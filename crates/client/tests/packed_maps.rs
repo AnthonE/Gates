@@ -146,6 +146,8 @@ fn packed_models() -> Vec<&'static str> {
         client::render::town_fx::SEARCHLIGHT_GLB,
         client::render::casino::SLOT_GLB,
         client::render::casino::TERMINAL_GLB,
+        client::render::casino::STOOL_GLB,
+        client::render::casino::ARMCHAIR_GLB,
     ] {
         set.insert(p);
     }
@@ -156,6 +158,14 @@ fn packed_models() -> Vec<&'static str> {
         if let HeldSrc::Glb(p) = &m.src {
             set.insert(*p);
         }
+    }
+    // The crops' generated plants and the fruit they bear (`render::crops`).
+    for p in client::render::crops::CROP_GLB
+        .iter()
+        .chain(client::render::crops::FRUIT_GLB.iter())
+        .flatten()
+    {
+        set.insert(*p);
     }
     // The skins with models of their own (#292), which replace a held row's.
     for m in SKIN_MODELS.iter() {

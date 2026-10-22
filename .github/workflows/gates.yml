@@ -19,7 +19,8 @@ on:
       - "assets/textures/**"
       - ".github/workflows/gates.yml"
   push:
-    branches: [main]
+    # `next-wipe` is gated like main: it is the other branch that merges.
+    branches: [main, next-wipe]
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
@@ -38,6 +39,10 @@ concurrency:
   group: gates-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Read-only token: nothing here writes, and a compromised step gets no more.
+permissions:
+  contents: read
+
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -53,7 +58,7 @@ jobs:
     # and nightly run 36139601292 was cancelled at 120 mid-suite.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: toolchain
         run: |
           # `rust-toolchain.toml` pins the version, the profile, the two
@@ -70,7 +75,7 @@ jobs:
       # 09-16 and took 90 minutes. A PR restores its base branch's cache.
       - name: cache cargo (restore)
         id: cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -103,7 +108,7 @@ jobs:
         run: ./ci/gates.sh
       - name: cache cargo (save, main only)
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry

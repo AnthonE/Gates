@@ -38,7 +38,9 @@ use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
-use sim_core::build::{anchor, facing_of, shape_has_facing, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE};
+use sim_core::build::{
+    anchor, facing_of, shape_has_facing, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_NONE, LOC_PLANE,
+};
 use sim_core::deploy::{arch_is_door, box_key, cell_center, ARCH_BOX, ARCH_HEARTH};
 use sim_core::input::BTN_PRIMARY;
 use sim_core::inventory::CONT_BOX;
@@ -116,6 +118,9 @@ pub struct Face {
     pub facing: u8,
     /// Out of the base: the side the eyes saw it from, a unit vector.
     pub out: [f32; 2],
+    /// Its middle on the ground: a grid edge's anchor, or an edge the grid
+    /// cannot name read off its collision row (its address spells its id).
+    pub mid: [f32; 2],
     pub seen: u32,
 }
 
@@ -129,8 +134,7 @@ impl Face {
 
     /// Where a body stands outside it, this far out.
     pub fn outside(&self, m: f32) -> [f32; 2] {
-        let (ax, az) = anchor(self.at.cx, self.at.cz, self.at.loc);
-        [ax + self.out[0] * m, az + self.out[1] * m]
+        [self.mid[0] + self.out[0] * m, self.mid[1] + self.out[1] * m]
     }
 }
 
@@ -404,15 +408,20 @@ impl Bases {
                 let Some(def) = def.filter(|d| d.hp > 0 && shape_has_facing(d.shape)) else {
                     continue;
                 };
-                if r.level != 0 || !matches!(r.loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
+                // A ground-storey edge: the grid's, or one it cannot name,
+                // addressed by its spelled id as every verb names it.
+                let posed_edge = r.loc == LOC_NONE
+                    && core
+                        .pieces
+                        .cols()
+                        .hulls()
+                        .find(sim_core::build::hull_key(r.id))
+                        .is_some_and(|h| h.kind == sim_core::hull::HULL_EDGE);
+                if r.level != 0 || !(matches!(r.loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) || posed_edge) {
                     continue;
                 }
-                let at = OpAddr {
-                    cx: r.cx,
-                    cz: r.cz,
-                    level: r.level,
-                    loc: r.loc,
-                };
+                let (cx, cz, level, loc) = r.target();
+                let at = OpAddr { cx, cz, level, loc };
                 (false, at, def.hp, r.facing, r.dmg, What::Face(true))
             } else {
                 self.deploy = (self.deploy + 1) % nd;
@@ -422,7 +431,16 @@ impl Bases {
                     continue;
                 }
                 let def = core.deploy_defs.defs[usize::from(r.row)];
-                let what = if arch_is_door(def.arch) && r.level == 0 {
+                // A door's storey: its doorway's, for one the grid cannot
+                // name (the address spells the doorway's id, level bits too).
+                let ground = if r.loc == LOC_NONE {
+                    core.pieces
+                        .find(r.cx, r.cz, r.level, r.loc)
+                        .is_some_and(|p| p.level == 0)
+                } else {
+                    r.level == 0
+                };
+                let what = if arch_is_door(def.arch) && ground {
                     What::Face(false)
                 } else if def.arch == ARCH_BOX {
                     What::Box
@@ -442,7 +460,9 @@ impl Bases {
             if own(at.cx, at.cz, at.level, at.loc) {
                 continue;
             }
-            let (ax, az) = if at.loc == LOC_PLANE {
+            let (ax, az) = if at.loc == LOC_NONE {
+                sim_core::deploy::edge_mid(core.pieces.cols(), at.cx, at.cz, at.level, at.loc)
+            } else if at.loc == LOC_PLANE {
                 cell_center(at.cx, at.cz)
             } else {
                 anchor(at.cx, at.cz, at.loc)
@@ -492,6 +512,7 @@ impl Bases {
                         sided,
                         facing,
                         out,
+                        mid: [ax, az],
                         seen: tick,
                     };
                     self.stats.faces += 1;
@@ -644,8 +665,27 @@ impl Bases {
 /// foundation, else (a wall in a field) the side `eye` is on; `None` with
 /// floor on both sides.
 fn outward(core: &ClientCore, at: OpAddr, eye: [f32; 2]) -> Option<[f32; 2]> {
-    let (ax, az) = anchor(at.cx, at.cz, at.loc);
     let cols = core.pieces.cols();
+    // An edge the grid cannot name: its own normal, and a slab of either
+    // building's ground storey a half cell to each side of its middle.
+    if let Some(p) = sim_core::deploy::posed_insert(cols, at.cx, at.cz, at.level, at.loc) {
+        let axis = [p.normal.0, p.normal.1];
+        let h = sim_core::build::BUILD_CELL_M * 0.5;
+        let floor = |s: f32| {
+            cols.hulls()
+                .slab_top(0, p.x + axis[0] * s * h, p.z + axis[1] * s * h)
+                .is_some()
+        };
+        let neg = [-axis[0], -axis[1]];
+        let eye_after = (eye[0] - p.x) * axis[0] + (eye[1] - p.z) * axis[1] >= 0.0;
+        return match (floor(-1.0), floor(1.0)) {
+            (true, true) => None,
+            (true, false) => Some(axis),
+            (false, true) => Some(neg),
+            (false, false) => Some(if eye_after { axis } else { neg }),
+        };
+    }
+    let (ax, az) = anchor(at.cx, at.cz, at.loc);
     let (axis, before, after, eye_after) = match at.loc {
         LOC_EDGE_XLO => (
             [1.0, 0.0],
@@ -1062,7 +1102,7 @@ impl RaidJob {
         tick: u32,
     ) -> Raid {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        let (ax, az) = anchor(face.at.cx, face.at.cz, face.at.loc);
+        let [ax, az] = face.mid;
         let inside = -((x - ax) * face.out[0] + (z - az) * face.out[1]);
         let stalled = self
             .approach
@@ -1398,7 +1438,11 @@ pub fn take_from(core: &ClientCore) -> Option<(u8, u8, u16)> {
         let max = core.catalog.row(usize::from(stack.item)).stack_max.max(1);
         let onto = order.clone().find(|&i| {
             let s = core.inv[i];
-            s.count > 0 && s.item == stack.item && s.count < max
+            s.count > 0
+                && s.item == stack.item
+                && s.skin == stack.skin
+                && s.cond == stack.cond
+                && s.count < max
         });
         let to = onto.or_else(|| order.clone().find(|&i| core.inv[i].count == 0));
         if let Some(to) = to {
@@ -1446,6 +1490,10 @@ mod tests {
             // side faces; seen from -z, outside.
             facing: 1,
             out: [0.0, -1.0],
+            mid: {
+                let (x, z) = anchor(100, 100, LOC_EDGE_ZLO);
+                [x, z]
+            },
             seen: 0,
         }
     }

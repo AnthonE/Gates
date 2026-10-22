@@ -31,8 +31,10 @@ use crate::build::{
     BuildContent, Pieces, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY,
     SHAPE_FRAME, SHAPE_WALL, SHAPE_WINDOW,
 };
+use crate::build::{LEVEL_H_M, LOC_NONE};
 use crate::collide::{ColIndex, ColMasks};
 use crate::deploy::{cell_center, pays_rent, DeployContent, Deploys, PERIODS_PER_DAY, WORLD_OWNER};
+use crate::hull::{Hull, HULL_EDGE, HULL_HALF, HULL_PLANE, HULL_RISER, HULL_TRI};
 use crate::limits::{HEARTH_STOCK_ROWS, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS};
 
 // ---------------------------------------------------------------------------
@@ -267,6 +269,71 @@ pub fn inside(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) 
     inside_at(cols, cx, cz, level, loc, rise(shape))
 }
 
+/// [`inside`] for a placed piece, whatever names it (freeform W4): a piece
+/// the grid cannot name — a triangle, anything in a building turned off the
+/// grid — is asked of the collision rows over its middle ([`rows_over`]); a
+/// grid piece of its masks, and of the rows the grid cannot name over it.
+pub fn piece_inside(
+    cols: &ColIndex,
+    id: u32,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    shape: u8,
+) -> bool {
+    match cols.hulls().find(crate::build::hull_key(id)) {
+        Some(h) if h.hit.loc == LOC_NONE => rows_over(cols, h, shape, false),
+        Some(h) => inside(cols, cx, cz, level, loc, shape) || rows_over(cols, h, shape, true),
+        None => inside(cols, cx, cz, level, loc, shape),
+    }
+}
+
+/// [`inside`] asked of the collision rows: whether a row stands at or over
+/// the socket the piece's top reaches, over the piece's middle — a body
+/// whose footprint holds it (a frame only over an edge, its rim, as
+/// [`rim_bits`] reads the grid), an edge stacked on the same line.
+/// `posed_only` asks only the rows the grid cannot name, which is all a
+/// grid piece's masks do not already say.
+pub fn rows_over(cols: &ColIndex, h: &Hull, shape: u8, posed_only: bool) -> bool {
+    let (x, z) = h.middle();
+    let top = h.floor_y + rise(shape) as f32 * LEVEL_H_M * 0.5;
+    covered(cols, x, z, top, h.kind == HULL_EDGE, h.key, posed_only)
+}
+
+/// Whether a row other than `own` stands at or over height `top` over
+/// (`x`, `z`) — [`rows_over`]'s walk. An edge's middle is on the line its
+/// neighbours' sides share, so it is asked with a few centimetres' slack.
+fn covered(
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    top: f32,
+    edge: bool,
+    own: u64,
+    posed_only: bool,
+) -> bool {
+    // The storeys' heights are sums; the slack is for one summed in
+    // another order.
+    let need = top - 0.01;
+    let tol = if edge { 0.05 } else { 0.0 };
+    cols.hulls().near(x - tol, z - tol, x + tol, z + tol, |o| {
+        if o.key == own
+            || (posed_only && o.hit.loc != LOC_NONE)
+            || o.floor_y.is_nan()
+            || o.floor_y < need
+        {
+            return false;
+        }
+        let reaches = match o.kind {
+            HULL_EDGE => edge,
+            HULL_PLANE | HULL_HALF | HULL_TRI | HULL_RISER => edge || !o.open,
+            _ => false,
+        };
+        reaches && o.foot_contains(x, z, tol)
+    })
+}
+
 /// A deployable's version of [`inside`]: a body on a plane is covered by
 /// the next socket up, a door in an edge by what covers a wall. The door's
 /// own doorway is not counted over it — a lintel over a leaf is the
@@ -274,13 +341,36 @@ pub fn inside(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) 
 ///
 /// A body deployable's `loc` is a slot name (`deploy::BODY_LOCS`), not a
 /// place in the cell — slot 8 is not a diagonal — so everything that is not
-/// an edge is asked as the plane it stands on.
-pub fn deploy_inside(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    if loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO {
-        inside_at(cols, cx, cz, level, loc, 2)
-    } else {
-        inside_at(cols, cx, cz, level, crate::build::LOC_PLANE, 1)
+/// an edge is asked as the plane it stands on. (`x`, `z`) is where it
+/// stands: off the grid's planes (freeform W4), the rows over it are asked
+/// there, at the slab it stands on — and a door in a doorway the grid
+/// cannot name is asked as that doorway.
+#[allow(clippy::too_many_arguments)]
+pub fn deploy_inside(
+    cols: &ColIndex,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    x: f32,
+    z: f32,
+) -> bool {
+    if loc == LOC_NONE {
+        let Some(h) = crate::build::spelled_id(cx, cz, level, loc)
+            .and_then(|id| cols.hulls().find(crate::build::hull_key(id)))
+        else {
+            return false;
+        };
+        return rows_over(cols, h, SHAPE_WALL, false);
     }
+    if loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO {
+        return inside_at(cols, cx, cz, level, loc, 2);
+    }
+    inside_at(cols, cx, cz, level, crate::build::LOC_PLANE, 1)
+        || cols
+            .hulls()
+            .slab_top(level, x, z)
+            .is_some_and(|(y, posed)| covered(cols, x, z, y + LEVEL_H_M * 0.5, false, 0, !posed))
 }
 
 fn inside_at(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8, rise: u8) -> bool {
@@ -392,7 +482,7 @@ pub fn bill(
         if rec.owner == WORLD_OWNER || !pays_rent(&def) {
             continue;
         }
-        let (x, z) = rec.xz();
+        let (x, z) = rec.place_xz(pieces.cols());
         if !deploys.hearth_covers(hi, x, z) {
             continue;
         }
@@ -591,7 +681,10 @@ mod tests {
             !inside(c, 10, 10, 1, LOC_PLANE, SHAPE_FLOOR),
             "open sky over the roof"
         );
-        assert!(deploy_inside(c, 10, 10, 0, LOC_PLANE), "a box on the floor");
+        assert!(
+            deploy_inside(c, 10, 10, 0, LOC_PLANE, 31.5, 31.5),
+            "a box on the floor"
+        );
     }
 
     #[test]
@@ -603,7 +696,7 @@ mod tests {
         let c = p.cols();
         assert!(!inside(c, 10, 10, 0, LOC_PLANE, SHAPE_FOUNDATION));
         assert!(!inside(c, 10, 10, 0, LOC_EDGE_ZLO, SHAPE_WALL));
-        assert!(!deploy_inside(c, 10, 10, 0, LOC_PLANE));
+        assert!(!deploy_inside(c, 10, 10, 0, LOC_PLANE, 31.5, 31.5));
     }
 
     #[test]

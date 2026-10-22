@@ -17,22 +17,18 @@
 //!
 //! ## What the verdict is, and what it is not
 //!
-//! [`verdict`] is a **local guess that saves a round trip**, never an
-//! authority. It answers the four refusals a client can see for itself —
-//! the spot is taken, out of reach, cannot afford it, the ground will not
-//! hold a foundation — and says nothing about support, hearth claims or
-//! world capacity, which are the server's alone. A ghost that draws green
-//! and then refuses is a ghost that was honest about what it knew; a ghost
-//! that draws red on something the sim would have taken is the failure to
-//! avoid, so every check here is one the sim runs the same way.
+//! [`verdict`] is the sim's own `build::check_place` asked of this client's
+//! mirror, so the ghost's colour is the server's answer: every rule, in the
+//! server's order, except a hearth's claim (crew lists never ride the wire)
+//! and a full world, which stay the server's alone.
 
 use sim_core::build::{
-    anchor, band_of_ground, build_cell_of, column_floor_y, foundation_terrain_ok, plate_for,
-    terrain_band, BuildContent, PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A,
-    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
-    LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, SHAPE_DOORWAY,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_TRI_FLOOR,
-    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    anchor, band_of_ground, build_cell_of, column_floor_y, terrain_band, BuildContent, PieceRec,
+    BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
+    LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO,
+    PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, REFUSE_B_SPOT, SHAPE_DOORWAY, SHAPE_FOUNDATION,
+    SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
@@ -43,8 +39,6 @@ use sim_core::deploy::{
 use sim_core::footprint::Pose;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
-
-use super::build::affordable;
 
 /// The ghost's word for ground the world keeps for itself — THE GATE, the
 /// depot, a landmark, the ziggurat (`terrain::build_reserved`). The sim
@@ -281,7 +275,24 @@ pub fn aim_from_look_step(
                 beside,
             };
         }
-        if let Some((level, s)) = socket_crossed(seed, haven, cols, prev, p) {
+        // The walls the grid cannot name (freeform): a triangle's sides,
+        // a turned base's.
+        if let Some((_, h)) = cols.hulls().posed_edge_crossed(prev, p) {
+            let met = match h.shape {
+                SHAPE_HALF_WALL => Met::HalfWall(h.level),
+                SHAPE_LOW_WALL => Met::LowWall(h.level),
+                _ => Met::Wall(h.level),
+            };
+            return Aim {
+                at: clamp_to_reach(planar_feet, (prev[0], prev[2])),
+                met,
+                standing,
+                beside: None,
+            };
+        }
+        let socket = socket_crossed(seed, haven, cols, prev, p)
+            .or_else(|| cols.hulls().posed_socket_crossed(prev, p, SOCKET_BAND_M));
+        if let Some((level, s)) = socket {
             let x = prev[0] + (p[0] - prev[0]) * s;
             let z = prev[2] + (p[2] - prev[2]) * s;
             return Aim {
@@ -365,6 +376,10 @@ fn level_of(
     z: f32,
     y: f32,
 ) -> u8 {
+    // A slab the grid cannot name knows its own storey (freeform W4).
+    if let Some(level) = cols.hulls().posed_level(x, z, y) {
+        return level;
+    }
     let (cx, cz) = (build_cell_of(x), build_cell_of(z));
     if !in_grid(cx, cz) {
         return 0;
@@ -848,84 +863,209 @@ pub struct Site<'a> {
     pub haven: &'a sim_core::terrain::Haven,
     /// The player's feet, world XZ.
     pub at: (f32, f32),
-    /// Addresses already holding a piece.
-    pub taken: &'a [sim_core::build::PieceRec],
-    /// The predictor's column index — the client's own mirror of the store
-    /// `build::place` reads. Here for the plate (build plate v1): the height
-    /// a placement takes is no longer a function of (seed, cell), so the
-    /// ghost has to ask the same question the sim will.
-    pub cols: &'a sim_core::collide::ColIndex,
+    /// The client's mirror of the store `build::place` reads — the sim's own
+    /// `Pieces`, so the verdict is the sim's own rules over it (freeform W2):
+    /// which building a placement joins, what bears it, what it overlaps.
+    pub store: &'a sim_core::build::Pieces,
     pub content: &'a BuildContent,
     pub inv: &'a [ItemStack; INV_SLOTS],
 }
 
-/// The four refusals a client can see for itself. See the module header for
-/// what this deliberately does not answer.
+/// Whether the sim would take this placement: `build::grid_site` and
+/// `build::check_site`, the server's own rules in the server's own order,
+/// asked of this client's mirror. The hearth claim is the one rule the mirror cannot hold (crew lists
+/// never ride the wire), so it answers no and the server keeps that word.
 pub fn verdict(
     t: Target,
     row: u16,
-    shape: u8,
+    _shape: u8,
     site: &Site<'_>,
     freehand: bool,
     want: i8,
 ) -> Verdict {
-    // Spot taken. `deploy.rs` and `build.rs` both key on the full address, so
-    // this is the same comparison the sim's `find` makes.
-    if site.taken.iter().any(|r| {
-        r.cx == t.cx
-            && r.cz == t.cz
-            && r.level == t.level
-            && (r.loc == t.loc
-                || (sim_core::build::is_stair_loc(r.loc) && sim_core::build::is_stair_loc(t.loc)))
-    }) {
-        return Verdict::No("spot taken");
+    match check(t, row, site, freehand, want) {
+        Ok(_) => Verdict::Ok,
+        Err(no) => no,
     }
+}
 
-    // Reach, measured to the ANCHOR — the sim's own corner, via the sim's own
-    // function. See the header.
-    let (ax, az) = anchor(t.cx, t.cz, t.loc);
-    if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
-        return Verdict::No(RESERVED_LINE);
-    }
-    let (dx, dz) = (ax - site.at.0, az - site.at.1);
-    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
-        return Verdict::No("out of reach");
-    }
-
-    // Ground, for a foundation only — every other shape stands on structure
-    // and the sim asks a different question of it.
-    if matches!(
-        shape,
-        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
-    ) && !foundation_terrain_ok(site.seed, site.haven, ax, az)
-    {
-        return Verdict::No("bad ground");
-    }
-
-    // The plate (build plate v1), by the sim's own rule against the client's
-    // own mirror — after ground and before cost, which is `build::place`'s
-    // own order, so the sentence the ghost shows is the one the server would
-    // have said and not a later one.
-    //
-    // **Mirrored rather than left Unknown**, unlike the claim: the two plate
-    // refusals are computed from the piece index and the terrain, and the
-    // client holds both. Leaving them out would put a green ghost on the
-    // commonest refusal a hillside can produce.
-    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand, want) {
+/// [`verdict`], keeping what an accepted placement would be: the plate it
+/// stands at and the side its soft face shows — what a piece drawn before the
+/// server answers needs (`ClientCore::predict_place`).
+pub fn check(
+    t: Target,
+    row: u16,
+    site: &Site<'_>,
+    freehand: bool,
+    want: i8,
+) -> Result<sim_core::build::Placement, Verdict> {
+    let shape = site
+        .content
+        .pieces
+        .get(row as usize)
+        .filter(|_| row < site.content.piece_count)
+        .map_or(0, |d| d.shape);
+    sim_core::build::grid_site(
+        site.seed, site.haven, site.store, t.cx, t.cz, t.level, t.loc, shape, freehand, want,
+    )
+    .and_then(|s| check_site_on(site, row, &s))
+    .map_err(|why| match why {
+        // The sim answers reserved ground with the occupied spot's code;
+        // over an empty plaza "spot taken" reads as a bug.
+        REFUSE_B_SPOT
+            if {
+                let (ax, az) = anchor(t.cx, t.cz, t.loc);
+                sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5)
+            } =>
+        {
+            Verdict::No(RESERVED_LINE)
+        }
         // Indexed rather than formatted: `Verdict::No` carries a
-        // `&'static str`, and the table row IS that string — the same one
-        // the server's refusal would arrive with (`DeployVerdict`'s
-        // discipline, one table over). `plate_for` returns only these two
-        // codes, so an out-of-range index here is a loud bug and not a
-        // case to clamp away.
-        return Verdict::No(super::refusals::BUILD[why as usize]);
-    }
+        // `&'static str`, and the table row IS the sentence the server's
+        // refusal would arrive with.
+        why => Verdict::No(
+            super::refusals::BUILD
+                .get(why as usize)
+                .copied()
+                .unwrap_or("refused"),
+        ),
+    })
+}
 
-    if !affordable(site.content, row, site.inv) {
-        return Verdict::No("missing materials");
-    }
+/// How far round the aim the ghost looks for something to snap to on a
+/// building's lattice (freeform W2), metres: a cell and a bit either way.
+pub const SNAP_NEAR_M: f32 = 6.0;
 
-    Verdict::Ok
+/// Where a placement the grid cannot name goes (freeform W2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LatticeAim {
+    /// On a standing building's lattice (`ActionMsg::PlaceAt`).
+    At {
+        bld: u16,
+        sock: sim_core::sock::Sock,
+    },
+    /// A foundation starting a building of its own (`ActionMsg::PlaceFree`):
+    /// its frame's origin and turn.
+    Free {
+        x_cm: i32,
+        z_cm: i32,
+        yaw: u16,
+        tri: bool,
+    },
+}
+
+/// Whether the ghost places on a lattice rather than on the grid, and
+/// where (freeform W2). A triangle always does: it snaps beside what stands
+/// near ([`sim_core::build::snap`]). A foundation, square or triangle, with
+/// nothing near starts a building of its own with its middle on the aim,
+/// facing `yaw` (the look's) — any base at any angle. Anything else does
+/// where the nearest free footprint beside what stands near is in a
+/// building turned off the grid, within a cell of the aim; or is one the
+/// grid cannot name — a wall on a triangle's side — and is nearer the aim
+/// than the grid's own address, so a square base on the grid builds on as
+/// it always has.
+pub fn lattice_aim(
+    store: &sim_core::build::Pieces,
+    shape: u8,
+    level: u8,
+    aim: (f32, f32),
+    grid: Target,
+    turn: u8,
+    yaw: u16,
+) -> Option<LatticeAim> {
+    use sim_core::sock::{FOOT_TRI, FOOT_TRI_RISER};
+    let tri = matches!(sim_core::support::foot_of(shape), FOOT_TRI | FOOT_TRI_RISER);
+    let snapped = sim_core::build::snap(store, shape, level, aim.0, aim.1, SNAP_NEAR_M, turn);
+    if let Some(s) = snapped {
+        let frame = store.frame(s.bld)?;
+        let named = sim_core::build::grid_name(frame, &s.sock).is_some();
+        let (gx, gz) = anchor(grid.cx, grid.cz, grid.loc);
+        let g = ((gx - aim.0) * (gx - aim.0) + (gz - aim.1) * (gz - aim.1)).sqrt();
+        // A building turned off the grid can never be joined through a
+        // grid address, so within a cell of its free socket that socket is
+        // the aim's, however near a grid cell's middle happens to be.
+        let turned = sim_core::build::grid_origin(frame).is_none();
+        if tri || (!named && s.dist_m < g) || (turned && s.dist_m <= BUILD_CELL_M) {
+            return Some(LatticeAim::At {
+                bld: s.bld,
+                sock: s.sock,
+            });
+        }
+        // Near a grid base, the grid's address; out past a turned one's
+        // reach, a foundation starts a building of its own.
+        if !turned {
+            return None;
+        }
+    }
+    if !((tri && sim_core::support::grounded(shape)) || shape == sim_core::build::SHAPE_FOUNDATION)
+    {
+        return None;
+    }
+    // The body `build::free_site` lays has its first corner on the origin:
+    // step back from the aim to its middle.
+    let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
+    let mid = if tri {
+        sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0).at
+    } else {
+        sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at
+    };
+    let (ox, oz) = probe.to_world(mid);
+    Some(LatticeAim::Free {
+        x_cm: ((aim.0 - ox) * 100.0).round() as i32,
+        z_cm: ((aim.1 - oz) * 100.0).round() as i32,
+        yaw,
+        tri,
+    })
+}
+
+/// The site a lattice aim names, by the sim's own constructors.
+pub fn lattice_site(
+    site: &Site<'_>,
+    aim: LatticeAim,
+    level: u8,
+    want: i8,
+) -> Result<sim_core::build::Site, u32> {
+    match aim {
+        LatticeAim::At { bld, sock } => sim_core::build::lattice_site(site.store, bld, level, sock),
+        LatticeAim::Free {
+            x_cm,
+            z_cm,
+            yaw,
+            tri,
+        } => sim_core::build::free_site(
+            site.seed,
+            site.haven,
+            site.store,
+            (x_cm, z_cm),
+            yaw,
+            tri,
+            want,
+        ),
+    }
+}
+
+/// [`check`] for a lattice aim: the sim's rules over the mirror, and the
+/// verdict in the refusal table's words.
+pub fn check_lattice(
+    site: &Site<'_>,
+    row: u16,
+    aim: LatticeAim,
+    level: u8,
+    want: i8,
+) -> Result<(sim_core::build::Site, sim_core::build::Placement), Verdict> {
+    let at = lattice_site(site, aim, level, want).map_err(refusal)?;
+    let placed = check_site_on(site, row, &at).map_err(refusal)?;
+    Ok((at, placed))
+}
+
+/// A build refusal code in the words the server's refusal would carry.
+fn refusal(why: u32) -> Verdict {
+    Verdict::No(
+        super::refusals::BUILD
+            .get(why as usize)
+            .copied()
+            .unwrap_or("refused"),
+    )
 }
 
 /// The plate a placement at `t` would take, or 0 where the rule refuses —
@@ -937,8 +1077,36 @@ pub fn verdict(
 /// an unlatched foundation would stand — so a red ghost on `too far below the
 /// floor` sits on the terrain under it with the base it could not reach
 /// visibly above, which is the picture that explains the refusal.
-pub fn ghost_plate(site: &Site<'_>, t: Target, freehand: bool, want: i8) -> i8 {
-    plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand, want).unwrap_or(0)
+pub fn ghost_plate(site: &Site<'_>, t: Target, shape: u8, freehand: bool, want: i8) -> i8 {
+    sim_core::build::grid_site(
+        site.seed, site.haven, site.store, t.cx, t.cz, t.level, t.loc, shape, freehand, want,
+    )
+    .ok()
+    .and_then(|s| s.frame(site.store).copied())
+    .map_or(0, |f| {
+        let ground = sim_core::build::terrain_band(site.seed, site.haven, t.cx, t.cz);
+        (f.band - ground).clamp(i8::MIN as i32, i8::MAX as i32) as i8
+    })
+}
+
+/// `build::check_site` over the mirror, for a site already resolved — the
+/// grid's or the lattice's. The hearth claim is the server's to answer.
+pub fn check_site_on(
+    site: &Site<'_>,
+    row: u16,
+    at: &sim_core::build::Site,
+) -> Result<sim_core::build::Placement, u32> {
+    sim_core::build::check_site(
+        site.seed,
+        site.haven,
+        site.content,
+        site.store,
+        site.at,
+        site.inv,
+        row,
+        at,
+        |_, _| false,
+    )
 }
 
 /// The band a placement at `t` ASKS for (foundation height v0,
@@ -1045,7 +1213,7 @@ pub fn freehand_from_aim(site: &Site<'_>, t: Target, aim: (f32, f32)) -> bool {
         if (nx as usize) >= MAX_BUILD_COORD || (nz as usize) >= MAX_BUILD_COORD {
             continue;
         }
-        if site.cols.plate(nx, nz).is_none() {
+        if site.store.cols().plate(nx, nz).is_none() {
             continue;
         }
         latchable = true;
@@ -1243,6 +1411,67 @@ pub fn body_aim(aim: &Aim, feet: (f32, f32), turn: u8) -> Option<(Target, Pose)>
     ))
 }
 
+/// The doorway, window or frame the grid cannot name (freeform W4) whose
+/// middle is nearest the aim on the aimed storey, within a cell's reach of
+/// it — or, for a lock, the door hung in one — if it is nearer than the
+/// grid's own target `grid`. What a door in hand reaches for on a
+/// triangle's side.
+pub fn posed_insert_target(
+    store: &sim_core::build::Pieces,
+    site: &DeploySite<'_>,
+    placement: u8,
+    aim: (f32, f32),
+    level: u8,
+    grid: Target,
+) -> Option<Target> {
+    let near2 = BUILD_CELL_M * BUILD_CELL_M;
+    let grid_mid = sim_core::deploy::edge_mid(site.cols, grid.cx, grid.cz, grid.level, grid.loc);
+    let d2 = |(x, z): (f32, f32)| (x - aim.0) * (x - aim.0) + (z - aim.1) * (z - aim.1);
+    let mut best: Option<(f32, Target)> = None;
+    let mut offer = |at: (u16, u16, u8, u8)| {
+        let d = d2(sim_core::deploy::edge_mid(
+            site.cols, at.0, at.1, at.2, at.3,
+        ));
+        if d <= near2 && d < d2(grid_mid) && best.is_none_or(|(b, _)| d < b) {
+            best = Some((
+                d,
+                Target {
+                    cx: at.0,
+                    cz: at.1,
+                    level: at.2,
+                    loc: at.3,
+                },
+            ));
+        }
+    };
+    if placement == sim_core::deploy::PLACE_DOOR {
+        // A door's address spells its doorway's id, level bits and all:
+        // the storey is the doorway's.
+        for d in site.deploys {
+            if d.loc == sim_core::build::LOC_NONE
+                && store
+                    .find(d.cx, d.cz, d.level, d.loc)
+                    .is_some_and(|r| r.level == level)
+            {
+                offer((d.cx, d.cz, d.level, d.loc));
+            }
+        }
+    } else {
+        let want = socket_shape(placement)?;
+        for r in store.entries() {
+            let known = (r.row as u16) < site.piece_have.min(site.piece_defs.piece_count);
+            if !r.on_grid()
+                && r.level == level
+                && known
+                && site.piece_defs.pieces[r.row as usize].shape == want
+            {
+                offer(r.target());
+            }
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
 /// How far a body deployable's ghost may slide back toward the player to
 /// clear what it was aimed into, metres ([`body_slide`]).
 pub const DEPLOY_SLIDE_MAX_M: f32 = 1.2;
@@ -1368,10 +1597,12 @@ impl DeploySite<'_> {
             .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
     }
 
+    /// The piece an address names — its grid address, or its spelled id
+    /// (`build::spell_id`, freeform W2).
     fn piece_at(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
         self.pieces
             .iter()
-            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+            .find(|r| r.target() == (cx, cz, level, loc))
     }
 }
 
@@ -1436,6 +1667,9 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
     let (ax, az) = match site.deploy_at(t.cx, t.cz, t.level, t.loc) {
         Some(host) if def.placement == PLACE_DOOR && !sim_core::deploy::is_edge_loc(t.loc) => {
             host.xz()
+        }
+        _ if t.loc == sim_core::build::LOC_NONE => {
+            sim_core::deploy::edge_mid(site.cols, t.cx, t.cz, t.level, t.loc)
         }
         _ => sim_core::footprint::centre(t.cx, t.cz, pose),
     };
@@ -1532,7 +1766,7 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::build::{PieceDef, PieceRec, BUILD_CELL_M, MAT_WOOD};
+    use sim_core::build::{foundation_terrain_ok, PieceDef, PieceRec, BUILD_CELL_M, MAT_TWIG};
     use sim_core::deploy::{cell_center, ARCH_BOX};
 
     fn empty_inv() -> [ItemStack; INV_SLOTS] {
@@ -1545,13 +1779,37 @@ mod tests {
         let mut c = BuildContent::EMPTY;
         c.pieces[0] = PieceDef {
             shape,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 0,
             costs: [(0, 0); sim_core::limits::MAX_PIECE_COSTS],
         };
         c.piece_count = 1;
         c
+    }
+
+    /// A mirror holding grid pieces, each in a grid building of its own on
+    /// its own ground — what the server sends for a lone piece.
+    fn mirror(
+        seed: u64,
+        haven: &sim_core::terrain::Haven,
+        pieces: &[(u16, u16, u8, u8)],
+    ) -> sim_core::build::Pieces {
+        let mut store = sim_core::build::Pieces::new();
+        for (i, &(cx, cz, loc, shape)) in pieces.iter().enumerate() {
+            let rec = PieceRec {
+                cx,
+                cz,
+                loc,
+                id: 1 + i as u32,
+                bld: i as u16,
+                sock: sim_core::sock::from_grid(cx, cz, cx, cz, loc).expect("a grid address"),
+                ..PieceRec::default()
+            };
+            let frame = sim_core::build::grid_frame(seed, haven, cx, cz);
+            assert!(store.mirror_put(rec, frame, |_| Some(shape)));
+        }
+        store
     }
 
     #[test]
@@ -1674,11 +1932,10 @@ mod tests {
     fn every_foundation_preview_refuses_bad_ground() {
         let seed = 20260731;
         let haven = sim_core::terrain::haven(seed);
-        let cols = sim_core::collide::ColIndex::new();
+        let store = sim_core::build::Pieces::new();
         let inv = empty_inv();
         for (shape, loc) in [
             (SHAPE_FOUNDATION, LOC_PLANE),
-            (SHAPE_TRI_FOUNDATION, LOC_TRI_XLO_ZLO),
             (sim_core::build::SHAPE_FOUNDATION_STEPS, LOC_RISER),
         ] {
             let t = Target {
@@ -1692,8 +1949,7 @@ mod tests {
                 seed,
                 haven: &haven,
                 at,
-                taken: &[],
-                cols: &cols,
+                store: &store,
                 content: &content,
                 inv: &inv,
             };
@@ -1722,12 +1978,12 @@ mod tests {
         let content = free_table(SHAPE_FOUNDATION);
         let inv = empty_inv();
         let cols = sim_core::collide::ColIndex::new();
+        let store = sim_core::build::Pieces::new();
         let site = Site {
             seed,
             haven: &haven,
             at: (0.0, 0.0),
-            taken: &[],
-            cols: &cols,
+            store: &store,
             content: &content,
             inv: &inv,
         };
@@ -1771,28 +2027,15 @@ mod tests {
             level: 0,
             loc: LOC_EDGE_XLO,
         };
-        let taken = [PieceRec {
-            cx: 3,
-            cz: 3,
-            level: 0,
-            loc: LOC_EDGE_XLO,
-            row: 0,
-            facing: 0,
-            hp: 10,
-            uh: 0,
-            dmg: 0,
-            plate: 0,
-        }];
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
-        // Nothing built anywhere: `plate_for` answers 0 and refuses nothing,
-        // so these two tests keep asking exactly what they asked before.
-        let empty_cols = sim_core::collide::ColIndex::new();
+        // The mirror holds the wall: the verdict is the sim's own check
+        // over it.
+        let store = mirror(1, &haven1, &[(3, 3, LOC_EDGE_XLO, SHAPE_WALL)]);
         let site = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az),
-            taken: &taken,
-            cols: &empty_cols,
+            store: &store,
             content: &content,
             inv: &inv,
         };
@@ -1807,20 +2050,13 @@ mod tests {
         let haven = sim_core::terrain::haven(1);
         let content = free_table(sim_core::build::SHAPE_STAIRS);
         let inv = empty_inv();
-        let cols = sim_core::collide::ColIndex::new();
         for placed in sim_core::build::STAIR_LOCS {
-            let taken = [PieceRec {
-                cx: 3,
-                cz: 3,
-                loc: placed,
-                ..PieceRec::default()
-            }];
+            let store = mirror(1, &haven, &[(3, 3, placed, sim_core::build::SHAPE_STAIRS)]);
             let site = Site {
                 seed: 1,
                 haven: &haven,
                 at: (10.5, 10.5),
-                taken: &taken,
-                cols: &cols,
+                store: &store,
                 content: &content,
                 inv: &inv,
             };
@@ -1856,13 +2092,14 @@ mod tests {
             loc: LOC_EDGE_XLO,
         };
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
-        let empty_cols = sim_core::collide::ColIndex::new();
+        // A foundation under it: a wall stands on something, and the
+        // verdict is the sim's whole check, support included.
+        let store = mirror(1, &haven1, &[(10, 10, LOC_PLANE, SHAPE_FOUNDATION)]);
         let site_near = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M + 0.2),
-            taken: &[],
-            cols: &empty_cols,
+            store: &store,
             content: &content,
             inv: &inv,
         };
@@ -1871,8 +2108,7 @@ mod tests {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M - 0.2),
-            taken: &[],
-            cols: &empty_cols,
+            store: &store,
             content: &content,
             inv: &inv,
         };
@@ -2206,5 +2442,165 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A foundation aimed at open ground starts a building of its own,
+    /// square or triangle, its middle on the aim and turned to the look —
+    /// any base at any angle.
+    #[test]
+    fn a_lone_foundation_starts_its_own_turned_building() {
+        use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
+        let store = sim_core::build::Pieces::new();
+        let aim = (1234.5, 987.25);
+        let grid = Target {
+            cx: 411,
+            cz: 329,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        for (shape, tri) in [(SHAPE_FOUNDATION, false), (SHAPE_TRI_FOUNDATION, true)] {
+            let got = lattice_aim(&store, shape, 0, aim, grid, 0, 9_000);
+            let Some(LatticeAim::Free {
+                x_cm,
+                z_cm,
+                yaw,
+                tri: t,
+            }) = got
+            else {
+                panic!("{shape}: {got:?}");
+            };
+            assert_eq!((yaw, t), (9_000, tri));
+            let sock = if tri {
+                sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0)
+            } else {
+                sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0)
+            };
+            let (mx, mz) = sim_core::frame::Frame::new((x_cm, z_cm), 0, yaw).to_world(sock.at);
+            assert!(
+                (mx - aim.0).abs() < 0.01 && (mz - aim.1).abs() < 0.01,
+                "{shape}: middle at ({mx}, {mz})"
+            );
+        }
+    }
+
+    /// Beside a building turned off the grid, a foundation takes the
+    /// building's own free socket though the aim sits on a grid cell's very
+    /// middle: the grid could never join it to that building.
+    #[test]
+    fn a_turned_base_builds_on_its_own_lattice() {
+        use sim_core::build::{BuildContent, Pieces, LOC_NONE, SHAPE_FOUNDATION};
+        use sim_core::sock::Sock;
+        let bc = BuildContent::probe_fixture();
+        assert_eq!(bc.pieces[0].shape, SHAPE_FOUNDATION);
+        let frame = sim_core::frame::Frame::new((123_456, 98_765), 0, 7_000);
+        let core_sq = Sock::square_from(sim_core::lattice::LPt::ZERO, 0);
+        let (cx, cz) = sim_core::build::anchor_cell(&frame, &core_sq);
+        let mut store = Pieces::new();
+        assert!(store.mirror_put(
+            PieceRec {
+                id: 1,
+                sock: core_sq,
+                row: 0,
+                cx,
+                cz,
+                loc: LOC_NONE,
+                hp: 1,
+                ..PieceRec::default()
+            },
+            frame,
+            |r| Some(bc.pieces[r as usize].shape),
+        ));
+        let (sides, _) = core_sq.sides();
+        let (next, _) = sim_core::sock::beside(&sides[0], -sides[0].side_of(core_sq.at));
+        let (mx, mz) = frame.to_world(next.at);
+        let (gx, gz) = (
+            sim_core::build::build_cell_of(mx) as u16,
+            sim_core::build::build_cell_of(mz) as u16,
+        );
+        let grid = Target {
+            cx: gx,
+            cz: gz,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        let aim = anchor(gx, gz, LOC_PLANE);
+        let got = lattice_aim(&store, SHAPE_FOUNDATION, 0, aim, grid, 0, 0);
+        assert!(
+            matches!(got, Some(LatticeAim::At { bld: 0, .. })),
+            "the grid cell took it: {got:?}"
+        );
+    }
+
+    /// The look ray meets a building turned off the grid as it meets a grid
+    /// base: a wall's face is `Met::Wall` of its storey, and the air just
+    /// past a turned upper floor's edge is that floor's socket — what a roof
+    /// aimed at the walls, or a floor run out past its edge, takes its storey
+    /// from.
+    #[test]
+    fn the_aim_meets_a_turned_bases_walls_and_floor_edges() {
+        use sim_core::build::{band_y, BuildContent, Pieces, LOC_NONE};
+        use sim_core::sock::Sock;
+        let seed = 20260731u64;
+        let haven = sim_core::terrain::haven(seed);
+        let bc = BuildContent::probe_fixture();
+        let (gx, gz) = (2047.5f32, 2047.5f32);
+        let band = sim_core::build::band_of_ground(sim_core::terrain::ground(seed, &haven, gx, gz));
+        let frame =
+            sim_core::frame::Frame::new(((gx * 100.0) as i32, (gz * 100.0) as i32), band, 7_000);
+        let sq = Sock::square_from(sim_core::lattice::LPt::ZERO, 0);
+        let (sides, _) = sq.sides();
+        let mut store = Pieces::new();
+        // Probe fixture rows: 0 the foundation, 1 the wall, 2 the floor.
+        for (id, row, level, sock) in [(1, 0, 0, sq), (2, 1, 0, sides[0]), (3, 2, 1, sq)] {
+            let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+            assert!(store.mirror_put(
+                PieceRec {
+                    id,
+                    sock,
+                    row,
+                    level,
+                    cx,
+                    cz,
+                    loc: LOC_NONE,
+                    hp: 1,
+                    ..PieceRec::default()
+                },
+                frame,
+                |r| Some(bc.pieces[r as usize].shape),
+            ));
+        }
+        let cols = store.cols();
+        let floor = band_y(band);
+        let (cx, cz) = frame.to_world(sq.at);
+        let out = |side: Sock| {
+            let (mx, mz) = frame.to_world(side.at);
+            let d = ((mx - cx) * (mx - cx) + (mz - cz) * (mz - cz)).sqrt();
+            ((mx, mz), ((mx - cx) / d, (mz - cz) / d))
+        };
+
+        // Outside the wall, looking level at it.
+        let ((mx, mz), (ox, oz)) = out(sides[0]);
+        let eye = [mx + ox * 2.5, floor + 1.6, mz + oz * 2.5];
+        let feet = [eye[0], floor, eye[2]];
+        let aim = aim_from_look(seed, &haven, cols, eye, [-ox, 0.0, -oz], feet);
+        assert_eq!(aim.met, Met::Wall(0), "the turned wall's face");
+
+        // Outside the open side, looking down at the air just past the
+        // upper floor's edge.
+        let ((mx, mz), (ox, oz)) = out(sides[2]);
+        let top = floor + sim_core::build::level_y(1);
+        let eye = [mx + ox * 2.0, top + 1.6, mz + oz * 2.0];
+        let at = [mx + ox * 0.5, top, mz + oz * 0.5];
+        let d = [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let aim = aim_from_look(
+            seed,
+            &haven,
+            cols,
+            eye,
+            [d[0] / n, d[1] / n, d[2] / n],
+            [eye[0], top, eye[2]],
+        );
+        assert_eq!(aim.met, Met::Socket(1), "past the turned floor's edge");
     }
 }

@@ -1902,6 +1902,10 @@ pub enum Biome {
 /// How many biomes there are — the length of every per-biome table.
 pub const BIOMES: usize = 6;
 
+/// The biomes' names in [`Biome`] order, as content spells them
+/// (`cooking.toml` `[farm] soil`).
+pub const BIOME_NAMES: [&str; BIOMES] = ["beach", "meadow", "forest", "highland", "desert", "fel"];
+
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
 /// spawns into it, so the spawn zone cannot drift away from the biome.
@@ -7047,6 +7051,19 @@ pub enum Occupant {
     /// pressed against it (`world::CACTUS_HP`). Drawn from a shrub cell
     /// after the draw is settled, so no other cell moves for it.
     Cactus = 28,
+    /// Wild corn: a shrub by a lake's fresh water ([`plant_of`]) that
+    /// rolled [`WILD_CORN_PERMILLE`]. A lake's shore lies under
+    /// [`BEACH_MAX_H`], so nearly every one stands on a lake's edge in the
+    /// Beach biome (measured: 59 on three seeds, 58 Beach, one Meadow; 55
+    /// with fresh water the nearest water). Picked by hand with `E` for corn
+    /// and a seed (`gather.wild_corn`), so the crop has a wild source the
+    /// way hemp does. Passable.
+    WildCorn = 29,
+    /// A wild pumpkin vine, [`WildCorn`]'s neighbour by the water
+    /// (`gather.wild_pumpkin`).
+    ///
+    /// [`WildCorn`]: Occupant::WildCorn
+    WildPumpkin = 30,
 }
 
 impl Occupant {
@@ -7055,7 +7072,14 @@ impl Occupant {
     /// pickup. Every one is passable and none blocks a swing, an arrow or a
     /// body.
     pub const fn is_plant(self) -> bool {
-        matches!(self, Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub) || self.is_pickup()
+        matches!(
+            self,
+            Occupant::BerryBush
+                | Occupant::Hemp
+                | Occupant::Shrub
+                | Occupant::WildCorn
+                | Occupant::WildPumpkin
+        ) || self.is_pickup()
     }
 
     /// A ground pickup — loose stone, wood, ore, mushrooms ([`plant_of`]).
@@ -7138,10 +7162,74 @@ const _: () = {
     }
 };
 
+/// Share of the scenery shrubs by a lake ([`fresh_water_near`]) that grow as
+/// wild corn, per mille. **(knob)**
+///
+/// Most of the island's lakes are small, and the ground within a few metres
+/// of one is under [`BEACH_MAX_H`], so a lake's shore is Beach and its
+/// meadow starts 25–30 m back: eight seeds hold 19–54 shrubs in reach of
+/// fresh water on a whole island, 11–30 of them a crop at these shares. So the share is high where it applies —
+/// three in five of those shrubs are a crop — and the 3 : 2 corn to
+/// pumpkin split is the design's.
+pub const WILD_CORN_PERMILLE: u16 = 360;
+/// And as a wild pumpkin, per mille, past the corn's share. **(knob)**
+pub const WILD_PUMPKIN_PERMILLE: u16 = 240;
+/// How far from a wild crop the fresh water it needs may be, metres: the
+/// outer ring of [`fresh_water_near`]'s taps; the inner is at half. **(knob)**
+pub const WILD_WATER_REACH_M: f32 = 24.0;
+
+/// Whether fresh water stands near (`x`, `z`): a tap under `SEA_LEVEL`
+/// whose water is a lake's (`open < 0.5`, the test `survival::water_in_reach`
+/// drinks fresh by), on eight bearings at half [`WILD_WATER_REACH_M`] and
+/// at it. Up to sixteen height taps, so only a shrub that already rolled a
+/// wild crop asks, and the first wet tap answers.
+fn fresh_water_near<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> bool {
+    for r in [WILD_WATER_REACH_M * 0.5, WILD_WATER_REACH_M] {
+        let d = r * core::f32::consts::FRAC_1_SQRT_2;
+        for (dx, dz) in [
+            (r, 0.0),
+            (-r, 0.0),
+            (0.0, r),
+            (0.0, -r),
+            (d, d),
+            (-d, d),
+            (d, -d),
+            (-d, -d),
+        ] {
+            let (h, open) = open_of(height_parts_in(c, seed, x + dx, z + dz));
+            if h < SEA_LEVEL && open < 0.5 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Which plant a cell that drew the bush column grows: its own hash channel,
 /// so the roll that put a plant there and the roll that says which plant are
 /// independent, and every cell that held a bush still holds a plant.
-pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
+///
+/// A Beach, Meadow or Forest shrub at (`x`, `z`) with a lake's fresh water
+/// in reach ([`fresh_water_near`]) may grow as wild corn or a wild pumpkin
+/// instead: the same hash's high bits, an independent roll, taken only on
+/// the scenery remainder, so no berry bush, hemp or pickup moves for it.
+/// Since a lake's shore is Beach and its meadow starts past the reach,
+/// they grow on lake shores; the sea's water is open and never counts, so
+/// a sea beach grows one only where a lake lies within reach of it too
+/// (`tests/wild_crops.rs` pins the census).
+pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, x: f32, z: f32, b: Biome) -> Occupant {
+    plant_in(&mut Direct, seed, cell_x, cell_z, x, z, b)
+}
+
+fn plant_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    cell_x: i32,
+    cell_z: i32,
+    x: f32,
+    z: f32,
+    b: Biome,
+) -> Occupant {
     let h = cell_hash(seed, cell_x, cell_z, CH_PLANT);
     let r = (h % 1000) as u16;
     let [berry, hemp] = PLANT_SHARES[b as usize];
@@ -7170,6 +7258,17 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
             Occupant::SulfurPile,
             Occupant::MushroomPatch,
         ][i.min(4)]
+    } else if matches!(b, Biome::Beach | Biome::Meadow | Biome::Forest) {
+        let w = ((h >> 48) % 1000) as u16;
+        if w < WILD_CORN_PERMILLE + WILD_PUMPKIN_PERMILLE && fresh_water_near(c, seed, x, z) {
+            if w < WILD_CORN_PERMILLE {
+                Occupant::WildCorn
+            } else {
+                Occupant::WildPumpkin
+            }
+        } else {
+            Occupant::Shrub
+        }
     } else {
         Occupant::Shrub
     }
@@ -7205,24 +7304,54 @@ const _: () = {
     }
 };
 
-/// A saguaro's trunk at scale 1, metres: the widest column the client draws
-/// (`render/plants::cactus`, 0.2–0.27 m), rounded outward; its arms are
-/// outside it, as a tree's limbs are. And its top: the shortest saguaro's,
-/// so nothing invisible blocks above a short one.
+/// A saguaro's trunk at scale 1, metres: the drawn model's
+/// (`props::CACTUS_GLB`), 0.25–0.28 m off its axis. And its top: the
+/// model's crown.
 pub const CACTUS_R_M: f32 = 0.27;
-pub const CACTUS_TOP_M: f32 = 2.4;
+pub const CACTUS_TOP_M: f32 = 3.6;
 
-/// The desert's other cactus: a ribbed ball at knee height
-/// (`render/plants`' ball model). Painted species 1 of a cactus slot; as
-/// wide as a saguaro's trunk so the road clearance above holds for both.
+/// The saguaro's two arms beside its trunk, on `SHELTER_BOXES`' terms, in
+/// the model's own frame (`props::CACTUS_GLB`, arms along local X): solid,
+/// so a body is stopped by the arm it sees and not only by the trunk. Both
+/// start above a crouch, so a crouched body passes under them.
+pub const SAGUARO_ARM_BOXES: [[f32; 6]; 2] = [
+    [-0.49, 1.85, 0.0, 0.44, 1.3, 0.34], // left arm, from 1.2 m
+    [0.45, 2.35, 0.0, 0.52, 1.3, 0.34],  // right arm, from 1.7 m
+];
+/// Bounding radius of the saguaro, arms and all: the broad phase.
+pub const SAGUARO_R_M: f32 = 0.7301;
+
+/// The desert's other cactus: a ribbed ball (`props::CACTUS_GLB`'s second
+/// model) about hip high. Painted species 1 of a cactus slot.
 pub const BALL_CACTUS_SPECIES: u8 = 1;
-pub const BALL_CACTUS_TOP_M: f32 = 0.6;
+pub const BALL_CACTUS_R_M: f32 = 0.5044;
+pub const BALL_CACTUS_TOP_M: f32 = 0.96;
 
-/// [`occupant_volume`] for this slot: a ball cactus is short.
+/// How high a palm blocks, metres: its drawn height (the client's
+/// `tree::PALM_H`), the reference game's palms rather than the pine's 42 m.
+pub const PALM_TOP_M: f32 = 12.0;
+
+/// [`occupant_volume`] for this slot: a ball cactus is its own, and a palm
+/// is shorter than the other trees.
 pub const fn slot_volume(slot: &Slot) -> (f32, f32) {
     match slot.occupant {
-        Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => (CACTUS_R_M, BALL_CACTUS_TOP_M),
+        Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => {
+            (BALL_CACTUS_R_M, BALL_CACTUS_TOP_M)
+        }
+        Occupant::Tree if slot.species == PALM_SPECIES => {
+            (OCCUPANT_R_M[Occupant::Tree as usize], PALM_TOP_M)
+        }
         o => occupant_volume(o),
+    }
+}
+
+/// A cactus slot's round column: the saguaro's trunk without its arms, or
+/// the ball. What a swing aims at and a mark lands on.
+pub const fn cactus_column(slot: &Slot) -> (f32, f32) {
+    if slot.species == BALL_CACTUS_SPECIES {
+        (BALL_CACTUS_R_M, BALL_CACTUS_TOP_M)
+    } else {
+        (CACTUS_R_M, CACTUS_TOP_M)
     }
 }
 
@@ -7921,7 +8050,7 @@ fn scatter_in<C: Corners>(
                     1 => Occupant::StoneNode,
                     2 => Occupant::MetalNode,
                     3 => Occupant::SulfurNode,
-                    4 => plant_of(seed, cell_x, cell_z, biome(hy, moist, fel)),
+                    4 => plant_in(c, seed, cell_x, cell_z, x, z, biome(hy, moist, fel)),
                     5 => Occupant::Rock,
                     _ => Occupant::BarrelSlot,
                 };
@@ -9845,9 +9974,10 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// deleted browser client's geometry, a guess carried forward — and 0.9 m
 /// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
 /// taller than it is wide. It was the measured object, 0.585 m across by
-/// 0.88 tall, and that read small beside a Rust-sized player; it is Rust's
-/// drum now, grown 12/11 on 2026-10-17: **0.638 m across by 0.96 tall**, so
-/// 0.638/2 here, 0.96 in `OCCUPANT_TOP_M`, and the client's
+/// 0.88 tall, and that read small beside a Rust-sized player; it grew 12/11
+/// on 2026-10-17 and still read small, so a quarter more on 2026-10-20:
+/// **0.798 m across by 1.2 tall**, so 0.798/2 here, 1.2 in
+/// `OCCUPANT_TOP_M`, and the client's
 /// `archetype_lift` set to the half-height so the drum's base is the slot's
 /// ground. Two independent sources agree on the pair — the reference set's
 /// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
@@ -9856,7 +9986,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 29] = [
+pub const OCCUPANT_R_M: [f32; 31] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -9892,7 +10022,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
     1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
-    0.3191,             // BarrelSlot — the drum is 0.638 m across, so 0.638/2
+    0.3989,             // BarrelSlot — the drum is 0.798 m across, so 0.798/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -9904,7 +10034,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.6801,        // GreenCrate — the crate's box
     0.6801,        // BlueCrate
     0.6801,        // EliteCrate
-    0.3191,        // OilBarrel — the barrel's drum
+    0.3989,        // OilBarrel — the barrel's drum
     ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
     0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
     CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
@@ -9916,7 +10046,9 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.0,           // MetalPile
     0.0,           // SulfurPile
     0.0,           // MushroomPatch
-    CACTUS_R_M,    // Cactus — the saguaro's trunk
+    SAGUARO_R_M,   // Cactus — broad phase; the trunk and SAGUARO_ARM_BOXES are the volume
+    0.0,           // WildCorn — passable, like hemp
+    0.0,           // WildPumpkin
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9929,13 +10061,14 @@ pub const OCCUPANT_R_M: [f32; 29] = [
 /// meter so it reads as embedded rather than dropped — so their tops are 1.5
 /// and not 2.0.
 ///
-/// The tree is solid to 24 m, the palm's drawn apex (the broadleaf is drawn
-/// 33 m and the pine 42 m; the sim cannot tell the species apart, so the
-/// shortest one wins and nothing invisible blocks above a palm). It was the 5.7 m pine trunk,
-/// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 29] = [
+/// The tree is solid to 33 m, the broadleaf's drawn apex (the pine is drawn
+/// 42 m; the shortest wins, so nothing invisible blocks above a broadleaf).
+/// The palm is its own, shorter ([`PALM_TOP_M`], through [`slot_volume`]).
+/// It was the 5.7 m pine trunk, and arrows and roof-standers went straight
+/// through the upper half.
+pub const OCCUPANT_TOP_M: [f32; 31] = [
     0.0,  // None
-    24.0, // Tree — the palm's drawn height (2026-10-19)
+    33.0, // Tree — the broadleaf's drawn height; the palm is `PALM_TOP_M`
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
     // radius` — the same correction the radii above take, and for the same
     // reason: the blob never reaches its nominal radius in any axis.
@@ -9944,7 +10077,7 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     1.1269,         // SulfurNode
     0.0,            // Bush
     1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
-    0.96,           // BarrelSlot — lift 0.48 + half-height 0.48
+    1.2,            // BarrelSlot — lift 0.6 + half-height 0.6
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -9956,7 +10089,7 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.8,              // GreenCrate
     0.8,              // BlueCrate
     0.8,              // EliteCrate
-    0.96,             // OilBarrel
+    1.2,              // OilBarrel
     ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
     0.4,              // FoodCrate — lift 0.2 + half-height 0.2
     CAR_WRECK_PEAK_M, // CarWreck — the roof
@@ -9969,6 +10102,8 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.0,              // SulfurPile
     0.0,              // MushroomPatch
     CACTUS_TOP_M,     // Cactus
+    0.0,              // WildCorn
+    0.0,              // WildPumpkin
 ];
 
 /// Widest scale `scatter` can hand a slot. Both draws top out at
@@ -10051,19 +10186,19 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.2398, 24.0),
+        Occupant::Tree => (0.2398, 33.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::BerryBush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
-        Occupant::BarrelSlot => (0.3191, 0.96),
+        Occupant::BarrelSlot => (0.3989, 1.2),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
-        Occupant::OilBarrel => (0.3191, 0.96),
+        Occupant::OilBarrel => (0.3989, 1.2),
         Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
         Occupant::FoodCrate => (0.5831, 0.4),
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
@@ -10074,7 +10209,8 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         | Occupant::MetalPile
         | Occupant::SulfurPile
         | Occupant::MushroomPatch => (0.0, 0.0),
-        Occupant::Cactus => (CACTUS_R_M, CACTUS_TOP_M),
+        Occupant::Cactus => (SAGUARO_R_M, CACTUS_TOP_M),
+        Occupant::WildCorn | Occupant::WildPumpkin => (0.0, 0.0),
     }
 }
 
@@ -10112,7 +10248,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 29 && OCCUPANT_TOP_M.len() == 29);
+    assert!(OCCUPANT_R_M.len() == 31 && OCCUPANT_TOP_M.len() == 31);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -10162,6 +10298,10 @@ const _: () = {
     assert!(occupant_volume(Occupant::Shrub).1 == OCCUPANT_TOP_M[22]);
     assert!(occupant_volume(Occupant::Cactus).0 == OCCUPANT_R_M[28]);
     assert!(occupant_volume(Occupant::Cactus).1 == OCCUPANT_TOP_M[28]);
+    assert!(occupant_volume(Occupant::WildCorn).0 == OCCUPANT_R_M[29]);
+    assert!(occupant_volume(Occupant::WildCorn).1 == OCCUPANT_TOP_M[29]);
+    assert!(occupant_volume(Occupant::WildPumpkin).0 == OCCUPANT_R_M[30]);
+    assert!(occupant_volume(Occupant::WildPumpkin).1 == OCCUPANT_TOP_M[30]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who
@@ -10203,6 +10343,10 @@ const _: () = {
     // The car is parked along the road, so its half-width (with the yaw
     // jitter) is what has to clear the carriageway, not its length.
     assert!(CAR_WRECK_BOXES[0][3] * 0.5 < JUNK_CAR_CLEAR_M);
+    // The saguaro's broad phase holds its arms, trunk and ball too.
+    assert!(boxes_corner_fits(&SAGUARO_ARM_BOXES, SAGUARO_R_M));
+    assert!(boxes_peak(&SAGUARO_ARM_BOXES) <= CACTUS_TOP_M);
+    assert!(CACTUS_R_M <= SAGUARO_R_M && BALL_CACTUS_R_M <= SAGUARO_R_M);
 
     // The two tiers are different SHAPES, not one shape at two sizes, and
     // that is the whole point of the second table (`NOW.md` §4b). Scaling
@@ -10350,6 +10494,21 @@ pub fn slot_blocks(
             capsule_r,
             capsule_h,
         ),
+        // The saguaro's trunk, then its arms (`SAGUARO_ARM_BOXES`).
+        Occupant::Cactus if slot.species != BALL_CACTUS_SPECIES => {
+            let trunk = CACTUS_R_M * slot.scale + capsule_r;
+            dx * dx + dz * dz < trunk * trunk
+                || boxes_block(
+                    slot,
+                    &SAGUARO_ARM_BOXES,
+                    usize::MAX,
+                    dx,
+                    dz,
+                    feet_y,
+                    capsule_r,
+                    capsule_h,
+                )
+        }
         _ => true,
     }
 }
@@ -10370,7 +10529,11 @@ pub fn slot_blocks(
 /// walks off a crate's edge stays on it until it is clear of it rather than
 /// falling down its side half inside it (`kit::ground_local`'s defect).
 pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> f32 {
-    let (r, top) = slot_volume(slot);
+    let (r, top) = match slot.occupant {
+        // Stood on at its crown, not across its arms' broad phase.
+        Occupant::Cactus => cactus_column(slot),
+        _ => slot_volume(slot),
+    };
     if r <= 0.0 {
         return crate::collide::NO_SURFACE;
     }

@@ -37,6 +37,11 @@ pub const SLOT_LEAVING: u32 = 2;
 const STATE_BITS: u32 = 2;
 const STATE_MASK: u32 = (1 << STATE_BITS) - 1;
 
+/// The last generation a slot may mint. A player id is `generation << 8 |
+/// slot` (`net.rs`) and bit 31 is `limits::MOB_ID_TAG`, so 23 bits of
+/// generation reach an id; a slot that gets here retires ([`SlotTable::claim`]).
+pub const ID_GEN_MAX: u32 = 0x007F_FFFF;
+
 #[inline]
 pub fn pack(state: u32, generation: u32) -> u32 {
     (generation << STATE_BITS) | state
@@ -109,13 +114,16 @@ impl SlotTable {
     }
 
     /// Accept loop only: claim an empty slot, bumping its generation.
-    /// Returns the new generation.
+    /// Returns the new generation. `None` for a slot in use, and for a
+    /// **retired** one: a slot that has minted [`ID_GEN_MAX`] has used every
+    /// player id it can mint, and wrapping would hand a newcomer an old id —
+    /// and with it whatever lock, cupboard or bag still names that id.
     pub fn claim(&self, slot: usize) -> Option<u32> {
         let cur = self.load(slot);
-        if state_of(cur) != SLOT_EMPTY {
+        if state_of(cur) != SLOT_EMPTY || generation_of(cur) >= ID_GEN_MAX {
             return None;
         }
-        let generation = generation_of(cur).wrapping_add(1) & 0x3FFF_FFFF;
+        let generation = generation_of(cur) + 1;
         let next = pack(SLOT_LIVE, generation);
         self.words[slot]
             .compare_exchange(cur, next, Ordering::AcqRel, Ordering::Acquire)
@@ -123,14 +131,17 @@ impl SlotTable {
             .map(|_| generation)
     }
 
-    /// Boot only, before the accept loop: start every slot's generations past
-    /// `floor`, so no id this shard mints repeats one a saved world still
-    /// holds (`worldfile::WorldBoot::id_floor`). A repeated id would be
-    /// handed whatever the old one owned — a bag, a lock's say, a cupboard —
-    /// or be refused a body because a sleeper already wears it.
-    pub fn start_past(&self, floor: u32) {
-        let floor = floor & 0x3FFF_FFFF;
-        for w in self.words.iter() {
+    /// Boot only, before the accept loop: start each slot's generations past
+    /// its own floor (`floors[slot]`; a slot past the end has none), so no id
+    /// this shard mints repeats one a saved world still holds
+    /// (`worldfile::WorldBoot::id_floors`). A repeated id would be handed
+    /// whatever the old one owned — a bag, a lock's say, a cupboard — or be
+    /// refused a body because a sleeper already wears it. Per slot, because
+    /// an id carries its slot: one slot driven to retirement stays retired
+    /// after a restart, and takes no other slot with it.
+    pub fn start_past(&self, floors: &[u32]) {
+        for (w, &floor) in self.words.iter().zip(floors) {
+            let floor = floor.min(ID_GEN_MAX);
             let cur = w.load(Ordering::Acquire);
             if state_of(cur) == SLOT_EMPTY && generation_of(cur) < floor {
                 w.store(pack(SLOT_EMPTY, floor), Ordering::Release);
@@ -415,6 +426,12 @@ pub struct WorldMsg {
     /// restart. The sim may not hold a key, so the pairing is done by
     /// `ShardCore` (which is server-side) and rides along here.
     pub idents: Vec<(PlayerKey, u32)>,
+    /// The ids evicted bodies wore (`<world>.evicted`, `core::EvictIds`),
+    /// when they moved: written only after this world lands, so a crash
+    /// never pairs an older world with a newer id map (a returning victim's
+    /// row spent, their base still under the old id). Not written at all
+    /// when the world is not, and handed back (`WorldDone::side_lost`).
+    pub side: Option<FileMsg>,
 }
 
 /// Sim→storage thread: a small text file the shard keeps beside the world —
@@ -441,6 +458,9 @@ pub struct WorldDone {
     /// The save landed (or there is no world file to land in): what the
     /// standings taken beside it wait on (`standings::Standings::release`).
     pub ok: bool,
+    /// `WorldMsg::side` was not written: the sim takes it again at the
+    /// next save (`EvictIds::mark_dirty`).
+    pub side_lost: bool,
 }
 
 /// Accept→storage thread: one record and where in the file it goes. The
@@ -467,14 +487,47 @@ mod tests {
     use super::*;
 
     /// A restarted shard mints past every id its saved world still holds:
-    /// the first claim after `start_past(7)` is generation 8, never 1.
+    /// the first claim after a floor of 7 is generation 8, never 1.
     #[test]
     fn a_slot_started_past_a_floor_never_mints_under_it() {
         let t = SlotTable::new(3);
-        t.start_past(7);
+        t.start_past(&[7, 7, 7]);
         assert_eq!(t.claim(1), Some(8));
         // A live slot is left alone, and a lower floor moves nothing.
-        t.start_past(3);
+        t.start_past(&[3, 3, 3]);
         assert_eq!(t.claim(2), Some(8));
+        // Each slot has its own floor.
+        let t = SlotTable::new(3);
+        t.start_past(&[0, 40]);
+        assert_eq!(t.claim(0), Some(1));
+        assert_eq!(t.claim(1), Some(41));
+        assert_eq!(t.claim(2), Some(1), "a slot past the floors has none");
+    }
+
+    /// **A slot that has minted every id it can retires; it never wraps.**
+    /// Wrapping minted an id an earlier tenant wore, and a lock or cupboard
+    /// still naming it let the newcomer in. A retired slot is passed over by
+    /// the accept loop's search, and a restart keeps it retired without
+    /// retiring its neighbours.
+    #[test]
+    fn a_slot_that_minted_its_last_id_retires_and_never_wraps() {
+        let t = SlotTable::new(2);
+        t.start_past(&[ID_GEN_MAX - 1]);
+        assert_eq!(t.claim(0), Some(ID_GEN_MAX), "the last id is minted");
+        t.mark_leaving(0, ID_GEN_MAX);
+        t.free(0, ID_GEN_MAX);
+        assert_eq!(t.claim(0), None, "and then never another");
+        assert_eq!(t.claim(1), Some(1), "its neighbour is untouched");
+
+        // A world that holds the last id restarts with that slot retired.
+        let t = SlotTable::new(2);
+        t.start_past(&[ID_GEN_MAX, 5]);
+        assert_eq!(t.claim(0), None);
+        assert_eq!(t.claim(1), Some(6));
+        // Never past the last id, whatever a floor says.
+        let t = SlotTable::new(1);
+        t.start_past(&[u32::MAX]);
+        assert_eq!(generation_of(t.load(0)), ID_GEN_MAX);
+        assert_eq!(t.claim(0), None);
     }
 }

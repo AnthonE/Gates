@@ -20,7 +20,11 @@ use server::config::parse_shard_toml;
 /// these two are the only seeds the repo can actually assert on — and
 /// `shard-public.toml` is the one that matters, because it is what the
 /// operator runs when they publish.
-const TRACKED_CONFIGS: [&str; 2] = ["shard.toml.example", "shard-public.toml"];
+const TRACKED_CONFIGS: [&str; 3] = [
+    "shard.toml.example",
+    "shard-public.toml",
+    "shard-agents.toml",
+];
 
 fn repo_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")

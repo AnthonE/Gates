@@ -76,8 +76,15 @@ pub struct HearthView(pub Option<(u16, u16, u8)>);
 /// `Kind::Mouth`, a little under a second for network jitter), so an honest
 /// press that waits the full second here never meets that refusal — and a
 /// hammered eat key eats once a second instead of queuing a stack.
+///
+/// And the bandage being wrapped on, if one is (`ui::wrap`, Rust's
+/// `MedicalTool`): the other clock on a use, started by the same press. The
+/// viewmodel draws the wrap off it and the HUD counts it down.
 #[derive(Resource, Default)]
-pub struct Bite(Option<f64>);
+pub struct Bite {
+    last: Option<f64>,
+    pub wrap: crate::ui::wrap::WrapClock,
+}
 
 /// The wait between two bites, seconds — Rust's consume cooldown.
 pub const BITE_S: f64 = 1.0;
@@ -85,10 +92,10 @@ pub const BITE_S: f64 = 1.0;
 impl Bite {
     /// May a mouthful go at `now`? Starts the clock when it does.
     pub fn take(&mut self, now: f64) -> bool {
-        if self.0.is_some_and(|last| now - last < BITE_S) {
+        if self.last.is_some_and(|last| now - last < BITE_S) {
             return false;
         }
-        self.0 = Some(now);
+        self.last = Some(now);
         true
     }
 }
@@ -204,6 +211,7 @@ pub fn resolve(
         y,
     );
     let mut aim = Aim::new(x, z, fx, fz);
+    aim.cols = Some(core.pieces.cols());
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
@@ -220,8 +228,6 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
-    // Its hold on the core ends here; the island below takes the core mutably.
-    drop(lying);
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
@@ -235,6 +241,50 @@ pub fn resolve(
         aimed.0.verb,
         interact::Verb::Recycler | interact::Verb::Research | interact::Verb::TechTree
     ) && interact::town_station(&core.haven().town, aimed.0.cx, aimed.0.cz);
+    // A crop under the crosshair (farming v2), by its pick cylinder: it
+    // wins over the planter it stands in, and carries its own planter's
+    // address so `E` still opens the tank when there is nothing to tend.
+    {
+        let plants = core.plants.entries();
+        let hit = interact::resolve_plant(
+            plants,
+            (eye[0], eye[1], eye[2]),
+            (dir[0], dir[1], dir[2]),
+            sim_core::gather::PICK_REACH_M,
+        )
+        .map(|(i, _)| plants[i]);
+        let planter = hit.and_then(|p| {
+            crate::ui::farm::planter_of(
+                &p,
+                core.deploys.entries(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                |d| span(d, sim_core::deploy::ARCH_PLANTER).0,
+            )
+        });
+        // The shard's hand test, as the deploy pick asks it: a crop behind
+        // a wall or a window is not offered, since the tend would be refused.
+        let hit = hit.filter(|p| {
+            crate::ui::farm::plant_in_sight(
+                p,
+                planter,
+                |d| reach(d, sim_core::deploy::ARCH_PLANTER),
+                |q| lying(q, [0; 3]),
+            )
+        });
+        aimed.0 = interact::fold_plant(aimed.0, hit, planter, (x, z));
+        if aimed.0.verb == Verb::Plant {
+            let held = core.inv.get(sel as usize).copied().unwrap_or_default();
+            aimed.0.water_in_hand = held.count > 0
+                && crate::ui::farm::is_water(crate::ui::oven::roles_of(
+                    &core.catalog,
+                    sim_core::deploy::ARCH_PLANTER,
+                    held.item,
+                ));
+        }
+    }
+    // Its hold on the core ends here; the island below takes the core mutably.
+    drop(lying);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
@@ -333,6 +383,7 @@ pub fn resolve(
                         crouched,
                     },
                     &mut island,
+                    shadows.cols,
                 );
                 if bush.occupant != 0 {
                     aimed.0 = interact::Pick {
@@ -481,6 +532,16 @@ pub fn resolve(
             aimed.0 = casino;
         }
     }
+    // A casino seat, the same way: a free armchair to sit in, or the seat
+    // you are in to get up from.
+    if aimed.0.is_none() {
+        let seat = interact::resolve_seat(x, z, &core.haven().town, core.seated(), |k| {
+            super::casino::seat_taken(core, k)
+        });
+        if seat.verb != interact::Verb::None {
+            aimed.0 = seat;
+        }
+    }
     // A ziggurat door's reader or lever, the same way.
     if aimed.0.is_none() {
         let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
@@ -495,9 +556,18 @@ pub fn resolve(
             aimed.0 = work;
         }
     }
-    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way.
+    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way. A
+    // speaker says how many offers they have left for you.
     if aimed.0.is_none() {
-        let lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        let mut lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        if lore.verb == interact::Verb::Talk {
+            if let Some(s) = core.lore.speakers.get(lore.handle as usize) {
+                lore.offers =
+                    crate::ui::offer::open_count(s, &core.skins, &core.skins_owned, |item| {
+                        sim_core::craft::inv_count(&core.inv, item)
+                    });
+            }
+        }
         if lore.verb != interact::Verb::None {
             aimed.0 = lore;
         }
@@ -534,7 +604,7 @@ pub fn resolve(
         structure::struck(
             built?,
             (x, z),
-            core.pieces.entries(),
+            core.pieces.store(),
             &core.piece_defs,
             core.piece_defs_have,
             core.deploys.entries(),
@@ -595,6 +665,16 @@ pub fn keys(
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
     let on = |a: Action| binds.just_pressed(a, &keys, &mouse);
+    // The wrap ends with its time, or is put away with the hand — the
+    // sim's own rule (`survival::tick_use`) — or when the body goes down.
+    {
+        let core = &net.session.core;
+        let held = core.inv.get(net.sel as usize).copied().unwrap_or_default();
+        bite.wrap.step(now, net.sel, (held.item, held.count));
+        if core.wounded || core.dead {
+            bite.wrap.cancel();
+        }
+    }
     if binds.just_released(Action::Interact, &keys, &mouse) {
         send(&net, &mut toast, "release help", |buf| {
             protocol::encode_action_assist(0, buf)
@@ -946,10 +1026,20 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
             });
         }
         crate::ui::research::UseAs::Consume => {
+            // A bandage is wrapped on (`ui::wrap`): one at a time, and the
+            // press that starts it starts the arm.
+            let use_ticks = net.session.core.catalog.row(stack.item as usize).use_ticks;
+            if use_ticks > 0 && bite.wrap.progress(now).is_some() {
+                return;
+            }
             if bite.take(now) {
                 send(net, toast, "eat", |buf| {
                     protocol::encode_action_consume(slot, buf)
                 });
+                if use_ticks > 0 {
+                    let secs = f64::from(use_ticks) / f64::from(sim_core::limits::TICK_HZ);
+                    bite.wrap.begin(now, secs, slot, stack.item);
+                }
             }
         }
     }
@@ -1056,9 +1146,30 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
-        Verb::Planter => {
-            // A planter is a box that grows: `E` opens it and the panel is
-            // where the seeds go in and the harvest comes out.
+        // A crop (farming v2): pick it ripe, clear it dead, water a growing
+        // one from the skin in hand; otherwise open a bed plant's planter
+        // (a ground plant's `E` does nothing else).
+        Verb::Plant => {
+            if let Some(act) = pick.tend() {
+                let plant = pick.plant.id;
+                if send(net, toast, "tend", |buf| {
+                    protocol::encode_action_tend(plant, act, buf)
+                }) {
+                    net.farm_sent = Some(act);
+                }
+            } else if pick.handle != 0 {
+                let handle = pick.handle;
+                if send(net, toast, "open", |buf| {
+                    protocol::encode_action_container(CONT_BOX, handle, buf)
+                }) {
+                    open_panel(ui);
+                }
+            }
+        }
+        Verb::Planter | Verb::Catcher => {
+            // A planter's one slot is its water tank (farming v2): `E` opens
+            // it; seeds go in the soil by hand. A catcher's is the skin it
+            // fills.
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)
@@ -1165,8 +1276,20 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         // THE GATE's casino (`panels::casino`): the wheel's betting panel, or
-        // a slot machine's.
+        // a slot machine's — and its stool, sat on to play if it is free.
         Verb::Wheel | Verb::Slots => {
+            let k = pick.handle as usize;
+            let seat = if pick.verb == Verb::Wheel {
+                sim_core::town::terminal_seat(k)
+            } else {
+                sim_core::town::slot_seat(k)
+            };
+            let core = &net.session.core;
+            if !core.seated() && !super::casino::seat_taken(core, seat) {
+                send(net, toast, "sit", |buf| {
+                    protocol::encode_action_sit(seat as u8, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = if pick.verb == Verb::Wheel {
@@ -1183,13 +1306,33 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
-        // A speaker opens the talk panel and asks the first topic: they greet
-        // you. The answer is the server's (`SUB_ARC_TEXT`).
+        // A seat, or getting up from one (`sim_core::seat`). Nothing is
+        // predicted: the server puts the body on the seat and says so on the
+        // next snapshot (`EntityState::seated`).
+        Verb::Sit => {
+            let seat = pick.handle as u8;
+            send(net, toast, "sit", |buf| {
+                protocol::encode_action_sit(seat, buf)
+            });
+        }
+        // A speaker opens the talk panel and asks the first topic that is
+        // not a gift: they greet you. A gift is asked only by its own button
+        // (`ui::offer`), since asking one takes it, price and all. The answer
+        // is the server's (`SUB_ARC_TEXT`).
         Verb::Talk => {
             let k = pick.handle as u8;
-            send(net, toast, "talk", |buf| {
-                protocol::encode_action_arc(sim_core::lore::OP_TALK, k, 0, buf)
-            });
+            let greeting = net
+                .session
+                .core
+                .lore
+                .speakers
+                .get(k as usize)
+                .and_then(|s| s.greeting());
+            if let Some(t) = greeting {
+                send(net, toast, "talk", |buf| {
+                    protocol::encode_action_arc(sim_core::lore::OP_TALK, k, t, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Talk;
@@ -1268,6 +1411,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
 /// on the press and taken back a tick later is worse than a flame that
 /// arrives a tick late.
 fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
+    // A crop between sapling and mature (farming v2): `C` cuts it for
+    // clones, its seed carrying its genes. The plant is consumed.
+    if pick.verb == Verb::Plant {
+        if pick.can_clone() {
+            let plant = pick.plant.id;
+            send(net, toast, "clone", |buf| {
+                protocol::encode_action_tend(plant, sim_core::farm::TEND_CLONE, buf)
+            });
+        } else {
+            toast.warn("a clone is cut from a sapling to a mature plant");
+        }
+        return;
+    }
     // A recycler takes the same key and the same action: `ACT_USE` carries
     // an address, and `oven::toggle` switches whatever converter stands
     // there. The refusal that separates them is the sim's — a fire with

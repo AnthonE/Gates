@@ -328,13 +328,19 @@ fn only_a_tree_carries_a_visibility_range() {
 
 /// A plant's range is its own fade (`plants::fade_band`), on every part, and
 /// never a tree's band — or it pops at the ring's edge, or fades apart from
-/// the rest of it. The desktop's: a browser's plants carry none.
+/// the rest of it. The desktop's: WebGL2's plants carry an abrupt one.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn every_part_of_a_plant_carries_the_plants_fade() {
     let (mut app, a) = fixture();
     let fade = client::render::plants::fade_band();
-    for occupant in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+    for occupant in [
+        Occupant::BerryBush,
+        Occupant::Hemp,
+        Occupant::Shrub,
+        Occupant::WildCorn,
+        Occupant::WildPumpkin,
+    ] {
         let (_, kids) = spawned(&mut app, &a, &slot(occupant));
         assert!(!kids.is_empty());
         for k in kids {
@@ -343,6 +349,34 @@ fn every_part_of_a_plant_carries_the_plants_fade() {
                 "a part of a {occupant:?} does not carry the plants' fade"
             );
         }
+    }
+}
+
+/// The wild crops by the lakes spawn whole and go when picked: a stalk or
+/// vine, its leaves and its fruit, every part retired by the harvested bit
+/// and growing back on a picked plant's span, and the fruit hidden until the
+/// plant is grown — the berry bush's shape.
+#[test]
+fn spawn_slot_draws_both_wild_crops_picked_and_grown_back() {
+    use client::render::props::Grow;
+    let (mut app, a) = fixture();
+    for occupant in [Occupant::WildCorn, Occupant::WildPumpkin] {
+        let (_, kids) = spawned(&mut app, &a, &slot(occupant));
+        assert_eq!(kids.len(), 3, "a {occupant:?} is wood, leaves and fruit");
+        let mut fruit = 0;
+        for k in kids {
+            let e = app.world().entity(k);
+            let f = e
+                .get::<Fellable>()
+                .unwrap_or_else(|| panic!("a part of a {occupant:?} is not harvestable"));
+            assert_eq!(f.part, FellPart::Vanish, "a picked {occupant:?} vanishes");
+            let g = e
+                .get::<Grow>()
+                .unwrap_or_else(|| panic!("a part of a {occupant:?} never grows back"));
+            assert_eq!(g.span, sim_core::gather::PLANT_GROW_TICKS);
+            fruit += usize::from(g.fruit);
+        }
+        assert_eq!(fruit, 1, "a {occupant:?} carries one fruit part");
     }
 }
 

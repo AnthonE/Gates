@@ -341,6 +341,53 @@ fn inert_loot_content_leaves_barrels_standing() {
     );
 }
 
+/// **A smashed barrel rolls on the world's secret** (`World::secret_seed`):
+/// the seed, the cell and the last swing's tick are all the smasher's, so on
+/// them alone a client could time the swing to the tick that pays. Two
+/// worlds, one smash on one tick, two salts. Mutant: the plain seed at
+/// the barrel arm's `roll_into`.
+#[test]
+fn a_barrel_rolls_on_the_worlds_salt() {
+    const SALT: u64 = 0xFEED;
+    let secret = {
+        let mut w = Box::new(World::new(SEED));
+        w.arc.salt = SALT;
+        w.secret_seed()
+    };
+    // The cell `scanned_slot` finds, by its own walk.
+    let (cx, cz) = {
+        let scatter = terrain::ScatterTable::alpha_default();
+        let haven = terrain::haven(SEED);
+        let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
+        (0..span)
+            .flat_map(|cz| (0..span).map(move |cx| (cx, cz)))
+            .find(|&(cx, cz)| {
+                terrain::scatter(SEED, &scatter, &haven, cx, cz).occupant == Occupant::BarrelSlot
+            })
+            .expect("a barrel on this island")
+    };
+    let key = cell_key(cx as u16, cz as u16);
+    let smashed = |salt: u64| {
+        let mut w = barrel_world();
+        w.arc.salt = salt;
+        smash(&mut w);
+        let lying: Vec<ItemStack> = w.ground_items.entries().iter().map(|g| g.stack).collect();
+        (w.tick - 1, lying)
+    };
+    let roll = |seed: u64, tick: u64| {
+        let mut out = [ItemStack::default(); sim_core::limits::INV_SLOTS];
+        let (lc, gc) = (LootContent::probe_fixture(), GatherContent::probe_fixture());
+        lc.roll_into(LOOT_BARREL, &gc, seed, key, tick, &mut out);
+        out.into_iter().filter(|s| s.count > 0).collect::<Vec<_>>()
+    };
+    let (at, plain) = smashed(0);
+    let (at_salted, salty) = smashed(SALT);
+    assert_eq!(at, at_salted, "both worlds smash on one tick");
+    assert_eq!(plain, roll(SEED, at), "an unsalted world rolls the seed");
+    assert_eq!(salty, roll(secret, at), "a salted one its secret");
+    assert_ne!(salty, plain, "the salt never reached the barrel");
+}
+
 #[test]
 fn two_barrels_roll_independently() {
     // The roll is addressed by cell, so two barrels are not one barrel
@@ -361,4 +408,17 @@ fn two_barrels_roll_independently() {
         differed,
         "every cell rolls the same barrel — cell is unused"
     );
+}
+
+/// **Loot, cones, genes and duds key on a secret, not the public seed.**
+/// Every client is told the seed (it draws terrain from it) and can aim a
+/// press at a known tick, so a draw keyed on the seed alone is one a client
+/// can time. An unsalted world reads back its seed exactly — which is why no
+/// pinned hash moved — and a salted one does not.
+#[test]
+fn timeable_draws_key_on_the_arc_secret() {
+    let mut w = World::new(SEED);
+    assert_eq!(w.secret_seed(), SEED, "an unsalted world is its seed");
+    w.arc.salt = 0x5EC2_E7ED_0000_0001;
+    assert_ne!(w.secret_seed(), SEED, "a salted one is not");
 }

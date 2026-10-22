@@ -12,7 +12,8 @@
 //! special case.
 
 use crate::stats::{
-    AIM_STALE_CEILING_TICKS, JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS, PLAYOUT_CLAIM_MARGIN_TICKS,
+    AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS, FAVOUR_DISAGREE_PERSIST_TICKS,
+    JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS, PLAYOUT_CLAIM_MARGIN_TICKS,
 };
 use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
@@ -87,6 +88,14 @@ pub fn ring_index(tick: u32) -> usize {
 /// Every player slot's tag bit (`ClientNetState::tags_owed`).
 pub const TAGS_ALL: u128 = u128::MAX >> (128 - sim_core::limits::MAX_PLAYERS);
 const _: () = assert!(sim_core::limits::MAX_PLAYERS <= 128);
+
+/// `ClientNetState::held_tiles`: a tile is `1 << HELD_TILE_SHIFT` build cells
+/// on a side (48 m), and the map is `HELD_TILES_SIDE` tiles square — every
+/// build coordinate there is, in 2 KiB a connection.
+const HELD_TILE_SHIFT: u32 = 4;
+const HELD_TILES_SIDE: usize = 128;
+const HELD_TILE_WORDS: usize = HELD_TILES_SIDE * HELD_TILES_SIDE / 64;
+const _: () = assert!(sim_core::limits::MAX_BUILD_COORD >> HELD_TILE_SHIFT <= HELD_TILES_SIDE);
 
 pub struct ClientNetState {
     pub connected: bool,
@@ -208,6 +217,18 @@ pub struct ClientNetState {
     /// gives back one tick per `PLAYOUT_BOUND_DECAY_TICKS`, the client's
     /// slew.
     playout_peak: (u8, u64),
+    /// This connection's transport round trip, µs, as its writer task last
+    /// read it (`ShardStats::slot_rtt_us`, copied in by the tick): the
+    /// bound on how stale its acks may claim to be (`rtt_bounded_view`).
+    /// 0 is unmeasured and bounds nothing.
+    pub transport_rtt_us: u32,
+    /// The world tick this connection's acks first sat past that bound
+    /// plus the band, every datagram since; `None` while they sit inside.
+    /// Only a run of `FAVOUR_DISAGREE_PERSIST_TICKS` is counted.
+    over_band_since: Option<u64>,
+    /// The view the last datagram was held to that bound at. The same view
+    /// again means no newer snapshot reached the client since.
+    bounded_view: Option<u16>,
     /// The bound in force: the most playout favour is priced at. Never
     /// below `INTERP_DELAY_TICKS`, the delay every client starts at and
     /// every agent reports, so neither is ever capped. Not sim state:
@@ -236,8 +257,10 @@ pub struct ClientNetState {
     /// slots. Only updated when the ring accepted the message, so a
     /// refused push re-diffs by itself.
     pub last_inv: [ItemStack; INV_SLOTS],
-    /// Harvested-set walk: next `slot_lives` entry index to scan. At or
-    /// past the store's len ⇒ the walk is done.
+    /// Harvested-set walk: `slot_lives` entries **still owed**, read from
+    /// the tail down like `piece_sync_cursor` (zero ⇒ the walk is done).
+    /// While `sync_reset` is set the walk has not started and owes the
+    /// whole store, whatever this says.
     pub sync_cursor: usize,
     /// The next sync batch carries the reset bit (fresh join or
     /// event-lane resync): the client clears its set before applying.
@@ -283,6 +306,23 @@ pub struct ClientNetState {
     /// holds (it is owed a reset batch either way) and the placement
     /// broadcast passes unfiltered for that window, which is one tick.
     pub piece_anchor_valid: bool,
+    /// The 48 m tiles this connection **may hold** a piece or deployable in:
+    /// a bit is set wherever its anchor sends it a record (the piece and
+    /// deploy walks, the placement events; an owner's own deployables far
+    /// off mark nothing and their removals reach it by id). Cleared only
+    /// where both walks restart with a reset batch, which empties the
+    /// client's piece and deployable mirrors (a fresh connection,
+    /// `ev_resync`): until then a superset costs a no-op removal, a subset a
+    /// wall that stands forever. A removal goes only to the tiles that may
+    /// hold what it removes (`ShardCore::route_events`), so a raid or a
+    /// decay sweep 500 m off is not a radar.
+    pub held_tiles: [u64; HELD_TILE_WORDS],
+    /// Bumped wherever `held_tiles` is cleared. A spectator seat hears
+    /// removals only through its target's map, so a seat whose target's
+    /// map was forgotten re-walks from a reset too (`ShardCore::arm_walks`).
+    pub held_epoch: u32,
+    /// A seat's: the target `held_epoch` its walks last restarted at.
+    pub seen_held_epoch: u32,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
     /// Placed-deployable walk: entries **still owed**, the piece walk's
@@ -302,6 +342,11 @@ pub struct ClientNetState {
     pub gitem_sync_cursor: usize,
     /// The next loose-stack batch carries the reset bit.
     pub gitem_sync_reset: bool,
+    /// Plant walk cursor (farming v2): the deployables' shape — tail-down,
+    /// aimed, entries still owed — re-armed with the piece anchor.
+    pub plant_sync_cursor: usize,
+    /// The next plant batch carries the reset bit.
+    pub plant_sync_reset: bool,
     /// What the store looked like when this client's walk was last
     /// complete: `(next_id, len)`.
     ///
@@ -527,6 +572,9 @@ impl ClientNetState {
             ack_sample_credit: 0,
             ack_note_tick: 0,
             playout_peak: (0, 0),
+            transport_rtt_us: 0,
+            over_band_since: None,
+            bounded_view: None,
             playout_cap: INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
@@ -546,12 +594,17 @@ impl ClientNetState {
             piece_sync_reset: true,
             piece_anchor_cm: (0, 0),
             piece_anchor_valid: false,
+            held_tiles: [0; HELD_TILE_WORDS],
+            held_epoch: 0,
+            seen_held_epoch: 0,
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
             bag_sync_cursor: 0,
             gitem_sync_cursor: 0,
             gitem_sync_reset: true,
+            plant_sync_cursor: 0,
+            plant_sync_reset: true,
             gitem_seen: (0, 0),
             lodged_sync_cursor: 0,
             lodged_sync_reset: true,
@@ -632,6 +685,10 @@ impl ClientNetState {
         self.piece_defs_cursor = 0;
         self.piece_sync_cursor = 0;
         self.piece_sync_reset = true;
+        // Both walks below restart with a reset batch, and the client
+        // empties its piece and deployable mirrors on it: what it may hold
+        // is what the walks and placements tell it from here.
+        self.forget_held();
         // The anchor is dropped with the walk it aimed: a resync re-arms
         // from where the player is *now*, which is the only position the
         // batch it is about to send can honestly claim to cover.
@@ -644,6 +701,8 @@ impl ClientNetState {
         self.gitem_sync_cursor = 0;
         self.gitem_sync_reset = true;
         self.gitem_seen = (0, 0);
+        self.plant_sync_cursor = 0;
+        self.plant_sync_reset = true;
         self.lodged_sync_cursor = 0;
         self.lodged_sync_reset = true;
         // The open container is *closed*, not resynced. Every other line
@@ -723,9 +782,40 @@ impl ClientNetState {
     /// Arm the slot for a fresh connection. Everything netcode resets; the
     /// world-side join is the caller's command.
     pub fn reset(&mut self, id: u32) {
+        // The map is forgotten here too: the epoch carries across, so a
+        // seat still watching this id hears it (`held_epoch`).
+        let epoch = self.held_epoch.wrapping_add(1);
         *self = Self::new();
+        self.held_epoch = epoch;
         self.connected = true;
         self.id = id;
+    }
+
+    /// Empty `held_tiles`, telling the seats (`held_epoch`).
+    fn forget_held(&mut self) {
+        self.held_tiles = [0; HELD_TILE_WORDS];
+        self.held_epoch = self.held_epoch.wrapping_add(1);
+    }
+
+    /// `held_tiles`' bit for build cell `(cx, cz)`, clamped onto the map.
+    #[inline]
+    fn held_tile_bit(cx: u16, cz: u16) -> usize {
+        let t = |c: u16| ((c >> HELD_TILE_SHIFT) as usize).min(HELD_TILES_SIDE - 1);
+        t(cz) * HELD_TILES_SIDE + t(cx)
+    }
+
+    /// A piece or deployable at build cell `(cx, cz)` went to this client.
+    #[inline]
+    pub fn mark_tile(&mut self, cx: u16, cz: u16) {
+        let b = Self::held_tile_bit(cx, cz);
+        self.held_tiles[b / 64] |= 1 << (b % 64);
+    }
+
+    /// May this client hold a record at build cell `(cx, cz)`?
+    #[inline]
+    pub fn holds_tile(&self, cx: u16, cz: u16) -> bool {
+        let b = Self::held_tile_bit(cx, cz);
+        self.held_tiles[b / 64] & (1 << (b % 64)) != 0
     }
 
     // --- acks ---------------------------------------------------------
@@ -801,6 +891,59 @@ impl ClientNetState {
         } else {
             self.playout_cap = held;
         }
+    }
+
+    /// The most ack age this connection's transport round trip explains
+    /// (`stats::rtt_age_bound`), plus `extra`: the sim loop's own catch-up
+    /// slack (`ShardCore::note_pace_backlog`), which quinn never sees.
+    /// `None` while the round trip is unmeasured.
+    pub fn age_bound(&self, extra: u16) -> Option<u16> {
+        crate::stats::rtt_age_bound(self.transport_rtt_us).map(|b| b.saturating_add(extra))
+    }
+
+    /// The view a datagram arriving at `now` (world tick `tick`) may claim:
+    /// no staler than [`Self::age_bound`] explains.
+    /// `findings/lagcomp-design-20260818.md` §6.2's wall-clock check, read
+    /// off quinn rather than a clock: the ack-history cross-check in
+    /// `ShardCore::push_input` cannot see a client that simply acks late,
+    /// because its history is those same late acks, and holding them back
+    /// on a 20 ms link bought the whole `REWIND_MAX_TICKS`. Acking late at
+    /// the game level cannot move quinn's round trip; delaying QUIC's own
+    /// ACK frames from a patched stack can (`stats::SlotRtt`), and buys
+    /// what an honest client on that trip is owed.
+    ///
+    /// The excess is clamped from the first datagram, but counted as a
+    /// disagreement only once every datagram has sat past the band for
+    /// `FAVOUR_DISAGREE_PERSIST_TICKS`: one late frame or a jitter spike
+    /// is not an accusation. Nor is an ack that has stopped moving: no newer
+    /// snapshot reached the client, a stalled downlink or a roam whose lost
+    /// packets quinn's round trip never samples, so such a datagram neither
+    /// starts nor counts a run. It holds one already going, so a freeze
+    /// that jumps to a still-late ack is counted on the jump. An age past
+    /// `AIM_STALE_CEILING_TICKS` (or a view from the future) is left for
+    /// `favour_for` to refuse outright: clamping it would turn a refused
+    /// ack into a paid one.
+    pub fn rtt_bounded_view(&mut self, now: u16, view: u16, tick: u64, extra: u16) -> u16 {
+        let Some(bound) = self.age_bound(extra) else {
+            return view;
+        };
+        let age = now.wrapping_sub(view);
+        if age > AIM_STALE_CEILING_TICKS {
+            return view;
+        }
+        let moved = self.bounded_view.replace(view) != Some(view);
+        if age <= bound + FAVOUR_DISAGREE_BAND_TICKS {
+            self.over_band_since = None;
+        } else if moved {
+            let since = *self.over_band_since.get_or_insert(tick);
+            if tick.saturating_sub(since) >= FAVOUR_DISAGREE_PERSIST_TICKS {
+                self.note_ack_regression();
+            }
+        }
+        if age <= bound {
+            return view;
+        }
+        now.wrapping_sub(bound)
     }
 
     /// The playout favour is priced at: the claim on the shared rails,
@@ -1479,6 +1622,114 @@ mod tests {
             c.reported_playout = claim;
             assert_eq!(c.priced_playout(), want, "claim {claim}");
         }
+    }
+
+    /// The transport's round trip bounds how stale an ack may claim to be:
+    /// nothing until measured, a late claim cut to the bound, and an ack
+    /// past the ceiling left for `favour_for` to refuse.
+    #[test]
+    fn a_late_ack_is_held_to_the_round_trip() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        let now = 1000u16;
+        assert_eq!(
+            c.rtt_bounded_view(now, now - 12, 0, 0),
+            now - 12,
+            "unmeasured"
+        );
+        // 20 ms: one tick of trip, plus the slack.
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        assert_eq!(c.rtt_bounded_view(now, now - 3, 0, 0), now - 3);
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 0), now - bound);
+        // The sim loop's catch-up slack widens the bound by what it says.
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 3), now - bound - 3);
+        let ancient = now.wrapping_sub(AIM_STALE_CEILING_TICKS + 1);
+        assert_eq!(c.rtt_bounded_view(now, ancient, 0, 0), ancient);
+        assert_eq!(
+            c.rtt_bounded_view(now, now + 1, 0, 0),
+            now + 1,
+            "from the future"
+        );
+        // 250 ms: eight ticks of trip, all of them owed.
+        c.transport_rtt_us = 250_000;
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 0), now - 12);
+    }
+
+    /// Clamped from the first datagram, accused only when it persists: a
+    /// run of acks past the bound and the band counts once it has lasted
+    /// `FAVOUR_DISAGREE_PERSIST_TICKS`, and one datagram inside the band
+    /// (a spike that passed) starts the run over.
+    #[test]
+    fn only_a_persistent_late_ack_is_counted() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        let late = bound + FAVOUR_DISAGREE_BAND_TICKS + 1;
+        let p = FAVOUR_DISAGREE_PERSIST_TICKS;
+        // The field, not the drain: the drain has one reader
+        // (`lagcomp_measure::the_disagreement_relay_has_one_reader`).
+        for t in 0..p {
+            let now = 1000 + t as u16;
+            assert_eq!(c.rtt_bounded_view(now, now - late, t, 0), now - bound);
+        }
+        assert_eq!(c.ack_regressions, 0, "under a second of lateness");
+        // One honest datagram, and the run starts again.
+        assert_eq!(c.rtt_bounded_view(2000, 2000 - 2, p, 0), 2000 - 2);
+        for t in p + 1..2 * p + 1 {
+            let now = 2000 + t as u16;
+            c.rtt_bounded_view(now, now - late, t, 0);
+        }
+        assert_eq!(c.ack_regressions, 0, "the honest datagram reset the run");
+        let now = 2000 + (2 * p + 1) as u16;
+        c.rtt_bounded_view(now, now - late - 2, 2 * p + 1, 0);
+        c.rtt_bounded_view(now, now - late, 2 * p + 1, 0);
+        assert_eq!(c.ack_regressions, 2, "every datagram once it persists");
+        // Within the band of the bound: clamped, never accused.
+        c.over_band_since = None;
+        for t in 0..3 * p {
+            let v = c.rtt_bounded_view(2000, 2000 - bound - FAVOUR_DISAGREE_BAND_TICKS, t, 0);
+            assert_eq!(v, 2000 - bound);
+        }
+        assert_eq!(c.ack_regressions, 2);
+    }
+
+    /// An ack that stops moving is a downlink that stopped delivering, which
+    /// quinn's round trip cannot see: clamped like any late ack, never
+    /// counted, however long it lasts. A run already going keeps its start,
+    /// so a freeze that jumps to a still-late ack is counted on the jump.
+    #[test]
+    fn a_frozen_ack_is_clamped_but_not_counted() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        let late = bound + FAVOUR_DISAGREE_BAND_TICKS + 1;
+        let p = FAVOUR_DISAGREE_PERSIST_TICKS;
+        // A fresh ack, then two seconds frozen on it, ageing past the band.
+        let frozen = 1000u16;
+        assert_eq!(c.rtt_bounded_view(frozen + 2, frozen, 0, 0), frozen);
+        for t in 1..2 * p {
+            let now = frozen + late + t as u16;
+            assert_eq!(c.rtt_bounded_view(now, frozen, t, 0), now - bound);
+        }
+        assert_eq!(c.ack_regressions, 0, "a stalled downlink was accused");
+        // Late acks that move, for a third of a second, then a freeze long
+        // enough to persist, then a jump that is still late: the jump counts.
+        let start = 2 * p;
+        for t in start..start + 10 {
+            let now = 2000 + t as u16;
+            c.rtt_bounded_view(now, now - late, t, 0);
+        }
+        let held = 2000 + (start + 9) as u16 - late;
+        for t in start + 10..start + p {
+            c.rtt_bounded_view(2000 + t as u16, held, t, 0);
+        }
+        assert_eq!(c.ack_regressions, 0);
+        let now = 2000 + (start + p) as u16;
+        c.rtt_bounded_view(now, now - late, start + p, 0);
+        assert_eq!(c.ack_regressions, 1, "the freeze hid a persistent late ack");
     }
 
     /// A starved tick earns its catch-up only when the body stood still on

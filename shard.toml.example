@@ -194,6 +194,18 @@ seed = 20260731
 # the rest of the seats stay a person's. Unset or 0 = no cap.
 # agent_seats = 80
 #
+# This host's own public addresses, which no per-source cap counts. Loopback
+# and a specific `bind` address are exempt already; with a wildcard `bind`
+# (0.0.0.0) list the address your own agents or bots arrive from when they
+# dial this shard's public name, or they all share one source's cap. Plain
+# IP addresses, at most 8.
+# own_sources = "203.0.113.7"
+#
+# An agent-only world: declared agents and spectators only, a person refused
+# at the hello (REFUSE_AGENTS). Refused at boot with a population (an
+# inhabitant joins as a person). shard-agents.toml is a whole example.
+# agents_only = false
+#
 # Post each wipe's podiums and prizes (names, never addresses) to Discord.
 # discord_webhook = "https://discord.com/api/webhooks/…"
 
@@ -227,6 +239,12 @@ seed = 20260731
 # 2026-08-03 row in DECISIONS.md for why ufw alone buys nothing there).
 # DECISIONS.md §open "shard status endpoint v0".
 # status_addr = "127.0.0.1:8080"
+
+# The companion (crates/server/src/companion.rs): Gates' Rust+. A page and a
+# JSON API where a player or an agent signs in with their wallet and sees
+# their team on the map, reads and writes team chat, and gets raid alerts.
+# Unset serves nothing. Plain HTTP on loopback; put nginx in front.
+# companion_addr = "127.0.0.1:8434"
 
 # The ticket door (crates/server/src/entitle.rs): does a joiner own a copy?
 #

@@ -123,9 +123,16 @@ const FEATHER: Mat = m(0xece6d8, 0.8, 0.0, Tex::Weave);
 const FEATHER_RED: Mat = m(0xb83a30, 0.8, 0.0, Tex::Weave);
 const FEATHER_BLUE: Mat = m(0x3a6ab8, 0.8, 0.0, Tex::Weave);
 const SOIL: Mat = m(0x4a3524, 1.0, 0.0, Tex::Speckle);
+const TARP: Mat = m(0x5e6a3a, 0.9, 0.0, Tex::Weave);
 const LEAF: Mat = m(0x5f9a3a, 0.55, 0.0, Tex::Plain);
 const KERNEL: Mat = m(0xeec44a, 0.45, 0.0, Tex::Plain);
 const HEMP: Mat = m(0x8c7a4c, 0.6, 0.0, Tex::Speckle);
+const POTATO_EYE: Mat = m(0x8a6a44, 0.85, 0.0, Tex::Speckle);
+const PUMPKIN_PIP: Mat = m(0xe8dcb0, 0.6, 0.0, Tex::Plain);
+const BERRY_PIP: Mat = m(0x6a2a24, 0.5, 0.0, Tex::Plain);
+const POTATO_SKIN: Mat = m(0xb48c5a, 0.85, 0.0, Tex::Speckle);
+const PUMPKIN_SKIN: Mat = m(0xd8741e, 0.5, 0.0, Tex::Plain);
+const PUMPKIN_STEM: Mat = m(0x6a6232, 0.85, 0.0, Tex::Grain);
 const THREAD_RED: Mat = m(0xb03a32, 0.9, 0.0, Tex::Weave);
 const THREAD_BLUE: Mat = m(0x3a5ea8, 0.9, 0.0, Tex::Weave);
 // An LED and an ember are bright paint and nothing more: a carried emissive
@@ -762,12 +769,15 @@ pub const NAMES: &[&str] = &[
     "tech_trash",
     "electric_fuse",
     "blueprint",
-    "key_lock",
-    "code_lock",
     "pistol_round",
     "medical_syringe",
     "corn_seed",
     "hemp_seed",
+    "potato_seed",
+    "pumpkin_seed",
+    "berry_seed",
+    "potato",
+    "pumpkin",
     "burlap_tunic",
     "burlap_hood",
     "hide_poncho",
@@ -780,6 +790,7 @@ pub const NAMES: &[&str] = &[
     "glass_window",
     "camp_fire",
     "wood_shutters",
+    "water_catcher",
 ];
 
 /// The parts of the prop called `name`, or `None` for a name with none.
@@ -807,12 +818,15 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "tech_trash" => tech_trash(),
         "electric_fuse" => fuse(),
         "blueprint" => blueprint(),
-        "key_lock" => padlock(),
-        "code_lock" => code_lock(),
         "pistol_round" => rounds(),
         "medical_syringe" => syringe(),
         "corn_seed" => seeds(KERNEL, 0.012, 21),
         "hemp_seed" => seeds(HEMP, 0.009, 22),
+        "potato_seed" => seeds(POTATO_EYE, 0.012, 23),
+        "pumpkin_seed" => seeds(PUMPKIN_PIP, 0.011, 24),
+        "berry_seed" => seeds(BERRY_PIP, 0.006, 25),
+        "potato" => potato(),
+        "pumpkin" => pumpkin(),
         "burlap_tunic" => stood(shirt(BURLAP)),
         "burlap_hood" => hood(),
         "hide_poncho" => stood(poncho()),
@@ -826,6 +840,7 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "glass_window" => glass_window(),
         "camp_fire" => fire_pit(),
         "wood_shutters" => insert(sim_core::deploy::ARCH_WINDOW_SHUTTER, WOOD),
+        "water_catcher" => water_catcher(),
         _ => return None,
     })
 }
@@ -1370,64 +1385,6 @@ fn blueprint() -> Vec<Part> {
     ]
 }
 
-fn padlock() -> Vec<Part> {
-    vec![
-        p(
-            cuboid(0.11, 0.09, 0.04),
-            BRASS,
-            xf([0.0, 0.045, 0.0], [0.0; 3]),
-        ),
-        p(
-            tube(
-                &arc(Vec3::new(0.0, 0.09, 0.0), 0.036, 0.0, PI, 20),
-                |_| 0.01,
-                10,
-            ),
-            STEEL,
-            Transform::IDENTITY,
-        ),
-        p(
-            cyl(0.01, 0.006),
-            HOLE,
-            xf([0.0, 0.055, 0.021], [90.0, 0.0, 0.0]),
-        ),
-        p(
-            cuboid(0.006, 0.02, 0.006),
-            HOLE,
-            xf([0.0, 0.04, 0.021], [0.0; 3]),
-        ),
-    ]
-}
-
-fn code_lock() -> Vec<Part> {
-    let mut out = vec![
-        p(
-            cuboid(0.12, 0.17, 0.04),
-            DARK_STEEL,
-            xf([0.0, 0.085, 0.0], [0.0; 3]),
-        ),
-        p(
-            cuboid(0.08, 0.026, 0.006),
-            GLASS,
-            xf([0.0, 0.145, 0.021], [0.0; 3]),
-        ),
-        p(sphere(0.007), LED_RED, xf([0.042, 0.145, 0.022], [0.0; 3])),
-    ];
-    for r in 0..4 {
-        for c in 0..3 {
-            out.push(p(
-                cuboid(0.022, 0.018, 0.008),
-                GUNMETAL,
-                xf(
-                    [-0.028 + c as f32 * 0.028, 0.105 - r as f32 * 0.025, 0.022],
-                    [0.0; 3],
-                ),
-            ));
-        }
-    }
-    out
-}
-
 fn rounds() -> Vec<Part> {
     let mut out = Vec::new();
     for i in 0..3 {
@@ -1501,6 +1458,45 @@ fn seeds(mat: Mat, r: f32, seed: u32) -> Vec<Part> {
             )
         })
         .collect()
+}
+
+/// A raw potato: a lumpy oval 11 cm long, with a few sunken eyes.
+fn potato() -> Vec<Part> {
+    let mut out = vec![p(
+        blob_n(31, 0.22, 3),
+        POTATO_SKIN,
+        xfs([0.0, 0.035, 0.0], [0.0, 20.0, 0.0], [0.055, 0.035, 0.04]),
+    )];
+    for i in 0..4u32 {
+        let a = i as f32 * 1.7 + jit(i, 32) * 0.4;
+        let y = 0.035 + 0.02 * jit(i, 33);
+        out.push(p(
+            sphere(0.005),
+            POTATO_EYE,
+            xf([0.05 * a.cos(), y, 0.036 * a.sin()], [0.0; 3]),
+        ));
+    }
+    out
+}
+
+/// A pumpkin: the vine's ribbed fruit (`render::plants::pumpkin`), painted
+/// here, with a dry stem out of its top.
+fn pumpkin() -> Vec<Part> {
+    let shell = super::plants::pumpkin_shell(0);
+    // The shell's first vertex is its top pole, down in the stem's dimple.
+    let pole = shell
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .and_then(|a| a.as_float3())
+        .and_then(|ps| ps.first())
+        .map_or(super::plants::PUMPKIN_H, |p| p[1]);
+    vec![
+        p(shell, PUMPKIN_SKIN, Transform::IDENTITY),
+        p(
+            frustum(0.009, 0.015, 0.07),
+            PUMPKIN_STEM,
+            xf([0.004, pole + 0.03, 0.0], [0.0, 0.0, -14.0]),
+        ),
+    ]
 }
 
 /// A tunic laid flat, facing the camera.
@@ -1780,6 +1776,42 @@ fn fire_pit() -> Vec<Part> {
         part.at.translation.y += 0.01;
         part
     }));
+    out
+}
+
+/// A water catcher: a blue barrel in a frame of four poles, under an olive
+/// tarp sagging into a funnel over its mouth.
+fn water_catcher() -> Vec<Part> {
+    let mut out = vec![
+        p(cyl(0.075, 0.16), BLUE_PAINT, xf([0.0, 0.08, 0.0], [0.0; 3])),
+        p(cyl(0.05, 0.004), HOLE, xf([0.0, 0.161, 0.0], [0.0; 3])),
+        p(
+            frustum(0.115, 0.025, 0.07),
+            TARP,
+            xf([0.0, 0.225, 0.0], [0.0; 3]),
+        ),
+        p(cyl(0.012, 0.05), BLACK, xf([0.0, 0.18, 0.0], [0.0; 3])),
+    ];
+    for (x, z) in [
+        (-0.11f32, -0.11f32),
+        (0.11, -0.11),
+        (-0.11, 0.11),
+        (0.11, 0.11),
+    ] {
+        out.push(p(cuboid(0.02, 0.3, 0.02), WOOD, xf([x, 0.15, z], [0.0; 3])));
+    }
+    for s in [-0.11f32, 0.11] {
+        out.push(p(
+            cuboid(0.24, 0.02, 0.02),
+            WOOD_DARK,
+            xf([0.0, 0.27, s], [0.0; 3]),
+        ));
+        out.push(p(
+            cuboid(0.02, 0.02, 0.24),
+            WOOD_DARK,
+            xf([s, 0.27, 0.0], [0.0; 3]),
+        ));
+    }
     out
 }
 

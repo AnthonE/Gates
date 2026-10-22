@@ -63,6 +63,18 @@ fn id_of(slot: usize) -> u32 {
 }
 
 fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientCore)]) -> [u32; 4] {
+    pump_seen(core, stats, clients, &mut Vec::new())
+}
+
+/// The same pump, keeping every event the server put on a lane, decoded
+/// from those bytes (`deploy_wire.rs`'s shape): routing is asserted on what
+/// was sent, not on a mirror that may agree for another reason.
+fn pump_seen(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    seen: &mut Vec<(usize, protocol::EventMsg)>,
+) -> [u32; 4] {
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
@@ -84,8 +96,16 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     });
     let mut flags = [0u32; 4];
     for (slot, bytes) in events {
+        seen.push((
+            slot,
+            protocol::decode_event(&bytes).expect("server events decode"),
+        ));
         if let Some(c) = clients.iter_mut().find(|(s, _)| *s == slot).map(|(_, c)| c) {
-            flags[slot] |= c.on_stream(&bytes).expect("server events decode");
+            let f = c.on_stream(&bytes).expect("server events decode");
+            // A seat's slot is past the players' flags.
+            if let Some(flag) = flags.get_mut(slot) {
+                *flag |= f;
+            }
         }
     }
     for (slot, bytes) in snaps {
@@ -466,6 +486,244 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
         "the re-armed walk delivered something the base does not have"
     );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **A removal reaches who was walked the piece, and not a client 500 m
+/// off.** A raid's killing blow, a decay sweep and a demolish all arrive as
+/// `EV_PIECE_REMOVED`, which used to reach every client on the island with
+/// its cell — a raid radar the struct-hit filter left open. It now goes
+/// only where a record was sent (`held_tiles`): the client the walk gave the
+/// base hears the foundation come down, and the far one is never told.
+///
+/// The far client owns a workbench on that foundation. Its own deployables
+/// are walked to it from anywhere (the owner's exemption), and that must not
+/// open the tile: a cheap deployable beside a base would be a radar on the
+/// base. The bench's own removal still reaches it, by id.
+#[test]
+fn a_removal_reaches_who_was_walked_the_piece_and_not_a_far_client() {
+    const BENCH: u16 = 1;
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let base = lay_base(&mut core, CX, CZ, 24);
+    assert!(
+        base.contains(&(CX, CZ)),
+        "the fixture did not lay the piece it takes down"
+    );
+    // The far client's bench, on the foundation the near one takes down.
+    let builder = sim_core::limits::MAX_PLAYERS - 1;
+    let (ax, az) = sim_core::build::anchor(CX, CZ, LOC_PLANE);
+    let w = &mut core.world;
+    let p = &mut w.players[builder];
+    p.body = sim_core::movement::Body::at(SEED, hv(SEED), ax, az);
+    p.id = id_of(0);
+    p.inv[0] = ItemStack {
+        item: w.deploy.defs[BENCH as usize].item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    sim_core::deploy::place_deploy(
+        SEED,
+        hv(SEED),
+        &w.deploy,
+        &w.build,
+        &mut w.pieces,
+        &mut w.deploys,
+        &mut w.players[builder],
+        w.tick,
+        BENCH,
+        CX,
+        CZ,
+        0,
+        LOC_PLANE,
+        sim_core::footprint::Pose::CENTRE,
+        &mut w.events,
+    );
+    w.players[builder] = sim_core::world::Player::default();
+    assert!(
+        core.world.deploys.find(CX, CZ, 0, LOC_PLANE).is_some(),
+        "the bench was refused"
+    );
+    // Slot 0 spawns 500 m off, slot 1 on the base (the `walking_to_a_base`
+    // dance: a `Join` reads `dev_spawn` when it runs).
+    core.world.dev_spawn = Some((SPAWN.0 + 500.0, SPAWN.1));
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    pump(&mut core, &stats, &mut clients);
+    core.world.dev_spawn = Some(SPAWN);
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+    for _ in 0..20 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(
+        clients[0].1.pieces.len(),
+        0,
+        "the far client was walked the base"
+    );
+    let has_bench = |c: &ClientCore| {
+        c.deploys
+            .entries()
+            .iter()
+            .any(|d| (d.cx, d.cz, d.row) == (CX, CZ, BENCH as u8))
+    };
+    assert!(
+        has_bench(&clients[0].1),
+        "the owner was not walked its bench"
+    );
+    assert_eq!(
+        clients[1].1.pieces.len(),
+        base.len(),
+        "the near client was not walked the base"
+    );
+
+    // The near client takes the foundation at its feet back down.
+    assert!(core.wants_action(1), "hand should be open");
+    core.push_action(
+        1,
+        protocol::ActionMsg::Demolish {
+            deploy: false,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        core.world.pieces.find(CX, CZ, 0, LOC_PLANE).is_none(),
+        "the demolish was refused, so nothing below proves anything"
+    );
+    let removed = |slot: usize| {
+        seen.iter().any(|(s, m)| {
+            *s == slot
+                && matches!(m, protocol::EventMsg::PieceRemoved { cx, cz, .. }
+                    if (*cx, *cz) == (CX, CZ))
+        })
+    };
+    assert!(
+        removed(1),
+        "the client the walk gave the piece never heard it go"
+    );
+    assert!(
+        !removed(0),
+        "a removal 500 m off reached a client that never held the piece"
+    );
+    assert!(
+        core.world.deploys.find(CX, CZ, 0, LOC_PLANE).is_none(),
+        "the bench outlived its floor"
+    );
+    let bench_gone = seen.iter().any(|(s, m)| {
+        *s == 0
+            && matches!(m, protocol::EventMsg::DeployRemoved { cx, cz, .. }
+                if (*cx, *cz) == (CX, CZ))
+    });
+    assert!(bench_gone, "the owner never heard its own bench go");
+    assert!(!has_bench(&clients[0].1));
+    assert_eq!(clients[1].1.pieces.len(), base.len() - 1);
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **A resync forgets the map, the walk marks it again, and a seat re-walks
+/// with its target.** `held_tiles` is cleared where the client's piece and
+/// deployable mirrors are: `ev_resync` restarts both walks with a reset
+/// batch. A tile told about long ago stops drawing removals, and what the
+/// walk then sends marks its tiles again. A seat hears removals only through
+/// its target's map, so it starts over too and never keeps a wall that fell.
+#[test]
+fn a_resync_forgets_the_map_and_a_seat_rewalks_with_its_target() {
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let base = lay_base(&mut core, CX, CZ, 24);
+    assert!(base.contains(&(CX, CZ)));
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    pump(&mut core, &stats, &mut clients);
+    let seat = sim_core::limits::MAX_PLAYERS;
+    assert!(core.connect_spectator(seat, id_of(0), 0), "seated");
+    clients.push((seat, ClientCore::new(SEED, id_of(0), 0)));
+    for _ in 0..20 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(clients[0].1.pieces.len(), base.len());
+    assert_eq!(clients[1].1.pieces.len(), base.len(), "the seat");
+
+    // A tile it was told about long ago, 900 m off, then a resync.
+    let far = (CX + 300, CZ);
+    core.clients[0].mark_tile(far.0, far.1);
+    core.clients[0].ev_resync();
+    assert!(!core.clients[0].holds_tile(far.0, far.1));
+    assert!(!core.clients[0].holds_tile(CX, CZ));
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        core.clients[0].holds_tile(CX, CZ),
+        "the walk never marked the base again"
+    );
+    assert!(
+        !core.clients[0].holds_tile(far.0, far.1),
+        "a tile outlived the resync"
+    );
+    let reset = |slot: usize| {
+        let piece = seen.iter().any(|(s, m)| {
+            *s == slot && matches!(m, protocol::EventMsg::PieceSync { reset: true, .. })
+        });
+        let deploy = seen.iter().any(|(s, m)| {
+            *s == slot && matches!(m, protocol::EventMsg::DeploySync { reset: true, .. })
+        });
+        piece && deploy
+    };
+    assert!(reset(0));
+    assert!(reset(seat), "the seat never re-walked with its target");
+    assert_eq!(clients[0].1.pieces.len(), base.len());
+    assert_eq!(clients[1].1.pieces.len(), base.len(), "the seat");
+
+    // The target takes the foundation at its feet down: the seat hears it
+    // through the map the walks marked again.
+    assert!(core.wants_action(0), "hand should be open");
+    core.push_action(
+        0,
+        protocol::ActionMsg::Demolish {
+            deploy: false,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_PLANE).is_none());
+    assert_eq!(clients[0].1.pieces.len(), base.len() - 1);
+    assert_eq!(
+        clients[1].1.pieces.len(),
+        base.len() - 1,
+        "the seat kept a wall that fell"
+    );
+
+    // Resynced 500 m off, the target's map no longer covers the base, so
+    // no removal there could reach the seat: it must not keep the base.
+    stand_at(&mut core, id_of(0), SPAWN.0 + 500.0, SPAWN.1);
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    core.clients[0].ev_resync();
+    for _ in 0..20 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(!core.clients[0].holds_tile(CX, CZ));
+    assert_eq!(clients[0].1.pieces.len(), 0);
+    assert_eq!(
+        clients[1].1.pieces.len(),
+        0,
+        "the seat kept walls its target's map no longer covers"
+    );
 }
 
 /// **A standing client's walk costs nothing once it is done.**

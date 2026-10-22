@@ -9,6 +9,11 @@
 //! and every other gate is green over it, because only a browser running
 //! WebGL2 ever builds that pipeline.
 //!
+//! An ABRUPT range (`VisibilityRange::abrupt`) is the exception and is safe:
+//! with no crossfade Bevy keys no `VISIBILITY_RANGE_DITHER`, so no pipeline
+//! reads the table, and the range still culls on the CPU. That is what the
+//! WebGL2 halves of `plants::fade_band` and `poles::fade_band` return.
+//!
 //! The rule, as a source scan: every `VisibilityRange { … }` literal in
 //! `src/` sits in a fn behind `#[cfg(not(webgl2))]` or
 //! `#[cfg(not(target_arch = "wasm32"))]`, or in a fn named in [`VALUES_ONLY`].

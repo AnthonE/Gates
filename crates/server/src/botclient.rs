@@ -403,7 +403,7 @@ impl EventTally {
                 .fetch_add(*took as u64, Ordering::Relaxed);
             return;
         }
-        if let EventMsg::PiecePlaced { rec } = ev {
+        if let EventMsg::PiecePlaced { rec, .. } = ev {
             let storey = rec.level % MAX_BUILD_LEVELS as u8;
             self.top_storey.fetch_max(storey as u64, Ordering::Relaxed);
         }
@@ -513,6 +513,22 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             protocol::encode_action_respawn_at(cx, cz, level, buf)
         }
         Command::Pick { cell, .. } => encode_action_pick(cell, buf),
+        Command::Plant {
+            slot,
+            host,
+            spot,
+            qx,
+            qz,
+            ..
+        } => {
+            let target = if host == sim_core::farm::HOST_GROUND {
+                protocol::PlantTarget::Ground { qx, qz }
+            } else {
+                protocol::PlantTarget::Bed { host, spot }
+            };
+            protocol::encode_action_plant(slot, target, buf)
+        }
+        Command::Tend { plant, act, .. } => protocol::encode_action_tend(plant, act, buf),
         // Not a raid step — the reload lane's, and here because this is the
         // one table in this file that turns a `Command` into the bytes a
         // real client writes. Payloadless on the wire on purpose: the sim
@@ -685,7 +701,7 @@ pub fn walk_ticks(duration: Duration) -> u64 {
 /// Is this failure the box saying "not now", rather than the shard saying no?
 ///
 /// The distinction is the whole point and it is exact, not a heuristic.
-/// **Our** refusals are `REFUSE_VERSION..=REFUSE_IN_USE`, 0..=9, closed with
+/// **Our** refusals are `REFUSE_VERSION..=REFUSE_AGENTS`, 0..=10, closed with
 /// the refusal text beside them (`net.rs`) — those are ANSWERS and are
 /// returned on the first try, because retrying one would let a suite sleep
 /// through a version gate that had begun rejecting everybody. `0x107` is
@@ -1829,7 +1845,7 @@ pub fn agent_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint<
         let cfg = match (pin.clone(), loopback) {
             (Some(digest), _) => roots.with_server_certificate_hashes([digest]).build(),
             (None, true) => roots.with_no_cert_validation().build(),
-            (None, false) => roots.with_native_certs().build(),
+            (None, false) => roots.with_custom_tls(client::tls::webtransport()).build(),
         };
         Endpoint::client(cfg)
     };

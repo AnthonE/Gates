@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 167] = [
+pub const STEMS: [&str; 196] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -78,6 +78,7 @@ pub const STEMS: [&str; 167] = [
     "shape_window",
     "shape_wall_frame",
     "shape_floor",
+    "shape_floor_frame",
     "shape_tri_floor",
     "shape_stairs",
     "shape_half_wall",
@@ -142,6 +143,26 @@ pub const STEMS: [&str; 167] = [
     "abyss_rug",
     "boots",
     "hazmat_suit",
+    // Clothing v1: Rust's clothes for every slot, and their teas.
+    "burlap_trousers",
+    "burlap_shoes",
+    "burlap_gloves",
+    "hide_pants",
+    "hide_boots",
+    "hide_vest",
+    "leather_gloves",
+    "hoodie",
+    "pants",
+    "jacket",
+    "snow_jacket",
+    "bandana",
+    "improvised_balaclava",
+    "beenie_hat",
+    "warming_tea",
+    "strong_warming_tea",
+    "cooling_tea",
+    "warding_tea",
+    "healing_tea",
     "blueprint",
     "bat",
     "torch",
@@ -167,6 +188,12 @@ pub const STEMS: [&str; 167] = [
     "code_lock",
     "waterskin",
     "full_waterskin",
+    // The water pass's vessels, painted rather than baked from a model:
+    // the full skin's own picture salted, and a clay jug, until the jug's
+    // model ships.
+    "salt_waterskin",
+    "water_jug",
+    "full_water_jug",
     "wooden_barricade",
     "leather",
     "hide_poncho",
@@ -219,6 +246,14 @@ pub const STEMS: [&str; 167] = [
     "planter_box",
     "auto_turret",
     "vending_machine",
+    // Farming v2's water catcher (`ci/icons/water_catcher.py`, ours).
+    "water_catcher",
+    // Farming v2's second wave (`ci/icons/crops.py`, ours).
+    "potato",
+    "potato_seed",
+    "pumpkin",
+    "pumpkin_seed",
+    "berry_seed",
     // The food loop's states. `burnt_meat` is the one PNG in
     // `assets/icons/` that is not game-icons.net — the archive has none, so
     // it is ours. The other two were briefly ours as well and are archive

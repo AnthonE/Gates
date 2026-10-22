@@ -16,8 +16,8 @@
 //! a milestone is done or the pack runs short, and the mind sends it off
 //! for what the next one needs ([`Survey::needs`]). Once the starter
 //! stands come its stations: a workbench on a foundation behind the core,
-//! where `E` takes it, and a furnace on the upstairs floor, both in reach
-//! of the stand spot, where a station's recipes are crafted. Then code locks on both doors and
+//! where `E` takes it, and a furnace on one behind the stair cell, both in
+//! reach of the stand spot, where a station's recipes are crafted. Then code locks on both doors and
 //! the cupboard, armed with its own code ([`LockCode`]), and metal doors in
 //! place of the wooden ones when the fragments are spare.
 //!
@@ -85,8 +85,8 @@ pub enum Milestone {
     /// A workbench behind the core, on a stone foundation of its own: its
     /// 100 fragments are bought at THE GATE with the first loot runs' junk.
     Bench,
-    /// A furnace on the floor over the cupboard, crafted at the bench; ore
-    /// smelts there.
+    /// A furnace behind the stair cell, on a stone foundation of its own,
+    /// crafted at the bench; ore smelts there.
     Furnace,
     /// Code locks on both doors and the cupboard, armed with its code; a
     /// metal front door, and the inner one in metal whenever the fragments
@@ -184,25 +184,22 @@ pub const HAMMER_ITEM: &str = "Hammer";
 /// in, both behind the front door from the second milestone on. The box
 /// stands in the stair cell, the one plane inside the room the cupboard
 /// does not take (a box is solid, and the airlock's walk passes beside
-/// it); the bag in the airlock, where a walk-over mat blocks nobody. Then
-/// the furnace, within `craft::STATION_RADIUS_M` of the stand spot (the
-/// gate is planar, so the floor above counts), on the floor over the
-/// cupboard, the blueprint's own box spot: it is worked as a station and
-/// never opened, so that `E` there takes the cupboard costs nothing. A
-/// workbench is opened (`E` shows its tree), so each rung stands where `E`
-/// takes it from the stand spot, on a stone foundation of its own behind
-/// the core (`LATER`): the first on `YARD`, the second on `ANNEX`. The plot
-/// is chosen to take both foundations.
-const EXTRAS: [(&str, i8, i8, u8, Milestone); 3] = [
+/// it); the bag in the airlock, where a walk-over mat blocks nobody. The
+/// stations stand in the yard row behind the core (`LATER`), each on a
+/// stone foundation of its own within `craft::STATION_RADIUS_M` of the
+/// stand spot (the gate is planar): a workbench is opened (`E` shows its
+/// tree), so its rung stands where `E` takes it from the stand spot, on
+/// `YARD`; the furnace is worked as a station and never opened, on
+/// `ANNEX`. The plot is chosen to take both foundations.
+const EXTRAS: [(&str, i8, i8, u8, Milestone); 2] = [
     (BOX_ITEM, 1, 0, 0, Milestone::Doors),
     (BAG_ITEM, 1, 1, 0, Milestone::Doors),
-    (FURNACE_ITEM, 0, 0, 1, Milestone::Furnace),
 ];
 /// Where in its cell a kit item goes (free placement). Everything stands at
-/// its cell's centre but the bag: the airlock is a triangle foundation (the
-/// NW half, `bots::BASE` at (1, 1)) with a diagonal wall on its hypotenuse
-/// through the centre, so the bag lies inside the half, along the wall,
-/// clear of it and of both doorways.
+/// its cell's centre but the bag, which lies in the airlock (`bots::STARTER`
+/// at (1, 1)) off its middle, clear of both doorways and the walk between
+/// them. The cupboard is turned to face the
+/// room, as the scripted owner stands it (`bots::HEARTH_POSE`).
 pub fn kit_pose(name: &str) -> sim_core::footprint::Pose {
     if name == BAG_ITEM {
         sim_core::footprint::Pose {
@@ -210,18 +207,22 @@ pub fn kit_pose(name: &str) -> sim_core::footprint::Pose {
             oz: -32,
             yaw: 32,
         }
+    } else if name == HEARTH_ITEM {
+        sim_core::bots::HEARTH_POSE
     } else {
         sim_core::footprint::Pose::CENTRE
     }
 }
 
-/// The cell behind the core the first bench's foundation takes, from the
-/// plot.
+/// The cell behind the core the bench's foundation takes, from the plot.
 pub const YARD: (i8, i8) = (0, -1);
-/// The cell behind the stair cell the second bench's foundation takes.
+/// The cell behind the stair cell the furnace's foundation takes.
 pub const ANNEX: (i8, i8) = (1, -1);
-/// The plot's cells: the core's three by two, and the yard and annex cells
-/// behind it (not the rest of that row, which may be a neighbour's).
+/// The cell whose low-z edge is the airlock's south wall.
+const AIRLOCK_SOUTH: (i8, i8) = (1, 2);
+/// The plot's cells: the core's three by two, the yard and annex cells
+/// behind it (not the rest of that row, which may be a neighbour's), and
+/// the cell the airlock's south wall is filed under.
 fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
     let at = |(dx, dz): (i8, i8)| {
         (
@@ -232,22 +233,25 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
     (cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1)
         || (cx, cz) == at(YARD)
         || (cx, cz) == at(ANNEX)
+        || (cx, cz) == at(AIRLOCK_SOUTH)
 }
 
 /// What it does after the starter and its stations, in order, as `(op, dx,
 /// dz, level, loc, milestone, optional)`: the first bench on its stone
-/// foundation behind the core (`YARD`); the cupboard's lock and code
+/// foundation behind the core (`YARD`), then the furnace on its own behind
+/// the stair cell (`ANNEX`: every plane inside is taken, the floor over the
+/// cupboard is out of a hand's sight from it, and the stair cell's box
+/// leaves no flight to climb there by); the cupboard's lock and code
 /// (the doors' are the blueprint's own), the inner door swapped for metal
-/// like the front one, the second bench rung on a stone foundation of its
-/// own behind the stair cell (`ANNEX`: every plane inside is taken, and
-/// the first rung stays, its recipes made at either); then the gear,
+/// like the front one, the second bench rung in the first one's place (its
+/// recipes are the first's and more); then the gear,
 /// each blueprint learned before it is made, a parent before its child
 /// (pistol rounds before the revolver: the tree's own edge). First of all,
 /// a key lock on each door with the doors, when it lives alone (`keyed`):
 /// the blueprint's code locks wait for fragments, and a door anybody can
 /// open is no door. An optional op holds no milestone back: it is done when
 /// the pack pays for it on top of what the milestone in hand costs.
-const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 29] = [
+const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 30] = [
     (
         Op::Lock(KEY_LOCK_ITEM),
         FRONT.0,
@@ -291,6 +295,33 @@ const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 29] = [
         0,
         LOC_PLANE,
         Milestone::Bench,
+        false,
+    ),
+    (
+        Op::Piece(Part::Foundation),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Furnace,
+        false,
+    ),
+    (
+        Op::Grade(MAT_STONE),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Furnace,
+        false,
+    ),
+    (
+        Op::Kit(FURNACE_ITEM),
+        ANNEX.0,
+        ANNEX.1,
+        0,
+        LOC_PLANE,
+        Milestone::Furnace,
         false,
     ),
     (
@@ -396,27 +427,9 @@ const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 29] = [
     (Op::Learn("Medkit"), 0, 0, 0, 0, Milestone::Medkits, false),
     (Op::Make("Medkit", 2), 0, 0, 0, 0, Milestone::Medkits, false),
     (
-        Op::Piece(Part::Foundation),
-        ANNEX.0,
-        ANNEX.1,
-        0,
-        LOC_PLANE,
-        Milestone::Bench2,
-        false,
-    ),
-    (
-        Op::Grade(MAT_STONE),
-        ANNEX.0,
-        ANNEX.1,
-        0,
-        LOC_PLANE,
-        Milestone::Bench2,
-        false,
-    ),
-    (
-        Op::Kit(BENCH2_ITEM),
-        ANNEX.0,
-        ANNEX.1,
+        Op::Swap(BENCH_ITEM, BENCH2_ITEM),
+        YARD.0,
+        YARD.1,
         0,
         LOC_PLANE,
         Milestone::Bench2,
@@ -561,18 +574,29 @@ struct Spec {
 impl Spec {
     /// Where the op is worked from, as the chain point the walk through the
     /// doors goes by and the spot itself, relative to the plot's corner.
-    /// Everything is worked from the stand spot in the core but a door's
-    /// lock and a door's swap: those from beside the door, on the side
-    /// the cupboard is not (from the core `E` takes the cupboard first),
-    /// where that door is the one `E` and the take-down's key take, the
-    /// front from outside, the inner from the room.
+    /// Everything is worked from the stand spot in the core but a door, its
+    /// lock and its swap: those from beside the door, on the side the
+    /// cupboard is not (from the core `E` takes the cupboard first), where
+    /// that door is the one `E` and the take-down's key take, the front
+    /// from outside, the inner from the room — and the airlock's outer
+    /// walls, past build reach from the core, from the inner spot. A
+    /// deployable goes down (and comes up) only where the hand sees it
+    /// (`deploy::place_deploy`), so what the core's walls hide is worked
+    /// from where they do not: the bag from the airlock, the yard row's
+    /// stations from behind their foundations, outside.
     fn work_spot(&self) -> (usize, [f32; 2]) {
-        let door = matches!(self.op, Op::Lock(_) | Op::Code | Op::Swap(..));
+        let door = matches!(self.op, Op::Kit(_) | Op::Lock(_) | Op::Code | Op::Swap(..));
+        let kit = matches!(self.op, Op::Kit(_) | Op::Swap(..));
         let here = (self.dx, self.dz, self.level, self.loc);
+        let cell = (self.dx, self.dz);
         if door && here == FRONT {
             (CHAIN.len() - 1, CHAIN[CHAIN.len() - 1])
-        } else if door && here == INNER {
+        } else if (door && here == INNER) || AIRLOCK_SHELL.contains(&here) {
             (INNER_LEG, INNER_SPOT)
+        } else if kit && cell == AIRLOCK && self.loc == LOC_PLANE {
+            (AIRLOCK_JOIN, CHAIN[AIRLOCK_JOIN])
+        } else if kit && (cell == YARD || cell == ANNEX) {
+            (CHAIN.len() - 1, behind(cell))
         } else {
             (0, CHAIN[0])
         }
@@ -582,6 +606,24 @@ impl Spec {
 /// Where the inner door is worked from: in the room, closer to it than to
 /// the box or the stairs, so it is the nearest thing standing there.
 const INNER_SPOT: [f32; 2] = [1.5, -0.45];
+/// The airlock's two outer walls, as the blueprint addresses them.
+const AIRLOCK_SHELL: [(i8, i8, u8, u8); 2] = [(2, 1, 0, LOC_EDGE_XLO), (1, 2, 0, LOC_EDGE_ZLO)];
+/// The airlock's cell, from the plot.
+const AIRLOCK: (i8, i8) = (1, 1);
+/// How far past its foundation's back edge a station behind the base is
+/// worked from: a body's capsule clear of the slab, the station in sight
+/// over it and in reach.
+const BEHIND_M: f32 = 0.6;
+
+/// The spot behind a cell of the yard row (`YARD`, `ANNEX`), relative to
+/// the plot's corner: in line with its middle, [`BEHIND_M`] past its back
+/// edge, on the ground `scatter_in` keeps clear.
+fn behind((dx, dz): (i8, i8)) -> [f32; 2] {
+    [
+        (f32::from(dx) - 0.5) * BUILD_CELL_M,
+        (f32::from(dz) - 1.0) * BUILD_CELL_M - BEHIND_M,
+    ]
+}
 
 /// Op `i`: the blueprint's in order, then [`EXTRAS`], then [`LATER`].
 fn spec(i: usize) -> Spec {
@@ -685,6 +727,11 @@ fn spec(i: usize) -> Spec {
         },
         BaseOp::Feed(dx, dz, level) => none(dx, dz, level, LOC_PLANE),
     }
+}
+
+/// Does `op` put the named deployable down: its kit, or a swap to it?
+fn puts_down(op: Op, name: &str) -> bool {
+    matches!(op, Op::Kit(n) | Op::Swap(_, n) if n == name)
 }
 
 fn addr(plan: &BasePlan, s: &Spec) -> OpAddr {
@@ -1056,7 +1103,7 @@ pub enum Region {
 /// the airlock and out of the front door. Each point keeps a body's
 /// capsule clear of the walls, the posts, the cupboard and the box.
 ///
-/// The stand spot sits 0.45 m from the cupboard's side, a capsule and a
+/// The stand spot sits 0.49 m from the cupboard's front, a capsule and a
 /// hair; it is walked to straight from the wall side, never past the
 /// cupboard's corner.
 const CHAIN: [[f32; 2]; 9] = [
@@ -1517,14 +1564,14 @@ pub(crate) fn e_picks_by(
         let r = (E_AIM_RADIUS_M + give).max(0.0);
         (t > -give && ox * ox + oz * oz <= r * r, dx * dx + dz * dz)
     };
-    let in_reach = |cx: u16, cz: u16| {
-        let (cx, cz) = sim_core::deploy::cell_center(cx, cz);
+    let in_reach = |cx: u16, cz: u16, level: u8, loc: u8| {
+        let (cx, cz) = e_points(core, cx, cz, level, loc).0;
         (cx - x) * (cx - x) + (cz - z) * (cz - z) <= reach2
     };
-    if !in_reach(door.cx, door.cz) {
+    if !in_reach(door.cx, door.cz, door.level, door.loc) {
         return false;
     }
-    let (ax, az) = anchor(door.cx, door.cz, door.loc);
+    let (ax, az) = e_points(core, door.cx, door.cz, door.level, door.loc).1;
     let (aimed, mine) = score(ax, az, -slack);
     if !aimed || mine > own_reach2 {
         return false;
@@ -1533,11 +1580,11 @@ pub(crate) fn e_picks_by(
     let own = deploy_rec(core, door).map_or(u8::MAX, |d| rank(d.row));
     let deploys = core.deploys.entries().iter().filter(|d| {
         (d.cx, d.cz, d.level, d.loc) != (door.cx, door.cz, door.level, door.loc)
-            && in_reach(d.cx, d.cz)
+            && in_reach(d.cx, d.cz, d.level, d.loc)
     });
     let rivals = deploys
         .map(|d| {
-            let (x, z) = anchor(d.cx, d.cz, d.loc);
+            let (x, z) = e_points(core, d.cx, d.cz, d.level, d.loc).1;
             (x, z, rank(d.row))
         })
         .chain(
@@ -1645,7 +1692,7 @@ fn region_at(rel: [f32; 2]) -> Region {
     let span = BUILD_CELL_M;
     if x > -span && x < span && z > -span && z < 0.0 {
         Region::Room
-    } else if x > 0.0 && z > 0.0 && x + z < span {
+    } else if x > 0.0 && z > 0.0 && x < span && z < span {
         Region::Airlock
     } else {
         Region::Outside
@@ -1673,7 +1720,26 @@ pub(crate) fn door_open(core: &ClientCore, at: OpAddr) -> Option<bool> {
 
 /// Where the eyes go to work an address: the piece's middle, a door's
 /// handle height, a plane's top.
+/// Where `E` measures a deployable at this address from — (its reach, its
+/// aim): a door in a doorway the grid cannot name at that doorway's middle,
+/// both (its address spells the doorway's id, freeform W4); anything else
+/// at its cell's middle and `anchor`, as the human client's pick has it.
+fn e_points(core: &ClientCore, cx: u16, cz: u16, level: u8, loc: u8) -> ((f32, f32), (f32, f32)) {
+    if loc == sim_core::build::LOC_NONE {
+        let m = sim_core::deploy::edge_mid(core.pieces.cols(), cx, cz, level, loc);
+        return (m, m);
+    }
+    (sim_core::deploy::cell_center(cx, cz), anchor(cx, cz, loc))
+}
+
 pub(crate) fn look_point(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> [f32; 3] {
+    // A door in a doorway the grid cannot name: its handle, over that
+    // doorway's own floor.
+    if let Some(p) =
+        sim_core::deploy::posed_insert(core.pieces.cols(), at.cx, at.cz, at.level, at.loc)
+    {
+        return [p.x, p.floor_y + 1.1, p.z];
+    }
     let (x, z) = anchor(at.cx, at.cz, at.loc);
     let floor = match core.pieces.cols().plate(at.cx, at.cz) {
         Some(plate) => column_floor_y(seed, haven, at.cx, at.cz, plate),
@@ -2477,7 +2543,7 @@ impl Builder {
             let s = spec(i);
             let at = addr(&plan, &s);
             (s.stage.is_some()
-                && s.op == Op::Kit(name)
+                && puts_down(s.op, name)
                 && self.mine & bit(i) != 0
                 && deploy_at(core, at).is_some())
             .then_some(at)
@@ -2715,11 +2781,12 @@ impl Builder {
         if core.recipes_have < core.recipes.recipe_count {
             return false;
         }
-        let lost = |op: Op| (0..OPS).any(|j| spec(j).op == op && self.given_up & bit(j) != 0);
+        let lost =
+            |name| (0..OPS).any(|j| puts_down(spec(j).op, name) && self.given_up & bit(j) != 0);
         let station_lost = |station: u8| match station {
-            STATION_WORKBENCH1 => lost(Op::Kit(BENCH_ITEM)),
-            STATION_WORKBENCH2 => lost(Op::Kit(BENCH2_ITEM)),
-            STATION_FURNACE => lost(Op::Kit(FURNACE_ITEM)),
+            STATION_WORKBENCH1 => lost(BENCH_ITEM),
+            STATION_WORKBENCH2 => lost(BENCH2_ITEM),
+            STATION_FURNACE => lost(FURNACE_ITEM),
             _ => false,
         };
         let mut recipes = core.recipes.recipes
@@ -3569,12 +3636,16 @@ impl Builder {
         let pointed = at_corner(c, CHAIN[via]);
         let at_via = (pointed[0] - x).hypot(pointed[1] - z) <= STAND_M;
         let region = self.region(body);
+        let outside = region_at(rel) == Region::Outside;
         let same_side = region == region_at(rel) && (region == Region::Outside || at_via);
         if far > STAND_M && self.walled(core) && (!same_side || self.passage.busy()) {
             // Through the airlock, or round the cupboard and the box
             // inside, by the chain, to the point by the spot.
             let last = CHAIN.len() - 1;
             let way = match region {
+                // A spot outside the doors (behind the yard row) is out of
+                // them, however far it is from the chain's end.
+                _ if outside => Way::Out,
                 Region::Outside => Way::In,
                 _ => {
                     let rel_here = [x - c[0], z - c[1]];
@@ -4057,17 +4128,17 @@ mod tests {
             }
             last = last.max(m);
         }
-        // The shell: two foundations, a triangle, five walls, two doorways,
-        // the diagonal, and the cupboard. Two doors and a key lock on each,
-        // the box and the bag.
-        assert_eq!(seen[Milestone::Shell as usize], 12);
+        // The shell: three foundations, seven walls, two doorways and the
+        // cupboard. Two doors and a key lock on each, the box and the bag.
+        assert_eq!(seen[Milestone::Shell as usize], 13);
         assert_eq!(seen[Milestone::Doors as usize], 6);
-        assert_eq!(seen[Milestone::Stone as usize], 11);
+        assert_eq!(seen[Milestone::Stone as usize], 12);
         assert!(seen[Milestone::Upstairs as usize] >= 10);
         // Its stations in reach of the stand spot, the bench on a stone
         // foundation of its own.
         assert_eq!(seen[Milestone::Bench as usize], 3);
-        assert_eq!(seen[Milestone::Furnace as usize], 1);
+        // The furnace on one of its own.
+        assert_eq!(seen[Milestone::Furnace as usize], 3);
         // A lock and its code on both doors and the cupboard, the front
         // door in metal, and the inner one when the fragments are spare.
         assert_eq!(seen[Milestone::Locks as usize], 8);
@@ -4081,8 +4152,8 @@ mod tests {
             optional,
             [(Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM), dx, dz, level, loc)]
         );
-        // The second bench, on a stone foundation of its own.
-        assert_eq!(seen[Milestone::Bench2 as usize], 3);
+        // The second bench, in the first one's place.
+        assert_eq!(seen[Milestone::Bench2 as usize], 1);
         assert_eq!(seen[Milestone::Done as usize], 0);
         // Every gear milestone has work, and a blueprint is learned before
         // what it teaches is made.
@@ -4099,7 +4170,7 @@ mod tests {
         let plan = BasePlan::new(0, 100, 100);
         let stand = at_corner(corner(&plan), CHAIN[0]);
         for name in [BENCH_ITEM, FURNACE_ITEM, BENCH2_ITEM] {
-            let s = (0..OPS).map(spec).find(|s| s.op == Op::Kit(name)).unwrap();
+            let s = (0..OPS).map(spec).find(|s| puts_down(s.op, name)).unwrap();
             let at = addr(&plan, &s);
             let (x, z) = sim_core::deploy::cell_center(at.cx, at.cz);
             let d = (x - stand[0]).hypot(z - stand[1]);
@@ -4178,10 +4249,15 @@ mod tests {
                     cz: at.cz,
                     level: at.level,
                     loc: at.loc,
+                    id: 1 + i as u32,
                     ..Default::default()
                 };
                 stream(&mut core, |buf| {
-                    protocol::event::encode_event_piece_placed(&rec, buf)
+                    protocol::event::encode_event_piece_placed(
+                        &rec,
+                        &sim_core::frame::Frame::ZERO,
+                        buf,
+                    )
                 });
             }
         }
@@ -4230,10 +4306,15 @@ mod tests {
                     cz: at.cz,
                     level: at.level,
                     loc: at.loc,
+                    id: 1 + i as u32,
                     ..Default::default()
                 };
                 stream(&mut core, |buf| {
-                    protocol::event::encode_event_piece_placed(&rec, buf)
+                    protocol::event::encode_event_piece_placed(
+                        &rec,
+                        &sim_core::frame::Frame::ZERO,
+                        buf,
+                    )
                 });
             }
         }
@@ -4493,12 +4574,15 @@ mod tests {
     #[test]
     fn every_op_is_in_reach_of_the_stand_spot() {
         let plan = BasePlan::new(0, 100, 100);
-        let stand = at_corner(corner(&plan), CHAIN[0]);
         for i in 0..OPS {
             let s = spec(i);
             if s.stage.is_none() {
                 continue;
             }
+            // Worked from its own spot: the core's, or beside a door, or
+            // the room's for the airlock's outer walls, or where the hand
+            // sees a deployable the core's walls and floor hide.
+            let stand = at_corner(corner(&plan), s.work_spot().1);
             let at = addr(&plan, &s);
             let (ax, az) = match s.op {
                 Op::Kit(_) => sim_core::deploy::cell_center(at.cx, at.cz),

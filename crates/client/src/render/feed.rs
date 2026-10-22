@@ -280,6 +280,10 @@ pub struct Feed {
     /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
     auths: [(u16, u16, u8, u8, u8); FEED_CAP],
     n_auths: usize,
+    /// Fires and furnaces switched on or off this frame: address + lit.
+    /// Broadcast, like `knocks`.
+    oven_flips: [(u16, u16, u8, u8, bool); FEED_CAP],
+    n_oven_flips: usize,
     /// Arrows loosed this frame (wire v33): shooter id, yaw, pitch, and the
     /// round's speed and drop in mm/tick. Broadcast, like `knocks`.
     ///
@@ -358,6 +362,13 @@ pub struct Feed {
     /// first snapshot, which reads as the boot phase — mid-morning — and
     /// is exactly what a loading world should look like.
     pub server_tick_est: f64,
+    /// `ClientCore::pending_pieces_gen`, copied each drain for the same
+    /// reason: `structures::structures_changed` is a RUN CONDITION, and a
+    /// condition that took the non-send `Net` was run on a worker thread and
+    /// aborted the client on every join (2026-10-21). Zero with no session,
+    /// which is what the structure ring starts at, so no session never
+    /// reads as a change.
+    pub pending_pieces_gen: u32,
     /// The world's sky/clock record (`client_core` `env`, weather v0),
     /// copied beside the tick for the same reason: every reader of the hour
     /// or the weather takes it as a `Res<Feed>`.
@@ -466,6 +477,9 @@ impl Feed {
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
+    pub fn oven_flips(&self) -> &[(u16, u16, u8, u8, bool)] {
+        &self.oven_flips[..self.n_oven_flips]
+    }
     /// Placements that happened this frame, oldest first.
     /// The directions blows arrived from this frame, merged, in the order
     /// each direction was first seen.
@@ -563,6 +577,7 @@ impl Feed {
         self.reloaded = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
+        self.n_oven_flips = 0;
         self.n_shots = 0;
         self.n_impacts = 0;
         self.n_swings = 0;
@@ -606,6 +621,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
+    feed.pending_pieces_gen = core.pending_pieces_gen();
     feed.env = core.env;
 
     while let Some(h) = core.pop_hit() {
@@ -770,6 +786,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_auths;
             feed.auths[n] = a;
             feed.n_auths += 1;
+        }
+    }
+    while let Some(f) = core.pop_oven_flip() {
+        if feed.n_oven_flips >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_oven_flips;
+            feed.oven_flips[n] = f;
+            feed.n_oven_flips += 1;
         }
     }
     while let Some(sh) = core.pop_shot() {

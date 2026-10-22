@@ -339,6 +339,34 @@ pub fn siwe_message_for(
     w.at.min(SIWE_MESSAGE_MAX)
 }
 
+/// The companion page's sign-in (`server::companion`): EIP-4361's shape, so a
+/// wallet still checks the domain line against the page, with a statement of
+/// its own. Its bytes are never [`siwe_message_for`]'s, so whoever collects
+/// one gets no game login — the game never verifies this text — and nothing
+/// derived from the game's.
+pub fn companion_message(
+    domain: &str,
+    uri_host: &str,
+    address: &str,
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    out: &mut [u8; SIWE_MESSAGE_MAX],
+) -> usize {
+    let mut w = TextWriter { out, at: 0 };
+    w.s(domain);
+    w.s(" wants you to sign in with your Ethereum account:\n");
+    w.s(address);
+    w.s("\n\nSign in to your Gates team page. This is not a game login; it authorises nothing and moves no funds.\n\nURI: https://");
+    w.s(uri_host);
+    w.s("\nVersion: 1\nChain ID: ");
+    w.num(CHAIN_ID);
+    w.s("\nNonce: ");
+    w.hex(nonce);
+    w.s("\nIssued At: ");
+    w.iso8601(issued_at);
+    w.at.min(SIWE_MESSAGE_MAX)
+}
+
 /// The chain the launcher names in a proof. **Theirs, not ours**
 /// (`scry_broker::protocol::CHAIN_ID`) — we recompute their message, so a
 /// number we preferred here would simply fail to verify.
@@ -645,6 +673,39 @@ mod tests {
         let a = core::str::from_utf8(&hex).expect("utf-8");
         let n = siwe_message(&long, a, "gates", &[0; NONCE_BYTES], 0, &mut buf);
         assert!(n >= SIWE_MESSAGE_MAX, "an over-long domain should saturate");
+    }
+
+    /// The companion's text at the domain cap on both lines fits whole, and
+    /// it is never the game's text over the same values.
+    #[test]
+    fn the_companion_text_fits_and_is_not_the_games() {
+        let cap = "x".repeat(DOMAIN_MAX);
+        let sum = Address::GUEST.to_checksum_hex();
+        let a = core::str::from_utf8(&sum).expect("utf-8");
+        let mut buf = [0u8; SIWE_MESSAGE_MAX];
+        let n = companion_message(
+            &cap,
+            &cap,
+            a,
+            &[0xff; NONCE_BYTES],
+            u32::MAX as u64,
+            &mut buf,
+        );
+        assert!(
+            n < SIWE_MESSAGE_MAX,
+            "the companion text at the cap overran: {n}"
+        );
+        let mut game = [0u8; SIWE_MESSAGE_MAX];
+        let g = siwe_message_for(
+            &cap,
+            &cap,
+            a,
+            "gates",
+            &[0xff; NONCE_BYTES],
+            u32::MAX as u64,
+            &mut game,
+        );
+        assert_ne!(buf[..n], game[..g]);
     }
 
     /// The four canonical EIP-55 vectors from the spec itself.

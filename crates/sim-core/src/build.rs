@@ -42,7 +42,7 @@ use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS, MAX_COLLAPSE_PIECES, MAX_DEPLOY_COSTS,
-    MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
+    MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, PIECE_ADDR_SLOTS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{
@@ -239,6 +239,38 @@ pub const LOC_RISER_XHI: u8 = 10;
 pub const LOC_RISER_ZLO: u8 = 11;
 pub const LOC_RISER_XLO: u8 = 12;
 pub const STAIR_LOCS: [u8; 4] = [LOC_RISER, LOC_RISER_XHI, LOC_RISER_ZLO, LOC_RISER_XLO];
+/// No grid address: a piece the 3 m grid cannot name — a triangle, or
+/// anything in a building turned off the grid (freeform W3). In the
+/// piece's record `cx`, `cz` are the cell its anchor stands in (where
+/// interest looks for it); in an address a verb or an event names it by,
+/// `cx`, `cz` and `level` spell its id instead ([`spell_id`]). The first
+/// loc the piece store does not use, so it crosses in `BUILD_LOC_BITS`.
+pub const LOC_NONE: u8 = 13;
+
+/// Ids an address can spell: `cx` and `cz` take eleven bits each, `level`
+/// four. The store refuses a piece past it (`REFUSE_B_FULL`).
+pub const MAX_PIECE_ID: u32 = 1 << 26;
+
+/// The address that names piece `id` (`LOC_NONE`'s doc).
+#[inline]
+pub const fn spell_id(id: u32) -> (u16, u16, u8, u8) {
+    (
+        (id & 0x7FF) as u16,
+        ((id >> 11) & 0x7FF) as u16,
+        ((id >> 22) & 0xF) as u8,
+        LOC_NONE,
+    )
+}
+
+/// The id an address spells, if it spells one.
+#[inline]
+pub const fn spelled_id(cx: u16, cz: u16, level: u8, loc: u8) -> Option<u32> {
+    if loc == LOC_NONE {
+        Some((cx as u32 & 0x7FF) | (cz as u32 & 0x7FF) << 11 | (level as u32 & 0xF) << 22)
+    } else {
+        None
+    }
+}
 
 #[inline]
 pub fn is_stair_loc(loc: u8) -> bool {
@@ -310,6 +342,9 @@ pub const REFUSE_B_PLATE_LOW: u32 = 14;
 /// or on the town's own stations. Rust's safe zone lets no weapon be drawn,
 /// and its monuments cannot be raided.
 pub const REFUSE_B_SAFE: u32 = 15;
+/// Not from the water (water pass): a swimmer builds nothing until its feet
+/// find the bottom (`movement::swimming`).
+pub const REFUSE_B_SWIMMING: u32 = 16;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -320,10 +355,26 @@ pub const LEVEL_H_M: f32 = 3.0;
 /// default, same §open row.
 pub const BUILD_REACH_M: f32 = 5.0;
 /// Foundation terrain rules: cell-center height at least this (above the
-/// beach line, so the sea floor can't hold a base) and slope under this
-/// (the spawn walkability shape). Proposed defaults, same §open row.
+/// beach line) and slope under this (the spawn walkability shape) is ground
+/// a base stands WELL on — what fixtures and the agents look for
+/// ([`foundation_terrain_ok`]). Proposed defaults, same §open row.
 pub const FOUNDATION_MIN_H_M: f32 = 1.5;
 pub const FOUNDATION_MAX_SLOPE: f32 = 1.0;
+/// The deepest water `place` stands a foundation in (the water pass,
+/// 2026-10-21, [`foundation_ground_ok`]): the reference builds wherever a
+/// foundation touches the ground, the beach and the lake's edge included,
+/// and its lakes are pitched as base spots. Two metres is where a
+/// foundation's top still reaches the waterline at the most a plate lifts
+/// it (`PLATE_RISE_MAX_BANDS`), so a shore base can wade out without a floor
+/// nobody can stand on. Deeper is a later knob (an underwater base), not a
+/// different rule.
+pub const FOUNDATION_MAX_WATER_M: f32 = 2.0;
+pub const FOUNDATION_FLOOR_H_M: f32 = terrain::SEA_LEVEL - FOUNDATION_MAX_WATER_M;
+/// The ground a deployable stands on bare: dry land, the beach included. A
+/// fire, a box or a bed does not go in the water (the reference refuses the
+/// same); a deployable that belongs in it — a pump, a trap — would be the
+/// first to ask for a different rule.
+pub const DEPLOY_MIN_H_M: f32 = terrain::LAND_MIN_H;
 
 /// The vertical build lattice: a column's floor height is its cell-center
 /// terrain sample snapped to multiples of this, so neighbouring cells whose
@@ -840,6 +891,65 @@ pub struct PieceRec {
     ///
     /// [`dmg`]: PieceRec::dmg
     pub plate: i8,
+    /// Stable identity (freeform W3): minted by [`Pieces::insert`] from the
+    /// store's counter and never reused in a world. What the piece's
+    /// collision row is filed under ([`hull_key`]); hashed and saved.
+    pub id: u32,
+    /// The building the piece stands in (`building::Buildings`).
+    pub bld: u16,
+    /// Its footprint in that building's lattice. With `bld` and `level`,
+    /// its address (`sock::PieceAddr`) — the identity the support and
+    /// overlap rules read. `cx`, `cz`, `loc` and `plate` are the same
+    /// piece seen on the 3 m grid, for the readers that still look there,
+    /// and `loc` is [`LOC_NONE`] for a piece the grid cannot name.
+    pub sock: crate::sock::Sock,
+}
+
+impl PieceRec {
+    /// Where the piece is: building, socket level and footprint.
+    #[inline]
+    pub fn addr(&self) -> crate::sock::PieceAddr {
+        crate::sock::PieceAddr {
+            bld: self.bld,
+            level: self.level,
+            sock: self.sock,
+        }
+    }
+
+    /// Whether the 3 m grid can name the piece.
+    #[inline]
+    pub fn on_grid(&self) -> bool {
+        self.loc != LOC_NONE
+    }
+
+    /// The address verbs and events name the piece by: its grid address,
+    /// or its id spelled ([`spell_id`]).
+    #[inline]
+    pub fn target(&self) -> (u16, u16, u8, u8) {
+        if self.on_grid() {
+            (self.cx, self.cz, self.level, self.loc)
+        } else {
+            spell_id(self.id)
+        }
+    }
+
+    /// [`target`](Self::target) as an event's first two words, the row
+    /// left out: `(cell_key, level << 16 | loc << 8)`.
+    #[inline]
+    pub fn ev_addr(&self) -> (u32, u32) {
+        let (cx, cz, level, loc) = self.target();
+        (
+            crate::gather::cell_key(cx, cz),
+            ((level as u32) << 16) | ((loc as u32) << 8),
+        )
+    }
+}
+
+/// A piece's collision row key: its id, tagged apart from the grid keys a
+/// client mirror files under (`hull::grid_key` sets bit 63, this bit 62).
+#[inline]
+pub const fn hull_key(id: u32) -> u64 {
+    (1 << 62) | id as u64
 }
 
 /// The placed-piece store: dense, insertion-ordered (command order, so
@@ -875,6 +985,11 @@ pub struct Pieces {
     entries: Box<[PieceRec; MAX_PIECES]>,
     len: usize,
     cols: Box<crate::collide::ColIndex>,
+    /// Address → index into `entries`, so `find` is a probe rather than a
+    /// scan of the whole store (a raid's every hit asks it). Derived state
+    /// like `cols`: kept in lockstep by `insert`, `remove_at`,
+    /// `set_rotation` and `restore`, never hashed, never saved.
+    addr: AddrIndex,
     /// Bumped by every insert, removal, upgrade and restore — the stamp
     /// `claim::ClaimCache` compares to know whether the base shapes (and,
     /// since upkeep v2, the graded counts) it cached can have changed. **Derived-cache plumbing, not state**: it
@@ -886,6 +1001,17 @@ pub struct Pieces {
     /// extra rebuild costs a bounded walk and a missed one costs a wall
     /// the sweep still thinks is standing.
     gen: u64,
+    /// The buildings the pieces stand in (freeform W3): derived from the
+    /// records and the saved frames, rebuilt by `restore`.
+    blds: crate::building::Buildings,
+    /// Lattice address → index (`sock::PieceAddr::key`), the index the
+    /// support and overlap rules probe. Derived like `addr`.
+    lat: LatIndex,
+    /// Piece id → index ([`hull_key`]). Derived like `addr`.
+    ids: AddrIndex,
+    /// The id the next insert mints. Saved: an id is never reused in a
+    /// world.
+    next_id: u32,
 }
 
 impl Pieces {
@@ -895,7 +1021,12 @@ impl Pieces {
             entries: crate::boxed_array(PieceRec::default()),
             len: 0,
             cols: Box::new(crate::collide::ColIndex::new()),
+            addr: AddrIndex::new(),
             gen: 0,
+            blds: crate::building::Buildings::new(),
+            lat: LatIndex::new(),
+            ids: AddrIndex::new(),
+            next_id: 1,
         }
     }
 
@@ -930,7 +1061,7 @@ impl Pieces {
     /// Memoize the terrain band of any column opened since the last call
     /// (`ColIndex::fill_bands`). Derived like the rest of `cols`: never
     /// hashed, never saved, and no answer depends on whether it ran.
-    pub(crate) fn fill_bands(&mut self, seed: u64, haven: &terrain::Haven) {
+    pub fn fill_bands(&mut self, seed: u64, haven: &terrain::Haven) {
         self.cols.fill_bands(seed, haven);
     }
 
@@ -947,18 +1078,86 @@ impl Pieces {
     }
 
     pub fn find(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
-        self.entries[..self.len]
-            .iter()
-            .find(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+        self.find_index(cx, cz, level, loc)
+            .map(|i| &self.entries[i])
     }
 
     /// The store index of the piece at an address — what a write needs
     /// (`find` hands out a reference the borrow checker won't let a
     /// mutation follow).
     pub(crate) fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
-        self.entries[..self.len]
-            .iter()
-            .position(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+        match spelled_id(cx, cz, level, loc) {
+            Some(id) => self.find_id(id),
+            None => self.addr.get(addr_key(cx, cz, level, loc)),
+        }
+    }
+
+    /// Where a record's piece is measured from for reach and blasts: its
+    /// grid anchor ([`anchor`]), or its footprint's middle in the world.
+    pub fn anchor_of(&self, rec: &PieceRec) -> (f32, f32) {
+        if rec.on_grid() {
+            return anchor(rec.cx, rec.cz, rec.loc);
+        }
+        match self.blds.get(rec.bld) {
+            Some(f) => f.to_world(rec.sock.at),
+            None => anchor(rec.cx, rec.cz, LOC_PLANE),
+        }
+    }
+
+    /// The store index of the piece at a lattice address.
+    pub fn find_addr(&self, a: &crate::sock::PieceAddr) -> Option<usize> {
+        self.lat.get(a.key())
+    }
+
+    /// The store index of the piece with id `id`.
+    pub fn find_id(&self, id: u32) -> Option<usize> {
+        self.ids.get(hull_key(id))
+    }
+
+    /// [`soft_side`] for any record: a piece the grid cannot name keeps its
+    /// facing on the lattice (1: soft toward the edge's anticlockwise
+    /// normal, [`check_site`]), read in its building's frame.
+    pub fn soft_side_of(&self, rec: &PieceRec, px: f32, pz: f32) -> bool {
+        let Some(frame) = self.frame(rec.bld).filter(|_| !rec.on_grid()) else {
+            return soft_side(rec, px, pz);
+        };
+        let (lx, lz) = frame.to_local(px, pz);
+        let (mx, mz) = rec.sock.at.to_xz();
+        let (nx, nz) = crate::frame::STEP_CS[((rec.sock.dir + 3) % 12) as usize];
+        ((lx - mx) * nx + (lz - mz) * nz > 0.0) == (rec.facing == 1)
+    }
+
+    /// Whether a piece the grid cannot name stands over cell (`cx`, `cz`):
+    /// its footprint shares area with the cell's square. What the claim walk
+    /// adds to the column masks so a triangle — or a turned base, whose
+    /// pieces straddle cells and whose middles can sit only diagonally
+    /// apart — is part of its base in every cell it stands over.
+    pub fn posed_in(&self, cx: u16, cz: u16) -> bool {
+        let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
+        let (x1, z1) = (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M);
+        let cell = crate::footprint::Rect::aligned(x0, z0, x1, z1);
+        self.cols.hulls().near(x0, z0, x1, z1, |h| {
+            if h.hit.loc != LOC_NONE {
+                return false;
+            }
+            let (pts, n) = h.footprint();
+            n >= 3 && crate::deploy::foot_overlaps(&pts[..n], &cell)
+        })
+    }
+
+    /// The buildings the pieces stand in.
+    pub fn buildings(&self) -> &crate::building::Buildings {
+        &self.blds
+    }
+
+    /// A live building's frame.
+    pub fn frame(&self, b: u16) -> Option<&crate::frame::Frame> {
+        self.blds.get(b)
+    }
+
+    /// The id the next insert mints (saved with the store).
+    pub fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     /// Re-row entry `i` in place (the upgrade verb's write). The address
@@ -978,17 +1177,33 @@ impl Pieces {
     /// Turn an existing record without changing its dense-store position,
     /// grade, damage, upkeep or placement clock. Edge facing does not change
     /// collision; stairs move between their four direction masks.
-    fn set_rotation(&mut self, i: usize, shape: u8, loc: u8) {
+    fn set_rotation(&mut self, i: usize, shape: u8, sock: crate::sock::Sock, loc: u8) {
         let rec = self.entries[i];
-        if rec.loc == loc {
+        if rec.sock == sock {
             self.entries[i].facing ^= 1;
-        } else {
-            self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
-            self.entries[i].loc = loc;
-            self.cols
-                .add(rec.cx, rec.cz, rec.level, loc, shape, rec.plate);
-            self.gen += 1;
+            return;
         }
+        if rec.on_grid() {
+            self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.addr.del(addr_key(rec.cx, rec.cz, rec.level, rec.loc));
+        }
+        self.lat.del(rec.addr().key());
+        self.entries[i].sock = sock;
+        self.entries[i].loc = loc;
+        let now = self.entries[i];
+        if now.on_grid() {
+            self.addr
+                .put(addr_key(now.cx, now.cz, now.level, now.loc), i);
+            self.cols
+                .add_masks(now.cx, now.cz, now.level, now.loc, shape, now.plate);
+        }
+        self.lat.put(now.addr().key(), i);
+        if let Some(frame) = self.blds.get(now.bld).copied() {
+            let hull =
+                crate::hull::posed_hull(hull_key(now.id), hit_of(&now), &frame, &now.addr(), shape);
+            self.cols.hulls_mut().add(hull);
+        }
+        self.gen += 1;
     }
 
     /// Append a record. False ⇒ store full (the caller refuses the
@@ -1022,36 +1237,286 @@ impl Pieces {
             // neighbour into account), which is plate 0 — the pre-plate rule,
             // so every gate written before build plate v1 keeps its numbers.
             plate: 0,
+            ..PieceRec::default()
         };
         assert!(
-            self.insert(rec, bc.pieces[row as usize].shape, 0),
+            self.insert_at_origin(rec, bc.pieces[row as usize].shape, 0),
             "the fixture overflowed the piece store"
         );
     }
 
-    fn insert(&mut self, rec: PieceRec, shape: u8, tick: u64) -> bool {
-        if self.len == MAX_PIECES {
+    /// [`Pieces::insert_for_test`] standing on the island: the fixture's
+    /// building takes the ground band of the first column it is put in, and
+    /// every record its plate off that, so collision, the column masks and
+    /// the deploy walks all read one floor — what `place` would have built
+    /// on flat ground.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_grounded_for_test(
+        &mut self,
+        seed: u64,
+        haven: &terrain::Haven,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        row: u8,
+        bc: &BuildContent,
+    ) {
+        let ground = terrain_band(seed, haven, cx, cz);
+        let band = self.blds.get(0).map_or(ground, |f| f.band);
+        let Some(sock) = crate::sock::from_grid(0, 0, cx, cz, loc) else {
+            panic!("a grid address");
+        };
+        let rec = PieceRec {
+            cx,
+            cz,
+            level,
+            loc,
+            row,
+            hp: bc.pieces[row as usize].hp,
+            plate: (band - terrain_band(seed, haven, cx, cz)) as i8,
+            bld: 0,
+            sock,
+            ..PieceRec::default()
+        };
+        let mint = self
+            .blds
+            .get(0)
+            .is_none()
+            .then(|| crate::frame::Frame::new((0, 0), band, 0));
+        assert!(
+            self.insert(rec, bc.pieces[row as usize].shape, 0, mint),
+            "the fixture overflowed the piece store"
+        );
+    }
+
+    /// Fixtures: insert a grid record into one grid building whose lattice
+    /// origin is the world origin, minting it on first use — band 0, so a
+    /// fixture that reads heights builds through `place` instead.
+    #[cfg(test)]
+    pub(crate) fn insert_at_origin(&mut self, mut rec: PieceRec, shape: u8, tick: u64) -> bool {
+        let Some(sock) = crate::sock::from_grid(0, 0, rec.cx, rec.cz, rec.loc) else {
+            return false;
+        };
+        rec.bld = 0;
+        rec.sock = sock;
+        let mint = self
+            .blds
+            .get(0)
+            .is_none()
+            .then(|| crate::frame::Frame::new((0, 0), 0, 0));
+        self.insert(rec, shape, tick, mint)
+    }
+
+    fn insert(
+        &mut self,
+        mut rec: PieceRec,
+        shape: u8,
+        tick: u64,
+        mint: Option<crate::frame::Frame>,
+    ) -> bool {
+        if self.len == MAX_PIECES || self.next_id >= MAX_PIECE_ID {
             return false;
         }
-        self.entries[self.len] = rec;
-        self.placed[self.len] = tick;
+        let frame = match (mint, self.blds.get(rec.bld)) {
+            (Some(f), None) => f,
+            (None, Some(f)) => *f,
+            _ => return false,
+        };
+        rec.id = self.next_id;
+        let hull =
+            crate::hull::posed_hull(hull_key(rec.id), hit_of(&rec), &frame, &rec.addr(), shape);
+        // The row first: it is the one write that can refuse, so a refusal
+        // leaves nothing half-filed.
+        if !self.cols.hulls_mut().add(hull) {
+            return false;
+        }
+        self.next_id += 1;
+        self.blds.retain(rec.bld, frame);
+        let i = self.len;
+        self.entries[i] = rec;
+        self.placed[i] = tick;
+        if rec.on_grid() {
+            self.addr
+                .put(addr_key(rec.cx, rec.cz, rec.level, rec.loc), i);
+            self.cols
+                .add_masks(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
+        }
+        self.lat.put(rec.addr().key(), i);
+        self.ids.put(hull_key(rec.id), i);
         self.len += 1;
-        self.cols
-            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         self.gen += 1;
         true
     }
 
     /// Swap-remove entry `i` (the decay sweep's removal; deploy.rs).
     pub(crate) fn remove_at(&mut self, i: usize, shape: u8) {
+        self.remove_entry(i, Some(shape));
+    }
+
+    /// [`remove_at`](Self::remove_at), for a record whose collision may
+    /// never have been filed (`shape` `None`: a mirror's row whose def has
+    /// not arrived).
+    fn remove_entry(&mut self, i: usize, shape: Option<u8>) {
         let rec = self.entries[i];
-        self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        if rec.on_grid() {
+            if let Some(shape) = shape {
+                self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            }
+            self.addr.del(addr_key(rec.cx, rec.cz, rec.level, rec.loc));
+        }
+        self.cols.hulls_mut().del(hull_key(rec.id));
+        self.lat.del(rec.addr().key());
+        self.ids.del(hull_key(rec.id));
+        self.blds.release(rec.bld);
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
+        if i < self.len {
+            let moved = self.entries[i];
+            if moved.on_grid() {
+                self.addr
+                    .put(addr_key(moved.cx, moved.cz, moved.level, moved.loc), i);
+            }
+            self.lat.put(moved.addr().key(), i);
+            self.ids.put(hull_key(moved.id), i);
+        }
         // Both halves move together, which is the whole contract of a
         // parallel array (`placed`'s own doc).
         self.placed[i] = self.placed[self.len];
         self.gen += 1;
+    }
+
+    /// The client's way in (freeform W2): file a record the server sent,
+    /// under its own id and in the frame it came with, replacing whatever
+    /// the mirror held under that id. `shape_of` is the row's shape, `None`
+    /// while its def has not arrived — such a record is held but nothing
+    /// collides with it until [`mirror_refile`](Self::mirror_refile). A frame
+    /// that disagrees with the one held for its building means the server
+    /// freed that row and minted it again, so what is held there is stale
+    /// and goes first. False when nothing changed, or the mirror is full.
+    pub fn mirror_put(
+        &mut self,
+        rec: PieceRec,
+        frame: crate::frame::Frame,
+        shape_of: impl Fn(u8) -> Option<u8>,
+    ) -> bool {
+        if (rec.bld as usize) >= crate::limits::MAX_BUILDINGS {
+            return false;
+        }
+        if let Some(i) = self.find_id(rec.id) {
+            if self.entries[i] == rec && self.blds.get(rec.bld) == Some(&frame) {
+                return false;
+            }
+            self.remove_entry(i, shape_of(self.entries[i].row));
+        }
+        if self.blds.get(rec.bld).is_some_and(|f| *f != frame) {
+            let mut i = self.len;
+            while i > 0 {
+                i -= 1;
+                if self.entries[i].bld == rec.bld {
+                    self.remove_entry(i, shape_of(self.entries[i].row));
+                }
+            }
+        }
+        // Over an address the mirror holds under another id: the server
+        // moved on from it (a resync missed its removal).
+        let stale = if rec.on_grid() {
+            self.addr.get(addr_key(rec.cx, rec.cz, rec.level, rec.loc))
+        } else {
+            None
+        }
+        .or_else(|| self.lat.get(rec.addr().key()));
+        if let Some(i) = stale {
+            self.remove_entry(i, shape_of(self.entries[i].row));
+        }
+        if self.len == MAX_PIECES {
+            return false;
+        }
+        let i = self.len;
+        self.entries[i] = rec;
+        self.placed[i] = 0;
+        self.blds.retain(rec.bld, frame);
+        if let Some(shape) = shape_of(rec.row) {
+            self.file(i, shape, &frame);
+        }
+        if rec.on_grid() {
+            self.addr
+                .put(addr_key(rec.cx, rec.cz, rec.level, rec.loc), i);
+        }
+        self.lat.put(rec.addr().key(), i);
+        self.ids.put(hull_key(rec.id), i);
+        self.next_id = self.next_id.max(rec.id.wrapping_add(1));
+        self.len += 1;
+        self.gen += 1;
+        true
+    }
+
+    /// Take the piece an address names out of a mirror (`mirror_put`'s
+    /// twin). False when the mirror did not hold it.
+    pub fn mirror_take(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        shape_of: impl Fn(u8) -> Option<u8>,
+    ) -> bool {
+        match self.find_index(cx, cz, level, loc) {
+            Some(i) => {
+                self.remove_entry(i, shape_of(self.entries[i].row));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// File every record's collision again — a mirror's defs arrived and
+    /// rows that had no shape may have one now. Clears the door and solid
+    /// bits with the rest; the caller puts them back.
+    pub fn mirror_refile(&mut self, shape_of: impl Fn(u8) -> Option<u8>) {
+        self.cols.clear();
+        for i in 0..self.len {
+            let rec = self.entries[i];
+            let (Some(shape), Some(frame)) = (shape_of(rec.row), self.blds.get(rec.bld).copied())
+            else {
+                continue;
+            };
+            self.file(i, shape, &frame);
+        }
+    }
+
+    /// Re-state a mirrored piece's hp and band (the client's `StructHit`
+    /// and repair arms).
+    pub fn mirror_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
+        if let Some(i) = self.find_index(cx, cz, level, loc) {
+            self.entries[i].hp = hp;
+            self.entries[i].dmg = dmg;
+        }
+    }
+
+    /// Empty the store, buildings, ids and all.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.gen += 1;
+        self.cols.clear();
+        self.addr.clear();
+        self.lat.clear();
+        self.ids.clear();
+        self.blds.clear();
+    }
+
+    /// File entry `i`'s collision: the grid's masks when the grid names it,
+    /// and its posed row.
+    fn file(&mut self, i: usize, shape: u8, frame: &crate::frame::Frame) {
+        let rec = self.entries[i];
+        if rec.on_grid() {
+            self.cols
+                .add_masks(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
+        }
+        let hull =
+            crate::hull::posed_hull(hull_key(rec.id), hit_of(&rec), frame, &rec.addr(), shape);
+        self.cols.hulls_mut().add(hull);
     }
 
     /// Write entry `i`'s hp alone — the raid verb's write (deploy.rs
@@ -1070,34 +1535,38 @@ impl Pieces {
     /// Set or clear the closed-door bit at a doorway edge (deploy.rs owns
     /// when: door placement, the use toggle, and door removal).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn set_insert(
-        &mut self,
-        cx: u16,
-        cz: u16,
-        level: u8,
-        loc: u8,
-        arch: u8,
-        shut: bool,
-    ) {
+    pub fn set_insert(&mut self, cx: u16, cz: u16, level: u8, loc: u8, arch: u8, shut: bool) {
         if arch == crate::deploy::ARCH_DOOR {
             self.set_door(cx, cz, level, loc, shut);
         } else {
             self.cols.set_insert(cx, cz, level, loc, arch, shut);
+            let panes = matches!(
+                arch,
+                crate::deploy::ARCH_WINDOW_GLASS | crate::deploy::ARCH_WINDOW_SHUTTER
+            );
+            if let Some(i) = self.find_index(cx, cz, level, loc) {
+                let key = hull_key(self.entries[i].id);
+                self.cols.hulls_mut().set_shut(key, shut, panes);
+            }
         }
     }
 
-    pub(crate) fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
+    pub fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
         self.cols.set_door(cx, cz, level, loc, shut);
+        if let Some(i) = self.find_index(cx, cz, level, loc) {
+            let key = hull_key(self.entries[i].id);
+            self.cols.hulls_mut().set_shut(key, shut, false);
+        }
     }
 
     /// Index or drop a blocking deployable — `set_door`'s twin (deploy
     /// collision v0; deploy.rs owns when: placement, removal, and the load
     /// path's `World::rebuild_doors`).
-    pub(crate) fn add_solid(&mut self, solid: crate::collide::SolidPose) {
+    pub fn add_solid(&mut self, solid: crate::collide::SolidPose) {
         self.cols.add_solid(solid);
     }
 
-    pub(crate) fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+    pub fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
         self.cols.del_solid(cx, cz, level, loc);
     }
 
@@ -1118,20 +1587,237 @@ impl Pieces {
     /// runs after the deployables land (`worldsave.rs`).
     ///
     /// Boot-only, like everything on the load path.
-    pub(crate) fn restore(&mut self, recs: &[PieceRec], placed: &[u64], bc: &BuildContent) {
+    pub(crate) fn restore(
+        &mut self,
+        recs: &[PieceRec],
+        placed: &[u64],
+        bc: &BuildContent,
+        frames: &[(u16, crate::frame::Frame)],
+        next_id: u32,
+    ) {
         debug_assert_eq!(recs.len(), placed.len(), "placed must be index-aligned");
         self.gen += 1;
         self.cols.clear();
+        self.addr.clear();
+        self.lat.clear();
+        self.ids.clear();
+        self.blds.clear();
         self.len = recs.len().min(MAX_PIECES);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);
         self.placed[..self.len].copy_from_slice(&placed[..self.len]);
-        for rec in &self.entries[..self.len] {
+        self.next_id = next_id;
+        for (i, rec) in recs[..self.len].iter().enumerate() {
+            self.next_id = self.next_id.max(rec.id.wrapping_add(1));
             // The row was range-checked by the decoder against
             // `piece_count`; this index is the one `worldsave.rs`
-            // `BadContentRow` exists to make safe.
+            // `BadContentRow` exists to make safe. Every building a record
+            // names has its frame (`worldsave.rs` refuses a save that does
+            // not).
             let shape = bc.pieces[rec.row as usize].shape;
-            self.cols
-                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
+            let Some(&(_, frame)) = frames.iter().find(|f| f.0 == rec.bld) else {
+                continue;
+            };
+            self.blds.retain(rec.bld, frame);
+            if rec.on_grid() {
+                self.cols
+                    .add_masks(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
+            }
+            let hull =
+                crate::hull::posed_hull(hull_key(rec.id), hit_of(rec), &frame, &rec.addr(), shape);
+            self.cols.hulls_mut().add(hull);
+            // The first record at an address wins, as the scan `find`
+            // replaced would have answered.
+            if rec.on_grid() {
+                let key = addr_key(rec.cx, rec.cz, rec.level, rec.loc);
+                if self.addr.get(key).is_none() {
+                    self.addr.put(key, i);
+                }
+            }
+            if self.lat.get(rec.addr().key()).is_none() {
+                self.lat.put(rec.addr().key(), i);
+            }
+            self.ids.put(hull_key(rec.id), i);
+        }
+    }
+}
+
+/// A piece address as one key for [`AddrIndex`]; the top bit marks a used
+/// slot, so a zero key is an empty one.
+fn addr_key(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
+    (1 << 63) | (cx as u64) << 32 | (cz as u64) << 16 | (level as u64) << 8 | loc as u64
+}
+
+/// The address → index table behind `Pieces::find`: `collide::ColIndex`'s
+/// open addressing (Fibonacci home slot, linear probe, Knuth 6.4 R
+/// backward-shift delete, so no tombstones), keyed by [`addr_key`].
+struct AddrIndex {
+    keys: Box<[u64; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+}
+
+impl AddrIndex {
+    fn new() -> Self {
+        Self {
+            keys: crate::boxed_array(0),
+            vals: crate::boxed_array(0),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.keys.fill(0);
+        self.vals.fill(0);
+    }
+
+    #[inline]
+    fn home(key: u64) -> usize {
+        (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - PIECE_ADDR_SLOTS.trailing_zeros()))
+            as usize
+            & (PIECE_ADDR_SLOTS - 1)
+    }
+
+    fn get(&self, key: u64) -> Option<usize> {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == key {
+                return Some(self.vals[i] as usize);
+            }
+            if k == 0 {
+                return None;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+    }
+
+    /// Insert or re-point. The store holds at most `MAX_PIECES` records, so
+    /// the table never passes half load and a free slot always exists.
+    fn put(&mut self, key: u64, idx: usize) {
+        let mut i = Self::home(key);
+        while self.keys[i] != 0 && self.keys[i] != key {
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = key;
+        self.vals[i] = idx as u16;
+    }
+
+    fn del(&mut self, key: u64) {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return;
+            }
+            if k == key {
+                break;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = 0;
+        let mut j = i;
+        loop {
+            j = (j + 1) & (PIECE_ADDR_SLOTS - 1);
+            let k = self.keys[j];
+            if k == 0 {
+                return;
+            }
+            let h = Self::home(k);
+            if j.wrapping_sub(h) & (PIECE_ADDR_SLOTS - 1)
+                >= j.wrapping_sub(i) & (PIECE_ADDR_SLOTS - 1)
+            {
+                self.keys[i] = k;
+                self.vals[i] = self.vals[j];
+                self.keys[j] = 0;
+                i = j;
+            }
+        }
+    }
+}
+
+/// What a shot or a swing that meets the piece names (`collide::PieceHit`):
+/// the address verbs find it by ([`PieceRec::target`]).
+fn hit_of(rec: &PieceRec) -> crate::collide::PieceHit {
+    let (cx, cz, level, loc) = rec.target();
+    crate::collide::PieceHit { cx, cz, level, loc }
+}
+
+/// Lattice address → store index: [`AddrIndex`] on a 128-bit key.
+struct LatIndex {
+    keys: Box<[u128; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+}
+
+impl LatIndex {
+    fn new() -> Self {
+        Self {
+            keys: crate::boxed_array(0),
+            vals: crate::boxed_array(0),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.keys.fill(0);
+        self.vals.fill(0);
+    }
+
+    #[inline]
+    fn home(key: u128) -> usize {
+        let k = (key as u64) ^ ((key >> 64) as u64).rotate_left(29);
+        (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - PIECE_ADDR_SLOTS.trailing_zeros())) as usize
+            & (PIECE_ADDR_SLOTS - 1)
+    }
+
+    fn get(&self, key: u128) -> Option<usize> {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == key {
+                return Some(self.vals[i] as usize);
+            }
+            if k == 0 {
+                return None;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+    }
+
+    fn put(&mut self, key: u128, idx: usize) {
+        let mut i = Self::home(key);
+        while self.keys[i] != 0 && self.keys[i] != key {
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = key;
+        self.vals[i] = idx as u16;
+    }
+
+    fn del(&mut self, key: u128) {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return;
+            }
+            if k == key {
+                break;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = 0;
+        let mut j = i;
+        loop {
+            j = (j + 1) & (PIECE_ADDR_SLOTS - 1);
+            let k = self.keys[j];
+            if k == 0 {
+                return;
+            }
+            let h = Self::home(k);
+            if j.wrapping_sub(h) & (PIECE_ADDR_SLOTS - 1)
+                >= j.wrapping_sub(i) & (PIECE_ADDR_SLOTS - 1)
+            {
+                self.keys[i] = k;
+                self.vals[i] = self.vals[j];
+                self.keys[j] = 0;
+                i = j;
+            }
         }
     }
 }
@@ -1143,13 +1829,13 @@ impl Default for Pieces {
 }
 
 /// Whether (cx, cz, level) holds a plane piece (foundation/floor/roof).
-fn plane_at(pieces: &Pieces, cx: u16, cz: u16, level: u8) -> bool {
-    pieces.find(cx, cz, level, LOC_PLANE).is_some()
+fn plane_at(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8) -> bool {
+    occupied_at(cols, cx, cz, level, LOC_PLANE)
 }
 
 /// An edge's top must coincide with the socket it carries. Low cover bears none.
-fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    let m = pieces.cols().get(cx, cz);
+fn edge_bears(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    let m = cols.get(cx, cz);
     let (half, low) = m.partial_edges(loc);
     if let Some(below) = level_step(level, -1) {
         if half & (1 << below) != 0 {
@@ -1157,7 +1843,7 @@ fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         }
     }
     level_step(level, -2).is_some_and(|below| {
-        (half | low) & (1 << below) == 0 && pieces.find(cx, cz, below, loc).is_some()
+        (half | low) & (1 << below) == 0 && occupied_at(cols, cx, cz, below, loc)
     })
 }
 
@@ -1166,8 +1852,15 @@ fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
 /// edge? `canonical` distinguishes the edge's own cell from its low
 /// neighbour, because each side has its own pair of touching halves
 /// (triangles v0; the `LOC_TRI_*` doc draws the map).
-fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: bool) -> bool {
-    let m = pieces.cols().get(bx, bz);
+fn bears_edge(
+    cols: &crate::collide::ColIndex,
+    bx: u16,
+    bz: u16,
+    level: u8,
+    loc: u8,
+    canonical: bool,
+) -> bool {
+    let m = cols.get(bx, bz);
     if m.riser_shape(level) == SHAPE_FOUNDATION_STEPS {
         let high = match (loc, canonical) {
             (LOC_EDGE_XLO, true) => m.stairs_xlo,
@@ -1179,7 +1872,7 @@ fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: 
             return true;
         }
     }
-    if plane_at(pieces, bx, bz, level) {
+    if plane_at(cols, bx, bz, level) {
         return true;
     }
     let (t1, t2) = match (loc, canonical) {
@@ -1188,7 +1881,7 @@ fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: 
         (LOC_EDGE_ZLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO),
         _ => (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI),
     };
-    pieces.find(bx, bz, level, t1).is_some() || pieces.find(bx, bz, level, t2).is_some()
+    occupied_at(cols, bx, bz, level, t1) || occupied_at(cols, bx, bz, level, t2)
 }
 
 /// A triangle's two side-edge addresses and its hypotenuse loc — the
@@ -1273,6 +1966,15 @@ pub fn build_cell_of(v: f32) -> i32 {
     floor_i32(v / BUILD_CELL_M)
 }
 
+/// The cell a footprint's middle stands in, clamped to the grid: where a
+/// piece the grid cannot name is filed for interest (`LOC_NONE`'s doc). The
+/// wire derives it with this too, so the two ends agree to the bit.
+pub fn anchor_cell(frame: &crate::frame::Frame, sock: &crate::sock::Sock) -> (u16, u16) {
+    let (ax, az) = frame.to_world(sock.at);
+    let cell = |v: f32| build_cell_of(v).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16;
+    (cell(ax), cell(az))
+}
+
 /// Whether an edge shape occupies this address's facing at all — planes
 /// and risers have no sides.
 #[inline]
@@ -1340,19 +2042,36 @@ pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
 /// is `World::chip`'s since melee aim v1) and is preserved here by omission
 /// rather than by a flag nobody would read.
 #[inline]
-pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -> u16 {
-    if shape_has_facing(shape) && !soft_side(rec, px, pz) {
+pub fn structure_price(p: &Pieces, rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -> u16 {
+    if shape_has_facing(shape) && !p.soft_side_of(rec, px, pz) {
         crate::combat::HARD_SIDE_STRUCTURE
     } else {
         full
     }
 }
 
-/// Will this ground hold a foundation? One definition — `place` refuses on
-/// it, and a fixture that needs buildable ground finds it with it, so the
-/// two can never drift apart.
+/// Is this ground a base stands well on — dry, over the beach line? What a
+/// fixture that needs buildable ground looks for, and the agents' site
+/// picker: every cell it finds, `place` takes ([`foundation_ground_ok`] is
+/// the wider rule), so the two cannot drift into a fixture `place` refuses.
 pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
-    terrain::ground(seed, haven, ax, az) >= FOUNDATION_MIN_H_M
+    terrain_ok(seed, haven, ax, az, FOUNDATION_MIN_H_M)
+}
+
+/// Will this ground hold a foundation? `place`'s rule: dry land, the beach,
+/// or the shallows to [`FOUNDATION_MAX_WATER_M`].
+pub fn foundation_ground_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain_ok(seed, haven, ax, az, FOUNDATION_FLOOR_H_M)
+}
+
+/// Will this bare ground hold a deployable? [`foundation_terrain_ok`]'s
+/// rule, dry: [`DEPLOY_MIN_H_M`] rather than the foundation's water.
+pub fn deploy_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain_ok(seed, haven, ax, az, DEPLOY_MIN_H_M)
+}
+
+fn terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32, min_h: f32) -> bool {
+    terrain::ground(seed, haven, ax, az) >= min_h
         && terrain::ground_slope(seed, haven, ax, az) < FOUNDATION_MAX_SLOPE
         // The town's floor is flat and nobody's: it answers here too, so
         // every scan for buildable ground passes it by.
@@ -1426,21 +2145,27 @@ fn body_conflicts(loc: u8, out: &mut [u8; 5]) -> usize {
 /// Does anything stand in the cell body where `loc`'s occupant would
 /// overlap it? The `place` refusal triangles v0 added — a spot check
 /// like "the address is taken", not a support rule.
-pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+pub(crate) fn cell_body_conflict(
+    cols: &crate::collide::ColIndex,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> bool {
     if is_stair_loc(loc) {
         return STAIR_LOCS
             .iter()
-            .any(|&other| occupied_at(pieces, cx, cz, level, other));
+            .any(|&other| occupied_at(cols, cx, cz, level, other));
     }
     let mut c = [0u8; 5];
     let n = body_conflicts(loc, &mut c);
     c.iter()
         .take(n)
-        .any(|&other| occupied_at(pieces, cx, cz, level, other))
+        .any(|&other| occupied_at(cols, cx, cz, level, other))
 }
 
 fn vertical_edge_conflict(
-    pieces: &Pieces,
+    cols: &crate::collide::ColIndex,
     shape: u8,
     cx: u16,
     cz: u16,
@@ -1452,9 +2177,9 @@ fn vertical_edge_conflict(
     }
     let bottom = level_y(level);
     let top = bottom + wall_height(shape);
-    let m = pieces.cols().get(cx, cz);
+    let m = cols.get(cx, cz);
     for other in 0..MAX_BUILD_SOCKETS as u8 {
-        if other != level && occupied_at(pieces, cx, cz, other, loc) {
+        if other != level && occupied_at(cols, cx, cz, other, loc) {
             let y = level_y(other);
             if bottom < y + m.edge_height(loc, other) && y < top {
                 return true;
@@ -1467,7 +2192,14 @@ fn vertical_edge_conflict(
 /// Support rule v0 for a piece of `shape` at the address. Foundations
 /// carry no support requirement (terrain is their check), and the
 /// triangle foundation is a foundation.
-fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+fn supported(
+    cols: &crate::collide::ColIndex,
+    shape: u8,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS => true,
         SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => {
@@ -1475,10 +2207,10 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             // wall below deliberately does NOT bear a full plane — its
             // span crosses the middle, not a side.
             level >= 1
-                && (edge_bears(pieces, cx, cz, level, LOC_EDGE_XLO)
-                    || edge_bears(pieces, cx + 1, cz, level, LOC_EDGE_XLO)
-                    || edge_bears(pieces, cx, cz, level, LOC_EDGE_ZLO)
-                    || edge_bears(pieces, cx, cz + 1, level, LOC_EDGE_ZLO))
+                && (edge_bears(cols, cx, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(cols, cx + 1, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(cols, cx, cz, level, LOC_EDGE_ZLO)
+                    || edge_bears(cols, cx, cz + 1, level, LOC_EDGE_ZLO))
         }
         SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_TRI_FLOOR_FRAME => {
             // One of its two sides, or the diagonal wall under its own
@@ -1487,13 +2219,13 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                 return false;
             }
             let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
-            edge_bears(pieces, e1x, e1z, level, e1l)
-                || edge_bears(pieces, e2x, e2z, level, e2l)
-                || edge_bears(pieces, cx, cz, level, hyp)
+            edge_bears(cols, e1x, e1z, level, e1l)
+                || edge_bears(cols, e2x, e2z, level, e2l)
+                || edge_bears(cols, cx, cz, level, hyp)
         }
         // A frame bears its perimeter, not a flight across its empty centre.
         shape if crate::circulation::is_riser(shape) => {
-            let m = pieces.cols().get(cx, cz);
+            let m = cols.get(cx, cz);
             let tri = match loc {
                 LOC_RISER_XHI => LOC_TRI_XLO_ZHI,
                 LOC_RISER_ZLO => LOC_TRI_XHI_ZHI,
@@ -1503,12 +2235,12 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             let stacked = matches!(shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
                 && level_step(level, -1).is_some_and(|below| {
                     m.riser_shape(below) == shape
-                        && occupied_at(pieces, cx, cz, below, opposite_riser(loc))
+                        && occupied_at(cols, cx, cz, below, opposite_riser(loc))
                 });
             stacked
                 || m.planes & (1 << level) != 0
                 || (shape == SHAPE_STAIRS_TRI_SPIRAL
-                    && pieces.find(cx, cz, level, tri).is_some()
+                    && occupied_at(cols, cx, cz, level, tri)
                     && !m.tri_is_frame(level, tri))
         }
         // The diagonal wall: a triangle of its own pair, whose hypotenuse
@@ -1517,80 +2249,27 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
         // the reference never allows either (its walls take sockets).
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
             let (t1, t2) = diag_pair(loc);
-            let body_at = |lvl: u8| {
-                pieces.find(cx, cz, lvl, t1).is_some() || pieces.find(cx, cz, lvl, t2).is_some()
-            };
+            let body_at =
+                |lvl: u8| occupied_at(cols, cx, cz, lvl, t1) || occupied_at(cols, cx, cz, lvl, t2);
             if level == 0 {
                 body_at(0)
             } else {
-                edge_bears(pieces, cx, cz, level, loc) || body_at(level)
+                edge_bears(cols, cx, cz, level, loc) || body_at(level)
             }
         }
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW
         | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
-                bears_edge(pieces, ax, az, 0, loc, true)
-                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, 0, loc, false))
+                bears_edge(cols, ax, az, 0, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(cols, bx, bz, 0, loc, false))
             } else {
-                edge_bears(pieces, cx, cz, level, loc)
-                    || bears_edge(pieces, ax, az, level, loc, true)
-                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, level, loc, false))
+                edge_bears(cols, cx, cz, level, loc)
+                    || bears_edge(cols, ax, az, level, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(cols, bx, bz, level, loc, false))
             }
         }
         _ => false,
-    }
-}
-
-/// A grid address: (cx, cz, level, loc). What the collapse front carries.
-type Addr = (u16, u16, u8, u8);
-
-/// Four edges, four possible stair directions and two diagonals can
-/// depend on a plane. An edge names at most seven dependents.
-const MAX_DEPENDENTS: usize = 14;
-
-/// The inverse of `supported()`: every address whose support test **reads**
-/// `(cx, cz, level, loc)`. Change one of the two and you must change the
-/// other; `collapse_matches_a_naive_fixed_point` is the gate that says so,
-/// and it is the whole reason the pair sits in one place.
-///
-/// Read straight off `supported()` above, clause by clause:
-/// - the stairs branch probes `plane_at(cx, cz, level)`, both straight
-///   edge branches probe the cell bodies beside them at their own level
-///   (`bears_edge`), and the diagonal branch probes the body it stands
-///   across — so a **plane** is read by the riser, the four edges of its
-///   own cell and the two diagonals, all at its own level;
-/// - the floor/roof branch probes four edges at the half and whole sockets
-///   below, the tri floor/roof branch probes its sides and hypotenuse there,
-///   and the edge branches probe the piece below — so an **edge** is
-///   read by the planes and touching triangle halves at those top sockets in the
-///   two cells it adjoins and by the edge directly above it, and a
-///   **diagonal** by its own pair and the diagonal above;
-/// - a **triangle half** is read by its sides, hypotenuse and triangular
-///   spiral at its own level (`bears_edge` / the body support probes);
-/// - foundation steps bear their high edge; a spiral bears the opposite
-///   flight at the next half socket. Ordinary stairs bear no upper floor.
-///
-/// Foundations appear here as planes like any other; they are simply never
-/// dropped themselves, because their own clause is unconditional.
-fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDENTS]) -> usize {
-    if matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO | LOC_DIAG_A | LOC_DIAG_B) {
-        let mut n = 0;
-        for halves in [1, 2] {
-            if let Some(up) = level_step(level, halves) {
-                n += dependents_at(cx, cz, level, loc, up, &mut out[n..]);
-            }
-        }
-        n
-    } else {
-        let mut n = dependents_at(cx, cz, level, loc, level, out);
-        if is_stair_loc(loc) {
-            if let Some(up) = level_step(level, 1) {
-                out[n] = (cx, cz, up, opposite_riser(loc));
-                n += 1;
-            }
-        }
-        n
     }
 }
 
@@ -1603,114 +2282,16 @@ fn opposite_riser(loc: u8) -> u8 {
     }
 }
 
-fn dependents_at(cx: u16, cz: u16, level: u8, loc: u8, up: u8, out: &mut [Addr]) -> usize {
-    match loc {
-        LOC_PLANE => {
-            out[0] = (cx, cz, level, LOC_RISER);
-            out[1] = (cx, cz, level, LOC_EDGE_XLO);
-            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
-            out[3] = (cx, cz, level, LOC_EDGE_ZLO);
-            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
-            out[5] = (cx, cz, level, LOC_DIAG_A);
-            out[6] = (cx, cz, level, LOC_DIAG_B);
-            out[7] = (cx, cz, level, LOC_RISER_XHI);
-            out[8] = (cx, cz, level, LOC_RISER_ZLO);
-            out[9] = (cx, cz, level, LOC_RISER_XLO);
-            10
-        }
-        LOC_TRI_XLO_ZLO | LOC_TRI_XHI_ZLO | LOC_TRI_XLO_ZHI | LOC_TRI_XHI_ZHI => {
-            // Its two side edges (their bears_edge clause reads this half
-            // at the same level) and its hypotenuse (the diag body probe).
-            let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
-            out[0] = (e1x, e1z, level, e1l);
-            out[1] = (e2x, e2z, level, e2l);
-            out[2] = (cx, cz, level, hyp);
-            for (i, riser) in STAIR_LOCS.into_iter().enumerate() {
-                out[3 + i] = (cx, cz, level, riser);
-            }
-            7
-        }
-        LOC_EDGE_XLO | LOC_EDGE_ZLO => {
-            if up >= MAX_BUILD_SOCKETS as u8 {
-                return 0; // nothing can be addressed above the top storey
-            }
-            out[0] = (cx, cz, up, LOC_PLANE);
-            out[1] = (cx, cz, up, loc);
-            // The triangle halves one level up whose SIDE this edge is —
-            // the canonical cell's pair, then the low neighbour's
-            // (`bears_edge`'s two maps, inverted).
-            let (c1, c2, n1, n2) = if loc == LOC_EDGE_XLO {
-                (
-                    LOC_TRI_XLO_ZLO,
-                    LOC_TRI_XLO_ZHI,
-                    LOC_TRI_XHI_ZLO,
-                    LOC_TRI_XHI_ZHI,
-                )
-            } else {
-                (
-                    LOC_TRI_XLO_ZLO,
-                    LOC_TRI_XHI_ZLO,
-                    LOC_TRI_XLO_ZHI,
-                    LOC_TRI_XHI_ZHI,
-                )
-            };
-            out[2] = (cx, cz, up, c1);
-            out[3] = (cx, cz, up, c2);
-            let other = if loc == LOC_EDGE_XLO {
-                cx.checked_sub(1).map(|x| (x, cz))
-            } else {
-                cz.checked_sub(1).map(|z| (cx, z))
-            };
-            match other {
-                Some((bx, bz)) => {
-                    out[4] = (bx, bz, up, LOC_PLANE);
-                    out[5] = (bx, bz, up, n1);
-                    out[6] = (bx, bz, up, n2);
-                    7
-                }
-                None => 4, // the grid's low border: the edge adjoins one cell
-            }
-        }
-        LOC_DIAG_A | LOC_DIAG_B => {
-            if up >= MAX_BUILD_SOCKETS as u8 {
-                return 0;
-            }
-            let (t1, t2) = diag_pair(loc);
-            out[0] = (cx, cz, up, loc);
-            out[1] = (cx, cz, up, t1);
-            out[2] = (cx, cz, up, t2);
-            3
-        }
-        LOC_RISER => {
-            out[0] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
-            1
-        }
-        LOC_RISER_XHI => {
-            out[0] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
-            1
-        }
-        LOC_RISER_ZLO => {
-            out[0] = (cx, cz, level, LOC_EDGE_ZLO);
-            1
-        }
-        LOC_RISER_XLO => {
-            out[0] = (cx, cz, level, LOC_EDGE_XLO);
-            1
-        }
-        _ => 0,
-    }
-}
-
 /// Whether any piece stands at the address — the O(1) column-index probe
-/// (collide.rs), so a cascade only pays a store scan for a candidate that
-/// actually exists. The index is kept in lockstep by `Pieces` itself and
-/// `col_index_churn_matches_a_naive_shadow` gates that; here it is a
-/// filter in front of `find_index`, never the answer.
-fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+/// (collide.rs). The index is kept in lockstep by `Pieces` itself and
+/// `col_index_churn_matches_a_naive_shadow` gates that, so this is the same
+/// answer `Pieces::find` gives without the store scan — and the one the
+/// client's mirror can give too, which is why every placement rule reads it.
+fn occupied_at(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     if level >= MAX_BUILD_SOCKETS as u8 {
         return false;
     }
-    let m = pieces.cols().get(cx, cz);
+    let m = cols.get(cx, cz);
     let field = match loc {
         LOC_PLANE => m.planes | m.floor_frames,
         LOC_RISER => m.stairs,
@@ -1741,7 +2322,26 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
 pub(crate) fn stands(pieces: &Pieces, bc: &BuildContent, i: usize) -> bool {
     let r = pieces.entries()[i];
     let shape = bc.pieces[r.row as usize].shape;
-    supported(pieces, shape, r.cx, r.cz, r.level, r.loc)
+    crate::support::supported(pieces, bc, shape, &r.addr())
+}
+
+/// Take the piece at store index `i` down — its deployables with it — and
+/// then everything that stood only on it (the collapse cascade), inside
+/// one tick's removal `budget`. How many fell besides it.
+pub fn take_down(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    i: usize,
+    budget: &mut usize,
+    events: &mut EventQueue,
+) -> usize {
+    let r = pieces.entries()[i];
+    let shape = bc.pieces[r.row as usize].shape;
+    crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
+    *budget = budget.saturating_sub(1);
+    collapse_from(dc, bc, pieces, deploys, r.addr(), budget, events)
 }
 
 /// A piece at `from` has just been removed: re-evaluate what rested on it
@@ -1774,27 +2374,24 @@ pub(crate) fn collapse_from(
     bc: &BuildContent,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
-    from: Addr,
+    from: crate::sock::PieceAddr,
     budget: &mut usize,
     events: &mut EventQueue,
 ) -> usize {
     // One slot per possible removal, plus the seed: `tail` advances only
-    // where `fell` does, so the front can never outrun this.
-    let mut front = [(0u16, 0u16, 0u8, 0u8); MAX_COLLAPSE_PIECES + 1];
-    front[0] = from;
+    // where `fell` does, so the front can never outrun this. The front
+    // holds addresses, not indices: a removal swap-moves the store.
+    let mut front = [from; MAX_COLLAPSE_PIECES + 1];
     let mut head = 0usize;
     let mut tail = 1usize;
     let mut fell = 0usize;
-    let mut kids = [(0u16, 0u16, 0u8, 0u8); MAX_DEPENDENTS];
+    let mut kids = [from; crate::support::MAX_DEPENDENTS];
     while head < tail && fell < MAX_COLLAPSE_PIECES && *budget > 0 {
-        let (cx, cz, level, loc) = front[head];
+        let at = front[head];
         head += 1;
-        let n = dependents(cx, cz, level, loc, &mut kids);
-        for &(kx, kz, kl, kloc) in kids.iter().take(n) {
-            if !occupied_at(pieces, kx, kz, kl, kloc) {
-                continue;
-            }
-            let Some(i) = pieces.find_index(kx, kz, kl, kloc) else {
+        let n = crate::support::dependents(&at, &mut kids);
+        for &kid in kids.iter().take(n) {
+            let Some(i) = pieces.find_addr(&kid) else {
                 continue;
             };
             if stands(pieces, bc, i) {
@@ -1803,7 +2400,7 @@ pub(crate) fn collapse_from(
             let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
             crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
             *budget -= 1;
-            front[tail] = (kx, kz, kl, kloc);
+            front[tail] = kid;
             tail += 1;
             fell += 1;
             if fell == MAX_COLLAPSE_PIECES || *budget == 0 {
@@ -1846,15 +2443,7 @@ pub(crate) fn support_sweep(
         let shape = bc.pieces[r.row as usize].shape;
         crate::deploy::drop_piece(dc, pieces, deploys, i, shape, events);
         *budget -= 1;
-        collapse_from(
-            dc,
-            bc,
-            pieces,
-            deploys,
-            (r.cx, r.cz, r.level, r.loc),
-            budget,
-            events,
-        );
+        collapse_from(dc, bc, pieces, deploys, r.addr(), budget, events);
         // The swap-remove moved the last entry into `i`; resume there so a
         // long cascade cannot walk the cursor off the end of the store.
         *cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
@@ -1862,20 +2451,34 @@ pub(crate) fn support_sweep(
     }
 }
 
-/// Apply one place request (`Command::Place`). Refusals are events, not
-/// errors — the placer hears why. The cost is paid whole at placement;
-/// the piece is announced by EV_PIECE_PLACED for the wire to broadcast.
-/// `deploys` carries the hearth list for the privilege check; `tick`
-/// stamps the piece's upkeep clock (deploy.rs).
+/// Where an accepted placement stands: the column plate it takes and the
+/// side its soft face shows. Everything about a new piece that is not in
+/// the request itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub plate: i8,
+    pub facing: u8,
+}
+
+/// Every rule [`place`] applies, in its order, as a pure function of the
+/// column index — so the client's ghost asks the sim's own question of its
+/// own mirror, and a green ghost is a placement the server takes.
+///
+/// Two things stay outside. The hearth claim needs crew lists the wire never
+/// carries, so `foreign` answers it: the sim asks `claim::foreign_claim`, the
+/// ghost says no and lets the server have the last word. A full store is
+/// the server's alone (`REFUSE_B_FULL`, at insert).
+///
+/// `at` is the placer's feet, world XZ: reach is measured from it and the
+/// soft side faces it.
 #[allow(clippy::too_many_arguments)]
-pub fn place(
+pub fn check_place(
     seed: u64,
     haven: &terrain::Haven,
     bc: &BuildContent,
-    deploys: &Deploys,
-    pieces: &mut Pieces,
-    p: &mut Player,
-    tick: u64,
+    cols: &crate::collide::ColIndex,
+    at: (f32, f32),
+    inv: &[crate::gather::ItemStack; crate::limits::INV_SLOTS],
     row: u16,
     cx: u16,
     cz: u16,
@@ -1883,16 +2486,14 @@ pub fn place(
     loc: u8,
     freehand: bool,
     want: i8,
-    events: &mut EventQueue,
-) {
+    foreign: impl FnOnce(f32, f32) -> bool,
+) -> Result<Placement, u32> {
     if row >= bc.piece_count {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
-        return;
+        return Err(REFUSE_B_PIECE);
     }
     let def = &bc.pieces[row as usize];
     if def.hp == 0 {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
-        return;
+        return Err(REFUSE_B_PIECE);
     }
     // Everything enters the world as twig, and a finished grade is only
     // ever reached by `upgrade` (twig v0, `reference/BUILDING.md` §7b.4).
@@ -1901,8 +2502,7 @@ pub fn place(
     // forged row is how a placement would otherwise skip the skeleton it
     // is supposed to cost.
     if def.material != MAT_TWIG {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
-        return;
+        return Err(REFUSE_B_TIER);
     }
     let level_ok = (level as usize) < MAX_BUILD_SOCKETS
         && (!shape_has_facing(def.shape)
@@ -1924,51 +2524,45 @@ pub fn place(
         || (cz as usize) >= MAX_BUILD_COORD
         || !level_ok
         || !loc_fits_shape(def.shape, loc)
-        || pieces.find(cx, cz, level, loc).is_some()
+        || occupied_at(cols, cx, cz, level, loc)
         // The cell-body overlap set (triangles v0): a full plane over a
         // half, two crossed halves, a diagonal through either — the same
         // "spot taken" refusal the address check gives, because to a
         // player they are one fact.
-        || cell_body_conflict(pieces, cx, cz, level, loc)
-        || vertical_edge_conflict(pieces, def.shape, cx, cz, level, loc)
+        || cell_body_conflict(cols, cx, cz, level, loc)
+        || vertical_edge_conflict(cols, def.shape, cx, cz, level, loc)
         || (crate::circulation::is_riser(def.shape) && def.shape != SHAPE_FOUNDATION_STEPS
             && level_y(level) + crate::circulation::rise(def.shape) > crate::limits::MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
-        || (def.shape == SHAPE_FOUNDATION_STEPS && (pieces.cols().get(cx,cz).planes
-            | pieces.cols().get(cx,cz).tri_xlo_zlo | pieces.cols().get(cx,cz).tri_xhi_zlo
-            | pieces.cols().get(cx,cz).tri_xlo_zhi | pieces.cols().get(cx,cz).tri_xhi_zhi) & (1 << level) != 0)
+        || (def.shape == SHAPE_FOUNDATION_STEPS && (cols.get(cx,cz).planes
+            | cols.get(cx,cz).tri_xlo_zlo | cols.get(cx,cz).tri_xhi_zlo
+            | cols.get(cx,cz).tri_xlo_zhi | cols.get(cx,cz).tri_xhi_zhi) & (1 << level) != 0)
         || (matches!(loc, LOC_PLANE | LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI)
-            && pieces.cols().get(cx,cz).riser_shape(level) == SHAPE_FOUNDATION_STEPS)
+            && cols.get(cx,cz).riser_shape(level) == SHAPE_FOUNDATION_STEPS)
     {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
-        return;
+        return Err(REFUSE_B_SPOT);
     }
     let (ax, az) = anchor(cx, cz, loc);
     // A landmark's ground is its own, like the depot's (`landmark.rs`).
     if crate::terrain::build_reserved(haven, ax, az, BUILD_CELL_M * 1.5) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
-        return;
+        return Err(REFUSE_B_SPOT);
     }
-    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
-    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (px, pz) = at;
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
-        return;
+        return Err(REFUSE_B_REACH);
     }
-    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
-        return;
+    if foreign(ax, az) {
+        return Err(REFUSE_B_CLAIM);
     }
     if matches!(
         def.shape,
         SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS
-    ) && !foundation_terrain_ok(seed, haven, ax, az)
+    ) && !foundation_ground_ok(seed, haven, ax, az)
     {
         // The anchor is the shape's own: the cell centre for a square,
         // the half's centroid for a triangle — the ground actually under
         // the piece.
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
-        return;
+        return Err(REFUSE_B_TERRAIN);
     }
     // The column's floor, decided BEFORE support and cost so a refusal about
     // height is told as one (build plate v1). A piece in a built column takes
@@ -1976,29 +2570,17 @@ pub fn place(
     // touches, or takes its own ground — unless `freehand` declined the latch,
     // which only the client can tell us (freehand placement v0) — and where
     // nothing else decides, the band it asked for (foundation height v0).
-    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz, freehand, want) {
-        Ok(p) => p,
-        Err(why) => {
-            events.push(EV_BUILD_REFUSED, p.id, why, 0);
-            return;
-        }
-    };
-    if !supported(pieces, def.shape, cx, cz, level, loc) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
-        return;
+    let plate = plate_for(cols, seed, haven, cx, cz, freehand, want)?;
+    if !supported(cols, def.shape, cx, cz, level, loc) {
+        return Err(REFUSE_B_SUPPORT);
     }
     for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
-        if inv_count(&p.inv, item) < units as u32 {
-            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
-            return;
+        if inv_count(inv, item) < units as u32 {
+            return Err(REFUSE_B_COST);
         }
     }
-    let rec = PieceRec {
-        cx,
-        cz,
-        level,
-        loc,
-        row: row as u8,
+    Ok(Placement {
+        plate,
         // Soft toward the builder (hard/soft v0). Planes and risers have
         // no sides and carry 0, so two replays cannot disagree about a
         // bit that means nothing.
@@ -2007,25 +2589,822 @@ pub fn place(
         } else {
             0
         },
+    })
+}
+
+/// Apply one place request (`Command::Place`). Refusals are events, not
+/// errors — the placer hears why. The cost is paid whole at placement;
+/// the piece is announced by EV_PIECE_PLACED for the wire to broadcast.
+/// `deploys` carries the hearth list for the privilege check; `tick`
+use crate::support::flights as flights_of;
+
+/// Where a placement lands on the lattice (freeform W3): its address, the
+/// frame it mints when it is a building's first piece, and the grid's name
+/// for it when the grid has one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Site {
+    pub addr: crate::sock::PieceAddr,
+    /// The new building's frame, for a first piece. `addr.bld` is then the
+    /// row it would take, or `u16::MAX` when every row is taken (the insert
+    /// refuses `REFUSE_B_FULL`).
+    pub mint: Option<crate::frame::Frame>,
+    /// (cx, cz, loc) when the 3 m grid names the piece.
+    pub grid: Option<(u16, u16, u8)>,
+}
+
+impl Site {
+    /// The site's frame: the minted one, or the building's.
+    pub fn frame<'a>(&'a self, p: &'a Pieces) -> Option<&'a crate::frame::Frame> {
+        self.mint.as_ref().or_else(|| p.frame(self.addr.bld))
+    }
+}
+
+/// The frame a grid building started at cell (`cx`, `cz`) on its own ground
+/// takes: its origin the cell's low corner, facing +x, on the cell's band.
+pub fn grid_frame(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> crate::frame::Frame {
+    let cell = (BUILD_CELL_M * 100.0) as i32;
+    crate::frame::Frame::new(
+        (cx as i32 * cell, cz as i32 * cell),
+        terrain_band(seed, haven, cx, cz),
+        0,
+    )
+}
+
+/// Whether a building's lattice is the 3 m grid's: facing +x, its origin on
+/// a cell corner. Its origin cell, if so.
+pub fn grid_origin(f: &crate::frame::Frame) -> Option<(u16, u16)> {
+    let (x, z) = f.origin_cm;
+    let cell = (BUILD_CELL_M * 100.0) as i32;
+    (f.yaw == 0 && x >= 0 && z >= 0 && x % cell == 0 && z % cell == 0)
+        .then_some(((x / cell) as u16, (z / cell) as u16))
+}
+
+/// Every store index whose collision row's box meets a world box, possibly
+/// more than once and in table order: for any/all questions only.
+pub(crate) fn pieces_near(
+    p: &Pieces,
+    x0: f32,
+    z0: f32,
+    x1: f32,
+    z1: f32,
+    mut f: impl FnMut(usize) -> bool,
+) -> bool {
+    p.cols().hulls().near(x0, z0, x1, z1, |h| {
+        if h.key & (1 << 62) == 0 {
+            return false;
+        }
+        match p.find_id((h.key & 0xFFFF_FFFF) as u32) {
+            Some(i) => f(i),
+            None => false,
+        }
+    })
+}
+
+/// The grid's way into the lattice (freeform W3): the site a grid address
+/// names. The building is the one already standing in the address's
+/// column, else the highest-floored grid building in the four columns
+/// beside it — build plate v1's latch, which is now joining that building
+/// — else, for a foundation or a placement that declined the latch
+/// (`freehand`), a new building on the cell's corner at the cell's own
+/// ground plus `want`. Anything else gets a provisional new building too,
+/// and the support rule refuses it in its turn.
+#[allow(clippy::too_many_arguments)]
+pub fn grid_site(
+    seed: u64,
+    haven: &terrain::Haven,
+    p: &Pieces,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    shape: u8,
+    freehand: bool,
+    want: i8,
+) -> Result<Site, u32> {
+    if (cx as usize) >= MAX_BUILD_COORD || (cz as usize) >= MAX_BUILD_COORD {
+        return Err(REFUSE_B_SPOT);
+    }
+    // The grid buildings with a piece in this column and in the four
+    // beside it.
+    let (mut own, mut best): (Option<u16>, Option<(bool, i32, u16)>) = (None, None);
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z0 = cz as f32 * BUILD_CELL_M;
+    let pad = BUILD_CELL_M - 0.01;
+    pieces_near(
+        p,
+        x0 - pad,
+        z0 - pad,
+        x0 + BUILD_CELL_M + pad,
+        z0 + BUILD_CELL_M + pad,
+        |i| {
+            let r = p.entries()[i];
+            let Some(f) = p.frame(r.bld) else {
+                return false;
+            };
+            if !r.on_grid() || grid_origin(f).is_none() {
+                return false;
+            }
+            let (dx, dz) = (r.cx as i32 - cx as i32, r.cz as i32 - cz as i32);
+            // An edge is carried by a body beside it, or by the same edge
+            // stacked under it: another edge filed in a column (a wall on a
+            // neighbour base's side) says nothing about who stands beside
+            // this one.
+            let is_edge = |l: u8| l == LOC_EDGE_XLO || l == LOC_EDGE_ZLO;
+            if is_edge(loc) && is_edge(r.loc) && !((dx, dz) == (0, 0) && r.loc == loc) {
+                return false;
+            }
+            if (dx, dz) == (0, 0) {
+                own = Some(own.map_or(r.bld, |b| b.min(r.bld)));
+            } else if dx.abs() + dz.abs() == 1 {
+                // An edge lies between its own column and the one on its low
+                // side, and only a building there can have a body beside it:
+                // that one first, whatever stands higher across the way.
+                let touches = match loc {
+                    LOC_EDGE_XLO => (dx, dz) == (-1, 0),
+                    LOC_EDGE_ZLO => (dx, dz) == (0, -1),
+                    _ => true,
+                };
+                let cand = (touches, f.band, r.bld);
+                let better = best.is_none_or(|(t, band, b)| {
+                    (cand.0, cand.1) > (t, band) || ((cand.0, cand.1) == (t, band) && cand.2 < b)
+                });
+                if better {
+                    best = Some(cand);
+                }
+            }
+            false
+        },
+    );
+    let joined = own.or_else(|| {
+        if freehand && crate::support::grounded(shape) {
+            None
+        } else {
+            best.map(|(_, _, b)| b)
+        }
+    });
+    if let Some(b) = joined {
+        let f = p.frame(b).expect("a live building");
+        let (ox, oz) = grid_origin(f).expect("a grid building");
+        let sock = crate::sock::from_grid(ox, oz, cx, cz, loc).ok_or(REFUSE_B_SPOT)?;
+        return Ok(Site {
+            addr: crate::sock::PieceAddr {
+                bld: b,
+                level,
+                sock,
+            },
+            mint: None,
+            grid: Some((cx, cz, loc)),
+        });
+    }
+    let plate = plate_asked(want)?;
+    let ground = grid_frame(seed, haven, cx, cz);
+    let frame = crate::frame::Frame::new(ground.origin_cm, ground.band + plate as i32, 0);
+    let sock = crate::sock::from_grid(cx, cz, cx, cz, loc).ok_or(REFUSE_B_SPOT)?;
+    Ok(Site {
+        addr: crate::sock::PieceAddr {
+            bld: p.buildings().next_free().unwrap_or(u16::MAX),
+            level,
+            sock,
+        },
+        mint: Some(frame),
+        grid: Some((cx, cz, loc)),
+    })
+}
+
+/// A foundation placed free (freeform W3): the first piece of a new
+/// building, its frame's origin on the foundation's first corner at world
+/// (`x_cm`, `z_cm`), turned `yaw` (`frame::Frame`'s convention), standing on
+/// the ground under its middle plus `want` bands. `tri` asks for the
+/// triangle.
+pub fn free_site(
+    seed: u64,
+    haven: &terrain::Haven,
+    p: &Pieces,
+    origin_cm: (i32, i32),
+    yaw: u16,
+    tri: bool,
+    want: i8,
+) -> Result<Site, u32> {
+    use crate::lattice::LPt;
+    let plate = plate_asked(want)?;
+    let sock = if tri {
+        crate::sock::Sock::tri_from(LPt::ZERO, 0)
+    } else {
+        crate::sock::Sock::square_from(LPt::ZERO, 0)
+    };
+    let probe = crate::frame::Frame::new(origin_cm, 0, yaw);
+    let (cx, cz) = probe.to_world(sock.at);
+    let band = band_of_ground(terrain::ground(seed, haven, cx, cz)) + plate as i32;
+    let frame = crate::frame::Frame::new(origin_cm, band, yaw);
+    Ok(Site {
+        addr: crate::sock::PieceAddr {
+            bld: p.buildings().next_free().unwrap_or(u16::MAX),
+            level: 0,
+            sock,
+        },
+        mint: Some(frame),
+        // A free foundation that happens to land on the grid is named on
+        // it, like everything placed in its building after it.
+        grid: grid_name(&frame, &sock),
+    })
+}
+
+/// The grid's name for a footprint in a building, when the building is on
+/// the grid and the footprint is one the grid has.
+pub fn grid_name(frame: &crate::frame::Frame, sock: &crate::sock::Sock) -> Option<(u16, u16, u8)> {
+    grid_origin(frame).and_then(|(ox, oz)| crate::sock::to_grid(ox, oz, sock))
+}
+
+/// Where a placement snaps on the lattice (freeform W2): [`snap`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Snap {
+    pub bld: u16,
+    pub sock: crate::sock::Sock,
+    /// From the aim to the footprint's middle, metres.
+    pub dist_m: f32,
+}
+
+/// The footprint a piece of `shape` aimed at world (`x`, `z`) on socket
+/// `level` snaps to (freeform W2 — the ghost's question, the reference's
+/// sockets): beside what stands within `near_m` of the aim, in whatever
+/// building it stands in — a body's sides and the bodies across them, an
+/// edge's two bodies and the edge itself — the free one whose middle is
+/// nearest the aim. A flight takes its body's heading turned `turn` steps
+/// (quarter turns on a square, thirds on a triangle). `None` when nothing
+/// stands near. Pure over the store, so the ghost asks it of the mirror.
+pub fn snap(
+    p: &Pieces,
+    shape: u8,
+    level: u8,
+    x: f32,
+    z: f32,
+    near_m: f32,
+    turn: u8,
+) -> Option<Snap> {
+    use crate::sock::{Sock, FOOT_EDGE, FOOT_RISER, FOOT_SQUARE, FOOT_TRI, FOOT_TRI_RISER};
+    let want = crate::support::foot_of(shape);
+    let mut best: Option<Snap> = None;
+    let mut consider = |bld: u16, frame: &crate::frame::Frame, body_or_edge: Sock| {
+        // The footprint of the wanted kind this neighbour offers.
+        let cand = match (want, body_or_edge.foot) {
+            (FOOT_RISER, FOOT_SQUARE) => Sock::riser(body_or_edge.at, body_or_edge.dir + 3 * turn),
+            (FOOT_TRI_RISER, FOOT_TRI) => {
+                Sock::tri_riser(body_or_edge.at, body_or_edge.dir + 4 * (turn % 3))
+            }
+            (w, f) if w == f => body_or_edge,
+            _ => return,
+        };
+        let a = crate::sock::PieceAddr {
+            bld,
+            level,
+            sock: cand,
+        };
+        if !crate::support::on_lattice(&cand) || p.find_addr(&a).is_some() {
+            return;
+        }
+        let (cx, cz) = frame.to_world(cand.at);
+        let d = ((cx - x) * (cx - x) + (cz - z) * (cz - z)).sqrt();
+        let better = best.is_none_or(|b| {
+            d < b.dist_m - 1e-4 || (d < b.dist_m + 1e-4 && (bld, cand) < (b.bld, b.sock))
+        });
+        if better {
+            best = Some(Snap {
+                bld,
+                sock: cand,
+                dist_m: d,
+            });
+        }
+    };
+    pieces_near(p, x - near_m, z - near_m, x + near_m, z + near_m, |i| {
+        let r = p.entries()[i];
+        let Some(frame) = p.frame(r.bld).copied() else {
+            return false;
+        };
+        let body = match r.sock.foot {
+            FOOT_RISER | FOOT_TRI_RISER => r.sock.body(),
+            _ => r.sock,
+        };
+        if body.foot == FOOT_EDGE {
+            // An edge: the edge itself (stacked), and the two bodies of
+            // each kind across it.
+            consider(r.bld, &frame, body);
+            for side in [1, -1] {
+                let (sq, tri) = crate::sock::beside(&body, side);
+                consider(r.bld, &frame, sq);
+                consider(r.bld, &frame, tri);
+            }
+        } else {
+            // A body: itself (a floor over a foundation, a flight on it),
+            // its sides, and the bodies across them.
+            consider(r.bld, &frame, body);
+            let (sides, n) = body.sides();
+            for e in &sides[..n] {
+                consider(r.bld, &frame, *e);
+                for side in [1, -1] {
+                    let (sq, tri) = crate::sock::beside(e, side);
+                    consider(r.bld, &frame, sq);
+                    consider(r.bld, &frame, tri);
+                }
+            }
+        }
+        false
+    });
+    best
+}
+
+/// A footprint on a standing building's lattice (freeform W2): the site a
+/// lattice placement names. Refused when the building is gone.
+pub fn lattice_site(p: &Pieces, bld: u16, level: u8, sock: crate::sock::Sock) -> Result<Site, u32> {
+    let frame = p.frame(bld).ok_or(REFUSE_B_SPOT)?;
+    Ok(Site {
+        addr: crate::sock::PieceAddr { bld, level, sock },
+        mint: None,
+        grid: grid_name(frame, &sock),
+    })
+}
+
+/// A piece's vertical extent in the world, for overlap across buildings: a
+/// foundation is solid to the ground, a slab is its thickness, a flight its
+/// rise, an edge its height.
+fn extent(frame: &crate::frame::Frame, level: u8, shape: u8) -> (f32, f32) {
+    let floor = band_y(frame.band) + level_y(level);
+    match crate::support::foot_of(shape) {
+        crate::sock::FOOT_EDGE => (floor, floor + wall_height(shape)),
+        crate::sock::FOOT_RISER | crate::sock::FOOT_TRI_RISER => {
+            (floor, floor + crate::circulation::rise(shape))
+        }
+        _ if level == 0 => (f32::MIN, floor),
+        _ => (floor - crate::collide::PLANE_THICKNESS_M, floor),
+    }
+}
+
+/// A footprint's world outline: a body's corners, or an edge's ends.
+fn world_outline(
+    frame: &crate::frame::Frame,
+    sock: &crate::sock::Sock,
+) -> ([(f32, f32); 4], usize) {
+    let (c, n) = sock.corners();
+    let mut out = [(0.0, 0.0); 4];
+    for (o, p) in out.iter_mut().zip(c.iter()).take(n) {
+        *o = frame.to_world(*p);
+    }
+    (out, n)
+}
+
+/// Whether two world outlines overlap by more than a centimetre: the
+/// separating-axis test on every side's normal, floats in the wall-1 set.
+/// An edge is its two ends; two edges cross, or run along one line over a
+/// shared stretch, or they do not meet.
+fn world_overlap(a: &[(f32, f32)], b: &[(f32, f32)]) -> bool {
+    const SLOP: f32 = 0.01;
+    let axes = |poly: &[(f32, f32)], out: &mut [(f32, f32); 8], n: &mut usize| {
+        let k = poly.len();
+        for i in 0..k {
+            let (x0, z0) = poly[i];
+            let (x1, z1) = poly[(i + 1) % k];
+            let (dx, dz) = (x1 - x0, z1 - z0);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len > 1e-6 {
+                // The side's normal, and for a lone edge its run as well.
+                out[*n] = (-dz / len, dx / len);
+                *n += 1;
+                if k == 2 {
+                    out[*n] = (dx / len, dz / len);
+                    *n += 1;
+                    break;
+                }
+            }
+        }
+    };
+    let mut ax = [(0.0, 0.0); 8];
+    let mut n = 0;
+    axes(a, &mut ax, &mut n);
+    axes(b, &mut ax, &mut n);
+    let span = |poly: &[(f32, f32)], (nx, nz): (f32, f32)| {
+        poly.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &(x, z)| {
+            let d = x * nx + z * nz;
+            (lo.min(d), hi.max(d))
+        })
+    };
+    let segs = a.len() == 2 && b.len() == 2;
+    ax[..n].iter().all(|&axis| {
+        let (alo, ahi) = span(a, axis);
+        let (blo, bhi) = span(b, axis);
+        if segs {
+            // Two edges: separated only by a gap, so collinear ones that
+            // share a stretch overlap.
+            ahi > blo - 1e-4 && bhi > alo - 1e-4 && (ahi - blo).min(bhi - alo) > -1e-4
+        } else {
+            ahi - blo > SLOP && bhi - alo > SLOP
+        }
+    }) && (!segs || {
+        // Collinear edges must share more than a corner.
+        let (dx, dz) = (a[1].0 - a[0].0, a[1].1 - a[0].1);
+        let len = (dx * dx + dz * dz).sqrt().max(1e-6);
+        let axis = (dx / len, dz / len);
+        let (alo, ahi) = span(a, axis);
+        let (blo, bhi) = span(b, axis);
+        ahi - blo > SLOP && bhi - alo > SLOP
+    })
+}
+
+/// Does anything already standing take the space the site would — in its
+/// own building on the lattice, exactly, or in another building in the
+/// world, to a centimetre? The `REFUSE_B_SPOT` the address check gives,
+/// because to a player they are one fact.
+fn site_conflict(
+    bc: &BuildContent,
+    p: &Pieces,
+    site: &Site,
+    shape: u8,
+    frame: &crate::frame::Frame,
+) -> bool {
+    use crate::sock::{FOOT_EDGE, FOOT_RISER, FOOT_TRI_RISER};
+    let a = site.addr;
+    let foot = a.sock.foot;
+    let (wo, wn) = world_outline(frame, &a.sock);
+    let (lo, hi) = extent(frame, a.level, shape);
+    let (mut x0, mut z0, mut x1, mut z1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(x, z) in &wo[..wn] {
+        x0 = x0.min(x);
+        z0 = z0.min(z);
+        x1 = x1.max(x);
+        z1 = z1.max(z);
+    }
+    let pad = crate::collide::WALL_THICKNESS_M;
+    pieces_near(p, x0 - pad, z0 - pad, x1 + pad, z1 + pad, |i| {
+        let r = p.entries()[i];
+        let rshape = bc.pieces[r.row as usize].shape;
+        let rfoot = r.sock.foot;
+        let riser = |f: u8| f == FOOT_RISER || f == FOOT_TRI_RISER;
+        if r.bld == a.bld && site.mint.is_none() {
+            if r.level != a.level {
+                return false;
+            }
+            let steps = |s: u8| s == SHAPE_FOUNDATION_STEPS;
+            let meets = crate::support::crosses(&a.sock, &r.sock);
+            return match (foot == FOOT_EDGE, rfoot == FOOT_EDGE) {
+                // Two edges cross; an edge through a body.
+                (true, true) => meets,
+                (true, false) => !riser(rfoot) && meets,
+                (false, true) => !riser(foot) && meets,
+                (false, false) => {
+                    let (fl_a, fl_r) = (riser(foot), riser(rfoot));
+                    match (fl_a, fl_r) {
+                        // Two flights on one body, or bodies that overlap.
+                        (true, true) => meets || a.sock.body() == r.sock.body(),
+                        // A stepped foundation is a body; a flight stands on
+                        // one.
+                        (true, false) => steps(shape) && meets,
+                        (false, true) => steps(rshape) && meets,
+                        (false, false) => meets,
+                    }
+                }
+            };
+        }
+        // Another building: bodies and edges that take the same world.
+        let Some(rf) = p.frame(r.bld) else {
+            return false;
+        };
+        if (foot == FOOT_EDGE) != (rfoot == FOOT_EDGE) {
+            return false;
+        }
+        let (rlo, rhi) = extent(rf, r.level, rshape);
+        if rhi <= lo || hi <= rlo {
+            return false;
+        }
+        let (ro, rn) = world_outline(rf, &r.sock);
+        world_overlap(&wo[..wn], &ro[..rn])
+    })
+}
+
+/// Partial walls stack on one edge and may not interpenetrate (half
+/// height v0): an edge at another socket of the same edge whose span
+/// meets this one's.
+fn vertical_edge_clash(
+    bc: &BuildContent,
+    p: &Pieces,
+    a: &crate::sock::PieceAddr,
+    shape: u8,
+) -> bool {
+    if !shape_has_facing(shape) {
+        return false;
+    }
+    let bottom = level_y(a.level);
+    let top = bottom + wall_height(shape);
+    (0..MAX_BUILD_SOCKETS as u8).any(|other| {
+        if other == a.level {
+            return false;
+        }
+        let o = crate::sock::PieceAddr { level: other, ..*a };
+        p.find_addr(&o).is_some_and(|i| {
+            let s = bc.pieces[p.entries()[i].row as usize].shape;
+            let y = level_y(other);
+            bottom < y + wall_height(s) && y < top
+        })
+    })
+}
+
+/// The rules a placement at a lattice site answers to (freeform W3), in
+/// the order [`check_place`] has always told them: the row, the spot, the
+/// landmark, reach, claim, terrain, height, support, cost. Pure over the
+/// store, like `check_place` — the ghost will run it.
+#[allow(clippy::too_many_arguments)]
+pub fn check_site(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    p: &Pieces,
+    at: (f32, f32),
+    inv: &[crate::gather::ItemStack; crate::limits::INV_SLOTS],
+    row: u16,
+    site: &Site,
+    foreign: impl FnOnce(f32, f32) -> bool,
+) -> Result<Placement, u32> {
+    if row >= bc.piece_count {
+        return Err(REFUSE_B_PIECE);
+    }
+    let def = &bc.pieces[row as usize];
+    if def.hp == 0 {
+        return Err(REFUSE_B_PIECE);
+    }
+    if def.material != MAT_TWIG {
+        return Err(REFUSE_B_TIER);
+    }
+    let a = site.addr;
+    let shape = def.shape;
+    let level = a.level;
+    let grounded = crate::support::grounded(shape);
+    let level_ok = (level as usize) < MAX_BUILD_SOCKETS
+        && (!shape_has_facing(shape)
+            || level_y(level) + wall_height(shape) <= MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
+        && (!grounded || level == 0)
+        && (!matches!(
+            shape,
+            SHAPE_FLOOR
+                | SHAPE_ROOF
+                | SHAPE_TRI_FLOOR
+                | SHAPE_TRI_ROOF
+                | SHAPE_FLOOR_FRAME
+                | SHAPE_TRI_FLOOR_FRAME
+        ) || level >= 1)
+        && (!crate::circulation::is_riser(shape)
+            || shape == SHAPE_FOUNDATION_STEPS
+            || level_y(level) + crate::circulation::rise(shape)
+                <= MAX_BUILD_LEVELS as f32 * LEVEL_H_M);
+    let Some(frame) = site.frame(p).copied() else {
+        return Err(REFUSE_B_SPOT);
+    };
+    if !level_ok
+        || crate::support::foot_of(shape) != a.sock.foot
+        || !crate::support::on_lattice(&a.sock)
+        || (site.mint.is_none() && p.find_addr(&a).is_some())
+        // A grid name is one piece's: another building's piece there (the
+        // lattice key above sees only this building's) holds it.
+        || site
+            .grid
+            .is_some_and(|(cx, cz, loc)| p.find(cx, cz, a.level, loc).is_some())
+        || site_conflict(bc, p, site, shape, &frame)
+        || vertical_edge_clash(bc, p, &a, shape)
+    {
+        return Err(REFUSE_B_SPOT);
+    }
+    let (ax, az) = frame.to_world(a.sock.at);
+    // A landmark's ground is its own, like the depot's (`landmark.rs`).
+    if crate::terrain::build_reserved(haven, ax, az, BUILD_CELL_M * 1.5) {
+        return Err(REFUSE_B_SPOT);
+    }
+    let (px, pz) = at;
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        return Err(REFUSE_B_REACH);
+    }
+    if foreign(ax, az) {
+        return Err(REFUSE_B_CLAIM);
+    }
+    if grounded && !foundation_ground_ok(seed, haven, ax, az) {
+        return Err(REFUSE_B_TERRAIN);
+    }
+    // The height a piece stands at is its building's (build plate v1's
+    // latch, now the building). A foundation may not stand more than the
+    // stilt limit over its own ground, nor sink past the sink limit; and a
+    // piece the grid names keeps its column inside that window too, the
+    // rule the grid's per-column plate always held.
+    let ground = if let Some((cx, cz, _)) = site.grid {
+        terrain_band(seed, haven, cx, cz)
+    } else {
+        band_of_ground(terrain::ground(seed, haven, ax, az))
+    };
+    let plate = frame.band - ground;
+    if (grounded || site.grid.is_some()) && plate > PLATE_RISE_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_HIGH);
+    }
+    if (grounded || site.grid.is_some()) && plate < -PLATE_SINK_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_LOW);
+    }
+    if !crate::support::supported(p, bc, shape, &a) {
+        return Err(REFUSE_B_SUPPORT);
+    }
+    for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
+        if inv_count(inv, item) < units as u32 {
+            return Err(REFUSE_B_COST);
+        }
+    }
+    let facing = if !shape_has_facing(shape) {
+        0
+    } else if let Some((cx, cz, loc)) = site.grid {
+        facing_of(loc, cx, cz, px, pz)
+    } else {
+        // Soft toward the builder: 1 when they stand on the edge's
+        // anticlockwise side.
+        let (lx, lz) = frame.to_local(px, pz);
+        let (mx, mz) = a.sock.at.to_xz();
+        let (nx, nz) = crate::frame::STEP_CS[((a.sock.dir + 3) % 12) as usize];
+        ((lx - mx) * nx + (lz - mz) * nz > 0.0) as u8
+    };
+    Ok(Placement {
+        plate: plate.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
+        facing,
+    })
+}
+
+/// Pay for and insert a placement [`check_site`] passed, and say so.
+#[allow(clippy::too_many_arguments)]
+pub fn place_site(
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    site: &Site,
+    at: Placement,
+    events: &mut EventQueue,
+) -> bool {
+    let def = &bc.pieces[row as usize];
+    let (cx, cz, loc) = site.grid.unwrap_or_else(|| {
+        let (cx, cz) = site
+            .frame(pieces)
+            .map_or((0, 0), |f| anchor_cell(f, &site.addr.sock));
+        (cx, cz, LOC_NONE)
+    });
+    let rec = PieceRec {
+        cx,
+        cz,
+        level: site.addr.level,
+        loc,
+        row: row as u8,
+        facing: at.facing,
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
-        plate,
+        plate: at.plate,
+        id: 0,
+        bld: site.addr.bld,
+        sock: site.addr.sock,
     };
-    if !pieces.insert(rec, def.shape, tick) {
+    if site.addr.bld as usize >= crate::limits::MAX_BUILDINGS
+        || !pieces.insert(rec, def.shape, tick, site.mint)
+    {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
-        return;
+        return false;
     }
     for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
         inv_take(&mut p.inv, item, units as u32);
     }
-    events.push(
-        EV_PIECE_PLACED,
-        crate::gather::cell_key(cx, cz),
-        ((level as u32) << 16) | ((loc as u32) << 8) | row as u32,
-        0,
+    let placed = PieceRec {
+        id: pieces.next_id() - 1,
+        ..rec
+    };
+    let (a, b) = placed.ev_addr();
+    events.push(EV_PIECE_PLACED, a, b | row as u32, 0);
+    true
+}
+
+/// stamps the piece's upkeep clock (deploy.rs). The rules are
+/// [`check_place`]'s; this is the paying and the inserting.
+#[allow(clippy::too_many_arguments)]
+pub fn place(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    freehand: bool,
+    want: i8,
+    events: &mut EventQueue,
+) {
+    // The grid address names a site on some building's lattice (or a new
+    // building's); the lattice rules decide (freeform W3).
+    let shape = if row < bc.piece_count {
+        bc.pieces[row as usize].shape
+    } else {
+        0
+    };
+    let site = grid_site(
+        seed, haven, pieces, cx, cz, level, loc, shape, freehand, want,
     );
+    check_and_place(seed, haven, bc, deploys, pieces, p, tick, row, site, events);
+}
+
+/// The rules for a site, then the paying and inserting — or the refusal,
+/// told to the placer. Every placement verb's last step.
+#[allow(clippy::too_many_arguments)]
+fn check_and_place(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    site: Result<Site, u32>,
+    events: &mut EventQueue,
+) {
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let checked = site.and_then(|site| {
+        check_site(
+            seed,
+            haven,
+            bc,
+            pieces,
+            (px, pz),
+            &p.inv,
+            row,
+            &site,
+            |ax, az| crate::claim::foreign_claim(pieces, deploys, ax, az, p.id),
+        )
+        .map(|at| (site, at))
+    });
+    let (site, at) = match checked {
+        Ok(ok) => ok,
+        Err(why) => {
+            events.push(EV_BUILD_REFUSED, p.id, why, 0);
+            return;
+        }
+    };
+    // Asked after the spot: a swimmer aiming at the open sea hears that the
+    // ground is wrong, which is the more useful of the two.
+    if crate::movement::swimming(&p.body) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SWIMMING, 0);
+        return;
+    }
+    place_site(bc, pieces, p, tick, row, &site, at, events);
+}
+
+/// Apply one lattice placement (`Command::PlaceAt`, freeform W2): row
+/// `row` at footprint `sock` on socket `level` of standing building `bld`
+/// — a triangle, a wall on a triangle's side, anything in a building
+/// turned off the grid, and anything the grid could name too, by the same
+/// rules [`place`] keeps.
+#[allow(clippy::too_many_arguments)]
+pub fn place_at(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    bld: u16,
+    level: u8,
+    sock: crate::sock::Sock,
+    events: &mut EventQueue,
+) {
+    let site = lattice_site(pieces, bld, level, sock);
+    check_and_place(seed, haven, bc, deploys, pieces, p, tick, row, site, events);
+}
+
+/// Apply one free placement (`Command::PlaceFree`, freeform W2): a
+/// foundation that starts a building of its own — [`free_site`]'s.
+#[allow(clippy::too_many_arguments)]
+pub fn place_free(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    origin_cm: (i32, i32),
+    yaw: u16,
+    tri: bool,
+    want: i8,
+    events: &mut EventQueue,
+) {
+    let site = free_site(seed, haven, pieces, origin_cm, yaw, tri, want);
+    check_and_place(seed, haven, bc, deploys, pieces, p, tick, row, site, events);
 }
 
 /// The baked row for a shape in a material, if the table holds one.
@@ -2085,7 +3464,7 @@ pub fn upgrade(
         return;
     }
     let cur = bc.pieces[rec.row as usize];
-    let (ax, az) = anchor(cx, cz, loc);
+    let (ax, az) = pieces.anchor_of(&pieces.entries()[i]);
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -2162,12 +3541,12 @@ pub fn rotate(
         (rec.row as u16) < bc.piece_count
             && d.hp != 0
             && (crate::circulation::is_riser(d.shape) || shape_has_facing(d.shape))
-            && loc_fits_shape(d.shape, loc)
+            && (!rec.on_grid() || loc_fits_shape(d.shape, loc))
     }) else {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
         return;
     };
-    let (ax, az) = anchor(cx, cz, loc);
+    let (ax, az) = pieces.anchor_of(&rec);
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -2183,51 +3562,68 @@ pub fn rotate(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_WINDOW, 0);
         return;
     }
-    let next = if crate::circulation::is_riser(def.shape) {
-        // Turning a bearing changes which socket it carries. Keep loaded
-        // steps and stacked spiral flights fixed until their load is removed.
+    let (next, sock) = if crate::circulation::is_riser(def.shape) {
+        // The record's own storey: a posed piece's command address spells
+        // its id, level bits and all (`spell_id`).
+        let here = rec.addr();
+        let body = here.sock.body();
+        let at = |level: u8, sock: crate::sock::Sock| crate::sock::PieceAddr {
+            bld: rec.bld,
+            level,
+            sock,
+        };
+        // Stepped foundations bear their high side: turning them would drop
+        // what stands on it.
         if def.shape == SHAPE_FOUNDATION_STEPS {
-            let mut deps = [(0, 0, 0, 0); MAX_DEPENDENTS];
-            let n = dependents_at(cx, cz, level, loc, level, &mut deps);
-            if deps[..n]
-                .iter()
-                .any(|&(x, z, l, a)| occupied_at(pieces, x, z, l, a))
-            {
+            let mut deps = [here; crate::support::MAX_DEPENDENTS];
+            let n = crate::support::dependents(&here, &mut deps);
+            if deps[..n].iter().any(|d| pieces.find_addr(d).is_some()) {
                 events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
                 return;
             }
         }
+        // A spiral carrying the flight above it.
         if matches!(def.shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
-            && level_step(level, 1)
-                .is_some_and(|up| occupied_at(pieces, cx, cz, up, opposite_riser(loc)))
+            && level_step(here.level, 1).is_some_and(|up| {
+                let (fl, n) = flights_of(&body);
+                fl[..n]
+                    .iter()
+                    .any(|&f| pieces.find_addr(&at(up, f)).is_some())
+            })
         {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
             return;
         }
-        // Exclude this flight from the placement conflict check. Any other
-        // direction consumes the same cell body, even if not the next loc.
-        if STAIR_LOCS
+        // Another flight on the same body.
+        let (fl, n) = flights_of(&body);
+        if fl[..n]
             .iter()
-            .any(|&other| other != loc && occupied_at(pieces, cx, cz, level, other))
+            .any(|&f| f != here.sock && pieces.find_addr(&at(here.level, f)).is_some())
         {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
             return;
         }
-        let next = match loc {
-            LOC_RISER => LOC_RISER_XHI,
-            LOC_RISER_XHI => LOC_RISER_ZLO,
-            LOC_RISER_ZLO => LOC_RISER_XLO,
-            _ => LOC_RISER,
+        // A quarter turn clockwise (+z, +x, −z, −x), or a third for a
+        // triangle's flight.
+        let turned = if here.sock.foot == crate::sock::FOOT_TRI_RISER {
+            crate::sock::Sock::tri_riser(here.sock.at, here.sock.dir + 4)
+        } else {
+            crate::sock::Sock::riser(here.sock.at, here.sock.dir + 9)
         };
-        if !supported(pieces, def.shape, cx, cz, level, next) {
+        if !crate::support::supported(pieces, bc, def.shape, &at(here.level, turned)) {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
             return;
         }
-        next
+        let next = pieces
+            .frame(rec.bld)
+            .and_then(grid_origin)
+            .and_then(|(ox, oz)| crate::sock::to_grid(ox, oz, &turned))
+            .map_or(LOC_NONE, |g| g.2);
+        (next, turned)
     } else {
-        loc
+        (loc, rec.sock)
     };
-    pieces.set_rotation(i, def.shape, next);
+    pieces.set_rotation(i, def.shape, sock, next);
     if next != loc {
         events.push(
             EV_PIECE_REMOVED,
@@ -2367,7 +3763,7 @@ pub fn demolish(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
     };
-    let (ax, az) = anchor(cx, cz, loc);
+    let (ax, az) = pieces.anchor_of(&pieces.entries()[i]);
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
@@ -2408,17 +3804,10 @@ pub fn demolish(
             gc.cond_max_of(item),
         );
     }
+    let gone = pieces.entries()[i].addr();
     crate::deploy::drop_piece(dc, pieces, deploys, i, def.shape, events);
     *budget -= 1;
-    collapse_from(
-        dc,
-        bc,
-        pieces,
-        deploys,
-        (cx, cz, level, loc),
-        budget,
-        events,
-    );
+    collapse_from(dc, bc, pieces, deploys, gone, budget, events);
 }
 
 /// Buy a damaged structure back to its baked hp, priced in its own
@@ -2505,9 +3894,9 @@ pub fn repair(
     // A free-placed deployable is reached where it stands, not at the
     // corner a body slot's `loc` would name as a piece.
     let (ax, az) = if deploy {
-        crate::deploy::rec_anchor(&deploys.entries()[i])
+        crate::deploy::rec_anchor(pieces.cols(), &deploys.entries()[i])
     } else {
-        anchor(cx, cz, loc)
+        pieces.anchor_of(&pieces.entries()[i])
     };
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
@@ -3191,312 +4580,6 @@ mod tests {
         assert!(!soft_side(&n, px, pz - BUILD_CELL_M), "north of the wall");
     }
 
-    /// A diagonal wall across a full square foundation is refused: it is
-    /// the hypotenuse of a triangle and nothing else (reported in play, a
-    /// wall cutting a square room corner to corner). The square's own edges
-    /// still take one.
-    #[test]
-    fn a_diagonal_wall_needs_a_triangle_not_a_square() {
-        let bc = BuildContent::probe_fixture();
-        let mut pieces = Pieces::new();
-        let nod = Deploys::new();
-        let mut ev = EventQueue::default();
-        let mut p = player_at_cell_center(&[(0, 200), (1, 50)]);
-        let mut put = |pieces: &mut Pieces, row: u16, loc: u8| {
-            place(
-                SEED,
-                hv(),
-                &bc,
-                &nod,
-                pieces,
-                &mut p,
-                0,
-                row,
-                CX,
-                CZ,
-                0,
-                loc,
-                false,
-                0,
-                &mut ev,
-            );
-            last(&ev)
-        };
-        assert_eq!(
-            put(&mut pieces, 0, LOC_PLANE).0,
-            crate::world::EV_PIECE_PLACED
-        );
-        for diag in [LOC_DIAG_A, LOC_DIAG_B] {
-            assert_eq!(
-                put(&mut pieces, 1, diag),
-                (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SUPPORT),
-                "a diagonal across the square"
-            );
-        }
-        assert_eq!(
-            put(&mut pieces, 1, LOC_EDGE_XLO).0,
-            crate::world::EV_PIECE_PLACED,
-            "the square's own edge"
-        );
-    }
-
-    /// Triangles v0: the placement matrix. Two halves coexist across
-    /// their own diagonal and refuse everything else they overlap; the
-    /// diagonal wall stands on its pair and refuses through the crossed
-    /// pair; a tri floor stands on a side edge OR its hypotenuse's wall;
-    /// and the whole family upgrades like any shape.
-    #[test]
-    fn triangles_pair_across_their_diagonal_and_refuse_the_rest() {
-        let mut bc = BuildContent::probe_fixture();
-        // Rows 7..10: twig tri foundation, twig tri floor, twig wall
-        // stand-ins for the fixture (the probe fixture's shape, extended).
-        bc.piece_count = 10;
-        bc.pieces[7] = PieceDef {
-            shape: SHAPE_TRI_FOUNDATION,
-            material: MAT_TWIG,
-            hp: 100,
-            n_costs: 1,
-            costs: [(0, 2), (0, 0)],
-        };
-        bc.pieces[8] = PieceDef {
-            shape: SHAPE_TRI_FLOOR,
-            material: MAT_TWIG,
-            hp: 100,
-            n_costs: 1,
-            costs: [(0, 2), (0, 0)],
-        };
-        bc.pieces[9] = PieceDef {
-            shape: SHAPE_TRI_ROOF,
-            material: MAT_TWIG,
-            hp: 100,
-            n_costs: 1,
-            costs: [(0, 2), (0, 0)],
-        };
-        let mut pieces = Pieces::new();
-        let nod = Deploys::new();
-        let mut ev = EventQueue::default();
-        let mut p = player_at_cell_center(&[(0, 200), (1, 50)]);
-
-        // NW and SE pair across diagonal B.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            7,
-            CX,
-            CZ,
-            0,
-            LOC_TRI_XLO_ZLO,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            7,
-            CX,
-            CZ,
-            0,
-            LOC_TRI_XHI_ZHI,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
-        // NE overlaps both standing halves: refused as a spot.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            7,
-            CX,
-            CZ,
-            0,
-            LOC_TRI_XHI_ZLO,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev),
-            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
-        );
-        // A full foundation over the pair: same refusal.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            0,
-            CX,
-            CZ,
-            0,
-            LOC_PLANE,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev),
-            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
-        );
-        // Diagonal A would bisect both halves: refused. Diagonal B is
-        // their shared hypotenuse: it stands.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            1,
-            CX,
-            CZ,
-            0,
-            LOC_DIAG_A,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev),
-            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
-        );
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            1,
-            CX,
-            CZ,
-            0,
-            LOC_DIAG_B,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
-        assert_eq!(pieces.cols().get(CX, CZ).diag_b, 1, "diag in the index");
-
-        // A tri floor one storey up, on the hypotenuse wall alone: the NW
-        // half's own hyp is B, which is exactly what stands below.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            8,
-            CX,
-            CZ,
-            1,
-            LOC_TRI_XLO_ZLO,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev).0,
-            crate::world::EV_PIECE_PLACED,
-            "the diagonal wall bears the tri floor above it"
-        );
-        // A crossed sibling in THIS cell is a spot conflict with the
-        // standing NW floor; the honest support case is next door, where
-        // a tri floor has neither a side edge nor a hypotenuse below.
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            8,
-            CX,
-            CZ,
-            1,
-            LOC_TRI_XHI_ZLO,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev),
-            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
-        );
-        place(
-            SEED,
-            hv(),
-            &bc,
-            &nod,
-            &mut pieces,
-            &mut p,
-            0,
-            8,
-            CX + 1,
-            CZ,
-            1,
-            LOC_TRI_XLO_ZLO,
-            false,
-            0,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev),
-            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SUPPORT)
-        );
-
-        // Knock the diagonal out: the tri floor above falls with it.
-        let di = pieces.find_index(CX, CZ, 0, LOC_DIAG_B).unwrap();
-        let mut budget = 8;
-        crate::deploy::drop_piece(
-            &crate::deploy::DeployContent::probe_fixture(),
-            &mut pieces,
-            &mut Deploys::new(),
-            di,
-            SHAPE_WALL,
-            &mut ev,
-        );
-        collapse_from(
-            &crate::deploy::DeployContent::probe_fixture(),
-            &bc,
-            &mut pieces,
-            &mut Deploys::new(),
-            (CX, CZ, 0, LOC_DIAG_B),
-            &mut budget,
-            &mut ev,
-        );
-        assert!(
-            pieces.find(CX, CZ, 1, LOC_TRI_XLO_ZLO).is_none(),
-            "the tri floor lost its hypotenuse and fell"
-        );
-    }
-
     #[test]
     fn terrain_refuses_the_sea() {
         let bc = BuildContent::probe_fixture();
@@ -3532,24 +4615,21 @@ mod tests {
         let mut pieces = Pieces::new();
         let nod = Deploys::new();
         for i in 0..MAX_PIECES {
-            assert!(pieces.insert(
+            assert!(pieces.insert_at_origin(
                 PieceRec {
                     cx: (i % MAX_BUILD_COORD) as u16,
                     cz: (i / MAX_BUILD_COORD) as u16,
                     level: 0,
                     loc: LOC_PLANE,
                     row: 0,
-                    facing: 0,
                     hp: 1,
-                    uh: 0,
-                    dmg: 0,
-                    plate: 0,
+                    ..PieceRec::default()
                 },
                 SHAPE_FOUNDATION,
                 0
             ));
         }
-        assert!(!pieces.insert(PieceRec::default(), SHAPE_FOUNDATION, 0));
+        assert!(!pieces.insert_at_origin(PieceRec::default(), SHAPE_FOUNDATION, 0));
         assert_eq!(pieces.len(), MAX_PIECES);
 
         let bc = BuildContent::probe_fixture();
@@ -3983,8 +5063,6 @@ mod tests {
         for (shape, loc) in [
             (SHAPE_WALL, LOC_EDGE_XLO),
             (SHAPE_WALL, LOC_EDGE_ZLO),
-            (SHAPE_WALL, LOC_DIAG_A),
-            (SHAPE_WALL, LOC_DIAG_B),
             (SHAPE_DOORWAY, LOC_EDGE_XLO),
             (SHAPE_DOORWAY, LOC_EDGE_ZLO),
             (SHAPE_WINDOW, LOC_EDGE_XLO),
@@ -4005,7 +5083,9 @@ mod tests {
                 plate: 1,
                 ..PieceRec::default()
             };
-            assert!(pieces.insert(rec, shape, 123));
+            assert!(pieces.insert_at_origin(rec, shape, 123));
+            // As stored: the store minted its id and placed it.
+            let rec = pieces.entries()[0];
             if shape == SHAPE_DOORWAY {
                 pieces.set_door(CX, CZ, 2, loc, true);
             }
@@ -4050,7 +5130,7 @@ mod tests {
             plate: 1,
             ..PieceRec::default()
         };
-        assert!(pieces.insert(
+        assert!(pieces.insert_at_origin(
             PieceRec {
                 loc: LOC_PLANE,
                 row: SHAPE_FLOOR,
@@ -4059,7 +5139,8 @@ mod tests {
             SHAPE_FLOOR,
             122
         ));
-        assert!(pieces.insert(rec, SHAPE_STAIRS, 123));
+        assert!(pieces.insert_at_origin(rec, SHAPE_STAIRS, 123));
+        let rec = pieces.entries()[1];
         let p = player_at_cell_center(&[]);
         let deploys = Deploys::new();
         for (turn, loc) in STAIR_LOCS.into_iter().enumerate() {
@@ -4078,7 +5159,21 @@ mod tests {
                 &mut ev,
             );
             assert_eq!(pieces.len(), 2);
-            assert_eq!(pieces.entries()[1], PieceRec { loc: next, ..rec });
+            let turned = pieces.entries()[1];
+            assert_eq!(
+                turned,
+                PieceRec {
+                    loc: next,
+                    sock: turned.sock,
+                    ..rec
+                }
+            );
+            // The footprint turned with the grid's name for it.
+            let origin = pieces.frame(rec.bld).and_then(grid_origin).unwrap();
+            assert_eq!(
+                crate::sock::to_grid(origin.0, origin.1, &turned.sock),
+                Some((CX, CZ, next))
+            );
             assert_eq!(pieces.placed(), &[122, 123]);
             assert!(pieces.find(CX, CZ, 2, loc).is_none());
             assert_eq!(ev.len(), 2);
@@ -4095,7 +5190,8 @@ mod tests {
             for (i, mask) in masks.into_iter().enumerate() {
                 assert_eq!(mask, if i == (turn + 1) % 4 { 1 << 2 } else { 0 });
             }
-            let base = column_floor_y(SEED, hv(), CX, CZ, 1) + 2.0 * LEVEL_H_M;
+            // The fixture's building stands on band 0.
+            let base = band_y(pieces.frame(rec.bld).unwrap().band) + 2.0 * LEVEL_H_M;
             let ground = crate::collide::piece_ground(
                 SEED,
                 hv(),
@@ -5086,18 +6182,13 @@ mod tests {
     /// a fixture reads `SHAPE_FLOOR` where the store reads `row`. Covers
     /// all six — the probe fixture has no stairs and no roof, and both are
     /// clauses of the support rule this section is about.
+    /// One twig row per shape, the row's index its shape code — so a
+    /// fixture can put `row: shape` and the lattice rules, which read a
+    /// neighbour's shape off its row, read the shape it meant.
     fn collapse_content() -> BuildContent {
-        let shapes = [
-            SHAPE_FOUNDATION,
-            SHAPE_WALL,
-            SHAPE_DOORWAY,
-            SHAPE_FLOOR,
-            SHAPE_STAIRS,
-            SHAPE_ROOF,
-        ];
         let mut b = BuildContent::EMPTY;
-        b.piece_count = shapes.len() as u16;
-        for (row, &shape) in shapes.iter().enumerate() {
+        b.piece_count = SHAPE_TRI_FLOOR_FRAME as u16 + 1;
+        for (row, shape) in (0..=SHAPE_TRI_FLOOR_FRAME).enumerate() {
             b.pieces[row] = PieceDef {
                 shape,
                 material: MAT_TWIG,
@@ -5138,6 +6229,7 @@ mod tests {
             assert!(!try_put(&mut pieces, CX, CZ, 1, loc, SHAPE_STAIRS));
             assert!(!try_put(&mut pieces, CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
             let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+            let gone = pieces.entries()[i].addr();
             pieces.remove_at(i, SHAPE_FOUNDATION);
             let mut budget = MAX_COLLAPSE_PIECES;
             assert_eq!(
@@ -5146,7 +6238,7 @@ mod tests {
                     &bc,
                     &mut pieces,
                     &mut Deploys::new(),
-                    (CX, CZ, 0, LOC_PLANE),
+                    gone,
                     &mut budget,
                     &mut EventQueue::default()
                 ),
@@ -5161,26 +6253,40 @@ mod tests {
     /// `supported()` the place verb runs would have taken it: a fixture
     /// that could never have been built is not evidence about a base.
     fn try_put(pieces: &mut Pieces, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) -> bool {
-        if !loc_fits_shape(shape, loc)
+        let bc = collapse_content();
+        let Some(sock) = crate::sock::from_grid(0, 0, cx, cz, loc) else {
+            return false;
+        };
+        let site = Site {
+            addr: crate::sock::PieceAddr {
+                bld: 0,
+                level,
+                sock,
+            },
+            mint: pieces
+                .frame(0)
+                .is_none()
+                .then(|| crate::frame::Frame::new((0, 0), 0, 0)),
+            grid: Some((cx, cz, loc)),
+        };
+        let frame = *site.frame(pieces).unwrap();
+        if crate::support::foot_of(shape) != sock.foot
             || level >= MAX_BUILD_LEVELS as u8
-            || pieces.find(cx, cz, level, loc).is_some()
-            || cell_body_conflict(pieces, cx, cz, level, loc)
-            || !supported(pieces, shape, cx, cz, level, loc)
+            || pieces.find_addr(&site.addr).is_some()
+            || site_conflict(&bc, pieces, &site, shape, &frame)
+            || !crate::support::supported(pieces, &bc, shape, &site.addr)
         {
             return false;
         }
-        pieces.insert(
+        pieces.insert_at_origin(
             PieceRec {
                 cx,
                 cz,
                 level,
                 loc,
                 row: shape,
-                facing: 0,
                 hp: 100,
-                uh: 0,
-                dmg: 0,
-                plate: 0,
+                ..PieceRec::default()
             },
             shape,
             0,
@@ -5390,13 +6496,14 @@ mod tests {
                     bc.pieces[row as usize].shape
                 };
                 let i = fast.find_index(vx, vz, vl, vloc).unwrap();
+                let gone = fast.entries()[i].addr();
                 fast.remove_at(i, shape);
                 let fell = collapse_from(
                     &dc,
                     &bc,
                     &mut fast,
                     &mut nod,
-                    (vx, vz, vl, vloc),
+                    gone,
                     &mut tick_budget(),
                     &mut ev,
                 );
@@ -5426,6 +6533,100 @@ mod tests {
         }
     }
 
+    /// `find` probes an address table now, not the store: through inserts
+    /// and swap-removes in a random order it must answer exactly what the
+    /// scan it replaced would — every live address at its own index, every
+    /// gone one absent.
+    #[test]
+    fn address_index_churn_matches_a_scan() {
+        let mut rng = crate::rng::Pcg32::new(0x0ADD_2E55, 3);
+        let mut pieces = Pieces::new();
+        let scan = |p: &Pieces, cx: u16, cz: u16, level: u8, loc: u8| {
+            p.entries()
+                .iter()
+                .position(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+        };
+        for _ in 0..20_000 {
+            let cx = CX + rng.next_bounded(24) as u16;
+            let cz = CZ + rng.next_bounded(24) as u16;
+            let level = rng.next_bounded(4) as u8;
+            // Every footprint the grid names (the right-angled halves and
+            // diagonals are gone with freeform W3).
+            let loc = [
+                LOC_PLANE,
+                LOC_EDGE_XLO,
+                LOC_EDGE_ZLO,
+                LOC_RISER,
+                LOC_RISER_XHI,
+                LOC_RISER_ZLO,
+                LOC_RISER_XLO,
+            ][rng.next_bounded(7) as usize];
+            if rng.next_bounded(3) == 0 && !pieces.is_empty() {
+                let i = rng.next_bounded(pieces.len() as u32) as usize;
+                let shape = pieces.entries()[i].row;
+                pieces.remove_at(i, shape);
+            } else if scan(&pieces, cx, cz, level, loc).is_none() {
+                let rec = PieceRec {
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                    row: SHAPE_FOUNDATION,
+                    ..PieceRec::default()
+                };
+                assert!(pieces.insert_at_origin(rec, SHAPE_FOUNDATION, 0));
+            }
+            assert_eq!(
+                pieces.find_index(cx, cz, level, loc),
+                scan(&pieces, cx, cz, level, loc)
+            );
+        }
+        for (i, r) in pieces.entries().iter().enumerate() {
+            assert_eq!(pieces.find_index(r.cx, r.cz, r.level, r.loc), Some(i));
+        }
+    }
+
+    /// The placement rules read occupancy off the column index, not the
+    /// store, so the client's mirror can ask them too (`check_place`). That
+    /// is only the same rule while the index answers exactly what `find`
+    /// does: on a grown base and on what is left after every third piece
+    /// goes, every address around it must agree.
+    #[test]
+    fn occupancy_from_the_index_is_the_store() {
+        let agree = |pieces: &Pieces, stage: &str| {
+            for cx in CX - 9..CX + 10 {
+                for cz in CZ - 9..CZ + 10 {
+                    for level in 0..MAX_BUILD_SOCKETS as u8 {
+                        for loc in 0..=LOC_RISER_XLO {
+                            assert_eq!(
+                                occupied_at(pieces.cols(), cx, cz, level, loc),
+                                pieces.find(cx, cz, level, loc).is_some(),
+                                "{stage}: ({cx}, {cz}, {level}, {loc})"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        let grow: [fn(&mut Pieces); 2] = [
+            |p| grow_from_one_foundation(p, CX, CZ, 50),
+            grow_stacks_and_a_landing,
+        ];
+        for build in grow {
+            let mut pieces = Pieces::new();
+            build(&mut pieces);
+            agree(&pieces, "grown");
+            // `try_put` files the shape as the row.
+            let mut i = 0;
+            while i < pieces.len() {
+                let shape = pieces.entries()[i].row;
+                pieces.remove_at(i, shape);
+                i += 2;
+            }
+            agree(&pieces, "thinned");
+        }
+    }
+
     /// The gap this exists for: take the legs out and the base comes down.
     #[test]
     fn a_foundation_takes_its_whole_tower_with_it() {
@@ -5439,13 +6640,14 @@ mod tests {
         let before: Vec<PieceRec> = pieces.entries().to_vec();
 
         let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        let gone = pieces.entries()[i].addr();
         crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
         let fell = collapse_from(
             &dc,
             &bc,
             &mut pieces,
             &mut nod,
-            (CX, CZ, 0, LOC_PLANE),
+            gone,
             &mut tick_budget(),
             &mut ev,
         );
@@ -5543,13 +6745,14 @@ mod tests {
         assert!(try_put(&mut pieces, CX + 1, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
 
         let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        let gone = pieces.entries()[i].addr();
         crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
         let fell = collapse_from(
             &dc,
             &bc,
             &mut pieces,
             &mut nod,
-            (CX, CZ, 0, LOC_PLANE),
+            gone,
             &mut tick_budget(),
             &mut ev,
         );
@@ -5579,13 +6782,14 @@ mod tests {
         );
 
         let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        let gone = pieces.entries()[i].addr();
         crate::deploy::drop_piece(&dc, &mut pieces, &mut nod, i, SHAPE_FOUNDATION, &mut ev);
         let fell = collapse_from(
             &dc,
             &bc,
             &mut pieces,
             &mut nod,
-            (CX, CZ, 0, LOC_PLANE),
+            gone,
             &mut tick_budget(),
             &mut ev,
         );
@@ -5754,6 +6958,9 @@ mod tests {
             body: Body::at(SEED, hv(), 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
             ..Player::default()
         };
+        // The corner cell is open sea: stand the builder on its foundation,
+        // not on the sea floor under it, where it would be swimming.
+        p.body.qy = 0;
         p.inv[0] = ItemStack {
             item: 0,
             count: 9,
@@ -5804,7 +7011,7 @@ mod tests {
             LOC_PLANE,
             crate::footprint::Pose {
                 ox: 0,
-                oz: 60,
+                oz: 80,
                 yaw: 0,
             },
             &mut ev,

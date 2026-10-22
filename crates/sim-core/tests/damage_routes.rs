@@ -246,6 +246,15 @@ const ROUTES: &[(&str, bool, bool, &str)] = &[
          standing when it bit",
     ),
     (
+        "world.rs",
+        false,
+        true,
+        "drowning (the water pass, `World::breathe`) — the breath ran out: \
+         metabolic, like the cold, so a plate does not breathe for you. The \
+         drowning itself points nowhere (the water is on every side); the \
+         file announces `EV_HURT` for the bites it also lands",
+    ),
+    (
         "survival.rs",
         false,
         false,

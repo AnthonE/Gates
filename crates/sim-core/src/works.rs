@@ -50,7 +50,7 @@ pub const WORK_EV_LIT: u32 = 2;
 pub const WORK_EV_FALLBACK: u32 = 3;
 /// Its tank ran dry: the ceiling is off.
 pub const WORK_EV_EMBERS: u32 = 4;
-/// Fuel went into a dry tank; `c` is who.
+/// Fuel went into a dry tank, at least [`rekindle_min`]; `c` is who.
 pub const WORK_EV_REKINDLED: u32 = 5;
 pub const WORK_EV_MAX: u32 = WORK_EV_REKINDLED;
 
@@ -77,7 +77,8 @@ pub const REFUSE_A_KIND: u32 = 1;
 pub const REFUSE_A_REACH: u32 = 2;
 /// Not open yet.
 pub const REFUSE_A_SEALED: u32 = 3;
-/// You carry nothing it still needs.
+/// You carry nothing it still needs (or too little fuel to relight a dry
+/// tank, [`rekindle_min`]).
 pub const REFUSE_A_NOTHING: u32 = 4;
 /// Already burning: it takes fuel now, not its quota.
 pub const REFUSE_A_LIT: u32 = 5;
@@ -95,6 +96,8 @@ pub const REFUSE_A_MAX: u32 = REFUSE_A_CAP;
 
 /// How close to a work's terminal a deposit must be, metres.
 pub const WORK_REACH_M: f32 = 4.0;
+/// A dry tank relights only on a tenth of a full one ([`rekindle_min`]).
+const REKINDLE_DIV: u32 = 10;
 /// How often works open, light and burn: every ten seconds.
 pub const WORKS_PERIOD_TICKS: u64 = 10 * TICK_HZ as u64;
 /// Which tick of the period, so the sweep does not share one with the
@@ -488,6 +491,14 @@ pub fn knob_pct(wc: &WorksContent, unlocks: u32, knob: u8) -> u32 {
     pct
 }
 
+/// The least fuel that relights `def`'s dry tank: a tenth of a full one.
+/// A single unit would switch the ceiling on for a minute and earn the
+/// rekindle deed each time, so the exchange's wide gate (and every other
+/// ceiling) would cost one lowgrade. A tank still burning takes any amount.
+pub fn rekindle_min(def: &WorkDef) -> u32 {
+    (def.fuel_max / REKINDLE_DIV).max(1)
+}
+
 /// The burn rate at `players` online, per cent of full.
 fn burn_pct(wc: &WorksContent, players: u32) -> u32 {
     let (quiet, busy) = (wc.quiet_players as u32, wc.busy_players as u32);
@@ -636,12 +647,12 @@ pub fn act(
                 return refuse(events, REFUSE_A_FULL);
             }
             let take = inv_count(&p.inv, def.fuel).min(room);
-            if take == 0 {
+            let dry = w.fuel == 0;
+            if take == 0 || (dry && take < rekindle_min(&def)) {
                 return refuse(events, REFUSE_A_NOTHING);
             }
             inv_take(&mut p.inv, def.fuel, take);
             events.push(EV_GAVE, p.id, (def.fuel as u32) << 16 | k as u32, take);
-            let dry = w.fuel == 0;
             w.fuel += take;
             // A full tank is worth a quarter of a quota's credit.
             let share = (take as u64 * 2_500 / def.fuel_max as u64).max(1);

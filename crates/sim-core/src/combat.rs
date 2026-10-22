@@ -562,6 +562,16 @@ pub const WEAR_HEAD: u8 = 1;
 pub const WEAR_BODY: u8 = 2;
 /// `Player::worn[2]`: boots (Rust's, 2026-10-18).
 pub const WEAR_FEET: u8 = 3;
+/// `Player::worn[3..7]` (clothing v1, Rust's seven clothing slots): pants,
+/// gloves, the shirt under the body piece (a hoodie under a road sign
+/// jacket), and a mask or bandana under the hat. `WEAR_BODY` is the outer
+/// torso layer from here on: vests, plates, jackets, ponchos.
+pub const WEAR_LEGS: u8 = 4;
+pub const WEAR_HANDS: u8 = 5;
+pub const WEAR_SHIRT: u8 = 6;
+pub const WEAR_FACE: u8 = 7;
+// `ArmorDef::fills` is a bit per slot in a byte.
+const _: () = assert!(crate::limits::WEAR_SLOTS <= 8);
 
 /// The most a whole worn set may take off one hit, in percent.
 ///
@@ -598,11 +608,13 @@ pub struct ArmorDef {
     /// refuses a row past 90, so a `u8` cannot be overrun by content.
     pub reduction_pct: u8,
     /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
-    /// `WEAR_NONE`, `WEAR_HEAD`, `WEAR_BODY` or `WEAR_FEET`.
+    /// `WEAR_NONE`, or `WEAR_HEAD` through `WEAR_FACE`.
     pub slot: u8,
-    /// Rust's Full Body layer (the hazmat suit): worn in `slot`, it fills
-    /// every other wear slot too (`wear_clashes`).
-    pub full: bool,
+    /// The other wear slots this piece fills, a bit per zero-based slot
+    /// (clothing v1, Rust's two-layer pieces): a snow jacket fills the
+    /// shirt, a coffee can the face, the hazmat suit (Rust's Full Body)
+    /// every slot. Nothing goes on in a filled slot (`wear_clashes`).
+    pub fills: u8,
 }
 
 /// The whole combat ruleset the sim knows. Construction input like the
@@ -653,6 +665,10 @@ pub struct CombatContent {
     /// 100 for that reason and it is the one field of this struct whose
     /// inert value is not zero.
     pub arrow_break_pct: u16,
+    /// The share of the hp a hit takes that opens a wound, per cent
+    /// (`[survival] bleed_pct`, Rust's bleeding): `hurt` adds it to
+    /// `Player::bleed`, which the survival clock bleeds out. Zero is none.
+    pub bleed_pct: u16,
     /// Ticks an arrow that DEALT DAMAGE waits before it may be taken back
     /// (`globals.arrow_lodge_s` × `TICK_HZ`, baked). A missed arrow is
     /// takeable on the tick it lands, so this number prices exactly one
@@ -752,7 +768,7 @@ impl CombatContent {
         armor: [ArmorDef {
             reduction_pct: 0,
             slot: WEAR_NONE,
-            full: false,
+            fills: 0,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
         // 100, not 0 — see the field. An inert recovery rule must destroy
@@ -760,6 +776,7 @@ impl CombatContent {
         // row silently giving ammunition back forever) is the one that
         // cannot be noticed by looking at the game.
         arrow_break_pct: 100,
+        bleed_pct: 0,
         arrow_lodge_ticks: 0,
         cond_max: [0; MAX_ITEM_DEFS],
         shot_wear: [0; MAX_ITEM_DEFS],
@@ -832,12 +849,12 @@ impl CombatContent {
         c.armor[4] = ArmorDef {
             reduction_pct: 10,
             slot: WEAR_HEAD,
-            full: false,
+            fills: 0,
         };
         c.armor[5] = ArmorDef {
             reduction_pct: 20,
             slot: WEAR_BODY,
-            full: false,
+            fills: 0,
         };
         // **Item 6 is a hitscan firearm and item 7 is its round**, and this
         // row is the whole reason `probe_combat`'s rewind claim is true.
@@ -1270,6 +1287,16 @@ pub fn holstered(cc: &CombatContent, gc: &crate::gather::GatherContent, p: &Play
     p.safe && drawn_weapon(cc, gc, held_item(p))
 }
 
+/// A swimmer with a bow, a gun or a charge in hand: the reference fires
+/// nothing but melee in the water, so the hand does nothing (`World::tick`).
+#[inline]
+pub fn waterlogged(cc: &CombatContent, p: &Player) -> bool {
+    let item = held_item(p);
+    item != NO_ITEM
+        && crate::movement::swimming(&p.body)
+        && (cc.held_ranged(item).is_some() || cc.held_throw(item).is_some())
+}
+
 /// Whether the safe zone protects this body: inside it and not hostile.
 #[inline]
 pub fn protected(v: &Player) -> bool {
@@ -1299,6 +1326,22 @@ pub fn knuckles(cc: &CombatContent, p: &mut Player, events: &mut EventQueue) {
 
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
+    let h = burn(cc, v, raw);
+    // Rust's bleeding: a hit opens a wound worth a share of what got
+    // through the armor, and the survival clock bleeds it out
+    // (`survival::step`) until a bandage closes it.
+    let opened = (u32::from(h.dealt) * u32::from(cc.bleed_pct) / 100) as u16;
+    v.bleed = v
+        .bleed
+        .saturating_add(opened)
+        .min(crate::survival::BLEED_MAX);
+    h
+}
+
+/// [`hurt`] without the wound: fire scorches, it does not cut. Armor still
+/// blunts it and wears for it, exactly as for a hit.
+#[inline]
+pub fn burn(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     let pct = worn_pct(cc, v);
     wear_worn(cc, v, raw);
     debit(v, reduce(raw, pct))
@@ -1419,8 +1462,9 @@ pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
 }
 
 /// Whether `item` landing in wear slot `s` clashes with what else is worn:
-/// a full-body piece (`ArmorDef::full`, Rust's hazmat suit) goes on over
-/// nothing, and nothing goes on over it. The other slots are read as they
+/// a piece that fills another slot (`ArmorDef::fills`: a snow jacket the
+/// shirt, the hazmat suit every slot) goes on over nothing in it, and
+/// nothing goes on in a slot something worn fills. The other slots are read as they
 /// stand, which is right for every move `wearable_in` lets through: it
 /// refuses wear-to-wear moves between slots, so the slot a landing stack
 /// leaves is never another wear slot.
@@ -1431,10 +1475,17 @@ pub fn wear_clashes(
     item: u16,
     s: u8,
 ) -> bool {
-    let full = |i: u16| (i as usize) < MAX_ITEM_DEFS && cc.armor[i as usize].full;
-    worn.iter()
-        .enumerate()
-        .any(|(t, w)| t != s as usize && w.count > 0 && (full(item) || full(w.item)))
+    let fills = |i: u16| {
+        if (i as usize) < MAX_ITEM_DEFS {
+            cc.armor[i as usize].fills
+        } else {
+            0
+        }
+    };
+    let mine = fills(item);
+    worn.iter().enumerate().any(|(t, w)| {
+        t != s as usize && w.count > 0 && (mine & (1 << t) != 0 || fills(w.item) & (1 << s) != 0)
+    })
 }
 
 /// What gets through `pct` percent of protection.

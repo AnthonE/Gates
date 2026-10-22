@@ -1,8 +1,10 @@
 //! The arc's two screens (`ARC.md` F4):
 //!
-//! - **WORK** — `E` at a work's terminal: its state, its quota line by line
-//!   with what you carry and a DEPOSIT for each, and once it burns its tank
-//!   and FUEL.
+//! - **WORK** — `E` at a work's terminal, Rust's monument card: its three
+//!   steps (sealed, open, burning) with the one it is on lit, one sentence on
+//!   what to do now, what it unlocks for everybody (the things it lets anyone
+//!   make or buy, and what its tank boosts), then its quota line by line with
+//!   a picture, a bar, what is still owed and a DEPOSIT, and its tank.
 //! - **ISLAND** — `O` anywhere: the act, every work's bar, what each one
 //!   gives the whole server, and what the island holds now.
 //!
@@ -13,15 +15,30 @@
 use bevy::prelude::*;
 
 use super::kit::{self, BAR_FILL, BAR_TANK};
-use super::{Panel, Ui, LINE_HOT, TEXT, TEXT_DIM};
+use super::{Panel, Ui, BADGE, CELL_BG, CELL_FULL, LINE_HOT, TEXT, TEXT_DIM, TEXT_SHORT};
 use crate::render::feed::{Feed, Refused};
+use crate::render::icons::Icons;
 use crate::ui::arc as words;
 use crate::ui::craft::item_label;
+use client_core::arc::WorkView;
 use client_core::core::ClientCore;
-use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_LIT, WORK_OPEN};
+use sim_core::works::{ARG_ALL, NO_UNLOCK, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_LIT, WORK_OPEN};
 
-const WORK_W: f32 = 600.0;
+const WORK_W: f32 = 680.0;
 const ISLAND_W: f32 = 640.0;
+/// A standings board's column, and the gap between two: two to a row.
+const BOARD_W: f32 = 296.0;
+const BOARD_GAP: f32 = 12.0;
+/// A quota line's picture, px.
+const ICON_PX: f32 = 34.0;
+/// The label on the right of the work's own bar.
+const BAR_LABEL_W: f32 = 80.0;
+/// How many of an unlock's items its card pictures, and names.
+const UNLOCK_ICONS: usize = 8;
+const UNLOCK_NAMES: usize = 4;
+/// A step behind the work, and an unlock the island holds: the badge's
+/// green, dark.
+const STEP_DONE: Color = Color::srgba(0.20, 0.27, 0.13, 0.95);
 
 /// A press on a work: `ACT_ARC`'s op, target and argument.
 #[derive(Component, Clone, Copy)]
@@ -36,7 +53,7 @@ fn now(core: &ClientCore) -> f64 {
     core.clock.server_est
 }
 
-pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
+pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
     let k = ui.work as usize;
     let Some(w) = core.arc.works.get(k).filter(|w| w.known).copied() else {
         kit::screen(commands, WORK_W, |p| {
@@ -49,20 +66,50 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     let have = |item: u16| sim_core::craft::inv_count(&core.inv, item);
     kit::screen(commands, WORK_W, |p| {
         kit::header(p, w.name(), Some(words::act_title(w.def.act)), &ui.status);
-        kit::strong(p, words::state_line(&w, now(core)), 14.0, TEXT);
+        steps(p, &w);
+        kit::line(p, words::todo_line(&w, now(core)), 13.0, TEXT);
         match w.state {
-            WORK_LIT if w.def.fuel_max > 0 => kit::bar(p, words::tank_pct(&w) * 10, BAR_TANK, None),
+            WORK_LIT if w.def.fuel_max > 0 => labelled_bar(
+                p,
+                words::tank_pct(&w) * 10,
+                BAR_TANK,
+                format!("TANK {}%", words::tank_pct(&w)),
+            ),
             WORK_LIT => {}
-            _ => kit::bar(p, w.progress_pm(), BAR_FILL, None),
-        }
-        let gives = words::gives_line(&w);
-        if !gives.is_empty() {
-            kit::line(p, format!("GIVES EVERYONE  {gives}"), 12.0, LINE_HOT);
+            _ => labelled_bar(
+                p,
+                w.progress_pm(),
+                BAR_FILL,
+                format!("{}% FILLED", w.progress_pm() / 10),
+            ),
         }
 
-        kit::section(p, "THE QUOTA");
+        unlocks(p, core, icons, &w);
+
         let open = w.state == WORK_OPEN;
-        let mut any = false;
+        if w.state != WORK_LIT {
+            let any = w
+                .def
+                .inputs
+                .iter()
+                .enumerate()
+                .take(w.def.n_inputs as usize)
+                .any(|(i, input)| have(input.item) > 0 && w.got[i] < input.need);
+            section_with(p, "WHAT IT NEEDS", |r| {
+                kit::button(
+                    r,
+                    "DEPOSIT ALL",
+                    ArcButton {
+                        op: OP_DEPOSIT,
+                        target: k as u8,
+                        arg: ARG_ALL,
+                    },
+                    open && any,
+                );
+            });
+        } else {
+            kit::section(p, "WHAT IT TOOK");
+        }
         for (i, input) in w
             .def
             .inputs
@@ -73,61 +120,69 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
             let got = w.got[i].min(input.need);
             let carry = have(input.item);
             let left = input.need - got;
-            any |= open && carry > 0 && left > 0;
+            let pm = (got as u64 * 1000 / input.need.max(1) as u64) as u32;
             kit::row(p, |r| {
+                icon(r, core, icons, input.item, ICON_PX);
+                name_bar(r, item_label(&core.catalog, input.item), pm, BAR_FILL);
+                kit::cell(r, words::quota_count(got, input.need), 110.0, TEXT);
                 kit::cell(
                     r,
-                    item_label(&core.catalog, input.item).to_uppercase(),
-                    150.0,
-                    TEXT,
+                    words::quota_left(got, input.need),
+                    86.0,
+                    if left == 0 { BADGE } else { TEXT_DIM },
                 );
                 kit::cell(
                     r,
-                    format!("{got} / {}", input.need),
-                    140.0,
-                    kit::count_color(got, input.need),
-                );
-                kit::cell(r, format!("you carry {carry}"), 130.0, TEXT_DIM);
-                kit::button(
-                    r,
-                    "DEPOSIT",
-                    ArcButton {
-                        op: OP_DEPOSIT,
-                        target: k as u8,
-                        arg: i as u8,
+                    format!("you have {}", words::thousands(carry)),
+                    96.0,
+                    if carry > 0 && left > 0 {
+                        TEXT
+                    } else {
+                        TEXT_DIM
                     },
-                    open && carry > 0 && left > 0,
                 );
-            });
-        }
-        if w.state != WORK_LIT {
-            kit::row(p, |r| {
-                kit::button(
-                    r,
-                    "DEPOSIT EVERYTHING IT TAKES",
-                    ArcButton {
-                        op: OP_DEPOSIT,
-                        target: k as u8,
-                        arg: ARG_ALL,
-                    },
-                    any,
-                );
+                if w.state != WORK_LIT {
+                    kit::button(
+                        r,
+                        "DEPOSIT",
+                        ArcButton {
+                            op: OP_DEPOSIT,
+                            target: k as u8,
+                            arg: i as u8,
+                        },
+                        open && carry > 0 && left > 0,
+                    );
+                }
             });
         }
 
         if w.def.fuel_max > 0 {
-            kit::section(p, "THE TANK");
             let carry = have(w.def.fuel);
             let lit = w.state == WORK_LIT;
+            // A dry tank relights only on a tenth of a full one from one
+            // pack (`works::rekindle_min`); the sim refuses less.
+            let need = if w.fuel == 0 {
+                sim_core::works::rekindle_min(&w.def)
+            } else {
+                1
+            };
+            kit::section(p, "THE TANK");
             kit::row(p, |r| {
+                icon(r, core, icons, w.def.fuel, ICON_PX);
+                name_bar(
+                    r,
+                    item_label(&core.catalog, w.def.fuel),
+                    words::tank_pct(&w) * 10,
+                    BAR_TANK,
+                );
+                kit::cell(r, words::quota_count(w.fuel, w.def.fuel_max), 110.0, TEXT);
+                kit::cell(r, format!("-{} / h", w.def.burn_per_hour), 86.0, TEXT_DIM);
                 kit::cell(
                     r,
-                    item_label(&core.catalog, w.def.fuel).to_uppercase(),
-                    150.0,
-                    TEXT,
+                    format!("you have {}", words::thousands(carry)),
+                    96.0,
+                    if carry >= need { TEXT } else { TEXT_DIM },
                 );
-                kit::cell(r, format!("{} / {}", w.fuel, w.def.fuel_max), 140.0, TEXT);
-                kit::cell(r, format!("you carry {carry}"), 130.0, TEXT_DIM);
                 kit::button(
                     r,
                     "FUEL",
@@ -136,18 +191,22 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
                         target: k as u8,
                         arg: 0,
                     },
-                    lit && carry > 0 && w.fuel < w.def.fuel_max,
+                    lit && carry >= need && w.fuel < w.def.fuel_max,
                 );
             });
-            kit::line(
-                p,
-                format!(
-                    "burns {} an hour on a busy island, slower on a quiet one",
-                    w.def.burn_per_hour
-                ),
-                11.0,
-                TEXT_DIM,
-            );
+            if !lit {
+                kit::line(p, "the tank takes fuel once it burns", 11.0, TEXT_DIM);
+            } else if w.fuel == 0 {
+                kit::line(
+                    p,
+                    format!(
+                        "a dry tank relights on {} or more at once — pool it in one pack",
+                        words::thousands(need)
+                    ),
+                    11.0,
+                    TEXT_DIM,
+                );
+            }
         }
         if core.bank.work as usize == k {
             // THE EXCHANGE: carried JUNK leaves for the wallet here.
@@ -157,14 +216,15 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
             kit::section(p, "THE WAY OUT");
             kit::strong(p, state, 13.0, TEXT);
             kit::row(p, |r| {
+                icon(r, core, icons, bank.coin, ICON_PX);
                 kit::cell(
                     r,
                     item_label(&core.catalog, bank.coin).to_uppercase(),
-                    150.0,
+                    180.0,
                     TEXT,
                 );
-                kit::cell(r, format!("you carry {carry}"), 140.0, TEXT_DIM);
-                kit::cell(r, words::exit_room(&bank), 130.0, TEXT_DIM);
+                kit::cell(r, format!("you have {carry}"), 110.0, TEXT_DIM);
+                kit::cell(r, words::exit_room(&bank), 182.0, TEXT_DIM);
                 kit::button(
                     r,
                     "EXTRACT",
@@ -187,13 +247,285 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     });
 }
 
+/// The work's own bar, with what it measures on its right.
+fn labelled_bar(p: &mut ChildSpawnerCommands, pm: u32, fill: Color, label: String) {
+    kit::row(p, |r| {
+        kit::bar(r, pm, fill, Some(WORK_W - 28.0 - 10.0 - BAR_LABEL_W));
+        r.spawn((
+            Node {
+                width: Val::Px(BAR_LABEL_W),
+                justify_content: JustifyContent::FlexEnd,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            c.spawn((Text::new(label), super::font_bold(12.0), TextColor(TEXT)));
+        });
+    });
+}
+
+/// An item's picture, `px` square, or its name where there is none.
+fn icon(r: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, item: u16, px: f32) {
+    let name = item_label(&core.catalog, item);
+    let mut tile = r.spawn((
+        Node {
+            width: Val::Px(px),
+            height: Val::Px(px),
+            flex_shrink: 0.0,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(CELL_BG),
+        Pickable::IGNORE,
+    ));
+    match icons.item(&name) {
+        Some(h) => {
+            tile.insert(ImageNode {
+                color: crate::render::icons::PICTURE,
+                ..ImageNode::new(h)
+            });
+        }
+        None => {
+            let initial: String = name.chars().take(2).collect::<String>().to_uppercase();
+            tile.with_children(|t| {
+                t.spawn((
+                    Text::new(initial),
+                    super::font_bold(px * 0.38),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            });
+        }
+    }
+}
+
+/// A quota line's left half: the item's name over its own bar.
+fn name_bar(r: &mut ChildSpawnerCommands, name: String, pm: u32, fill: Color) {
+    r.spawn((
+        Node {
+            width: Val::Px(180.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(4.0),
+            ..default()
+        },
+        Pickable::IGNORE,
+    ))
+    .with_children(|c| {
+        c.spawn((
+            Text::new(name.to_uppercase()),
+            super::font_bold(13.0),
+            TextColor(TEXT),
+            Pickable::IGNORE,
+        ));
+        kit::bar(c, pm, fill, Some(180.0));
+    });
+}
+
+/// A section rule with something on its right: a button.
+fn section_with(
+    p: &mut ChildSpawnerCommands,
+    title: &str,
+    right: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    p.spawn((
+        Node {
+            margin: UiRect::top(Val::Px(6.0)),
+            padding: UiRect::bottom(Val::Px(3.0)),
+            border: UiRect::bottom(Val::Px(1.0)),
+            justify_content: JustifyContent::SpaceBetween,
+            align_items: AlignItems::FlexEnd,
+            ..default()
+        },
+        BorderColor::all(super::LINE),
+    ))
+    .with_children(|s| {
+        s.spawn((
+            Text::new(title),
+            super::font_bold(11.0),
+            TextColor(TEXT_DIM),
+        ));
+        right(s);
+    });
+}
+
+/// The three steps, Rust's monument progression: the ones behind in the
+/// badge's green, the one it is on lit, the one ahead dim.
+fn steps(p: &mut ChildSpawnerCommands, w: &WorkView) {
+    let (at, last) = words::step(w);
+    p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        margin: UiRect::vertical(Val::Px(4.0)),
+        ..default()
+    })
+    .with_children(|r| {
+        for (i, label) in words::STEPS.iter().enumerate() {
+            let label = if i == 2 { last } else { label };
+            let (bg, border, ink) = match i.cmp(&at) {
+                std::cmp::Ordering::Less => (STEP_DONE, BADGE, BADGE),
+                std::cmp::Ordering::Equal if last == "EMBERS" && i == 2 => {
+                    (CELL_FULL, TEXT_SHORT, TEXT_SHORT)
+                }
+                std::cmp::Ordering::Equal => (CELL_FULL, LINE_HOT, LINE_HOT),
+                std::cmp::Ordering::Greater => (CELL_BG, super::LINE, TEXT_DIM),
+            };
+            if i > 0 {
+                r.spawn((
+                    Node {
+                        width: Val::Px(36.0),
+                        height: Val::Px(2.0),
+                        ..default()
+                    },
+                    BackgroundColor(if i <= at { BADGE } else { super::LINE }),
+                ));
+            }
+            r.spawn((
+                Node {
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(5.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    column_gap: Val::Px(6.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(bg),
+                BorderColor::all(border),
+            ))
+            .with_children(|c| {
+                c.spawn((
+                    Text::new(format!("{}", i + 1)),
+                    super::font_bold(11.0),
+                    TextColor(TEXT_DIM),
+                ));
+                c.spawn((Text::new(label), super::font_bold(13.0), TextColor(ink)));
+            });
+        }
+    });
+}
+
+/// What the work gives everybody, as two cards side by side: what its
+/// burning unlocks for the rest of the wipe (and the things that lets
+/// anyone make or buy), and what its tank does while it holds fuel.
+fn unlocks(p: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, w: &WorkView) {
+    let floor = (w.def.floor != NO_UNLOCK).then(|| w.floor_name());
+    let ceiling = (w.def.ceiling != NO_UNLOCK).then(|| w.ceiling_name());
+    if floor.is_none() && ceiling.is_none() {
+        return;
+    }
+    kit::section(p, "WHAT IT UNLOCKS FOR EVERYONE");
+    p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        column_gap: Val::Px(10.0),
+        ..default()
+    })
+    .with_children(|r| {
+        if let Some(name) = floor {
+            let held = core.arc.holds(w.def.floor);
+            let items = words::unlocked_items(w.def.floor, &core.recipes, &core.vend);
+            unlock_card(r, name, "FOR THE WIPE", held, ("UNLOCKED", "LOCKED"), |c| {
+                if items.is_empty() {
+                    return;
+                }
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(4.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for &item in items.iter().take(UNLOCK_ICONS) {
+                        icon(row, core, icons, item, 28.0);
+                    }
+                });
+                let mut names: Vec<String> = items
+                    .iter()
+                    .take(UNLOCK_NAMES)
+                    .map(|&i| item_label(&core.catalog, i))
+                    .collect();
+                if items.len() > UNLOCK_NAMES {
+                    names.push(format!("+{} more", items.len() - UNLOCK_NAMES));
+                }
+                kit::line(
+                    c,
+                    format!("make or buy {}", names.join(", ")),
+                    11.0,
+                    TEXT_DIM,
+                );
+            });
+        }
+        if let Some(name) = ceiling {
+            let on = core.arc.holds(w.def.ceiling);
+            let boost = words::boost_line(w);
+            unlock_card(r, name, "WHILE IT BURNS", on, ("ON", "OFF"), |c| {
+                if let Some(b) = boost {
+                    kit::strong(c, b, 13.0, if on { LINE_HOT } else { TEXT });
+                }
+                if w.def.fuel_max > 0 {
+                    let fuel = item_label(&core.catalog, w.def.fuel);
+                    kit::line(c, format!("needs {fuel} in its tank"), 11.0, TEXT_DIM);
+                }
+            });
+        }
+    });
+}
+
+/// One of [`unlocks`]' cards: its name, how long it lasts, whether the
+/// island has it, and `body`.
+fn unlock_card(
+    r: &mut ChildSpawnerCommands,
+    name: &str,
+    lasts: &str,
+    held: bool,
+    (yes, no): (&str, &str),
+    body: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    r.spawn((
+        Node {
+            flex_grow: 1.0,
+            flex_basis: Val::Px(0.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(4.0),
+            padding: UiRect::all(Val::Px(8.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(if held { STEP_DONE } else { CELL_BG }),
+        BorderColor::all(if held { BADGE } else { super::LINE }),
+    ))
+    .with_children(|c| {
+        c.spawn(Node {
+            justify_content: JustifyContent::SpaceBetween,
+            ..default()
+        })
+        .with_children(|h| {
+            h.spawn((
+                Text::new(lasts),
+                super::font_bold(10.0),
+                TextColor(TEXT_DIM),
+            ));
+            h.spawn((
+                Text::new(if held { yes } else { no }),
+                super::font_bold(10.0),
+                TextColor(if held { BADGE } else { TEXT_DIM }),
+            ));
+        });
+        c.spawn((Text::new(name), super::font_bold(16.0), TextColor(TEXT)));
+        body(c);
+    });
+}
+
 /// An ISLAND tab: 0 the works, 1 the journal, 2 the standings.
 #[derive(Component, Clone, Copy)]
 pub struct IslandTab(pub u8);
 
-pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
+pub fn build_island(
+    commands: &mut Commands,
+    ui: &Ui,
+    core: &ClientCore,
+    friends: Option<&crate::friends::FriendSet>,
+) {
     let arc = &core.arc;
-    kit::screen(commands, ISLAND_W, |p| {
+    kit::page(commands, ui, ISLAND_W, |p| {
         kit::header(
             p,
             "THE ISLAND",
@@ -207,7 +539,7 @@ pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
         });
         match ui.island_tab {
             1 => journal(p, core),
-            2 => standings(p, core),
+            2 => standings(p, core, friends),
             _ => works(p, core),
         }
         kit::hint(p, "[O] OR [ESC] CLOSE");
@@ -263,42 +595,131 @@ fn works(p: &mut ChildSpawnerCommands, core: &ClientCore) {
 
 /// The wipe's standings: four boards and the last wipe's island, each with
 /// its top rows and where this player stands (`SUB_STANDING`).
-fn standings(p: &mut ChildSpawnerCommands, core: &ClientCore) {
+fn standings(
+    p: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    friends: Option<&crate::friends::FriendSet>,
+) {
     kit::line(
         p,
         "Ranked all wipe. What you give the works is yours for good; what \
          your base holds counts only if it is still yours when the wipe lands. \
          Where a board has a purse, its top places are paid to the wallet you \
-         play with after the wipe.",
+         play with after the wipe. Click a name to see their profile.",
         12.0,
         TEXT_DIM,
     );
+    let me = core
+        .tag(core.player_id)
+        .map(|t| t.address)
+        .filter(|a| !a.is_guest());
     let last = &core.standings[protocol::STANDING_BOARDS as usize - 1];
-    for (board, b) in core.standings.iter().enumerate() {
-        let board = board as u8;
-        if board == protocol::STANDING_BOARDS - 1 && last.n == 0 {
-            continue;
+    // Two boards a row, so all four fit a 720p screen without scrolling.
+    p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Wrap,
+        column_gap: Val::Px(BOARD_GAP),
+        row_gap: Val::Px(4.0),
+        ..default()
+    })
+    .with_children(|grid| {
+        for (board, b) in core.standings.iter().enumerate() {
+            let board = board as u8;
+            if board == protocol::STANDING_BOARDS - 1 && last.n == 0 {
+                continue;
+            }
+            grid.spawn(Node {
+                width: Val::Px(BOARD_W),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|p| board_column(p, b, board, me, friends));
         }
-        kit::section(p, &words::board_heading(b, board));
-        kit::line(p, words::board_blurb(board), 11.0, TEXT_DIM);
-        if let Some(purse) = words::purse_line(b) {
-            kit::strong(p, purse, 12.0, TEXT);
-        }
-        if b.n == 0 {
-            kit::line(p, "nobody yet — the board is open", 12.0, TEXT_DIM);
-        }
-        for i in 0..b.n as usize {
-            kit::row(p, |r| {
-                kit::cell(r, format!("#{}", i + 1), 40.0, TEXT_DIM);
-                kit::cell(r, b.name(i), 260.0, TEXT);
-                kit::cell(r, words::board_score(board, b.scores[i]), 140.0, TEXT);
-            });
-        }
-        kit::strong(p, words::standing_you(b), 12.0, LINE_HOT);
-        if let Some(prize) = words::prize_you(b) {
-            kit::line(p, prize, 12.0, LINE_HOT);
-        }
+    });
+}
+
+/// One board: its name and what it ranks, its purse, its top rows and where
+/// this player stands.
+fn board_column(
+    p: &mut ChildSpawnerCommands,
+    b: &protocol::StandingBoard,
+    board: u8,
+    me: Option<protocol::Address>,
+    friends: Option<&crate::friends::FriendSet>,
+) {
+    kit::section(p, &words::board_heading(b, board));
+    kit::line(p, words::board_blurb(board), 11.0, TEXT_DIM);
+    if let Some(purse) = words::purse_line(b) {
+        kit::strong(p, purse, 12.0, TEXT);
     }
+    if b.n == 0 {
+        kit::line(p, "nobody yet — the board is open", 12.0, TEXT_DIM);
+    }
+    for i in 0..b.n as usize {
+        let wallet = b.wallet(i);
+        let mine = wallet.is_some() && wallet == me;
+        let ink = match wallet {
+            _ if mine => LINE_HOT,
+            Some(a) if friends.is_some_and(|f| f.has(&a)) => crate::render::ui::FRIEND,
+            _ => TEXT,
+        };
+        // A row's name as drawn: an alias in streamer mode (`ui::streamer`),
+        // keyed by the row's wallet.
+        let hex = wallet.map(|a| a.to_hex());
+        let name = crate::ui::names::shown_text(
+            b.name(i),
+            hex.as_ref().and_then(|h| core::str::from_utf8(h).ok()),
+        );
+        standing_row(p, wallet, &name, |r| {
+            kit::cell(r, format!("#{}", i + 1), 26.0, TEXT_DIM);
+            kit::cell(
+                r,
+                if mine {
+                    format!("{name} (you)")
+                } else {
+                    name.clone()
+                },
+                168.0,
+                ink,
+            );
+            kit::cell(r, words::board_score(board, b.scores[i]), 76.0, TEXT);
+        });
+    }
+    kit::strong(p, words::standing_you(b), 12.0, LINE_HOT);
+    if let Some(prize) = words::prize_you(b) {
+        kit::line(p, prize, 11.0, LINE_HOT);
+    }
+}
+
+/// One standings row: a button to the player's profile card when the row
+/// names a wallet, a plain row when it does not (a guest).
+fn standing_row(
+    p: &mut ChildSpawnerCommands,
+    wallet: Option<protocol::Address>,
+    name: &str,
+    body: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    let mut row = p.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(6.0),
+        padding: UiRect::axes(Val::Px(4.0), Val::Px(1.0)),
+        ..default()
+    });
+    if let Some(wallet) = wallet {
+        let rest = Color::NONE;
+        row.insert((
+            Button,
+            super::profile::ProfileOpen {
+                wallet,
+                name: name.to_string(),
+            },
+            BackgroundColor(rest),
+            super::Hover::on(rest),
+        ));
+    }
+    row.with_children(body);
 }
 
 /// What this player has learned: the glyphs, and the stones read.

@@ -84,8 +84,7 @@ fn site<'a>(pieces: &'a Pieces, bc: &'a BuildContent, inv: &'a [ItemStack; INV_S
         seed: SEED,
         haven: hv(),
         at: (0.0, 0.0),
-        taken: pieces.entries(),
-        cols: pieces.cols(),
+        store: pieces,
         content: bc,
         inv,
     }

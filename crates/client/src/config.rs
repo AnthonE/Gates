@@ -63,6 +63,10 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// `crates/client/tests/quality.rs` holds that against the literal values.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Quality {
+    /// For a machine that cannot hold LOW: the world drawn at 70% and
+    /// stretched, one short shadow cascade, the forest as hulls past 35 m.
+    /// What the auto-detect (`render/potato.rs`) drops a struggling browser to.
+    Potato,
     /// Everything off that can be off: no ambient occlusion, no bloom, no
     /// anti-aliasing, two short shadow cascades at half the map size, and
     /// trees that become hulls at 35 m.
@@ -79,6 +83,7 @@ impl Quality {
     /// The file's spelling, and the screen's.
     pub fn name(self) -> &'static str {
         match self {
+            Quality::Potato => "potato",
             Quality::Low => "low",
             Quality::Medium => "medium",
             Quality::High => "high",
@@ -90,6 +95,7 @@ impl Quality {
     /// meant, which is `flag`'s posture one type over.
     pub fn from_name(s: &str) -> Option<Self> {
         match s {
+            "potato" => Some(Quality::Potato),
             "low" => Some(Quality::Low),
             "medium" => Some(Quality::Medium),
             "high" => Some(Quality::High),
@@ -99,7 +105,12 @@ impl Quality {
 
     /// The ladder, cheapest first. The screen steps along it and
     /// `tests/quality.rs` walks it to check the tiers only ever get cheaper.
-    pub const LADDER: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
+    pub const LADDER: [Quality; 4] = [
+        Quality::Potato,
+        Quality::Low,
+        Quality::Medium,
+        Quality::High,
+    ];
 }
 
 /// How the cloud deck is drawn where the atmosphere draws it
@@ -268,6 +279,9 @@ pub struct Persisted {
     pub fov_deg: f32,
     /// How much the renderer is asked to do; see [`Quality`].
     pub quality: Quality,
+    /// The game may still pick the preset (`render/potato.rs`): true until
+    /// the player touches a graphics row. Absent in older files, so true.
+    pub quality_auto: bool,
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
@@ -325,6 +339,9 @@ pub struct Persisted {
     /// opt-in is what "enables it" means, and `reference/VOICE.md` §9.1 is
     /// what the other default costs.
     pub discord_share_server: bool,
+    /// Streamer mode (`ui::streamer`): made-up names, no wallets, no server
+    /// addresses on screen. Off by default.
+    pub streamer_mode: bool,
     /// The individual graphics rows, where the file overrode the preset.
     /// See [`GfxFile`] — a `None` is a key the file did not carry.
     pub gfx: GfxFile,
@@ -409,6 +426,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
                     v.quality = q;
                 }
             }
+            "quality_auto" => flag(&mut v.quality_auto, value),
             "sensitivity" => num(&mut v.sensitivity, value),
             "invert_look" => flag(&mut v.invert_look, value),
             "vsync" => flag(&mut v.vsync, value),
@@ -435,6 +453,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "shake" => num(&mut v.shake, value),
             "discord_presence" => flag(&mut v.discord_presence, value),
             "discord_share_server" => flag(&mut v.discord_share_server, value),
+            "streamer_mode" => flag(&mut v.streamer_mode, value),
             // ── the individual graphics rows ──────────────────────────────
             //
             // Each writes into an `Option`, so "absent" and "present and
@@ -591,6 +610,7 @@ pub fn serialize(
     s.push_str(&format!("version = {}\n", version.max(SETTINGS_VERSION)));
     s.push_str(&format!("fov_deg = {}\n", v.fov_deg));
     s.push_str(&format!("quality = \"{}\"\n", v.quality.name()));
+    s.push_str(&format!("quality_auto = {}\n", v.quality_auto));
     s.push_str(&format!("sensitivity = {}\n", v.sensitivity));
     s.push_str(&format!("invert_look = {}\n", v.invert_look));
     s.push_str(&format!("vsync = {}\n", v.vsync));
@@ -619,6 +639,7 @@ pub fn serialize(
         "discord_share_server = {}\n",
         v.discord_share_server
     ));
+    s.push_str(&format!("streamer_mode = {}\n", v.streamer_mode));
     // The individual graphics rows. Written only where the caller has a value
     // — `render/settings.rs` always has one for every row, so a file the game
     // wrote carries all eight, and the `Option` is what lets a *test* (or a
@@ -757,6 +778,7 @@ mod tests {
             // Not the shipped default, for this fixture's stated reason: a
             // parser that read nothing would return `High` and pass.
             quality: Quality::Low,
+            quality_auto: true,
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
@@ -779,6 +801,7 @@ mod tests {
             shake: 1.0,
             discord_presence: false,
             discord_share_server: true,
+            streamer_mode: false,
             // Empty on purpose: the overlay tests below are about the
             // preset/override mechanics, and a fixture that already carried
             // an override could not tell "the file said so" from "the
@@ -791,6 +814,7 @@ mod tests {
         Persisted {
             fov_deg: 90.0,
             quality: Quality::Medium,
+            quality_auto: false,
             sensitivity: 0.55,
             invert_look: true,
             vsync: false,
@@ -813,6 +837,7 @@ mod tests {
             shake: 0.5,
             discord_presence: true,
             discord_share_server: false,
+            streamer_mode: true,
             gfx: GfxFile {
                 ao: Some(Ao::Ultra),
                 smaa: Some(false),

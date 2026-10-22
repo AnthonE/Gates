@@ -117,6 +117,9 @@ pub struct Settings {
     /// `quality` and none of the rows) lands on a frame somebody designed
     /// rather than on the default.
     pub quality: Quality,
+    /// The game may still move the preset for the player (`potato.rs`):
+    /// true until they touch a graphics row themselves.
+    pub quality_auto: bool,
     /// **What the renderer is actually asked for**, one field per row on the
     /// GRAPHICS tab. `render/quality.rs` owns the type, the preset table and
     /// the per-target clamp.
@@ -172,6 +175,11 @@ pub struct Settings {
     /// makes Discord's **Ask to Join** appear. The one row on this screen
     /// that discloses something rather than setting a preference.
     pub discord_share_server: bool,
+    /// Streamer mode, as the player set it (`ui::streamer`).
+    pub streamer_mode: bool,
+    /// The launcher started the game in streamer mode (`ELO_STREAMER=1`):
+    /// on for this run whatever the file says, and never written to it.
+    pub streamer_forced: bool,
     /// Which rail row is selected.
     pub cat: usize,
     /// Where Esc returns to. Settings is reachable from the intro screen and
@@ -201,6 +209,7 @@ impl Default for Settings {
             // `quality::default_gfx` is the one owner of that per-target
             // choice; this pair must agree, and `tests/quality.rs` says so.
             quality: DEFAULT_PRESET,
+            quality_auto: true,
             gfx: quality::default_gfx(),
             sensitivity: 1.0,
             invert_look: false,
@@ -253,6 +262,8 @@ impl Default for Settings {
             // preference** — the operator opened the door on condition the
             // player enables it (2026-08-16), and opt-in is what that means.
             discord_share_server: false,
+            streamer_mode: false,
+            streamer_forced: false,
             // **Not 1, and it is the reference's number rather than a
             // taste call**: their `audio.musicvolume` ships at 0.2 while
             // master and game ship at 1. A score at parity with footsteps
@@ -301,6 +312,7 @@ pub enum Knob {
     RenderScale,
     DiscordPresence,
     DiscordShareServer,
+    StreamerMode,
     Vsync,
     MaxFps,
     Fullscreen,
@@ -324,7 +336,33 @@ pub enum Knob {
     Shake,
 }
 
+impl Knob {
+    /// The GRAPHICS tab's rows: the preset and everything it writes.
+    pub fn is_graphics(self) -> bool {
+        matches!(
+            self,
+            Knob::Quality
+                | Knob::Shadows
+                | Knob::ShadowDistance
+                | Knob::ShadowCascades
+                | Knob::ShadowMapPx
+                | Knob::Ambient
+                | Knob::Smaa
+                | Knob::Taa
+                | Knob::Bloom
+                | Knob::TreeLod
+                | Knob::Clouds
+                | Knob::RenderScale
+        )
+    }
+}
+
 impl Settings {
+    /// Streamer mode as it stands: the player's switch, or the launcher's.
+    pub fn streamer(&self) -> bool {
+        self.streamer_mode || self.streamer_forced
+    }
+
     /// Move a setting. `delta` is +1/-1 for a numeric row and ignored by a
     /// toggle, which flips.
     ///
@@ -332,6 +370,11 @@ impl Settings {
     /// testable without a window, and so a keyboard path added later cannot
     /// reach a different clamp than the mouse path.
     pub fn adjust(&mut self, knob: Knob, delta: i32) {
+        // A player who touched a graphics row has chosen; the auto-detect
+        // leaves them alone from here on.
+        if knob.is_graphics() {
+            self.quality_auto = false;
+        }
         match knob {
             // Steps along `Quality::LADDER` and STOPS at each end rather than
             // wrapping. A wrap would put a player who clicked once too often
@@ -426,6 +469,11 @@ impl Settings {
                 self.discord_share_server = !self.discord_share_server;
                 self.discord_presence |= self.discord_share_server;
             }
+            // While the launcher holds it on, the row says so and stays on:
+            // a streamer who turned it on there should not lose it to a
+            // stray click here.
+            Knob::StreamerMode if self.streamer_forced => {}
+            Knob::StreamerMode => self.streamer_mode = !self.streamer_mode,
             Knob::InvertLook => self.invert_look = !self.invert_look,
             Knob::Fov => {
                 self.fov_deg =
@@ -534,10 +582,12 @@ impl Settings {
                 | Knob::Clouds
                 | Knob::RenderScale => {
                     self.quality = d.quality;
+                    self.quality_auto = d.quality_auto;
                     self.gfx = d.gfx;
                 }
                 Knob::DiscordPresence => self.discord_presence = d.discord_presence,
                 Knob::DiscordShareServer => self.discord_share_server = d.discord_share_server,
+                Knob::StreamerMode => self.streamer_mode = d.streamer_mode,
                 Knob::Vsync => self.vsync = d.vsync,
                 Knob::MaxFps => self.max_fps = d.max_fps,
                 Knob::Fullscreen => self.fullscreen = d.fullscreen,
@@ -607,6 +657,8 @@ impl Settings {
             Knob::Fullscreen => on_off(self.fullscreen),
             Knob::DiscordPresence => on_off(self.discord_presence),
             Knob::DiscordShareServer => on_off(self.discord_share_server),
+            Knob::StreamerMode if self.streamer_forced => "ON (LAUNCHER)".to_string(),
+            Knob::StreamerMode => on_off(self.streamer_mode),
             Knob::InvertLook => on_off(self.invert_look),
             Knob::Fov => format!("{:.0}", self.fov_deg),
             Knob::Sensitivity => format!("{:.2}", self.sensitivity),
@@ -632,6 +684,9 @@ impl Settings {
             Knob::MicDevice => {
                 if self.mic_device.is_empty() {
                     "DEFAULT".to_string()
+                } else if self.streamer() {
+                    // A device is often named for its owner ("Ann's AirPods").
+                    crate::ui::streamer::HIDDEN.to_string()
                 } else {
                     self.mic_device.chars().take(8).collect()
                 }
@@ -646,6 +701,7 @@ impl Settings {
         Persisted {
             fov_deg: self.fov_deg,
             quality: self.quality,
+            quality_auto: self.quality_auto,
             sensitivity: self.sensitivity,
             invert_look: self.invert_look,
             vsync: self.vsync,
@@ -668,6 +724,7 @@ impl Settings {
             shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
+            streamer_mode: self.streamer_mode,
             // Every row written out, always. `GfxFile`'s `None` means "the
             // file did not say", which is a state only an OLDER file (or a
             // test) can be in — the game always knows what it is drawing, so
@@ -706,6 +763,7 @@ impl Settings {
             // the default), so unlike every numeric row above there is no
             // out-of-range state to sanitize here.
             quality: p.quality,
+            quality_auto: p.quality_auto,
             gfx: gfx_from_file(p.quality, p.gfx),
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,
@@ -746,6 +804,7 @@ impl Settings {
             // the same way `adjust` does rather than honouring a state the
             // screen cannot show.
             discord_share_server: p.discord_share_server && p.discord_presence,
+            streamer_mode: p.streamer_mode,
             ..Self::default()
         }
     }
@@ -864,6 +923,8 @@ impl Disk {
     /// The footer's account of where the settings go.
     pub fn describe(&self) -> String {
         match &self.store {
+            // The path names the computer's user, so streamer mode says less.
+            Store::File(_) if crate::ui::streamer::on() => "saved on this computer".to_string(),
             Store::File(path) => format!("saved to {}", path.display()),
             Store::Browser => "saved in this browser".to_string(),
         }
@@ -913,6 +974,12 @@ fn write_store(store: &Store, text: &str) -> Result<(), String> {
 /// Read the settings once, before the first frame that applies anything.
 /// Missing or corrupt is the defaults, silently; nowhere to keep them is the
 /// defaults with persistence off for the run (no `Disk`).
+/// Hand the streamer switch to whatever draws (`ui::streamer`): one atomic
+/// store a frame, so the pure `ui` layer needs no `Settings` to ask.
+pub fn mirror_streamer(settings: Res<Settings>) {
+    crate::ui::streamer::set(settings.streamer());
+}
+
 pub fn load() -> (Settings, Favourites, Binds, Option<Disk>) {
     let Some((store, text)) = open_store() else {
         let mut settings = Settings::default();
@@ -921,6 +988,8 @@ pub fn load() -> (Settings, Favourites, Binds, Option<Disk>) {
         if super::web::in_post() {
             settings.fullscreen = false;
         }
+        settings.streamer_forced = crate::ui::streamer::forced_by_launcher();
+        crate::ui::streamer::set(settings.streamer());
         return (settings, Favourites::default(), Binds::default(), None);
     };
     let defaults = Settings::default().persisted();
@@ -932,6 +1001,8 @@ pub fn load() -> (Settings, Favourites, Binds, Option<Disk>) {
     if super::web::in_post() {
         settings.fullscreen = false;
     }
+    settings.streamer_forced = crate::ui::streamer::forced_by_launcher();
+    crate::ui::streamer::set(settings.streamer());
     // Bounded and deduplicated where the star is, not where the file is —
     // `config::parse`'s own header says range work does not live there, and a
     // hand-edited list of a thousand ids must reach the browser as the same
@@ -1123,6 +1194,12 @@ fn target_note(s: &Settings) -> String {
     if got.clouds != want.clouds {
         notes.push("flat clouds - no atmosphere to march them in".to_string());
     }
+    let cap = super::render_scale::web_cap();
+    if cap < want.render_scale {
+        notes.push(format!(
+            "world drawn at {cap}% - a browser draws a 1080p frame's worth"
+        ));
+    }
     if notes.is_empty() {
         "everything above is what the renderer gets".to_string()
     } else {
@@ -1203,6 +1280,8 @@ fn rows(cat: usize) -> Vec<Row> {
                 out.push(Row::FactOf("  in use", |s| {
                     if s.mic_device.is_empty() {
                         "your system's default input".to_string()
+                    } else if s.streamer() {
+                        "hidden in streamer mode".to_string()
                     } else {
                         s.mic_device.clone()
                     }
@@ -1302,6 +1381,11 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Fact(
                 "  who can see it",
                 "Anyone who can see your Discord profile - not only friends",
+            ),
+            Row::Toggle("STREAMER MODE", Knob::StreamerMode),
+            Row::Fact(
+                "  what it hides",
+                "Names, wallets, servers, the seed and door codes - for streaming",
             ),
         ],
         "KEYBINDS" => {
@@ -2115,6 +2199,35 @@ mod tests {
     /// a latent "publish my address" that no row on the screen is showing,
     /// waiting for the master to come back on months later and disclose
     /// something the player last agreed to under other circumstances.
+    /// Streamer mode is the player's switch, unless the launcher started the
+    /// game with it on: then it is on, says so, holds against a click, and
+    /// is never written to the file as if the player had chosen it.
+    #[test]
+    fn streamer_mode_is_the_players_unless_the_launcher_holds_it() {
+        let mut s = Settings::default();
+        assert!(!s.streamer());
+        s.adjust(Knob::StreamerMode, 0);
+        assert!(s.streamer() && s.persisted().streamer_mode);
+        assert_eq!(s.value(Knob::StreamerMode), "ON");
+        s.adjust(Knob::StreamerMode, 0);
+        assert!(!s.streamer());
+
+        s.streamer_forced = true;
+        assert!(s.streamer());
+        assert_eq!(s.value(Knob::StreamerMode), "ON (LAUNCHER)");
+        s.adjust(Knob::StreamerMode, 0);
+        assert!(s.streamer(), "a click does not undo the launcher");
+        assert!(
+            !s.persisted().streamer_mode,
+            "the launcher's switch is not saved"
+        );
+
+        let back = Settings::from_persisted(
+            crate::config::parse("streamer_mode = true\n", Settings::default().persisted()).values,
+        );
+        assert!(back.streamer_mode && !back.streamer_forced);
+    }
+
     #[test]
     fn the_discord_pair_cannot_reach_a_latent_disclosure() {
         let mut s = Settings::default();

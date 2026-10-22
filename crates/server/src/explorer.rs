@@ -64,7 +64,7 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::{STATION_FURNACE, STATION_NONE};
-use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
+use sim_core::deploy::{box_key, cell_center, ACCESS_OP_CREW_JOIN, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
@@ -132,6 +132,16 @@ pub const JOIN_GOAL_SECS: u32 = 5;
 /// How near a person must stand for `invite`: the human client's reach
 /// for N (`ASSIST_REACH_M`), inside the shard's own 7 m.
 pub const INVITE_REACH_M: f32 = 3.0;
+/// A give (`Goal::Give`) is offered while its friend or a teammate stands
+/// this near: the give's own reach (`sim_core::assist::ASSIST_REACH_M`), the
+/// same as an invite's. It runs at most this long, seconds.
+pub const GIVE_REACH_M: f32 = INVITE_REACH_M;
+pub const GIVE_GOAL_SECS: u32 = 60;
+/// An authorize (`Goal::Authorize`): the walk in through the team's doors to
+/// its cupboard and the press there, at most this long, seconds; one that
+/// came to nothing is not offered again for a while.
+pub const AUTHORIZE_GOAL_SECS: u32 = 150;
+pub const AUTHORIZE_RETRY_TICKS: u32 = 2 * 60 * TICK_HZ;
 /// A meet (`--friend`): the walk to THE GATE and the wait there, at most
 /// this long before it asks again, standing this near the stall.
 pub const MEET_GOAL_SECS: u32 = 180;
@@ -322,8 +332,8 @@ pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Bat"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Bat"];
 
 const _: () = assert!(
-    MAX_ITEM_DEFS <= 128,
-    "FoodBook and yield sets are u128 masks"
+    MAX_ITEM_DEFS <= ItemBits::CAP,
+    "FoodBook and yield sets are ItemBits masks"
 );
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -461,33 +471,62 @@ impl Kind {
     }
 }
 
+/// A set of item indices, one bit each: 256 of them, so the whole catalog
+/// (`MAX_ITEM_DEFS`) fits. An index past the set is never in it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ItemBits([u128; 2]);
+
+impl ItemBits {
+    pub const CAP: usize = 256;
+
+    /// The set holding `item` alone (empty when `item` is past the set).
+    pub fn bit(item: u16) -> Self {
+        let mut b = Self::default();
+        b.set(item);
+        b
+    }
+
+    pub fn set(&mut self, item: u16) {
+        let i = usize::from(item);
+        if i < Self::CAP {
+            self.0[i / 128] |= 1 << (i % 128);
+        }
+    }
+
+    pub fn has(&self, item: u16) -> bool {
+        let i = usize::from(item);
+        i < Self::CAP && self.0[i / 128] & 1 << (i % 128) != 0
+    }
+
+    pub fn or(&mut self, other: Self) {
+        self.0[0] |= other.0[0];
+        self.0[1] |= other.0[1];
+    }
+
+    pub fn any(&self) -> bool {
+        self.0 != [0; 2]
+    }
+}
+
 /// What the eat verb has taught this body, per item index: the sim's own
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: u128,
-    pub feeds: u128,
-    pub waters: u128,
-    pub tried: u128,
+    pub not_food: ItemBits,
+    pub feeds: ItemBits,
+    pub waters: ItemBits,
+    pub tried: ItemBits,
 }
 
 impl FoodBook {
-    fn bit(item: u16) -> u128 {
-        if (item as usize) < 128 {
-            1 << item
-        } else {
-            0
-        }
-    }
-
     /// Worth trying to eat: known to feed, or never tried and not refused.
     pub fn may_feed(&self, item: u16) -> bool {
-        let b = Self::bit(item);
-        b != 0 && (self.feeds & b != 0 || (self.tried & b == 0 && self.not_food & b == 0))
+        usize::from(item) < ItemBits::CAP
+            && (self.feeds.has(item) || (!self.tried.has(item) && !self.not_food.has(item)))
     }
 
     pub fn waters_known(&self, item: u16) -> bool {
-        self.waters & Self::bit(item) != 0
+        self.waters.has(item)
     }
 }
 
@@ -531,6 +570,9 @@ pub struct Senses {
     pub team_home: Sighting,
     /// A person it could invite to its team stands within reach.
     pub invitee: bool,
+    /// Its friend or a teammate, up and in sight, stands in hand reach
+    /// ([`GIVE_REACH_M`]): someone a give would go to.
+    pub give_to: bool,
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
@@ -555,7 +597,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u128; KINDS],
+    pub yields: [ItemBits; KINDS],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -657,6 +699,10 @@ pub struct Memory {
     pub team_bag: bool,
     pub crewed: bool,
     pub bag_home: bool,
+    /// The team's cupboard is known and it is not on the crew, a lock on it
+    /// has the team's code to answer it (or it has none), and no authorize
+    /// came to nothing a moment ago ([`AUTHORIZE_RETRY_TICKS`]).
+    pub authorize: bool,
     /// A trade at THE GATE, or a feed at a work, came to nothing a moment
     /// ago.
     pub trade_held: bool,
@@ -864,6 +910,39 @@ struct Active {
     paused: Option<u32>,
 }
 
+/// What a hand-over hands (`Survivor::hand_to`): the base's raw stuff to its
+/// founder (`HandOver`), or every stack of one item (`Give`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handing {
+    Base,
+    Item(u16),
+}
+
+/// An authorize under way ([`Survivor::authorize`]): in through the team's
+/// doors to its cupboard, the code at its lock (once) or the crew's join at
+/// a bare one, and its answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AuthLeg {
+    #[default]
+    In,
+    /// At the cupboard: what it takes to get on the crew.
+    Crew,
+    /// The crew's join went out at this tick; the answer is awaited.
+    Sent(u32),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Auth {
+    leg: AuthLeg,
+    /// The team's code went in at the cupboard's lock this authorize.
+    knocked: bool,
+    /// A deploy refusal answered the join in flight (`REFUSE_D_OWNER`: the
+    /// crew does not admit it).
+    refused: bool,
+    /// Since when the eyes have been on the cupboard, and where.
+    held: Option<(u32, [f32; 3])>,
+}
+
 /// A bag on its way to the team's base ([`Survivor::bag_in`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BagLeg {
@@ -885,6 +964,9 @@ pub struct Survivor {
     pub gathered: [u32; MAX_ITEM_DEFS],
     core: Option<Box<ClientCore>>,
     haven: Option<Haven>,
+    /// A haven already solved for a seed ([`Survivor::know_haven`]): the
+    /// next welcome on that seed takes it instead of solving its own.
+    known_haven: Option<(u64, Haven)>,
     senses: Senses,
     memory: Memory,
     sweep: Sweep,
@@ -912,6 +994,9 @@ pub struct Survivor {
     reload_at: Option<u32>,
     /// When armour or the belt was last seen to.
     dressed_at: Option<u32>,
+    /// The tick a bandage this bot is wrapping on has landed by (its
+    /// `use_ticks` and a second for the lane), while one is.
+    wrap_until: Option<u32>,
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
@@ -1081,6 +1166,14 @@ pub struct Survivor {
     /// Who `invite` would invite: a person up and within
     /// [`INVITE_REACH_M`], not an agent, not on its team.
     invitee: Option<u32>,
+    /// Who a give would go to now: its friend, else the nearest teammate,
+    /// up and in sight within [`GIVE_REACH_M`]; and who the give under way
+    /// is handing to.
+    give_to: Option<u32>,
+    hand_target: u32,
+    /// An authorize under way, and when the last came to nothing.
+    auth: Auth,
+    auth_failed: Option<u32>,
     /// Since when it has led a team of one, if it does.
     alone_since: Option<u32>,
     /// Its friend (`--friend`): their wallet, the player id the shard gave
@@ -1128,6 +1221,13 @@ impl Survivor {
         Self::with(mind, SurvivorOpts::default())
     }
 
+    /// Hand over `terrain::haven(seed)` already solved, for a process that
+    /// seats many agents on one seed: the solve costs most of a second, and
+    /// it is a pure function of the seed.
+    pub fn know_haven(&mut self, seed: u64, haven: Haven) {
+        self.known_haven = Some((seed, haven));
+    }
+
     pub fn with(mind: Mind, opts: SurvivorOpts) -> Self {
         Self {
             mind,
@@ -1136,6 +1236,7 @@ impl Survivor {
             gathered: [0; MAX_ITEM_DEFS],
             core: None,
             haven: None,
+            known_haven: None,
             senses: Senses::default(),
             memory: Memory::default(),
             sweep: Sweep::default(),
@@ -1151,6 +1252,7 @@ impl Survivor {
             ack_age: 1,
             reload_at: None,
             dressed_at: None,
+            wrap_until: None,
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
@@ -1250,6 +1352,10 @@ impl Survivor {
             wedge: Wedge::default(),
             backoff: None,
             invitee: None,
+            give_to: None,
+            hand_target: 0,
+            auth: Auth::default(),
+            auth_failed: None,
             alone_since: None,
             friend: opts.friend,
             friend_id: 0,
@@ -1634,7 +1740,26 @@ impl Survivor {
             .combat
             .strides
             .ahead_of(body.map_or([0.0; 3], |b| pressed_eye(b, intent.buttons)));
-        let f = self.hands.drive(&intent, &self.tracks, eye, base);
+        let mut f = self.hands.drive(&intent, &self.tracks, eye, base);
+        // In the water (the water pass) an agent swims at the surface and
+        // never dives: a look down at what it walks toward would steer it
+        // under, and nothing here counts its breath. Under anyway — knocked
+        // off a ledge, say — it comes up.
+        if let Some(b) = body {
+            let feet = b.qy as f32 * sim_core::movement::POS_Y_Q;
+            if sim_core::movement::swimming_at(feet) {
+                f.pitch = f.pitch.max(crate::agent::intent::LEVEL_PITCH);
+                f.buttons &= !sim_core::input::BTN_CROUCH;
+                if sim_core::movement::mouth_under(feet) {
+                    f.buttons |= sim_core::input::BTN_JUMP;
+                }
+            }
+        }
+        // A bandage being wrapped on keeps the hand that began it up: a
+        // switch would put it away unspent (`survival::tick_use`).
+        if self.wrapping(view.newest_applied.unwrap_or_default()) {
+            f.sel = self.sel;
+        }
         self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
         self.sel = f.sel;
@@ -1770,6 +1895,7 @@ impl Survivor {
                 // A new code is a new chance at the cupboard.
                 if self.team_code != Some(code) {
                     self.team_bag_failed = None;
+                    self.auth_failed = None;
                 }
                 self.team_code = Some(code);
             }
@@ -2214,9 +2340,14 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
-        if goal == Goal::HandOver {
+        if matches!(goal, Goal::HandOver | Goal::Give(_)) {
             self.hand = Hand::default();
         }
+        // A give goes to whoever was in hand reach when it was chosen.
+        if matches!(goal, Goal::Give(_)) {
+            self.hand_target = self.give_to.unwrap_or(0);
+        }
+        self.auth = Auth::default();
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;
         self.bag_knocked = false;
@@ -2240,6 +2371,13 @@ impl Survivor {
                     }
                     None => Trip::Stay,
                 });
+            }
+        }
+        // An authorize walks in through the team's doors to its cupboard.
+        if goal == Goal::Authorize {
+            if let Some(h) = self.shared.hearth() {
+                let (x, z) = cell_center(h.cx, h.cz);
+                self.home_job = HomeJob::new(Trip::Point([x, z]));
             }
         }
         self.leave.doors.clear();
@@ -2407,6 +2545,7 @@ impl Survivor {
             | Goal::Patrol
             | Goal::HandOver
             | Goal::Deliver
+            | Goal::Authorize
             | Goal::SupplyWood
             | Goal::SupplyStone
             | Goal::SupplyOre
@@ -2446,9 +2585,10 @@ impl Survivor {
                 return intent;
             }
         }
-        // Out of a teammate's base too, by its nearest door. A delivery
-        // works its own doors, and a follow goes where its teammate goes.
-        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver)
+        // Out of a teammate's base too, by its nearest door. A delivery and
+        // an authorize work its own doors, and a follow goes where its
+        // teammate goes.
+        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver | Goal::Authorize)
             || active.delivering
             || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
@@ -2647,6 +2787,18 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::HandOver => self.hand_over(core, body, tick),
+            Goal::Give(_) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Give(name) => self.give(core, body, name, tick),
+            Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
+                self.auth_failed = Some(tick);
+                self.home_job = HomeJob::default();
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Authorize => self.authorize(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
                 self.deliver_over(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
@@ -3093,16 +3245,69 @@ impl Survivor {
         })
     }
 
-    /// Hand over (`agent::society`): up to its founder, eyes on them at
-    /// arm's length, and the base's raw stuff out of the pack into theirs a
-    /// stack at a time — the give a player makes with a stack and a look.
-    /// What left the slot says a give landed; a founder whose pack has no
-    /// room says so, and the hand-over is over.
+    /// Hand over (`agent::society`): the base's raw stuff to its founder.
     fn hand_over(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
-        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let founder = self.kin.founder();
-        let Some((at, seen)) = self.founder_at(tick).filter(|_| founder != 0) else {
-            self.hand_failed = Some(tick);
+        let to = self
+            .founder_at(tick)
+            .filter(|_| founder != 0)
+            .map(|(at, seen)| (founder, at, seen));
+        self.hand_to(core, body, to, Handing::Base, tick)
+    }
+
+    /// A give (`Goal::Give`): every stack of the named item the pack
+    /// carries, to the friend or teammate who stood in hand reach when it
+    /// was chosen.
+    fn give(&mut self, core: &mut ClientCore, body: &EntityState, name: Name, tick: u32) -> Intent {
+        let Some(item) = crate::agent::build::item_named(core, name.as_str()) else {
+            self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
+            return Intent::IDLE;
+        };
+        let id = self.hand_target;
+        let to = (id != 0)
+            .then(|| self.mate_at(id, tick))
+            .flatten()
+            .map(|(at, seen)| (id, at, seen));
+        self.hand_to(core, body, to, Handing::Item(item), tick)
+    }
+
+    /// Where a player it hands to stands, by its own eyes: in sight, else
+    /// where they were a moment ago. Down, dead or asleep, nobody takes a
+    /// give (the sim's give refuses them).
+    fn mate_at(&self, id: u32, tick: u32) -> Option<([f32; 3], bool)> {
+        self.tracks
+            .get(id)
+            .filter(|t| {
+                t.active()
+                    && !t.dead
+                    && !t.wounded
+                    && !t.sleeping
+                    && (t.visible || tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
+            })
+            .map(|t| (t.pos, t.visible))
+    }
+
+    /// Hand to `to` (who, where, and whether its eyes have them): up to
+    /// them, eyes on them at arm's length, and what `what` names out of the
+    /// pack into theirs a stack at a time — the give a player makes with a
+    /// stack and a look (`encode_action_give`). What left the
+    /// slot says a give landed; a pack with no room says so, and the
+    /// hand-over is over. A hand-over to its founder that came to nothing
+    /// is not offered again for a while (`hand_failed`).
+    fn hand_to(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        to: Option<(u32, [f32; 3], bool)>,
+        what: Handing,
+        tick: u32,
+    ) -> Intent {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let base = what == Handing::Base;
+        let Some((id, at, seen)) = to else {
+            if base {
+                self.hand_failed = Some(tick);
+            }
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
@@ -3125,7 +3330,9 @@ impl Survivor {
                 let outcome = if self.hand.given > 0 {
                     Outcome::Done
                 } else {
-                    self.hand_failed = Some(tick);
+                    if base {
+                        self.hand_failed = Some(tick);
+                    }
                     Outcome::Failed(Why::BoxFull)
                 };
                 self.end_goal(tick, outcome);
@@ -3134,16 +3341,21 @@ impl Survivor {
                 self.hand.sent = None;
                 self.hand.tries += 1;
                 if self.hand.tries >= society::HAND_TRIES {
-                    self.hand_failed = Some(tick);
+                    if base {
+                        self.hand_failed = Some(tick);
+                    }
                     self.end_goal(tick, Outcome::Failed(Why::Stuck));
                     return Intent::IDLE;
                 }
             }
         }
         // Behind its walls the founder is not to be followed in: a crewmate
-        // in the airlock works its doors under the founder's own walk.
+        // in the airlock works its doors under the founder's own walk. Nor
+        // is anyone a give is for: they were in reach when it was chosen.
         if doors::walled_between(core, [x, z], [at[0], at[2]]) {
-            self.hand_failed = Some(tick);
+            if base {
+                self.hand_failed = Some(tick);
+            }
             let outcome = if self.hand.given > 0 {
                 Outcome::Done
             } else {
@@ -3194,27 +3406,41 @@ impl Survivor {
         if self.hand.sent.is_some() {
             return look;
         }
-        // The next stack for the base, biggest first.
+        // The next stack, biggest first: of the base's raw stuff, or of the
+        // item a give names.
         let mut next: Option<(u8, u16)> = None;
-        for name in society::HAND_ITEMS {
-            let Some(item) = crate::agent::build::item_named(core, name) else {
-                continue;
-            };
+        let mut biggest = |item: u16| {
             for (i, st) in core.inv[..INV_SLOTS].iter().enumerate() {
                 if st.count > 0 && st.item == item && next.is_none_or(|(_, c)| st.count > c) {
                     next = Some((i as u8, st.count));
                 }
             }
+        };
+        match what {
+            Handing::Base => {
+                for name in society::HAND_ITEMS {
+                    if let Some(item) = crate::agent::build::item_named(core, name) {
+                        biggest(item);
+                    }
+                }
+            }
+            Handing::Item(item) => biggest(item),
         }
         let Some((slot, count)) = next else {
-            self.end_goal(tick, Outcome::Done);
+            // All of it handed. A give with none of it to hand was not one.
+            let outcome = if base || self.hand.given > 0 {
+                Outcome::Done
+            } else {
+                Outcome::Failed(Why::MissingInputs)
+            };
+            self.end_goal(tick, outcome);
             return Intent::IDLE;
         };
         // The eyes settle on them first, as a player's would.
         let aimed = *self.hand.aimed.get_or_insert(tick);
         if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
             && self.hands.settled()
-            && self.queue(|b| protocol::encode_action_give(slot, count, founder, b))
+            && self.queue(|b| protocol::encode_action_give(slot, count, id, b))
         {
             self.hand.sent = Some((slot, count, tick, core.move_seq));
             self.hand.aimed = None;
@@ -3584,6 +3810,135 @@ impl Survivor {
             self.deliver_over(tick, outcome);
         }
         intent
+    }
+
+    /// Authorize (`Goal::Authorize`), Rust's tool-cupboard authorization:
+    /// in through the team's doors to its cupboard (the trip a bag bound
+    /// there takes, [`Self::bag_in`]), then onto its crew by the keys a
+    /// player presses there. A lock on it: the team's code at its keypad,
+    /// entered by the trip's own door walk — the right code is the whole
+    /// invitation (`deploy::hearth_admits`), and the lock puts the hand it
+    /// remembers on the crew in the same act, as the human client's `L`
+    /// opens the pad there and sends no crew op. A bare one: `L` at it, the
+    /// crew's join (`ACCESS_OP_CREW_JOIN`), which a crew that does not admit
+    /// it refuses (`REFUSE_D_OWNER`). Done once the cupboard says it is on
+    /// the crew (`EV_AUTH`, [`TeamHome::crewed`]).
+    fn authorize(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let Some(hearth) = self.shared.hearth() else {
+            return self.auth_over(tick, Outcome::Failed(Why::NotFound));
+        };
+        if self.shared.crewed() {
+            if let Some(a) = self.goal.as_mut() {
+                a.gained = 1;
+            }
+            return self.auth_over(tick, Outcome::Done);
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        match self.auth.leg {
+            AuthLeg::In => {
+                self.stats.phase = Phase::GoingHome;
+                let (intent, over) = self.home_step(core, body, tick);
+                match over {
+                    None => intent,
+                    Some(Outcome::Failed(why)) => self.auth_over(tick, Outcome::Failed(why)),
+                    Some(_) => {
+                        self.auth.leg = AuthLeg::Crew;
+                        Intent::IDLE
+                    }
+                }
+            }
+            AuthLeg::Crew if self.shared.hearth_locked(core) => {
+                // The code went in once and did not put it on the crew (a
+                // wrong code, or a full crew), or it has none to enter.
+                if self.auth.knocked || self.team_code.is_none() {
+                    return self.auth_over(tick, Outcome::Failed(Why::Locked));
+                }
+                self.home_job.doors.knock_at(hearth);
+                self.auth.knocked = true;
+                self.auth.leg = AuthLeg::In;
+                Intent::IDLE
+            }
+            AuthLeg::Crew => {
+                self.stats.phase = Phase::Waiting;
+                let Some(haven) = self.haven else {
+                    return Intent::IDLE;
+                };
+                let (seed, _) = core.island();
+                let (since, point) = match self.auth.held {
+                    Some(held) => held,
+                    None => {
+                        let point =
+                            crate::agent::build::aim_point(core, seed, &haven, hearth, x, z);
+                        self.auth.held = Some((tick, point));
+                        (tick, point)
+                    }
+                };
+                let waited = tick.wrapping_sub(since);
+                // The eyes settle on it, and the press goes only where the
+                // human client's `L` would take this cupboard.
+                if waited >= home::HOLD_TICKS
+                    && self.hands.settled()
+                    && crate::agent::build::e_picks_by(
+                        core,
+                        x,
+                        z,
+                        self.hands.view().0,
+                        hearth,
+                        crate::agent::build::PRESS_SLACK_M,
+                    )
+                    && self.queue(|b| {
+                        protocol::encode_action_access(
+                            hearth.cx,
+                            hearth.cz,
+                            hearth.level,
+                            hearth.loc,
+                            ACCESS_OP_CREW_JOIN,
+                            sim_core::lock::CODE_NONE,
+                            b,
+                        )
+                    })
+                {
+                    self.auth.leg = AuthLeg::Sent(tick);
+                    self.auth.refused = false;
+                } else if waited >= VERDICT_SECS * TICK_HZ {
+                    // Settled on it this long and `L` would still take
+                    // something else.
+                    return self.auth_over(tick, Outcome::Failed(Why::Blocked));
+                }
+                Intent {
+                    look: Look::Point(point),
+                    ..Intent::IDLE
+                }
+            }
+            AuthLeg::Sent(at) => {
+                if self.auth.refused {
+                    return self.auth_over(tick, Outcome::Failed(Why::Refused));
+                }
+                if tick.wrapping_sub(at) >= VERDICT_SECS * TICK_HZ {
+                    return self.auth_over(tick, Outcome::Failed(Why::NoAnswer));
+                }
+                self.stats.phase = Phase::Waiting;
+                match self.auth.held {
+                    Some((_, point)) => Intent {
+                        look: Look::Point(point),
+                        ..Intent::IDLE
+                    },
+                    None => Intent::IDLE,
+                }
+            }
+        }
+    }
+
+    /// An authorize is over; one that came to nothing is not offered again
+    /// for a while ([`AUTHORIZE_RETRY_TICKS`]).
+    fn auth_over(&mut self, tick: u32, outcome: Outcome) -> Intent {
+        if matches!(outcome, Outcome::Failed(_)) {
+            self.auth_failed = Some(tick);
+        }
+        self.auth = Auth::default();
+        self.home_job = HomeJob::default();
+        self.end_goal(tick, outcome);
+        Intent::IDLE
     }
 
     /// One step of the trip into the team's base (`agent::supply`):
@@ -4329,7 +4684,7 @@ impl Survivor {
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
-                if !room_for(core, FoodBook::bit(item))
+                if !room_for(core, ItemBits::bit(item))
                     && !craft_fits(core, recipe, batch(core, recipe))
                 {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
@@ -5016,7 +5371,14 @@ impl Survivor {
     /// medkit is for a wound, not a scratch).
     fn dose(&mut self, core: &ClientCore, tick: u32, target_pct: u32, reflex: bool) -> Dosed {
         self.watch_dose(core, tick);
-        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ);
+        // A bandage answers when its wrap lands (`survival::begin_use`).
+        let wrap = match self.awaiting {
+            Some((Pending::Consume { item, .. }, _)) => {
+                u32::from(core.catalog.row(item as usize).use_ticks)
+            }
+            _ => 0,
+        };
+        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap);
         match verdict {
             Ok(Some(Verdict::Ok)) => {
                 if let Some(a) = self.goal.as_mut().filter(|a| a.goal == Goal::Heal) {
@@ -5136,6 +5498,14 @@ impl Survivor {
         }
     }
 
+    /// A bandage of mine is being wrapped on (`survival::begin_use`), by
+    /// its own clock: a goal that starts or ends mid-wrap drops the answer
+    /// it was waiting on, and the hands must still hold still.
+    fn wrapping(&self, tick: u32) -> bool {
+        self.wrap_until
+            .is_some_and(|until| (until.wrapping_sub(tick) as i32) > 0)
+    }
+
     /// Kit up between everything else, the way a player does when nothing
     /// presses: wear the best armour the pack holds for each slot (a move
     /// into the wear container, by the catalog's wear slot), and put a
@@ -5144,6 +5514,10 @@ impl Survivor {
     /// nobody is about, and the goal in hand is not one waiting on a move's
     /// answer of its own.
     fn dress(&mut self, core: &ClientCore, tick: u32, calm: bool) {
+        // Not under a wrap: moving the stack would put it away unspent.
+        if self.wrapping(tick) {
+            return;
+        }
         // Mid-walk through the doors a use or a code may go out any frame,
         // and a move in the outbox would take its place.
         let quiet = !self.builder.passing()
@@ -5291,6 +5665,10 @@ impl Survivor {
     fn consume(&mut self, core: &ClientCore, slot: usize, tick: u32) {
         let item = core.inv[slot].item;
         if self.queue(|buf| protocol::encode_action_consume(slot as u8, buf)) {
+            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            if wrap > 0 {
+                self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
+            }
             self.awaiting = Some((
                 Pending::Consume {
                     item,
@@ -5300,7 +5678,7 @@ impl Survivor {
                 tick,
             ));
             self.verdict = None;
-            self.memory.food.tried |= FoodBook::bit(item);
+            self.memory.food.tried.set(item);
         }
     }
 
@@ -6449,6 +6827,35 @@ impl Survivor {
         self.senses.invitee = self.invitee.is_some();
         self.senses.friend_at = friend_at;
         self.senses.friend = self.friend_sense(core, &team, tick);
+        // Someone a give would go to: its friend first, else the nearest
+        // teammate, up, awake and in sight within hand reach.
+        // Teammates and its friend are spared from `recent`, so all of them.
+        let mut give_to: Option<(bool, f32, u32)> = None;
+        if let Some(o) = own_pos {
+            for t in self.tracks.all() {
+                let friend = self.friend_id != 0 && t.id == self.friend_id;
+                if t.species != Species::Player
+                    || !t.visible
+                    || !t.active()
+                    || t.wounded
+                    || t.dead
+                    || t.sleeping
+                    || t.id == core.player_id
+                    || !(friend || team.has(t.id))
+                {
+                    continue;
+                }
+                let d = (t.pos[0] - o[0]).hypot(t.pos[2] - o[1]);
+                if d <= GIVE_REACH_M
+                    && give_to
+                        .is_none_or(|(f, near, _)| (friend && !f) || (friend == f && d < near))
+                {
+                    give_to = Some((friend, d, t.id));
+                }
+            }
+        }
+        self.give_to = give_to.map(|(.., id)| id);
+        self.senses.give_to = self.give_to.is_some();
         if team.count == 1 && team.leader == core.player_id {
             let since = *self.alone_since.get_or_insert(tick);
             if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
@@ -6635,6 +7042,18 @@ impl Survivor {
                 .is_some_and(|at| tick.wrapping_sub(at) < home::HOME_ALARM_TICKS);
             self.memory.team_code = self.team_code.is_some();
             self.memory.crewed = self.shared.crewed();
+            // An authorize: on a team, the team's cupboard known (not its
+            // own, whose crew it joined by placing it) and not on its crew,
+            // and a way onto it — the team's code for a lock on it, or a bare
+            // one, whose crew answers yes or no.
+            let own_hearth = self.builder.hearth_addr(core);
+            self.memory.authorize = core.team().count > 0
+                && self.shared.hearth().is_some_and(|h| own_hearth != Some(h))
+                && !self.shared.crewed()
+                && (self.team_code.is_some() || self.shared.hearth_unlocked(core))
+                && self
+                    .auth_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= AUTHORIZE_RETRY_TICKS);
             self.memory.bag_home = self
                 .shared
                 .anchor()
@@ -6920,7 +7339,7 @@ impl Survivor {
             if let Some(a) = self.goal.as_mut() {
                 a.gained = a.gained.saturating_add(u32::from(added));
                 if let Some(kind) = Kind::of_goal(a.goal) {
-                    self.memory.yields[kind as usize] |= FoodBook::bit(item);
+                    self.memory.yields[kind as usize].set(item);
                 }
             }
             if self.target.is_some() {
@@ -7077,6 +7496,11 @@ impl Survivor {
         }
         while let Some(reason) = core.pop_deploy_refusal() {
             self.stats.refusals += 1;
+            // The crew's join in flight was refused: the crew does not
+            // admit it (`REFUSE_D_OWNER`), or has no room.
+            if matches!(self.auth.leg, AuthLeg::Sent(_)) {
+                self.auth.refused = true;
+            }
             self.home.on_refused(reason);
             self.builder.on_refused(true, reason);
             self.stash_job.on_refused();
@@ -7241,9 +7665,8 @@ impl Survivor {
             self.stats.refusals += 1;
             match self.awaiting {
                 Some((Pending::Consume { item, .. }, _)) => {
-                    let bit = FoodBook::bit(item);
                     if u32::from(reason) == REFUSE_C_NOT_FOOD {
-                        self.memory.food.not_food |= bit;
+                        self.memory.food.not_food.set(item);
                         self.verdict = Some(Verdict::Refused);
                     } else if u32::from(reason) == REFUSE_C_FULL {
                         self.verdict = Some(Verdict::Full);
@@ -7261,7 +7684,9 @@ impl Survivor {
                 _ => {}
             }
         }
-        if flags & APPLIED_DRANK != 0 {
+        // A vessel filled or poured rides the drink's flag too; only a
+        // mouthful is a drink.
+        if flags & APPLIED_DRANK != 0 && core.last_vessel.is_none() {
             self.stats.drinks += 1;
             if matches!(self.awaiting, Some((Pending::Drink, _))) {
                 self.verdict = Some(Verdict::Ok);
@@ -7269,17 +7694,16 @@ impl Survivor {
         }
         if flags & APPLIED_VITALS != 0 {
             if let Some((item, food, water)) = self.learning.take() {
-                let bit = FoodBook::bit(item);
                 if core.food > food {
-                    self.memory.food.feeds |= bit;
+                    self.memory.food.feeds.set(item);
                 }
                 if core.water > water {
-                    self.memory.food.waters |= bit;
+                    self.memory.food.waters.set(item);
                 }
                 if core.food <= food && core.water <= water {
                     // Consumed but restored neither meter: a bandage, say.
                     // Not food for this purpose, whatever else it does.
-                    self.memory.food.not_food |= bit;
+                    self.memory.food.not_food.set(item);
                 }
             }
         }
@@ -7305,11 +7729,12 @@ impl BotDriver for Survivor {
             let last = self.seen_tick.unwrap_or(welcome.tick);
             self.end_goal(last, Outcome::Interrupted(Why::Session));
         }
-        let mut core = Box::new(ClientCore::new(
-            welcome.seed,
-            welcome.player_id,
-            welcome.tick,
-        ));
+        let mut core = Box::new(match self.known_haven {
+            Some((seed, haven)) if seed == welcome.seed => {
+                ClientCore::with_haven(welcome.seed, welcome.player_id, welcome.tick, haven)
+            }
+            _ => ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
+        });
         self.haven = Some(*core.island().1.haven);
         self.core = Some(core);
         self.tracks.reset(welcome.seed, welcome.player_id);
@@ -7650,11 +8075,10 @@ fn out_of_town(core: &ClientCore, body: &EntityState) -> Option<Intent> {
 
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: u128) -> bool {
+fn room_for(core: &ClientCore, yields: ItemBits) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
-            || (yields & FoodBook::bit(s.item) != 0
-                && s.count < core.catalog.row(s.item as usize).stack_max)
+            || (yields.has(s.item) && s.count < core.catalog.row(s.item as usize).stack_max)
     })
 }
 
@@ -7735,7 +8159,7 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
             _ => Some(i),
         })
     };
-    best(&mut slots().filter(|&i| book.feeds & FoodBook::bit(core.inv[i].item) != 0))
+    best(&mut slots().filter(|&i| book.feeds.has(core.inv[i].item)))
         .or_else(|| best(&mut slots().filter(|&i| book.may_feed(core.inv[i].item))))
 }
 
@@ -7746,11 +8170,10 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
 fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
     (0..INV_SLOTS).find(|&i| {
         let s = core.inv[i];
-        let b = FoodBook::bit(s.item);
         s.count > 0
-            && b != 0
-            && book.tried & b == 0
-            && book.not_food & b == 0
+            && usize::from(s.item) < ItemBits::CAP
+            && !book.tried.has(s.item)
+            && !book.not_food.has(s.item)
             && core.catalog.row(usize::from(s.item)).food > 0
     })
 }
@@ -7870,7 +8293,7 @@ pub fn observe(
                     || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
-                    || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
+                    || !(room_for(core, ItemBits::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {
                     continue;
                 }
@@ -8270,6 +8693,10 @@ pub fn observe(
     if memory.hand && !senses.hostile {
         s.offer(Goal::HandOver);
     }
+    // Onto the team's cupboard's crew (Rust's authorize), while it is not.
+    if memory.authorize && !senses.hostile {
+        s.offer(Goal::Authorize);
+    }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for
     // it of a kind a gather goal could go for now; nobody dangerous in
@@ -8375,6 +8802,13 @@ pub fn observe(
         }
         // And anywhere at all, by bearing and metres.
         s.offer(Goal::Walk(crate::mind::Walk::ANY));
+        // A give of anything the pack holds, while its friend or a teammate
+        // stands in hand reach: a mind told who is about decides what.
+        if senses.give_to {
+            for i in 0..usize::from(s.items_len) {
+                s.offer(Goal::Give(s.items[i].0));
+            }
+        }
     }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));
@@ -8615,6 +9049,29 @@ mod tests {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
     }
 
+    /// The catalog outgrew one u128 (127 rows filled it): ids on both
+    /// sides of the word boundary and the catalog's last row each land in
+    /// their own bit, and nothing past the set is ever in it.
+    #[test]
+    fn item_bits_hold_ids_across_the_word_boundary() {
+        let ids = [0u16, 127, 128, MAX_ITEM_DEFS as u16 - 1];
+        assert_eq!(MAX_ITEM_DEFS, 160);
+        let mut all = ItemBits::default();
+        assert!(!all.any());
+        for &id in &ids {
+            let one = ItemBits::bit(id);
+            assert!(one.any() && one.has(id), "id {id}");
+            for &other in &ids {
+                assert_eq!(one.has(other), other == id, "id {id} vs {other}");
+            }
+            all.or(one);
+        }
+        assert!(ids.iter().all(|&id| all.has(id)));
+        assert!(!all.has(1) && !all.has(129) && !all.has(MAX_ITEM_DEFS as u16));
+        assert!(!ItemBits::bit(ItemBits::CAP as u16).any());
+        assert!(!all.has(u16::MAX));
+    }
+
     /// A welcomed controller with a small catalog: Rock (3), Wood (5) and,
     /// deliberately off the production rows, food at 7 and a hatchet at 9.
     fn fixture() -> (Survivor, ClientView, Target) {
@@ -8775,7 +9232,12 @@ mod tests {
             ..PieceRec::default()
         };
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_piece_sync(true, &[rec], &mut buf).unwrap();
+        let n = protocol::event::encode_event_piece_sync(
+            true,
+            &[(rec, sim_core::build::grid_frame(SEED, haven, cx, cz))],
+            &mut buf,
+        )
+        .unwrap();
         core.on_stream(&buf[..n]).unwrap();
         assert!(
             !visible(core, haven, body, target),
@@ -9624,7 +10086,7 @@ mod tests {
         let n = protocol::event::encode_event_vitals(110, 250, 500, 250, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let book = bot.memory.food;
-        assert!(book.not_food & 1 << 6 != 0 && book.feeds & 1 << 7 != 0);
+        assert!(book.not_food.has(6) && book.feeds.has(7));
         assert!(!book.may_feed(6) && book.may_feed(7));
         assert!(!book.waters_known(7));
     }
@@ -9954,7 +10416,7 @@ mod tests {
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);
-        assert_ne!(bot.memory.yields[Kind::Wood as usize], 0);
+        assert!(bot.memory.yields[Kind::Wood as usize].any());
         let core = bot.core.as_mut().unwrap();
         core.inv.fill(ItemStack {
             item: 6,

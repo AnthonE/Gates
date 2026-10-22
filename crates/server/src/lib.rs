@@ -26,12 +26,13 @@
 //! channels, and nondeterministic maps crate-wide (net code included — it
 //! never needed them).
 
-/// Who may run an admin verb, and what one does (admin v0).
 pub mod achievements;
 pub mod admin;
 /// The agent player's skills, hands and knowledge under the mind.
 pub mod agent;
 pub mod agent_demo;
+/// Who may run an admin verb, and what one does (admin v0).
+pub mod tls;
 // An agent's ears and voice: proximity voice to text and back.
 pub mod agent_voice;
 /// The append-only anomaly log — the evidence an alpha produces.
@@ -46,6 +47,8 @@ pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.
 pub mod bugs;
 pub mod client;
+/// Gates' Rust+: the team, team chat and raid alerts, from outside the game.
+pub mod companion;
 pub mod cond;
 pub mod config;
 pub mod core;
@@ -63,6 +66,8 @@ pub mod gifts;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
 pub mod jev;
+/// A private island stepped in lockstep, faster than the wall clock (`--warp`).
+pub mod lockstep;
 /// `jev-bot --mcp`: any MCP harness as the bot's mind (`JEV.md`).
 pub mod mcp;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
@@ -73,6 +78,7 @@ pub mod online;
 /// Per-connection pace on the action lane: no one acts faster than a person.
 pub mod pace;
 pub mod population;
+pub mod scribe;
 pub mod skins;
 pub mod slot;
 pub mod standings;

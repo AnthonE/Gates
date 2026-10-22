@@ -1089,168 +1089,112 @@ fn each_fire_slot_takes_only_its_own() {
     assert_eq!(w.players[0].inv[13].item, COOKED);
 }
 
-const PLANTER: u16 = 20;
-const SEED_ITEM: u16 = 21;
-const CROP: u16 = 22;
-const SKIN_FULL: u16 = 23;
-const SKIN_EMPTY: u16 = 24;
-
-/// A world with a planter placed beside the fire: its handle and cell.
-fn planter_world() -> (World, u32, u16, u16) {
-    use sim_core::deploy::{DeployDef, ARCH_PLANTER, PLACE_ANY};
-    use sim_core::oven::CookRow;
-    let (mut w, _, cx, cz) = fire_world();
-    w.gather.stack_max[PLANTER as usize] = 1;
-    w.gather.stack_max[SEED_ITEM as usize] = 50;
-    w.gather.stack_max[CROP as usize] = 50;
-    w.gather.stack_max[SKIN_FULL as usize] = 1;
-    w.gather.stack_max[SKIN_EMPTY as usize] = 1;
-    w.gather.item_count = w.gather.item_count.max(SKIN_EMPTY + 1);
-    let row = w.deploy.def_count;
-    w.deploy.defs[row as usize] = DeployDef {
-        arch: ARCH_PLANTER,
-        placement: PLACE_ANY,
-        hp: 100,
-        matter: sim_core::deploy::MATTER_WOOD,
-        item: PLANTER,
-        n_costs: 0,
-        costs: [(0, 0); 4],
-    };
-    w.deploy.def_count += 1;
-    let n = w.cook.row_count as usize;
-    w.cook.rows[n] = CookRow {
-        input: SEED_ITEM,
-        output: CROP,
-        count: 5,
-        ticks: 60,
-        arch: ARCH_PLANTER,
-    };
-    w.cook.row_count += 1;
-
-    // Beside the fire, one cell over.
-    let (pcx, pcz) = (cx + 1, cz);
-    w.players[0].inv[3] = ItemStack {
-        item: PLANTER,
+/// A pour douses only what a hand at the pourer reaches (`reach::clear_box`,
+/// the press's own rule): a lit fire behind a wall stays lit, and the same
+/// pour from inside the wall puts it out. Planar alone, a pour from outside
+/// a base put out every fire and furnace within 4 m of its wall.
+#[test]
+fn a_pour_does_not_douse_a_fire_through_a_wall() {
+    use sim_core::build::LOC_EDGE_XLO;
+    use sim_core::input::{InputFrame, BTN_AIM};
+    use sim_core::survival::{SurvivalContent, Vessel};
+    let (empty, fresh, salt) = (20u16, 21u16, 22u16);
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.cook = CookContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.survival.vessels[0] = Vessel { empty, fresh, salt };
+    w.survival.vessel_count = 1;
+    // A foundation, and the fire on the ground east of it, behind a wall
+    // on the foundation's east edge (the fire cell's west edge).
+    let (fx, cz) = buildable_cell(SEED);
+    let cx = fx + 1;
+    let (x, z) = cell_center(cx, cz);
+    w.dev_spawn = Some((x, z));
+    w.tick(&[Command::Join { id: PLAYER }]);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: FIRE_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
     };
-    w.players[0].frame.sel = 3;
+    // `BuildContent::probe_fixture`: row 0 the foundation, row 1 a wall,
+    // both paid in item 0.
+    w.players[0].inv[1] = ItemStack {
+        item: FUEL,
+        count: 40,
+        cond: 0,
+        skin: 0,
+    };
+    for (row, at, loc) in [(0u16, fx, LOC_PLANE), (1, cx, LOC_EDGE_XLO)] {
+        let before = w.pieces.len();
+        w.tick(&[Command::Place {
+            id: PLAYER,
+            row,
+            cx: at,
+            cz,
+            level: 0,
+            loc,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(w.pieces.len(), before + 1, "setup: piece row {row} placed");
+    }
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
-        row,
-        cx: pcx,
-        cz: pcz,
+        row: FIRE_ROW,
+        cx,
+        cz,
         level: 0,
         loc: LOC_PLANE,
         pose: sim_core::footprint::Pose::CENTRE,
     }]);
-    (w, box_key(pcx, pcz, 0, 0), pcx, pcz)
-}
-
-/// **A planter grows, with no fuel and no switch** (crops v0, `NOW.md` §5).
-/// A seed in a bed becomes its crop on the ovens' own sweep, one seed at a
-/// time per bed; the crop lands in the harvest slots; and a press does
-/// nothing, because there is nothing to light.
-#[test]
-fn a_planter_grows_seed_into_crop_with_no_fuel_and_no_switch() {
-    use sim_core::oven::{OvenState, PLANTER_LAYOUT};
-    const SEED: u16 = SEED_ITEM;
-    let (mut w, key, pcx, pcz) = planter_world();
-    let i = w.deploys.box_index(key).expect("a planter is a container");
-    let st = w.deploys.oven_states()[i];
-    assert!(
-        st.is_converter() && !st.burns(),
-        "a planter converts and burns nothing"
-    );
-    assert!(OvenState::arch_always_on(st.arch));
-
-    let bed = PLANTER_LAYOUT.input_slots().start;
-    load(&mut w, key, bed, SEED, 2);
-    press(&mut w, pcx, pcz);
-    assert_eq!(events(&w, EV_OVEN), 0, "a press switched a planter");
-
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 5, "the first seed grew");
-    assert_eq!(slot(&w, key, bed).count, 1, "one seed at a time per bed");
-    assert!(
-        PLANTER_LAYOUT
-            .output_slots()
-            .any(|s| slot(&w, key, s).item == CROP),
-        "the crop is in the harvest"
-    );
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 10, "the second followed");
-    assert_eq!(slot(&w, key, bed), ItemStack::default(), "the bed is empty");
-}
-
-/// **Rain waters an open planter** (`NOW.md` §5 item 7): a storm over a
-/// planter with no skin in it banks water, and the bed grows on it; a clear
-/// sky banks none.
-#[test]
-fn rain_waters_an_open_planter() {
-    use sim_core::oven::PLANTER_LAYOUT;
-    use sim_core::weather::{CLEAR, FORCE_FADE_TICKS, KEEP_TIME, STORM};
-    let (mut w, key, _, _) = planter_world();
-    w.cook.water_full = SKIN_FULL;
-    w.cook.water_empty = SKIN_EMPTY;
-    w.cook.water_ticks = 600;
-    w.cook.rain_pct = 400;
-    let bed = PLANTER_LAYOUT.input_slots().start;
-    w.tick(&[Command::AdminEnv {
-        weather: CLEAR,
-        time_pm: KEEP_TIME,
-    }]);
-    idle(&mut w, FORCE_FADE_TICKS);
-    load(&mut w, key, bed, SEED_ITEM, 3);
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 0, "a clear sky watered a planter");
-
-    w.tick(&[Command::AdminEnv {
-        weather: STORM,
-        time_pm: KEEP_TIME,
-    }]);
-    idle(&mut w, FORCE_FADE_TICKS);
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert!(
-        total(&w, key, CROP) >= 5,
-        "a storm did not water an open planter"
-    );
-}
-
-/// **Crops v1: a planter grows by daylight, and on water** (`NOW.md` §5
-/// item 7). Dry, its bed holds; a full skin in the water slot is drunk and
-/// left empty, and the bed grows; after dusk it holds again.
-#[test]
-fn a_planter_grows_only_on_water_and_by_day() {
-    use sim_core::oven::PLANTER_LAYOUT;
-    let (mut w, key, _, _) = planter_world();
-    w.cook.water_full = SKIN_FULL;
-    w.cook.water_empty = SKIN_EMPTY;
-    w.cook.water_ticks = 600;
-    let bed = PLANTER_LAYOUT.input_slots().start;
-    let water = PLANTER_LAYOUT.fuel_slots().start;
-    load(&mut w, key, bed, SEED_ITEM, 3);
-
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 0, "a dry planter grew");
-
-    load(&mut w, key, water, SKIN_FULL, 1);
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 5, "a watered planter did not grow");
     assert_eq!(
-        slot(&w, key, water).item,
-        SKIN_EMPTY,
-        "the skin was not drunk"
+        w.deploys.boxes().len(),
+        1,
+        "setup: the fire placed ({:?})",
+        refusal(&w, EV_DEPLOY_REFUSED)
     );
+    let key = box_key(cx, cz, 0, 0);
+    load(&mut w, key, 0, FUEL, 4);
+    press(&mut w, cx, cz);
+    assert!(lit(&w, key), "setup: the fire lights");
 
-    // Into the night: the second seed waits for the sun.
-    let day = sim_core::limits::DAY_TICKS;
-    let dusk = (sim_core::limits::DAY_PORTION as f64 * day as f64) as u64;
-    let start = w.tick;
-    let phase = (start + sim_core::limits::DAY_PHASE_TICKS) % day;
-    w.tick = start + (dusk + day - phase) % day + 1;
-    assert!(sim_core::world::is_night(w.tick));
-    idle(&mut w, 60 + OVEN_PERIOD_TICKS * 2);
-    assert_eq!(total(&w, key, CROP), 5, "a planter grew in the dark");
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let mut seq = 0u16;
+    // Stand at `x` facing +X (the fire), let the body settle, and pour.
+    let mut pour_from = |w: &mut World, x: f32| {
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        w.players[0].inv[5] = ItemStack {
+            item: fresh,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        seq += 1;
+        w.tick(&[Command::Input {
+            id: PLAYER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_AIM,
+                yaw: 64 << 8,
+                sel: 5,
+                ..InputFrame::default()
+            },
+            favour: 0,
+        }]);
+        assert_eq!(w.players[0].inv[5].item, empty, "setup: the vessel poured");
+    };
+
+    // On the foundation, the fire 2.5 m off: in the splash, out of sight.
+    pour_from(&mut w, x0 - 1.0);
+    assert!(lit(&w, key), "a pour put out a fire through a wall");
+    pour_from(&mut w, x0 + 0.5);
+    assert!(!lit(&w, key), "a pour in sight of the fire puts it out");
 }

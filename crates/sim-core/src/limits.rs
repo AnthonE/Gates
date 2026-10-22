@@ -27,10 +27,12 @@ pub const MAX_INPUT_FRAMES: usize = 10;
 
 /// Class-D entity records **one snapshot** may carry — a per-datagram wire
 /// count, not a world cap (NETCODE.md §9 budgets table: typical ~15 / cap
-/// 64). It is what `COUNT_BITS = 7` can name and what 1,100 B can hold, and
-/// the encoder refuses the 65th record of a single datagram.
+/// 64). It is what `COUNT_BITS = 7` can name, and the encoder refuses the
+/// 65th record of a single datagram. It is not a byte bound: the datagram's
+/// `DATAGRAM_BUDGET_BYTES` is the other one, and on wide records (every
+/// field absolute, a skinned item in hand) the bytes run out first.
 /// Overflow policy: **defer** — the priority accumulator keeps accruing
-/// what didn't fit (DESIGN.md §5.5).
+/// what didn't fit, or an overflow datagram carries it (DESIGN.md §5.5).
 ///
 /// ⚠ **It reads like an interest-set cap and it is not one by itself.** A
 /// client's interest set is cumulative across snapshots — a delta names
@@ -361,11 +363,12 @@ const _: () = assert!(
 /// §open.
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
-/// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. 127 is the
-/// most the wire's 7-bit held field can name beside its empty-hand code
-/// (`protocol::HELD_NONE`); past it, that field widens.
-pub const MAX_ITEM_DEFS: usize = 127;
+/// Item definitions the sim preallocates for (CONTENT.md §2). The content
+/// bake refuses a set past this. 160 leaves farming v2's rows headroom
+/// (127 filled the old 7-bit held field); the wire's held field is 8 bits
+/// since v135, so anything up to 255 fits beside its empty-hand code
+/// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
+pub const MAX_ITEM_DEFS: usize = 160;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -430,8 +433,9 @@ pub const INV_SLOTS: usize = 30;
 /// cap is to name a slot the array does not have, which `combat::worn_pct`
 /// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
 /// Proposed default, DECISIONS.md §open ("armor reduction v0"). 2 → 3 for
-/// the feet (Rust's boots, 2026-10-18).
-pub const WEAR_SLOTS: usize = 3;
+/// the feet (Rust's boots, 2026-10-18). 3 → 7 for clothing v1: Rust's seven
+/// clothing slots, as head, body, feet, legs, hands, shirt and face.
+pub const WEAR_SLOTS: usize = 7;
 
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the
@@ -564,14 +568,24 @@ pub const MAX_SLOT_LIVES: usize = 131_072;
 /// occupy.rs masks with it and a const block asserts it.
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
+/// The same memo on the shard's `World`, scaled with the roster: a body
+/// probes nine cells, and a shard whose players are spread out has
+/// `MAX_PLAYERS * 9` live at once. At 1 024 lines those collided and missed
+/// over half the time, which made movement 94 % of a spread tick (profile,
+/// 2026-10-20: 100 players at 60 m, 9.4 ms of sim against 0.2 ms clustered).
+/// About 24 B a line.
+pub const SLOT_CACHE_LINES: usize = (128 * MAX_PLAYERS).next_power_of_two();
+const _: () = assert!(SLOT_CACHE_LINES >= SLOT_CACHE_SLOTS);
 
 /// Lines in the direct-mapped memo of `cliff::crag` that the occupant query
 /// reads cliff crags through (occupy.rs), on the shard's `World`. A body's
 /// query scans at most 64 spots, so a full shard has `MAX_PLAYERS * 64` live
-/// at once; at 44 B a line this is 1.4 MB. `SLOT_CACHE_SLOTS`'s posture: a
-/// memo of a pure function, so a collision re-resolves (five ground taps off
-/// a cliff) and nothing can be lost. Must stay a power of two.
-pub const CRAG_CACHE_LINES: usize = 32_768;
+/// at once — kept under 5 % of the lines, because at 32 768 a spread shard's
+/// spots collided often enough to miss 30 % of the time (profile,
+/// 2026-10-20). 44 B a line. `SLOT_CACHE_SLOTS`'s posture: a memo of a pure
+/// function, so a collision re-resolves (five ground taps off a cliff) and
+/// nothing can be lost. Must stay a power of two.
+pub const CRAG_CACHE_LINES: usize = (1_024 * MAX_PLAYERS).next_power_of_two();
 /// The same memo for one predicted body (`ClientCore`, fixtures).
 pub const CRAG_CACHE_LINES_ONE: usize = 512;
 /// Lines in each direct-mapped memo of the faces by whole-metre point (the
@@ -600,6 +614,13 @@ pub const MAX_PIECE_COSTS: usize = 2;
 /// DECISIONS.md §open (build grid row).
 pub const MAX_PIECES: usize = 32_768;
 
+/// Buildings per shard (freeform W3): each is a frame, minted by a
+/// foundation placed free and freed with its last piece. A building has at
+/// least one piece, so this caps nothing a full piece store would not —
+/// except a world of single foundations, which it refuses past 4,096 with
+/// `REFUSE_B_FULL`. Structural, not a knob.
+pub const MAX_BUILDINGS: usize = 4_096;
+
 /// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
 /// axis, matching the wire's 11-bit cell fields (the 4,096 m island spans
 /// ~1,366 3 m cells; foundations further out die on the terrain rule first).
@@ -620,6 +641,13 @@ const _: () = assert!(MAX_BUILD_SOCKETS == MAX_BUILD_LEVELS * 2);
 /// derived from MAX_PIECES, not a knob.
 pub const COL_INDEX_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(COL_INDEX_SLOTS.is_power_of_two());
+
+/// Slots in the piece store's address → index table (`build::Pieces`):
+/// one row per piece, power of two, 2 × MAX_PIECES so it never passes half
+/// load. Structural, not a knob.
+pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
+const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
+const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
 
 /// Deployable definitions the sim preallocates for (the alpha set is 9
 /// rows, content/deployables.toml). The content bake refuses a set past
@@ -647,6 +675,14 @@ pub const MAX_DEPLOYS: usize = 4_096;
 pub const SOLID_SLOTS: usize = 2 * MAX_DEPLOYS;
 const _: () = assert!(SOLID_SLOTS.is_power_of_two());
 
+/// Rows in the freeform broadphase (`space::Space`, unwired): a piece or a
+/// deployable files under up to four 4 m buckets, and the table refuses past
+/// half load, so this holds every piece and deployable at the caps with room
+/// over. Power of two. Structural, not a knob.
+pub const SPACE_SLOTS: usize = 16 * MAX_PIECES;
+const _: () = assert!(SPACE_SLOTS.is_power_of_two());
+const _: () = assert!(SPACE_SLOTS / 2 >= 4 * (MAX_PIECES + MAX_DEPLOYS));
+
 /// Hearths per shard, tracked in their own dense list so claim checks
 /// and the upkeep sweep scan hearths, never the whole deploy store.
 /// Overflow policy: **refuse** the hearth placement. Proposed default,
@@ -657,7 +693,8 @@ pub const MAX_HEARTHS: usize = 512;
 /// roster slot below the town's sentries, taken from the animals' range —
 /// 64 leaves 187 animal slots, about three times what the shipped
 /// densities spawn. Past it, a placed turret stands inert until one comes
-/// down. Was 24 until wire v121, which a few bases on a full shard used up.
+/// down or a dry one gives its entry up to it (`turret::reconcile`). Was 24
+/// until wire v121, which a few bases on a full shard used up.
 pub const MAX_TURRETS: usize = 64;
 
 /// Rust's turret interference (2023): at most this many turrets within
@@ -666,6 +703,13 @@ pub const MAX_TURRETS: usize = 64;
 pub const TURRET_INTERFERENCE: usize = 12;
 /// The interference radius, metres.
 pub const TURRET_INTERFERENCE_M: f32 = 40.0;
+
+/// Turrets one player may have placed (`deploy::place_deploy`): more than
+/// [`TURRET_INTERFERENCE`] in one place never all fire anyway, and the
+/// [`MAX_TURRETS`] table is shard-wide, so one hand may not hold all of it.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
+pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
+const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
@@ -775,7 +819,15 @@ pub const BODY_BROADCAST_ARMS: usize = 3;
 /// (join sync / resync is drip-fed: at most one sync message per client
 /// per tick, at most this many entries examined to fill it). Proposed
 /// default, DECISIONS.md §open (gather wire row).
-pub const SYNC_SCAN_PER_TICK: usize = 256;
+///
+/// 2,048 since the walk is aimed and restarts on every class-S re-arm
+/// (`server::interest`): a full store, `MAX_SLOT_LIVES`, is then 64 scan
+/// windows plus at most ~88 windows a full batch of in-range cells ends
+/// early, 153 ticks, inside which a sprinter covers 28 m of the 32 m that
+/// re-arms it — the piece walk's inequality, held by the server's
+/// `a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it`. A
+/// server-side work cap: no wire, save or hash sees it.
+pub const SYNC_SCAN_PER_TICK: usize = 2_048;
 
 /// Death backpacks standing at once (backpack.rs). Sized past the worst
 /// honest case: `MAX_PLAYERS` bodies each holding a bag, plus headroom
@@ -811,6 +863,14 @@ pub const MAX_BACKPACKS: usize = 256;
 /// one with the barrels.
 pub const MAX_GROUND_ITEMS: usize = 512;
 
+/// Of [`MAX_GROUND_ITEMS`], the slots a thrown stack (`Command::Drop`)
+/// never takes: a throw into a store this full lands in the bag at the
+/// thrower's feet instead (`grounditem::GroundItems::toss`). The store is
+/// shard-wide and evicts, so a flood of one-unit drops otherwise pushed out
+/// every barrel's scatter and every landed arrow on the island; with this,
+/// a drop never evicts anything and those keep the last quarter.
+pub const DROP_HEADROOM: usize = MAX_GROUND_ITEMS / 4;
+
 /// Stacks in the air at once (`grounditem::Tosses`): a `Command::Drop` throws
 /// its stack out of the hand, and the throw is remembered only while it
 /// flies (two thirds of a second off a standing hand on level ground).
@@ -831,8 +891,44 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// on it. Overflow policy: **refuse** the placement with
 /// `REFUSE_D_FULL` — the same posture `MAX_HEARTHS` takes, and correct
 /// here for the same reason: nothing is lost by refusing a box that was
-/// never placed. Proposed default, DECISIONS.md §open (box v0).
-pub const MAX_BOXES: usize = 1_024;
+/// never placed. Proposed default, DECISIONS.md §open (box v0). 2,048
+/// since each hand's share was capped ([`MAX_BOXES_PER_OWNER`]): at 1,024
+/// sixteen accounts filled it. A count, not a stride, so old saves load.
+pub const MAX_BOXES: usize = 2_048;
+/// Of [`MAX_BOXES`], how many one player may have placed — boxes, fires,
+/// furnaces, planters, turrets, every container (`deploy::holds_items`).
+/// The store is shard-wide and a small box is cheap, so without a share one
+/// player kept every fire, furnace and box on the island from being placed.
+/// Overflow policy: **refuse** with `REFUSE_D_OWN_CAP` (the store's own is
+/// `REFUSE_D_FULL`).
+pub const MAX_BOXES_PER_OWNER: usize = 64;
+// Every container stands on a deploy record, and filling the store takes
+// thirty-two hands' whole shares.
+const _: () = assert!(MAX_BOXES <= MAX_DEPLOYS && MAX_BOXES >= 32 * MAX_BOXES_PER_OWNER);
+
+/// Living plants on the island at once, in planter beds and on the open
+/// ground (`farm.rs`). One fixed store; a farm period visits at most
+/// `ceil(MAX_PLANTS / 15)` of them. Overflow policy: **refuse** the
+/// planting with `REFUSE_D_PLANTS_FULL` — the seed stays in the hand.
+pub const MAX_PLANTS: usize = 4_096;
+
+/// Of [`MAX_PLANTS`], how many may stand in the open ground, island-wide
+/// and per sower (`farm::ground_ok`). A ground plant never dies before it
+/// ripens, so these are what bound a field sown to spam. Overflow policy:
+/// **refuse** the planting with `REFUSE_D_PLANTS_FULL`.
+pub const MAX_GROUND_PLANTS: usize = 512;
+pub const MAX_GROUND_PLANTS_PER_OWNER: usize = 48;
+
+/// Water catchers standing at once, island-wide (`deploy::ARCH_CATCHER`).
+/// Each one scans the boxes and the ground plants every tenth farm period
+/// to water what stands within its reach, so this bounds that scan.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+pub const MAX_CATCHERS: usize = 128;
+
+/// Crop rows the sim preallocates for (`content/cooking.toml` `[[crop]]`).
+/// Structural cap like [`MAX_COOK_ROWS`]: the bake refuses a set past it.
+/// A plant stores its crop as this table's index.
+pub const MAX_CROPS: usize = 8;
 
 /// Authored world containers that have ever been opened at once
 /// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a
@@ -1155,11 +1251,14 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// one charge — so wall 4 applies at its sharpest: without a cap, a
 /// client spamming the plant verb grows a per-tick scan without bound.
 ///
-/// Sized off what a raid actually is rather than off a player count: a
-/// stone wall at 1750 hp takes four of the alpha's 500-structure charges,
-/// so 64 is sixteen simultaneous walls coming down — more than any raid
-/// this shard's `MAX_PLAYERS` can mount at once, and small enough that the
-/// fuse scan is 64 integer compares a tick.
+/// Sized off the seats: every one of them holding its whole share
+/// (`MAX_CHARGES_PER_OWNER`) at once. The store is shard-wide, and one a
+/// handful of accounts planting on an empty field could fill would refuse
+/// every other raid on the island — at 64 it took six, since a paced hand
+/// keeps about ten lit and a per-owner cap above that never bound. Now no
+/// planter under its own share meets a full store. Tens of kB, so boxed
+/// (`charge::Charges`); the fuse scan is integer compares, and what one
+/// tick sets off is capped apart (`MAX_DETONATIONS_PER_TICK`).
 ///
 /// Overflow policy: **refuse** — the plant is refused with `REFUSE_B_FULL`
 /// and the charge stays in the raider's inventory. Refusing costs the
@@ -1167,7 +1266,24 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// would let one player disarm another's raid by planting into a full
 /// store, which is a grief verb rather than a cap.
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
-pub const MAX_LIVE_CHARGES: usize = 64;
+pub const MAX_LIVE_CHARGES: usize = MAX_PLAYERS * MAX_CHARGES_PER_OWNER;
+
+/// Live charges one planter may have burning at once: the share the store
+/// above is sized from. Twelve is more than a paced hand ever has lit
+/// honestly — one plant a second (`server::pace`) against a ten-second
+/// fuse is ten — so a real raid never meets it; it is the sim's own bound
+/// on a hand nothing paces. Overflow policy: **refuse**, `MAX_LIVE_CHARGES`'
+/// own (`REFUSE_B_FULL`, the charge stays in the pack).
+pub const MAX_CHARGES_PER_OWNER: usize = 12;
+const _: () = assert!(MAX_LIVE_CHARGES >= MAX_PLAYERS * MAX_CHARGES_PER_OWNER);
+
+/// Charges one tick sets off — blown or gone out — at most. With the store
+/// sized off the seats, far more than a tick's blast pass was ever sized
+/// for can come due together; 64 is the old store's whole size, sixteen
+/// stone walls coming down at once. Overflow policy: **defer** — the rest
+/// stay where they are stuck, due, and go off on the next tick, in store
+/// order; nothing is lost, and a paced island never comes near it.
+pub const MAX_DETONATIONS_PER_TICK: usize = 64;
 
 /// Fires burning on the ground at once (`fire.rs`) — what fire arrows leave.
 /// A bow looses one every 1.25 s and a fire lasts at most 40 s, so one archer
@@ -1197,6 +1313,18 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// must never do.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROWS: usize = 128;
+
+/// Arrows one archer may have in flight at once (`ranged::draw`) — their
+/// share of `MAX_ARROWS`, so the store cannot be filled by a handful of
+/// accounts lobbing arrows high to keep them airborne for the whole
+/// `MAX_ARROW_LIFE_TICKS`, which refused every bow and rocket on the shard.
+/// The cadence alone allows seven: a bow nocks every 37 ticks and a lob
+/// lives 240. An aimed shot is down inside two seconds, so an archer
+/// shooting at anything holds one or two; four is a lob every cadence for
+/// over 3.7 s of flight, which is shooting at nothing past ~170 m.
+/// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy and in the
+/// same place — before the ammo leaves the quiver.
+pub const MAX_ARROWS_PER_OWNER: usize = 4;
 
 /// Stopped arrows not yet lying on the ground (`spent.rs`): the ones in a
 /// body, for at most the lodge, and the ones stopped this tick. Four full

@@ -133,6 +133,28 @@ impl Fires {
         self.len = kept;
     }
 
+    /// Put out every fire within `r` metres of (`x`, `z`) in the plane and
+    /// `r` of height `y` (water poured on them, `World::pour`), keeping the
+    /// rest in order; `out` hears each one put out. How many went out.
+    pub fn douse(&mut self, x: f32, y: f32, z: f32, r: f32, mut out: impl FnMut(&FireRec)) -> u16 {
+        let mut kept = 0;
+        let mut n = 0u16;
+        for i in 0..self.len {
+            let f = self.entries[i];
+            let (fx, fy, fz) = f.at_m();
+            let (dx, dz) = (fx - x, fz - z);
+            if dx * dx + dz * dz <= r * r && fy >= y - r && fy <= y + r {
+                out(&f);
+                n += 1;
+            } else {
+                self.entries[kept] = f;
+                kept += 1;
+            }
+        }
+        self.len = kept;
+        n
+    }
+
     /// Replace the store with a saved one (`worldsave.rs`), at most
     /// `MAX_FIRES` of it.
     pub fn restore(&mut self, fires: &[FireRec]) {

@@ -33,7 +33,7 @@
 
 use bevy::prelude::*;
 use client::render::structures::{
-    base_transform, foundation_part, level_base_y, parts_for, shape_parts, Part, PartKind,
+    base_transform, foundation_part, level_base_y, parts_for, shape_parts, Part, PartKind, PostOwn,
     EDGE_DROP_M, SLAB_T,
 };
 use sim_core::build::{
@@ -643,4 +643,211 @@ fn the_drawn_extents_are_the_sims() {
             short
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §D · Pieces the grid cannot name (freeform)
+// ---------------------------------------------------------------------------
+
+/// The sim's row for a footprint in a building, as `build::Pieces` files it.
+fn posed_row(
+    frame: &sim_core::frame::Frame,
+    sock: sim_core::sock::Sock,
+    level: u8,
+    shape: u8,
+) -> sim_core::hull::Hull {
+    let addr = sim_core::sock::PieceAddr {
+        bld: 0,
+        level,
+        sock,
+    };
+    let hit = sim_core::collide::PieceHit {
+        cx: 0,
+        cz: 0,
+        level,
+        loc: sim_core::build::LOC_NONE,
+    };
+    sim_core::hull::posed_hull(1, hit, frame, &addr, shape)
+}
+
+/// Every vertex of a mesh, carried into the world by `root`.
+fn world_points(m: &Mesh, root: Transform) -> Vec<Vec3> {
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) =
+        m.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("positions");
+    };
+    p.iter()
+        .map(|v| root.transform_point(Vec3::from_array(*v)))
+        .collect()
+}
+
+/// A triangle in a building turned off the grid draws on the triangle the
+/// sim collides: every vertex of its dressed slab, in every tier, inside the
+/// row's footprint, and its corners reached.
+#[test]
+fn a_turned_triangle_is_drawn_on_its_own_corners() {
+    use client::render::structures::{dress, posed_transform};
+    let frame = sim_core::frame::Frame::new((612_345, 498_765), 3, 13_000);
+    let sock = sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::new(6, -12, 0, 6), 3);
+    let row = posed_row(&frame, sock, 1, SHAPE_TRI_FLOOR);
+    let root = posed_transform(&frame, &sock, 1);
+    let size = Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M);
+    for tier in 0..4u8 {
+        let pts = world_points(&dress::slab_mesh(size, true, false, tier), root);
+        for p in &pts {
+            assert!(
+                row.foot_contains(p.x, p.z, 1e-3),
+                "tier {tier}: vertex {p:?} off the triangle"
+            );
+        }
+        let (corners, n) = row.footprint();
+        for c in &corners[..n] {
+            let near = pts
+                .iter()
+                .map(|p| Vec2::new(p.x - c.0, p.z - c.1).length())
+                .fold(f32::MAX, f32::min);
+            assert!(near < 0.05, "tier {tier}: corner {c:?} undrawn ({near} m)");
+        }
+    }
+}
+
+/// Each flight of a triangle's spiral, turned a third further each, draws
+/// its treads on the walk the sim stands a player on: every upward face of
+/// the plain mesh within a riser's half of `circulation::surface` read in
+/// the flight's own row.
+#[test]
+fn a_triangle_flight_is_drawn_on_its_walk() {
+    use client::render::structures::{part_mesh, posed_transform};
+    use sim_core::build::SHAPE_STAIRS_TRI_SPIRAL;
+    let frame = sim_core::frame::Frame::new((612_345, 498_765), 3, 13_000);
+    let body = sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::new(6, -12, 0, 6), 3);
+    let (parts, _) = shape_parts(SHAPE_STAIRS_TRI_SPIRAL);
+    let mesh = part_mesh(&parts[0]);
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
+        mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+    else {
+        panic!("normals");
+    };
+    let idx: Vec<usize> = mesh.indices().unwrap().iter().collect();
+    for turn in 0..3u8 {
+        let sock = sim_core::sock::Sock::tri_riser(body.at, body.dir + 4 * turn);
+        let row = posed_row(&frame, sock, 0, SHAPE_STAIRS_TRI_SPIRAL);
+        let root = posed_transform(&frame, &sock, 0) * parts[0].transform();
+        let pts = world_points(&mesh, root);
+        let mut tops = 0;
+        for t in idx.chunks_exact(3) {
+            if normals[t[0]][1] < 0.5 {
+                continue;
+            }
+            let c = (pts[t[0]] + pts[t[1]] + pts[t[2]]) / 3.0;
+            let (lx, lz) = row.local(c.x, c.z);
+            let walk = sim_core::circulation::surface(SHAPE_STAIRS_TRI_SPIRAL, LOC_RISER, lx, lz)
+                .unwrap_or_else(|| panic!("turn {turn}: a tread at {c:?} off the walk"));
+            assert!(
+                (c.y - row.floor_y - walk).abs() <= LEVEL_H_M / 20.0,
+                "turn {turn}: drawn {} over the floor, walk {walk}",
+                c.y - row.floor_y
+            );
+            tops += 1;
+        }
+        assert!(tops > 0);
+    }
+}
+
+/// Round a turned square — four walls, each corner shared by two — every
+/// corner's post is drawn by exactly one wall, and a wall alone draws both
+/// of its own (`structures::posed_post_owner`).
+#[test]
+fn a_turned_base_draws_each_corner_post_once() {
+    use client::render::structures::posed_post_owner;
+    use sim_core::build::{BuildContent, PieceRec, Pieces, LOC_NONE};
+    use sim_core::sock::Sock;
+    let bc = BuildContent::probe_fixture();
+    let (foundation, wall) = (0u8, 1u8);
+    assert_eq!(bc.pieces[wall as usize].shape, SHAPE_WALL);
+    let frame = sim_core::frame::Frame::new((612_345, 498_765), 3, 13_000);
+    let sq = Sock::square_from(sim_core::lattice::LPt::ZERO, 0);
+    let shape_of = |row: u8| Some(bc.pieces[row as usize].shape);
+    let mut store = Pieces::new();
+    let put = |store: &mut Pieces, id: u32, row: u8, sock: Sock| {
+        let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+        let rec = PieceRec {
+            id,
+            bld: 0,
+            sock,
+            row,
+            cx,
+            cz,
+            loc: LOC_NONE,
+            hp: 1,
+            ..PieceRec::default()
+        };
+        assert!(store.mirror_put(rec, frame, shape_of));
+    };
+    put(&mut store, 1, foundation, sq);
+    let (sides, n) = sq.sides();
+    put(&mut store, 2, wall, sides[0]);
+    let alone = store.entries()[store
+        .find_addr(&sim_core::sock::PieceAddr {
+            bld: 0,
+            level: 0,
+            sock: sides[0],
+        })
+        .unwrap()];
+    assert_eq!(posed_post_owner(&store, &bc, &alone), PostOwn::BOTH);
+    for (k, e) in sides[..n].iter().enumerate().skip(1) {
+        put(&mut store, 2 + k as u32, wall, *e);
+    }
+    // Each corner of the square, and how many walls draw a post there.
+    let (corners, _) = sq.corners();
+    let mut drawn = [0; 4];
+    for r in store.entries().iter().filter(|r| r.row == wall) {
+        let own = posed_post_owner(&store, &bc, r);
+        let (ends, _) = r.sock.corners();
+        for (end, mine) in [(ends[0], own.low), (ends[1], own.high)] {
+            let c = corners.iter().position(|c| *c == end).unwrap();
+            drawn[c] += mine as usize;
+        }
+    }
+    assert_eq!(drawn, [1; 4], "posts drawn per corner");
+}
+
+/// A turned foundation's skirt is sized off its own footprint: its bottom is
+/// in the ground under every corner, wherever the cap does not stop it
+/// (`structures::posed_footing`).
+#[test]
+fn a_turned_footing_is_buried_under_its_own_corners() {
+    use client::render::structures::{posed_footing, SKIRT_MAX_M};
+    use sim_core::sock::Sock;
+    let seed = 20260731;
+    let haven = hv(seed);
+    let mut buried = 0;
+    for i in 0..24 {
+        let origin = (180_000 + i * 2_300, 210_000 + i * 1_700);
+        let (ox, oz) = (origin.0 as f32 / 100.0, origin.1 as f32 / 100.0);
+        let band = sim_core::build::band_of_ground(terrain::ground(seed, haven, ox, oz));
+        let frame = sim_core::frame::Frame::new(origin, band, (i as u16).wrapping_mul(9_973));
+        for sock in [
+            Sock::square_from(sim_core::lattice::LPt::ZERO, 0),
+            Sock::tri_from(sim_core::lattice::LPt::ZERO, 0),
+        ] {
+            let (_, depth) = posed_footing(seed, haven, &frame, &sock);
+            if depth >= SKIRT_MAX_M - 1e-4 {
+                continue;
+            }
+            let bottom = sim_core::build::band_y(band) - depth;
+            let (c, n) = sock.corners();
+            for p in &c[..n] {
+                let (x, z) = frame.to_world(*p);
+                assert!(
+                    bottom <= terrain::ground(seed, haven, x, z) + 1e-3,
+                    "the skirt stops {} over the ground at a corner",
+                    bottom - terrain::ground(seed, haven, x, z)
+                );
+            }
+            buried += 1;
+        }
+    }
+    assert!(buried > 0);
 }

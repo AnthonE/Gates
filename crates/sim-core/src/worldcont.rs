@@ -77,6 +77,10 @@ pub const CH_REFILL: u32 = 100;
 /// clearing the pad is worth doing, jittered so a shard does not learn one
 /// clock. Nothing here is a new number; if the window is wrong it is wrong
 /// for all three, which is the right place for that argument.
+///
+/// `seed` is the salted one (`gather::respawn_seed`), as the barrel's is:
+/// the world seed and the emptying tick alone let a looter time the first
+/// take for the shortest wait.
 pub fn refill_ticks(seed: u64, cx: u16, cz: u16, tick: u64) -> u64 {
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_REFILL) ^ tick);
     RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS
@@ -296,7 +300,10 @@ impl WorldConts {
 
     /// Open the container at cell `(cx, cz)` on behalf of `p`, minting the
     /// record and rolling its contents if this is the first visit — or if
-    /// it was emptied and its refill tick has come.
+    /// it was emptied and its refill tick has come. The roll draws on
+    /// `loot_seed`, the world's secret seed (`World::secret_seed`), not the
+    /// public `seed`, so a client cannot pick the tick it opens on to the
+    /// roll it wants.
     ///
     /// Returns the resolved index, or `None` with nothing written. The
     /// three refusals are all silent by design: the container simply does
@@ -321,6 +328,7 @@ impl WorldConts {
     pub fn open(
         &mut self,
         seed: u64,
+        loot_seed: u64,
         scatter: &terrain::ScatterTable,
         haven: &terrain::Haven,
         cols: &crate::collide::ColIndex,
@@ -376,7 +384,7 @@ impl WorldConts {
                     items: [ItemStack::default(); INV_SLOTS],
                 };
                 self.len += 1;
-                self.roll(i, lc, gc, seed, handle, tick);
+                self.roll(i, lc, gc, loot_seed, handle, tick);
                 return Some(i);
             }
         };
@@ -386,7 +394,7 @@ impl WorldConts {
         // is why an untouched container never re-rolls.
         if self.entries[i].refill_at != 0 && tick >= self.entries[i].refill_at {
             self.entries[i].refill_at = 0;
-            self.roll(i, lc, gc, seed, handle, tick);
+            self.roll(i, lc, gc, loot_seed, handle, tick);
         }
         Some(i)
     }

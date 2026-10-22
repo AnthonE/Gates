@@ -58,9 +58,18 @@ codegen-units = 1
 # wasm (13.8 MB gzipped) on 2026-09-12; what this changes and what each buys
 # is measured in `findings/web-build-20260909.md` §16 — do not tune it by
 # feel, rerun the script and read the size line it prints.
+#
+# **`opt-level = 3`, not `"s"`, since 2026-10-21**, measured rather than felt.
+# The frame is CPU on the page's one thread, and the same sim-core code timed
+# in V8 (node, best of five) ran 19-25% faster at 3 than at `s` (terrain
+# 1471 → 1187 ms, parity 24.4 → 20.5 s, combat 13.3 → 10.6 s). The module
+# pays for it: 40.7 → 51.3 MB raw, 10.8 → 13.6 MB gzip, 7.3 → 8.6 MB brotli —
+# still under the 14.5 MB gzip it was the day before, when the sound bank was
+# compiled in (`sound_bank::Rec`), and a module the page compiles once per
+# publish (V8's code cache, `web/app.js` `counted`).
 [profile.web]
 inherits = "release"
-opt-level = "s"
+opt-level = 3
 lto = "fat"
 codegen-units = 1
 # `true` (symbols), not `"debuginfo"`: the `name` section alone was 32.9 MB
@@ -138,3 +147,11 @@ debug = false
 # above depends on — and every gate runs `--release` regardless.
 [profile.dev.package.sim-core]
 opt-level = 3
+
+# webpki-roots, with the three eMudhra (emSign) roots removed after their
+# intermediates' keys were found brute-forceable (Oct 2026). ureq copies
+# `TLS_SERVER_ROOTS` wholesale and has no hook to filter it, so the list itself
+# is patched. `vendor/webpki-roots/README.md` says what changed and when to drop
+# it; `crates/server/tests/distrusted_roots.rs` keeps it that way.
+[patch.crates-io]
+webpki-roots = { path = "vendor/webpki-roots" }

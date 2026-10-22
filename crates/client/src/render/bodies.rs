@@ -295,7 +295,7 @@ pub fn stream(
         // The old draw added 0.9 m to the wire's y to centre a pill; a glTF
         // humanoid stands on its own origin, so adding it again floats every
         // player a metre off the ground. The wire's y IS the feet — no offset.
-        let pos = Vec3::new(rs.x, rs.y, rs.z);
+        let pos = Vec3::new(rs.x, rs.y + swim_lift(rs.y), rs.z);
         // The wire has carried yaw since the first snapshot and nothing ever
         // read it: bodies faced +Z no matter where they were looking or
         // walking. A capsule hid that; a figure with a face cannot.
@@ -303,7 +303,15 @@ pub fn stream(
         // A sleeper lies on its back; a corpse or a downed body is laid down
         // by `Death01` instead.
         let asleep = rs.sleeping && !rs.dead && !rs.wounded;
-        let (root, turn) = super::anim::root_pose(pos, facing, asleep);
+        // A sitter faces its seat (v130), whichever way its owner looks.
+        let seat_yaw = rs
+            .seated
+            .then(|| super::casino::seat_yaw(&core.haven().town, rs.x, rs.z))
+            .flatten();
+        let (root, turn) = match seat_yaw {
+            Some(yaw) => super::anim::sit_pose(pos, yaw),
+            None => super::anim::root_pose(pos, facing, asleep),
+        };
         match known {
             Some(entity) => {
                 if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
@@ -326,7 +334,8 @@ pub fn stream(
                     // killed player is drawn standing at idle.
                     anim.airborne = rs.airborne;
                     anim.crouched = rs.crouched;
-                    anim.facing = wire_yaw_to_radians(rs.yaw);
+                    anim.seated = seat_yaw.is_some();
+                    anim.facing = seat_yaw.unwrap_or(wire_yaw_to_radians(rs.yaw));
                     anim.hold = shoulders(&core.catalog, &rs);
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
@@ -381,7 +390,8 @@ pub fn stream(
                 let mut anim = BodyAnim {
                     airborne: rs.airborne,
                     crouched: rs.crouched,
-                    facing: wire_yaw_to_radians(rs.yaw),
+                    seated: seat_yaw.is_some(),
+                    facing: seat_yaw.unwrap_or(wire_yaw_to_radians(rs.yaw)),
                     hold: shoulders(&core.catalog, &rs),
                     ..BodyAnim::default()
                 };
@@ -910,3 +920,21 @@ pub fn light_flames(
         }
     }
 }
+
+/// How far a body floating at the surface is drawn above its feet's line,
+/// metres. The sim floats a swimmer with its feet `movement::FLOAT_DEPTH_M`
+/// under (the head out), but the swim clips hold the hips near standing
+/// height, so drawn at the feet the swimmer's back is half a metre under:
+/// lifted, it lies along the surface. Only at the float line — a diver is
+/// drawn where it is.
+pub fn swim_lift(feet_y: f32) -> f32 {
+    let float = sim_core::terrain::SEA_LEVEL - sim_core::movement::FLOAT_DEPTH_M;
+    if (feet_y - float).abs() < 0.15 {
+        SWIM_DRAW_LIFT_M
+    } else {
+        0.0
+    }
+}
+
+/// See [`swim_lift`].
+pub const SWIM_DRAW_LIFT_M: f32 = 0.4;

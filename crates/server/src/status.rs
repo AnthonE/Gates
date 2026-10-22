@@ -11,7 +11,7 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"agents":1,"spectators":1,"max_players":100,"proto":62,"tick":123456,
+//! {"players":3,"agents":1,"spectators":1,"agents_only":false,"max_players":100,"proto":62,"tick":123456,
 //!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
 //!  "stream_out_bytes":0,"stream_out_frames":0,
 //!  "stream_in_bytes":0,"stream_in_frames":0,
@@ -20,7 +20,10 @@
 //!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
 //!  "favour_granted":0,"favour_sum":0,
 //!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0,
-//!  "wipe":1,"act":1,"works_lit":0,"works_total":6,"restart_at":0}
+//!  "wipe":1,"act":1,"works_lit":0,"works_total":6,"restart_at":0,
+//!  "phase_p50_us":[64,16,128,64,128,256,1024],
+//!  "phase_p99_us":[256,32,512,128,512,1024,2048],
+//!  "phase_max_us":[900,40,1800,300,700,1900,4100]}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -36,6 +39,10 @@
 //! - `spectators` — occupied spectator seats (`NETCODE.md` §2.3), off the
 //!   gauge the sim loop mirrors from `ShardCore::spectators`. Never counted
 //!   in `players`: a seat has no body and does not take a player slot.
+//! - `agents_only` — the document's one boolean: `true` on an agent-only
+//!   shard (`shard.toml agents_only`), which refuses people at the hello,
+//!   so a server list can say what the island is before anyone dials it.
+//!   Raised once at spawn (`ShardStats::agents_only`).
 //! - `proto` — `protocol::PROTO_VER`, the wire this shard speaks. What a
 //!   publish reads before shipping a client (`ci/publish_web.sh`,
 //!   `ci/publish_depot.py`): a client on another number is `REFUSE_VERSION`
@@ -88,6 +95,11 @@
 //! - `wipe`, `act`, `works_lit`, `works_total` — the server's progression
 //!   (`ARC.md`): which wipe is running, the act, and how many works are lit
 //!   of how many exist. What the island banner tells a player, for a list.
+//!
+//! - `phase_p50_us`, `phase_p99_us`, `phase_max_us` — where a tick's time
+//!   goes, since boot: seven columns, net · prep · sim · interest · events ·
+//!   encode · whole tick (`stats::PHASE_ROWS`). The percentiles are log2
+//!   bucket edges, so read them as "under this", within 2×.
 //!
 //! - `restart_at` — unix seconds of a pending `/restart`, 0 for none
 //!   (`wipe::Restart`). The key being there at all is how
@@ -405,8 +417,23 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         hist.push_str(&ShardStats::get(b).to_string());
     }
     hist.push(']');
+    // Per-phase tick time (`stats::PHASE_ROWS`), three rows of seven.
+    let row = |f: &dyn Fn(usize) -> u64| {
+        let mut r = String::from("[");
+        for i in 0..crate::stats::PHASE_ROWS {
+            if i > 0 {
+                r.push(',');
+            }
+            r.push_str(&f(i).to_string());
+        }
+        r.push(']');
+        r
+    };
+    let p50 = row(&|i| stats.phase_pct_us(i, 50));
+    let p99 = row(&|i| stats.phase_pct_us(i, 99));
+    let pmax = row(&|i| ShardStats::get(&stats.phase_max_us[i]));
     let body = format!(
-        "{{\"players\":{},\"agents\":{},\"spectators\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
+        "{{\"players\":{},\"agents\":{},\"spectators\":{},\"agents_only\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
          \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
          \"stream_out_bytes\":{},\"stream_out_frames\":{},\
@@ -416,10 +443,12 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
          \"aim_stale_hist\":{},\
          \"favour_granted\":{},\"favour_sum\":{},\
          \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{},\
-         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{},\"restart_at\":{}}}",
+         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{},\"restart_at\":{},\
+         \"phase_p50_us\":{},\"phase_p99_us\":{},\"phase_max_us\":{}}}",
         ShardStats::get(&stats.players),
         ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
+        ShardStats::raised(&stats.agents_only),
         sim_core::limits::MAX_PLAYERS,
         protocol::PROTO_VER,
         ShardStats::get(&stats.current_tick),
@@ -447,6 +476,9 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         ShardStats::get(&stats.works_lit),
         ShardStats::get(&stats.works_total),
         ShardStats::get(&stats.restart_at),
+        p50,
+        p99,
+        pmax,
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

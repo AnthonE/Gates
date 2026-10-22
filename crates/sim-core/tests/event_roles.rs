@@ -98,14 +98,15 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
     EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
     EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
-    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_GROW,
-    EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MAX,
-    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
-    EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
-    EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
-    EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
-    EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX,
-    STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
+    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
+    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MAX, EV_MOVED,
+    EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_PLANT,
+    EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
+    EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
+    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
+    PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE,
+    TRUST_VERB_MAX,
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
@@ -2331,14 +2332,17 @@ fn stand_a_storey(w: &mut World, cx: u16, cz: u16) {
     place_piece(w, PIECE_FLOOR, cx, cz, UPPER, LOC_PLANE);
 }
 
-/// Stand everyone on the floor the door at `(cx, cz, UPPER, DOOR_EDGE)`
-/// hangs from: a door is worked from its own storey (`reach.rs`), never
-/// from the ground under its floor.
-fn up_to_the_door(w: &mut World, cx: u16, cz: u16) {
-    let rec = *w
-        .deploys
-        .find(cx, cz, UPPER, DOOR_EDGE)
-        .expect("the door stands");
+/// Stand everyone on `UPPER`'s floor (the one the door at `(cx, cz, UPPER,
+/// DOOR_EDGE)` hangs from): what stands on a storey is put there and worked
+/// from that storey (`reach.rs`), never from the ground under its floor.
+fn up_a_storey(w: &mut World, cx: u16, cz: u16) {
+    let rec = sim_core::deploy::DeployRec {
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        ..Default::default()
+    };
     let (x, z) = sim_core::build::anchor(cx, cz, DOOR_EDGE);
     let floor =
         sim_core::reach::Target::door(SEED, hv(SEED), w.pieces.cols(), &rec, (x, z + 1.0)).base_y;
@@ -2368,11 +2372,26 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
+/// Stand everyone on the floor of `level` in the column: a deployable goes
+/// where its placer can see (`World::deploy_seen`), never through the
+/// floor of the storey it goes on.
+fn stand_on_level(w: &mut World, cx: u16, cz: u16, level: u8) {
+    let plate = w.pieces.cols().plate(cx, cz).unwrap_or(0);
+    let floor = sim_core::build::column_floor_y(SEED, hv(SEED), cx, cz, plate)
+        + sim_core::build::level_y(level);
+    for p in w.players.iter_mut().filter(|p| p.active) {
+        p.body.qy = sim_core::movement::quant_y(floor);
+    }
+}
+
 /// Bolt the code lock onto the door at the address. Its own helper
 /// because a lock mints **no** deploy record — it is a record about one
 /// (`lock.rs`) — so `place_deploy`'s "the store grew by one" assertion is
 /// the wrong check for it, and the right one is that the lock store grew.
 fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.locks().len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -2393,6 +2412,9 @@ fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
 
 /// Place a deployable and leave the world standing on the tick it landed.
 fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -2453,25 +2475,21 @@ fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
     panic!("event code {code} never landed in {MAX_STEPS} sim ticks of raiding");
 }
 
-/// `EV_GROW` — a planter's beds changed how they are drawn (crops v1). The
-/// fixture's fire row is made a planter, so the cell key, the level and the
-/// stage byte are each read from a place a transposition would move.
+/// `EV_PLANT` and `EV_PLANT_GONE` — farming v2's two events. The fixture's
+/// fire row is made a planter and three plants go in, so the one read is
+/// plant 3 at store index 2: its id, its stage word and its index are three
+/// different numbers. It is read as it grows from seed to seedling, and as
+/// the builder (id 4) clears it dead (`GONE_CLEARED` = 2).
 #[test]
-fn grow_names_the_cell_then_the_level_then_the_beds() {
-    use sim_core::oven::{CookRow, PLANTER_LAYOUT};
+fn plant_names_the_plant_then_its_stage_then_its_index() {
+    use sim_core::farm::{FarmContent, GONE_CLEARED, STAGE_DYING, STAGE_SEEDLING, TEND_CLEAR};
     let mut w = World::new(SEED);
     w.cook = CookContent::probe_fixture();
+    w.cook.farm = FarmContent::probe_fixture();
+    w.cook.farm.crops[0].grow_ticks = 3_000;
+    w.cook.farm.ripe_ticks = 30;
     let (cx, cz) = builder_world(&mut w);
     w.deploy.defs[DEPLOY_FIRE as usize].arch = sim_core::deploy::ARCH_PLANTER;
-    let n = w.cook.row_count as usize;
-    w.cook.rows[n] = CookRow {
-        input: 3,
-        output: 5,
-        count: 1,
-        ticks: 3_000,
-        arch: sim_core::deploy::ARCH_PLANTER,
-    };
-    w.cook.row_count += 1;
     w.players[0].inv[4] = ItemStack {
         item: 6,
         count: 4,
@@ -2479,37 +2497,79 @@ fn grow_names_the_cell_then_the_level_then_the_beds() {
         skin: 0,
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    let host = box_key(cx, cz, GROUND, 0);
     let i = w
         .deploys
-        .box_index(box_key(cx, cz, GROUND, 0))
+        .box_index(host)
         .expect("the planter is a container");
-    // The second bed, so the stage lands above bit 0 and a byte read from
-    // the wrong end of `b` cannot pass.
+    // A full skin (fixture item 2) in the water slot.
     w.deploys.set_box_slot(
         i,
-        PLANTER_LAYOUT.input_slots().start + 1,
+        0,
         ItemStack {
-            item: 3,
+            item: w.cook.farm.water_full,
             count: 1,
             cond: 0,
             skin: 0,
         },
     );
-    for _ in 0..sim_core::oven::OVEN_PERIOD_TICKS * 2 {
+    // Slot 1 holds the fixture's seed (item 1).
+    for spot in 0..3 {
+        w.tick(&[Command::Plant {
+            id: BUILDER,
+            slot: 1,
+            host,
+            spot,
+            qx: 0,
+            qz: 0,
+        }]);
+    }
+    assert_eq!(w.farm.len(), 3, "three plants went in");
+    let third = w.farm.entries()[2].id;
+    assert_eq!(third, 3);
+    let mut landed = false;
+    for _ in 0..600 {
         w.tick(&[]);
-        if count(&w, EV_GROW) > 0 {
+        if w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_PLANT && e.a == third)
+        {
+            landed = true;
             break;
         }
     }
-    let g = only(&w, EV_GROW);
-    assert_eq!(g.a, cell_key(cx, cz), "EV_GROW.a is the CELL KEY");
-    assert_eq!(g.b >> 16, GROUND as u32, "EV_GROW.b's high field is LEVEL");
+    assert!(landed, "plant 3 never grew past its seed");
+    let g = only(&w, EV_PLANT);
+    assert_eq!(g.a, third, "EV_PLANT.a is the PLANT ID");
     assert_eq!(
-        g.b & 0xFF,
-        1 << 2,
-        "EV_GROW.b's low byte is the beds: bed 1 sprouted"
+        g.b,
+        (STAGE_SEEDLING as u32) << 8,
+        "EV_PLANT.b is stage << 8 | flags"
     );
-    assert_eq!(g.c, 0, "EV_GROW has no actor");
+    assert_eq!(g.c, 2, "EV_PLANT.c is the STORE INDEX");
+
+    let mut dying = false;
+    for _ in 0..6_000 {
+        w.tick(&[]);
+        if w.farm.entries()[2].stage == STAGE_DYING {
+            dying = true;
+            break;
+        }
+    }
+    assert!(dying, "plant 3 never ripened and died");
+    w.tick(&[Command::Tend {
+        id: BUILDER,
+        plant: third,
+        act: TEND_CLEAR,
+    }]);
+    let gone = only(&w, EV_PLANT_GONE);
+    assert_eq!(gone.a, third, "EV_PLANT_GONE.a is the PLANT ID");
+    assert_eq!(gone.b, GONE_CLEARED as u32, "EV_PLANT_GONE.b is the reason");
+    assert_eq!(
+        gone.c, BUILDER,
+        "EV_PLANT_GONE.c is the hand that cleared it"
+    );
 }
 
 /// `EV_OVEN` — the fire at the address went in or out, and who did it.
@@ -2657,8 +2717,8 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     let d = only(&w, EV_DEPLOY_PLACED);
     distinct3(d, "EV_DEPLOY_PLACED");
@@ -2704,8 +2764,8 @@ fn knock_and_auth_name_the_door_then_the_player() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
     w.tick(&[Command::Access {
         id: BUILDER,
@@ -2797,8 +2857,8 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     // A door places bare and closed (lock v1), so the three bits all read
     // 0 and a check taken here could not tell any of them apart. Drive
@@ -2919,6 +2979,7 @@ fn stock_names_the_feeder_first_and_the_cell_second() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     w.tick(&[Command::Feed {
         id: BUILDER,
@@ -2960,6 +3021,7 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     let placed = only(&w, EV_DEPLOY_PLACED);
     w.tick(&[Command::Feed {
@@ -4438,7 +4500,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 73] = [
+    const COVERED: [(&str, u8); 74] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
@@ -4457,7 +4519,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_ARC_REFUSED", EV_ARC_REFUSED),
         ("EV_ARC_DID", EV_ARC_DID),
         ("EV_MECH_SOLVED", EV_MECH_SOLVED),
-        ("EV_GROW", EV_GROW),
+        ("EV_PLANT", EV_PLANT),
+        ("EV_PLANT_GONE", EV_PLANT_GONE),
         ("EV_STUMP_GRUBBED", EV_STUMP_GRUBBED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -5203,8 +5266,8 @@ fn trust_names_the_actor_the_owner_and_a_door_worked_while_they_slept() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     stand_an_outsider(&mut w);
     put_the_builder_to_sleep(&mut w);
 
@@ -5274,8 +5337,8 @@ fn trust_names_a_grant_taken_on_the_lock_of_a_body_that_is_gone() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
     w.tick(&[Command::Access {
         id: BUILDER,
@@ -5491,8 +5554,8 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     // Your own door, worked by your own hand: the leaf moves, `EV_DOOR`
     // announces it, and no trust relationship was exercised.
@@ -5630,6 +5693,7 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     stand_an_outsider(&mut w);
 
@@ -6002,7 +6066,15 @@ fn a_shop_press_names_the_presser_the_machine_then_the_press() {
     w.tick(&[Command::Shop {
         id: BUILDER,
         key,
-        act: ShopAct::Buy { row: 2, times: 1 },
+        act: ShopAct::Buy {
+            row: 2,
+            times: 1,
+            terms: sim_core::shop::ShopOffer {
+                item: 3,
+                lot: 2,
+                price: 5,
+            },
+        },
     }]);
     let ev = only(&w, EV_SHOP_REFUSED);
     assert_eq!(ev.a, BUILDER, "EV_SHOP_REFUSED.a is the presser");
@@ -6212,6 +6284,77 @@ fn a_work_names_itself_what_happened_and_who() {
     assert_eq!(w.works.w[0].points_of(BUILDER), 20_000, "two whole lines");
 }
 
+/// A dry tank relights only on a tenth of a full one: less is refused and
+/// stays in the pack, so one unit cannot switch a ceiling on (and earn the
+/// rekindle) again and again. A tank still burning takes any amount.
+#[test]
+fn a_dry_tank_takes_a_real_refill_to_relight() {
+    use sim_core::works::{
+        rekindle_min, WorksContent, ARG_ALL, OP_DEPOSIT, OP_FUEL, REFUSE_A_NOTHING,
+        WORKS_PERIOD_TICKS, WORK_EV_REKINDLED, WORK_LIT, WORK_OPEN,
+    };
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    let mut wc = WorksContent::probe_fixture();
+    wc.defs[0].fuel_max = 100;
+    w.works_def = wc;
+    assert_eq!(rekindle_min(&w.works_def.defs[0]), 10);
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let spot = w.works_def.defs[0].spot;
+    let (x, _, z) = sim_core::spot::world(&w.haven, &spot).expect("the fixture seed has a town");
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    let stack = |item, count| ItemStack {
+        item,
+        count,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[0] = stack(0, 6);
+    w.players[0].inv[1] = stack(1, 2);
+    for _ in 0..WORKS_PERIOD_TICKS {
+        if w.works.w[0].state == WORK_OPEN {
+            break;
+        }
+        w.tick(&[]);
+    }
+    w.tick(&[Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: ARG_ALL,
+    }]);
+    assert_eq!(w.works.w[0].state, WORK_LIT);
+    // Burnt dry (the fixture's ceiling is unlock 2).
+    w.works.w[0].fuel = 0;
+    w.works.refresh(&w.works_def);
+    assert_eq!(w.works.unlocks, 0b01);
+    let fuel = Command::Arc {
+        id: BUILDER,
+        op: OP_FUEL,
+        target: 0,
+        arg: 0,
+    };
+    w.players[0].inv[1] = stack(1, 9);
+    w.tick(&[fuel]);
+    let ev = only(&w, EV_ARC_REFUSED);
+    assert_eq!((ev.a, ev.b), (BUILDER, REFUSE_A_NOTHING));
+    assert_eq!(count(&w, EV_WORK), 0);
+    assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 1), 9, "kept");
+    assert_eq!((w.works.w[0].fuel, w.works.unlocks), (0, 0b01));
+
+    w.players[0].inv[1] = stack(1, 10);
+    w.tick(&[fuel]);
+    let ev = only(&w, EV_WORK);
+    assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_REKINDLED, BUILDER));
+    assert_eq!((w.works.w[0].fuel, w.works.unlocks), (10, 0b11));
+
+    // Burning: one unit tops it up, and nothing is rekindled.
+    w.players[0].inv[1] = stack(1, 1);
+    w.tick(&[fuel]);
+    assert_eq!(count(&w, EV_WORK), 0);
+    assert_eq!(w.works.w[0].fuel, 11);
+}
+
 /// `EV_EXTRACTED: a = player, b = the exchange, c = units` — coin through the
 /// exchange: refused while it is shut, refused at a zero allowance, then
 /// taken up to the allowance the command carries and no further.
@@ -6390,6 +6533,19 @@ fn lore_and_locks_name_the_player_the_op_and_the_solver() {
     }
     assert!(solved, "the answer opened the lock");
     assert!(w.arc.mechs[0].rest_until > w.tick, "the lock rests");
+    // Every client is sent the dials, so the resting lock's scramble must
+    // name no dial's answer and must not be a fixed function of it (it was
+    // `want + 1 + j`, which read the wipe's answer to the whole shard).
+    let n = def.dials as usize;
+    let rest = w.arc.mechs[0].dials;
+    assert!(
+        (0..n).all(|j| rest[j] != want[j]),
+        "the lock rests on its answer"
+    );
+    assert!(
+        (0..n).any(|j| rest[j] != (want[j] + 1 + j as u8) % def.values),
+        "the resting dials are the answer, shifted"
+    );
     assert_eq!(
         sim_core::craft::inv_count(&w.players[0].inv, def.reward),
         def.reward_n as u32,

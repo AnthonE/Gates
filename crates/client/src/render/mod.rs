@@ -41,6 +41,8 @@ pub mod music_out;
 pub mod audio_web;
 pub mod bodies;
 pub mod casino;
+// Your own body, in the sun's shadow map and no camera.
+pub mod own_shadow;
 // The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
 // tick, read once a frame for the ground, the weather and the map.
 pub mod blight;
@@ -98,12 +100,18 @@ pub mod guards;
 pub mod keepers;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
+/// Contacts (Rust's): the players met, their mugshots, friendly or enemy.
+pub mod contacts;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
 pub mod faces;
+/// Elo Pros friends: read when looked at, marked on nametags and chat.
+pub mod friends;
 /// Painted skins (wire v110): fetched by hash, drawn on their canvas.
 pub mod paint;
+/// A player's profile card, read when a name is clicked.
+pub mod profile;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -114,6 +122,8 @@ pub mod disconnected;
 // (`F0 = 0.16 * r^2`) and not a 0..1 slider.
 pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
+/// Farming v2's planting ghost and left click.
+pub mod farm_ghost;
 pub mod ghost;
 pub mod gunfeel;
 // The blue wash over the piece a hammer is aimed at.
@@ -183,6 +193,9 @@ pub mod beasts;
 /// The attack helicopter's drawing (`sim-core/src/heli.rs`): the roster's
 /// last slot, taken from `mobs` and drawn as a gunship.
 pub mod heli;
+/// The front end's INVENTORY and ITEM STORE grids, off the platform's skins.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod locker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
@@ -208,6 +221,9 @@ pub mod panels;
 pub mod pause;
 // How many render pipelines are still compiling, for the loading gate.
 pub mod pipelines;
+// The POTATO rung picked for a machine that needs it: at boot, and in a
+// browser from the frame rate.
+pub mod potato;
 pub mod prewarm;
 pub mod quality;
 pub mod rain;
@@ -219,6 +235,8 @@ pub mod render_scale;
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod presence;
 // The plants the bush column grows: shrubs, berry bushes and hemp.
+/// Farming v2's plants, drawn off the plant mirror.
+pub mod crops;
 pub mod plants;
 pub mod props;
 pub mod rig;
@@ -336,6 +354,10 @@ pub struct Net {
     /// stack's `cond`. So a torch that runs dry goes dark on both sides
     /// off the same `SUB_INV`, with nothing stored anywhere to disagree.
     pub light: bool,
+    /// The last farm verb this client sent: a tend's act, `None` after a
+    /// seed was planted. `REFUSE_D_PLANT_ITEM` answers both, and the line
+    /// says which hand it was (`ui::refusals::deploy_after`).
+    pub farm_sent: Option<u8>,
 }
 
 /// The world's identity, resolved once from the welcome and then read-only.
@@ -409,7 +431,11 @@ pub struct Eye {
     /// is short: the camera must not stay high while the shot already
     /// leaves low.
     pub crouch: f32,
-    /// The eye's height above the feet this frame, metres, after both
+    /// **How seated the camera is**, 0 standing to 1 in a casino seat
+    /// (v130), eased by `input::place_eye` toward `ClientCore::seated` at
+    /// [`SEAT_EASE_S`]: a picture, like `down` — a seat is in the safe zone.
+    pub seat: f32,
+    /// The eye's height above the feet this frame, metres, after the
     /// eases. `pos.y - height` is the feet; nothing may assume
     /// [`EYE_HEIGHT`] for that, because a crouched or downed eye is lower.
     pub height: f32,
@@ -428,6 +454,13 @@ pub const CROUCH_EYE_M: f32 = sim_core::ranged::CROUCH_EYE_MM as f32 / 1000.0;
 /// The crouch ease's time constant, seconds: short, so the camera reaches
 /// the eye the sim already fires from within a few frames.
 pub const CROUCH_EASE_S: f32 = 0.06;
+
+/// A seated eye above the feet, metres: `Sitting_Idle_Loop`'s head top,
+/// lifted onto its seat (`anim::SIT_LIFT_M`), less the standing eye's
+/// 0.32 m under the head's top.
+pub const SEAT_EYE_M: f32 = 1.28;
+/// The seat ease's time constant, seconds: sitting down takes a moment.
+pub const SEAT_EASE_S: f32 = 0.18;
 
 /// The system set the world-streaming systems run in, after the eye has been
 /// placed for the frame.
@@ -659,6 +692,8 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<boulders::RockRing>();
         app.init_resource::<cliffs::CliffRing>();
         app.add_systems(Startup, far_trees::init);
+        // The crops' meshes and materials (farming v2), once.
+        app.add_systems(Startup, crops::build_kit);
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
@@ -700,12 +735,15 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<props::PropRing>()
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
+            .init_resource::<crops::CropRing>()
+            .init_resource::<farm_ghost::PlantAimed>()
             .init_resource::<bodies::Bodies>()
             .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
             .init_resource::<beasts::Beasts>()
             .init_resource::<screen::Browse>()
             .init_resource::<screen::Who>()
+            .init_resource::<friends::Friends>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<bow::FpBow>()
@@ -733,6 +771,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<impact::Contacts>()
             .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
+            .init_resource::<potato::Watch>()
             .init_resource::<hud::Readout>()
             .init_resource::<hud::CraftTimer>()
             .init_resource::<hud::Pickups>()
@@ -841,6 +880,8 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<menu::Picked>()
             .init_resource::<hub::HubState>()
             .init_resource::<menu::MyFace>()
+            .init_resource::<locker::Locker>()
+            .init_resource::<ui::ScrollMemo>()
             .init_resource::<faces::Pics>();
         // The direct address is also what the loading and pause screens name,
         // and on a capture start nothing has been "picked" — so the field
@@ -1058,7 +1099,7 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnExit(Screen::Paused), ui::despawn_all::<pause::PauseRoot>)
         .add_systems(
             Update,
-            (pause::click, pause::keys, pause::act)
+            (pause::click, pause::keys, pause::act, pause::friends_block)
                 .chain()
                 .run_if(in_state(Screen::Paused)),
         )
@@ -1214,6 +1255,8 @@ impl Plugin for GatesRenderPlugin {
                     settings::follow_browser_fullscreen,
                     settings::follow_focus,
                     settings::save_on_change,
+                    settings::mirror_streamer,
+                    potato::watch.before(quality::apply),
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player
                     // can move it from the intro screen, so it must run
@@ -1644,6 +1687,7 @@ impl Plugin for GatesRenderPlugin {
         // The sea's caches are one island's depths; the next island's would
         // be read off them until the eye happened to cross a snap cell.
         .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        .add_systems(OnEnter(Screen::Menu), crops::teardown.after(world_teardown))
         .add_systems(
             OnEnter(Screen::Menu),
             far_trees::teardown.after(world_teardown),
@@ -1729,6 +1773,9 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
+                // A seed in hand: the bed spot or the open ground the click
+                // plants, and the click.
+                farm_ghost::plant_ghost,
                 // After `verbs::resolve` has answered what is aimed at, and
                 // before the click that acts on it.
                 highlight::track,
@@ -1791,7 +1838,11 @@ impl Plugin for GatesRenderPlugin {
                     // was drained on, so a body that streams before the
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
-                    bodies::stream.after(feed::drain),
+                    (
+                        bodies::stream,
+                        (own_shadow::stream, own_shadow::hold).chain(),
+                    )
+                        .after(feed::drain),
                     // The heli is the roster's last slot and the town's
                     // sentries the four below it, which `mobs::stream`
                     // leaves to `heli::stream` and `sentry::stream`.
@@ -1824,8 +1875,15 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    // The compass's words, then its death marker.
-                    (hud::prompt, hud::death_mark),
+                    // The centre prompt, the compass tape, then the marks
+                    // riding under it, then the crop readout.
+                    (
+                        hud::prompt,
+                        hud::compass,
+                        hud::compass_pins,
+                        hud::death_mark,
+                        hud::plant_info,
+                    ),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
@@ -1855,7 +1913,6 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
-                        structures::planter_beds,
                         // Another player's torch, under the same night eye.
                         bodies::light_flames.after(bodies::stream),
                         town::dress,
@@ -1878,7 +1935,7 @@ impl Plugin for GatesRenderPlugin {
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light, works::animate).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials, lore::carve).chain(),
+                        (lore::spawn, lore::dials, lore::carve, lore::offer_marks).chain(),
                     ),
                     (hud::pad_overlay, hud::lift_announce),
                 )
@@ -1898,13 +1955,33 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_placed)
                 .run_if(world_running),
         )
+        // The crops (farming v2): noted on every frame the plant set moved,
+        // drawn on the next one the world is placed for.
+        .add_systems(
+            Update,
+            crops::note_plants.after(feed::drain).run_if(world_running),
+        )
+        // The crops' generated models, taken up as they finish loading.
+        .add_systems(Update, crops::ready_models.before(crops::stream_crops))
+        .add_systems(
+            Update,
+            crops::stream_crops
+                .run_if(crops::crops_changed)
+                .after(crops::note_plants)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
         // Foliage: the swap after the streamers that spawn trees, bushes and
         // grass, so a new plant never draws a frame without its sway; the
         // wind and trails after the weather they read.
         .add_systems(
             Update,
             (
-                foliage::swap.after(props::stream).after(clutter::stream),
+                foliage::swap
+                    .after(props::stream)
+                    .after(clutter::stream)
+                    .after(crops::stream_crops),
                 foliage::update.after(weather::update),
             )
                 .in_set(Stream)
@@ -2199,6 +2276,9 @@ impl Plugin for GatesRenderPlugin {
             chat::register(app);
             voice::register(app);
             faces::register(app);
+            friends::register(app);
+            profile::register(app);
+            contacts::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------
@@ -2333,6 +2413,15 @@ impl Plugin for GatesRenderPlugin {
         if let Some(mut s) = app.world_mut().get_resource_mut::<Settings>() {
             s.gfx = quality::effective(s.gfx);
         }
+        // A capture or a film draws the frame it was asked for, whatever
+        // box it runs on (CI's is often a software rasterizer).
+        #[cfg(not(target_arch = "wasm32"))]
+        let filming = app.world().contains_resource::<film::Film>();
+        #[cfg(target_arch = "wasm32")]
+        let filming = false;
+        if self.capture.is_none() && !filming {
+            potato::at_boot(app);
+        }
     }
 }
 
@@ -2359,7 +2448,13 @@ fn add_desktop_front_end(app: &mut App) {
     // is still drawing behind it.
     app.add_systems(
         OnEnter(Screen::Menu),
-        (world_teardown, menu::begin_fetch, menu::setup).chain(),
+        (
+            world_teardown,
+            menu::begin_fetch,
+            friends::on_menu,
+            menu::setup,
+        )
+            .chain(),
     )
     .add_systems(OnExit(Screen::Menu), ui::despawn_all::<menu::MenuRoot>)
     .add_systems(
@@ -2372,11 +2467,17 @@ fn add_desktop_front_end(app: &mut App) {
             // documents a menu waits on, both raise a dirty flag, and
             // `menu::rebuild` at the end of this chain is the one redraw.
             hub::poll,
+            // The store and this wallet's skins, for INVENTORY and ITEM
+            // STORE: the same documents the browser page reads.
+            locker::poll,
             // The count half, after the list half: `poll_fetch` is what
             // creates the rows a poll addresses by index, and both raise
             // the one `dirty` flag `rebuild` below acts on.
             menu::begin_status_poll,
             menu::poll_status,
+            ui::wheel,
+            menu::nav_hover,
+            menu::drift,
             menu::click,
             menu::keys,
             menu::take_pick,

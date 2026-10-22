@@ -24,6 +24,7 @@
 //! code the client ships — the load tool cannot drift from the client
 //! it stands in for.
 
+#![forbid(unsafe_code)]
 pub mod arc;
 pub mod clock;
 pub mod core;

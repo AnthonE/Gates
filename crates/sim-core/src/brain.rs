@@ -35,10 +35,18 @@
 //! the last think left (`mob::step`). Every input is sim state (player bodies
 //! and buttons, the roster, the clock) and every draw is a `cell_hash` of the
 //! slot and the tick, so a replay thinks the same thoughts on the same ticks.
+//!
+//! **A bred brain may choose the fights** (`genome.rs`, [`WOLF_NET`]).
+//! Content can install a small net per species ([`Nets`], `mobs.toml`
+//! `genome`) that picks, inside a fight, what the rule table picked by fixed
+//! order — press, bite, circle, back off — bred against the agent by
+//! `server/examples/zoo.rs`. The hard rules stay in front of it, and with no
+//! net installed every animal thinks exactly as it did, to the hash.
 
-use crate::input::BTN_SPRINT;
+use crate::genome::{Genome, Net, Shape};
+use crate::input::{BTN_AIM, BTN_SPRINT};
 use crate::limits::{MAX_MOBS, MAX_PLAYERS, MOB_THINK_TICKS, MOB_WAKE_CM};
-use crate::mob::{Bite, Bites, Mob, MobDef};
+use crate::mob::{Bite, Bites, Mob, MobDef, MOB_KINDS};
 use crate::movement::POS_XZ_Q;
 use crate::nav::{dist2_cm, yaw_toward, Ground, Nav, Plan};
 use crate::rng::cell_hash;
@@ -140,6 +148,16 @@ pub enum Cond {
     Ambushed,
     /// A pack-mate inside the call range was struck within the last think.
     MateStruck,
+    /// The bred brain chose this action this think (`NET_CHARGE`…). Never
+    /// holds for an animal no net drives.
+    Pick(u8),
+    /// The choice in force — the one the current state was entered on
+    /// (`Mob::pick`). Never holds for an animal no net drives.
+    Chose(u8),
+    /// A bred brain has spent `NET_STALE_TICKS` of a hunt circling or backing
+    /// off without once pressing in: the engagement budget, so a net that
+    /// only ever circles still goes home.
+    Stale,
 }
 
 /// A rule: when every condition holds, go to `to`. `forget` drops the
@@ -171,6 +189,8 @@ const fn give_up(when: &'static [Cond], to: AiState) -> Rule {
 /// that leave it.
 pub struct Design {
     pub rules: [&'static [Rule]; AI_STATES],
+    /// A bred brain chooses this design's fights ([`WOLF_NET`]).
+    pub net: bool,
 }
 
 use AiState::*;
@@ -249,6 +269,7 @@ pub static BOAR: Design = Design {
             go(&[Finished], Idle),
         ],
     ],
+    net: false,
 };
 
 /// The wolf, after the reference's 2024 rework: a pack hunter that runs you
@@ -350,6 +371,7 @@ pub static WOLF: Design = Design {
             go(&[Timer], Idle),
         ],
     ],
+    net: false,
 };
 
 /// A wolf kept at a post (`mob::guard_site_of`): the wolf's fight, with
@@ -434,18 +456,172 @@ pub static GUARD: Design = Design {
             go(&[Timer], Idle),
         ],
     ],
+    net: false,
 };
 
-/// Which design a slot runs. Pure in the slot and the species, like
-/// `kind_of`: a guard is a wolf at a post, and a pack hunter is one whose
-/// content row says it answers its pack and bites. A herd that answers its
-/// own but never bites (the stag) is prey: it runs the boar's design, and
-/// its herd's call is a flight it joins (`pack_call`).
-pub fn design_for(slot: usize, def: &MobDef) -> &'static Design {
+/// The wolf with a bred brain choosing its fights (`genome.rs`,
+/// [`Nets`]). Everything around a fight is the [`WOLF`]'s, row for row: how
+/// it rests, roams, sleeps, goes to look and walks home. From the moment it
+/// notices someone the net chooses among four things — charge (run in and
+/// bite the moment it can, the rule table's whole fight), circle one way or
+/// the other, or back off — where the rule table always charged. The hard
+/// rules still come first and the net cannot reach past them: it breaks off
+/// hurt, drops a target that is gone, gives up on a rock after
+/// `MobDef::give_up_tries` failed routes or `NET_STALE_TICKS` without
+/// pressing in, circles a lit torch, and waits its turn behind
+/// `MobDef::pack_biters`. A changed choice holds `NET_HOLD_TICKS` before the
+/// next (`enter`), so a net cannot learn a frame-perfect bite and step out.
+pub static WOLF_NET: Design = Design {
+    rules: [
+        // Idle
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
+            go(&[Target], Chase),
+            go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
+            go(&[Timer, Night, Drowsy], Sleep),
+            go(&[Timer, Napping], Sleep),
+            go(&[Timer], Roam),
+        ],
+        // Roam
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
+            go(&[Target], Chase),
+            go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+        // Chase: a charge bites the moment it can, as the rule table's does.
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            give_up(&[GaveUp], NavigateHome),
+            give_up(&[Stale], NavigateHome),
+            go(&[Fire], Orbit),
+            go(&[InReach, Crowded], Orbit),
+            go(&[InReach, Chose(NET_CHARGE)], Attack),
+            go(&[Failed], Orbit),
+            go(&[Timer, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Timer, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Pick(NET_BACK_OFF)], Flee),
+        ],
+        // Attack
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            give_up(&[Stale], NavigateHome),
+            go(&[Fire], Orbit),
+            go(&[OutOfReach], Chase),
+            go(&[Timer, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Timer, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Pick(NET_BACK_OFF)], Flee),
+        ],
+        // Flee: a retreat, chosen or after an ambush, is chosen out of once
+        // its timer runs out — unless the wolf is still too hurt to fight.
+        &[
+            go(&[NoTarget], Idle),
+            give_up(&[Stale], NavigateHome),
+            go(&[Timer, Brave, Pick(NET_CHARGE), InReach], Attack),
+            go(&[Timer, Brave, Pick(NET_CHARGE)], Chase),
+            go(&[Timer, Brave, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Timer, Brave, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Brave, Pick(NET_BACK_OFF)], Flee),
+        ],
+        // NavigateHome
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+        // Orbit: a torch or a full set of biters keeps it circling, the
+        // same way round, rather than choosing a charge the next think's
+        // hard rule would turn straight back. A turn the other way is a
+        // fresh circle.
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            give_up(&[GaveUp], NavigateHome),
+            give_up(&[Stale], NavigateHome),
+            go(&[Timer, Fire], Orbit),
+            go(&[Timer, Crowded], Orbit),
+            go(&[Timer, Pick(NET_CHARGE), InReach], Attack),
+            go(&[Timer, Pick(NET_CHARGE)], Chase),
+            go(&[Timer, Pick(NET_CIRCLE_A), Chose(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Pick(NET_CIRCLE_B), Chose(NET_CIRCLE_A)], Orbit),
+            go(&[Timer, Pick(NET_BACK_OFF)], Flee),
+        ],
+        // Patrol: only a guard patrols, and a guard keeps its table.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+        ],
+        // Sleep
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
+            go(&[Target], Chase),
+            go(&[Noise], MoveTowards),
+            go(&[Timer], Idle),
+        ],
+        // MoveTowards
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+    ],
+    net: true,
+};
+
+/// Which design a slot runs. Pure in the slot, the species and whether a
+/// bred brain is installed for it, like `kind_of`: a guard is a wolf at a
+/// post, and a pack hunter is one whose content row says it answers its
+/// pack and bites. A herd that answers its own but never bites (the stag)
+/// is prey: it runs the boar's design, and its herd's call is a flight it
+/// joins (`pack_call`). Only a free pack hunter takes a net: a guard keeps
+/// its post's rule table, and a net installed on prey's row drives nothing.
+pub fn design_for(slot: usize, def: &MobDef, net: bool) -> &'static Design {
     if crate::mob::guard_site_of(slot).is_some() {
         &GUARD
     } else if def.pack_cm > 0 && def.attack > 0 {
-        &WOLF
+        if net {
+            &WOLF_NET
+        } else {
+            &WOLF
+        }
     } else {
         &BOAR
     }
@@ -543,6 +719,117 @@ const CH_IDLE: u32 = 114;
 const CH_ROAM: u32 = 115;
 const CH_CHANCE: u32 = 117;
 
+/// The bred wolf's actions: what [`WOLF_NET`] turns each output into. A
+/// charge runs in and bites the moment it can — the rule table's fight.
+pub const NET_CHARGE: u8 = 0;
+/// Circle the target one way round, or the other.
+pub const NET_CIRCLE_A: u8 = 1;
+pub const NET_CIRCLE_B: u8 = 2;
+/// Back off for `RETREAT_TICKS`, then choose again.
+pub const NET_BACK_OFF: u8 = 3;
+pub const NET_ACTIONS: usize = 4;
+/// No choice made this think: no net, or nobody to fight.
+pub const NO_PICK: u8 = u8::MAX;
+
+/// A chosen fight state holds at least this long before the net is asked
+/// again: one second, a little over a player's swing.
+pub const NET_HOLD_TICKS: u64 = 30;
+/// A bred hunt that has spent this long circling and backing off without
+/// once pressing in (Chase or Attack) is given up — the engagement budget,
+/// half a minute. A charge the target keeps dodging is never stale: the
+/// rule-table wolf does not give that up either, and a budget that counted
+/// it sent bred wolves home from every fight with a player who parries.
+pub const NET_STALE_TICKS: u64 = 900;
+
+/// The wolf net's text prefix: shape 24-16-4 reading [`wolf_features`].
+/// Any change to the shape, the feature list or the actions is a new
+/// prefix, so an old genome is refused rather than read as a different
+/// animal.
+pub const WOLF_NET_PREFIX: &[u8; 4] = b"gw1:";
+pub const WOLF_NET_IN: usize = 24;
+pub const WOLF_NET_HIDDEN: usize = 16;
+
+/// The wolf net's shape.
+pub const fn wolf_shape() -> Shape {
+    match Shape::new(WOLF_NET_IN, WOLF_NET_HIDDEN, NET_ACTIONS) {
+        Some(s) => s,
+        None => panic!("the wolf net is inside genome.rs's caps"),
+    }
+}
+
+/// How near the target another player counts as company, centimetres.
+const NET_COMPANY_CM: i64 = 1_000;
+
+/// The bred brains content installed, one per species at most, each from
+/// a fel tier up (`content/mobs.toml` `genome`, `genome_tier`). Content,
+/// like the species table: built at boot, never written by a tick, and
+/// neither hashed nor saved (the genome text is in the content hash).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Nets {
+    kinds: [Option<SpeciesNet>; MOB_KINDS],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpeciesNet {
+    /// What the net was built from; `None` for hand-set weights
+    /// ([`Nets::install_weights`]).
+    pub genome: Option<Genome>,
+    /// The lowest fel tier it drives in; below it the rule table does.
+    pub tier: u8,
+    pub net: Net,
+}
+
+impl Nets {
+    /// Install `genome` for `kind` from fel tier `tier` up. False for a
+    /// species the roster does not have.
+    pub fn install(&mut self, kind: u8, genome: Genome, tier: u8) -> bool {
+        let Some(slot) = self.kinds.get_mut(kind as usize) else {
+            return false;
+        };
+        *slot = Some(SpeciesNet {
+            genome: Some(genome),
+            tier,
+            net: Net::build(wolf_shape(), &genome),
+        });
+        true
+    }
+
+    /// Install hand-set weights with no genome behind them — for tests and
+    /// tools that need a brain that always makes one choice. False for a
+    /// species the roster does not have, or a net of another shape.
+    pub fn install_weights(&mut self, kind: u8, net: Net, tier: u8) -> bool {
+        if net.shape != wolf_shape() {
+            return false;
+        }
+        let Some(slot) = self.kinds.get_mut(kind as usize) else {
+            return false;
+        };
+        *slot = Some(SpeciesNet {
+            genome: None,
+            tier,
+            net,
+        });
+        true
+    }
+
+    /// The net driving `kind` in fel tier `tier`, if any.
+    pub fn get(&self, kind: u8, tier: u8) -> Option<&Net> {
+        self.kinds
+            .get(kind as usize)?
+            .as_ref()
+            .filter(|n| tier >= n.tier)
+            .map(|n| &n.net)
+    }
+
+    pub fn species(&self, kind: u8) -> Option<&SpeciesNet> {
+        self.kinds.get(kind as usize)?.as_ref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kinds.iter().all(Option::is_none)
+    }
+}
+
 /// A peer as the brain sees it. The roster is snapshotted once at the top
 /// of the tick and each slot's entry is refreshed as soon as it has thought,
 /// so a pack-mate thinking later in the same tick sees the decision (the
@@ -603,6 +890,13 @@ pub struct Ctx<'c, 'h, 'o> {
     pub peers: &'c [Peer; MAX_MOBS],
     pub nav: &'c mut Nav,
     pub ground: &'c mut Ground<'h, 'o>,
+    /// The bred brain installed for this animal's species and tier, if any
+    /// ([`Nets::get`]).
+    pub net: Option<&'c Net>,
+    /// This think runs a design a net drives. Set by [`think`].
+    pub netted: bool,
+    /// What the net chose this think, or [`NO_PICK`]. Set by [`think`].
+    pub pick: u8,
 }
 
 /// One think for the animal in `slot`.
@@ -631,10 +925,27 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
     sense(ctx, slot, def, mob);
     heal(ctx, def, mob);
 
+    // A bred brain is asked once a think, after the senses, and only with
+    // someone to fight; its hunt clock runs while it is not pressing in.
+    let design = design_for(slot, def, ctx.net.is_some());
+    ctx.netted = design.net;
+    ctx.pick = NO_PICK;
+    if design.net {
+        if !has_target(ctx, mob) {
+            mob.pressed_at = 0;
+        } else {
+            if mob.pressed_at == 0 || matches!(mob.state, Chase | Attack) {
+                mob.pressed_at = tick.max(1);
+            }
+            if let Some(net) = ctx.net {
+                ctx.pick = net.choose(&wolf_features(ctx, slot, def, mob));
+            }
+        }
+    }
+
     // Rule on what the last think left, then run the state; a state that
     // finishes or fails on the spot is re-ruled at once, up to
     // `MAX_SWITCHES`.
-    let design = design_for(slot, def);
     let (mut switches, mut ran) = (0, false);
     loop {
         let fired = design.rules[mob.state as usize]
@@ -687,6 +998,13 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Chance(pct) => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < pct as u64,
         Drowsy => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64,
         Napping => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64 / 3,
+        Pick(a) => ctx.pick == a,
+        Chose(a) => ctx.netted && mob.pick == a + 1,
+        Stale => {
+            ctx.netted
+                && mob.pressed_at != 0
+                && tick.saturating_sub(mob.pressed_at) >= NET_STALE_TICKS
+        }
     }
 }
 
@@ -1107,6 +1425,19 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         }
         Chase | Attack => mob.ambushed = false,
     }
+    // A bred brain's fight states hold for `NET_HOLD_TICKS` (a retreat for
+    // `RETREAT_TICKS`) before it chooses again, and remember the choice.
+    if ctx.netted && matches!(to, Chase | Attack | Orbit | Flee) {
+        mob.state_until = tick
+            + if to == Flee {
+                RETREAT_TICKS
+            } else {
+                NET_HOLD_TICKS
+            };
+        if ctx.pick != NO_PICK {
+            mob.pick = ctx.pick + 1;
+        }
+    }
 }
 
 /// The state's think (`StateThink`): what it does this half-second, and
@@ -1378,7 +1709,12 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
         (mob.body.qz - p.qz) as f32 * POS_XZ_Q,
     );
     let bearing = yaw_toward(ox, oz, mob.yaw);
-    let step = orbit_step(slot);
+    // A bred brain chose which way round; the rule table splits the pack.
+    let step = match mob.pick {
+        p if ctx.netted && p == NET_CIRCLE_A + 1 => ORBIT_STEP,
+        p if ctx.netted && p == NET_CIRCLE_B + 1 => 0u16.wrapping_sub(ORBIT_STEP),
+        _ => orbit_step(slot),
+    };
     let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
     let (dx, dz) = yaw_dir(bearing.wrapping_add(step));
     let rm = r * 0.01;
@@ -1404,6 +1740,104 @@ fn orbit_step(slot: usize) -> u16 {
     } else {
         0u16.wrapping_sub(ORBIT_STEP)
     }
+}
+
+/// What the bred wolf reads of its fight: [`WOLF_NET_IN`] numbers of
+/// about unit size, every one of them something the rule table could
+/// already see — the target's body, buttons and swing clock, its torch,
+/// the pack's, the hour. All zero with nobody to fight.
+///
+/// | # | input |
+/// |---|---|
+/// | 0 | distance, tens of metres, at most 4 |
+/// | 1 | in bite reach |
+/// | 2 | the target's height over the wolf, per 1.5 m, ±2 |
+/// | 3 | the target faces the wolf (−1 back turned … 1 dead on) |
+/// | 4 | the wolf faces the target |
+/// | 5 | the target walking at the wolf (forward input × input 3) |
+/// | 6, 7, 8 | crouched, sprinting, aiming |
+/// | 9, 10 | a swing on its way (`strike_at`), a swing recovering (`next_swing`) |
+/// | 11 | a lit torch |
+/// | 12, 13 | the target's hp share, the wolf's |
+/// | 14 | pack-mates on the same target, per 3 |
+/// | 15 | animals biting it, per `MobDef::pack_biters` |
+/// | 16, 17 | a mate just struck, the wolf itself just struck |
+/// | 18 | failed routes, per `MobDef::give_up_tries` |
+/// | 19 | night |
+/// | 20 | other players within 10 m of the target, per 3 |
+/// | 21, 22, 23 | in Chase, Attack, Orbit |
+pub fn wolf_features(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> [f32; WOLF_NET_IN] {
+    let bit = |b: bool| if b { 1.0 } else { 0.0 };
+    let mut x = [0.0f32; WOLF_NET_IN];
+    if !has_target(ctx, mob) {
+        return x;
+    }
+    let tick = ctx.tick;
+    let t = mob.target as usize;
+    let p = &ctx.players[t];
+    let dx = (p.body.qx - mob.body.qx) as f32 * POS_XZ_Q;
+    let dz = (p.body.qz - mob.body.qz) as f32 * POS_XZ_Q;
+    let d = (dx * dx + dz * dz).sqrt();
+    let (ux, uz) = if d > 0.0 {
+        (dx / d, dz / d)
+    } else {
+        (0.0, 0.0)
+    };
+    let (pfx, pfz) = yaw_dir(p.frame.yaw);
+    let (wfx, wfz) = yaw_dir(mob.yaw);
+    let faces = -(pfx * ux + pfz * uz);
+    let moving = p.frame.move_z != 0 || p.frame.move_x != 0;
+    x[0] = (d / 10.0).min(4.0);
+    x[1] = bit(in_reach(ctx, def, mob, 100));
+    x[2] = ((p.body.qy - mob.body.qy) as f32 / 150.0).clamp(-2.0, 2.0);
+    x[3] = faces;
+    x[4] = wfx * ux + wfz * uz;
+    x[5] = p.frame.move_z as f32 / 127.0 * faces;
+    x[6] = bit(p.crouched());
+    x[7] = bit(p.frame.buttons & BTN_SPRINT != 0 && moving);
+    x[8] = bit(p.frame.buttons & BTN_AIM != 0);
+    x[9] = bit(p.strike_at > tick);
+    x[10] = bit(p.next_swing > tick);
+    x[11] = bit(ctx.lit[t]);
+    x[12] = p.hp as f32 / p.hp_max.max(1) as f32;
+    x[13] = mob.hp as f32 / def.hp.max(1) as f32;
+    let pack = crate::mob::pack_of(slot);
+    let (mut mates, mut biting) = (0u32, 0u32);
+    for (i, q) in ctx.peers.iter().enumerate() {
+        if i == slot || !q.live || q.target != mob.target {
+            continue;
+        }
+        if q.state == Attack {
+            biting += 1;
+        }
+        if pack.is_some() && crate::mob::pack_of(i) == pack {
+            mates += 1;
+        }
+    }
+    x[14] = mates as f32 / 3.0;
+    x[15] = biting as f32 / def.pack_biters.max(1) as f32;
+    x[16] = bit(mate_struck(ctx, slot, def, mob));
+    x[17] = bit(mob.hurt_at > 0 && tick.saturating_sub(mob.hurt_at) <= MOB_THINK_TICKS);
+    x[18] = mob.tries as f32 / def.give_up_tries.max(1) as f32;
+    x[19] = bit(crate::world::is_night(ctx.day_tick));
+    let company = ctx
+        .players
+        .iter()
+        .enumerate()
+        .filter(|&(i, q)| {
+            i != t
+                && q.active
+                && !q.sleeping
+                && !q.dead
+                && dist2_cm(q.body.qx - p.body.qx, q.body.qz - p.body.qz)
+                    <= NET_COMPANY_CM * NET_COMPANY_CM
+        })
+        .count();
+    x[20] = company as f32 / 3.0;
+    x[21] = bit(mob.state == Chase);
+    x[22] = bit(mob.state == Attack);
+    x[23] = bit(mob.state == Orbit);
+    x
 }
 
 /// Plan a route for this animal, gait untouched.
@@ -1590,13 +2024,16 @@ mod tests {
         w.mob = MobContent::probe_fixture();
         let bc = BuildContent::probe_fixture();
         let (cx, cz) = flat_cell(&w);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_PLANE, 0, &bc);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_EDGE_XLO, 1, &bc);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_EDGE_ZLO, 1, &bc);
         w.pieces
-            .insert_for_test(cx + 1, cz, 0, LOC_EDGE_XLO, 1, &bc);
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_PLANE, 0, &bc);
         w.pieces
-            .insert_for_test(cx, cz + 1, 0, LOC_EDGE_ZLO, 1, &bc);
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_EDGE_XLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_EDGE_ZLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx + 1, cz, 0, LOC_EDGE_XLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz + 1, 0, LOC_EDGE_ZLO, 1, &bc);
         let (px, pz) = (
             (cx as f32 + 0.5) * BUILD_CELL_M,
             (cz as f32 + 0.5) * BUILD_CELL_M,

@@ -8,13 +8,17 @@ name: deploy kind
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, next-wipe]
+
+# Read-only token: nothing here writes, and a compromised step gets no more.
+permissions:
+  contents: read
 
 jobs:
   kind:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Every branch's history, for the merge base, but no file bodies
           # until git asks for the handful the pins live in.

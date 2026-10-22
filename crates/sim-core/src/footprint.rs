@@ -53,9 +53,9 @@ impl Pose {
 /// still cover ground nothing else may be placed on. Zero rows are not
 /// free-placed: the door and the window inserts live in their edge, and a
 /// lock is never a record.
-pub const DEPLOY_FOOT: [[f32; 2]; 23] = [
+pub const DEPLOY_FOOT: [[f32; 2]; 24] = [
     [1.9, 0.8],   // 0 bag — a bedroll a body is longer than
-    [1.2, 0.6],   // 1 hearth
+    [1.54, 0.92], // 1 hearth
     [1.2, 0.7],   // 2 box
     [0.7, 0.7],   // 3 fire
     [1.56, 1.02], // 4 furnace
@@ -77,6 +77,7 @@ pub const DEPLOY_FOOT: [[f32; 2]; 23] = [
     [1.8, 0.6],   // 20 barbed barricade
     [1.4, 1.4],   // 21 floor spikes — a square board of stakes
     [1.7, 1.1],   // 22 rug — as big as `FOOT_REACH_M` lets a rectangle be
+    [0.9, 0.9],   // 23 water catcher
 ];
 
 /// The farthest any footprint corner stands from its centre, metres: how far

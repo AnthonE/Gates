@@ -243,6 +243,15 @@ station = "none"
 seconds = 15
 inputs = [{ item = "item.wood", count = 100 }]
 
+# Farming v2: a barrel of planks under a tarp, no bench.
+[[recipe]]
+id = "recipe.water_catcher"
+output = "item.water_catcher"
+count = 1
+station = "none"
+seconds = 20
+inputs = [{ item = "item.wood", count = 100 }, { item = "item.tarp", count = 1 }]
+
 # A cob's kernels are seed: one corn, two seeds, by hand. What keeps a farm
 # going once the barrels' seed runs out.
 [[recipe]]
@@ -260,6 +269,15 @@ count = 1
 station = "none"
 seconds = 10
 inputs = [{ item = "item.leather", count = 10 }]
+
+# The jug (the water pass): metal, so a little later than the skin.
+[[recipe]]
+id = "recipe.water_jug"
+output = "item.water_jug"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.metal_frags", count = 25 }]
 
 [[recipe]]
 id = "recipe.fire_pit"
@@ -1090,4 +1108,196 @@ inputs = [
     { item = "item.leather", count = 20 },
     { item = "item.metal_frags", count = 15 },
     { item = "item.sewing_kit", count = 1 },
+]
+
+# --- clothing v1: Rust's seven clothing slots --------------------------------
+# Burlap and hide by hand, as theirs; the cotton and the snow gear at a bench.
+# Known from the start: theirs sit on the tech tree, ours wait for a later
+# research pass rather than gate the cold's answer behind scrap on day one.
+
+[[recipe]]
+id = "recipe.armor_burlap_legs"
+output = "item.armor_burlap_legs"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.cloth", count = 15 }]
+
+[[recipe]]
+id = "recipe.armor_burlap_feet"
+output = "item.armor_burlap_feet"
+count = 1
+station = "none"
+seconds = 8
+inputs = [{ item = "item.cloth", count = 10 }]
+
+[[recipe]]
+id = "recipe.armor_burlap_hands"
+output = "item.armor_burlap_hands"
+count = 1
+station = "none"
+seconds = 8
+inputs = [{ item = "item.cloth", count = 10 }]
+
+[[recipe]]
+id = "recipe.armor_hide_legs"
+output = "item.armor_hide_legs"
+count = 1
+station = "none"
+seconds = 12
+inputs = [{ item = "item.leather", count = 15 }]
+
+[[recipe]]
+id = "recipe.armor_hide_feet"
+output = "item.armor_hide_feet"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.leather", count = 10 }]
+
+[[recipe]]
+id = "recipe.armor_hide_shirt"
+output = "item.armor_hide_shirt"
+count = 1
+station = "none"
+seconds = 12
+inputs = [{ item = "item.leather", count = 15 }]
+
+[[recipe]]
+id = "recipe.armor_bandana_face"
+output = "item.armor_bandana_face"
+count = 1
+station = "none"
+seconds = 5
+inputs = [{ item = "item.cloth", count = 5 }]
+
+[[recipe]]
+id = "recipe.armor_balaclava_face"
+output = "item.armor_balaclava_face"
+count = 1
+station = "none"
+seconds = 8
+inputs = [{ item = "item.cloth", count = 10 }]
+
+[[recipe]]
+id = "recipe.armor_beenie_head"
+output = "item.armor_beenie_head"
+count = 1
+station = "none"
+seconds = 8
+inputs = [{ item = "item.cloth", count = 10 }]
+
+[[recipe]]
+id = "recipe.armor_leather_hands"
+output = "item.armor_leather_hands"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.leather", count = 15 },
+    { item = "item.sewing_kit", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_hoodie_shirt"
+output = "item.armor_hoodie_shirt"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.cloth", count = 30 },
+    { item = "item.sewing_kit", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_pants_legs"
+output = "item.armor_pants_legs"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.cloth", count = 25 },
+    { item = "item.sewing_kit", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_jacket_body"
+output = "item.armor_jacket_body"
+count = 1
+station = "workbench1"
+seconds = 25
+inputs = [
+    { item = "item.cloth", count = 30 },
+    { item = "item.leather", count = 10 },
+    { item = "item.sewing_kit", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_snowjacket_body"
+output = "item.armor_snowjacket_body"
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.cloth", count = 40 },
+    { item = "item.leather", count = 20 },
+    { item = "item.sewing_kit", count = 2 },
+]
+
+# --- teas (Rust's mixing table, ours by hand) ------------------------------
+
+[[recipe]]
+id = "recipe.tea_warming"
+output = "item.tea_warming"
+count = 1
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.berries", count = 4 },
+    { item = "item.fat", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.tea_warming_strong"
+output = "item.tea_warming_strong"
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.tea_warming", count = 2 },
+    { item = "item.mushrooms", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.tea_cooling"
+output = "item.tea_cooling"
+count = 1
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.cactus_flesh", count = 3 },
+    { item = "item.berries", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.tea_warding"
+output = "item.tea_warding"
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.charcoal", count = 10 },
+    { item = "item.mushrooms", count = 2 },
+    { item = "item.berries", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.tea_healing"
+output = "item.tea_healing"
+count = 1
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.berries", count = 3 },
+    { item = "item.mushrooms", count = 2 },
 ]

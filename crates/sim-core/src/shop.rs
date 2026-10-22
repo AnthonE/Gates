@@ -2,8 +2,8 @@
 //! Rust's vending machine priced in the island's junk.
 //!
 //! The machine is a 12-slot container like a box (`deploy::holds_items`):
-//! its slots hold the stock and the junk it takes. Only its owner and the
-//! crew of the claim it stands in move items in or out, or set its offers
+//! its slots hold the stock and the junk it takes. Only its owner and its
+//! owner's crew where it stands move items in or out, or set its offers
 //! (`turret::spares`, the turret's rule); anyone in reach may open it to look
 //! and may buy.
 //!
@@ -92,6 +92,12 @@ impl ShopRec {
 }
 
 /// What a shop press asks: set a row, clear it, or buy `times` lots of it.
+///
+/// A buy names the offer it was pressed against (`terms`, as the buyer's
+/// view drew them) and is refused if the row says anything else
+/// (`REFUSE_SH_OFFER`). The owner may reprice a row every tick, so a buy
+/// that named only the row paid whatever the row said when it landed: a
+/// lot of 100 shown, a lot of 1 sold, at ten times the price.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShopAct {
     Set {
@@ -106,6 +112,9 @@ pub enum ShopAct {
     Buy {
         row: u8,
         times: u8,
+        /// The offer the buyer was shown. A row rewritten since is refused
+        /// rather than charged on terms nobody agreed to.
+        terms: ShopOffer,
     },
 }
 
@@ -262,7 +271,8 @@ fn add_to(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.skin == skin && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.skin == skin && s.cond == cond && s.count < stack_max
+        {
             let take = ((stack_max - s.count) as u32).min(left);
             s.count += take as u16;
             left -= take;
@@ -387,14 +397,16 @@ pub fn apply(
             }
             deploys.shops_mut().clear(key, row);
         }
-        ShopAct::Buy { times, .. } => {
+        ShopAct::Buy { times, terms, .. } => {
             let coin = dc.shop_coin;
             if times == 0 || times > SHOP_TIMES_MAX || coin == NO_SHOP_COIN {
                 refuse(events, REFUSE_SH_KIND);
                 return;
             }
             let o = deploys.shops().offers(key)[row];
-            if !o.live() {
+            // The buy names the terms it was shown: the owner may reprice
+            // at will, but never between a buyer's look and their press.
+            if !o.live() || o != terms {
                 refuse(events, REFUSE_SH_OFFER);
                 return;
             }

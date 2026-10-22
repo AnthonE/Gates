@@ -252,6 +252,8 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Loot => "loot",
         ActionMsg::Pickup { .. } => "pickup",
         ActionMsg::Place { .. } => "place",
+        ActionMsg::PlaceAt { .. } => "place_at",
+        ActionMsg::PlaceFree { .. } => "place_free",
         ActionMsg::Deploy { .. } => "deploy",
         ActionMsg::Feed { .. } => "feed",
         ActionMsg::TakeStock { .. } => "take_stock",
@@ -266,8 +268,11 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Shop { .. } => "shop",
         ActionMsg::Wheel { .. } => "wheel",
         ActionMsg::Slots { .. } => "slots",
+        ActionMsg::Sit { .. } => "sit",
         ActionMsg::Swipe { .. } => "swipe",
         ActionMsg::Pick { .. } => "pick",
+        ActionMsg::Plant { .. } => "plant",
+        ActionMsg::Tend { .. } => "tend",
         ActionMsg::Arc { .. } => "arc",
         ActionMsg::Drop { .. } => "drop",
         ActionMsg::Treat { .. } => "treat",
@@ -321,6 +326,57 @@ fn the_agent_encodes_only_verbs_the_human_client_encodes() {
     assert!(
         agent.is_subset(&human),
         "the agent encodes {:?}, which no human client call site encodes",
+        agent.difference(&human).collect::<Vec<_>>()
+    );
+}
+
+/// The `ACCESS_OP_*` names these files use in code (comments cut), read
+/// off the source: which ops a side can put in an access verb.
+fn access_ops_in(files: &[std::path::PathBuf]) -> BTreeSet<String> {
+    let mut ops = BTreeSet::new();
+    for file in files {
+        for line in shipped(file).lines() {
+            let code = line.split("//").next().unwrap_or("");
+            for piece in code.split("ACCESS_OP_").skip(1) {
+                let name: String = piece
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    ops.insert(name);
+                }
+            }
+        }
+    }
+    ops
+}
+
+/// The access ops the agent sends, `ACCESS_OP_` cut: the code at a lock,
+/// the code on its own lock, and the crew's join at a bare cupboard
+/// (`authorize`). The one list to extend when a lane gives it another.
+const EXPECTED_ACCESS_OPS: [&str; 3] = ["CREW_JOIN", "ENTER", "SET_CODE"];
+
+/// Wall 1 for locks and cupboards (the social verb `authorize`): every op
+/// the agent puts in an access verb is one the human client's keypad or its
+/// `L`/`K` keys send, read off both sources. The verbs that carry them,
+/// `access` and `give`, are human verbs in [`EXPECTED_VERBS`].
+#[test]
+fn the_agent_sends_only_access_ops_the_human_client_sends() {
+    assert!(EXPECTED_VERBS.contains(&"access") && EXPECTED_VERBS.contains(&"give"));
+    let human = access_ops_in(&rs_files(&root().join("crates/client/src")));
+    assert!(
+        human.contains("ENTER") && human.contains("CREW_JOIN"),
+        "the client source was not read: {human:?}"
+    );
+    let agent = access_ops_in(&agent_sources());
+    assert_eq!(
+        agent,
+        EXPECTED_ACCESS_OPS.into_iter().map(String::from).collect(),
+        "the agent's access ops changed; update EXPECTED_ACCESS_OPS and PLAYERS.md"
+    );
+    assert!(
+        agent.is_subset(&human),
+        "the agent sends access ops {:?}, which no human client call site sends",
         agent.difference(&human).collect::<Vec<_>>()
     );
 }
@@ -769,17 +825,29 @@ impl Harness {
                     self.pick_checks += 1;
                 }
                 // The keypad speaks to the lock `L` opened it on: the one
-                // `E` picks, on something a lock bolts to.
+                // `E` picks, on something a lock bolts to. A crew op is `L`
+                // at a bare cupboard, sent at once with no pad
+                // (`render/verbs.rs` `access_aimed`): the cupboard `E` picks,
+                // with no lock on it.
                 ActionMsg::Access {
-                    cx, cz, level, loc, ..
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                    op,
+                    ..
                 } => {
                     let pick = self.e_pick(frame.yaw);
+                    let at = (pick.cx, pick.cz, pick.level, pick.loc) == (cx, cz, level, loc);
+                    let human = if sim_core::deploy::op_is_crew(op) {
+                        pick.verb == Verb::Hearth && !pick.has_lock && at
+                    } else {
+                        sim_core::deploy::lockable(pick.arch) && pick.has_lock && at
+                    };
                     assert!(
-                        sim_core::deploy::lockable(pick.arch)
-                            && pick.has_lock
-                            && (pick.cx, pick.cz, pick.level, pick.loc) == (cx, cz, level, loc),
-                        "the agent spoke to the lock at {cx},{cz},{level},{loc}, not the one `L` \
-                         would open ({pick:?}), at tick {}",
+                        human,
+                        "the agent sent access op {op} to {cx},{cz},{level},{loc}, which `L` \
+                         would not ({pick:?}), at tick {}",
                         self.tick
                     );
                     self.pick_checks += 1;
@@ -1121,7 +1189,7 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     });
     let fed = h.until(9_000, |b| b.stats.drinks >= 1 && b.stats.eaten >= 1);
     assert!(fed, "no drink and meal: {}", h.explain());
-    assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
+    assert!(h.bot.memory().food.feeds.any(), "a meal teaches what feeds");
 
     // 3. A blow it survives, mid-goal: the fight reflex takes the frames —
     //    it turns on the body that struck it and fights back — the goal
@@ -1538,11 +1606,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
             );
         }
         // Roofed over the core and the stairwell, and the airlock.
-        let tri = sim_core::build::LOC_TRI_XLO_ZLO;
         for (x, z, level, loc) in [
             (cx, cz, 2, LOC_PLANE),
             (cx + 1, cz, 2, LOC_PLANE),
-            (cx + 1, cz + 1, 1, tri),
+            (cx + 1, cz + 1, 1, LOC_PLANE),
         ] {
             assert!(
                 w.pieces.find(x, z, level, loc).is_some(),
@@ -2230,6 +2297,342 @@ fn a_crewmate_joins_its_founder_and_hands_over_its_wood() {
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
+/// The give test's decision source, an external one (a give is offered to
+/// the minds `go:` is): yes to a team, then `give:Wood` while it is on
+/// offer, else stand.
+struct GiveWood;
+
+impl server::mind::DecisionSource for GiveWood {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let wood = Goal::Give(server::mind::Name::new(b"Wood").unwrap());
+        let goal = [Goal::JoinTeam, wood]
+            .into_iter()
+            .find(|g| s.offers(*g))
+            .unwrap_or(Goal::Wait);
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// `give`, the social verb (PLAYERS.md): on a team, its teammate standing
+/// in hand reach, an external mind is offered `give:Wood` and takes it, and
+/// the agent hands every stack of wood it carries into the teammate's pack
+/// with the human client's give — `TRUST_GIVE` in the ledger, the teammate
+/// the counterparty. Both shards hash-identical, the frame path
+/// allocation-free.
+#[test]
+fn a_teammate_gives_its_wood_to_the_teammate_in_reach() {
+    use sim_core::movement::POS_XZ_Q;
+    use sim_core::world::TRUST_GIVE;
+
+    let mind = Mind::inline(GiveWood, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, common::clearing(3), mind);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+
+    // Wood in the pack, two stacks; the teammate two metres in front of it.
+    let content = common::content();
+    let wood = |count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, "item.wood")
+    };
+    let wood_item = wood(1).item;
+    h.stage(move |p| {
+        p.inv[HOTBAR_SLOTS + 5] = wood(300);
+        p.inv[HOTBAR_SLOTS + 6] = wood(100);
+    });
+    let me = h.me().body;
+    let (fx, fz) = sim_core::yaw_dir(h.bot.hands().view().0);
+    let haven = h.shard.world.haven;
+    let (x, z) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+    let mate = sim_core::movement::Body::at(SEED, &haven, x + fx * 2.0, z + fz * 2.0);
+    h.stage_puppet(move |p| p.body = mate);
+    let gave = |h: &Harness| {
+        h.bot
+            .history
+            .iter()
+            .any(|r| matches!(r.goal, Goal::Give(_)))
+    };
+    let mut logged = false;
+    for _ in 0..60 * TICK_HZ {
+        if gave(&h) {
+            break;
+        }
+        h.step();
+        logged |= h
+            .shard
+            .world
+            .trust
+            .rows()
+            .iter()
+            .any(|r| r.actor == ID && r.counterparty == PUPPET && r.verb == TRUST_GIVE);
+    }
+    assert!(gave(&h), "no give ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| matches!(r.goal, Goal::Give(_)))
+        .unwrap();
+    assert_eq!(
+        report.goal,
+        Goal::Give(server::mind::Name::new(b"Wood").unwrap())
+    );
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(report.gained, 400);
+    let held = |p: &sim_core::world::Player| -> u32 {
+        p.inv
+            .iter()
+            .filter(|s| s.count > 0 && s.item == wood_item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    let mate = h
+        .shard
+        .world
+        .players
+        .iter()
+        .find(|p| p.active && p.id == PUPPET)
+        .unwrap();
+    assert_eq!(held(mate), 400, "the teammate holds the wood");
+    assert_eq!(held(h.me()), 0, "the pack is empty of it");
+    assert!(logged, "the ledger kept no give from it to the teammate");
+    assert!(h.verbs.contains("give"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The authorize tests' decision source: yes to a team, then `authorize`
+/// once the test says (`.0`) and it is on offer, else stand; every answer
+/// carries the code a teammate gave (`.1`), if one was.
+struct AuthorizeWhenSaid(
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Option<server::agent::lock::LockCode>,
+);
+
+impl server::mind::DecisionSource for AuthorizeWhenSaid {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let said = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        let goal = if s.offers(Goal::JoinTeam) {
+            Goal::JoinTeam
+        } else if said && s.offers(Goal::Authorize) {
+            Goal::Authorize
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: self.1,
+        })
+    }
+}
+
+/// Run until an authorize ends, watching the ledger for a `TRUST_AUTH` from
+/// the agent to the teammate. The report, and whether one was kept.
+fn authorize_until_over(h: &mut Harness) -> (server::mind::Report, bool) {
+    use sim_core::world::TRUST_AUTH;
+    let over = |h: &Harness| h.bot.history.iter().any(|r| r.goal == Goal::Authorize);
+    let mut logged = false;
+    for _ in 0..150 * TICK_HZ {
+        if over(h) {
+            break;
+        }
+        h.step();
+        logged |= h
+            .shard
+            .world
+            .trust
+            .rows()
+            .iter()
+            .any(|r| r.actor == ID && r.counterparty == PUPPET && r.verb == TRUST_AUTH);
+    }
+    assert!(over(h), "no authorize ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::Authorize)
+        .unwrap();
+    (report, logged)
+}
+
+/// `authorize`, the social verb (Rust's tool-cupboard auth): living in its
+/// teammate's base, given the team's code, with a code lock bolted on the
+/// cupboard, the agent walks back in from outside through the shut door and
+/// enters the code at the cupboard's keypad — the human client's `L`, the
+/// pad, the try — which puts it on the crew; `TRUST_AUTH` in the ledger,
+/// the teammate the counterparty. Both shards hash-identical, the frame
+/// path allocation-free.
+#[test]
+fn a_teammate_given_the_code_authorizes_on_the_team_s_cupboard() {
+    use server::agent::lock::LockCode;
+    use sim_core::build::{BUILD_CELL_M, LOC_PLANE};
+    use sim_core::deploy::ACCESS_OP_SET_CODE;
+
+    let given = 2580;
+    let at = common::clearing(3);
+    let said = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mind = Mind::inline(
+        AuthorizeWhenSaid(said.clone(), Some(LockCode::given(given).unwrap())),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bx, bz) = move_in(&mut h, at);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    assert!(
+        h.bot.shared().hearth().is_some(),
+        "the cupboard was never seen: {}",
+        h.explain()
+    );
+    // The teammate bolts a code lock onto the cupboard, sets the code, goes.
+    let lock = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.lock_code")
+    };
+    let mate = place(bxf + 1.5, bzf + 2.2);
+    h.stage_puppet(move |p| {
+        p.body = mate;
+        p.inv[HOTBAR_SLOTS] = lock;
+    });
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.lock,
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    h.puppet_act(ActionMsg::Access {
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        op: ACCESS_OP_SET_CODE,
+        code: given,
+    });
+    let crew = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .hearths()
+            .iter()
+            .any(|r| (r.cx, r.cz) == (bx, bz) && r.crew.contains(ID))
+    };
+    assert!(!crew(&h), "the agent is not on the crew yet");
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+    let out = place(bxf + 1.5, bzf - 8.0);
+    h.stage(move |p| p.body = out);
+    h.until(TICK_HZ, |_| false);
+    assert!(
+        h.bot.summary(&h.view, ID).unwrap().offers(Goal::Authorize),
+        "authorize is offered: {}",
+        h.explain()
+    );
+
+    said.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (report, logged) = authorize_until_over(&mut h);
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert!(crew(&h), "the code put it on the crew");
+    assert!(h.bot.shared().crewed());
+    assert!(logged, "the ledger kept no authorization by it");
+    for verb in ["use", "access"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    // On the crew, it is not offered again.
+    h.until(2 * TICK_HZ, |_| false);
+    assert!(!h.bot.summary(&h.view, ID).unwrap().offers(Goal::Authorize));
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// `authorize` at a bare cupboard whose crew does not admit it (its owner
+/// is on it, and no lock remembers the agent): the crew's join, `L` at a
+/// cupboard with no lock, is refused with the cupboard's own word
+/// (`REFUSE_D_OWNER`), the authorize fails as refused, nobody's crew moves,
+/// and it is not offered again for a while.
+#[test]
+fn an_authorize_at_a_cupboard_whose_crew_does_not_admit_it_is_refused() {
+    let at = common::clearing(3);
+    let said = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mind = Mind::inline(AuthorizeWhenSaid(said.clone(), None), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let (bx, bz) = move_in(&mut h, at);
+    assert!(
+        h.bot.shared().hearth().is_some(),
+        "the cupboard was never seen: {}",
+        h.explain()
+    );
+    let crew = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .hearths()
+            .iter()
+            .find(|r| (r.cx, r.cz) == (bx, bz))
+            .map(|r| (r.crew.contains(ID), r.crew.contains(PUPPET)))
+    };
+    assert_eq!(crew(&h), Some((false, true)), "the owner alone is on it");
+
+    said.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (report, logged) = authorize_until_over(&mut h);
+    assert_eq!(
+        report.outcome,
+        Outcome::Failed(Why::Refused),
+        "{report:?}: {}",
+        h.explain()
+    );
+    assert_eq!(crew(&h), Some((false, true)), "nobody's crew moved");
+    assert!(!logged, "a refused join entrusted nothing");
+    assert!(h.verbs.contains("access"), "{:?}", h.verbs);
+    assert!(!h.bot.shared().crewed());
+    h.until(2 * TICK_HZ, |_| false);
+    assert!(
+        !h.bot.summary(&h.view, ID).unwrap().offers(Goal::Authorize),
+        "a refused authorize is held a while"
+    );
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
 /// The free bot as a teammate, end to end through the real scripted
 /// policy: a person beside it asks to team up in local chat and it
 /// invites them by the human client's own verb; they say yes; on team chat
@@ -2575,10 +2978,12 @@ fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
 /// Returns the plot cell; the puppet is left in the core.
 fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
     use server::population::base_rows;
-    use sim_core::bots::{BasePlan, STARTER_FOOTPRINT, STARTER_STAND_M};
+    use sim_core::bots::{
+        BasePlan, AIRLOCK_STAND_M, INNER_STAND_M, STARTER_FOOTPRINT, STARTER_STAND_M,
+    };
     use sim_core::build::{
-        anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_DIAG_B,
-        LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_TRI_XLO_ZLO,
+        anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_EDGE_XLO,
+        LOC_EDGE_ZLO, LOC_PLANE,
     };
 
     let haven = h.shard.world.haven;
@@ -2629,6 +3034,7 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
     h.until(2, |_| false);
     let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
     let stand = (x0 + STARTER_STAND_M.0, z0 + STARTER_STAND_M.1);
+    let inner = (x0 + INNER_STAND_M.0, z0 + INNER_STAND_M.1);
     let pocket = [
         stack("item.wood", 1000),
         stack("item.wood", 1000),
@@ -2675,22 +3081,66 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
         (bx + 2, bz, LOC_EDGE_XLO, rows.wall),
         (bx + 1, bz + 1, LOC_EDGE_ZLO, rows.doorway),
         (bx + 1, bz + 1, LOC_EDGE_XLO, rows.doorway),
-        (bx + 1, bz + 1, LOC_DIAG_B, rows.wall),
+        (bx + 2, bz + 1, LOC_EDGE_XLO, rows.wall),
+        (bx + 1, bz + 2, LOC_EDGE_ZLO, rows.wall),
     ];
     let mut acts = vec![
         place(rows.foundation, bx, bz, LOC_PLANE),
         deploy(rows.hearth, bx, bz, LOC_PLANE),
         place(rows.foundation, bx + 1, bz, LOC_PLANE),
-        place(rows.tri_foundation, bx + 1, bz + 1, LOC_TRI_XLO_ZLO),
+        place(rows.foundation, bx + 1, bz + 1, LOC_PLANE),
     ];
-    for &(cx, cz, loc, row) in &shell {
+    // The airlock's outer walls are past reach from the core: laid from
+    // the room (`bots::stand_m`).
+    let (core_shell, outer) = shell.split_at(shell.len() - 2);
+    for &(cx, cz, loc, row) in core_shell {
         acts.push(place(row, cx, cz, loc));
     }
-    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO));
-    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO));
-    acts.push(deploy(rows.container, bx + 1, bz, LOC_PLANE));
-    for a in acts {
+    for a in acts.drain(..) {
         h.puppet_act(a);
+    }
+    for (spot, walls) in [(inner, outer), (stand, &[][..])] {
+        for core in [&mut h.shard, &mut h.replay] {
+            let haven = core.world.haven;
+            let p = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+                .unwrap();
+            p.body = sim_core::movement::Body::at(SEED, &haven, spot.0, spot.1);
+        }
+        for &(cx, cz, loc, row) in walls {
+            h.puppet_act(place(row, cx, cz, loc));
+        }
+    }
+    // Each door hung from beside it, in sight of its doorway (a hand places
+    // only what it sees: `bots::stand_m`), the front from the airlock and
+    // the inner from the room; the box from the core, the puppet left there.
+    let airlock = (x0 + AIRLOCK_STAND_M.0, z0 + AIRLOCK_STAND_M.1);
+    for (spot, act) in [
+        (airlock, deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO)),
+        (inner, deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO)),
+        (stand, deploy(rows.container, bx + 1, bz, LOC_PLANE)),
+    ] {
+        for core in [&mut h.shard, &mut h.replay] {
+            let haven = core.world.haven;
+            let p = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+                .unwrap();
+            p.body = sim_core::movement::Body::at(SEED, &haven, spot.0, spot.1);
+        }
+        h.puppet_act(act);
+        // Taken where it was sent from, before the body moves on.
+        for _ in 0..10 * TICK_HZ {
+            if h.shard.wants_action(h.puppet_slot) && h.replay.wants_action(h.puppet_slot) {
+                break;
+            }
+            h.step();
+        }
     }
     for core in [&mut h.shard, &mut h.replay] {
         let w = &core.world;
@@ -3780,11 +4230,12 @@ fn a_survivor_empties_a_crate_through_its_panel() {
 
 /// The starter stands, the pack holds what the stations cost: the
 /// workbench goes on a stone foundation behind the core, the furnace is
-/// crafted at it and goes on the floor over the cupboard, and ore staged
-/// afterwards is smelted there into fragments, a batch at a time.
+/// crafted at it and goes on one of its own behind the stair cell (each put
+/// down from behind it, where the hand sees it), and ore staged afterwards
+/// is smelted there into fragments, a batch at a time.
 #[test]
 fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
-    use server::agent::build::{Milestone, YARD};
+    use server::agent::build::{Milestone, ANNEX, YARD};
     use sim_core::build::LOC_PLANE;
     use sim_core::deploy::{ARCH_FURNACE, ARCH_WORKBENCH};
 
@@ -3847,7 +4298,11 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
                 .filter(|d| d.owner == ID)
                 .map(|d| w.deploy.defs[usize::from(d.row)].arch)
         };
-        assert_eq!(arch(cx, cz, 1), Some(ARCH_FURNACE), "the furnace upstairs");
+        let (fx, fz) = (
+            cx.checked_add_signed(i16::from(ANNEX.0)).unwrap(),
+            cz.checked_add_signed(i16::from(ANNEX.1)).unwrap(),
+        );
+        assert_eq!(arch(fx, fz, 0), Some(ARCH_FURNACE), "the furnace behind");
         let (yx, yz) = (
             cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
             cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
@@ -4400,13 +4855,13 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
 }
 
 /// The gear past the first bench, with what it costs staged: the second
-/// bench on its stone foundation behind the core, gunpowder made at it,
+/// bench in the first one's place behind the core, gunpowder made at it,
 /// the pistol round, the revolver and the roadsign vest learned at that
 /// bench's tree (tier two: `E` on the second bench, which the harness
 /// checks at every unlock), made, and the vest worn.
 #[test]
 fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
-    use server::agent::build::{Milestone, ANNEX};
+    use server::agent::build::{Milestone, YARD};
     use sim_core::build::LOC_PLANE;
     use sim_core::deploy::ARCH_WORKBENCH2;
 
@@ -4418,8 +4873,12 @@ fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
         ..common::stack(&content, id)
     };
     h.until(5, |_| false);
-    let mut kit = vec![stack("item.wood", 1000); 6];
-    kit.extend([stack("item.stone", 1000); 6]);
+    // Four thousand each, not six: the base costs far less, and the surplus
+    // filled the pack and the one box between them, so two salvage pieces
+    // off a roadside barrel left no slot for the gunpowder it then makes
+    // (a full pack is never "ready", and it explored for good).
+    let mut kit = vec![stack("item.wood", 1000); 4];
+    kit.extend([stack("item.stone", 1000); 4]);
     kit.extend([
         stack("item.cloth", 400),
         stack("item.metal_frags", 1000),
@@ -4463,8 +4922,8 @@ fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
     );
     let plan = h.bot.builder().plan().unwrap();
     let (ax, az) = (
-        plan.cx.checked_add_signed(i16::from(ANNEX.0)).unwrap(),
-        plan.cz.checked_add_signed(i16::from(ANNEX.1)).unwrap(),
+        plan.cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
+        plan.cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
     );
     {
         let w = &h.shard.world;
@@ -5516,8 +5975,12 @@ fn a_survivor_climbs_to_the_blue_door_loots_the_room_and_comes_back_down() {
         h.explain()
     );
     // The red card goes up the chain another time; this run waits out the
-    // door, then walks: out, by the lever, and down.
+    // door, then walks: out, by the lever, and down. Any other card the crate
+    // rolled goes too, or it walks off to swipe that one instead.
     drop_item(&mut h, red);
+    for other in ["item.keycard_green", "item.keycard_blue"] {
+        drop_item(&mut h, content.item_index(other).unwrap());
+    }
     for _ in 0..90 * TICK_HZ {
         if h.shard.world.card_door_bits & 2 == 0 {
             break;

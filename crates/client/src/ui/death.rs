@@ -20,9 +20,9 @@ use protocol::event::ItemCatalog;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::mob;
 use sim_core::world::{
-    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CACTUS, DEATH_BY_CHARGE, DEATH_BY_CLOCK,
-    DEATH_BY_COLD, DEATH_BY_FALL, DEATH_BY_FEL, DEATH_BY_HAND, DEATH_BY_HEAT, DEATH_BY_MOB,
-    DEATH_BY_SALT, DEATH_BY_SPIKES,
+    DEATH_BY_ARROW, DEATH_BY_BLEED, DEATH_BY_BULLET, DEATH_BY_CACTUS, DEATH_BY_CHARGE,
+    DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_DROWN, DEATH_BY_FALL, DEATH_BY_FEL, DEATH_BY_HAND,
+    DEATH_BY_HEAT, DEATH_BY_MOB, DEATH_BY_SALT, DEATH_BY_SPIKES,
 };
 
 use super::craft::item_name;
@@ -71,6 +71,8 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_FALL => "you fell too far".to_string(),
         DEATH_BY_CACTUS => "you kept walking into a cactus".to_string(),
         DEATH_BY_SPIKES => "you stayed on the spikes".to_string(),
+        DEATH_BY_BLEED => "you bled out".to_string(),
+        DEATH_BY_DROWN => "you stayed under too long".to_string(),
         DEATH_BY_HAND if d.own_doing() => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {
@@ -233,6 +235,8 @@ pub fn killed_by(d: &Death, killer: &str, meters: Meters) -> String {
         DEATH_BY_FALL => "Fall".to_string(),
         DEATH_BY_CACTUS => "A cactus".to_string(),
         DEATH_BY_SPIKES => "Spikes".to_string(),
+        DEATH_BY_BLEED => "Bleeding".to_string(),
+        DEATH_BY_DROWN => "Drowned".to_string(),
         DEATH_BY_FEL => "The Verdigris".to_string(),
         DEATH_BY_MOB => beast(d.killer).map_or("An animal", |b| b.name).to_string(),
         DEATH_BY_HAND | DEATH_BY_CHARGE if d.own_doing() => "Yourself".to_string(),
@@ -481,9 +485,10 @@ pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
 // The marker on the compass (Rust's death marker)
 // ---------------------------------------------------------------------------
 
-/// How far either side of the bearing the compass's marker row reaches,
-/// degrees: a mark this far round sits at the row's end.
-pub const COMPASS_HALF_SPAN_DEG: f32 = 90.0;
+/// How far either side of the bearing the compass reaches, degrees: the
+/// tape's numbers end here and a mark this far round sits at the row's end.
+/// Rust's tape shows about this much (`render::hud`'s compass).
+pub const COMPASS_HALF_SPAN_DEG: f32 = 45.0;
 
 /// Where a world point sits on the compass's marker row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -891,9 +896,12 @@ mod tests {
         );
         // Turn to face it and it comes to the middle.
         assert!(at(90.0, east).across.abs() < 1e-3);
-        // Half-way round to the right.
+        // Part-way round to the right, in proportion to the span.
         let ne = at(45.0, east);
-        assert!((ne.across - 0.5).abs() < 1e-3, "{ne:?}");
+        assert!(
+            (ne.across - 45.0 / COMPASS_HALF_SPAN_DEG).abs() < 1e-3,
+            "{ne:?}"
+        );
         // Behind, a little to the right: held at the right end, marked off.
         let behind = at(0.0, (here.0 - 1.0, here.1 - 10.0));
         assert!(
@@ -905,7 +913,10 @@ mod tests {
         assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
         // Across the 0/360 seam: facing 350, a mark at 10 is just right.
         let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
-        assert!(seam.across > 0.0 && seam.across < 0.3, "{seam:?}");
+        assert!(
+            seam.across > 0.0 && seam.across < 30.0 / COMPASS_HALF_SPAN_DEG,
+            "{seam:?}"
+        );
     }
 
     #[test]

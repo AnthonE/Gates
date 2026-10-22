@@ -239,6 +239,7 @@ pub(super) fn spawn_parts(
             MeshMaterial3d(waxed.clone()),
             Transform::default(),
             Visibility::Hidden,
+            bevy::light::NotShadowCaster,
         ));
     }
     model.spawn((
@@ -247,6 +248,7 @@ pub(super) fn spawn_parts(
         MeshMaterial3d(materials.add(super::heldgen::arrow_material())),
         Transform::default(),
         Visibility::Hidden,
+        bevy::light::NotShadowCaster,
     ));
 }
 
@@ -339,7 +341,41 @@ pub fn two_bone(s: Vec3, t: Vec3, a: f32, b: f32, pole: Vec3) -> (Vec3, Vec3) {
     (s + a * (u * cos + v * sin), s + u * d)
 }
 
-/// Put the left hand on the string while the bow is up.
+/// The bandage going on round the wrapped forearm (`viewmodel::wrap_arm`):
+/// one cloth sleeve under the viewmodel rig, grown from the wrist toward the
+/// elbow as the right hand goes round, hidden with no wrap.
+#[derive(Component)]
+pub struct WrapCloth;
+
+/// The sleeve's radius, metres: proud of the forearm's skin, so it reads as
+/// cloth wound on rather than as the arm turning white.
+pub const WRAP_CLOTH_R_M: f32 = 0.05;
+
+/// The sleeve, spawned hidden under the rig once (`viewmodel::spawn_item`).
+pub(super) fn spawn_wrap_cloth(
+    rig: &mut ChildSpawnerCommands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    rig.spawn((
+        WrapCloth,
+        Mesh3d(meshes.add(Cylinder::new(1.0, 1.0).mesh().resolution(12))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.86, 0.83, 0.76),
+            perceptual_roughness: 0.95,
+            reflectance: super::fresnel::DIELECTRIC,
+            ..default()
+        })),
+        Transform::default(),
+        Visibility::Hidden,
+        bevy::camera::visibility::NoFrustumCulling,
+        bevy::light::NotShadowCaster,
+    ));
+}
+
+/// Put the left hand on the string while the bow is up — or the left
+/// forearm across the view while a bandage is wrapped on it
+/// (`viewmodel::wrap_rig` takes the right hand round it).
 ///
 /// The first-person arms hold everything in the right hand and fold the left
 /// arm away (`viewmodel::VIEWMODEL_HIDDEN_ARM`). A raised bow brings it back:
@@ -356,10 +392,12 @@ pub fn draw_arm(
     held: Query<(Entity, &HeldModel)>,
     parents: Query<&ChildOf>,
     mut xf: Query<&mut Transform>,
+    mut cloth: Query<(Entity, &mut Visibility), With<WrapCloth>>,
 ) {
     let Some([sh, up, fore, hand]) = arm.bones else {
         return;
     };
+    let mut sleeve = None;
     let pose = motion.bow();
     let model = held
         .iter()
@@ -376,8 +414,38 @@ pub fn draw_arm(
             &parents,
             &xf,
         ),
+        (_, Ok(rig)) if motion.wrap().0 > 0.02 => {
+            let (w, turn) = motion.wrap();
+            solve_wrap(w, sh, [up, fore, hand], rig, &parents, &xf).map(|(set, elbow, wrist)| {
+                // The bandage so far: from just short of the wrist back
+                // toward the elbow, as far as the hand has gone round.
+                let axis = (wrist - elbow).normalize_or(Vec3::X);
+                let fore_m = wrist.distance(elbow);
+                let k = turn / crate::ui::wrap::WRAP_TURNS;
+                let near = wrist - axis * (fore_m * super::viewmodel::WRAP_FROM);
+                let far = near - axis * (fore_m * super::viewmodel::WRAP_COVER * k);
+                if k > 0.02 {
+                    let mut t = span(far, near);
+                    t.scale.x = WRAP_CLOTH_R_M;
+                    t.scale.z = WRAP_CLOTH_R_M;
+                    sleeve = Some(t);
+                }
+                set
+            })
+        }
         _ => None,
     };
+    if let Ok((e, mut vis)) = cloth.single_mut() {
+        let want = if sleeve.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        vis.set_if_neq(want);
+        if let (Some(t), Ok(mut x)) = (sleeve, xf.get_mut(e)) {
+            *x = t;
+        }
+    }
     let Some((t_sh, [q_up, q_fore, q_hand])) = solved else {
         // Folded away, as `dress_arms` left it.
         if let Ok(mut t) = xf.get_mut(sh) {
@@ -420,8 +488,6 @@ fn solve(
     parents: &Query<&ChildOf>,
     xf: &Query<&mut Transform>,
 ) -> Option<(Vec3, [Quat; 3])> {
-    let local = |e: Entity| xf.get(e).ok().copied();
-    let (t_sh, t_up, t_fore, t_hand) = (local(sh)?, local(up)?, local(fore)?, local(hand)?);
     // The nock the fingers hold and the arrow's line through it.
     let m_model = in_frame(model, rig, parents, xf)?;
     let at = nock_at(ends, nock_back(pull, 0.0));
@@ -431,15 +497,77 @@ fn solve(
         .normalize_or(Vec3::NEG_Z);
     let wrist = nock - fwd * DRAW_WRIST_BACK_M + Vec3::NEG_Y * DRAW_WRIST_DROP_M;
     let fingers = nock + Vec3::NEG_Y * DRAW_FINGERS_DROP_M;
-    // The shoulder, moved so the upper arm starts at `DRAW_SHOULDER`.
+    reach(
+        DRAW_SHOULDER,
+        wrist,
+        Some(fingers),
+        DRAW_ELBOW,
+        sh,
+        [up, fore, hand],
+        rig,
+        parents,
+        xf,
+    )
+    .map(|(set, _, _)| set)
+}
+
+/// The arm brought up to be wrapped, `w` of the way: the wrapped place is
+/// view space (`viewmodel::wrap_arm`) and the rig moves under it — the right
+/// hand going round is the rig's motion (`viewmodel::wrap_rig`) — so the
+/// targets are taken into the rig's frame through this frame's rig, and the
+/// left arm holds still while the right one moves. Also the elbow and the
+/// wrist it reached, rig frame, for the sleeve.
+#[allow(clippy::type_complexity)]
+fn solve_wrap(
+    w: f32,
+    sh: Entity,
+    arm: [Entity; 3],
+    rig: Entity,
+    parents: &Query<&ChildOf>,
+    xf: &Query<&mut Transform>,
+) -> Option<((Vec3, [Quat; 3]), Vec3, Vec3)> {
+    let (s, _, wrist) = super::viewmodel::wrap_arm(w);
+    let to_rig = xf.get(rig).ok()?.compute_affine().inverse();
+    reach(
+        to_rig.transform_point3(s),
+        to_rig.transform_point3(wrist),
+        None,
+        to_rig.transform_vector3(super::viewmodel::WRAP_ELBOW),
+        sh,
+        arm,
+        rig,
+        parents,
+        xf,
+    )
+}
+
+/// The left arm's new locals for an upper arm starting at `shoulder` and a
+/// wrist at `wrist`, the elbow bent toward `pole`, all in the rig's frame;
+/// the hand's fingers turned onto `fingers`, or straight on along the
+/// forearm with none. Also the elbow and the wrist the arm reached.
+#[allow(clippy::too_many_arguments)]
+fn reach(
+    shoulder: Vec3,
+    wrist: Vec3,
+    fingers: Option<Vec3>,
+    pole: Vec3,
+    sh: Entity,
+    [up, fore, hand]: [Entity; 3],
+    rig: Entity,
+    parents: &Query<&ChildOf>,
+    xf: &Query<&mut Transform>,
+) -> Option<((Vec3, [Quat; 3]), Vec3, Vec3)> {
+    let local = |e: Entity| xf.get(e).ok().copied();
+    let (t_sh, t_up, t_fore, t_hand) = (local(sh)?, local(up)?, local(fore)?, local(hand)?);
+    // The shoulder, moved so the upper arm starts at `shoulder`.
     let m_p = in_frame(parents.get(sh).ok()?.0, rig, parents, xf)?;
-    let t_sh_new = m_p.inverse().transform_point3(DRAW_SHOULDER) - t_sh.rotation * t_up.translation;
+    let t_sh_new = m_p.inverse().transform_point3(shoulder) - t_sh.rotation * t_up.translation;
     let m_sh = m_p * Affine3A::from_rotation_translation(t_sh.rotation, t_sh_new);
     let m_up = m_sh * t_up.compute_affine();
     let m_fore = m_up * t_fore.compute_affine();
     let (s, e0) = (Vec3::from(m_up.translation), Vec3::from(m_fore.translation));
     let h0 = Vec3::from((m_fore * t_hand.compute_affine()).translation);
-    let (elbow, reach) = two_bone(s, wrist, e0.distance(s), h0.distance(e0), DRAW_ELBOW);
+    let (elbow, reach) = two_bone(s, wrist, e0.distance(s), h0.distance(e0), pole);
     // The upper arm onto the elbow, the forearm onto the wrist, the hand's
     // fingers onto the string.
     let q_up = rot(&m_sh).inverse() * arc(e0 - s, elbow - s) * rot(&m_up);
@@ -451,13 +579,10 @@ fn solve(
     let m_fore =
         m_up * Affine3A::from_scale_rotation_translation(t_fore.scale, q_fore, t_fore.translation);
     let m_hand = m_fore * t_hand.compute_affine();
-    let q_hand = rot(&m_fore).inverse()
-        * arc(
-            rot(&m_hand) * Vec3::Y,
-            fingers - Vec3::from(m_hand.translation),
-        )
-        * rot(&m_hand);
-    Some((t_sh_new, [q_up, q_fore, q_hand]))
+    let at = Vec3::from(m_hand.translation);
+    let fingers = fingers.unwrap_or(at + (at - e1));
+    let q_hand = rot(&m_fore).inverse() * arc(rot(&m_hand) * Vec3::Y, fingers - at) * rot(&m_hand);
+    Some(((t_sh_new, [q_up, q_fore, q_hand]), e1, at))
 }
 
 /// A unit cylinder along +Y stretched from `a` to `b`. The string runs up the

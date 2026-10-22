@@ -12,9 +12,9 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
-    WireGItem, WireLodged,
+    WireGItem, WireLodged, WirePlant,
 };
-use sim_core::build::{BuildContent, PieceRec};
+use sim_core::build::{BuildContent, PieceRec, Pieces};
 use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
@@ -23,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PLANTS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -40,6 +40,11 @@ pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
 
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
+
+/// Placements this client sent and the server has not answered: how many
+/// are drawn at once, and how long one is drawn without an answer.
+pub const PENDING_PIECES: usize = 8;
+const PENDING_PIECE_MS: f64 = 1500.0;
 
 /// Shots heard between two drains, drop-oldest (guns v1): sixteen, so a
 /// fire-fight of automatics — an AK is a round every four ticks — does
@@ -62,6 +67,10 @@ pub const OWN_BAG_NEAR_M: f32 = 4.0;
 /// ring because the pump drains it every event, not every frame, and a
 /// dropped line is the one loss a player would actually notice.
 pub const CHAT_RING: usize = 16;
+
+/// Captions buffered for the log (v138, drop-oldest): a transcript and
+/// its translation are two, and a long one is a few.
+pub const CAPTION_RING: usize = 16;
 
 /// Arrow impacts buffered for the renderer (drop-oldest, cosmetic).
 ///
@@ -121,6 +130,9 @@ pub struct Removed {
     /// Where in its cell a deployable stood (free placement); the centre
     /// for a piece.
     pub pose: sim_core::footprint::Pose,
+    /// Where a piece the grid could not name stood (freeform W2): its
+    /// building's frame and its footprint — its address only spelled its id.
+    pub lattice: Option<(sim_core::frame::Frame, sim_core::sock::Sock)>,
 }
 
 /// Buffered swings — one entry is one body's arm starting to move
@@ -424,6 +436,10 @@ pub const APPLIED2_SKINS: u32 = 1 << 12;
 /// An achievement popup was queued (`EventMsg::Achievement`, v118):
 /// [`ClientCore::pop_achievement`].
 pub const APPLIED2_ACHIEVEMENT: u32 = 1 << 13;
+/// The plant set changed (`EventMsg::Plant` / `PlantGone` / `PlantSync`,
+/// farming v2) — re-read `plants`. A level, not a ring; raised on a reset
+/// too, for `APPLIED2_GITEMS`' reason.
+pub const APPLIED2_PLANTS: u32 = 1 << 14;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -480,6 +496,71 @@ impl GItemSet {
         }
         self.recs[self.len] = rec;
         self.len += 1;
+        true
+    }
+}
+
+/// The client's mirror of the plants the server has told it about
+/// (farming v2): `GItemSet`'s shape — an id is the identity and the record
+/// rides with it, so an insert replaces. Bounded like the server's store
+/// (`MAX_PLANTS`).
+pub struct PlantSet {
+    recs: Box<[WirePlant]>,
+    len: usize,
+}
+
+impl PlantSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WirePlant::default(); MAX_PLANTS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[WirePlant] {
+        &self.recs[..self.len]
+    }
+
+    pub fn find(&self, id: u32) -> Option<&WirePlant> {
+        self.entries().iter().find(|p| p.id == id)
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// True if the set changed. An id already held is replaced.
+    fn insert(&mut self, rec: WirePlant) -> bool {
+        if let Some(i) = self.entries().iter().position(|r| r.id == rec.id) {
+            if self.recs[i] == rec {
+                return false;
+            }
+            self.recs[i] = rec;
+            return true;
+        }
+        if self.len == self.recs.len() {
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
+    }
+
+    /// True if `id` was held.
+    fn remove(&mut self, id: u32) -> bool {
+        let Some(i) = self.entries().iter().position(|r| r.id == id) else {
+            return false;
+        };
+        self.len -= 1;
+        self.recs[i] = self.recs[self.len];
         true
     }
 }
@@ -774,23 +855,23 @@ impl Harvested for HarvestedSet {
     }
 }
 
-/// The client's mirror of the placed-piece set, keyed by grid address —
-/// bounded like the server's store (`MAX_PIECES`). Insertion is
-/// idempotent (a piece can arrive by broadcast AND by the sync walk); an
-/// insert past capacity is dropped, the same bounded posture as the
-/// harvested set (the server refuses placements there too, so a full
-/// client store only desyncs against a server bug, and the next resync
-/// walk retries).
+/// The client's mirror of the placed-piece set: the server's own store
+/// (`build::Pieces`), filled through its mirror half (freeform W2) — keyed
+/// by piece id, each record in the frame of the building it stands in —
+/// so the predictor collides with exactly the rows the sim files, and the
+/// ghost asks the sim's own placement rules of it. Bounded like the
+/// server's store (`MAX_PIECES`). Insertion is idempotent (a piece can
+/// arrive by broadcast AND by the sync walk); an insert past capacity is
+/// dropped, the same bounded posture as the harvested set (the server
+/// refuses placements there too, so a full client store only desyncs
+/// against a server bug, and the next resync walk retries).
 ///
-/// The mirror also keeps the predictor's collision index (`ColIndex`,
-/// collide.rs) in lockstep. A record's collision shape comes from its
-/// baked row, which drips separately (`PieceDefs`): rows not received
-/// yet contribute no collision, and the defs-arrival handler rebuilds
-/// the index — bounded staleness the next reconcile absorbs.
+/// A record's collision shape comes from its baked row, which drips
+/// separately (`PieceDefs`): rows not received yet contribute no
+/// collision, and the defs-arrival handler refiles the index — bounded
+/// staleness the next reconcile absorbs.
 pub struct PieceSet {
-    recs: Box<[PieceRec]>,
-    len: usize,
-    cols: Box<ColIndex>,
+    store: Box<Pieces>,
 }
 
 /// The collision shape of piece row `row`, if that row has dripped in.
@@ -807,33 +888,48 @@ fn shape_of(defs: &BuildContent, have: u16, row: u8) -> Option<u8> {
 impl PieceSet {
     fn new() -> Self {
         Self {
-            recs: vec![PieceRec::default(); MAX_PIECES].into_boxed_slice(),
-            len: 0,
-            cols: Box::new(ColIndex::new()),
+            store: Box::new(Pieces::new()),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        self.store.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.store.is_empty()
     }
 
     pub fn entries(&self) -> &[PieceRec] {
-        &self.recs[..self.len]
+        self.store.entries()
+    }
+
+    /// The mirror as the sim's store: what `build::check_site` and the
+    /// support rules read.
+    pub fn store(&self) -> &Pieces {
+        &self.store
+    }
+
+    /// The piece an address names: a grid address, or a spelled id
+    /// (`build::spell_id`).
+    pub fn find(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
+        self.store.find(cx, cz, level, loc)
+    }
+
+    /// A building's frame, while the mirror holds a piece of it.
+    pub fn frame(&self, bld: u16) -> Option<&sim_core::frame::Frame> {
+        self.store.frame(bld)
     }
 
     /// The predictor's collision view (movement::step's `cols`).
     pub fn cols(&self) -> &ColIndex {
-        &self.cols
+        self.store.cols()
     }
 
     /// Memoize the terrain band of any column the mirror opened since the
     /// last call — the sim's `Pieces::fill_bands`, for the predictor's walks.
     fn fill_bands(&mut self, seed: u64, haven: &Haven) {
-        self.cols.fill_bands(seed, haven);
+        self.store.fill_bands(seed, haven);
     }
 
     /// Set or clear a closed-door bit in the predictor's index. Doors
@@ -842,15 +938,7 @@ impl PieceSet {
     /// stores' views of a doorway in step (the sim does the same).
     #[allow(clippy::too_many_arguments)]
     fn set_insert(&mut self, cx: u16, cz: u16, level: u8, loc: u8, arch: u8, shut: bool) {
-        if arch == sim_core::deploy::ARCH_DOOR {
-            self.set_door(cx, cz, level, loc, shut);
-        } else {
-            self.cols.set_insert(cx, cz, level, loc, arch, shut);
-        }
-    }
-
-    fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
-        self.cols.set_door(cx, cz, level, loc, shut);
+        self.store.set_insert(cx, cz, level, loc, arch, shut);
     }
 
     /// `set_door`'s twin for the blocking deployables (deploy collision
@@ -858,11 +946,11 @@ impl PieceSet {
     /// the same index rows the sim's own lockstep writes — where it stands,
     /// since free placement, and not just which cell.
     fn add_solid(&mut self, solid: sim_core::collide::SolidPose) {
-        self.cols.add_solid(solid);
+        self.store.add_solid(solid);
     }
 
     fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
-        self.cols.del_solid(cx, cz, level, loc);
+        self.store.del_solid(cx, cz, level, loc);
     }
 
     /// Re-state the piece at an address, if one stands there: its exact hp
@@ -883,52 +971,24 @@ impl PieceSet {
     /// store's — the band always could — which is why the hammer words its
     /// repair quote as a floor, `client::ui::hammer::repair_line`.)
     fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
-        for r in self.recs[..self.len].iter_mut() {
-            if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
-                r.hp = hp;
-                r.dmg = dmg;
-                return;
-            }
-        }
+        self.store.mirror_hp(cx, cz, level, loc, hp, dmg);
     }
 
-    /// True if the set changed (a known address with the same row is a
-    /// duplicate, not a change).
-    fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
-        for r in self.recs[..self.len].iter_mut() {
-            if r.cx == rec.cx && r.cz == rec.cz && r.level == rec.level && r.loc == rec.loc {
-                if *r == rec {
-                    return false;
-                }
-                let old_row = r.row;
-                *r = rec;
-                if old_row != rec.row {
-                    if let Some(shape) = shape_of(defs, have, old_row) {
-                        self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
-                    }
-                    if let Some(shape) = shape_of(defs, have, rec.row) {
-                        self.cols
-                            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
-                    }
-                }
-                return true;
-            }
-        }
-        if self.len == self.recs.len() {
-            return false;
-        }
-        self.recs[self.len] = rec;
-        self.len += 1;
-        if let Some(shape) = shape_of(defs, have, rec.row) {
-            self.cols
-                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
-        }
-        true
+    /// True if the set changed (a record already held as it is, in the
+    /// same frame, is a duplicate, not a change).
+    fn insert(
+        &mut self,
+        rec: PieceRec,
+        frame: sim_core::frame::Frame,
+        defs: &BuildContent,
+        have: u16,
+    ) -> bool {
+        self.store
+            .mirror_put(rec, frame, |row| shape_of(defs, have, row))
     }
 
     fn clear(&mut self) {
-        self.len = 0;
-        self.cols.clear();
+        self.store.clear();
     }
 
     fn remove(
@@ -940,31 +1000,15 @@ impl PieceSet {
         defs: &BuildContent,
         have: u16,
     ) -> bool {
-        if let Some(i) = self.recs[..self.len]
-            .iter()
-            .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
-        {
-            if let Some(shape) = shape_of(defs, have, self.recs[i].row) {
-                self.cols.del(cx, cz, level, loc, shape);
-            }
-            self.len -= 1;
-            self.recs[i] = self.recs[self.len];
-            true
-        } else {
-            false
-        }
+        self.store
+            .mirror_take(cx, cz, level, loc, |row| shape_of(defs, have, row))
     }
 
-    /// Rebuild the collision index from the records — the defs-arrival
+    /// Refile the collision index from the records — the defs-arrival
     /// path, where rows that were unknown at insert time gain shapes.
     /// Event-lane cadence, never the render loop.
     fn rebuild_cols(&mut self, defs: &BuildContent, have: u16) {
-        self.cols.clear();
-        for r in self.recs[..self.len].iter() {
-            if let Some(shape) = shape_of(defs, have, r.row) {
-                self.cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
-            }
-        }
+        self.store.mirror_refile(|row| shape_of(defs, have, row));
     }
 }
 
@@ -1099,18 +1143,6 @@ impl DeploySet {
         }
     }
 
-    /// Apply a planter's beds (crops v1, `EventMsg::Planter`) to its
-    /// record. An address never heard of waits for the deploy walk, which
-    /// carries the same byte.
-    fn set_grow(&mut self, cx: u16, cz: u16, level: u8, loc: u8, stages: u8) {
-        if let Some(r) = self.recs[..self.len]
-            .iter_mut()
-            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
-        {
-            r.grow = stages;
-        }
-    }
-
     /// Apply a door announcement to the mirrored record; returns the
     /// record as it now stands, or None when this client has never heard
     /// of that address (the deploy walk will bring it, carrying state).
@@ -1166,8 +1198,9 @@ impl LitOvens {
 
     /// Absolute, never a toggle — the event carries the state and this
     /// stores exactly what it carried, so two announcements crossing can
-    /// never leave a client inverted (`EV_OVEN`'s own argument).
-    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) {
+    /// never leave a client inverted (`EV_OVEN`'s own argument). Says
+    /// whether the set moved.
+    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) -> bool {
         let at = self.addrs[..self.len]
             .iter()
             .position(|a| *a == (cx, cz, level, loc));
@@ -1176,13 +1209,16 @@ impl LitOvens {
                 if self.len < MAX_BOXES {
                     self.addrs[self.len] = (cx, cz, level, loc);
                     self.len += 1;
+                    return true;
                 }
+                false
             }
             (false, Some(i)) => {
                 self.len -= 1;
                 self.addrs[i] = self.addrs[self.len];
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -1957,6 +1993,9 @@ pub struct ClientCore {
     chats: [(u32, protocol::Channel, ChatText); CHAT_RING],
     chat_head: usize,
     chat_len: usize,
+    captions: [protocol::Caption; CAPTION_RING],
+    caption_head: usize,
+    caption_len: usize,
     /// Own health, absolute as the server last stated it. `hp_max` 0 means
     /// no `Health` has arrived yet — a shard whose content disarms combat
     /// never sends one, and the HUD must not draw an empty bar for a
@@ -1994,6 +2033,10 @@ pub struct ClientCore {
     /// `APPLIED_DRANK` (`client_drank`, named here until 2026-08-15, was
     /// the deleted C-ABI bridge).
     pub last_drink: u32,
+    /// The last vessel fact (wire v131, `EventMsg::Vessel`), when the last
+    /// `APPLIED_DRANK` was one rather than a mouthful: (poured, salt, fires
+    /// put out, planters reached).
+    pub last_vessel: Option<(bool, bool, u16, u16)>,
     /// The last move's address, `sim_core::inventory::addr`'s pack
     /// verbatim, and the refusal reason (0 = the move landed). Read
     /// together by `render/panels/mod.rs::sync_refusals` and the panel's
@@ -2117,6 +2160,16 @@ pub struct ClientCore {
     /// costing hp (wire v113).
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// The open wound, hp it still owes (`EventMsg::Exposure`): BLEEDING
+    /// while it is above zero.
+    pub bleed: u8,
+    /// The breath the owner has left, per cent, and whether the water is
+    /// costing hp (wire v137, `World::breathe`).
+    pub breath_pct: u8,
+    pub drowning: bool,
+    /// Minutes left on each tea by `sim_core::exposure::BREW_*` (wire
+    /// v139, clothing v1).
+    pub brew_min: [u8; sim_core::exposure::BREW_KINDS],
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2197,6 +2250,9 @@ pub struct ClientCore {
     /// Loose stacks on the ground, as the server last stated them
     /// (ground items v0). Read through `ground_items()`.
     pub gitems: GItemSet,
+    /// Every plant the server has told this client of (farming v2), as it
+    /// last stated them. Never predicted.
+    pub plants: PlantSet,
     /// Arrows standing in bodies, as the server last stated them (wire
     /// v94). Read through `lodged()`.
     pub lodged: LodgedSet,
@@ -2265,6 +2321,11 @@ pub struct ClientCore {
     auths: [(u16, u16, u8, u8, u8); REFUSAL_RING],
     auth_head: usize,
     auth_len: usize,
+    /// Fires and furnaces that went on or off (`EV_OVEN`): address + lit.
+    /// Drop-oldest; a sound, not the state (`LitOvens` holds that).
+    oven_flips: [(u16, u16, u8, u8, bool); REFUSAL_RING],
+    oven_flip_head: usize,
+    oven_flip_len: usize,
     /// Placements that HAPPENED (`PiecePlaced`/`DeployPlaced` broadcasts):
     /// address + which store (`true` = deployable). **Never fed by a sync
     /// walk**, and that asymmetry is the ring's whole reason to exist: the
@@ -2308,6 +2369,18 @@ pub struct ClientCore {
     /// belonged to some *other* queued action rolls this door back early
     /// — harmless, because a use that does land announces right behind.
     pending_door: Option<(u16, u16, u8, u8)>,
+    /// Pieces this client placed and the server has not confirmed, oldest
+    /// first, and the `now_ms` each stops being drawn at. Drawn the frame the
+    /// click lands and never collided with: the predictor walks the server's
+    /// world, and a piece the server refuses must not have moved anyone. The
+    /// broadcast at the same address confirms one, the next build refusal
+    /// takes the oldest, and the clock takes the rest.
+    pending_pieces: [PieceRec; PENDING_PIECES],
+    pending_until: [f64; PENDING_PIECES],
+    n_pending_pieces: usize,
+    /// Bumped on every change to `pending_pieces`, so the renderer redraws on
+    /// a click and an expiry as well as on the wire's news.
+    pending_pieces_gen: u32,
     /// The last removal's grid address (valid while the flags say a
     /// removal was applied this message).
     pub removed_addr: (u16, u16, u8, u8),
@@ -2372,6 +2445,12 @@ impl ClientCore {
     }
 
     pub fn new(seed: u64, player_id: u32, server_tick: u32) -> Self {
+        Self::with_haven(seed, player_id, server_tick, terrain::haven(seed))
+    }
+
+    /// [`ClientCore::new`] with the seed's haven already solved
+    /// (`World::with_haven` has why). `haven` must be `terrain::haven(seed)`.
+    pub fn with_haven(seed: u64, player_id: u32, server_tick: u32, haven: terrain::Haven) -> Self {
         Self {
             player_id,
             spectating: false,
@@ -2401,7 +2480,7 @@ impl ClientCore {
             worn: [ItemStack::default(); WEAR_SLOTS],
             harvested: HarvestedSet::new(),
             scatter_table: ScatterTable::alpha_default(),
-            haven: terrain::haven(seed),
+            haven,
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
             item_descs: Box::new(protocol::ItemDescs::EMPTY),
@@ -2456,6 +2535,17 @@ impl ClientCore {
             chats: [(0, protocol::Channel::Local, ChatText::EMPTY); CHAT_RING],
             chat_head: 0,
             chat_len: 0,
+            captions: [protocol::Caption {
+                from: 0,
+                line: 0,
+                voice: true,
+                more: false,
+                channel: protocol::Channel::Local,
+                lang: 0,
+                text: ChatText::EMPTY,
+            }; CAPTION_RING],
+            caption_head: 0,
+            caption_len: 0,
             hp: 0,
             hp_max: 0,
             food: 0,
@@ -2469,6 +2559,7 @@ impl ClientCore {
             consume_refusal_head: 0,
             consume_refusal_len: 0,
             last_drink: 0,
+            last_vessel: None,
             last_move: 0,
             move_seq: 0,
             last_move_refused: 0,
@@ -2508,6 +2599,10 @@ impl ClientCore {
             air_c: 0,
             fel_pct: 0,
             fel_hurting: false,
+            bleed: 0,
+            breath_pct: 100,
+            drowning: false,
+            brew_min: [0; sim_core::exposure::BREW_KINDS],
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -2531,6 +2626,7 @@ impl ClientCore {
             deploys: DeploySet::new(),
             bags: BagSet::new(),
             gitems: GItemSet::new(),
+            plants: PlantSet::new(),
             lodged: LodgedSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
@@ -2568,6 +2664,9 @@ impl ClientCore {
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
             auth_head: 0,
             auth_len: 0,
+            oven_flips: [(0, 0, 0, 0, false); REFUSAL_RING],
+            oven_flip_head: 0,
+            oven_flip_len: 0,
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
@@ -2578,6 +2677,10 @@ impl ClientCore {
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
             pending_door: None,
+            pending_pieces: [PieceRec::default(); PENDING_PIECES],
+            pending_until: [0.0; PENDING_PIECES],
+            n_pending_pieces: 0,
+            pending_pieces_gen: 0,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
             own_struct_hit: (0, 0, 0, 0, 0, 0),
@@ -2962,6 +3065,8 @@ impl ClientCore {
                 floor_len,
                 ceiling_name,
                 ceiling_len,
+                boost_knob,
+                boost_pct,
             } => {
                 self.arc.count = total.min(sim_core::limits::MAX_WORKS as u8);
                 if let Some(w) = self.arc.works.get_mut(index as usize) {
@@ -2973,6 +3078,8 @@ impl ClientCore {
                     w.floor_len = floor_len;
                     w.ceiling_name = ceiling_name;
                     w.ceiling_len = ceiling_len;
+                    w.boost_knob = boost_knob;
+                    w.boost_pct = boost_pct;
                 }
                 self.arc.gen = self.arc.gen.wrapping_add(1);
             }
@@ -3007,6 +3114,7 @@ impl ClientCore {
                 n_topics,
                 topics,
                 topic_lens,
+                offers,
                 dials,
                 values,
             } => {
@@ -3023,6 +3131,7 @@ impl ClientCore {
                             s.n_topics = n_topics;
                             s.topics = topics;
                             s.topic_lens = topic_lens;
+                            s.offers = offers;
                         }
                     }
                     protocol::ARC_INSCRIPTION => {
@@ -3050,6 +3159,7 @@ impl ClientCore {
                 kind,
                 index,
                 topic,
+                gift,
                 text,
                 len,
             } => {
@@ -3059,6 +3169,7 @@ impl ClientCore {
                         s.said_topic = topic;
                         s.said = text;
                         s.said_len = len;
+                        s.heard(topic, gift);
                     }
                 } else if let Some(i) = l.inscriptions.get_mut(index as usize) {
                     i.text = text;
@@ -3323,11 +3434,13 @@ impl ClientCore {
                 // spell the same redraw.
                 flags |= APPLIED_RECIPES;
             }
-            EventMsg::PiecePlaced { rec } => {
+            EventMsg::PiecePlaced { rec, frame } => {
+                self.settle_pending_piece(rec.cx, rec.cz, rec.level, rec.loc);
                 if self
                     .pieces
-                    .insert(rec, &self.piece_defs, self.piece_defs_have)
+                    .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                 {
+                    self.reseal_at(rec.target());
                     self.push_piece_change(rec);
                     // A broadcast is a placement HAPPENING; only it rings
                     // (see `placed`). The walk's tail batch carrying the
@@ -3336,16 +3449,24 @@ impl ClientCore {
                     flags |= APPLIED_PIECES;
                 }
             }
-            EventMsg::PieceSync { reset, recs, count } => {
+            EventMsg::PieceSync {
+                reset,
+                recs,
+                frames,
+                count,
+            } => {
                 if reset {
                     self.pieces.clear();
                     flags |= APPLIED_PIECE_RESET;
                 }
-                for &rec in recs.iter().take(count as usize) {
+                for (&rec, &frame) in recs.iter().zip(frames.iter()).take(count as usize) {
                     if self
                         .pieces
-                        .insert(rec, &self.piece_defs, self.piece_defs_have)
+                        .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                     {
+                        if !reset {
+                            self.reseal_at(rec.target());
+                        }
                         self.push_piece_change(rec);
                         flags |= APPLIED_PIECES;
                     }
@@ -3356,6 +3477,13 @@ impl ClientCore {
                 }
             }
             EventMsg::BuildRefused { reason } => {
+                // Answers arrive in the order the actions went, so a refusal
+                // is the oldest placement's. One that belonged to an upgrade
+                // or a repair takes a placement down early, and the
+                // broadcast right behind puts it back.
+                if self.n_pending_pieces > 0 {
+                    self.drop_pending_piece(0);
+                }
                 if self.build_refusal_len == REFUSAL_RING {
                     self.build_refusal_head = (self.build_refusal_head + 1) % REFUSAL_RING;
                     self.build_refusal_len -= 1;
@@ -3645,9 +3773,7 @@ impl ClientCore {
                         .map(|r| self.deploy_defs.defs[r.row as usize].hp)
                 } else {
                     self.pieces
-                        .entries()
-                        .iter()
-                        .find(|r| addressed(&(r.cx, r.cz, r.level, r.loc)))
+                        .find(cx, cz, level, loc)
                         .filter(|r| (r.row as u16) < self.piece_defs_have)
                         .map(|r| self.piece_defs.pieces[r.row as usize].hp)
                 };
@@ -3722,18 +3848,18 @@ impl ClientCore {
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
-                let was = self
-                    .pieces
-                    .entries()
-                    .iter()
-                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
-                    .map(|r| (r.row, r.plate));
+                let was = self.pieces.find(cx, cz, level, loc).map(|r| {
+                    let lattice = (!r.on_grid())
+                        .then(|| self.pieces.frame(r.bld).map(|f| (*f, r.sock)))
+                        .flatten();
+                    (r.row, r.plate, lattice)
+                });
                 if self
                     .pieces
                     .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
                 {
                     self.removed_addr = (cx, cz, level, loc);
-                    let (row, plate) = was.unwrap_or((0, 0));
+                    let (row, plate, lattice) = was.unwrap_or((0, 0, None));
                     self.push_removed(Removed {
                         cx,
                         cz,
@@ -3743,6 +3869,7 @@ impl ClientCore {
                         row,
                         plate,
                         pose: sim_core::footprint::Pose::CENTRE,
+                        lattice,
                     });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
@@ -3775,6 +3902,7 @@ impl ClientCore {
                         row: gone.row,
                         plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
                         pose: gone.pose,
+                        lattice: None,
                     });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
@@ -3810,24 +3938,47 @@ impl ClientCore {
                 level,
                 loc,
                 lit,
-                by: _,
+                by,
             } => {
-                // Absolute state, like the door's. The actor is on the
-                // wire and deliberately unread here: what a toast should
-                // say about someone else's fire is a UI question, and the
-                // core's job is the fact.
-                self.ovens.set(cx, cz, level, loc, lit);
+                // Absolute state, like the door's. What a toast should say
+                // about someone else's fire is a UI question, and the core's
+                // job is the fact.
+                //
+                // The flip ring hears a fire lit by a hand (`by` is the
+                // presser) or going out, for any reason. A lit restatement
+                // (the deploy walk's, `by` 0) is not a flip: a joiner walking
+                // into a base must not hear every furnace in it struck.
+                if self.ovens.set(cx, cz, level, loc, lit) && (by != 0 || !lit) {
+                    if self.oven_flip_len == REFUSAL_RING {
+                        self.oven_flip_head = (self.oven_flip_head + 1) % REFUSAL_RING;
+                        self.oven_flip_len -= 1;
+                    }
+                    self.oven_flips[(self.oven_flip_head + self.oven_flip_len) % REFUSAL_RING] =
+                        (cx, cz, level, loc, lit);
+                    self.oven_flip_len += 1;
+                }
                 flags |= APPLIED_DEPLOYS;
             }
-            EventMsg::Planter {
-                cx,
-                cz,
-                level,
-                loc,
-                stages,
-            } => {
-                self.deploys.set_grow(cx, cz, level, loc, stages);
-                flags |= APPLIED_DEPLOYS;
+            EventMsg::Plant(p) => {
+                if self.plants.insert(p) {
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+            }
+            EventMsg::PlantGone { id, .. } => {
+                if self.plants.remove(id) {
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+            }
+            EventMsg::PlantSync { reset, recs, count } => {
+                if reset {
+                    self.plants.clear();
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.plants.insert(rec) {
+                        self.applied2 |= APPLIED2_PLANTS;
+                    }
+                }
             }
             EventMsg::Vitals {
                 food,
@@ -3895,6 +4046,17 @@ impl ClientCore {
             }
             EventMsg::Drank { water, hp_cost } => {
                 self.last_drink = ((water as u32) << 16) | hp_cost as u32;
+                self.last_vessel = None;
+                flags |= APPLIED_DRANK;
+            }
+            EventMsg::Vessel {
+                poured,
+                salt,
+                doused,
+                watered,
+            } => {
+                self.last_drink = 0;
+                self.last_vessel = Some((poured, salt, doused, watered));
                 flags |= APPLIED_DRANK;
             }
             EventMsg::Health { hp, max } => {
@@ -4066,6 +4228,10 @@ impl ClientCore {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
+                breath_pct,
+                drowning,
+                brew_min,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4075,6 +4241,10 @@ impl ClientCore {
                 self.air_c = air_c;
                 self.fel_pct = fel_pct;
                 self.fel_hurting = fel_hurting;
+                self.bleed = bleed;
+                self.breath_pct = breath_pct;
+                self.drowning = drowning;
+                self.brew_min = brew_min;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
@@ -4248,6 +4418,16 @@ impl ClientCore {
                 self.chat_len += 1;
                 flags |= APPLIED_CHAT;
             }
+            // Words as text (v138): the chat log's, like a line.
+            EventMsg::Caption(c) => {
+                if self.caption_len == CAPTION_RING {
+                    self.caption_head = (self.caption_head + 1) % CAPTION_RING;
+                    self.caption_len -= 1;
+                }
+                self.captions[(self.caption_head + self.caption_len) % CAPTION_RING] = c;
+                self.caption_len += 1;
+                flags |= APPLIED_CHAT;
+            }
             EventMsg::Stock {
                 cx,
                 cz,
@@ -4319,6 +4499,53 @@ impl ClientCore {
     /// Piece records the last applied message added (renderer detail).
     pub fn piece_changes(&self) -> &[PieceRec] {
         &self.piece_changes[..self.n_piece_changes]
+    }
+
+    /// Draw a placement this client just sent, before the server answers.
+    /// Render-only (`pending_pieces`); a second one at the same address
+    /// replaces the first, and past [`PENDING_PIECES`] the oldest goes.
+    pub fn predict_place(&mut self, rec: PieceRec) {
+        if let Some(i) = self.pending_pieces[..self.n_pending_pieces]
+            .iter()
+            .position(|p| (p.cx, p.cz, p.level, p.loc) == (rec.cx, rec.cz, rec.level, rec.loc))
+        {
+            self.drop_pending_piece(i);
+        }
+        if self.n_pending_pieces == PENDING_PIECES {
+            self.drop_pending_piece(0);
+        }
+        let n = self.n_pending_pieces;
+        self.pending_pieces[n] = rec;
+        self.pending_until[n] = self.now_ms + PENDING_PIECE_MS;
+        self.n_pending_pieces += 1;
+        self.pending_pieces_gen = self.pending_pieces_gen.wrapping_add(1);
+    }
+
+    /// The placements drawn ahead of the server, oldest first.
+    pub fn pending_pieces(&self) -> &[PieceRec] {
+        &self.pending_pieces[..self.n_pending_pieces]
+    }
+
+    /// Changes whenever [`pending_pieces`](Self::pending_pieces) does.
+    pub fn pending_pieces_gen(&self) -> u32 {
+        self.pending_pieces_gen
+    }
+
+    fn settle_pending_piece(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        if let Some(i) = self.pending_pieces[..self.n_pending_pieces]
+            .iter()
+            .position(|p| (p.cx, p.cz, p.level, p.loc) == (cx, cz, level, loc))
+        {
+            self.drop_pending_piece(i);
+        }
+    }
+
+    fn drop_pending_piece(&mut self, i: usize) {
+        let n = self.n_pending_pieces;
+        self.pending_pieces.copy_within(i + 1..n, i);
+        self.pending_until.copy_within(i + 1..n, i);
+        self.n_pending_pieces -= 1;
+        self.pending_pieces_gen = self.pending_pieces_gen.wrapping_add(1);
     }
 
     /// Toggle the door at the address **optimistically**, on this
@@ -4402,6 +4629,22 @@ impl ClientCore {
             {
                 self.pieces.add_solid(solid);
             }
+        }
+    }
+
+    /// Re-seal the door or insert hung at a piece's address, if one is: a
+    /// re-filed piece's collision row is filed open (an upgrade, a flip, a
+    /// later sync batch), and a door that arrived before its doorway had
+    /// nothing to seal. Bounded by the deploy mirror, event lane only.
+    fn reseal_at(&mut self, at: (u16, u16, u8, u8)) {
+        if let Some(d) = self
+            .deploys
+            .entries()
+            .iter()
+            .find(|d| (d.cx, d.cz, d.level, d.loc) == at)
+            .copied()
+        {
+            self.seal_for(d);
         }
     }
 
@@ -4599,6 +4842,18 @@ impl ClientCore {
         Some(m)
     }
 
+    /// Oldest buffered fire switched on or off: its address and whether it
+    /// is lit now.
+    pub fn pop_oven_flip(&mut self) -> Option<(u16, u16, u8, u8, bool)> {
+        if self.oven_flip_len == 0 {
+            return None;
+        }
+        let f = self.oven_flips[self.oven_flip_head];
+        self.oven_flip_head = (self.oven_flip_head + 1) % REFUSAL_RING;
+        self.oven_flip_len -= 1;
+        Some(f)
+    }
+
     /// Oldest buffered grant: the lock's address and what it now allows
     /// this client (`sim_core::lock::GRANT_*`).
     pub fn pop_auth(&mut self) -> Option<(u16, u16, u8, u8, u8)> {
@@ -4780,6 +5035,17 @@ impl ClientCore {
         Some(t)
     }
 
+    /// Oldest buffered caption (v138).
+    pub fn pop_caption(&mut self) -> Option<protocol::Caption> {
+        if self.caption_len == 0 {
+            return None;
+        }
+        let c = self.captions[self.caption_head];
+        self.caption_head = (self.caption_head + 1) % CAPTION_RING;
+        self.caption_len -= 1;
+        Some(c)
+    }
+
     /// Oldest buffered chat line: (speaker id, channel, text).
     pub fn pop_chat(&mut self) -> Option<(u32, protocol::Channel, ChatText)> {
         if self.chat_len == 0 {
@@ -4952,6 +5218,19 @@ impl ClientCore {
             .get(item as usize)
             .is_some_and(|r| r.holster)
             && sim_core::town::safe(&self.haven().town, x, z)
+    }
+
+    /// A swimmer with a bow or a gun in hand (`sim_core::combat::waterlogged`):
+    /// the sim fires nothing but melee from the water, so the arm stays down.
+    pub fn waterlogged(&self) -> bool {
+        let item = self.held_item();
+        item != NO_ITEM
+            && sim_core::movement::swimming_at(self.predict.position()[1])
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.gun.is_some() || r.draw_ticks > 0)
     }
 
     /// Forget the open ground container. The server's close lands here, and
@@ -5167,6 +5446,20 @@ impl ClientCore {
             && !self.dead
     }
 
+    /// Is the body this client looks through sitting in a casino seat (wire
+    /// v130)? The server's word off this body's own record, while the
+    /// predicted body still stands where that record put it: the first step
+    /// stands a sitter up (`sim_core::seat`), and the eye need not wait a
+    /// round trip to hear so.
+    pub fn seated(&self) -> bool {
+        if self.spectating {
+            return self.spectate_view().is_some_and(|v| v.seated);
+        }
+        self.view.get(self.player_id).is_some_and(|e| {
+            e.seated && e.qx == self.predict.body.qx && e.qz == self.predict.body.qz
+        })
+    }
+
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
     ///
@@ -5209,6 +5502,9 @@ impl ClientCore {
         // why the native client never could.
         let dt_ms = clock::sane_dt(dt_ms);
         self.now_ms += dt_ms;
+        while self.n_pending_pieces > 0 && self.pending_until[0] <= self.now_ms {
+            self.drop_pending_piece(0);
+        }
         // The playout delay slews toward its jitter-derived target
         // (netcode v2 S5): floor + K jitters of margin, bounded by the
         // rails, moved slowly enough that the slide is beneath notice.
@@ -5520,6 +5816,48 @@ mod tests {
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// A placement is drawn from the click until the server answers: its
+    /// broadcast settles it, a refusal takes the oldest, the clock the rest.
+    #[test]
+    fn a_predicted_piece_lives_until_the_server_answers() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let at = |cx: u16| PieceRec {
+            cx,
+            cz: 9,
+            ..PieceRec::default()
+        };
+        c.predict_place(at(1));
+        c.predict_place(at(2));
+        c.predict_place(at(1)); // the same address again replaces, not stacks
+        assert_eq!(c.pending_pieces(), &[at(2), at(1)]);
+        let gen = c.pending_pieces_gen();
+        let len =
+            protocol::encode_event_piece_placed(&at(1), &sim_core::frame::Frame::ZERO, &mut buf)
+                .unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.pending_pieces(), &[at(2)]);
+        assert_ne!(c.pending_pieces_gen(), gen, "a settle must redraw");
+        let len = protocol::encode_event_build_refused(1, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.pending_pieces().is_empty());
+        c.predict_place(at(3));
+        // Frame-sized steps: one `advance` claims at most `MAX_FRAME_MS`.
+        let mut waited = 0.0;
+        while waited + 100.0 < PENDING_PIECE_MS {
+            c.advance(100.0);
+            waited += 100.0;
+        }
+        assert_eq!(c.pending_pieces(), &[at(3)]);
+        c.advance(100.0);
+        assert!(c.pending_pieces().is_empty(), "nobody answered, so it goes");
+        for cx in 0..PENDING_PIECES as u16 + 2 {
+            c.predict_place(at(cx));
+        }
+        assert_eq!(c.pending_pieces().len(), PENDING_PIECES);
+        assert_eq!(c.pending_pieces()[0], at(2), "the oldest make room");
     }
 
     /// An agent's mark answers for the full id it was sent for: the next
@@ -6267,6 +6605,86 @@ mod tests {
         assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
     }
 
+    /// The collision row the walks read keeps a shut door through every way
+    /// its doorway is filed again: a re-sent record (an upgrade, a hammer
+    /// flip) re-files it open, and a doorway that arrives after its door —
+    /// the deploy walk and the piece walk race on a join — has nothing
+    /// sealed it yet. The door at its address seals it each time.
+    #[test]
+    fn a_refiled_doorway_keeps_its_shut_door() {
+        use protocol::{
+            encode_event_deploy_defs, encode_event_deploy_placed, encode_event_piece_defs,
+            encode_event_piece_placed,
+        };
+        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) =
+            encode_event_piece_defs(&BuildContent::probe_fixture(), 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (len, _) =
+            encode_event_deploy_defs(&DeployContent::probe_fixture(), 0, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (ox, oz) = (340u16, 680u16);
+        let frame = sim_core::frame::Frame::new((ox as i32 * 300, oz as i32 * 300), 0, 0);
+        // Probe fixtures: piece row 3 is the doorway, deploy row 2 the door.
+        let doorway = |id: u32, cx: u16| PieceRec {
+            id,
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 3,
+            hp: 1,
+            sock: sim_core::sock::from_grid(ox, oz, cx, 682, LOC_EDGE_XLO).unwrap(),
+            ..PieceRec::default()
+        };
+        let door = |cx: u16| DeployRec {
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 2,
+            ..DeployRec::default()
+        };
+        let row_shut = |c: &ClientCore, id: u32| {
+            c.pieces
+                .cols()
+                .hulls()
+                .find(sim_core::build::hull_key(id))
+                .is_some_and(|h| h.shut)
+        };
+        let piece = |c: &mut ClientCore, rec: PieceRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_piece_placed(&rec, &frame, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+        let deploy = |c: &mut ClientCore, rec: DeployRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_deploy_placed(&rec, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+
+        // Doorway, then its door: sealed.
+        piece(&mut c, doorway(5, 341));
+        deploy(&mut c, door(341));
+        assert!(row_shut(&c, 5), "a placed door seals its doorway's row");
+        // The doorway's record again, its soft side flipped: still sealed.
+        piece(
+            &mut c,
+            PieceRec {
+                facing: 1,
+                ..doorway(5, 341)
+            },
+        );
+        assert!(row_shut(&c, 5), "a re-filed doorway keeps its shut door");
+
+        // A door before its doorway: sealed when the doorway lands.
+        deploy(&mut c, door(343));
+        piece(&mut c, doorway(6, 343));
+        assert!(row_shut(&c, 6), "a doorway after its door is sealed");
+    }
+
     /// The predictor collides against the same closed doors the sim does,
     /// and the shut bit survives every path that rebuilds the derived
     /// index. A door the client renders shut but predicts through is the
@@ -6303,7 +6721,8 @@ mod tests {
             row: 3,
             ..PieceRec::default()
         };
-        let len = encode_event_piece_placed(&doorway, &mut buf).unwrap();
+        let len =
+            encode_event_piece_placed(&doorway, &sim_core::frame::Frame::ZERO, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert_eq!(c.piece_defs.pieces[3].shape, SHAPE_DOORWAY);
         assert!(!shut(&c), "an empty doorway is not sealed");
@@ -6592,10 +7011,27 @@ mod tests {
             }
         }
         let (cx, cz, y) = site.expect("seed 7 has an open flat patch near the centre");
-        for k in -4i32..=4 {
-            c.pieces
-                .cols
-                .add(cx, (cz as i32 + k) as u16, 0, LOC_EDGE_XLO, SHAPE_WALL, 0);
+        // Nine walls, each on its own ground (a grid building of one), as
+        // the server would send them.
+        c.piece_defs = BuildContent::probe_fixture();
+        c.piece_defs_have = c.piece_defs.piece_count;
+        assert_eq!(c.piece_defs.pieces[1].shape, SHAPE_WALL);
+        for k in 0..9u16 {
+            let wz = cz + k - 4;
+            let frame = build::grid_frame(SEED, &c.haven, cx, wz);
+            let rec = PieceRec {
+                cx,
+                cz: wz,
+                loc: LOC_EDGE_XLO,
+                row: 1,
+                id: 10 + k as u32,
+                bld: k,
+                sock: sim_core::sock::from_grid(cx, wz, cx, wz, LOC_EDGE_XLO).unwrap(),
+                ..PieceRec::default()
+            };
+            assert!(c
+                .pieces
+                .insert(rec, frame, &c.piece_defs, c.piece_defs_have));
         }
         let wall_x = cx as f32 * BUILD_CELL_M;
         let z = (cz as f32 + 0.5) * BUILD_CELL_M;

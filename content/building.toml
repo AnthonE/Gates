@@ -322,7 +322,7 @@ hp = 1000
 cost = [{ item = "item.metal_frags", count = 100 }]
 
 # --- tri foundation · 0.5 — a triangle is half its square (§7b.3's
-# footprint axis; ours IS half by area, where theirs is 0.43).
+# footprint axis), though by area it is 0.43: equilateral, as theirs is.
 
 [[piece]]
 id = "build.tri_foundation_wood"

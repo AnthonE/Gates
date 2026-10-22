@@ -434,10 +434,9 @@ fn the_bag_list_announces_itself() {
 /// took. A join is told (empty), a placement is told, a pickup is told,
 /// and a resync is told again — each to the owner and nobody else.
 ///
-/// The pickup is a **stranger's** (unclaimed ground: anyone in reach may
-/// take a deployable), which is the case `EV_DEPLOY_REMOVED`'s owner field
-/// exists for: the hand that lifted the bag is not the player whose list
-/// changed, so routing the re-send off the actor would tell the wrong one.
+/// A stranger's pickup is refused — a bag answers to its owner, even on
+/// unclaimed ground (`deploy::pick_up`), since lifting it took away its
+/// owner's respawn — and the owner's own lift is told to the owner alone.
 #[test]
 fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
     let (mut core, stats, mut clients) = a_shard();
@@ -475,18 +474,27 @@ fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
     assert_eq!(bags_for(&resynced, 0), vec![(CX, CZ, 0u8, true)]);
     assert_eq!(lists_to(&resynced, 1), 0);
 
-    // 4 · the stranger lifts it, and the OWNER is told it is gone.
+    // 4 · the stranger may not lift it; the owner does, and is told.
+    let lift = ActionMsg::Demolish {
+        deploy: true,
+        cx: CX,
+        cz: CZ,
+        level: 0,
+        loc: LOC_PLANE,
+    };
     assert!(core.wants_action(1), "hand should be open");
-    core.push_action(
+    core.push_action(1, lift);
+    let mut refused = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut refused);
+    }
+    assert_eq!(
+        core.world.deploys.len(),
         1,
-        ActionMsg::Demolish {
-            deploy: true,
-            cx: CX,
-            cz: CZ,
-            level: 0,
-            loc: LOC_PLANE,
-        },
+        "a stranger pocketed somebody's bag"
     );
+    assert!(core.wants_action(0), "hand should be open");
+    core.push_action(0, lift);
     let mut taken = Vec::new();
     for _ in 0..4 {
         pump(&mut core, &stats, &mut clients, &mut taken);
@@ -497,7 +505,7 @@ fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
     assert_eq!(
         core.world.deploys.len(),
         0,
-        "the stranger's pickup did not land — the fixture, not the mechanic"
+        "the owner's pickup did not land — the fixture, not the mechanic"
     );
     assert_eq!(
         lists_to(&taken, 0),
@@ -508,8 +516,7 @@ fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
     assert_eq!(
         lists_to(&taken, 1),
         0,
-        "the hand that lifted it was sent a list — the re-send followed the \
-         actor, not the owner"
+        "the bystander was sent somebody else's list"
     );
     assert!(
         clients[0].1.own_bags().is_empty(),

@@ -166,6 +166,9 @@ pub struct TreeCards {
     /// for a ring tree's far part — `props::spawn_slot` and
     /// `props::spawn_outer_tree` draw these where they drew the lathed hull.
     pub ring_meshes: Vec<Handle<Mesh>>,
+    /// Each ring mesh's bounds with the card spread ([`ring_aabb`]), worn
+    /// with `NoAutoAabb` so a ring card is culled like any other mesh.
+    pub ring_bounds: Vec<Aabb>,
     /// Per tint, for the ring cards. They ignore the mask.
     pub ring_materials: [Handle<TreeCardMaterial>; props::TINT_POOL],
     /// The island tiles' material, which steps aside for the rings.
@@ -221,9 +224,11 @@ pub fn init(
             meshes.add(tile_mesh(b))
         })
         .collect();
+    let ring_bounds = dims.iter().map(|d| ring_aabb(*d)).collect();
     commands.insert_resource(TreeCards {
         dims,
         ring_meshes,
+        ring_bounds,
         ring_materials,
         island_material,
     });
@@ -649,6 +654,20 @@ fn tile_aabb(b: &TileBuild) -> Aabb {
     Aabb::from_min_max(lo, hi)
 }
 
+/// A ring card's bounds in its tree's own frame. The vertex stage spreads
+/// the corners `half_w × scale` sideways in WORLD space, and a felled tree's
+/// card can be tipped over, so the spread is boxed in every direction around
+/// the axis: a sphere's worth either way of the 0..h line, which holds the
+/// card at any yaw or topple. The scale is the transform's, so it is not here.
+///
+/// Until this existed the ring cards wore `NoFrustumCulling`, which put
+/// every one of the ~2,000 outer-ring cards behind the camera into the main
+/// pass and every shadow cascade, each frame.
+pub fn ring_aabb(d: CardDims) -> Aabb {
+    let r = d.half_w;
+    Aabb::from_min_max(Vec3::new(-r, -r, -r), Vec3::new(r, d.h + r, r))
+}
+
 fn tile_mesh(b: TileBuild) -> Mesh {
     let n = b.pos.len() / 4;
     let mut idx = Vec::with_capacity(n * 6);
@@ -677,6 +696,7 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
     let pool = tree::CONIFER_POOL;
     let needle = tree::needle_image();
     let leaf = tree::leaf_image();
+    let frond = super::plants::frond_image();
     let w = CARD_W * pool as u32;
     let h = CARD_H;
     let mut level0 = vec![0u8; (w * h * 4) as usize];
@@ -687,6 +707,8 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
         // needles on an evergreen — the pine and the palm — leaves on a
         // broadleaf.
         let (card, gain, trunk) = match tree::SPECIES[tree::species_of(v)].tree_type {
+            // The palm's crown wears the frond card, its colour its own.
+            _ if tree::species_of(v) == tree::PALM => (&frond, 1.0, BARK_MEAN),
             bevy_procedural_tree::enums::TreeType::Evergreen => {
                 (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
             }

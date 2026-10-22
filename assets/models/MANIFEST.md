@@ -932,9 +932,78 @@ sidecars, prompts included, are in `To Examine/skins/`.
 | `frost_pickaxe.glb` | Frost Pickaxe (3) | stone_pickaxe | `01a13bcd-5081` | `01a13bcd-a272` |
 | `bone_bow.glb` | Bone Bow (4) | hunting_bow | `01a13bcd-507e` | `01a13bcd-f206` |
 
-The Gilded Revolver (5) and Moss Tunic (6) stay tints: the revolver's hold
-is built for the generated straight-gripped gun, and worn pieces are lathe
-meshes on the body.
+The Moss Tunic (6) stays a tint: worn pieces are lathe meshes on the body.
+
+### The Realm drop and the rework (2026-10-21)
+
+Rust's skins are the item's own mesh in a new finish, so these are too:
+**`ci/meshy_retexture.py`** strips the shipped `.glb` to its geometry, has
+Meshy repaint it on its own UVs (`retexture`, meshy-6, `enable_original_uv`;
+every delivery measured 100% of its UVs ours) and grafts the maps back onto
+the shipped geometry byte for byte, so height, grip and muzzle are the item's
+own. `--concept` first paints the finish over the item's own icon render
+(nano-banana-pro image-to-image) and textures from that picture: the first
+Verdigris rifle textured from words alone came out near-black with 0.4% of
+it lit; from a concept, the crack web lands on every part. Guns are shown to
+the generator lying flat (`--pose gun`), since its front view of a barrel-up
+gun is the muzzle. Then `ktx_pack.py --size 1024` (by `basisu`, its header).
+
+The glow (`--glow 3.0 --veins HUE`) is the albedo's own cracks of that hue,
+burnt at the fel cracks' strength: meshy-6's emission map came back black.
+`SkinModelDef::glow` is the one carve-out from "nothing held glows".
+
+Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt. 1,297 →
+871 credits for the lot, test rolls included, run ten at a time (so the
+per-row deltas in the sidecars overlap and are not recorded here).
+
+| file | skin (catalog) | base | retexture task | glow |
+|---|---|---|---|---|
+| `gilded_revolver.glb` | Gilded Revolver (5) | new: `meshy_gen.py`, image `01a15d42-415b`, mesh `01a15d42-be08` | — | |
+| `verdigris_rifle.glb` | Verdigris AR (11) | `assault_rifle` | `01a15d49-61a8` | 120° |
+| `verdigris_python.glb` | Verdigris Python (12) | `python_revolver` | `01a15d4f-a483` | 120° |
+| `verdigris_longsword.glb` | Verdigris Longsword (13) | `longsword` | `01a15d4f-a604` | 120° |
+| `verdigris_hatchet.glb` | Verdigris Hatchet (14) | `metal_hatchet` | `01a15d4f-a3ec` | 120° |
+| `lapis_thompson.glb` | Lapis Thompson (15) | `thompson` | `01a15d4f-c9dc` | |
+| `lapis_bolt_rifle.glb` | Lapis Bolt Rifle (16) | `bolt_action_rifle` | `01a15d4f-c942` | |
+| `lapis_pickaxe.glb` | Lapis Pickaxe (17) | `metal_pickaxe` | `01a15d4f-a5c6` | |
+| `lapis_mace.glb` | Lapis Mace (18) | `mace` | `01a15d4f-cc25` | |
+| `tidewrack_shotgun.glb` | Tidewrack Shotgun (19) | `pump_shotgun` | `01a15d4f-a355` | |
+| `tidewrack_smg.glb` | Tidewrack SMG (20) | `custom_smg` | `01a15d50-693b` | |
+| `tidewrack_sar.glb` | Tidewrack SAR (21) | `semi_automatic_rifle` | `01a15d4f-a67f` | |
+| `tidewrack_cleaver.glb` | Tidewrack Cleaver (22) | `salvaged_cleaver` | `01a15d52-bb90` | |
+| `ember_hatchet.glb` | Ember Hatchet (2), reworked | its 2026-10-14 self | `01a15d52-c230` | 30° |
+| `obsidian_bat.glb` | Obsidian Bat (1), reworked | its 2026-10-14 self | `01a15d52-be7d` | |
+| `founder_bat.glb` | Founder's Bat (7), reworked | its 2026-10-14 self | `01a15d52-e3d8` | |
+
+The revolver was imported as the guns were (`--turn=z-90,y-90`, 0.261 m),
+then `stand_grip.py --shaft 0.45 0.98 --grip 0.19` three times: the
+default 0.40..0.95 window took in the cylinder and flipped ±4° per pass,
+where this one converges to 0.00°.
+
+Prompts, in full. Every retexture's concept prompt is "Exactly this object,
+the same shape, proportions and parts, seen the same way, repainted as a
+premium cosmetic skin: " + the set's line + " Plain white background.", and
+every set's line ends "Realistic, highly detailed. No text, no letters, no
+logos, no symbols."
+
+> **Verdigris** — "the wooden parts become glossy black volcanic glass, the metal becomes dark corroded bronze crusted with pale blue-green verdigris and worn to bright bronze on the edges, and a web of jagged cracks runs across the whole object, every crack filled with brilliant saturated neon-green light like molten green glass." The longsword: "the blade becomes glossy black volcanic glass, the crossguard and pommel dark corroded bronze crusted with pale blue-green verdigris, the grip black leather, and a web of jagged cracks runs along the whole blade, every crack filled with brilliant saturated neon-green light like molten green glass." The rifle: "the wooden stock, grip and handguard become glossy black volcanic glass, the steel becomes dark corroded bronze crusted with pale blue-green verdigris and worn to bright bronze on the edges, and a web of jagged cracks runs across the stock, handguard, receiver and magazine, every crack filled with brilliant saturated neon-green light like molten green glass. Glowing green ring at the muzzle."
+>
+> **Lapis** — "the wooden parts become polished black obsidian inlaid with brilliant deep-blue lapis lazuli panels flecked with gold, the metal becomes dark blackened steel edged with tarnished antique gold filigree and fine engraved gold scrollwork. Regal, ancient, ornate."
+>
+> **Tidewrack** — "the wooden parts become pale sun-bleached driftwood, silver-grey and weathered smooth with deep open grain, bound with frayed tarred rope lashings, the metal becomes sea-worn brass and dark iron crusted with small white barnacles and specks of rust, with inset pieces of frosted sea-glass in pale aqua and green. A salvaged coastal look."
+>
+> **Ember Hatchet** — "the stone head becomes charred black volcanic rock split by a web of deep jagged cracks glowing with brilliant orange-yellow molten ember light, the wooden haft is burnt to black charcoal with a few thin glowing orange ember cracks, the binding is blackened iron wire."
+>
+> **Obsidian Bat** — "the whole bat is carved from glossy black obsidian volcanic glass with sharp conchoidal fracture facets and a deep violet and purple iridescent sheen across its surface, the studs are polished black glass points, the grip wrapped in black leather."
+>
+> **Founder's Bat** — "the barrel of the bat becomes polished deep-blue lapis lazuli stone flecked with gold, bound with bands of bright gold wire, the handle is dark polished walnut wrapped in deep-blue cloth tape, a gold cap on the knob."
+>
+> **gilded_revolver** — "A single compact six-shot revolver lying on its side on a plain white background, seen exactly from the side, muzzle pointing right. A short four-inch barrel, a fluted cylinder, a spur hammer, a slim straight grip. The whole gun is gilded: polished gold plate deeply engraved with scrolling vines and leaves, darker antique brass in the recesses of the engraving, the grip panels of carved ivory-white bone. 26 centimetres long, 13 centimetres tall and 4 centimetres wide. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Polished gold plate with deep scrolling vine engraving, darker antique brass in the recesses, carved ivory-white bone grip panels, no text, no logos"
+
+Each skin's store and inventory picture is a render of its model, named by
+catalog id (`iconbake --skins` → `ci/icons/skin_renders/<catalog>.png`, then
+`finish_icons.py --only-renders` → `assets/icons/skins/<catalog>.png`), held by
+`tests/held_assets.rs`; the browser shell's store reads the same file.
 
 ## Textures are KTX2/UASTC at 1024, and the reason is VRAM
 
@@ -1096,7 +1165,7 @@ with `ci/prop_kit.py sheet <names…>`.
 | files | what |
 |---|---|
 | `deploy/furnace`, `recycler`, `research_table`, `workbench2`, `workbench3` | the deployables that were cuboids |
-| `deploy/door`, `deploy/door_locked` | one geometry, two surface sets; `build_kit` lays the locked material on the door's mesh |
+| `deploy/door` | the wooden door (the metal door was its geometry under sheet metal until §Locks and the metal door) |
 | `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
@@ -1333,6 +1402,24 @@ each to its player.
 >
 > **bet_terminal** — "A single small betting terminal kiosk standing upright on a plain white background, three-quarter front view. A squat steel pedestal 60 centimetres wide, 60 centimetres deep and 110 centimetres tall, with a sloped control desk on top facing the viewer that carries a dark glass screen and a row of five big round arcade buttons coloured yellow, green, blue, purple and red, a coin slot and a small chrome tray on the front of the pedestal, a bolted foot plate. Dark grey painted steel with brass trim, scratched and chipped, rust at the bolts, a salvaged post-apocalyptic look. Exactly one terminal. No stool, no ground, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted steel with brass trim, scratched and chipped, rusty bolts, dark glass screen, five big round arcade buttons coloured yellow, green, blue, purple and red, no text, no letters, no numbers, no logos"
 
+## `site/casino_stool.glb`, `site/casino_armchair.glb` — the casino's seats, Meshy, 2026-10-21
+
+Same terms and pipeline as the slot machine: `meshy_gen.py` (nano-banana-pro
+→ meshy-t2 smart topology, single view) → `import_meshy.py` uniform →
+`ktx_pack.py --size 512`. Run one after the other, 24 credits each (balance
+871 → 823). A stool at every slot machine and wheel terminal and a lounge of
+armchairs facing the wheel (`render/casino.rs`, `town::SEATS`); both face +Z
+at their base, the seat 0.46 m up, where `Sitting_Idle_Loop` sits.
+
+| file | image task | mesh task | size (m) | import |
+|---|---|---|---|---|
+| `site/casino_stool.glb` | `01a15d59-c7f3` | `01a15d5b-40db` | 0.31 × 0.46 × 0.31 | ×0.613 uniform, fit by height; the delivery was 0.51 × 0.75 × 0.51 |
+| `site/casino_armchair.glb` | `01a15d5b-f413` | `01a15d5c-7412` | 0.86 × 0.86 × 0.71 | ×0.956 uniform, the seat cushion at 0.46 m |
+
+> **casino_stool** — "A single old casino stool standing upright on a plain white background, three-quarter view. A low round stool 45 centimetres tall: a thick round padded seat cushion 42 centimetres across and 10 centimetres deep, upholstered in worn deep red leather with a row of brass studs round its edge, on one short chrome steel column over a heavy round chrome foot 40 centimetres across. Scratched and dented chrome, rust at the foot, cracked and scuffed leather, a salvaged post-apocalyptic look. Exactly one stool. No backrest, no arms, no ground, no shadow, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Worn deep red leather seat cushion with brass studs round the edge, scratched dented chrome column and round foot, rust at the foot, no text, no logos"
+>
+> **casino_armchair** — "A single old casino lounge armchair on a plain white background, three-quarter front view. A low club armchair 75 centimetres wide, 75 centimetres deep and 85 centimetres tall, its seat cushion 45 centimetres off the ground, thick rounded padded arms, a padded rounded backrest, upholstered in worn deep red leather with brass studs along the arms and round the back, four short turned dark wooden legs. Cracked and scuffed leather, scratched wood, a salvaged post-apocalyptic look. Exactly one armchair. No ground, no shadow, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Worn deep red leather upholstery with brass studs along the arms and the back, cracked and scuffed, short turned dark wooden legs, no text, no logos"
+
 ## `held/` — guns v1: Rust's guns, their rounds, the rocket and C4 (Meshy, 2026-10-18)
 
 Thirteen items for guns v1 (`content/weapons.toml`), the batch-1 pipeline
@@ -1507,3 +1594,98 @@ faces at z −0.45 and −1.0; the counter z 0.35–1.06, 0.9 m tall.
 Prompts, in full, for the IP rail:
 
 > **works_exchange** — "A single ancient free-standing stone gateway ruin on a plain white background, three-quarter front view. Two square weathered warm sandstone pillars 50 centimetres wide joined by a heavy carved lintel across their tops, the whole gateway 300 centimetres wide, 300 centimetres tall and 80 centimetres deep. The opening between the pillars is closed by a recessed flat panel of deep blue glazed stone with one plain round recess 180 centimetres across in its middle, framed by a riveted bronze ring mount. Bronze and brass machinery on the pillars: toothed gear wheels, a small piston, pipes running up into the lintel, valve wheels. In front of the right pillar stands a waist-high sandstone counter 100 centimetres tall with a brass top, a narrow slot and a shallow brass tray, and a small gear-driven sorting mechanism with brass chutes on its side. Bronze and brass weathered to green verdigris patina. Ancient, ornate, weathered. Both faces of the gateway finished alike. Exactly one gateway. No door, no ring inside the recess, no glow, no light, no crystals, no coins, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone pillars and carved lintel, deep blue glazed stone panel, bronze ring mount, gears and pipes with green verdigris patina, brass counter top and tray, no glow, no text, no letters, no symbols"
+## Locks and the metal door — Meshy, 2026-10-21
+
+The code lock and key lock drew the prop kit's boxes, and the metal door was
+the wooden door's planks under a sheet-metal material. Same terms as
+§Roadside. `meshy_gen.py` (nano-banana-pro → meshy-t2 for the locks;
+`--multiview` → meshy-7.1 for the door, whose back is seen from inside every
+base) → `import_meshy.py` → `ktx_pack.py` (512 for the locks, 1024 for the
+door). The locks keep the generator's size (it was right: 0.10 × 0.18 and
+0.07 × 0.16 m) and are the held items, the icons and the lock bolted on a
+door or box (`structures::LOCK_ASSET`). The door is `--turn=y-90 --fit-axes`
+onto the door's row: hinge at −Z like `door.glb`, and its 24 cm of handle,
+sheet and back frame pressed to the row's 12 cm (x0.51; the sheet itself is
+8 mm). 87 credits for the three.
+
+| file | tris | size (m) | image | mesh |
+|---|---|---|---|---|
+| `held/code_lock.glb` | 2,910 | 0.10 × 0.18 × 0.06 | `01a15d54-bbeb-70a2-8dd2-9b8ae2e40e58` | `01a15d55-35f5-7466-8e18-8569dbc7deef` |
+| `held/key_lock.glb` | 3,202 | 0.07 × 0.16 × 0.09 | `01a15d54-c3a3-74b4-affb-c52a89631ef2` | `01a15d55-3f83-72b5-8b4c-0c609bbb3630` |
+| `deploy/door_metal.glb` | 5,173 | 0.12 × 2.20 × 1.20 | `01a15d54-c9dc-73e5-9100-6793130b1d83` (3 views) | `01a15d55-6f82-724e-8b0d-6972a62f83a8` |
+
+> **code_lock** — "A single heavy-duty electronic keypad lock for a door on a plain white background, three-quarter front view. A rugged upright rectangular housing of dark gunmetal steel, 11 centimetres wide, 18 centimetres tall and 5 centimetres deep, with chamfered edges and a thick faceplate fixed by four hex bolts at its corners. Near the top, one small round indicator light behind a domed clear lens in a raised steel bezel, beside a narrow dark recessed display window. Below it, a grid of twelve chunky square rubber buttons in three columns and four rows, worn grey with blank faces, inside a raised protective lip. A short armoured cable conduit entering the bottom edge. Scratched paint worn to bare steel on the edges, grime in the seams, light rust at the bolts. Real, photographed in soft daylight. Exactly one lock. No door, no wall, no ground, no hands, no text, no numbers, no letters, no logos, no scale bar."  ·  texture: "Dark gunmetal painted steel scratched to bare metal on the edges, worn grey rubber keypad buttons with blank faces, clear domed indicator lens, dark display glass, rusty hex bolts, grime in the seams, no text, no numbers, no letters, no logos"
+>
+> **key_lock** — "A single heavy steel hasp and padlock for a door on a plain white background, three-quarter front view. A thick flat rectangular steel hasp plate 7 centimetres wide and 17 centimetres tall with rounded corners, fixed by four large round bolt heads, with a folded steel staple loop standing out from its lower half. Hanging through the staple, one chunky laminated steel padlock 6 centimetres wide, 6 centimetres tall and 3 centimetres thick, its body made of stacked steel plates riveted together, a thick U-shaped hardened steel shackle, and a round brass keyhole on its front face. Scratched dull steel with rust spots and grime, worn and heavily used. Real, photographed in soft daylight. Exactly one hasp and one padlock. No door, no wall, no key, no chain, no ground, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Scratched dull grey steel with rust spots and grime, laminated padlock plates with rivets, polished hardened steel shackle, brass keyhole, rusty bolt heads, no text, no letters, no logos"
+>
+> **door_metal** — "A single heavy scrap-built steel door, flat and upright, on a plain white background. One rectangular door leaf 120 centimetres wide, 220 centimetres tall and 8 centimetres thick. Built from four mismatched riveted steel sheet panels, one of them corrugated, welded over a rectangular frame of angle iron, with a horizontal steel crossbar across the middle and rows of round rivet heads along every seam. Three heavy welded steel barrel hinges on the left edge. On the right side at waist height, a thick bent steel bar pull handle, and a small square steel mounting plate just above it. Faded industrial paint in dull grey-green, chipped and scratched to bare steel, orange rust streaks running down from the rivets, weld scars and dents. Real, photographed in soft daylight. Exactly one door. No door frame, no wall, no ground, no people, no plants, no window, no text, no numbers, no letters, no logos, no scale bar."  ·  texture: "Faded grey-green industrial paint over riveted sheet steel, chipped and scratched to bare metal, orange rust streaks from the rivets, one corrugated panel, weld scars, dents, grime, no text, no numbers, no letters, no logos"
+
+## Farming v2 — the planter, the catcher, the crops and their fruit (Meshy, 2026-10-21)
+
+Same terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt) and
+the batch-1 pipeline: `meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view;
+`--multiview` → meshy-7.1 multi-image, remeshed, for the fruit and the plants) →
+`import_meshy.py` → `flatten_charts.py` where it helped → `ktx_pack.py` (`--size 1024`;
+the two held items at 512). **345 credits for eleven rolls** (balance 2,580 → 2,235,
+measured, run serially, so each row's figure is its own). Seven ship.
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `deploy/planter_box.glb` | DEPLOY row 17 planter, and its held token | `01a15db4-1f02` | `01a15db4-9ef6` | 24 | 3,973 | 1.60 × 0.50 × 0.80 | second roll; `--fit-axes` to the `DEPLOY` row (aspect 1.16; delivered 1.10 × 0.40 × 0.58), so the bed is `DEPLOY_VOL[17]`; soil at the six spots 0.436–0.447 against the sim's 0.44 |
+| `deploy/water_catcher.glb` | DEPLOY row 23 catcher, and its held token | `01a15db6-d0fd` | `01a15db7-5302` | 24 | 4,724 | 0.82 × 1.03 × 0.90 | uniform to the `DEPLOY` row (×0.514; delivered 1.60 × 2.00 × 1.75); an empty stray root node dropped from the scene, buffers untouched |
+| `held/pumpkin.glb` | Pumpkin; `FRUIT_GLB[LOOK_PUMPKIN]` | `01a15db9-1056` | `01a15db9-91ba` | 39 | 1,573 | 0.34 × 0.30 × 0.34 | 3 views; cube fit; charts flattened (`--luma-only`, 0.079 → 0.016); `height_m` 0.301 |
+| `held/potato.glb` | Potato | `01a15dbd-7eda` | `01a15dbe-2c09` | 39 | 834 | 0.11 × 0.06 × 0.07 | 3 views; `--turn=x90,y90` (delivered standing on end), cube fit; charts flattened (0.265 → 0.061); `height_m` 0.063 |
+| `crops/corn_plant.glb` | `CROP_GLB[LOOK_CORN]` | `01a15dc2-2e5c` | `01a15dc2-d925` | 39 | 3,100 | 1.09 × 1.80 × 0.73 | 3 views; uniform by HEIGHT to `LOOK_H_M` 1.8 (the leaves span wider than 0.6), stalk on the origin (`--shift`); as delivered |
+| `crops/pumpkin_vine.glb` | `CROP_GLB[LOOK_PUMPKIN]` | `01a15dc7-bbd2` | `01a15dc8-8feb` | 39 | 2,104 | 0.71 × 0.35 × 0.57 | 3 views; uniform into 0.8 × 0.35 × 0.8, crown on the origin; as delivered |
+| `crops/potato_plant.glb` | `CROP_GLB[LOOK_POTATO]` | `01a15dd8-4809` | `01a15dd8-cd38` | 39 | 2,374 | 0.48 × 0.55 × 0.53 | third roll, 3 views, `--tris 3000`; uniform into 0.6 × 0.55 × 0.6, stem on the origin; as delivered |
+
+**Rolled and not shipped:** the planter's first roll (`01a15db1-c056` / `01a15db2-4020`)
+stood its corner posts 8 cm proud of the rim with the soil 6 cm under the boards, so fitted to
+0.5 m the soil sat at 0.36, 8 cm under the plants the sim draws at 0.44. The second prompt
+cuts the posts flush. The potato plant's first two (`01a15dcc-3ab0` / `01a15dcc-e5d4`,
+`01a15dd1-89e9` / `01a15dd2-5e9a`) remeshed to 963 and 850 triangles of loose leaf shards: a
+compound leaf of small leaflets does not survive a 2,000-triangle remesh. The third names large
+paired leaflets of a stated size and asks for 3,000.
+
+The plants (`crops/`, `render::crops::CROP_GLB`) draw from sapling on in
+place of the procedural stalk and leaves, scaled by stage; their dry, dying
+and ripe-potato looks tint the model's own material as the procedural leaves
+are tinted, and the whole plant bends on the stalk's sway. Hemp and the
+berry bush stay procedural. The ears and the pumpkins on a fruiting plant
+are the held corn and pumpkin (`FRUIT_GLB`). A file that fails to load
+leaves its look procedural.
+
+What was learned, measured:
+
+- **The multi-image path makes real leaf SHEETS, not hulls**, contrary to
+  `reference/PLANTS.md` §4's expectation for generators: the corn's eight strap leaves, the
+  vine's broad leaves and the potato's leaflets are open double-sided surfaces with gaps
+  between them, one material, opaque. It holds while the leaves are big; small leaflets come
+  back as shards.
+- **A box's "top edge" is the rim of its boards, not the tops of its posts.** Say which, or the
+  soil lands under the line the sim plants at.
+- `measure_glb.py`'s bands are a rock's again: the planter fails depth/width (0.50 by
+  definition), every plant fails green %, and the multi-material catcher and planter fail chart
+  contrast because wood, soil, canvas and a blue drum genuinely differ.
+
+Prompts, in full, for the IP rail:
+
+> **planter_box** — "A single long low rectangular raised garden planter box on a plain white background, three-quarter front view of its long side. 160 centimetres long, 80 centimetres deep and 50 centimetres tall, half as deep as it is long, built from old weathered grey-brown wooden planks nailed to four square corner posts inside the corners, the posts cut flush with the top edge of the planks so nothing sticks up above the flat rim, rusty nails, one cracked plank, mud splashed on the lower boards. Filled with dark moist crumbly soil to six centimetres below the rim, the soil surface flat, level and empty. Real, weathered, photographed in soft daylight. Exactly one planter box. No plants, no seedlings, no ground, no people, no tools, no text, no letters, no logos, no scale bar."  ·  texture: "Weathered grey-brown wooden planks with rusty nails and mud stains, dark moist soil top, no text, no logos"
+>
+> **water_catcher** — "A single small improvised rain water catcher on a plain white background, three-quarter front view. A square frame of four rough wooden poles 90 centimetres wide, 90 centimetres deep and 110 centimetres tall, as deep as it is wide, holding a sagging olive-green canvas tarp stretched between the tops of the poles into a funnel, draining through a short black hose into a dented faded blue plastic barrel standing on the ground inside the frame, frayed rope lashings at the corners. Weathered, dirty, patched. Real, photographed in soft daylight. Exactly one water catcher. No water spray, no ground, no people, no plants, no text, no letters, no logos, no scale bar."  ·  texture: "Rough wooden poles, olive canvas tarp with patches and dirt, dented faded blue plastic barrel, black hose, frayed rope, no text, no logos"
+>
+> **pumpkin** — "A single ripe orange field pumpkin with deep vertical ribs and a short curled dry green-brown stem on top, on a plain white background, three-quarter view. Round and slightly squat, 34 centimetres across, 34 centimetres deep and 28 centimetres tall, as deep as it is wide, a few scuffs and a pale yellowish patch on its underside where it lay on the ground. Real, photographed in soft daylight. Exactly one pumpkin. No leaves, no vine, no ground, no people, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Deep orange ribbed pumpkin skin with scuffs and a pale ground patch, dry green-brown stem, no text"
+>
+> **potato** — "A single raw brown potato lying on its side on a plain white background, three-quarter view. Oval and lumpy, 11 centimetres long, 8 centimetres wide and 7 centimetres tall, with small shallow eyes and dry soil clinging to the skin. Real, photographed in soft daylight. Exactly one potato. No sprouts, no ground, no people, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Dusty light-brown potato skin with small eyes and dry soil specks, no text"
+>
+> **corn_plant** — "A single tall green corn plant on a plain white background, side three-quarter view. One upright stalk 180 centimetres tall with eight long arching ribbon-like leaves spreading about 60 centimetres across in every direction, a pale golden tassel at the top, a small root flare at the bottom, no cobs. Healthy green, slightly dusty, real, photographed in soft daylight. Exactly one plant. No pot, no soil, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Green corn stalk and long ribbon leaves with light yellowing at the tips, pale golden tassel, no text"
+>
+> **pumpkin_vine** — "A single low sprawling pumpkin vine plant on a plain white background, high three-quarter view. Broad lobed dark green leaves on hairy curling stems growing out from one central root crown, spreading about 80 centimetres across, 80 centimetres deep and 35 centimetres high, as deep as it is wide, a few small yellow trumpet flowers, curly tendrils, no pumpkins. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Dark green lobed pumpkin leaves with pale veins, hairy green stems, small yellow flowers, no text"
+>
+> **potato_plant** — "A single potato plant on a plain white background, three-quarter view from slightly above. About ten thick fleshy green stems arching outward from one root crown into a low rounded mound, each stem carrying five to seven large flat oval leaflets arranged in pairs along it, each leaflet 10 centimetres long and 6 centimetres wide, smooth edged, matte mid-green with pale veins; the plant 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide. Two small clusters of white five-petalled flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Matte mid-green potato leaflets with pale veins, thick green stems, small white flowers with yellow centres, no text"
+>
+> **planter_box**, first roll (not shipped) — "A single long rectangular raised garden planter box on a plain white background, three-quarter front view of its long side. 160 centimetres long, 80 centimetres deep and 50 centimetres tall, half as deep as it is long, built from old weathered grey-brown wooden planks nailed to four square corner posts, rusty nails, one cracked plank, mud splashed on the lower boards. Filled with dark moist crumbly soil to six centimetres below the top edge, the soil surface flat, level and empty. Real, weathered, photographed in soft daylight. Exactly one planter box. No plants, no seedlings, no ground, no people, no tools, no text, no letters, no logos, no scale bar."
+>
+> **potato_plant**, first roll (not shipped) — "A single bushy potato plant on a plain white background, three-quarter view. A rounded upright clump of leafy green stems growing from one root crown, the soft mid-green compound leaves each made of several oval leaflets, the clump 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a few small white and pale violet star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
+>
+> **potato_plant**, second roll (not shipped) — "A single young potato plant on a plain white background, three-quarter view. A dense rounded bush of thick green stems rising from one root crown, every stem carrying broad soft mid-green oval leaves 8 to 12 centimetres long that overlap one another, the leaves attached to their stems with no gaps and no loose pieces, the bush 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a small cluster of white star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."

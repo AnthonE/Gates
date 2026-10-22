@@ -16,6 +16,14 @@ pub fn content() -> content::Content {
     content::Content::load_dir(&root().join("content")).unwrap()
 }
 
+/// The fixture seed's haven, solved once per process: `terrain::haven`
+/// costs most of a second, and a scene solved it three times over (the
+/// shard, the agent's client, the rig).
+pub fn haven() -> sim_core::terrain::Haven {
+    static HAVEN: std::sync::OnceLock<sim_core::terrain::Haven> = std::sync::OnceLock::new();
+    *HAVEN.get_or_init(|| sim_core::terrain::haven(SEED))
+}
+
 /// A level standing point near a stone node with a tree close by.
 pub fn scene() -> (f32, f32) {
     use sim_core::terrain::{self, Occupant, ScatterTable};
@@ -132,7 +140,7 @@ pub fn shard_with(
     joins: &[(usize, u32)],
 ) -> Box<ShardCore> {
     let t = server::net::bake_all(content).unwrap();
-    let mut core = Box::new(ShardCore::new(SEED));
+    let mut core = Box::new(ShardCore::with_haven(SEED, haven()));
     core.world.gather = t.gather;
     core.world.craft = t.craft;
     core.world.build = t.build;
@@ -164,6 +172,7 @@ pub fn shard_with(
     core.world.cards = t.cards;
     if wildlife {
         core.world.mob = t.mobs;
+        *core.world.nets = t.nets;
     }
     core.catalog = t.catalog;
     core.world.dev_spawn = Some(at);

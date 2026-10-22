@@ -43,7 +43,7 @@ pub fn retry_after_ms(attempt: u32, failed: Failed) -> Option<u32> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm::source;
+pub use wasm::{bytes, source};
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
@@ -107,6 +107,25 @@ mod wasm {
             }
         });
         let _ = JsFuture::from(wait).await;
+    }
+
+    /// One file's whole body, with the reader's retries: `None` once it has
+    /// failed for good. For the bytes the game reads itself rather than
+    /// through Bevy (the sound bank's recordings, `render::audio`).
+    pub async fn bytes(url: String) -> Option<Vec<u8>> {
+        let mut attempt = 0;
+        loop {
+            let (failed, why) = match once(&url).await {
+                Ok(bytes) => return Some(bytes),
+                Err(e) => e,
+            };
+            let Some(ms) = retry_after_ms(attempt, failed) else {
+                warn!("{url}: {why} ({} tries)", attempt + 1);
+                return None;
+            };
+            sleep_ms(ms).await;
+            attempt += 1;
+        }
     }
 
     impl RetryingReader {

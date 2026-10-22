@@ -219,15 +219,16 @@ done < <(git ls-files -z assets/)
 [ "$count" -gt 0 ] || { echo "git ls-files staged nothing from assets/ - refusing" >&2; exit 1; }
 printf "   %d tracked asset files, %s\n" "$count" "$(du -sh "$out/assets" | cut -f1)"
 
-# **The web asset variant: the staged models' KTX2 maps become PNG.** The
-# UASTC transcoder is C++ and is not in the browser build, so every model's
+# **The web asset variant: the staged models' KTX2 maps become JPEG, or PNG
+# where a map has alpha.** The UASTC transcoder is C++ and is not in the
+# browser build, so every model's
 # glTF load failed there as `format requires transcoding` — 47 of them, and
 # the island had no rocks, nodes, sites or held items. The conversion runs
 # where the transcoder exists (natively, here) over the STAGED copy, in
 # place, so the tree's files and every gate over them are untouched and the
 # client needs no path seam. `crates/client/src/webassets.rs` is the whole
 # argument, including why level 1 (512²) and not level 0.
-echo "== converting the staged models for the browser (KTX2 -> PNG)"
+echo "== converting the staged models for the browser (KTX2 -> JPEG/PNG)"
 cargo run -q -p client --features webassets --bin web_assets -- "$out/assets/models"
 
 # **`wasm-opt`, when the box has one.** binaryen is what actually shrinks a
@@ -243,8 +244,12 @@ if [ -n "$opt" ] && [ -x "$opt" ]; then
   for m in client_web_bg client_web_gpu_bg sound_worklet_bg; do
     [ -f "$out/$m.wasm" ] || continue
     before=$(stat -c%s "$out/$m.wasm")
+    # `--enable-simd` because the modules are built `+simd128`
+    # (`.cargo/config.toml`), and `--enable-multivalue` because rustc's wasm32
+    # target has emitted it by default since 1.82.
     "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
       --enable-mutable-globals --enable-sign-ext --enable-reference-types \
+      --enable-simd --enable-multivalue \
       -o "$out/$m.wasm.opt" "$out/$m.wasm"
     mv "$out/$m.wasm.opt" "$out/$m.wasm"
     printf "   wasm-opt: %s %d -> %d bytes\n" "$m" "$before" "$(stat -c%s "$out/$m.wasm")"
@@ -285,6 +290,20 @@ raw=$(stat -c%s "$out/client_web_bg.wasm" 2>/dev/null || echo 0)
 # the fly; without either, measured 2026-09-12, the module went over the
 # wire raw.
 gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
+# **Brotli twins, where the box has `brotli`.** Measured 2026-10-21 on the
+# WebGL2 module: 45.9 MB raw, 14.5 MB gzip -9, **10.7 MB brotli -q 11** — a
+# quarter of the download. The origin serves them once its `/games/gates/`
+# block says `brotli_static on;` (ngx_brotli); until then they are inert
+# files beside the `.gz` and nothing changes on the wire.
+if command -v brotli >/dev/null; then
+  for f in client_web_bg client_web_gpu_bg sound_worklet_bg; do
+    [ -f "$out/$f.wasm" ] || continue
+    brotli -q 11 -f -o "$out/$f.wasm.br" "$out/$f.wasm"
+    printf "   %s.wasm.br %d bytes\n" "$f" "$(stat -c%s "$out/$f.wasm.br")"
+  done
+else
+  echo "== brotli: not installed, no .br twins (apt install brotli)"
+fi
 # The audio pair's hash, AFTER wasm-opt has had its turn at the module: the
 # page asks for `audio.js` and `sound_worklet_bg.wasm` by it (`app.js`,
 # openAudio), for the reason the game modules carry theirs.

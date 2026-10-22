@@ -22,8 +22,8 @@ pub fn build_team(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     let team = core.team();
     let me = core.player_id;
     let [x, _, z] = core.predict.render_position();
-    let rows = words::rows(team, me, [x, z], |id| crate::ui::names::of(core, id));
-    kit::screen(commands, TEAM_W, |p| {
+    let rows = words::rows(team, me, [x, z], |id| crate::ui::names::shown(core, id));
+    kit::page(commands, ui, TEAM_W, |p| {
         let count = format!("{}/{}", team.count, protocol::TEAM_MAX);
         kit::header(
             p,
@@ -33,7 +33,7 @@ pub fn build_team(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
         );
         if team.count == 0 {
             if team.invite != 0 {
-                let who = crate::ui::names::of(core, team.invite);
+                let who = crate::ui::names::shown(core, team.invite);
                 kit::line(p, format!("{who} invited you to their team."), 13.0, TEXT);
             } else {
                 kit::line(

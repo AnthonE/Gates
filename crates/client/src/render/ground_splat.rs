@@ -168,10 +168,11 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
 pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
     MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
 
-/// The desert's sand, linear: a warm tan, where the beach's sand is a pale
-/// grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about (170, 137, 95),
-/// the colour of the reference game's arid biome. **(knob)**
-pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.40, 0.25, 0.115];
+/// The desert's sand, linear: a pale warm tan, where the beach's sand is a
+/// pale grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about
+/// (180, 160, 124), the colour of the reference game's arid biome — it was
+/// (170, 137, 95), an orange the reference never shows. **(knob)**
+pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.45, 0.35, 0.20];
 
 /// Lying snow, linear (snow v0): sRGB about 205 grey, under fresh snow's
 /// ~0.8 so a sunlit drift keeps its relief rather than clipping white.
@@ -184,13 +185,85 @@ pub const SNOW_FADE_M: f32 = 10.0;
 /// out (`WeatherNow::snow_arid`), in aridity.
 pub const SNOW_ARID_FADE: f32 = 0.1;
 
-/// The grass at the desert's border, linear: straw, sRGB about (120, 110, 58).
-/// **(knob)**
-pub const DRY_GRASS_ALBEDO: [f32; 3] = [0.188, 0.155, 0.042];
+/// The grass the desert dries, linear: a golden straw, sRGB about (156, 137, 89),
+/// the reference game's arid grass. **(knob)**
+pub const DRY_GRASS_ALBEDO: [f32; 3] = [0.33, 0.25, 0.10];
+
+/// The desert's rock, linear: a pale warm sandstone, sRGB about
+/// (200, 173, 139), where the rest of the island's is granite (0.285, 0.254,
+/// 0.202 — already beige, so anything short of this reads as the same grey
+/// rock). The reference game tints one rock by the biome it stands in
+/// (`reference/ROCKS.md`). **(knob)**
+pub const DESERT_ROCK_ALBEDO: [f32; 3] = [0.58, 0.42, 0.26];
 
 /// How far the grass identity goes to [`DRY_GRASS_ALBEDO`] at full aridity.
-/// Short of 1 so the last turf before the sand keeps a little green. **(knob)**
-pub const DRY_GRASS_MIX: f32 = 0.85;
+/// All the way: the desert's grass patches are straw through, and the turf
+/// at its edge, at less than full aridity, still keeps some green. **(knob)**
+pub const DRY_GRASS_MIX: f32 = 1.0;
+
+/// The desert's grass patches' wavelength, metres. **(knob)** The reference
+/// game's arid floor is golden grass and open sand in patches tens of metres
+/// across, not sand alone.
+pub const DESERT_GRASS_M: f32 = 34.0;
+
+/// The aridity over which the grass patches come in (they are the desert's,
+/// not the dry meadow's, which is already grass).
+pub const DESERT_GRASS_ARID: (f32, f32) = (0.2, 0.6);
+
+/// How much of the desert's sand goes to grass, 0..1, at `(x, z)`: the patch
+/// field alone, before aridity. The ground shader paints the same field
+/// (`ground_splat.wgsl`'s `desert_grass`, with these numbers as literals) and
+/// the clutter grows its dry tufts on it, so the tufts stand on the golden
+/// ground and not on bare sand.
+pub fn desert_grass(x: f32, z: f32) -> f32 {
+    let (x, z) = (x / DESERT_GRASS_M, z / DESERT_GRASS_M);
+    let n = 0.65 * plane_value(x, z) + 0.35 * plane_value(x * 2.7 + 17.0, z * 2.7 + 5.0);
+    let t = ((n - 0.5) / 0.14).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// `ground_splat.wgsl`'s `value3` on the plane y = 0, bit for bit as far as
+/// f32 goes: the shader's lattice hash, its quintic fade.
+fn plane_value(x: f32, z: f32) -> f32 {
+    fn lowbias32(mut x: u32) -> u32 {
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7feb_352d);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846c_a68b);
+        x ^= x >> 16;
+        x
+    }
+    let key = |cx: i32, cz: i32| {
+        let h =
+            lowbias32((cx as u32).wrapping_mul(73_856_093) ^ (cz as u32).wrapping_mul(83_492_791));
+        (h >> 8) as f32 * (1.0 / 16_777_216.0)
+    };
+    let (ix, iz) = (x.floor(), z.floor());
+    let (fx, fz) = (x - ix, z - iz);
+    let q = |f: f32| f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let (ux, uz) = (q(fx), q(fz));
+    let (ix, iz) = (ix as i32, iz as i32);
+    let a = key(ix, iz) + (key(ix + 1, iz) - key(ix, iz)) * ux;
+    let b = key(ix, iz + 1) + (key(ix + 1, iz + 1) - key(ix, iz + 1)) * ux;
+    a + (b - a) * uz
+}
+
+/// The turf, linear: the grass cards' own mean colour (the opaque texels of
+/// `clutter::CARD_ATLAS`), which the grass identity is drawn as where the
+/// blades have sunk (`foliage::GRASS_FADE_END_M`) and partly under them
+/// ([`TURF_NEAR`]).
+///
+/// **Why the ground does not simply carry this as its albedo.** The tufts
+/// average about twice the ground's value (this against
+/// `GROUND_ALBEDO[1]`), so every gap between them read as a hole and the
+/// meadow past the fade dropped to dark felt; the Rust frames' turf keeps
+/// its colour to the horizon (2026-10-21). `GROUND_ALBEDO` is the identity
+/// the fill's bounce and `ART.md` §3's bands are pinned to, so the turf is a
+/// distance blend over it instead.
+pub const TURF_ALBEDO: [f32; 3] = [0.106, 0.117, 0.023];
+/// How much of [`TURF_ALBEDO`] the grass identity carries inside the grass's
+/// fade, under the tufts. **(knob)**
+pub const TURF_NEAR: f32 = 0.6;
 
 /// The Verdigris' ash, linear: what sand and forest litter go to at full
 /// corruption. A green-black grey at the albedo floor's edge (`ART.md`: no
@@ -502,7 +575,9 @@ pub struct GroundSplatParams {
     pub pavement: Vec4,
     /// xyz = branch linear albedo; w = edge wear.
     pub road_dirt: Vec4,
-    /// x/y = distance fade start/end, derived from the terrain ring.
+    /// x/y = distance fade start/end, derived from the terrain ring; z/w =
+    /// the grass's fade start/end (`foliage::GRASS_FADE_*`), where the turf
+    /// takes over.
     pub road_lod: Vec4,
     /// xyz = paint reflectance; w = maximum worn coverage.
     pub paint_yellow: Vec4,
@@ -544,8 +619,10 @@ pub struct GroundSplatParams {
     /// xyz = [`DESERT_SAND_ALBEDO`], w = [`DRY_GRASS_MIX`]: what the sand and
     /// the grass go to as the ground dries (`ATTRIBUTE_ARID`).
     pub desert: Vec4,
-    /// xyz = [`DRY_GRASS_ALBEDO`]. w reserved and zero.
+    /// xyz = [`DRY_GRASS_ALBEDO`], w = [`DESERT_GRASS_M`].
     pub dry_grass: Vec4,
+    /// xyz = [`DESERT_ROCK_ALBEDO`]. w reserved and zero.
+    pub desert_rock: Vec4,
     /// Snow (snow v0): x how white the weather has laid the ground and y the
     /// height it lies from, both live (`terrain_mesh::Ring::set_snow`);
     /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
@@ -582,6 +659,8 @@ pub struct GroundSplatParams {
     pub blight_now: Vec4,
     /// Live: xy the ward's centre.
     pub blight_ward: Vec4,
+    /// xyz = [`TURF_ALBEDO`], w = [`TURF_NEAR`].
+    pub turf: Vec4,
     /// Live: each disc, (x, z, radius, depth), a hot spot's depth negative.
     /// Last, so the array closes the struct on both sides.
     pub blight_discs: [Vec4; BLIGHT_DISCS],
@@ -626,7 +705,12 @@ impl GroundSplatParams {
                 ROAD_DIRT_ALBEDO[2],
                 ROAD_EDGE_WEAR,
             ),
-            road_lod: Vec4::new(ROAD_FADE_START_M, ROAD_FADE_END_M, 0.0, 0.0),
+            road_lod: Vec4::new(
+                ROAD_FADE_START_M,
+                ROAD_FADE_END_M,
+                super::foliage::GRASS_FADE_START_M,
+                super::foliage::GRASS_FADE_END_M,
+            ),
             paint_yellow: Vec4::new(
                 ROAD_PAINT_YELLOW[0],
                 ROAD_PAINT_YELLOW[1],
@@ -681,6 +765,12 @@ impl GroundSplatParams {
                 DRY_GRASS_ALBEDO[0],
                 DRY_GRASS_ALBEDO[1],
                 DRY_GRASS_ALBEDO[2],
+                DESERT_GRASS_M,
+            ),
+            desert_rock: Vec4::new(
+                DESERT_ROCK_ALBEDO[0],
+                DESERT_ROCK_ALBEDO[1],
+                DESERT_ROCK_ALBEDO[2],
                 0.0,
             ),
             snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
@@ -747,6 +837,15 @@ impl GroundSplatParams {
             // material draws the heart alone.
             blight_now: Vec4::new(sim_core::blight::F0, 0.0, 0.0, 0.0),
             blight_ward: Vec4::ZERO,
+            turf: Vec4::new(
+                TURF_ALBEDO[0],
+                TURF_ALBEDO[1],
+                TURF_ALBEDO[2],
+                std::env::var("GATES_TUNE_TURF_NEAR")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(TURF_NEAR),
+            ), // TUNE
             blight_discs: [Vec4::ZERO; BLIGHT_DISCS],
         }
     }

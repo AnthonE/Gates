@@ -992,6 +992,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     let xlo = deploy_transform(
         SEED,
         hv(SEED),
+        &sim_core::collide::ColIndex::new(),
         (CX, CZ, 0, LOC_EDGE_XLO),
         ARCH_DOOR,
         false,
@@ -1015,6 +1016,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     let zlo = deploy_transform(
         SEED,
         hv(SEED),
+        &sim_core::collide::ColIndex::new(),
         (CX, CZ, 0, sim_core::build::LOC_EDGE_ZLO),
         ARCH_DOOR,
         false,
@@ -1031,7 +1033,15 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     );
 
     // A body deployable keeps the cell body: the split is the door's alone.
-    let body = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false, 0);
+    let body = deploy_transform(
+        SEED,
+        hv(SEED),
+        &sim_core::collide::ColIndex::new(),
+        (CX, CZ, 0, LOC_PLANE),
+        ARCH_BOX,
+        false,
+        0,
+    );
     assert!(
         (body.translation.x - (CX as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
         "a box left the cell centre"
@@ -1042,6 +1052,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     let open = deploy_transform(
         SEED,
         hv(SEED),
+        &sim_core::collide::ColIndex::new(),
         (CX, CZ, 0, LOC_EDGE_XLO),
         ARCH_DOOR,
         true,

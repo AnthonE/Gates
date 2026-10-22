@@ -86,9 +86,10 @@ use crate::craft::{inv_count, inv_take};
 use crate::footprint::{Pose, Rect};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
-    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
-    MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS,
-    MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOXES_PER_OWNER,
+    MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS,
+    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, MAX_TURRETS_PER_OWNER,
+    UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -160,18 +161,18 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// Rust's wooden barricade: a free-standing wall of sharpened logs that
 /// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
 pub const ARCH_BARRICADE: u8 = 16;
-/// A planter box (crops v0, `NOW.md` §5): a container that **grows**. Seeds
-/// in its beds become a crop over minutes on the ovens' own sweep
-/// (`oven.rs`), with no fuel and no switch — a planter is always growing,
-/// and what grows into what is rows in `content/cooking.toml`.
+/// A planter box (farming v2, `farm.rs`): six bed spots whose plants live in
+/// the farm store, and one box slot that is its water tank. A seed goes in
+/// the soil by hand (`Command::Plant`); what grows into what is the
+/// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or the crew
-/// of the claim it stands in.
+/// rounds a gun on top spends on anybody who is not its owner or on every
+/// crew its owner is on where it stands (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
-/// the island's coin. Only its owner and the crew of the claim it stands in
+/// the island's coin. Only its owner and its owner's crew where it stands
 /// move items in or out (`turret::spares`, the turret's rule).
 pub const ARCH_VENDING: u8 = 19;
 /// Rust's barbed wooden barricade: the log wall with wire wound through it,
@@ -184,6 +185,10 @@ pub const ARCH_FLOOR_SPIKES: u8 = 21;
 /// A rug: a flat cloth floor piece a body walks over. Its row's comfort
 /// (`deployables.toml` `comfort`, `World::furnish_comfort`) is what it does.
 pub const ARCH_RUG: u8 = 22;
+/// A water catcher (farming v2, `farm.rs`): a tarp funnel over a barrel. It
+/// banks rain under open sky, fills an empty waterskin in its one slot, and
+/// waters the planters and ground plants within its reach.
+pub const ARCH_CATCHER: u8 = 23;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -206,9 +211,9 @@ pub const ARCH_RUG: u8 = 22;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 23] = [
+pub const DEPLOY_VOL: [[f32; 3]; 24] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
-    [1.2, 1.0, 0.6],     // 1 hearth
+    [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
     [0.0, 0.0, 0.0],     // 3 fire — walk-over
     [1.56, 1.14, 1.02],  // 4 furnace
@@ -230,6 +235,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 23] = [
     [1.8, 1.4, 0.6],     // 20 barbed barricade — the barricade's wall
     [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
     [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
+    [0.9, 1.1, 0.9],     // 23 water catcher — a funnel over a barrel
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -326,6 +332,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_RECYCLER
         || arch == ARCH_RESEARCH
         || arch == ARCH_PLANTER
+        || arch == ARCH_CATCHER
         || arch == ARCH_TURRET
         || arch == ARCH_VENDING
 }
@@ -513,7 +520,9 @@ pub const REFUSE_D_DOOR: u32 = 11;
 /// full-rights lock op from a guest or a stranger (lock v1). One reason
 /// for every half, because all of them are the same sentence — *this lock
 /// does not know you* — and a client that could tell them apart would
-/// learn something about the lock it was refused by.
+/// learn something about the lock it was refused by. Also a stranger's
+/// lift of a bag still cooling down, for the same reason
+/// ([`REFUSE_D_BAG_SPENT`] is its owner's).
 pub const REFUSE_D_OWNER: u32 = 12;
 /// A use press on an oven with nothing in it that burns (oven v0,
 /// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
@@ -542,8 +551,37 @@ pub const REFUSE_D_AUTH_FULL: u32 = 18;
 /// inventory that could not hold them would be the worst kind of loss —
 /// silent, and caused by the player's own verb.
 pub const REFUSE_D_NOT_EMPTY: u32 = 19;
+/// Farming v2 (`farm.rs`): the stack named is not a seed this island grows,
+/// or the hand holds no full waterskin for a water.
+pub const REFUSE_D_PLANT_ITEM: u32 = 20;
+/// The bed spot is past the planter's six, or already holds a plant.
+pub const REFUSE_D_PLANT_SPOT: u32 = 21;
+/// Nothing grows here: open ground the seed cannot take — the sea's edge,
+/// a road, an authored site, a slope, a biome that is not soft, a roof or
+/// something built over it (`farm::ground_ok`).
+pub const REFUSE_D_PLANT_SOIL: u32 = 22;
+/// The island's plant store is full (`limits::MAX_PLANTS`).
+pub const REFUSE_D_PLANTS_FULL: u32 = 23;
+/// The plant is not at the stage the verb needs (a pick before it is ripe).
+pub const REFUSE_D_PLANT_STAGE: u32 = 24;
+/// The planter's tank has no room for a skin.
+pub const REFUSE_D_PLANT_WATER: u32 = 25;
+/// Not from the water (water pass): a swimmer puts nothing down
+/// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
+pub const REFUSE_D_SWIMMING: u32 = 26;
+/// One hand's share of a shard-wide store is placed already: its
+/// containers (`limits::MAX_BOXES_PER_OWNER`) or its turrets
+/// (`limits::MAX_TURRETS_PER_OWNER`). Its own reason rather than
+/// `REFUSE_D_FULL`: the world is not full, this hand's share is, and the
+/// fix is to take one of yours up.
+pub const REFUSE_D_OWN_CAP: u32 = 27;
+/// A pickup named a sleeping bag still cooling down from a respawn
+/// (`Deploys::bag_ready`): lifted and set back down it would be born ready.
+/// Told to the bag's owner only; any other hand hears `REFUSE_D_OWNER`, so
+/// the refusal does not tell a stranger somebody just woke there.
+pub const REFUSE_D_BAG_SPENT: u32 = 28;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_NOT_EMPTY;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_BAG_SPENT;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -923,11 +961,6 @@ pub struct DeployRec {
     /// deliberately does not maintain this and why it is absent from
     /// `state_hash`. Read it on a client, never on a shard.
     pub dmg: u8,
-    /// A planter's beds as they are drawn (crops v1, wire v100): two bits a
-    /// bed, `oven::planter_stages`. Wire-only and filled at encode, `dmg`'s
-    /// posture — the sim keeps it on the planter's `OvenState::bank` and
-    /// announces a change with `EV_GROW`. Zero for everything else.
-    pub grow: u8,
     /// The lock bolted on is a key lock, not a code lock (wire v120), so
     /// the client draws a padlock and offers no keypad. Wire-only and
     /// filled at encode from the lock store, `dmg`'s posture: not hashed,
@@ -1636,6 +1669,15 @@ impl Deploys {
         self.boxes.entries[i].items[s] = stack;
     }
 
+    /// Set box `i`'s water tank, a planter's or a catcher's (`farm.rs`).
+    /// Total like [`Self::set_box_slot`], and it writes nothing into any
+    /// other container, whose tank the save refuses.
+    pub fn set_box_water(&mut self, i: usize, water: u32) {
+        if i < self.boxes.len && crate::oven::OvenState::arch_has_tank(self.boxes.ovens[i].arch) {
+            self.boxes.ovens[i].water = water;
+        }
+    }
+
     /// Planar distance from a box to a player, against [`STATION_REACH_M`].
     /// The storey and the line are `reach.rs`'s, asked after this.
     pub fn box_in_reach(&self, i: usize, p: &Player) -> bool {
@@ -2019,11 +2061,15 @@ pub fn bag_wake_body(
         x - rec.cx as f32 * BUILD_CELL_M,
         z - rec.cz as f32 * BUILD_CELL_M,
     );
-    if !on_plane {
+    // Off the grid's planes, the slab the grid cannot name under it.
+    let y = if on_plane {
+        crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
+            + crate::build::level_y(rec.level)
+    } else if let Some(y) = cols.hulls().posed_floor(rec.level, x, z) {
+        y
+    } else {
         return crate::movement::Body::at(seed, haven, x, z);
-    }
-    let y = crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
-        + crate::build::level_y(rec.level);
+    };
     crate::movement::Body {
         qx: crate::movement::quant_xz(x),
         qy: crate::movement::quant_y(y),
@@ -2127,7 +2173,7 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// ([`BODY_LOCS`]): the player aimed at a spot, not at a slot number.
 pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => is_edge_loc(loc),
         // A lock goes where its target lives: a door on a doorway's edge,
         // a box or a hearth in its body slot (locks on boxes, `DOORS.md`
         // §9.8). The support arm below still requires a lockable
@@ -2141,17 +2187,55 @@ pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
 
 /// The slots a cell's body deployables are filed under, in the order they
 /// are handed out: every four-bit `loc` but the two straight edges, which a
-/// door or a window in the cell's doorway owns. Slot 0 is `LOC_PLANE`, so
+/// door or a window in the cell's doorway owns, and `LOC_NONE`, an insert
+/// in an edge the grid cannot name (freeform W4). Slot 0 is `LOC_PLANE`, so
 /// the first deployable in a cell has exactly the address it had before
 /// free placement. In the deploy store a `loc` is a name and nothing more —
 /// slot 1 is not a riser and slot 4 is not a triangle.
-pub const BODY_LOCS: [u8; 14] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+pub const BODY_LOCS: [u8; 13] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15];
 
 /// Whether a deploy-store `loc` is a doorway edge — the door's, a window
-/// insert's — rather than a body slot.
+/// insert's — rather than a body slot: a grid edge, or `LOC_NONE`, an edge
+/// the grid cannot name, whose address then spells its id exactly as the
+/// piece's does (`build::spell_id`, freeform W4).
 #[inline]
 pub fn is_edge_loc(loc: u8) -> bool {
-    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO
+    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == crate::build::LOC_NONE
+}
+
+/// Where an insert in an edge the grid cannot name hangs (freeform W4): the
+/// edge's collision row, read off the index both ends keep — its middle
+/// (world XZ), its floor, its run and its anticlockwise normal. `None` for
+/// a grid address, or an edge the index does not hold.
+pub fn posed_insert(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Option<InsertAt> {
+    let id = crate::build::spelled_id(cx, cz, level, loc)?;
+    let h = cols.hulls().find(crate::build::hull_key(id))?;
+    let half = crate::build::BUILD_CELL_M * 0.5;
+    Some(InsertAt {
+        x: h.ox + h.ux * half,
+        z: h.oz + h.uz * half,
+        floor_y: h.floor_y,
+        run: (h.ux, h.uz),
+        normal: (h.vx, h.vz),
+    })
+}
+
+/// [`posed_insert`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsertAt {
+    pub x: f32,
+    pub z: f32,
+    pub floor_y: f32,
+    pub run: (f32, f32),
+    pub normal: (f32, f32),
+}
+
+/// An edge insert's middle: the grid's anchor, or a posed edge's.
+pub fn edge_mid(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> (f32, f32) {
+    match posed_insert(cols, cx, cz, level, loc) {
+        Some(at) => (at.x, at.z),
+        None => crate::build::anchor(cx, cz, loc),
+    }
 }
 
 impl DeployRec {
@@ -2163,13 +2247,26 @@ impl DeployRec {
         crate::footprint::centre(self.cx, self.cz, self.pose)
     }
 
+    /// Where it is for a claim, a reach or a bill: a door or an insert in
+    /// an edge the grid cannot name at that edge's middle — its address
+    /// spells the edge's id, not a cell (freeform W4) — and anything else
+    /// where [`Self::xz`] has always put it.
+    #[inline]
+    pub fn place_xz(&self, cols: &ColIndex) -> (f32, f32) {
+        if self.loc == crate::build::LOC_NONE {
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
+        } else {
+            self.xz()
+        }
+    }
+
     /// Where a hand reaches it: a door, a garage door or a shutter (an edge
     /// address) at its doorway's middle, where it hangs (`build::anchor`);
     /// anything else where it stands ([`Self::xz`]).
     #[inline]
-    pub fn hand_xz(&self) -> (f32, f32) {
+    pub fn hand_xz(&self, cols: &ColIndex) -> (f32, f32) {
         if is_edge_loc(self.loc) {
-            crate::build::anchor(self.cx, self.cz, self.loc)
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
         } else {
             self.xz()
         }
@@ -2188,12 +2285,8 @@ impl DeployRec {
 /// for anything placed freely. The deploy store's twin of `anchor`, which
 /// reads a body slot's `loc` as a piece location and would answer a corner
 /// the deployable is nowhere near.
-pub fn rec_anchor(rec: &DeployRec) -> (f32, f32) {
-    if is_edge_loc(rec.loc) {
-        crate::build::anchor(rec.cx, rec.cz, rec.loc)
-    } else {
-        rec.xz()
-    }
+pub fn rec_anchor(cols: &ColIndex, rec: &DeployRec) -> (f32, f32) {
+    rec.hand_xz(cols)
 }
 
 /// The first body slot of `(cx, cz, level)` no record holds, or `None` when
@@ -2249,7 +2342,9 @@ pub fn ground_base(seed: u64, haven: &terrain::Haven, rect: &Rect, solid: bool) 
 /// foundation, and a plane's removal takes what stood on it).
 ///
 /// The height is the column's floor (`build::column_floor_y` against its
-/// stored plate) plus the storey — `collide::solid_bottom`'s rule exactly.
+/// stored plate) plus the storey — or, off the grid's planes, the floor of
+/// the slab the grid cannot name under the centre (`Hulls::posed_floor`).
+/// `collide::solid_bottom` is this function.
 #[allow(clippy::too_many_arguments)]
 pub fn built_floor(
     seed: u64,
@@ -2261,14 +2356,19 @@ pub fn built_floor(
     x: f32,
     z: f32,
 ) -> Option<f32> {
-    if level == 0
-        && !cols.get(cx, cz).plane_covers(
-            0,
-            x - cx as f32 * BUILD_CELL_M,
-            z - cz as f32 * BUILD_CELL_M,
-        )
-    {
-        return None;
+    if !cols.get(cx, cz).plane_covers(
+        level,
+        x - cx as f32 * BUILD_CELL_M,
+        z - cz as f32 * BUILD_CELL_M,
+    ) {
+        // A slab the grid cannot name — a triangle, a floor of a building
+        // turned off the grid — carries its own floor (freeform W4).
+        if let Some(y) = cols.hulls().posed_floor(level, x, z) {
+            return Some(y);
+        }
+        if level == 0 {
+            return None;
+        }
     }
     Some(crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level))
 }
@@ -2287,6 +2387,9 @@ pub fn body_base_y(
     arch: u8,
 ) -> f32 {
     if is_edge_loc(rec.loc) {
+        if let Some(at) = posed_insert(cols, rec.cx, rec.cz, rec.level, rec.loc) {
+            return at.floor_y;
+        }
         return crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
             + crate::build::level_y(rec.level);
     }
@@ -2298,6 +2401,22 @@ pub fn body_base_y(
         Some(r) => ground_base(seed, haven, &r, solid_vol(arch).is_some()),
         None => terrain::ground(seed, haven, x, z),
     }
+}
+
+/// [`body_base_y`] for the deployable box `b` belongs to: the box carries
+/// its record's address and pose, which is all that reads. For a caller
+/// that holds the box store mutably and cannot look the record up (the
+/// farm's tank, `farm::step`).
+pub fn box_base_y(seed: u64, haven: &terrain::Haven, cols: &ColIndex, b: &BoxRec, arch: u8) -> f32 {
+    let rec = DeployRec {
+        cx: b.cx,
+        cz: b.cz,
+        level: b.level,
+        loc: b.loc,
+        pose: b.pose,
+        ..DeployRec::default()
+    };
+    body_base_y(seed, haven, cols, &rec, arch)
 }
 
 /// The collision index's row for a blocking deployable, or `None` for one
@@ -2344,21 +2463,24 @@ fn planes_carry(
         }
         let (i, j) = (i as u16, j as u16);
         let m = cols.get(i, j);
-        m.plane_covers(
+        let grid = m.plane_covers(
             level,
             x - i as f32 * BUILD_CELL_M,
             z - j as f32 * BUILD_CELL_M,
-        ) && crate::collide::col_base_y(seed, haven, cols, i, j) + crate::build::level_y(level)
-            == floor
+        ) && crate::collide::col_base_y(seed, haven, cols, i, j)
+            + crate::build::level_y(level)
+            == floor;
+        grid || cols.hulls().posed_floor(level, x, z) == Some(floor)
     })
 }
 
 /// Whether every sample of the rectangle is on a plane at `level` —
 /// [`planes_carry`] without the heights, which is all a removal can change
 /// (the floors that remain do not move). `gone` counts one piece that has
-/// just left the index — `(cx, cz, loc)`, a full plane or a triangle half —
-/// as still there, which is how the removal cascade asks "was it carried".
-fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16, u8)>) -> bool {
+/// just left the index as still there, which is how the removal cascade
+/// asks "was it carried": a grid piece by `(cx, cz, loc)`, a full plane or
+/// a triangle half, or a slab the grid cannot name by the row it had.
+fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Gone) -> bool {
     rect.samples().iter().all(|&(x, z)| {
         let (i, j) = (
             crate::build::build_cell_of(x),
@@ -2369,16 +2491,95 @@ fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16,
         }
         let (i, j) = (i as u16, j as u16);
         let (dx, dz) = (x - i as f32 * BUILD_CELL_M, z - j as f32 * BUILD_CELL_M);
-        let was = gone.is_some_and(|(gx, gz, loc)| {
-            gx == i
-                && gz == j
-                && (loc == LOC_PLANE
-                    || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
-                        .contains(&loc)
-                        && crate::collide::tri_half_has(loc, dx, dz)))
-        });
+        let was = match gone {
+            Gone::Grid(gx, gz, loc) => {
+                gx == i
+                    && gz == j
+                    && (loc == LOC_PLANE
+                        || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
+                            .contains(&loc)
+                            && crate::collide::tri_half_has(loc, dx, dz)))
+            }
+            Gone::Posed(h) => h.level == level && h.slab_holds(x, z),
+            Gone::Nothing => false,
+        };
         was || cols.get(i, j).plane_covers(level, dx, dz)
+            || cols.hulls().posed_floor(level, x, z).is_some()
     })
+}
+
+/// The piece [`planes_cover`] counts as still standing.
+#[derive(Clone, Copy)]
+enum Gone {
+    Nothing,
+    Grid(u16, u16, u8),
+    Posed(crate::hull::Hull),
+}
+
+/// Whether a convex footprint (corners in order round it) and a rectangle
+/// share area: the separating-axis test over both shapes' edge normals,
+/// touching apart as [`Rect::overlaps`] reads it.
+pub(crate) fn foot_overlaps(pts: &[(f32, f32)], r: &Rect) -> bool {
+    let n = pts.len();
+    let mut axes = [
+        (r.c, -r.s),
+        (r.s, r.c),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ];
+    for k in 0..n {
+        let (ax, az) = pts[k];
+        let (bx, bz) = pts[(k + 1) % n];
+        let (ex, ez) = (bx - ax, bz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        if len > 1e-6 {
+            axes[2 + k] = (-ez / len, ex / len);
+        }
+    }
+    for &(nx, nz) in &axes[..2 + n] {
+        if nx == 0.0 && nz == 0.0 {
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &(x, z) in pts {
+            let d = x * nx + z * nz;
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+        let mid = r.x * nx + r.z * nz;
+        let half = r.hw * crate::fmath::fabs(r.c * nx - r.s * nz)
+            + r.hd * crate::fmath::fabs(r.s * nx + r.c * nz);
+        if hi <= mid - half + crate::footprint::TOUCH_M
+            || lo >= mid + half - crate::footprint::TOUCH_M
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a row's footprint shares area with the rectangle — a flight on
+/// a triangle, whose footprint its row cannot say, anywhere within a side
+/// of its first corner.
+fn hull_crosses(h: &crate::hull::Hull, rect: &Rect) -> bool {
+    let (pts, n) = h.footprint();
+    if n == 0 {
+        return rect.dist2(h.ox, h.oz) < BUILD_CELL_M * BUILD_CELL_M;
+    }
+    foot_overlaps(&pts[..n], rect)
+}
+
+/// Every row the grid cannot name (freeform W4) filed near the rectangle,
+/// until `f` answers true.
+fn posed_near(cols: &ColIndex, rect: &Rect, mut f: impl FnMut(&crate::hull::Hull) -> bool) -> bool {
+    let (ex, ez) = rect.half_aabb();
+    let (ex, ez) = (ex + EDGE_HALF_M, ez + EDGE_HALF_M);
+    cols.hulls()
+        .near(rect.x - ex, rect.z - ez, rect.x + ex, rect.z + ez, |h| {
+            h.hit.loc == crate::build::LOC_NONE && f(h)
+        })
 }
 
 /// Half the thickness a wall, a doorway, a window or a frame occupies either
@@ -2442,7 +2643,11 @@ fn edges_cross(cols: &ColIndex, rect: &Rect, level: u8) -> bool {
             }
         }
     }
-    false
+    // And the edges the grid cannot name: a triangle's sides, the walls of
+    // a building turned off the grid.
+    posed_near(cols, rect, |h| {
+        h.kind == crate::hull::HULL_EDGE && h.level == level && hull_crosses(h, rect)
+    })
 }
 
 /// Whether the rectangle overlaps a cell holding a stair-class riser at
@@ -2472,17 +2677,35 @@ fn cell_bodies_cross(cols: &ColIndex, rect: &Rect, level: u8, ground: bool) -> b
             }
         }
     }
-    false
+    // The bodies the grid cannot name, by their own footprints: a flight of
+    // the storey, and on bare ground anything standing on the ground.
+    posed_near(cols, rect, |h| {
+        let foundation = ground && h.level == 0 && h.is_body();
+        let riser = h.kind == crate::hull::HULL_RISER && h.level == level;
+        (foundation || riser) && hull_crosses(h, rect)
+    })
 }
 
-/// Whether the rectangle overlaps a placed body deployable at `level`
-/// (`skip` is a record's own address, for a re-check of one that stands).
-/// A row the table does not know is not read as anything: a client mirror
-/// can hold a record whose def has not dripped in, and the server's table
-/// is whole.
-fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, rect: &Rect, level: u8) -> bool {
+/// Whether two deployables may share floor: exactly one of them is a rug. A
+/// rug is two centimetres of cloth a body walks over, so a box, a bed or a
+/// bench stands on it; two rugs would draw through each other, and their
+/// comfort is one rug's anyway (`World::furnish_comfort`).
+fn layers(a: u8, b: u8) -> bool {
+    (a == ARCH_RUG) != (b == ARCH_RUG)
+}
+
+/// Whether the rectangle of an `arch` deployable overlaps a placed body
+/// deployable at `level`. A row the table does not know is not read as
+/// anything: a client mirror can hold a record whose def has not dripped in,
+/// and the server's table is whole.
+///
+/// A rug lies under everything else ([`layers`]): it crosses only another rug.
+fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, arch: u8, rect: &Rect, level: u8) -> bool {
     recs.iter().any(|d| {
         if d.level != level || is_edge_loc(d.loc) || d.row as u16 >= dc.def_count {
+            return false;
+        }
+        if layers(arch, dc.defs[d.row as usize].arch) {
             return false;
         }
         let (x, z) = d.xz();
@@ -2509,9 +2732,10 @@ fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, rect: &Rect, level: u8)
 ///   and the ground under its rectangle falls away no more than the tilt
 ///   allows. Refusals: `REFUSE_D_SUPPORT`, or `REFUSE_D_TERRAIN` for a
 ///   ground-class deployable at level 0.
-/// - **Clearance** (`REFUSE_D_SPOT`): no other body deployable's rectangle,
-///   no edge piece of its storey, no riser in a cell it covers, and — on
-///   bare ground — no foundation's cell.
+/// - **Clearance** (`REFUSE_D_SPOT`): no other body deployable's rectangle
+///   (a rug and anything but a rug share floor), no edge piece of its
+///   storey, no riser in a cell it covers, and — on bare ground — no
+///   foundation's cell.
 #[allow(clippy::too_many_arguments)]
 pub fn body_site(
     seed: u64,
@@ -2537,15 +2761,23 @@ pub fn body_site(
         return Err(REFUSE_D_SPOT);
     };
     let m = cols.get(cx, cz);
-    let on_plane = m.plane_covers(
+    let on_grid = m.plane_covers(
         level,
         rect.x - cx as f32 * BUILD_CELL_M,
         rect.z - cz as f32 * BUILD_CELL_M,
     );
+    // Off the grid's planes, a slab the grid cannot name may be under it.
+    let posed = if on_grid {
+        None
+    } else {
+        cols.hulls().posed_floor(level, rect.x, rect.z)
+    };
+    let on_plane = on_grid || posed.is_some();
     let solid = solid_vol(arch).is_some();
     let site = if on_plane && placement != PLACE_GROUND {
-        let floor =
-            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level);
+        let floor = posed.unwrap_or_else(|| {
+            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level)
+        });
         if !planes_carry(seed, haven, cols, &rect, level, floor) {
             return Err(REFUSE_D_SUPPORT);
         }
@@ -2555,7 +2787,7 @@ pub fn body_site(
             base_y: floor,
         }
     } else if level == 0 && !on_plane && matches!(placement, PLACE_GROUND | PLACE_ANY) {
-        if !crate::build::foundation_terrain_ok(seed, haven, rect.x, rect.z) {
+        if !crate::build::deploy_terrain_ok(seed, haven, rect.x, rect.z) {
             return Err(REFUSE_D_TERRAIN);
         }
         let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -2582,7 +2814,7 @@ pub fn body_site(
     } else {
         return Err(REFUSE_D_SUPPORT);
     };
-    if deploys_cross(recs, dc, &rect, level)
+    if deploys_cross(recs, dc, arch, &rect, level)
         || edges_cross(cols, &rect, level)
         || cell_bodies_cross(cols, &rect, level, site.ground)
     {
@@ -2672,6 +2904,61 @@ pub fn piece_crosses_deploys(
     })
 }
 
+/// [`piece_crosses_deploys`] for a lattice site (`build::lattice_site`,
+/// `build::free_site`): a site the grid names asks it by its grid address;
+/// one the grid cannot name — a triangle, a building turned off the grid —
+/// by the footprint its row would have.
+pub fn site_crosses_deploys(
+    pieces: &Pieces,
+    recs: &[DeployRec],
+    dc: &DeployContent,
+    shape: u8,
+    site: &crate::build::Site,
+) -> bool {
+    let level = site.addr.level;
+    if let Some((cx, cz, loc)) = site.grid {
+        return piece_crosses_deploys(pieces.cols(), recs, dc, shape, cx, cz, level, loc);
+    }
+    let Some(frame) = site.frame(pieces) else {
+        return false;
+    };
+    let hit = crate::collide::PieceHit {
+        cx: 0,
+        cz: 0,
+        level,
+        loc: crate::build::LOC_NONE,
+    };
+    let h = crate::hull::posed_hull(1, hit, frame, &site.addr, shape);
+    // A foundation meets what stands on bare ground, a flight or an edge
+    // what stands on its storey; floors and roofs land above it all.
+    let ground_only = crate::support::grounded(shape);
+    if !(ground_only || h.kind == crate::hull::HULL_RISER || h.kind == crate::hull::HULL_EDGE) {
+        return false;
+    }
+    let cols = pieces.cols();
+    recs.iter().any(|d| {
+        if d.level != level || is_edge_loc(d.loc) || d.row as u16 >= dc.def_count {
+            return false;
+        }
+        let Some(r) = d.rect(dc.defs[d.row as usize].arch) else {
+            return false;
+        };
+        if ground_only {
+            // Only what stands on bare ground, as the grid's rule reads it.
+            let (x, z) = d.xz();
+            let c = BUILD_CELL_M;
+            if cols
+                .get(d.cx, d.cz)
+                .plane_covers(0, x - d.cx as f32 * c, z - d.cz as f32 * c)
+                || cols.hulls().posed_floor(0, x, z).is_some()
+            {
+                return false;
+            }
+        }
+        hull_crosses(&h, &r)
+    })
+}
+
 /// The owner of a deployable no player placed: the town's public stations.
 /// Player ids are `(generation << 8) | slot` with generation ≥ 1, so 0 is
 /// never a player. It cannot be picked up, damaged or taxed by upkeep.
@@ -2721,7 +3008,6 @@ pub fn stand_authored(
         has_lock: false,
         locked: false,
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -2778,6 +3064,10 @@ pub fn place_deploy(
     pose: Pose,
     events: &mut EventQueue,
 ) {
+    if crate::movement::swimming(&p.body) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SWIMMING, 0);
+        return;
+    }
     if row >= dc.def_count {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
         return;
@@ -2822,6 +3112,9 @@ pub fn place_deploy(
     // it always was.
     let (ax, az) = match deploys.find(cx, cz, level, loc) {
         Some(host) if def.placement == PLACE_DOOR && !is_edge_loc(loc) => host.xz(),
+        // An insert in an edge the grid cannot name is reached at that
+        // edge's middle; a grid insert at its cell's centre, as ever.
+        _ if loc == crate::build::LOC_NONE => edge_mid(pieces.cols(), cx, cz, level, loc),
         _ => crate::footprint::centre(cx, cz, pose),
     };
     if crate::terrain::build_reserved(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
@@ -2950,6 +3243,43 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
+    // Each hand's share of that store is capped too
+    // (`MAX_BOXES_PER_OWNER`), or one player's cheap boxes kept every fire
+    // and furnace on the shard from being placed.
+    if holds_items(def.arch)
+        && deploys.boxes.entries[..deploys.boxes.len]
+            .iter()
+            .filter(|b| b.owner == p.id)
+            .count()
+            >= MAX_BOXES_PER_OWNER
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
+        return;
+    }
+    // The turret table is shard-wide (`MAX_TURRETS`), so one hand may hold
+    // only its share of it.
+    if def.arch == ARCH_TURRET
+        && deploys.entries[..deploys.len]
+            .iter()
+            .filter(|d| d.owner == p.id && dc.defs[d.row as usize].arch == ARCH_TURRET)
+            .count()
+            >= MAX_TURRETS_PER_OWNER
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
+        return;
+    }
+    // The catchers' own cap: each one's watering scan is bounded by it.
+    if def.arch == ARCH_CATCHER
+        && deploys
+            .oven_states()
+            .iter()
+            .filter(|o| o.arch == ARCH_CATCHER)
+            .count()
+            >= crate::limits::MAX_CATCHERS
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
     if inv_count(&p.inv, def.item) < 1 {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
         return;
@@ -2973,7 +3303,6 @@ pub fn place_deploy(
         locked: false,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -3151,6 +3480,7 @@ pub fn take_stock(
 #[allow(clippy::too_many_arguments)]
 fn door_in_reach(
     dc: &DeployContent,
+    cols: &ColIndex,
     deploys: &Deploys,
     p: &Player,
     cx: u16,
@@ -3172,7 +3502,7 @@ fn door_in_reach(
     // behind it; a locked box to where it stands. The storey and the line
     // are `reach.rs`'s, asked by `World`, which holds the collision index.
     let rec = &deploys.entries[i];
-    let (ax, az) = rec.hand_xz();
+    let (ax, az) = rec.hand_xz(cols);
     let reach = if is_edge_loc(rec.loc) {
         crate::backpack::LOOT_REACH_M
     } else {
@@ -3250,7 +3580,18 @@ pub fn use_door(
     loc: u8,
     events: &mut EventQueue,
 ) -> Option<u32> {
-    let i = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events)?;
+    let i = door_in_reach(
+        dc,
+        pieces.cols(),
+        deploys,
+        p,
+        cx,
+        cz,
+        level,
+        loc,
+        arch_is_door,
+        events,
+    )?;
     if !deploys.lock_passes(cx, cz, level, loc, p.id)
         && !key_crew_passes(pieces, deploys, cx, cz, level, loc, p.id)
     {
@@ -3281,9 +3622,12 @@ pub fn use_door(
     Some(deploys.entries[i].owner)
 }
 
-/// A key lock also opens for the base's hearth crew: anyone the building
-/// is authorized to (inside a hearth's claim and on every crew there).
-/// Rust shares a key lock by crafting keys; the crew is ours.
+/// A key lock also opens for its owner's hearth crew: anyone on every crew
+/// the lock's owner is on, of the hearths whose claim covers the door
+/// (`claim::shares_crew`; `crew_op` on leave and clear). Rust shares a key
+/// lock by crafting keys; the crew is ours. Not "on every crew here": a
+/// raider's own hearth on a foundation beside a hearthless base claims its
+/// doors too, and that rule let the raider through every key lock in it.
 fn key_crew_passes(
     pieces: &Pieces,
     deploys: &Deploys,
@@ -3293,19 +3637,19 @@ fn key_crew_passes(
     loc: u8,
     id: u32,
 ) -> bool {
-    if !deploys
+    let Some(owner) = deploys
         .locks
         .find(cx, cz, level, loc)
-        .is_some_and(|l| l.is_key())
-    {
+        .filter(|l| l.is_key())
+        .map(|l| l.owner)
+    else {
         return false;
-    }
+    };
     let Some(d) = deploys.find(cx, cz, level, loc) else {
         return false;
     };
-    let (x, z) = d.xz();
-    crate::claim::any_claim(pieces, deploys, x, z)
-        && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
+    let (x, z) = d.place_xz(pieces.cols());
+    crate::claim::shares_crew(pieces, deploys, x, z, owner, id)
 }
 
 /// Apply one lock request (`Command::Access`): run `op` against the code
@@ -3325,6 +3669,7 @@ fn key_crew_passes(
 pub fn lock_op(
     dc: &DeployContent,
     gc: &GatherContent,
+    cols: &ColIndex,
     deploys: &mut Deploys,
     p: &mut Player,
     cx: u16,
@@ -3337,7 +3682,7 @@ pub fn lock_op(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) -> Option<u32> {
-    let di = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events)?;
+    let di = door_in_reach(dc, cols, deploys, p, cx, cz, level, loc, lockable, events)?;
     let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NO_LOCK, 0);
         return None;
@@ -3445,6 +3790,42 @@ pub fn lock_op(
     None
 }
 
+/// Whether `p`'s hand may lift the deployable at the address, before
+/// anything about what is in it: one stands there, it is no world fixture,
+/// it is within build reach, in no one else's claim, and its lock passes
+/// the hand. Its index, or the `REFUSE_D_*` [`pick_up`] would say. Asked
+/// first by every pick-up, so an empty-or-not rule never answers a hand
+/// that could not have lifted it anyway.
+pub fn pick_up_hand(
+    pieces: &Pieces,
+    deploys: &Deploys,
+    p: &Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> Result<usize, u32> {
+    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
+        return Err(REFUSE_D_SPOT);
+    };
+    if deploys.entries[i].owner == WORLD_OWNER {
+        return Err(REFUSE_D_OWNER);
+    }
+    let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        return Err(REFUSE_D_REACH);
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        return Err(REFUSE_D_CLAIM);
+    }
+    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
+        return Err(REFUSE_D_OWNER);
+    }
+    Ok(i)
+}
+
 /// Take a deployable back up and return its item — **pickup v1**
 /// (`reference/BUILDING.md` §7 verb 11, and `DOORS.md` §7 verb 9, which
 /// are the same verb seen from two documents).
@@ -3455,7 +3836,8 @@ pub fn lock_op(
 /// asymmetry is right: a box is furniture and a wall is a base. The
 /// consequence worth stating is the one `DOORS.md` §5 already states —
 /// on unclaimed ground **anyone in reach may take it**, which is what
-/// makes a hearth worth placing.
+/// makes a hearth worth placing. Except a vending machine, a turret and a
+/// sleeping bag, which come up only for the hands they answer to.
 ///
 /// A deployable with a lock on it is the one extra check: the lock is the
 /// thing saying whose door — or whose box — this is, so a hand it does
@@ -3480,6 +3862,7 @@ pub fn pick_up(
     pieces: &mut Pieces,
     deploys: &mut Deploys,
     p: &mut Player,
+    tick: u64,
     cx: u16,
     cz: u16,
     level: u8,
@@ -3487,36 +3870,39 @@ pub fn pick_up(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) {
-    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
-        return;
+    let i = match pick_up_hand(pieces, deploys, p, cx, cz, level, loc) {
+        Ok(i) => i,
+        Err(why) => {
+            events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
+            return;
+        }
     };
-    if deploys.entries[i].owner == WORLD_OWNER {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
-    let (ax, az) = deploys.entries[i].xz();
-    let (px, pz) = player_xz(p);
-    let (dx, dz) = (ax - px, az - pz);
-    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
-        return;
-    }
-    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
-        return;
-    }
-    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
+    let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
-    // A vending machine comes up only for the hands it answers to: on open
-    // ground anyone may lift a box, but a shop's stock is not anyone's.
-    if def.arch == ARCH_VENDING && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
+    // A vending machine, a turret and a bag somebody wakes in come up only
+    // for the hands they answer to (`turret::spares`: the owner, or the crew
+    // of the claim it stands in): on open ground anyone may lift a box, but
+    // a shop's stock is not anyone's, a gun is not disarmed by walking off
+    // with it, and a stranger's respawn is not pocketed.
+    if matches!(def.arch, ARCH_VENDING | ARCH_TURRET | ARCH_BAG)
+        && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    // A spent bag stays down until it is ready again, for every hand:
+    // lifted and set back down it would be born ready (`Deploys::insert`),
+    // and the cooldown would last one pickup — a friend's included, handed
+    // back. Why is the owner's to hear; anyone else hears the lock's
+    // sentence rather than that somebody just woke here.
+    if def.arch == ARCH_BAG && deploys.bag_ready[i] > tick {
+        let why = if rec.owner == p.id {
+            REFUSE_D_BAG_SPENT
+        } else {
+            REFUSE_D_OWNER
+        };
+        events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
         return;
     }
     // A container comes up empty or not at all.
@@ -3608,6 +3994,14 @@ pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
 /// base — which is the shape of betrayal this record exists to be able to
 /// count, and the shape whose whole meaning is whether the owner was
 /// there.
+///
+/// **A hand's turrets, vending machine and key locks answer to the crews
+/// that hand is on** (`turret::spares`, `key_crew_passes`): every crew
+/// here its owner is on. So a leave or a clear withdraws them from that
+/// crew — the leaver's from the crew they left, every other member's from
+/// the clearer — and a rejoin gives them back. That is Rust's model, where
+/// each turret and lock carries its own authorisation, and it is what keeps
+/// a clear from handing the clearer every other member's guns.
 #[allow(clippy::too_many_arguments)]
 pub fn crew_op(
     deploys: &mut Deploys,
@@ -3751,19 +4145,30 @@ pub(crate) fn drop_piece(
     events: &mut EventQueue,
 ) {
     let rec = pieces.entries()[i];
+    // A slab the grid cannot name is read by its row, which leaves the
+    // index with it.
+    let posed = pieces
+        .cols()
+        .hulls()
+        .find(crate::build::hull_key(rec.id))
+        .copied()
+        .filter(|h| h.hit.loc == crate::build::LOC_NONE);
     pieces.remove_at(i, shape);
-    events.push(
-        EV_PIECE_REMOVED,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-        0,
-    );
+    let (a, b) = rec.ev_addr();
+    events.push(EV_PIECE_REMOVED, a, b | rec.row as u32, 0);
     // An edge piece takes the insert hung in it — the door in the doorway,
-    // the bars in the window — which shares its address exactly.
-    if is_edge_loc(rec.loc) {
-        if let Some(di) = deploys.entries[..deploys.len].iter().position(|d| {
-            d.cx == rec.cx && d.cz == rec.cz && d.level == rec.level && d.loc == rec.loc
-        }) {
+    // the bars in the window — which shares its address exactly (a posed
+    // edge's spelled id, freeform W4).
+    let at = rec.target();
+    let edge = match posed {
+        Some(h) => h.kind == crate::hull::HULL_EDGE,
+        None => is_edge_loc(at.3),
+    };
+    if edge {
+        if let Some(di) = deploys.entries[..deploys.len]
+            .iter()
+            .position(|d| (d.cx, d.cz, d.level, d.loc) == at)
+        {
             drop_deploy(dc, pieces, deploys, di, events);
         }
         return;
@@ -3773,7 +4178,10 @@ pub(crate) fn drop_piece(
     // (free placement — one may span two foundations, and loses its
     // footing with either). Walked from the back so a swap-remove only
     // ever moves a record this walk has already passed.
-    let gone = Some((rec.cx, rec.cz, rec.loc));
+    let gone = match posed {
+        Some(h) => Gone::Posed(h),
+        None => Gone::Grid(rec.cx, rec.cz, rec.loc),
+    };
     let cell = Rect::aligned(
         rec.cx as f32 * BUILD_CELL_M,
         rec.cz as f32 * BUILD_CELL_M,
@@ -3793,9 +4201,13 @@ pub(crate) fn drop_piece(
         // Carried with the removed piece and not without it. A deployable
         // on bare ground was never carried by a plane, so it stays whatever
         // was taken down beside it.
-        if r.overlaps(&cell)
+        let under = match posed {
+            Some(h) => hull_crosses(&h, &r),
+            None => r.overlaps(&cell),
+        };
+        if under
             && planes_cover(pieces.cols(), &r, d.level, gone)
-            && !planes_cover(pieces.cols(), &r, d.level, None)
+            && !planes_cover(pieces.cols(), &r, d.level, Gone::Nothing)
         {
             drop_deploy(dc, pieces, deploys, di, events);
         }
@@ -3885,10 +4297,11 @@ pub fn damage_piece(
         left = 1;
     }
     let dealt = rec.hp - left;
+    let (a, b) = rec.ev_addr();
     events.push(
         EV_STRUCT_HIT,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        a,
+        b | rec.row as u32,
         ((dealt as u32) << 16) | left as u32,
     );
     if left == 0 {
@@ -3904,15 +4317,7 @@ pub fn damage_piece(
         // Take the legs out and the base comes down: everything that
         // rested on this address is re-checked against the same support
         // rule that let it be placed (build.rs).
-        crate::build::collapse_from(
-            dc,
-            bc,
-            pieces,
-            deploys,
-            (rec.cx, rec.cz, rec.level, rec.loc),
-            budget,
-            events,
-        );
+        crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
         return true;
     }
     pieces.set_hp(i, left);
@@ -4186,7 +4591,15 @@ pub fn upkeep_sweep(
         // and never move structure (upkeep v2, `upkeep::inside`).
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, def.shape),
+            crate::upkeep::piece_inside(
+                pieces.cols(),
+                rec.id,
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                def.shape,
+            ),
         );
         let mut hp = rec.hp;
         let mut uh = rec.uh;
@@ -4253,15 +4666,7 @@ pub fn upkeep_sweep(
             // from under it falls exactly as one a raider broke would.
             drop_piece(dc, pieces, deploys, i, def.shape, events);
             *budget -= 1;
-            crate::build::collapse_from(
-                dc,
-                bc,
-                pieces,
-                deploys,
-                (rec.cx, rec.cz, rec.level, rec.loc),
-                budget,
-                events,
-            );
+            crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
         } else {
             pieces.set_upkeep(i, hp, uh);
@@ -4279,10 +4684,10 @@ pub fn upkeep_sweep(
             continue;
         }
         let def = dc.defs[rec.row as usize];
-        let (x, z) = rec.xz();
+        let (x, z) = rec.place_xz(pieces.cols());
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc),
+            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, x, z),
         );
         // A door or an insert pays its own build cost's rent like the
         // wall it sits in (`pays_rent`); asked of the claim once per visit
@@ -4465,6 +4870,46 @@ mod tests {
             GRADED_FOUNDATION as u8,
             "the fixture foundation never reached its stone rung"
         );
+    }
+
+    /// A rug lies under anything (`layers`): a bench goes down on one and a
+    /// rug goes down under one, while two rugs still refuse each other.
+    #[test]
+    fn a_rug_layers_under_anything_but_a_rug() {
+        let mut dc = DeployContent::probe_fixture();
+        let rug = dc.def_count as u8;
+        dc.defs[rug as usize] = DeployDef {
+            arch: ARCH_RUG,
+            ..dc.defs[1]
+        };
+        dc.def_count += 1;
+        let pieces = Pieces::new();
+        let at = |row: u8| DeployRec {
+            cx: CX,
+            cz: CZ,
+            loc: BODY_LOCS[0],
+            row,
+            ..DeployRec::default()
+        };
+        let site = |recs: &[DeployRec], arch: u8| {
+            body_site(
+                SEED,
+                hv(),
+                pieces.cols(),
+                recs,
+                &dc,
+                PLACE_ANY,
+                arch,
+                CX,
+                CZ,
+                0,
+                crate::footprint::Pose::CENTRE,
+            )
+        };
+        assert!(site(&[at(1)], ARCH_RUG).is_ok(), "a rug under a bench");
+        assert!(site(&[at(rug)], ARCH_WORKBENCH).is_ok(), "a bench on a rug");
+        assert_eq!(site(&[at(rug)], ARCH_RUG), Err(REFUSE_D_SPOT));
+        assert_eq!(site(&[at(1)], ARCH_WORKBENCH), Err(REFUSE_D_SPOT));
     }
 
     #[test]
@@ -5737,7 +6182,6 @@ mod tests {
                 has_lock: false,
                 locked: false,
                 dmg: 0,
-                grow: 0,
                 keyed: false,
             },
             0,
@@ -6180,6 +6624,7 @@ mod tests {
         lock_op(
             dc,
             &GatherContent::probe_fixture(),
+            &ColIndex::new(),
             deploys,
             p,
             CX,
@@ -6298,6 +6743,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -6379,6 +6825,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 deploys,
                 r,
                 CX,
@@ -6410,6 +6857,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut raider,
             CX,
@@ -6449,6 +6897,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6514,6 +6963,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 &mut deploys,
                 &mut stranger,
                 CX,
@@ -6534,6 +6984,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6551,6 +7002,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut far,
             CX,
@@ -6574,6 +7026,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6599,6 +7052,59 @@ mod tests {
 
     /// Pickup v1: a deployable comes back up any time you may build
     /// there, and comes up **empty or not at all**.
+    #[test]
+    fn a_strangers_bag_does_not_come_up_on_open_ground() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (5, 1)]);
+        // A sleeping bag (row 3, item 5) on unclaimed ground.
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1, "{:?}", last(&ev));
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        let mut lift = |who: &mut Player, ev: &mut EventQueue| {
+            pick_up(
+                &dc,
+                &gc,
+                &mut pieces,
+                &mut deploys,
+                who,
+                0,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                ev,
+                &mut [ItemStack::default(); INV_SLOTS],
+            )
+        };
+        lift(&mut stranger, &mut ev);
+        assert_eq!(last(&ev), (EV_DEPLOY_REFUSED, 9, REFUSE_D_OWNER, 0));
+        assert_eq!(crate::craft::inv_count(&stranger.inv, 5), 0);
+        lift(&mut p, &mut ev);
+        assert_eq!(crate::craft::inv_count(&p.inv, 5), 1, "its owner lifts it");
+    }
+
     #[test]
     fn a_deployable_comes_back_up_and_a_full_one_does_not() {
         let dc = DeployContent::probe_fixture();
@@ -6641,6 +7147,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -6687,6 +7194,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -6706,6 +7214,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -6755,6 +7264,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -6780,6 +7290,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -6912,6 +7423,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6937,6 +7449,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6952,6 +7465,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -6975,6 +7489,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7080,6 +7595,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7101,6 +7617,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -7126,6 +7643,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -7188,6 +7706,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -7209,6 +7728,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7243,6 +7763,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7303,6 +7824,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7321,6 +7843,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7386,6 +7909,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut guest,
+            0,
             CX,
             CZ,
             0,
@@ -7411,6 +7935,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut friend,
             CX,
@@ -7429,6 +7954,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut friend,
+            0,
             CX,
             CZ,
             0,
@@ -7474,6 +8000,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7489,6 +8016,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7507,6 +8035,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7529,6 +8058,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut guest,
+            0,
             CX,
             CZ,
             0,
@@ -7549,6 +8079,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7569,6 +8100,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut nobody,
+            0,
             CX,
             CZ,
             0,
@@ -8011,6 +8543,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 d,
                 p,
                 CX,
@@ -8717,5 +9250,537 @@ mod tests {
             deploys.boxes.len, MAX_BOXES,
             "the record took the last slot"
         );
+    }
+
+    /// **The 129th water catcher refuses** (`MAX_CATCHERS`): each catcher's
+    /// watering scan walks the boxes and the ground plants, so their number
+    /// is capped on its own, below the box store's. Written against the
+    /// private store like the box cap above; the 128 standing catchers are
+    /// oven rows, which is what the guard counts.
+    #[test]
+    fn the_129th_catcher_refuses_and_the_128th_places() {
+        use crate::limits::MAX_CATCHERS;
+        let mut dc = DeployContent::probe_fixture();
+        dc.defs[4] = DeployDef {
+            arch: ARCH_CATCHER,
+            placement: PLACE_FOUNDATION,
+            hp: 150,
+            item: 6,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 5;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 9), (6, 4)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        let place =
+            |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player, ev: &mut EventQueue| {
+                ev.clear();
+                place_deploy(
+                    SEED,
+                    hv(),
+                    &dc,
+                    &bc,
+                    pieces,
+                    deploys,
+                    p,
+                    0,
+                    4,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_PLANE,
+                    crate::footprint::Pose::CENTRE,
+                    ev,
+                );
+            };
+
+        deploys.boxes.len = MAX_CATCHERS;
+        for o in deploys.boxes.ovens[..MAX_CATCHERS].iter_mut() {
+            o.arch = ARCH_CATCHER;
+        }
+        let before = deploys.len();
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_REFUSED);
+        assert_eq!(last(&ev).2, REFUSE_D_FULL, "the 129th catcher refuses");
+        assert_eq!(deploys.len(), before, "and leaves no record standing");
+        assert_eq!(crate::craft::inv_count(&p.inv, 6), 4, "nor spends the item");
+
+        // One catcher fewer (a box in its row) and the same placement goes.
+        deploys.boxes.ovens[0].arch = ARCH_BOX;
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        assert_eq!(
+            deploys
+                .oven_states()
+                .iter()
+                .filter(|o| o.arch == ARCH_CATCHER)
+                .count(),
+            MAX_CATCHERS
+        );
+    }
+
+    /// **A raider's own hearth does not open a key lock** (exploit sweep 2,
+    /// base-life#0). A key lock opens for its owner's crew, and the claim a
+    /// raider's hearth on a foundation beside a hearthless base casts over
+    /// it — two cells off, then joined edge to edge — is not that crew. The
+    /// owner's own hearth with a teammate on it opens it for the teammate,
+    /// even with the raider's hearth still reaching the door.
+    #[test]
+    fn a_raiders_own_hearth_beside_a_hearthless_base_opens_none_of_its_key_locks() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().locked);
+
+        const RAIDER: u32 = 9;
+        const MATE: u32 = 11;
+        let press = |deploys: &mut Deploys, pieces: &mut Pieces, id: u32| {
+            let mut who = player_at_cell(CX, CZ, &[]);
+            who.id = id;
+            let mut ev = EventQueue::default();
+            use_door(
+                &dc,
+                pieces,
+                deploys,
+                &mut who,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_XLO,
+                &mut ev,
+            );
+            let open = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open;
+            if open {
+                // Shut it again for the next press.
+                let mut owner = player_at_cell(CX, CZ, &[]);
+                use_door(
+                    &dc,
+                    pieces,
+                    deploys,
+                    &mut owner,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_EDGE_XLO,
+                    &mut ev,
+                );
+            }
+            open
+        };
+
+        // The raider's foundation two cells off the base, a hearth on it.
+        pieces.insert_for_test(CX - 3, CZ, 0, LOC_PLANE, 0, &bc);
+        deploys.push_hearth_for_test(CX - 3, CZ, 0, RAIDER);
+        let (x, z) = deploys
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .place_xz(pieces.cols());
+        assert!(
+            crate::claim::any_claim(&pieces, &deploys, x, z)
+                && !crate::claim::foreign_claim(&pieces, &deploys, x, z, RAIDER),
+            "the fixture no longer puts the door inside the raider's own claim"
+        );
+        assert!(
+            !press(&mut deploys, &mut pieces, RAIDER),
+            "the raider's hearth opened the key lock"
+        );
+        // Joined edge to edge: the base is now on the raider's component.
+        pieces.insert_for_test(CX - 2, CZ, 0, LOC_PLANE, 0, &bc);
+        pieces.insert_for_test(CX - 1, CZ, 0, LOC_PLANE, 0, &bc);
+        assert!(
+            !press(&mut deploys, &mut pieces, RAIDER),
+            "joined to the base, it still did"
+        );
+
+        // The owner's own hearth, a teammate on its crew: the teammate
+        // opens it, the raider's claim over the same door notwithstanding;
+        // the raider still does not.
+        deploys.push_hearth_for_test(CX, CZ, 0, 7);
+        let h = deploys.hearths().len() - 1;
+        let _ = deploys.hearths_mut()[h].crew.add(MATE);
+        assert!(
+            press(&mut deploys, &mut pieces, MATE),
+            "the owner's crew is shut out of the owner's door"
+        );
+        assert!(!press(&mut deploys, &mut pieces, RAIDER));
+        assert!(!press(&mut deploys, &mut pieces, 13), "a stranger");
+    }
+
+    /// **A hand's turret and key lock answer to the crews that hand is on**
+    /// (review 5, claims#0; Rust's per-turret, per-lock authorisation). The
+    /// owner and a member on the base's hearth, the owner's turret spot and
+    /// key lock in its claim: the member is spared and let through. The
+    /// owner leaves, and the member is neither while the owner still is.
+    /// The member clears the hearth and gains nothing of the owner's — the
+    /// old rule's takeover. The owner rejoins through the hearth's code
+    /// lock, and the member has both back.
+    #[test]
+    fn a_hands_turret_and_key_lock_follow_the_crews_it_is_on() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert!(deploys
+            .locks
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .is_key());
+
+        const MATE: u32 = 11;
+        const STRANGER: u32 = 13;
+        let mut mate = player_at_cell(CX, CZ, &[]);
+        mate.id = MATE;
+        deploys.push_hearth_for_test(CX, CZ, 0, owner.id);
+        let _ = deploys.hearths_mut()[0].crew.add(MATE);
+        // The hearth's code lock, bolted on by the owner: it remembers them.
+        assert!(deploys
+            .locks
+            .insert(crate::lock::LockRec::fresh(CX, CZ, 0, LOC_PLANE, owner.id)));
+        let oid = owner.id;
+        let (x, z) = deploys
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .place_xz(pieces.cols());
+        let spared = |d: &Deploys, id| crate::turret::spares(&pieces, d, oid, x, z, id);
+        let passes = |d: &Deploys, id| {
+            d.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, id)
+                || key_crew_passes(&pieces, d, CX, CZ, 0, LOC_EDGE_XLO, id)
+        };
+        let op = |d: &mut Deploys, p: &Player, op: u8| {
+            let mut ev = EventQueue::default();
+            crew_op(d, p, CX, CZ, 0, op, &mut ev);
+        };
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
+
+        // The owner leaves: their gun and lock leave the crew with them.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_LEAVE);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(!spared(&deploys, MATE), "the gun stayed with the crew");
+        assert!(!passes(&deploys, MATE), "the key lock stayed with the crew");
+        assert!(spared(&deploys, oid) && passes(&deploys, oid));
+
+        // The member clears the hearth to themselves: nothing of the
+        // owner's comes with it.
+        op(&mut deploys, &mate, ACCESS_OP_CREW_CLEAR);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(
+            !spared(&deploys, MATE) && !passes(&deploys, MATE),
+            "a clear handed the clearer the owner's gun and lock"
+        );
+
+        // The owner walks back in on the hearth's lock: both are back.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_JOIN);
+        assert!(deploys.hearths()[0].crew.contains(oid));
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
+    }
+
+    /// **A spent bag stays down** (exploit sweep 2, base-life#1): lifted and
+    /// set back down it would be born ready, and the cooldown would last one
+    /// pickup. Ready again, it comes up.
+    #[test]
+    fn a_spent_bag_cannot_be_lifted_until_it_is_ready() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut gc = GatherContent::probe_fixture();
+        gc.stack_max[5] = 10;
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(5, 1)]);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        let loc = deploys.entries()[0].loc;
+        let (x, z) = cell_center(CX, CZ);
+        assert!(deploys.claim_bag(&dc, p.id, x, z, 100).is_some());
+        let lift = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player, tick| {
+            let mut ev = EventQueue::default();
+            pick_up(
+                &dc,
+                &gc,
+                pieces,
+                deploys,
+                p,
+                tick,
+                CX,
+                CZ,
+                0,
+                loc,
+                &mut ev,
+                &mut [ItemStack::default(); INV_SLOTS],
+            );
+            last(&ev)
+        };
+        let r = lift(&mut deploys, &mut pieces, &mut p, 101);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_SPENT)
+        );
+        // Anyone else is refused too, and not told why.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        let r = lift(&mut deploys, &mut pieces, &mut friend, 101);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER)
+        );
+        assert_eq!(deploys.len(), 1, "the spent bag came up");
+        lift(&mut deploys, &mut pieces, &mut p, 100 + BAG_COOLDOWN_TICKS);
+        assert_eq!(deploys.len(), 0, "a ready bag comes up");
+        assert_eq!(crate::craft::inv_count(&p.inv, 5), 1);
+    }
+
+    /// **One hand's share of the container store** (exploit sweep 2,
+    /// base-life#2): the store is shard-wide and a box is cheap.
+    #[test]
+    fn one_hand_places_only_its_share_of_the_container_store() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (9, 2)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        // The hand's share already standing, far off.
+        for (k, b) in deploys.boxes.entries[..MAX_BOXES_PER_OWNER]
+            .iter_mut()
+            .enumerate()
+        {
+            *b = BoxRec {
+                cx: 100 + k as u16,
+                cz: 100,
+                owner: p.id,
+                ..BoxRec::default()
+            };
+        }
+        deploys.boxes.len = MAX_BOXES_PER_OWNER;
+        let mut place = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player| {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                pieces,
+                deploys,
+                p,
+                0,
+                7,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
+        // A box of somebody else's in that row, and the same placement goes.
+        deploys.boxes.entries[0].owner = 9;
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(r.0, crate::world::EV_DEPLOY_PLACED);
+    }
+
+    /// The probe fixture's box rows plus a turret (row 8, item 12).
+    fn turret_fixture() -> DeployContent {
+        let mut d = boxed_fixture();
+        d.defs[8] = DeployDef {
+            arch: ARCH_TURRET,
+            placement: PLACE_ANY,
+            hp: 1000,
+            matter: MATTER_METAL,
+            item: 12,
+            n_costs: 0,
+            costs: [(0, 0); MAX_DEPLOY_COSTS],
+        };
+        d.def_count = 9;
+        d
+    }
+
+    /// A turret record and its (empty) box at `(cx, cz)`, placed with no
+    /// rules — the turret table's fixture.
+    fn stand_turret(deploys: &mut Deploys, cx: u16, cz: u16, owner: u32) {
+        assert!(deploys.insert(
+            DeployRec {
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                row: 8,
+                owner,
+                hp: 1000,
+                ..DeployRec::default()
+            },
+            0,
+        ));
+        let n = deploys.boxes.len;
+        deploys.boxes.entries[n] = BoxRec {
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            owner,
+            ..BoxRec::default()
+        };
+        deploys.boxes.len += 1;
+    }
+
+    /// **One hand holds only its share of the turret table** (exploit
+    /// sweep 2, pve#4): the table is shard-wide.
+    #[test]
+    fn one_hand_places_only_its_share_of_the_turrets() {
+        let dc = turret_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(12, 2)]);
+        for k in 0..MAX_TURRETS_PER_OWNER as u16 {
+            stand_turret(&mut deploys, 100 + k, 100, p.id);
+        }
+        let mut place = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player| {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                pieces,
+                deploys,
+                p,
+                0,
+                8,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
+        let i = deploys.find_index(100, 100, 0, LOC_PLANE).unwrap();
+        deploys.remove_at(i, &dc);
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(
+            r.0,
+            crate::world::EV_DEPLOY_PLACED,
+            "one fewer, and it goes"
+        );
+    }
+
+    /// **A full turret table gives way to a loaded gun** (exploit sweep 2,
+    /// pve#4): dry turrets parked first held every entry, and a loaded one
+    /// placed after them never got one.
+    #[test]
+    fn a_full_turret_table_gives_a_dry_entry_up_to_a_loaded_turret() {
+        use crate::limits::MAX_TURRETS;
+        use crate::turret::{reconcile, Turret};
+        const AMMO: u16 = 13;
+        let dc = turret_fixture();
+        let mut deploys = Deploys::new();
+        for k in 0..=MAX_TURRETS as u16 {
+            stand_turret(&mut deploys, 100 + k, 100, 1 + k as u32 / 12);
+        }
+        let mut table = [Turret::default(); MAX_TURRETS];
+        let mut slots = [crate::mob::Mob::default(); MAX_TURRETS];
+        let held = |table: &[Turret; MAX_TURRETS], cx: u16| {
+            table.iter().any(|t| t.live && t.cx == cx && t.cz == 100)
+        };
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        let last_cx = 100 + MAX_TURRETS as u16;
+        assert!(held(&table, 100) && !held(&table, last_cx), "first come");
+        // A dry one stays out while every entry is dry...
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(!held(&table, last_cx));
+        // ...and loaded, it takes the first dry entry.
+        let b = deploys
+            .box_index(box_key(last_cx, 100, 0, LOC_PLANE))
+            .unwrap();
+        deploys.set_box_slot(
+            b,
+            0,
+            ItemStack {
+                item: AMMO,
+                count: 5,
+                cond: 0,
+                skin: 0,
+            },
+        );
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(held(&table, last_cx), "a loaded turret got no entry");
+        assert!(!held(&table, 100), "the first dry one gave its entry up");
+        // A loaded one keeps it.
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(held(&table, last_cx) && !held(&table, 100));
     }
 }

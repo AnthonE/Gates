@@ -325,6 +325,7 @@ fn a_lit_fire_crackles_on_its_side() {
                 cz: 0,
                 level: 0,
                 loc: 0,
+                furnace: false,
             },
         ))
         .id();
@@ -594,6 +595,7 @@ fn teardown_ends_what_the_world_started() {
             cz: 0,
             level: 0,
             loc: 0,
+            furnace: false,
         },
     ));
     // The menu's frames had no fire, which put `fires` on its half-second

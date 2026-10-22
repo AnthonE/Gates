@@ -285,7 +285,12 @@ fn every_container_draws_at_the_sims_own_width() {
             "kind {kind} changed width when the derivation landed"
         );
     }
-    assert_eq!(slots::container_cols(CONT_WEAR), WEAR_SLOTS);
+    // Seven since clothing v1, past a grid row; the paperdoll draws them in
+    // two columns of its own (`inv.rs` `WEAR_LEFT`/`WEAR_RIGHT`).
+    assert_eq!(
+        slots::container_cols(CONT_WEAR),
+        WEAR_SLOTS.min(slots::GRID_COLS)
+    );
 }
 
 /// Every live kind has a title of its own, and none of them falls through.
@@ -573,7 +578,14 @@ fn affordability_is_the_tightest_input() {
         skin: 0,
     };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        2
+    );
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
     inv[1] = ItemStack {
@@ -588,10 +600,24 @@ fn affordability_is_the_tightest_input() {
         cond: 0,
         skin: 0,
     };
-    assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[1],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        1
+    );
 
     // Nothing in the bag pays for nothing.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &empty()), 0);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &empty(),
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        0
+    );
 }
 
 #[test]
@@ -604,7 +630,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
         cond: 0,
         skin: 0,
     };
-    let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
+    let (lines, n) = craft::ingredients(
+        &recipes.recipes[0],
+        3,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
     assert_eq!(lines[0].amount, 3);
@@ -613,7 +644,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
     // Five of nine is short, which is what the reference paints red.
     assert!(lines[0].short());
 
-    let (lines, _) = craft::ingredients(&recipes.recipes[0], 1, &inv);
+    let (lines, _) = craft::ingredients(
+        &recipes.recipes[0],
+        1,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(lines[0].total, 3);
     assert!(!lines[0].short());
 }
@@ -1251,7 +1287,13 @@ fn a_rock_is_not_a_target() {
     assert_eq!(swing_label(8), "");
     // A berry bush and hemp are picked with `E`, never swung at, and a
     // shrub is scenery.
-    for o in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+    for o in [
+        Occupant::BerryBush,
+        Occupant::Hemp,
+        Occupant::Shrub,
+        Occupant::WildCorn,
+        Occupant::WildPumpkin,
+    ] {
         assert_eq!(swing_label(o as u8), "", "{o:?}");
     }
 }
@@ -1270,6 +1312,8 @@ fn the_pick_prompt_names_the_plant() {
     };
     assert_eq!(prompt(Occupant::BerryBush), "[E] PICK BERRIES");
     assert_eq!(prompt(Occupant::Hemp), "[E] PICK HEMP");
+    assert_eq!(prompt(Occupant::WildCorn), "[E] PICK WILD CORN");
+    assert_eq!(prompt(Occupant::WildPumpkin), "[E] PICK PUMPKIN");
 }
 
 /// **A bush is `E`, not the left button** (operator, 2026-10-02). Looking at
@@ -1318,7 +1362,7 @@ fn a_bush_is_picked_with_e_and_never_swung() {
         Occupant::BerryBush as u8,
         "a swing still lands on a bush"
     );
-    let pick = resolve_pick(aim, &mut island);
+    let pick = resolve_pick(aim, &mut island, w.pieces.cols());
     assert_eq!(
         pick.occupant,
         Occupant::BerryBush as u8,
@@ -2014,6 +2058,14 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
                 wear: 0,
             };
         }
+        // The wolf is born holding the meat: a cut pays only a species' own
+        // rows, so a carcass is no multiplier for what was put in it.
+        w.mob.defs[MOB_WOLF as usize].loot[0] = ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
         w.dev_spawn = Some((px, tz));
         w.tick(&[Command::Join { id: 1 }]);
         // At full condition: a broken tool is refused at a carcass as at a
@@ -2270,7 +2322,12 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
         core.on_stream(&buf[..len]).expect("defs apply");
         if with_wall {
-            let len = encode_event_piece_placed(&wall, &mut buf).expect("encode piece");
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
             core.on_stream(&buf[..len]).expect("piece applies");
             assert_eq!(core.pieces.len(), 1, "the core holds the wall");
         }
@@ -2283,6 +2340,62 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         "no wall: the stance must reach the tree"
     );
     assert_eq!(pick(true), 0, "a wall across the look takes the swing");
+}
+
+/// **Nor is `E` offered on a bush through a wall**: the shard's
+/// `Command::Pick` asks for sight (`reach::clear_from`) and drops a pick
+/// through one without a word, so the prompt asks the same. The tree test's
+/// wiring above, aimed at a bush across a cell edge.
+#[test]
+fn a_wall_the_core_was_sent_shadows_the_bush() {
+    use client::ui::interact::resolve_pick;
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_piece_defs, encode_event_piece_placed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{BuildContent, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO};
+    use sim_core::movement::{Body, POS_Y_Q};
+
+    let seed = 7;
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, bx, by, bz) = find_slot(seed, Occupant::BerryBush).expect("seed 7 has a bush");
+    let (_, top) = swing_volume(Occupant::BerryBush);
+    let k = (bx / BUILD_CELL_M + 0.5).floor();
+    let edge = k * BUILD_CELL_M;
+    let px = if edge <= bx { edge - 0.4 } else { edge + 0.4 };
+    let py = Body::at(seed, &haven, px, bz).qy as f32 * POS_Y_Q;
+    let aim = aim_at(px, py, bz, bx, by + top * 0.5, bz);
+    let bc = BuildContent::probe_fixture();
+    let wall = PieceRec {
+        cx: k as u16,
+        cz: (bz / BUILD_CELL_M).floor() as u16,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 1,
+        hp: bc.pieces[1].hp,
+        ..PieceRec::default()
+    };
+    let pick = |with_wall: bool| {
+        let mut core = Box::new(ClientCore::new(seed, 1, 0));
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
+        core.on_stream(&buf[..len]).expect("defs apply");
+        if with_wall {
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
+            core.on_stream(&buf[..len]).expect("piece applies");
+        }
+        let (mut island, shadows) = swing_island(&mut core, 0);
+        resolve_pick(aim, &mut island, shadows.cols).occupant
+    };
+    assert_eq!(
+        pick(false),
+        Occupant::BerryBush as u8,
+        "no wall: the stance must reach the bush"
+    );
+    assert_eq!(pick(true), 0, "E was offered on a bush through a wall");
 }
 
 // ---------------------------------------------------------------------------
@@ -3579,7 +3692,7 @@ fn the_list_is_sorted_busy_first_with_unknown_last() {
     // FIRST — a shard nobody could poll would head the list as if it were the
     // busiest thing on it.
     let rows = listing();
-    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default());
+    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default(), &[]);
     assert_eq!(
         names(&rows, &shown),
         ["Direct", "full", "busy", "quiet", "unknown"],
@@ -3609,7 +3722,7 @@ fn the_direct_row_survives_every_filter_except_the_search_box() {
             ..default_filter()
         },
     ] {
-        let shown = servers::visible(&rows, &filter, &favs);
+        let shown = servers::visible(&rows, &filter, &favs, &[]);
         assert_eq!(
             rows[shown[0]].name, "Direct",
             "{filter:?} hid the direct row"
@@ -3623,7 +3736,7 @@ fn the_direct_row_survives_every_filter_except_the_search_box() {
         query: "busy".into(),
         ..default_filter()
     };
-    let shown = servers::visible(&rows, &typed, &favs);
+    let shown = servers::visible(&rows, &typed, &favs, &[]);
     assert_eq!(names(&rows, &shown), ["busy"]);
     assert!(servers::empty_reason(&typed, rows.len(), shown.len()).is_none());
 }
@@ -3647,6 +3760,7 @@ fn empty_and_unknown_are_not_the_same_thing() {
             ..Filter::default()
         },
         &favs,
+        &[],
     );
     assert_eq!(names(&rows, &shown), ["Direct", "full", "busy", "unknown"]);
 
@@ -3657,6 +3771,7 @@ fn empty_and_unknown_are_not_the_same_thing() {
             ..Filter::default()
         },
         &favs,
+        &[],
     );
     assert_eq!(names(&rows, &shown), ["Direct", "busy", "quiet", "unknown"]);
 }
@@ -3673,7 +3788,7 @@ fn a_search_reads_only_what_the_row_prints() {
             query: q.into(),
             ..Filter::default()
         };
-        names(&rows, &servers::visible(&rows, &f, &favs))
+        names(&rows, &servers::visible(&rows, &f, &favs, &[]))
     };
     assert_eq!(hits("BUSY"), ["busy"], "case-insensitive");
     assert_eq!(hits("island"), ["busy"], "the map is searched");
@@ -3695,13 +3810,13 @@ fn a_star_binds_to_a_row_and_survives_a_round_trip() {
         ..Filter::default()
     };
     assert_eq!(
-        names(&rows, &servers::visible(&rows, &f, &favs)),
+        names(&rows, &servers::visible(&rows, &f, &favs, &[])),
         ["Direct", "busy"]
     );
     // The rail counts the whole list, never the filtered one: a tab that read
     // `0` beside the thing you have to click to see anything is the opposite
     // of what a count on a tab is for.
-    assert_eq!(servers::counts(&rows, &favs), [5, 1]);
+    assert_eq!(servers::counts(&rows, &favs, &[]), [5, 1, 0]);
 
     // Off the disk and back, which is the shape `config::parse` hands over.
     let round = Favourites::from_disk(favs.ids().to_vec());
@@ -3710,6 +3825,60 @@ fn a_star_binds_to_a_row_and_survives_a_round_trip() {
     // writer to emit `favourites = ""` rather than omit the key.
     assert!(favs.toggle("id-busy"));
     assert!(favs.is_empty());
+}
+
+#[test]
+fn the_friends_rail_keeps_the_rows_a_friend_is_on() {
+    // `friends::shard_ids` names row ids; the rail keeps exactly those rows,
+    // the Direct row stays as it does under every category, and a friend on a
+    // shard this list does not carry lights nothing.
+    let rows = listing();
+    let favs = Favourites::default();
+    let ids = vec!["id-quiet".to_string(), "not-listed".to_string()];
+    let f = Filter {
+        cat: SCat::Friends,
+        ..Filter::default()
+    };
+    assert_eq!(
+        names(&rows, &servers::visible(&rows, &f, &favs, &ids)),
+        ["Direct", "quiet"]
+    );
+    assert_eq!(servers::counts(&rows, &favs, &ids), [5, 0, 1]);
+    // Nobody on a listed shard: the pane says where to look instead.
+    let only_direct = servers::visible(&rows[1..], &f, &favs, &[]);
+    assert!(only_direct.is_empty());
+    assert!(servers::empty_reason(&f, 4, 0).unwrap().contains("FRIENDS"));
+    assert_eq!(servers::friends_here(0), None);
+    assert_eq!(servers::friends_here(1).as_deref(), Some("1 friend here"));
+    assert_eq!(servers::friends_here(3).as_deref(), Some("3 friends here"));
+}
+
+#[test]
+fn an_agents_only_shard_says_watch_before_the_click() {
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    assert!(!row.agents_only());
+    let st =
+        client::shardlist::parse_status(br#"{"players":3,"max_players":100,"agents_only":true}"#)
+            .unwrap();
+    assert!(row.apply_status(&st), "the mode is drawn, so it redraws");
+    assert!(row.agents_only());
+    assert!(
+        row.sub_line(0).contains(servers::AGENTS_ONLY),
+        "{}",
+        row.sub_line(0)
+    );
+    assert!(row
+        .details(0)
+        .iter()
+        .any(|(_, v)| v == servers::AGENTS_ONLY));
+    // A poll that leaves it out keeps it; the shard list can say it too.
+    row.apply_status(
+        &client::shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap(),
+    );
+    assert!(row.agents_only());
+    let mut s = shardlist_shard("h:2");
+    s.agents_only = Some(true);
+    assert!(Listing::from_shard(&s).agents_only());
 }
 
 #[test]
@@ -3758,6 +3927,7 @@ fn shardlist_shard(addr: &str) -> client::shardlist::Shard {
         map: None,
         ping_ms: None,
         status_url: None,
+        agents_only: None,
     }
 }
 
@@ -5445,12 +5615,12 @@ fn the_protection_total_stops_at_the_cap_on_both_sides() {
     cc.armor[4] = sim_core::combat::ArmorDef {
         reduction_pct: 60,
         slot: combat::WEAR_HEAD,
-        full: false,
+        fills: 0,
     };
     cc.armor[5] = sim_core::combat::ArmorDef {
         reduction_pct: 50,
         slot: combat::WEAR_BODY,
-        full: false,
+        fills: 0,
     };
     let cat = catalog_for(&cc);
 
@@ -5793,12 +5963,14 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     // The call sits in `build_screen`'s row, ungated: the body, then the
     // pack (Rust's order since the pages split, 2026-09-25), then the
     // container *if* one is open. Matched on the pack call's head: its own
-    // arguments (the belt slot in hand) are not this test's.
+    // arguments (the belt slot in hand) are not this test's. The window is
+    // wide enough for the middle column's head, where the item card sits
+    // over the pack.
     let row = code
         .split("wear_panel(row, core, icons, portrait);")
         .nth(1)
         .expect("`build_screen` must draw the body");
-    let head = &row[..row.len().min(200)];
+    let head = &row[..row.len().min(800)];
     assert!(
         head.contains("own_grid(row, core, icons"),
         "the body is not drawn beside the pack: {head}"
@@ -5851,8 +6023,10 @@ fn no_container_is_headed_with_a_literal() {
 #[test]
 fn the_paperdoll_is_as_wide_as_the_body_is() {
     let code = inv_code();
+    // Since clothing v1 the row walks the slots in the body's order, an
+    // array the sim's count sizes.
     assert!(
-        code.contains("0..WEAR_SLOTS"),
+        code.contains("WEAR_ROW: [u8; WEAR_SLOTS]"),
         "the wear panel does not walk `WEAR_SLOTS` — a hardcoded pair of \
          cells draws two slots of however many the sim has, and \
          `reference/ARMOR.md` §9.3 has three more queued"
@@ -6252,6 +6426,64 @@ mod quick {
             (args.from_kind, args.to_kind, args.count, args.bag),
             (CONT_WORLD, CONT_SELF, 60, BAG),
             "taking out of a crate stopped working, or lost its handle"
+        );
+    }
+
+    /// **A carcass or a body is take-only too** (`World::move_item`'s
+    /// mob-tagged bag): the panel knows one by its look (`WireBag::kind`),
+    /// refuses a deposit, or a take that would swap the occupant in, by the
+    /// sim's own `deposits_into`, and says a carcass's sentence rather than
+    /// the crate's.
+    #[test]
+    fn a_carcass_takes_nothing_and_says_so_in_its_own_words() {
+        use client::ui::slots::{refusal_text, refusal_text_in, take_only_bag, take_only_refused};
+        use protocol::event::{WireBag, BAG_KIND_BODY, BAG_KIND_PACK};
+        let bag = |kind| WireBag {
+            id: BAG,
+            kind,
+            ..WireBag::default()
+        };
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(1)]),
+            "an animal's carcass"
+        );
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_BODY)]),
+            "a body"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_PACK)]),
+            "a pack takes"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG + 1, &[bag(1)]),
+            "another bag's look"
+        );
+        assert!(!take_only_bag(CONT_BOX, BAG, &[bag(1)]), "only an open bag");
+
+        let (wood, axe, none) = (stack(WOOD, 5), stack(HATCHET, 1), ItemStack::default());
+        assert!(
+            take_only_refused(true, CONT_SELF, CONT_BAG, wood, none),
+            "a drop in"
+        );
+        assert!(
+            take_only_refused(true, CONT_BAG, CONT_SELF, wood, axe),
+            "a take onto the axe swaps the axe in"
+        );
+        assert!(
+            !take_only_refused(true, CONT_BAG, CONT_SELF, wood, none),
+            "a take"
+        );
+        assert!(
+            !take_only_refused(false, CONT_SELF, CONT_BAG, wood, none),
+            "a pack"
+        );
+
+        let no_input = sim_core::inventory::REFUSE_M_NO_INPUT as u8;
+        assert!(refusal_text_in(no_input, CONT_BAG).contains("carcass"));
+        assert_eq!(
+            refusal_text_in(no_input, CONT_WORLD),
+            refusal_text(no_input)
         );
     }
 
@@ -7229,6 +7461,63 @@ mod research_table {
     }
 }
 
+/// A work's terminal says what its burn does in plain words, and which
+/// items its unlock opens, once each.
+#[test]
+fn the_work_terminal_says_what_it_unlocks() {
+    use client::ui::arc::{boost_line, quota_left, step, times, unlocked_items};
+    use client_core::arc::WorkView;
+    use sim_core::works::{KNOB_GATHER_PCT, KNOB_SMELT_PCT, WORK_LIT, WORK_OPEN, WORK_SEALED};
+    assert_eq!(times(200), "2x");
+    assert_eq!(times(150), "1.5x");
+    assert_eq!(times(125), "1.25x");
+    let mut w = WorkView {
+        boost_knob: protocol::NO_BOOST,
+        boost_pct: 100,
+        ..WorkView::default()
+    };
+    assert_eq!(boost_line(&w), None, "no boost, no line");
+    w.boost_knob = KNOB_SMELT_PCT;
+    w.boost_pct = 200;
+    assert_eq!(boost_line(&w).as_deref(), Some("furnaces smelt 2x as fast"));
+    w.boost_knob = KNOB_GATHER_PCT;
+    w.boost_pct = 150;
+    assert_eq!(
+        boost_line(&w).as_deref(),
+        Some("every swing gathers 1.5x as much")
+    );
+
+    w.state = WORK_SEALED;
+    assert_eq!(step(&w), (0, "BURNING"));
+    w.state = WORK_OPEN;
+    assert_eq!(step(&w).0, 1);
+    w.state = WORK_LIT;
+    w.def.fuel_max = 100;
+    assert_eq!(step(&w), (2, "EMBERS"), "a dry tank");
+    w.fuel = 5;
+    assert_eq!(step(&w), (2, "BURNING"));
+    assert_eq!(quota_left(41_200, 60_000), "18,800 more");
+    assert_eq!(quota_left(60_000, 60_000), "DONE");
+
+    let mut recipes = sim_core::craft::CraftContent::EMPTY;
+    recipes.recipe_count = 3;
+    for (i, (out, unlock)) in [(7u16, 2u8), (8, 0), (7, 2)].into_iter().enumerate() {
+        recipes.recipes[i].output = out;
+        recipes.recipes[i].unlock = unlock;
+    }
+    let mut vend = sim_core::vend::VendContent::EMPTY;
+    vend.count = 2;
+    vend.offers[0].get = 9;
+    vend.offers[0].unlock = 2;
+    vend.offers[1].get = 7;
+    vend.offers[1].unlock = 2;
+    assert_eq!(unlocked_items(2, &recipes, &vend), [7, 9]);
+    assert!(
+        unlocked_items(0, &recipes, &vend).is_empty(),
+        "no unlock opens nothing"
+    );
+}
+
 /// The STANDINGS page's words: a board's score reads as points or kills,
 /// and "you" says where you stand or how to get on the board.
 #[test]
@@ -7424,5 +7713,59 @@ mod surge {
         assert!(!w.step(&ArcView::default(), false));
         assert!(!w.step(&arc(C, false), true));
         assert!(!w.step(&arc(C, true), true));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Run conditions and the main thread.
+//
+// Bevy 0.18 evaluates a run condition on whichever thread the executor is on,
+// and a condition that takes `NonSend` aborts the client the first time it is
+// evaluated off the main one. `structures::structures_changed` took
+// `Option<NonSend<Net>>` and every desktop join panicked as the world started
+// building (2026-10-21) — invisible to clippy, to every headless test (no
+// session, so the `Option` was always `None`) and to the loot suites that
+// drive the same condition. A grep, because the defect is a signature.
+
+/// No named run condition in the render path takes a non-send resource.
+#[test]
+fn no_run_condition_takes_a_non_send_resource() {
+    let files = render_sources();
+    let all: String = files.iter().map(|(_, t)| t.as_str()).collect();
+    let mut names: Vec<&str> = Vec::new();
+    for (_, text) in &files {
+        for (i, _) in text.match_indices(".run_if(") {
+            let rest = &text[i + ".run_if(".len()..];
+            let path: &str = rest
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .next()
+                .unwrap_or("");
+            // Only a bare name: `in_state(..)`, `a.or(b)` and closures are
+            // Bevy's own or inline, and inline ones are read in review.
+            if path.is_empty() || !rest[path.len()..].starts_with(')') {
+                continue;
+            }
+            let name = path.rsplit("::").next().unwrap_or(path);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    assert!(
+        names.contains(&"structures_changed") && names.len() >= 3,
+        "the scan found too few conditions to mean anything: {names:?}"
+    );
+    for name in &names {
+        let needle = format!("fn {name}(");
+        for (at, _) in all.match_indices(&needle) {
+            let sig = &all[at..];
+            let sig = &sig[..sig.find('{').unwrap_or(sig.len())];
+            assert!(
+                !sig.contains("NonSend"),
+                "run condition `{name}` takes a non-send resource, and Bevy runs \
+                 conditions off the main thread: copy what it needs into a `Send` \
+                 resource (`feed::drain` does this for `Feed`) and read that\n{sig}"
+            );
+        }
     }
 }

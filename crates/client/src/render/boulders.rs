@@ -335,7 +335,9 @@ pub struct RockSoup {
     nrm: Vec<[f32; 3]>,
     /// Splat weights: rock, with moss (grass and litter) where it grows.
     col: Vec<[f32; 4]>,
-    /// `UV_1`: the value multiplier, and dry.
+    /// `UV_1`: the value multiplier, and dry — the second written as the
+    /// NEGATED aridity at [`RockSoup::mesh`], which the shader reads as the
+    /// desert's sandstone (a rock is never wet from below).
     val: Vec<[f32; 2]>,
     idx: Vec<u32>,
 }
@@ -368,8 +370,8 @@ impl RockSoup {
 
     /// The soup as a ground-material mesh. `seed` places it in the island's
     /// zones: a rock in the Verdigris goes to obsidian with lit cracks the way
-    /// the ground under it does (`ATTRIBUTE_ZONE`; the desert does not tint
-    /// rock, so its share stays 0).
+    /// the ground under it does (`ATTRIBUTE_ZONE`), and a rock in the desert
+    /// to sandstone (its aridity, negated, in `UV_1.y`).
     pub fn mesh(self, seed: u64, haven: &terrain::Haven) -> Mesh {
         let n = self.pos.len();
         // The heart's edge noise, as the ground carries it: the shader
@@ -380,6 +382,10 @@ impl RockSoup {
         // boulder would go green over clean sand (the shader clamps the
         // share at 0, so the desert never sees it).
         let mut lat = terrain::Lattice::new();
+        let mut val = self.val;
+        for (v, p) in val.iter_mut().zip(&self.pos) {
+            v[1] = -terrain::aridity_memo(&mut lat, seed, p[0], p[2]).clamp(0.0, 1.0);
+        }
         let zone: Vec<[f32; 2]> = self
             .pos
             .iter()
@@ -416,7 +422,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.val)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, val)
         .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tan)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
@@ -598,7 +604,11 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         v.extend((0..lo).map(|k| -1.0 + round(k)));
         let from = if low { -flat } else { -1.0 };
         v.extend((0..=n).map(|i| from + (flat - from) * i as f32 / n as f32));
-        v.extend((1..=ROUND_SEGS).map(|k| flat + round(k)));
+        v.extend((1..ROUND_SEGS).map(|k| flat + round(k)));
+        // The far end exactly 1, where the face that meets this one along it
+        // stands (`u[axis] = sg`): `flat + rho` is not 1.0 in floats, and a
+        // shared edge placed from two different `u` is a crack.
+        v.push(1.0);
         (v, lo)
     };
     let axes = [
@@ -650,9 +660,14 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
             }
         }
         let g = |i: usize, j: usize| grid[i * (nb + 1) + j];
-        let mut out = Vec3::ZERO;
-        out[axis] = sg;
-        let outward = r.world_dir(out);
+        // Which way the grid winds a quad, `a` then `b`, against the face's
+        // outward `sg`: `a × b` is +X, −Y and +Z for the three axes. Every
+        // triangle winds the way its quad does, never by its own normal: a
+        // facet on a rounded corner pushed in past square to its face's
+        // outward was flipped to face it, into the rock, and culled — a
+        // see-through sliver where the rock wraps round a corner (operator,
+        // 2026-10-20). Placing is orientation-preserving, so this is out.
+        let inward = (if axis == 1 { -sg } else { sg }) < 0.0;
         for i in 0..na {
             for j in 0..nb {
                 let q = [g(i, j), g(i + 1, j), g(i + 1, j + 1), g(i, j + 1)];
@@ -666,8 +681,7 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
                 for t in tris {
                     let mut p = [q[t[0]].0, q[t[1]].0, q[t[2]].0];
                     let mut d = [q[t[0]].1, q[t[1]].1, q[t[2]].1];
-                    let n = (p[1] - p[0]).cross(p[2] - p[0]);
-                    if n.dot(outward) < 0.0 {
+                    if inward {
                         p.swap(1, 2);
                         d.swap(1, 2);
                     }
@@ -808,4 +822,77 @@ pub fn formation_mesh(
         }
     }
     (!soup.is_empty()).then(|| soup.mesh(seed, haven))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two triangles that share an edge walk it in opposite directions, or
+    /// one of them faces into the rock and is culled: a see-through sliver
+    /// where a face wraps round a corner (operator, 2026-10-20). Returns the
+    /// edges walked twice the same way, and the edges with no reverse.
+    fn winding(soup: &RockSoup) -> (usize, usize) {
+        let key = |i: u32| soup.pos[i as usize].map(f32::to_bits);
+        let mut edges = HashMap::<([u32; 3], [u32; 3]), u32>::default();
+        for t in soup.idx.chunks(3) {
+            for k in 0..3 {
+                let (a, b) = (key(t[k]), key(t[(k + 1) % 3]));
+                if a != b {
+                    *edges.entry((a, b)).or_default() += 1;
+                }
+            }
+        }
+        let twice = edges.values().filter(|&&n| n > 1).count();
+        let open = edges
+            .keys()
+            .filter(|(a, b)| !edges.contains_key(&(*b, *a)))
+            .count();
+        (twice, open)
+    }
+
+    #[test]
+    fn every_rock_faces_out_and_a_closed_one_is_sealed() {
+        let mut bad = 0;
+        for k in 0..400u32 {
+            let h = |c: u32| h01(k, c);
+            let hgt = 0.6 + 9.0 * h(3);
+            let (s, c) = (h(4) * std::f32::consts::TAU).sin_cos();
+            let hx = 0.7 + 13.0 * h(1) * h(1);
+            let hz = 0.7 + 13.0 * h(2) * h(2);
+            let underside = k % 2 == 0;
+            let r = RockShape {
+                x: 40.0 * h(10),
+                z: 40.0 * h(11),
+                hx,
+                hz,
+                dir: (s, c),
+                y0: 5.0,
+                y1: 5.0 + hgt,
+                tx: (h(5) - 0.5),
+                tz: (h(6) - 0.5),
+                key: k.wrapping_mul(0x9E37_79B9),
+                moss: 1.0,
+                chisel: if k % 3 == 0 {
+                    (0.5 * hx.min(hz).min(hgt)).min(0.4)
+                } else {
+                    0.0
+                },
+                min_seg: if k % 7 == 0 { 1 } else { 2 },
+                value: ROCK_VALUE,
+                underside,
+            };
+            let mut soup = RockSoup::default();
+            rock_block(&mut soup, &r);
+            let (twice, open) = winding(&soup);
+            if twice > 0 || (underside && open > 0) {
+                bad += 1;
+                eprintln!("rock {k}: {twice} edges walked twice the same way, {open} open; {r:?}");
+            }
+        }
+        assert_eq!(
+            bad, 0,
+            "{bad} of 400 rocks have triangles facing in, or holes"
+        );
+    }
 }

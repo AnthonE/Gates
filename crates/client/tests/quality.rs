@@ -187,7 +187,11 @@ fn the_knob_steps_and_does_not_wrap() {
             );
             prev = now;
         }
-        let end = if dir < 0 { Quality::Low } else { Quality::High };
+        let end = if dir < 0 {
+            Quality::Potato
+        } else {
+            Quality::High
+        };
         assert_eq!(
             s.quality, end,
             "the walk must rest against the end it ran at"

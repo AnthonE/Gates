@@ -71,37 +71,6 @@ OUT = ROOT / "assets/icons"
 MASKS = ROOT / "ci/icons/masks"
 PX = 128
 
-# The six building shapes the shape wheel draws. **Still no material icons**,
-# and the hammer wheel landing is what settles that: the wheel is one ring
-# since 2026-08-07 — the blueprint places the bottom rung and the hammer
-# climbs the ladder — so `mat_wood`/`mat_stone`/`mat_metal` had no draw site.
-# This comment used to say they came back with the hammer wheel; the hammer
-# wheel is here and they did not, because `structure::next_material` picks the
-# rung and never asks the player which. They come back with a verb that offers
-# a choice, or not at all.
-SHAPES = {
-    "shape_foundation": "delapouite/flat-platform",
-    "shape_wall": "delapouite/brick-wall",
-    "shape_doorway": "delapouite/door",
-    # Catalogue v1's two openings. The window is the obvious pick; the
-    # wall frame is a GATE on purpose — a big opening something else will
-    # fill — and not `broken-wall`, for the rule the hammer verbs already
-    # follow: it shares `brick-wall`'s drawing family and a shape that
-    # looks like another shape is the positional trap wearing a menu.
-    "shape_window": "delapouite/window",
-    "shape_wall_frame": "delapouite/gate",
-    "shape_floor": "delapouite/floor-hatch",
-    "shape_stairs": "delapouite/3d-stairs",
-    "shape_roof": "delapouite/great-pyramid",
-    # Triangles v0. Picked for silhouette at 38 px against their square
-    # siblings: the corner flag plants a triangle at ground level, the
-    # sail is a bare right triangle, the tipi is a peaked shelter that
-    # does not share great-pyramid's stepped-mass drawing.
-    "shape_tri_foundation": "delapouite/corner-flag",
-    "shape_tri_floor": "delapouite/sail",
-    "shape_tri_roof": "delapouite/tipi",
-}
-
 # The verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
 # names them.
 #
@@ -284,6 +253,26 @@ ITEMS = {
     "floor_spikes": "delapouite/spiky-pit",
     "armor_boots_feet": "lorc/leather-boot",
     "armor_hazmat_suit": "delapouite/hazmat-suit",
+    # Clothing v1: Rust's clothes for every slot, and their teas.
+    "armor_burlap_legs": "lorc/trousers",
+    "armor_burlap_feet": "delapouite/slippers",
+    "armor_burlap_hands": "delapouite/gloves",
+    "armor_hide_legs": "delapouite/leg-armor",
+    "armor_hide_feet": "delapouite/fur-boot",
+    "armor_hide_shirt": "lorc/leather-vest",
+    "armor_leather_hands": "delapouite/winter-gloves",
+    "armor_hoodie_shirt": "delapouite/hoodie",
+    "armor_pants_legs": "lorc/trousers",
+    "armor_jacket_body": "delapouite/pirate-coat",
+    "armor_snowjacket_body": "delapouite/sleeveless-jacket",
+    "armor_bandana_face": "delapouite/bandana",
+    "armor_balaclava_face": "delapouite/robber-mask",
+    "armor_beenie_head": "delapouite/winter-hat",
+    "tea_warming": "lorc/coffee-mug",
+    "tea_warming_strong": "lorc/teapot",
+    "tea_cooling": "delapouite/coffee-cup",
+    "tea_warding": "delapouite/teapot-leaves",
+    "tea_healing": "delapouite/herbs-bundle",
 }
 
 # The three vitals, bottom right, in every frame of play.
@@ -293,7 +282,7 @@ ITEMS = {
 # — a stem in it that no item declares exits nonzero — because the wire carries
 # an item's display name and a missing picture must fail here rather than
 # silently in a cell. A vital is not an item and never will be, so it belongs
-# with `SHAPES` and `VERBS`: stems the interface needs that the content does
+# with `VERBS` and the shape glyphs: stems the interface needs that the content does
 # not name.
 #
 # They were the ASCII characters `+`, `~` and `*` until 2026-08-25 — the code
@@ -435,24 +424,45 @@ ELSEWHERE = {
     "keycard_blue": "keycards.py",
     "keycard_red": "keycards.py",
     "abyss_rug": "abyss_rug.py",
+    "water_catcher": "water_catcher.py",
+    "potato": "crops.py",
+    "potato_seed": "crops.py",
+    "pumpkin": "crops.py",
+    "pumpkin_seed": "crops.py",
+    "berry_seed": "crops.py",
 }
 
 # Ours, and NOT an item — so it cannot live in `OURS`, which is held equal to
 # `content/items.toml` the same way `ITEMS` is. `map_player` is the marker the
 # map screen spins by the compass's yaw; the archive has no compact glyph that
 # points up, and the file itself says which five were probed.
-# Building silhouettes describe the exact partial height or turn in our
-# catalogue. They use the same white-on-transparent bake as the archive art.
+# Every building shape is ours: one isometric line-art family drawn from our
+# geometry by `ci/icons/shape_icons.py` (run it first when a shape changes).
+SHAPE_STEMS = [
+    "shape_foundation",
+    "shape_tri_foundation",
+    "shape_wall",
+    "shape_half_wall",
+    "shape_low_wall",
+    "shape_doorway",
+    "shape_window",
+    "shape_wall_frame",
+    "shape_floor",
+    "shape_floor_frame",
+    "shape_tri_floor",
+    "shape_tri_floor_frame",
+    "shape_stairs",
+    "shape_roof",
+    "shape_tri_roof",
+    "shape_foundation_steps",
+    "shape_ramp",
+    "shape_stairs_l",
+    "shape_stairs_u",
+    "shape_stairs_spiral",
+    "shape_stairs_tri_spiral",
+]
 OURS_UI = {
-    "shape_half_wall": "shape_half_wall",
-    "shape_low_wall": "shape_low_wall",
-    "shape_foundation_steps": "shape_foundation_steps",
-    "shape_ramp": "shape_ramp",
-    "shape_stairs_l": "shape_stairs_l",
-    "shape_stairs_u": "shape_stairs_u",
-    "shape_stairs_spiral": "shape_stairs_spiral",
-    "shape_stairs_tri_spiral": "shape_stairs_tri_spiral",
-    "shape_tri_floor_frame": "shape_tri_floor_frame",
+    **{s: s for s in SHAPE_STEMS},
 
     "map_player": "map_player",
 }
@@ -476,8 +486,7 @@ unknown = sorted((set(ITEMS) | set(OURS) | set(ELSEWHERE)) - set(BY_ID))
 if unknown:
     sys.exit(f"map names items the content does not have: {unknown}")
 
-ALL = dict(SHAPES)
-ALL.update(VERBS)
+ALL = dict(VERBS)
 ALL.update(VITALS)
 ALL.update(MAP)
 ALL.update(UI)

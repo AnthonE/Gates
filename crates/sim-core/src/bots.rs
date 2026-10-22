@@ -10,9 +10,9 @@
 //! its own `Pcg32`, so nothing here moves a digest that existed before it.
 
 use crate::build::{
-    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, LOC_TRI_XLO_ZLO, MAT_STONE,
-    MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS_L,
-    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
+    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY,
+    SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS_L, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL,
 };
 use crate::deploy::{
     box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH,
@@ -54,7 +54,7 @@ const JUMP_PERIOD: u16 = 128;
 /// bot looking at the sky or its own feet two frames in three hit nothing
 /// it wandered past, and `test_replay`'s barrel-smash coverage went to
 /// zero. The band is where a person looks while walking — down enough to
-/// take a barrel (0.96 m) or a stone node (1.13 m) at a stride's distance
+/// take a barrel (1.2 m) or a stone node (1.13 m) at a stride's distance
 /// from a 1.6 m eye, up enough to still launch an arrow with some lift.
 /// Bounded, so every value is wire-legal by construction.
 pub const PITCH_LOW: u32 = 80;
@@ -597,11 +597,8 @@ const X: u8 = LOC_EDGE_XLO;
 const Z: u8 = LOC_EDGE_ZLO;
 const P: u8 = LOC_PLANE;
 
-const T: u8 = LOC_TRI_XLO_ZLO;
-const D: u8 = LOC_DIAG_B;
-
-/// The Rust starter a bot builds: a **2x1 with a triangle airlock, two
-/// storeys and a roof**, laid out and built in the order players build it
+/// The Rust starter a bot builds: a **2x1 with an airlock, two storeys and
+/// a roof**, laid out and built in the order players build it
 /// (`reference/BUILDING.md` §7b). Seen from above, the plot cell is the core:
 ///
 /// ```text
@@ -611,20 +608,19 @@ const D: u8 = LOC_DIAG_B;
 ///  west  |   TC   |  cell  |  east  two cells stays open
 ///        |        |   L    |
 ///        +--------+--door--+      the inner door
-///                 d       /
-///   outer door -> o     /         the airlock: half a cell, its long
-///                 o   /           side a diagonal wall
-///                 r /
-///                 +
+///                 d        |
+///   outer door -> o airlock|
+///                 o        |
+///                 r        |
+///                 +--------+
 ///               south
 /// ```
 ///
 /// - **The cupboard goes down first**, right after the core's foundation, so
 ///   the plot is claimed before anybody else can build on it.
 /// - **Two doors between the outside and the cupboard.** The front door opens
-///   into a triangle, the second out of it into the room: whoever follows you
-///   in meets a shut door, which is what an airlock is for, and the triangle
-///   is the cheapest room there is (half a foundation).
+///   into the airlock, the second out of it into the room: whoever follows you
+///   in meets a shut door, which is what an airlock is for.
 /// - **An L flight in the stair cell** climbs north up its east side, turns
 ///   west along its north wall and lands on the core's upper floor through
 ///   the open edge between the cells. A flight lands a full storey up right
@@ -645,8 +641,9 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Foundation, 0, 0, 0, P),
     Deploy(Kit::Hearth, 0, 0, 0, P),
     Place(Part::Foundation, 1, 0, 0, P),
-    Place(Part::TriFoundation, 1, 1, 0, T),
-    // The ground floor's shell, the airlock's two doorways and its long side.
+    Place(Part::Foundation, 1, 1, 0, P),
+    // The ground floor's shell, the airlock's two doorways and its outer
+    // walls.
     Place(Part::Wall, 0, 0, 0, X),
     Place(Part::Wall, 0, 0, 0, Z),
     Place(Part::Wall, 0, 1, 0, Z),
@@ -654,13 +651,15 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 2, 0, 0, X),
     Place(Part::Doorway, 1, 1, 0, Z),
     Place(Part::Doorway, 1, 1, 0, X),
-    Place(Part::Wall, 1, 1, 0, D),
+    Place(Part::Wall, 2, 1, 0, X),
+    Place(Part::Wall, 1, 2, 0, Z),
     // Doors: metal on the front if there is one, else wood; wood on the
     // inner one (refused wherever a door already hangs). The front door is
-    // first because it is the one a single door goes on. Its lock is set
-    // from inside the airlock, reached through the inner doorway before
-    // that door hangs; then the inner door and its lock from the room
-    // ([`stand_m`]: a lock is worked within a hand's reach of its door).
+    // first because it is the one a single door goes on. It is hung and its
+    // lock set from inside the airlock, reached through the inner doorway
+    // before that door hangs; then the inner door and its lock from the room
+    // ([`stand_m`]: a door is hung in sight of it, a lock worked within a
+    // hand's reach of its door).
     Deploy(Kit::MetalDoor, 1, 1, 0, X),
     Deploy(Kit::Door, 1, 1, 0, X),
     Deploy(Kit::Lock, 1, 1, 0, X),
@@ -679,7 +678,7 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 1, 1, 1, Z),
     Place(Part::Roof, 0, 0, 2, P),
     Place(Part::Roof, 1, 0, 2, P),
-    Place(Part::TriRoof, 1, 1, 1, T),
+    Place(Part::Roof, 1, 1, 1, P),
     // Grade in stone: the core's walls first, then the rest of the shell.
     Upgrade(0, 0, 0, X, MAT_STONE),
     Upgrade(0, 0, 0, Z, MAT_STONE),
@@ -688,11 +687,13 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(2, 0, 0, X, MAT_STONE),
     Upgrade(1, 1, 0, Z, MAT_STONE),
     Upgrade(1, 1, 0, X, MAT_STONE),
-    Upgrade(1, 1, 0, D, MAT_STONE),
+    Upgrade(2, 1, 0, X, MAT_STONE),
+    Upgrade(1, 2, 0, Z, MAT_STONE),
     Upgrade(0, 0, 0, P, MAT_STONE),
     Upgrade(1, 0, 0, P, MAT_STONE),
-    Upgrade(1, 1, 0, T, MAT_STONE),
-    // Loot upstairs, over the cupboard.
+    Upgrade(1, 1, 0, P, MAT_STONE),
+    // Loot upstairs, over the cupboard, put down from up there
+    // ([`stand_level`]).
     Deploy(Kit::Box, 0, 0, 1, P),
     // What stone did not reach goes to wood with what wood is left (refused
     // as a step down wherever stone got there first).
@@ -703,10 +704,11 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(2, 0, 0, X, MAT_WOOD),
     Upgrade(1, 1, 0, Z, MAT_WOOD),
     Upgrade(1, 1, 0, X, MAT_WOOD),
-    Upgrade(1, 1, 0, D, MAT_WOOD),
+    Upgrade(2, 1, 0, X, MAT_WOOD),
+    Upgrade(1, 2, 0, Z, MAT_WOOD),
     Upgrade(0, 0, 0, P, MAT_WOOD),
     Upgrade(1, 0, 0, P, MAT_WOOD),
-    Upgrade(1, 1, 0, T, MAT_WOOD),
+    Upgrade(1, 1, 0, P, MAT_WOOD),
     // And the second storey the same way, once the ground floor is done.
     Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_STONE),
     Upgrade(0, 0, 1, P, MAT_STONE),
@@ -718,7 +720,7 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(1, 1, 1, Z, MAT_STONE),
     Upgrade(0, 0, 2, P, MAT_STONE),
     Upgrade(1, 0, 2, P, MAT_STONE),
-    Upgrade(1, 1, 1, T, MAT_STONE),
+    Upgrade(1, 1, 1, P, MAT_STONE),
     Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_WOOD),
     Upgrade(0, 0, 1, P, MAT_WOOD),
     Upgrade(0, 0, 1, X, MAT_WOOD),
@@ -729,7 +731,7 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(1, 1, 1, Z, MAT_WOOD),
     Upgrade(0, 0, 2, P, MAT_WOOD),
     Upgrade(1, 0, 2, P, MAT_WOOD),
-    Upgrade(1, 1, 1, T, MAT_WOOD),
+    Upgrade(1, 1, 1, P, MAT_WOOD),
     // Rent.
     Feed(0, 0, 0),
 ];
@@ -739,14 +741,24 @@ pub const STARTER: &[BaseOp] = &[
 pub const STARTER_FOOTPRINT: [(i8, i8); 3] = [(0, 0), (1, 0), (1, 1)];
 
 /// Where the owner stands while it builds, in metres from the plot cell's
-/// low corner: in the core, between the cupboard and the north wall, where
-/// every address of [`STARTER`] is inside `build::BUILD_REACH_M` (planar
-/// reach, so every storey is) and which both doors stand between and the
-/// outside.
-pub const STARTER_STAND_M: (f32, f32) = (1.8, 0.75);
+/// low corner: in the core, in front of the cupboard by the north wall, where
+/// every address of [`STARTER`] but the airlock's outer walls is inside
+/// `build::BUILD_REACH_M` (planar reach, so every storey is) and which both
+/// doors stand between and the outside.
+pub const STARTER_STAND_M: (f32, f32) = (2.45, 0.75);
 
-/// Where the owner stands to set the front door's lock: inside the airlock
-/// triangle, in line with the inner doorway it came in by.
+/// How the cupboard stands in the core: at its centre, turned a quarter to
+/// face the room (+X). Rust's cupboard is 1.54 x 0.92 m and as tall as you;
+/// turned, it leaves the core's open east side a metre wide for the stand
+/// spot and the walk round it, where facing +Z it left 0.73 m, under a body.
+pub const HEARTH_POSE: crate::footprint::Pose = crate::footprint::Pose {
+    ox: 0,
+    oz: 0,
+    yaw: 64,
+};
+
+/// Where the owner stands to set the front door's lock: inside the airlock,
+/// in line with the inner doorway it came in by.
 pub const AIRLOCK_STAND_M: (f32, f32) = (4.4, 3.7);
 
 /// Where it stands to hang the inner door and set its lock: in the room,
@@ -754,17 +766,37 @@ pub const AIRLOCK_STAND_M: (f32, f32) = (4.4, 3.7);
 pub const INNER_STAND_M: (f32, f32) = (4.5, 2.2);
 
 /// Where the owner stands for `op`, in metres from the plot cell's low
-/// corner: [`STARTER_STAND_M`] for everything but the two doors' locks,
-/// which are worked from beside their doors. A door is reached at
-/// `backpack::LOOT_REACH_M`, in sight and on its storey (`reach.rs`), and
-/// neither door is, from the core.
+/// corner: [`STARTER_STAND_M`] for everything but the two doors, their
+/// locks and codes, which are worked from beside their doors, and the
+/// airlock's two outer walls, past build reach from the core and worked
+/// from the room. A door is reached at `backpack::LOOT_REACH_M`, in sight
+/// and on its storey (`reach.rs`), and neither door is, from the core; nor
+/// is the front doorway in sight of it, and a door is hung only where the
+/// hand sees (`deploy::place_deploy`). [`stand_level`] is the storey.
 pub fn stand_m(op: BaseOp) -> (f32, f32) {
     match op {
-        Deploy(Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => AIRLOCK_STAND_M,
+        Deploy(Kit::MetalDoor | Kit::Door | Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => {
+            AIRLOCK_STAND_M
+        }
         Deploy(Kit::Door, 1, 1, 0, Z) | Deploy(Kit::Lock, 1, 1, 0, Z) | Code(1, 1, 0, Z) => {
             INNER_STAND_M
         }
+        Place(_, 2, 1, 0, X)
+        | Place(_, 1, 2, 0, Z)
+        | Upgrade(2, 1, 0, X, _)
+        | Upgrade(1, 2, 0, Z, _) => INNER_STAND_M,
         _ => STARTER_STAND_M,
+    }
+}
+
+/// The storey the owner stands on for `op`: the ground floor but for a
+/// deployable on a floor above it (the box over the cupboard), put down
+/// from that floor, over [`stand_m`]'s spot. A hand places only what it
+/// sees (`deploy::place_deploy`), and from below, the floor is in the way.
+pub fn stand_level(op: BaseOp) -> u8 {
+    match op {
+        Deploy(Kit::Hearth | Kit::Box, _, _, level, P) => level,
+        _ => 0,
     }
 }
 
@@ -794,6 +826,12 @@ impl BasePlan {
     pub fn cell(&self, dx: i8, dz: i8) -> (u16, u16) {
         let at = |c: u16, d: i8| (c as i32 + d as i32).clamp(0, u16::MAX as i32) as u16;
         (at(self.cx, dx), at(self.cz, dz))
+    }
+
+    /// The storey the owner stands on for the next op of `blueprint`
+    /// ([`stand_level`]).
+    pub fn stand_level(&self, blueprint: &[BaseOp]) -> u8 {
+        stand_level(blueprint[self.next as usize % blueprint.len()])
     }
 
     /// Where the owner stands for the next op of `blueprint`, world metres
@@ -906,7 +944,10 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
                 cz,
                 level,
                 loc,
-                pose: crate::footprint::Pose::CENTRE,
+                pose: match kit {
+                    Kit::Hearth => HEARTH_POSE,
+                    _ => crate::footprint::Pose::CENTRE,
+                },
             }
         }
         Code(..) => Command::Access {

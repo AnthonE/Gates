@@ -164,7 +164,7 @@ pub fn setup(
         .find(|r| !r.direct && r.addr == addr)
         .map(|r| r.name.clone())
         .unwrap_or(addr);
-    let title = if name.is_empty() {
+    let title = if name.is_empty() || crate::ui::streamer::on() {
         "ENTERING THE ISLAND".to_string()
     } else {
         format!("ENTERING {}", name.to_uppercase())
@@ -175,6 +175,13 @@ pub fn setup(
         .spawn((
             LoadingCam,
             Camera2d,
+            // Off, never Bevy's default 4×. Cameras drawing to one target
+            // share its non-HDR main texture, and a scaled world's
+            // presentation camera (`render_scale`) is that and `Msaa::Off`:
+            // wgpu refuses the pass that pairs this camera's 4-sample depth
+            // with the shared 1-sample colour, and the page panicked on its
+            // first loading frame. A UI layer gains nothing from it anyway.
+            Msaa::Off,
             Camera {
                 // Above the rig, and blended over it rather than replacing
                 // it, so the fade at the end shows the world underneath.
@@ -300,7 +307,10 @@ pub fn update(
     // a wait, but the player still has to be able to leave one — the same
     // rule the connect screen obeys.
     if keyboard.just_pressed(KeyCode::Escape) {
-        menu.status = format!("{}: left while the world was loading", connecting.addr);
+        menu.status = format!(
+            "{}: left while the world was loading",
+            crate::ui::streamer::server(&connecting.addr)
+        );
         next.set(Screen::Menu);
         return;
     }

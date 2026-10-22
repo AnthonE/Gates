@@ -596,12 +596,25 @@ pub struct Report {
     pub truncated: bool,
 }
 
+/// What a title or body that held a private key or recovery phrase becomes.
+pub const SECRET_REMOVED: &str =
+    "[removed: it looked like a private key or recovery phrase, which is never shared]";
+
 impl Report {
     /// The only way to build one. `title` and `body` are whatever a stranger
     /// typed; everything else is ours.
     pub fn new(kind: Kind, title: &str, body: &str, at: u64, build: Build) -> Self {
-        let (title, t_cut) = one_line(title, TITLE_MAX);
-        let (body, b_cut) = many_lines(body, BODY_MAX, BODY_LINES_MAX);
+        // Reports get posted where anyone reads them: a pasted key or
+        // recovery phrase is dropped, never published (`protocol::secret`).
+        fn unshared(s: &str) -> &str {
+            if protocol::secret::holds_secret(s) {
+                SECRET_REMOVED
+            } else {
+                s
+            }
+        }
+        let (title, t_cut) = one_line(unshared(title), TITLE_MAX);
+        let (body, b_cut) = many_lines(unshared(body), BODY_MAX, BODY_LINES_MAX);
         Self {
             format: FORMAT,
             kind,
@@ -627,7 +640,12 @@ impl Report {
     /// any other, since a payload can quote a chat line or a shard's name.
     pub fn crash(location: String, payload: &str, at: u64) -> Self {
         let mut r = Report::new(Kind::Crash, "the client panicked", "", at, Build::here());
-        let (message, cut) = many_lines(payload, BODY_MAX, BODY_LINES_MAX);
+        // Sent without the player pressing anything, so it carries no file
+        // path that names them: an `io::Error` quotes `/home/<name>/…`.
+        let home = home_dir();
+        let payload = redact_home(payload, home.as_deref());
+        let location = redact_home(&location, home.as_deref());
+        let (message, cut) = many_lines(&payload, BODY_MAX, BODY_LINES_MAX);
         r.truncated |= cut;
         r.crash = Some(Crash { location, message });
         r
@@ -1255,6 +1273,7 @@ fn forbidden(c: char) -> bool {
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{FEFF}')
+        || protocol::chat::hides_or_reorders(c)
 }
 
 /// Strip what may never appear, and normalise line endings to `\n`.
@@ -1346,4 +1365,51 @@ pub fn fence_for(body: &str) -> String {
         }
     }
     "`".repeat(longest.max(2) + 1)
+}
+
+/// The player's home directory, as the OS names it; `None` on the web.
+fn home_dir() -> Option<String> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .filter(|h| h.len() > 1)
+}
+
+/// `text` with every `home` in it written `~`.
+fn redact_home(text: &str, home: Option<&str>) -> String {
+    match home {
+        Some(h) => text.replace(h, "~"),
+        None => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A crash report never carries the player's home directory: it is sent
+    /// without a press, and a path there names them.
+    #[test]
+    fn a_crash_report_writes_the_home_directory_as_a_tilde() {
+        let msg = "No such file: /home/ana/.gates/agent.key at /home/ana/x";
+        assert_eq!(
+            redact_home(msg, Some("/home/ana")),
+            "No such file: ~/.gates/agent.key at ~/x"
+        );
+        assert_eq!(redact_home(msg, None), msg);
+    }
+
+    #[test]
+    fn a_pasted_key_never_reaches_a_report() {
+        let key = "0123456789abcdef".repeat(4);
+        let r = Report::new(
+            Kind::Other,
+            "stuck",
+            &format!("my key is {key}"),
+            0,
+            Build::here(),
+        );
+        assert_eq!(r.body, SECRET_REMOVED);
+        assert_eq!(r.title, "stuck");
+    }
 }

@@ -202,6 +202,7 @@ pub const WATCHED: &[&str] = &[
     "chat_undelivered",
     "save_ring_drops",
     "saves_evicted",
+    "saves_refused",
     "save_write_errors",
     "world_save_errors",
     "world_load_errors",

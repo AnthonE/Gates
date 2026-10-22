@@ -103,6 +103,9 @@ pub struct Manifest {
     pub workshop: Section,
     #[serde(default)]
     pub buddies: Section,
+    /// The companion page (`ui::hub::Section::Team`).
+    #[serde(default)]
+    pub team: Section,
 }
 
 /// Parse a fetched manifest.

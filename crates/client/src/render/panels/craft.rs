@@ -37,7 +37,7 @@ use super::{
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
 use crate::ui::craft::{
     affordable, cell_abbrev, class_count, countdown_label, ingredients, item_label, rows, seconds,
-    station_label, Row, CELL_LINE_CHARS, RAIL,
+    station_label, worn_line, Row, CELL_LINE_CHARS, RAIL,
 };
 
 /// Rust's favourite star, gold (≈#C8B02A).
@@ -557,7 +557,12 @@ fn detail_body(
             BorderColor::all(LINE),
         ))
         .with_children(|tile| {
-            if let Some(image) = icons.item(&name) {
+            let look = icons.look(
+                &name,
+                ui.skin,
+                crate::ui::skins::tint_of(&core.skins, ui.skin),
+            );
+            if let Some((image, color)) = look {
                 tile.spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -571,11 +576,7 @@ fn detail_body(
                     // picture follows the SKINS pick.
                     ImageNode {
                         image,
-                        color: match crate::ui::skins::tint_of(&core.skins, ui.skin) {
-                            _ if locked => PICTURE_DIM,
-                            Some([r, g, b]) => Color::srgb(r, g, b),
-                            None => PICTURE,
-                        },
+                        color: if locked { PICTURE_DIM } else { color },
                         ..default()
                     },
                 ));
@@ -705,6 +706,10 @@ fn detail_body(
     if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
+    // What it does worn (clothing v1): slot, protection, warmth, ward.
+    if let Some(line) = crate::ui::craft::clothing_line(&core.catalog, def.output) {
+        pane.spawn((Text::new(line), font_bold(11.0), TextColor(TEXT)));
+    }
     // The output's condition, in words (§0dur item 1).
     if let Some(line) = crate::ui::craft::wear_line(&core.catalog, def.output) {
         pane.spawn((Text::new(line), font(11.0), TextColor(TEXT_DIM)));
@@ -729,7 +734,7 @@ fn detail_body(
 
     // The ingredient table, headed exactly as the reference heads it, with
     // each ingredient's picture beside its name.
-    let (lines, n) = ingredients(def, count, &core.inv);
+    let (lines, n) = ingredients(def, count, &core.inv, &core.catalog);
     pane.spawn(Node {
         flex_direction: FlexDirection::Column,
         row_gap: Val::Px(3.0),
@@ -763,9 +768,15 @@ fn detail_body(
             );
         }
     });
+    // A line short only because what the pack holds is worn: an input that
+    // must go in whole (`craft::input_ceil`) says so, rather than a HAVE of
+    // 0 beside a revolver the player can see.
+    if let Some(why) = worn_line(&core.catalog, &lines[..n]) {
+        pane.spawn((Text::new(why), font_bold(11.0), TextColor(TEXT_SHORT)));
+    }
 
     // The stepper and the button.
-    let max = affordable(def, &core.inv);
+    let max = affordable(def, &core.inv, &core.catalog);
     pane.spawn(Node {
         flex_direction: FlexDirection::Row,
         column_gap: Val::Px(6.0),
@@ -1027,8 +1038,14 @@ fn skin_tile(
     } else {
         tile.insert((SkinStore(t.catalog), Hover::on(rest)));
     }
+    // A skin with a model of its own is its own picture, untinted.
+    let own = icons.skin(t.catalog);
+    let (picture, tint) = match own {
+        Some(h) => (Some(h), None),
+        None => (picture, t.tint),
+    };
     tile.with_children(|c| {
-        let [r, g, b] = t.tint.unwrap_or([1.0, 1.0, 1.0]);
+        let [r, g, b] = tint.unwrap_or([1.0, 1.0, 1.0]);
         // A skin you do not own is the look, dimmed: seen, not offered.
         let colour = if t.owned {
             Color::srgb(r, g, b)
@@ -1277,17 +1294,16 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(10.0)),
                 row_gap: Val::Px(6.0),
-                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
-            BorderColor::all(LINE),
+            BackgroundColor(super::REGION_BG),
         ))
         .with_children(|col| {
             col.spawn((
                 Text::new("QUICK CRAFT".to_string()),
-                font_bold(15.0),
+                font_bold(17.0),
                 TextColor(TEXT),
+                crate::render::ui::TEXT_SHADOW,
             ));
             if all.is_empty() {
                 col.spawn((
@@ -1752,7 +1768,9 @@ pub fn clicks(
                 }
             }
         } else {
-            let can = def.map(|d| affordable(d, &core.inv)).unwrap_or(0);
+            let can = def
+                .map(|d| affordable(d, &core.inv, &core.catalog))
+                .unwrap_or(0);
             if can == 0 {
                 // A cell kept for its queue: the pack pays for no more.
                 ui.say(format!("need materials for another {name}"));
@@ -1830,7 +1848,9 @@ pub fn clicks(
         };
         // The ceiling is what the inventory pays for, clamped into `u16`
         // because that is the wire's width for a craft count.
-        let max = affordable(def, &core.inv).min(u16::MAX as u32).max(1) as u16;
+        let max = affordable(def, &core.inv, &core.catalog)
+            .min(u16::MAX as u32)
+            .max(1) as u16;
         ui.count = match step.0 {
             STEP_MAX => max,
             by => (ui.count as i32 + by).clamp(1, max as i32) as u16,

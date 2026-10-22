@@ -558,7 +558,17 @@ const TICKS: u64 = 900;
 /// **Moved → `0x2A9B_5B07_1CF9_388C` at guns v1** (2026-10-18, wipe), with
 /// the trace: a shot leaves down the frame's whole yaw and fine pitch rather
 /// than the LUTs' 1.4° steps, so the fixture gun's rounds land elsewhere.
-const GOLDEN_FINAL_HASH: u64 = 0x1219_F954_2DB4_6F18;
+/// **Moved → `0xF5EC_8D2C_AC0F_ACE9` at bigger barrels and solid cactus
+/// arms** (2026-10-20).
+/// **Moved → `0x7A45_8D13_0403_3749` at the casino's seats** (2026-10-21):
+/// `state_hash` reads `Player::seat`.
+/// **Moved → `0x5CC0_ADCF_F6BF_2C03` at the water pass** (2026-10-21): bodies swim
+/// in deep water instead of walking the bed, and the beach and the shallows
+/// take foundations and the beach deployables — with both reverted the old
+/// hash came back exactly.
+/// **Moved → `0xDFE5_FB90_8304_DF97` at clothing v1** (2026-10-22, wipe): `state_hash`
+/// reads seven worn stacks and the teas.
+const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -678,7 +688,15 @@ const GOLDEN_FINAL_HASH: u64 = 0x1219_F954_2DB4_6F18;
 /// (2026-10-18, wipe), with the final hash.
 /// **Moved → `0x5BD3_1C07_2F40_36AD` at the feet** (2026-10-18, wipe), with the
 /// final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x3AE6_2EA8_0EEF_A5C1;
+/// **Moved → `0xD2DC_F376_72B4_9018` at bigger barrels and solid cactus arms**
+/// (2026-10-20), with the final hash.
+/// **Moved → `0xE06B_9175_7ECB_60ED` at the casino's seats** (2026-10-21), with the final
+/// hash.
+/// **Moved → `0x1D20_50E2_3399_DA27` at the water pass** (2026-10-21), with the final
+/// hash and for its reason.
+/// **Moved → `0xCBE6_446E_651E_CBA2` at clothing v1** (2026-10-22, wipe), with the final
+/// hash.
+const GOLDEN_TRACE_HASH: u64 = 0xCBE6_446E_651E_CBA2;
 
 /// Fold a stamped trace into one number.
 ///

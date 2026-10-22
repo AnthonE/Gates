@@ -8,6 +8,10 @@ health = 20
 food = 0
 water = 0
 seconds = 4
+# Rust's bandage: held, a click wraps it on (their `healDurationSelf`, 4 s)
+# and switching away cancels it; it stops 50 of the bleeding.
+use_seconds = 4
+bleed = -50
 
 [[consumable]]
 id = "item.medkit"
@@ -17,6 +21,8 @@ water = 0
 seconds = 8
 # reference/WOUNDED.md §2.5: paid only on a failed roll, from the belt.
 belt_recovery = true
+# Rust's medkit stops all the bleeding.
+bleed = -100
 
 # `revive`: used on a downed body in reach (`Command::Treat`), it stands the
 # body up at once, as a won roll does, and heals it by `health` (the
@@ -47,12 +53,18 @@ fel = -400
 # Hydrating and calorie-poor, which is the reference's own split: meat
 # feeds and barely wets, forage wets and barely feeds, and a player who
 # eats only one of them dies of the other.
+#
+# `leaves` is what eating one leaves in your hand, `leaves_pm` per mille of
+# the time (Rust's seeds-from-eating): a berry's seed is spat out a quarter
+# of the time, a cob, a potato and a pumpkin always leave theirs.
 [[consumable]]
 id = "item.berries"
 health = 0
 food = 10
 water = 20
 seconds = 2
+leaves = "item.berry_seed"
+leaves_pm = 250
 
 [[consumable]]
 id = "item.mushrooms"
@@ -76,6 +88,29 @@ health = 0
 food = 40
 water = 20
 seconds = 3
+leaves = "item.corn_seed"
+leaves_pm = 1000
+
+# The second wave's food (`cooking.toml`'s potato and pumpkin crops). A raw
+# potato is a plain filler, corn's poorer cousin that grows a little faster;
+# a pumpkin is two meals and a drink, the slow crop's reward.
+[[consumable]]
+id = "item.potato"
+health = 0
+food = 25
+water = 5
+seconds = 3
+leaves = "item.potato_seed"
+leaves_pm = 1000
+
+[[consumable]]
+id = "item.pumpkin"
+health = 0
+food = 80
+water = 30
+seconds = 4
+leaves = "item.pumpkin_seed"
+leaves_pm = 1000
 
 # The best food on the island, and the only one that costs a walk: a kill, a
 # carry, a fire and a wait (`cooking.toml`). It is the one consumable that
@@ -115,3 +150,67 @@ health = 0
 food = 0
 water = 100
 seconds = 2
+
+# A full jug: two skins at once, so a slower drink.
+[[consumable]]
+id = "item.water_jug_full"
+health = 0
+food = 0
+water = 200
+seconds = 4
+# Teas (Rust's tea modifiers, clothing v1). Every one is +30 water, as all of
+# theirs are. `brew_amount` is degrees for warming and cooling, per cent kept
+# out for warding. Theirs: basic warming +5 for 20 min; the floor (their Min
+# Temperature) on the strong one is ours at 1 °C, the line where the cold
+# starts to cost hp (`[exposure] cold_below_c` less 12) — for half an hour
+# nothing the cold does can hurt you, and that is the tea's whole point.
+[[consumable]]
+id = "item.tea_warming"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warming"
+brew_amount = 5
+brew_minutes = 20
+
+[[consumable]]
+id = "item.tea_warming_strong"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warming"
+brew_amount = 10
+brew_floor_c = 1
+brew_minutes = 30
+
+[[consumable]]
+id = "item.tea_cooling"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "cooling"
+brew_amount = 10
+brew_minutes = 20
+
+# Their anti-rad tea's basic tier, for the Verdigris: 15 % for 30 min, on top
+# of what is worn (never past 95 %, `exposure::BREW_WARD_CEIL_PM`).
+[[consumable]]
+id = "item.tea_warding"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warding"
+brew_amount = 15
+brew_minutes = 30
+
+# Their basic healing tea: 30 hp over 30 s.
+[[consumable]]
+id = "item.tea_healing"
+health = 30
+food = 0
+water = 30
+seconds = 30

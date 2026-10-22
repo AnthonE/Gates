@@ -16,6 +16,9 @@ use std::net::SocketAddr;
 ///
 /// Proposed default, DECISIONS.md §open ("world persistence v0").
 pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
+/// How long a transcript file is kept (`transcript_days`): two weeks, long
+/// enough for a report to be filed and read.
+pub const DEFAULT_TRANSCRIPT_DAYS: u32 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetSim {
@@ -207,6 +210,10 @@ pub struct ShardConfig {
     /// separate operator act again. Port 0 binds ephemeral (the test path,
     /// same as `bind`). DECISIONS.md §open ("shard status endpoint v0").
     pub status_addr: Option<SocketAddr>,
+    /// Where the companion listens (`companion.rs`): the page and API a
+    /// player or an agent signs in to from outside the game. Unset serves
+    /// nothing, like `status_addr`.
+    pub companion_addr: Option<SocketAddr>,
     /// The shard's name for SIWE domain binding — what goes in the signed
     /// message, and what a player sees in their wallet prompt.
     ///
@@ -295,6 +302,14 @@ pub struct ShardConfig {
     /// Where admin bans last (`ban_file`, `admin::Bans`). `None` ⇒ a ban
     /// holds for the uptime only.
     pub ban_file: Option<String>,
+    /// Caption and translate what players say (`captions`, `scribe.rs`).
+    /// Off by default; on, the boot needs a transcriber's key in the
+    /// environment.
+    pub captions: bool,
+    /// Where transcripts are kept (`transcript_file`), one file a day beside
+    /// it; `None` keeps none. And for how many days (`transcript_days`).
+    pub transcript_file: Option<String>,
+    pub transcript_days: u32,
     /// **How many resident inhabitants the shard seats itself**
     /// (`population.rs`). Bots, dialled over this shard's own wire after the
     /// bind, running the raid profile — half owners building and locking,
@@ -318,6 +333,20 @@ pub struct ShardConfig {
     /// person's however many agents dial. People are never counted against
     /// it. Zero is the shipping default and caps nothing.
     pub agent_seats: u32,
+    /// **This host's own public addresses** (`own_sources`), counted by no
+    /// per-source cap (`net.rs`: the in-flight handshakes, the network's and
+    /// the seats, `SEATS_PER_SOURCE`). A
+    /// shard bound to a wildcard (`0.0.0.0`) cannot know the address its
+    /// house agents arrive from — they dial its public name, so they come
+    /// from the box's public address — and without this all of them count as
+    /// one source. Empty unless set; at most [`OWN_SOURCES_MAX`].
+    pub own_sources: Vec<std::net::IpAddr>,
+    /// **An agent-only world** (`agents_only`): the shard seats declared
+    /// agents (`HELLO_AGENT`) and spectators, and refuses a person at the
+    /// hello with `REFUSE_AGENTS`. Off by default. Anyone may host one
+    /// (`shard-agents.toml`); we never run one. Refused together with a
+    /// `population`, because an inhabitant handshakes as a person.
+    pub agents_only: bool,
     /// Which congestion controller quinn runs (`cc = "cubic" | "bbr"`).
     ///
     /// **CUBIC is the default and stays the default.** `NETCODE.md` §2.1
@@ -433,6 +462,7 @@ impl ShardConfig {
             wipe: None,
             blueprint_wipe_every: 2,
             status_addr: None,
+            companion_addr: None,
             domain: "127.0.0.1".into(),
             siwe_domains: None,
             entitle: crate::entitle::Config::off(),
@@ -450,8 +480,13 @@ impl ShardConfig {
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
             ban_file: None,
+            captions: false,
+            transcript_file: None,
+            transcript_days: DEFAULT_TRANSCRIPT_DAYS,
             population: 0,
             agent_seats: 0,
+            own_sources: Vec::new(),
+            agents_only: false,
             spectate: Spectate::OFF,
             team_max: protocol::TEAM_MAX as u8,
         }
@@ -512,6 +547,50 @@ fn parse_siwe_domains(value: &str) -> Result<Vec<String>, String> {
     }
     if out.is_empty() {
         return Err("siwe_domains names no host — omit the key to accept `domain` alone".into());
+    }
+    Ok(out)
+}
+
+/// Most addresses `own_sources` may list: a host's few public addresses,
+/// not a way to switch the per-source caps off for a network.
+pub const OWN_SOURCES_MAX: usize = 8;
+
+/// `own_sources`' value: a quoted comma string of plain IP addresses,
+/// `"203.0.113.7, 2001:db8::7"`, read canonical (a v4-mapped v6 address is
+/// its v4 one). Refused whole on anything that is not one — a name too, since
+/// resolving it would make the exemption whatever DNS says that day — and on
+/// an unspecified address, which no connection comes from.
+fn parse_own_sources(value: &str) -> Result<Vec<std::net::IpAddr>, String> {
+    let mut out: Vec<std::net::IpAddr> = Vec::with_capacity(OWN_SOURCES_MAX);
+    for entry in value.split(',').map(str::trim) {
+        if entry.is_empty() {
+            continue;
+        }
+        let Ok(ip) = entry.parse::<std::net::IpAddr>() else {
+            return Err(format!(
+                "own_sources names `{entry}`, which is not an IP address (no port, no \
+                 name) — write them as one quoted comma string, \"203.0.113.7, 2001:db8::7\""
+            ));
+        };
+        let ip = ip.to_canonical();
+        if ip.is_unspecified() {
+            return Err(format!(
+                "own_sources names `{entry}`, which no connection comes from — name this \
+                 host's public address"
+            ));
+        }
+        if out.contains(&ip) {
+            return Err(format!("own_sources names `{entry}` twice"));
+        }
+        if out.len() >= OWN_SOURCES_MAX {
+            return Err(format!(
+                "own_sources names more than {OWN_SOURCES_MAX} addresses"
+            ));
+        }
+        out.push(ip);
+    }
+    if out.is_empty() {
+        return Err("own_sources names no address — omit the key to exempt none".into());
     }
     Ok(out)
 }
@@ -626,6 +705,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut wipe_anchor: Option<u64> = None;
     let mut blueprint_wipe_every: u32 = 2;
     let mut status_addr: Option<SocketAddr> = None;
+    let mut companion_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
     let mut entitle_origin: Option<String> = None;
@@ -633,8 +713,13 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut admins: Option<crate::admin::Admins> = None;
     let mut anomaly_file: Option<String> = None;
     let mut ban_file: Option<String> = None;
+    let mut captions = false;
+    let mut transcript_file: Option<String> = None;
+    let mut transcript_days = DEFAULT_TRANSCRIPT_DAYS;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
+    let mut own_sources: Vec<std::net::IpAddr> = Vec::new();
+    let mut agents_only: Option<bool> = None;
     let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
@@ -958,6 +1043,22 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // — an empty value fails the same parse, so the "a line the
             // operator wrote is a line they meant" rule holds without a
             // separate check. Off is the key being absent.
+            "companion_addr" => {
+                let addr: SocketAddr = value
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad companion_addr: {e}", n + 1))?;
+                // The watch origin's rule: a serial hand-rolled listener that
+                // signs people in is published through a reviewed proxy
+                // (nginx buffers, rate-limits and terminates TLS), never
+                // bound where the internet can hold its one thread.
+                if !addr.ip().is_loopback() {
+                    return Err(format!(
+                        "shard.toml line {}: companion_addr must be loopback; publish it through a reverse proxy",
+                        n + 1
+                    ));
+                }
+                companion_addr = Some(addr);
+            }
             "status_addr" => {
                 status_addr = Some(
                     value
@@ -1240,6 +1341,52 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     )
                 })?;
             }
+            // The host's own public addresses, which no per-source cap
+            // counts (`ShardConfig::own_sources`).
+            "own_sources" => {
+                own_sources = parse_own_sources(value)
+                    .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?;
+            }
+            // Admission policy, so refused rather than coerced, as
+            // `require_auth` is.
+            "captions" => match value {
+                "true" => captions = true,
+                "false" => captions = false,
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: captions must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
+            "transcript_file" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: transcript_file is empty",
+                        n + 1
+                    ));
+                }
+                transcript_file = Some(value.to_string());
+            }
+            "transcript_days" => {
+                transcript_days = value.parse().ok().filter(|&d| d > 0).ok_or_else(|| {
+                    format!(
+                        "shard.toml line {}: transcript_days must be a whole number of days, \
+                         at least 1",
+                        n + 1
+                    )
+                })?;
+            }
+            "agents_only" => match value {
+                "true" => agents_only = Some(true),
+                "false" => agents_only = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: agents_only must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
             // Refused rather than defaulted on an unknown value: an
             // operator who typed `cc = "bbr2"` wanted something other than
             // CUBIC, and silently giving them CUBIC is the A/B reporting a
@@ -1422,6 +1569,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    // The same storm through the other door: an inhabitant says no
+    // `HELLO_AGENT`, so an agent-only shard refuses every one of them.
+    if population.unwrap_or(0) > 0 && agents_only.unwrap_or(false) {
+        return Err(
+            "shard.toml: population needs agents_only = false — an inhabitant joins \
+             as a person, so an agent-only shard refuses every one of them and the \
+             population re-dials its own closed door. Seat agents with jev-bot instead"
+                .into(),
+        );
+    }
     if prizes.places.iter().any(|p| !p.is_empty()) && prizes.ticker.is_empty() {
         return Err("shard.toml: prize places without prize_ticker — paid in what?".into());
     }
@@ -1486,6 +1643,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         world_file,
         world_save_interval_ticks,
         status_addr,
+        companion_addr,
         // Unset ⇒ 0, which admits every client that can talk to this shard at
         // all. `PROTO_VER` is still exact; this floor is the operator's extra.
         min_client: min_client.unwrap_or(0),
@@ -1497,9 +1655,14 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
         ban_file,
+        captions,
+        transcript_file,
+        transcript_days,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,
+        own_sources,
+        agents_only: agents_only.unwrap_or(false),
         spectate,
         team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
     })
@@ -2026,6 +2189,85 @@ mod auth_cfg_tests {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("agent_seats"), "{err}");
         }
+    }
+
+    /// `own_sources`: absent is none, set is a short list of plain addresses
+    /// read canonical; anything else refuses the boot. The public shard binds
+    /// a wildcard and its house agents dial it from its own public address,
+    /// so its config has to name that address.
+    #[test]
+    fn own_sources_parse_or_refuse_and_the_public_shard_names_its_host() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert!(parse_shard_toml(base).unwrap().own_sources.is_empty());
+        assert!(ShardConfig::ephemeral(1).own_sources.is_empty());
+        let three = parse_shard_toml(&format!(
+            "{base}own_sources = \"203.0.113.7, ::ffff:198.51.100.2, 2001:db8::7\"\n"
+        ))
+        .unwrap();
+        let want: Vec<std::net::IpAddr> = ["203.0.113.7", "198.51.100.2", "2001:db8::7"]
+            .iter()
+            .map(|a| a.parse().unwrap())
+            .collect();
+        assert_eq!(
+            three.own_sources, want,
+            "v4-mapped is read as its v4 address"
+        );
+        let too_many = (1..=OWN_SOURCES_MAX + 1)
+            .map(|i| format!("203.0.113.{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for bad in [
+            "own_sources = \"game.example\"\n".to_string(),
+            "own_sources = \"203.0.113.7:61234\"\n".to_string(),
+            "own_sources = \"203.0.113.7, 203.0.113.7\"\n".to_string(),
+            "own_sources = \"0.0.0.0\"\n".to_string(),
+            "own_sources = \"\"\n".to_string(),
+            format!("own_sources = \"{too_many}\"\n"),
+        ] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("own_sources"), "{bad}: {err}");
+        }
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../shard-public.toml");
+        let public = parse_shard_toml(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(public.bind.ip().is_unspecified());
+        assert!(
+            public
+                .own_sources
+                .contains(&"5.161.193.186".parse().unwrap()),
+            "the house agents' box (ops/gates-village@.service) is exempt"
+        );
+    }
+
+    #[test]
+    fn agents_only_defaults_off_reads_both_ways_and_refuses_a_population() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert!(!parse_shard_toml(base).unwrap().agents_only);
+        assert!(!ShardConfig::ephemeral(1).agents_only);
+        let on = parse_shard_toml(&format!("{base}agents_only = true\nspectate = true\n")).unwrap();
+        assert!(on.agents_only && on.spectate.open());
+        assert!(
+            !parse_shard_toml(&format!("{base}agents_only = false\n"))
+                .unwrap()
+                .agents_only
+        );
+        for bad in ["yes", "1", "True", ""] {
+            let err = parse_shard_toml(&format!("{base}agents_only = {bad}\n")).unwrap_err();
+            assert!(err.contains("agents_only"), "{err}");
+        }
+        let err =
+            parse_shard_toml(&format!("{base}agents_only = true\npopulation = 4\n")).unwrap_err();
+        assert!(
+            err.contains("agents_only") && err.contains("population"),
+            "{err}"
+        );
+        // A population alone still boots: the refusal is the pair.
+        assert_eq!(
+            parse_shard_toml(&format!("{base}population = 4\n"))
+                .unwrap()
+                .population,
+            4
+        );
     }
 
     #[test]

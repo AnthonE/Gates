@@ -29,6 +29,12 @@ pub enum EquipSlot {
     Body,
     Feet,
     None,
+    // Clothing v1 (Rust's seven clothing slots). Appended, so the hashed
+    // discriminants of the older five do not move.
+    Legs,
+    Hands,
+    Shirt,
+    Face,
 }
 
 /// What an item is, for the craft rail (`sim_core::craft::CLASS_*`): the
@@ -117,6 +123,22 @@ pub struct Item {
     /// point per tick — see `sim_core::light::step`.
     #[serde(default)]
     pub light_burn: u32,
+    /// What this item's `cond` carries when it is DATA, not wear ([`CondCarries`]).
+    /// Absent means wear (or nothing, at `condition_max` 0). Requires
+    /// `condition_max = 0`: one field cannot be both.
+    #[serde(default)]
+    pub cond_carries: Option<CondCarries>,
+}
+
+/// An item whose stack `cond` is data (`sim_core::gather::GatherContent::cond_cap`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CondCarries {
+    /// A crop seed: `cond` = a clone's genes + 1 (`sim_core::farm`), 0 a
+    /// blank seed. Every `[[crop]]` seed carries genes, and nothing else does.
+    Genes,
+    /// The research blueprint: `cond` = the recipe's item + 1.
+    Target,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -141,6 +163,10 @@ pub enum NodeArchetype {
     Stump,
     /// The desert's cactus (`terrain::Occupant::Cactus`), swung at.
     Cactus,
+    /// Wild corn by a lake (`terrain::Occupant::WildCorn`), picked by hand.
+    WildCorn,
+    /// A wild pumpkin by a lake (`terrain::Occupant::WildPumpkin`), picked by hand.
+    WildPumpkin,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its
@@ -593,8 +619,44 @@ pub struct Weapon {
 #[serde(rename_all = "snake_case")]
 pub enum ArmorSlot {
     Head,
+    /// The outer torso layer: vests, plates, jackets, ponchos.
     Body,
     Feet,
+    Legs,
+    Hands,
+    /// The inner torso layer, under `Body`: shirts, hoodies, tank tops.
+    Shirt,
+    /// Under the hat: masks and bandanas.
+    Face,
+}
+
+impl ArmorSlot {
+    /// The sim's one-based wear slot (`sim_core::combat::WEAR_*`).
+    pub fn wear(self) -> u8 {
+        use sim_core::combat::*;
+        match self {
+            ArmorSlot::Head => WEAR_HEAD,
+            ArmorSlot::Body => WEAR_BODY,
+            ArmorSlot::Feet => WEAR_FEET,
+            ArmorSlot::Legs => WEAR_LEGS,
+            ArmorSlot::Hands => WEAR_HANDS,
+            ArmorSlot::Shirt => WEAR_SHIRT,
+            ArmorSlot::Face => WEAR_FACE,
+        }
+    }
+
+    /// The item row's `slot` this armor row must agree with.
+    pub fn equip(self) -> EquipSlot {
+        match self {
+            ArmorSlot::Head => EquipSlot::Head,
+            ArmorSlot::Body => EquipSlot::Body,
+            ArmorSlot::Feet => EquipSlot::Feet,
+            ArmorSlot::Legs => EquipSlot::Legs,
+            ArmorSlot::Hands => EquipSlot::Hands,
+            ArmorSlot::Shirt => EquipSlot::Shirt,
+            ArmorSlot::Face => EquipSlot::Face,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -618,6 +680,15 @@ pub struct Armor {
     /// the head and feet too, so it is worn alone (`combat::wear_clashes`).
     #[serde(default)]
     pub full_body: bool,
+    /// Rust's two-layer pieces (clothing v1): the other slots this piece
+    /// fills as well as its own — a snow jacket is the shirt too, a coffee
+    /// can the face. Nothing else goes on in them while it is worn.
+    #[serde(default)]
+    pub fills: Vec<ArmorSlot>,
+    /// Keeps every drop out (Rust's Drowned protection, the hazmat suit):
+    /// a body wearing it never gets wet.
+    #[serde(default)]
+    pub waterproof: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -638,6 +709,53 @@ pub struct Consumable {
     /// the corruption out. ±1000.
     #[serde(default)]
     pub fel: i32,
+    /// The wound it closes, in hp of bleeding: negative stops that much
+    /// (Rust's bandage −50, medkit −100).
+    #[serde(default)]
+    pub bleed: i32,
+    /// Seconds it takes in the hands before it lands (Rust's
+    /// `MedicalTool`, the bandage's wrap): held and used with a click,
+    /// switching away cancels it and spends nothing. Zero is instant.
+    #[serde(default)]
+    pub use_seconds: u32,
+    /// What eating one leaves in the eater's hand (Rust's seeds-from-eating:
+    /// a cob leaves a corn seed), `leaves_pm` per mille of the time.
+    #[serde(default)]
+    pub leaves: Option<String>,
+    #[serde(default)]
+    pub leaves_pm: u32,
+    /// A tea (Rust's tea modifiers, `sim_core::exposure::Brew`): which kind,
+    /// how strong, its floor, and for how many minutes.
+    #[serde(default)]
+    pub brew: Option<BrewKind>,
+    /// Warming and cooling: whole degrees. Warding: per cent of the
+    /// Verdigris kept out.
+    #[serde(default)]
+    pub brew_amount: u32,
+    /// A warming tea's floor (Rust's Min Temperature), whole °C.
+    #[serde(default)]
+    pub brew_floor_c: Option<i32>,
+    #[serde(default)]
+    pub brew_minutes: u32,
+}
+
+/// What a tea does (`sim_core::exposure::BREW_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrewKind {
+    Warming,
+    Cooling,
+    Warding,
+}
+
+impl BrewKind {
+    pub fn code(self) -> u8 {
+        match self {
+            BrewKind::Warming => sim_core::exposure::BREW_WARM,
+            BrewKind::Cooling => sim_core::exposure::BREW_COOL,
+            BrewKind::Warding => sim_core::exposure::BREW_WARD,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -705,6 +823,9 @@ pub enum DeployArchetype {
     /// A rug: a flat cloth floor piece, walked over. Its row's `comfort` is
     /// what it does.
     Rug,
+    /// A water catcher (farming v2): banks rain, fills a waterskin, waters
+    /// the planters and ground plants in reach (`cooking.toml` `[farm]`).
+    Catcher,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -762,19 +883,71 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
-/// What waters a planter (crops v1, `sim_core::oven::CookContent::water_full`):
-/// a full `item` in the water slot is left there as `emptied` and buys
-/// `seconds` of growth for every bed.
+/// The farm (`content/cooking.toml` `[farm]`, `sim_core::farm::FarmContent`).
+/// Water is stated in plant-seconds — one plant drinking for one second —
+/// and the bake multiplies by `TICK_HZ` into the sim's water units.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlanterWater {
-    pub item: String,
+pub struct FarmSection {
+    /// A full waterskin, and what it is left as once poured.
+    pub water: String,
     pub emptied: String,
+    /// One skin's water, a planter's tank, and what full rain banks in an
+    /// open planter per second.
+    pub skin_water: u32,
+    pub planter_water: u32,
+    pub rain_water: u32,
+    /// Each growing stage's share of the grow, per cent: seed, seedling,
+    /// sapling, crossbreed, mature, fruiting. Sums to 100.
+    pub stage_pct: [u8; 6],
+    /// How long a ripe plant stays ripe, and how long a dying one stands.
+    pub ripe_seconds: u32,
+    pub dying_seconds: u32,
+    /// A rolled seed's genes, per slot, per mille: a good gene (G, Y or H)
+    /// with `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+    pub good_gene_pm: u32,
+    pub bad_w_pm: u32,
+    /// Per gene, per cent: G's speed, Y's yield, the share of the soil and
+    /// air gaps an H closes, and W's extra water.
+    pub g_pct: u32,
+    pub y_pct: u32,
+    pub h_pct: u32,
+    pub w_pct: u32,
+    /// A clone cut pays its crop's `clones`, and one more for every
+    /// `clone_y_per` Y genes the plant carries (Rust's two). Above 0.
+    pub clone_y_per: u32,
+    /// The open ground (Rust's fallback to a planter): what water a ground
+    /// plant holds, and what full rain banks in it per second.
+    pub ground_water: u32,
+    pub ground_rain: u32,
+    /// The ground's soil per biome (`sim_core::terrain::BIOME_NAMES`), per
+    /// mille: a ground plant's pace at best. A biome left out refuses a
+    /// seed; an unknown name is refused.
+    pub soil: BTreeMap<String, u32>,
+    /// The water catcher (`deployables.toml` archetype `catcher`): its
+    /// barrel, what full rain banks in it per second, what it pours per
+    /// second into each planter and ground plant in reach, and that reach.
+    pub catcher_water: u32,
+    pub catcher_rain: u32,
+    pub catcher_flow: u32,
+    pub catcher_reach_cm: u32,
+}
+
+/// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a
+/// pick pays at full health, and how long it takes to ripen.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CropRow {
+    pub id: String,
+    /// How it is drawn (`sim_core::farm::LOOK_NAMES`, lower case).
+    pub look: String,
+    pub seed: String,
+    #[serde(rename = "yield")]
+    pub yield_item: String,
+    pub count: u32,
     pub seconds: u32,
-    /// Rain on an unroofed planter banks water: per cent of the elapsed time
-    /// under full rain, up to `seconds` (`CookContent::rain_pct`).
-    #[serde(default)]
-    pub rain_pct: u16,
+    /// Clones a take pays.
+    pub clones: u32,
 }
 
 /// Which container runs a cook row. The archetype names of
@@ -788,8 +961,6 @@ pub enum CookStation {
     /// Converts without burning (recycler v0). The station that makes this
     /// table the economy's arming point: a row here is a faucet.
     Recycler,
-    /// Grows (crops v0): a seed in a planter's bed becomes a crop.
-    Planter,
 }
 
 /// One transformation a container performs: one unit in, `count` units of
@@ -978,6 +1149,17 @@ pub struct Mob {
     pub sleep_pct: u32,
     /// How far it hears each kind of noise, metres (`sim-core/src/noise.rs`).
     pub hear_m: Hearing,
+    /// A bred brain choosing this species' fights (`sim-core/src/genome.rs`,
+    /// `brain::WOLF_NET`): the text a breeding run prints, `gw1:` and
+    /// base64url (`cargo run -p server --release --example zoo`). Absent is
+    /// the rule table. Only a free pack hunter takes one: a guard keeps its
+    /// post's table, and validate refuses one on a species that never bites.
+    #[serde(default)]
+    pub genome: Option<String>,
+    /// The lowest fel tier (0–2) the bred brain drives in; below it the
+    /// rule table does, so wipe day's wolves are the old ones. Absent is 1.
+    #[serde(default)]
+    pub genome_tier: Option<u32>,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
@@ -1361,13 +1543,35 @@ pub struct Survival {
     /// requires a gatherable to answer thirst instead.
     pub drink_water: u32,
     pub drink_hp_cost: u32,
-    /// The water vessel (`survival::drink`): holding `vessel` at fresh
-    /// water, the drink verb fills it into `vessel_full` instead, and
-    /// drinking `vessel_full` (a consumable) hands `vessel` back.
+    /// A mouthful of the sea, when it differs from a lake's `drink_water`
+    /// (the water pass: salt water is the poorer drink). Absent is the
+    /// lake's mouthful; zero refuses the sea to the mouth.
     #[serde(default)]
-    pub vessel: Option<String>,
+    pub drink_water_salt: Option<u32>,
+    /// The water vessels (`survival::drink`, `World::pour`): holding an
+    /// `empty` one at water, the drink verb fills it into `fresh` (or `salt`,
+    /// at the sea, when the vessel names one) instead; drinking `fresh` (a
+    /// consumable) hands `empty` back.
     #[serde(default)]
-    pub vessel_full: Option<String>,
+    pub vessels: Vec<VesselDef>,
+    /// Bleeding (Rust's metabolism `bleeding`): the share of the hp a hit
+    /// takes that opens a wound, per cent, and the hp a minute an open
+    /// wound costs until it has taken that much or is bandaged. Absent is
+    /// no bleeding at all.
+    #[serde(default)]
+    pub bleed_pct: u32,
+    #[serde(default)]
+    pub bleed_hp_per_min: u32,
+}
+
+/// One water vessel (`[[survival.vessels]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VesselDef {
+    pub empty: String,
+    pub fresh: String,
+    #[serde(default)]
+    pub salt: Option<String>,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,
@@ -1501,6 +1705,21 @@ pub struct Exposure {
     /// the air freezes. Absent, snow wets as the rain does.
     #[serde(default = "thousand")]
     pub snow_wet_pm: u32,
+    /// Drowning (`sim_core::World::breathe`): the seconds of breath a body
+    /// holds with its mouth under, and the hp a second the water costs at
+    /// none left, ramping in from half. Absent is water nobody drowns in.
+    #[serde(default)]
+    pub air_s: u32,
+    #[serde(default)]
+    pub drown_hp_per_s: u32,
+    /// Clothing v1 (Rust's rule): the summed worn `cold_pct` that takes all
+    /// of the cold away (theirs: 400). Absent is the old flat rule.
+    #[serde(default)]
+    pub warm_full_pct: u32,
+    /// The air at which clothes dry at `dry_per_s`, whole °C; slower under
+    /// it, none at freezing but by a fire. Absent is the flat rate.
+    #[serde(default)]
+    pub dry_ref_c: i32,
 }
 
 /// `Exposure::snow_wet_pm`'s default: all of the rain's.

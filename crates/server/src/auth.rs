@@ -172,6 +172,32 @@ pub fn verify_any<S: AsRef<str>>(
     issued_at: u64,
     auth: &Auth,
 ) -> Result<PlayerKey, AuthError> {
+    verify_text(domains, auth, |domain, uri, addr, text| {
+        protocol::siwe_message_for(domain, uri, addr, protocol::SLUG, nonce, issued_at, text)
+    })
+}
+
+/// [`verify_any`] over the companion page's own text
+/// (`protocol::companion_message`), which the game never accepts: a sign-in
+/// collected for the page is no game login, and a game login is no sign-in.
+pub fn verify_companion<S: AsRef<str>>(
+    domains: &[S],
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    auth: &Auth,
+) -> Result<PlayerKey, AuthError> {
+    verify_text(domains, auth, |domain, uri, addr, text| {
+        protocol::companion_message(domain, uri, addr, nonce, issued_at, text)
+    })
+}
+
+/// The recovery both texts share: `compose` writes the message for one
+/// (domain, URI) pair and the checksummed address.
+fn verify_text<S: AsRef<str>>(
+    domains: &[S],
+    auth: &Auth,
+    compose: impl Fn(&str, &str, &str, &mut [u8; SIWE_MESSAGE_MAX]) -> usize,
+) -> Result<PlayerKey, AuthError> {
     if auth.address.is_guest() {
         return Err(AuthError::Guest);
     }
@@ -202,16 +228,7 @@ pub fn verify_any<S: AsRef<str>>(
         .flat_map(|d| domains.iter().map(move |u| (d.as_ref(), u.as_ref())));
     for (domain, uri) in pairs {
         let mut text = [0u8; SIWE_MESSAGE_MAX];
-        let len = protocol::siwe_message_for(
-            domain,
-            uri,
-            addr,
-            protocol::SLUG,
-            nonce,
-            issued_at,
-            &mut text,
-        );
-        let len = len.min(SIWE_MESSAGE_MAX);
+        let len = compose(domain, uri, addr, &mut text).min(SIWE_MESSAGE_MAX);
         let digest = personal_sign_digest(&text[..len]);
         match VerifyingKey::recover_from_prehash(&digest, &sig, rec_id) {
             Ok(vk) => {

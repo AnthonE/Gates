@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 181] = [
+const GOLDEN: [&[u8]; 191] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -216,7 +216,7 @@ const GOLDEN: [&[u8]; 181] = [
     include_bytes!("golden/action_respawn_at.bin"),
     include_bytes!("golden/event_worn.bin"),
     include_bytes!("golden/action_treat.bin"),
-    include_bytes!("golden/event_planter.bin"),
+    include_bytes!("golden/event_plant.bin"),
     include_bytes!("golden/event_stump_grubbed.bin"),
     include_bytes!("golden/action_take_stock.bin"),
     include_bytes!("golden/action_give.bin"),
@@ -244,6 +244,16 @@ const GOLDEN: [&[u8]; 181] = [
     include_bytes!("golden/event_wheel_bet.bin"),
     include_bytes!("golden/event_wheel_paid.bin"),
     include_bytes!("golden/event_slots.bin"),
+    include_bytes!("golden/action_sit.bin"),
+    include_bytes!("golden/action_place_at.bin"),
+    include_bytes!("golden/action_place_free.bin"),
+    include_bytes!("golden/event_plant_gone.bin"),
+    include_bytes!("golden/event_plant_sync.bin"),
+    include_bytes!("golden/action_plant_bed.bin"),
+    include_bytes!("golden/action_plant_ground.bin"),
+    include_bytes!("golden/action_tend.bin"),
+    include_bytes!("golden/event_vessel.bin"),
+    include_bytes!("golden/event_caption.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -498,7 +508,7 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 151);
     // A syringe on a downed body (v99).
     g!(seen, golden_action, 152);
-    // A planter's beds (v100).
+    // One plant (v135), in v100's planter-beds slot.
     g!(seen, golden_event, 153);
     // A grubbed stump (v101).
     g!(seen, golden_event, 154);
@@ -544,8 +554,23 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 178);
     g!(seen, golden_event, 179);
     g!(seen, golden_event, 180);
+    // The casino's seats (v130).
+    g!(seen, golden_action, 181);
+    // The lattice placement verbs (v134).
+    g!(seen, golden_action, 182);
+    g!(seen, golden_action, 183);
+    // Farming v2 (v135).
+    g!(seen, golden_event, 184);
+    g!(seen, golden_event, 185);
+    g!(seen, golden_action, 186);
+    g!(seen, golden_action, 187);
+    g!(seen, golden_action, 188);
+    // The water pass (v137).
+    g!(seen, golden_event, 189);
+    // Captions (v138).
+    g!(seen, golden_event, 190);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 181, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 191, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -696,6 +721,15 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             protocol::encode_action_slots(machine, mult, &mut buf).unwrap()
         }
+        "action_sit.bin" => {
+            let seat = protocol::goldens::action_sit();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Sit { seat },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_sit(seat, &mut buf).unwrap()
+        }
         "action_shop.bin" => {
             let (key, act) = protocol::goldens::action_shop();
             assert_eq!(
@@ -735,6 +769,33 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_drop(slot, count, &mut buf).unwrap()
+        }
+        "action_plant_bed.bin" => {
+            let (slot, target) = protocol::goldens::action_plant_bed();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Plant { slot, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_plant(slot, target, &mut buf).unwrap()
+        }
+        "action_plant_ground.bin" => {
+            let (slot, target) = protocol::goldens::action_plant_ground();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Plant { slot, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_plant(slot, target, &mut buf).unwrap()
+        }
+        "action_tend.bin" => {
+            let (plant, act) = protocol::goldens::action_tend();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Tend { plant, act },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_tend(plant, act, &mut buf).unwrap()
         }
         "action_pick.bin" => {
             let cell = protocol::goldens::action_pick();
@@ -1103,6 +1164,36 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             encode_action_research(slot, &mut buf).unwrap()
         }
+        "action_place_at.bin" => {
+            let (row, bld, level, sock) = protocol::goldens::action_place_at();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceAt {
+                    row,
+                    bld,
+                    level,
+                    sock
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap()
+        }
+        "action_place_free.bin" => {
+            let (row, x_cm, z_cm, yaw, tri, plate) = protocol::goldens::action_place_free();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceFree {
+                    row,
+                    x_cm,
+                    z_cm,
+                    yaw,
+                    tri,
+                    plate
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap()
+        }
         other => panic!("unknown action fixture {other}"),
     };
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
@@ -1416,6 +1507,15 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             protocol::encode_event_wheel_paid(staked, paid, &mut buf).unwrap()
         }
+        "event_caption.bin" => {
+            let c = protocol::goldens::event_caption();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Caption(c),
+                "{name}"
+            );
+            protocol::encode_event_caption(&c, &mut buf).unwrap()
+        }
         "event_slots.bin" => {
             let (machine, mult, code, reels, pay) = protocol::goldens::event_slots();
             assert_eq!(
@@ -1649,13 +1749,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             len
         }
         "event_piece_placed.bin" => {
-            let rec = event_piece_placed();
+            let (rec, frame) = event_piece_placed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::PiecePlaced { rec },
+                EventMsg::PiecePlaced { rec, frame },
                 "{name}: decode mismatch"
             );
-            encode_event_piece_placed(&rec, &mut buf).unwrap()
+            encode_event_piece_placed(&rec, &frame, &mut buf).unwrap()
         }
         "event_piece_sync.bin" => {
             let (reset, recs) = event_piece_sync();
@@ -1663,11 +1763,14 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::PieceSync {
                     reset: got_r,
                     recs: got,
+                    frames,
                     count,
                 } => {
                     assert_eq!(got_r, reset, "{name}: reset mismatch");
                     assert_eq!(count as usize, PIECE_SYNC_BATCH);
-                    assert_eq!(got, recs, "{name}: decode mismatch");
+                    for (i, want) in recs.iter().enumerate() {
+                        assert_eq!((got[i], frames[i]), *want, "{name}: record {i} mismatch");
+                    }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
@@ -2004,6 +2107,10 @@ fn golden_event(fixture: &[u8], name: &str) {
                     air_c: -7,
                     fel_pct: 40,
                     fel_hurting: false,
+                    bleed: 27,
+                    breath_pct: 30,
+                    drowning: true,
+                    brew_min: [18, 0, 0],
                 }
             );
             protocol::encode_event_exposure(&protocol::goldens::exposure(), &mut buf).unwrap()
@@ -2112,6 +2219,20 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_consume_refused(reason, &mut buf).unwrap()
+        }
+        "event_vessel.bin" => {
+            let (poured, salt, doused, watered) = protocol::goldens::event_vessel();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Vessel {
+                    poured,
+                    salt,
+                    doused,
+                    watered
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_vessel(poured, salt, doused, watered, &mut buf).unwrap()
         }
         "event_drank.bin" => {
             let (water, hp_cost) = event_drank();
@@ -2359,12 +2480,19 @@ fn golden_event(fixture: &[u8], name: &str) {
                     floor_len,
                     ceiling_name,
                     ceiling_len,
+                    boost_knob,
+                    boost_pct,
                 } => {
                     assert_eq!((total, index), (2, 1), "{name:?}: index");
                     assert_eq!(def, wc.defs[1], "work def: decode mismatch");
                     assert_eq!(&n[..name_len as usize], name);
                     assert_eq!(&floor_name[..floor_len as usize], floor);
                     assert_eq!(&ceiling_name[..ceiling_len as usize], ceiling);
+                    assert_eq!(
+                        (boost_knob, boost_pct),
+                        (sim_core::works::KNOB_SMELT_PCT, 200),
+                        "work def: its ceiling's boost"
+                    );
                 }
                 other => panic!("work def: decoded {other:?}"),
             }
@@ -2388,7 +2516,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_work_state(index, &work, n, mine, unlocks, &mut buf).unwrap()
         }
         "event_arc_place.bin" => {
-            let (kind, index, total, spot, name, topics) = protocol::goldens::event_arc_place();
+            let (kind, index, total, spot, name, topics, offers) =
+                protocol::goldens::event_arc_place();
             match decode_event(fixture).unwrap() {
                 EventMsg::ArcPlace {
                     kind: k,
@@ -2400,38 +2529,41 @@ fn golden_event(fixture: &[u8], name: &str) {
                     n_topics,
                     topics: tt,
                     topic_lens,
+                    offers: oo,
                     ..
                 } => {
                     assert_eq!((k, i, t, sp), (kind, index, total, spot));
                     assert_eq!(&n[..name_len as usize], name);
-                    assert_eq!(n_topics, 2);
-                    for j in 0..2 {
+                    assert_eq!(n_topics, 3);
+                    for j in 0..3 {
                         assert_eq!(&tt[j][..topic_lens[j] as usize], topics[j]);
+                        assert_eq!(oo[j], offers[j]);
                     }
                 }
                 other => panic!("arc place: decoded {other:?}"),
             }
             protocol::encode_event_arc_place(
-                kind, index, total, &spot, name, &topics, 0, 0, &mut buf,
+                kind, index, total, &spot, name, &topics, &offers, 0, 0, &mut buf,
             )
             .unwrap()
         }
         "event_arc_text.bin" => {
-            let (kind, index, topic, text) = protocol::goldens::event_arc_text();
+            let (kind, index, topic, gift, text) = protocol::goldens::event_arc_text();
             match decode_event(fixture).unwrap() {
                 EventMsg::ArcText {
                     kind: k,
                     index: i,
                     topic: t,
+                    gift: g,
                     text: x,
                     len,
                 } => {
-                    assert_eq!((k, i, t), (kind, index, topic));
+                    assert_eq!((k, i, t, g), (kind, index, topic, gift));
                     assert_eq!(&x[..len as usize], text);
                 }
                 other => panic!("arc text: decoded {other:?}"),
             }
-            protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap()
+            protocol::encode_event_arc_text(kind, index, topic, gift, text, &mut buf).unwrap()
         }
         "event_arc_dials.bin" => {
             let (mech, dials, resting) = protocol::goldens::event_arc_dials();
@@ -2596,20 +2728,36 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             protocol::encode_event_skins_owned(&owned, &mut buf).unwrap()
         }
-        "event_planter.bin" => {
-            let (cx, cz, level, loc, stages) = protocol::goldens::event_planter();
+        "event_plant.bin" => {
+            let p = protocol::goldens::event_plant();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Planter {
-                    cx,
-                    cz,
-                    level,
-                    loc,
-                    stages
+                EventMsg::Plant(p),
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_plant(&p, &mut buf).unwrap()
+        }
+        "event_plant_gone.bin" => {
+            let (id, reason) = protocol::goldens::event_plant_gone();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::PlantGone { id, reason },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_plant_gone(id, reason, &mut buf).unwrap()
+        }
+        "event_plant_sync.bin" => {
+            let (reset, recs) = protocol::goldens::event_plant_sync();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::PlantSync {
+                    reset,
+                    recs,
+                    count: protocol::PLANT_SYNC_BATCH as u8,
                 },
                 "{name}: decode mismatch"
             );
-            protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap()
+            protocol::encode_event_plant_sync(reset, &recs, &mut buf).unwrap()
         }
         "event_worn.bin" => {
             let (id, items, skins) = protocol::goldens::event_worn();
@@ -3247,7 +3395,7 @@ fn the_piece_goldens_carry_a_live_plate() {
     match decode_event(GOLDEN[fixture_index("event_piece_placed.bin")])
         .expect("piece placed decodes")
     {
-        EventMsg::PiecePlaced { rec } => assert!(
+        EventMsg::PiecePlaced { rec, .. } => assert!(
             rec.plate < 0,
             "the placed golden carries plate {}, so its bytes cannot tell a              dropped sign from a correct one",
             rec.plate
@@ -3268,10 +3416,12 @@ fn the_piece_goldens_carry_a_live_plate() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for (i, hit) in seen.iter().enumerate() {
-        let band = i as i32 - protocol::PLATE_BIAS;
+    // Both ends of the field and both signs (v134's batch of eleven holds
+    // fewer records than the field has values): a width one short loses an
+    // end, a lost bias a sign.
+    for band in [-protocol::PLATE_BIAS, protocol::PLATE_BIAS - 1, -1, 1] {
         assert!(
-            hit,
+            seen[(band + protocol::PLATE_BIAS) as usize],
             "no piece in the sync golden carries plate {band}, so that value's \
              bytes are pinned by nothing — the field is {width} values wide"
         );
@@ -3286,7 +3436,8 @@ fn the_piece_goldens_carry_a_live_plate() {
 
 #[test]
 fn the_loc_fuzz_covers_each_stores_whole_domain() {
-    use sim_core::build::{LOC_EDGE_ZLO, LOC_RISER_XLO};
+    use protocol::goldens::PIECE_SYNC_LOCS;
+    use sim_core::build::LOC_EDGE_ZLO;
 
     let mut seen = [false; 16];
     match decode_event(GOLDEN[fixture_index("event_piece_sync.bin")]).expect("piece sync decodes") {
@@ -3297,18 +3448,15 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for loc in 0..=LOC_RISER_XLO {
-        assert!(
-            seen[loc as usize],
-            "no piece in the sync golden sits at loc {loc}, so its bytes are \
-             pinned by nothing — the piece store addresses 0..={LOC_RISER_XLO}"
-        );
-    }
-    for (loc, hit) in seen.iter().enumerate().skip(LOC_RISER_XLO as usize + 1) {
-        assert!(
-            !*hit,
-            "the piece-sync golden carries loc {loc}, which no store can \
-             address — the fixture is pinning a forgery as if it were legal"
+    // Since freeform W3 the piece store holds squares, edges and the four
+    // flights on the grid, and `LOC_NONE` for what only a footprint names.
+    for (loc, hit) in seen.iter().enumerate() {
+        let legal = PIECE_SYNC_LOCS.contains(&(loc as u8));
+        assert_eq!(
+            *hit, legal,
+            "loc {loc}: the piece-sync golden must carry exactly the locs the \
+             store holds — one missing is pinned by nothing, one extra is a \
+             forgery pinned as if it were legal"
         );
     }
 

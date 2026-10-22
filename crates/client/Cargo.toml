@@ -89,7 +89,13 @@ webgpu = ["bevy?/webgpu"]
 # KTX2 transcoder and a PNG encoder, and deliberately NOT Bevy — a build
 # script pays a minute for this instead of the renderer's ten. Native only:
 # the transcoder is C++, which is the whole reason the variant exists.
-webassets = ["dep:basis-universal", "dep:ktx2", "dep:ruzstd", "dep:png"]
+webassets = [
+    "dep:basis-universal",
+    "dep:ktx2",
+    "dep:ruzstd",
+    "dep:png",
+    "dep:jpeg-encoder",
+]
 
 # The player binary carries `native`: it drives `client_endpoint` and opens an
 # OS window. Without the requirement, `cargo build -p client --target
@@ -663,6 +669,10 @@ ktx2 = { version = "0.4", optional = true }
 ruzstd = { version = "0.8", optional = true }
 # The web asset variant's encoder. Already in the lock through `image`.
 png = { version = "0.18", optional = true }
+# …and its JPEG one, for every map with no alpha in it: a quarter of a
+# PNG's bytes. Not `image`'s encoder, which subsamples chroma, and a normal or
+# roughness map stores data in the channels that subsampling would blur.
+jpeg-encoder = { version = "0.6", optional = true }
 # Painted skins (`render/paint.rs`): the check that a downloaded picture is
 # the one its catalog row names. Already in the lock through `k256`.
 sha2 = "0.10"
@@ -736,6 +746,13 @@ tokio = { version = "1", features = ["sync"] }
 # `ureq` opens a `TcpStream`. A tab has none of the three and never will.
 # ---------------------------------------------------------------------------
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Mozilla's roots as certificates, so `src/tls.rs` can drop a distrusted CA
+# from what every native HTTP fetch trusts.
+webpki-root-certs = "1.0.10"
+# The system's language, sent as `/lang` so captions arrive translated into
+# it (`render/chat.rs`). Already in the lock through Bevy's text stack; the
+# browser asks `navigator.language` instead.
+sys-locale = "0.3"
 # **The GPU-compressed texture path, native only.** Cargo unions features
 # across target tables, so a desktop build sees exactly the bevy feature set it
 # saw before this split; a browser build sees the same list minus the one C++

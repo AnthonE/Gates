@@ -102,7 +102,17 @@ fn the_blocked_ceiling_is_the_shortest_tree_drawn() {
     let mut shortest = f32::MAX;
     for v in 0..CONIFER_POOL {
         let (bark, needles) = conifer(v);
-        shortest = shortest.min(bounds(&[&bark, &needles]).0);
+        let h = bounds(&[&bark, &needles]).0;
+        // The palm is blocked to its own height (`terrain::slot_volume`).
+        if species_of(v) == client::render::tree::PALM {
+            assert!(
+                (h - sim_core::terrain::PALM_TOP_M).abs() < 1e-3,
+                "the sim blocks a palm to {} m and variant {v} is drawn {h:.3} m",
+                sim_core::terrain::PALM_TOP_M
+            );
+            continue;
+        }
+        shortest = shortest.min(h);
     }
     assert!(
         (top - shortest).abs() < 1e-3,

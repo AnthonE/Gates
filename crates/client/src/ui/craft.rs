@@ -28,9 +28,10 @@
 
 use protocol::event::ItemCatalog;
 use sim_core::craft::{
-    inv_count, CraftContent, RecipeDef, CLASS_AMMO, CLASS_CLOTHING, CLASS_CONSTRUCTION, CLASS_FOOD,
-    CLASS_ITEMS, CLASS_MEDICAL, CLASS_OTHER, CLASS_RESOURCES, CLASS_TOOLS, CLASS_WEAPONS,
-    STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2, STATION_WORKBENCH3,
+    input_ceil, inv_count, inv_count_whole, CraftContent, RecipeDef, CLASS_AMMO, CLASS_CLOTHING,
+    CLASS_CONSTRUCTION, CLASS_FOOD, CLASS_ITEMS, CLASS_MEDICAL, CLASS_OTHER, CLASS_RESOURCES,
+    CLASS_TOOLS, CLASS_WEAPONS, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+    STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
@@ -172,11 +173,27 @@ pub fn name_matches(name: &[u8], query: &str) -> bool {
         .any(|w| w.iter().zip(q.iter()).all(|(a, b)| eq(*a, *b)))
 }
 
+/// What of `item` the inventory may spend on a craft: every unit, except
+/// that an item carrying condition in a stack of one counts only when it is
+/// whole. The sim's own rule (`craft::input_ceil`, asked by `enqueue`), so
+/// a fired revolver is not counted toward an autoturret the shard refuses.
+/// A catalog row that has not dripped in reads `stack_max` 0 and counts
+/// every stack; the shard still refuses, so that is the old answer, never
+/// a worse one.
+pub fn spendable(inv: &[ItemStack; INV_SLOTS], item: u16, catalog: &ItemCatalog) -> u32 {
+    let idx = item as usize;
+    inv_count_whole(
+        inv,
+        item,
+        input_ceil(catalog.stack_max(idx), catalog.cond_max(idx)),
+    )
+}
+
 /// How many whole crafts the inventory pays for. `u32` because 30 slots of
 /// `u16` overflow a `u16`, and saturating rather than wrapping because the
 /// only thing downstream of a wrapped ceiling is a stepper that offers a
 /// craft the player cannot pay for.
-pub fn affordable(def: &RecipeDef, inv: &[ItemStack; INV_SLOTS]) -> u32 {
+pub fn affordable(def: &RecipeDef, inv: &[ItemStack; INV_SLOTS], catalog: &ItemCatalog) -> u32 {
     if def.out_count == 0 {
         return 0;
     }
@@ -185,7 +202,7 @@ pub fn affordable(def: &RecipeDef, inv: &[ItemStack; INV_SLOTS]) -> u32 {
         if *units == 0 {
             continue;
         }
-        least = least.min(inv_count(inv, *item) / *units as u32);
+        least = least.min(spendable(inv, *item, catalog) / *units as u32);
     }
     // A recipe with no inputs is not free forever — the sim still gates it —
     // but there is nothing here to divide by, so the panel offers one.
@@ -243,7 +260,7 @@ pub fn rows(
             output: def.output,
             out_count: def.out_count,
             station: def.station,
-            affordable: affordable(def, inv),
+            affordable: affordable(def, inv, catalog),
             // The sim's own predicate, imported rather than re-derived:
             // one shift written once, so a client cannot disagree with the
             // server about what a player knows.
@@ -307,8 +324,11 @@ pub struct Ingredient {
     pub item: u16,
     /// TOTAL: `amount × count` for the quantity the stepper is showing.
     pub total: u32,
-    /// HAVE: what the inventory holds right now.
+    /// HAVE: what the inventory holds right now that a craft may spend
+    /// ([`spendable`]).
     pub have: u32,
+    /// Held but not spendable: worn copies of an input that must be whole.
+    pub worn: u32,
 }
 
 impl Ingredient {
@@ -328,23 +348,40 @@ pub fn ingredients(
     def: &RecipeDef,
     count: u16,
     inv: &[ItemStack; INV_SLOTS],
+    catalog: &ItemCatalog,
 ) -> ([Ingredient; MAX_RECIPE_INPUTS], usize) {
     let mut rows = [Ingredient {
         amount: 0,
         item: 0,
         total: 0,
         have: 0,
+        worn: 0,
     }; MAX_RECIPE_INPUTS];
     let n = (def.n_inputs as usize).min(MAX_RECIPE_INPUTS);
     for (row, (item, units)) in rows.iter_mut().zip(def.inputs.iter()).take(n) {
+        let have = spendable(inv, *item, catalog);
         *row = Ingredient {
             amount: *units,
             item: *item,
             total: *units as u32 * count as u32,
-            have: inv_count(inv, *item),
+            have,
+            worn: inv_count(inv, *item) - have,
         };
     }
     (rows, n)
+}
+
+/// Why a short line is short when the pack does hold the item: only worn
+/// copies of an input that must go in whole. The panel says it under the
+/// table, so a player holding a fired revolver is not left to wonder why
+/// HAVE reads 0. The shard's refusal stays `REFUSE_CR_INPUTS`; this is the
+/// panel's sentence for it, not a new code.
+pub fn worn_line(catalog: &ItemCatalog, lines: &[Ingredient]) -> Option<String> {
+    let line = lines.iter().find(|l| l.short() && l.worn > 0)?;
+    Some(format!(
+        "A worn {} can't be used - a craft needs it undamaged.",
+        item_label(catalog, line.item)
+    ))
 }
 
 /// Seconds `count` crafts take, from the recipe's tick cost.
@@ -588,6 +625,31 @@ pub fn wear_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
     })
 }
 
+/// What the craft detail pane says a piece of clothing does when worn
+/// (clothing v1): its slot, the blows it takes off, the cold it keeps out or
+/// draws in, the Verdigris it wards off — Rust's protection rows. `None`
+/// for anything that is not worn.
+pub fn clothing_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
+    let row = catalog.row(item as usize);
+    if row.wear_slot == sim_core::combat::WEAR_NONE {
+        return None;
+    }
+    let mut line = format!(
+        "Worn: {} · protection {}%",
+        crate::ui::slots::wear_slot_label(row.wear_slot as usize - 1),
+        row.armor_pct
+    );
+    match row.warmth_pct {
+        0 => {}
+        w if w > 0 => line.push_str(&format!(" · warmth +{w}%")),
+        w => line.push_str(&format!(" · draws the cold in ({w}%)")),
+    }
+    if row.ward_pct > 0 {
+        line.push_str(&format!(" · Verdigris ward {}%", row.ward_pct));
+    }
+    Some(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +697,66 @@ mod tests {
             !station_here(&at(STATION_FURNACE), &[bench], &dc, x, z),
             "a bench is not a furnace"
         );
+    }
+
+    /// An input that must go in whole (`craft::input_ceil`, the shard's
+    /// rule): the panel counts what the shard will spend, so a fired
+    /// revolver pays for no autoturret and the pane says why the line is
+    /// short. Mutant: `inv_count` back in `spendable`.
+    #[test]
+    fn a_worn_input_is_held_but_not_spendable() {
+        const GUN: u16 = 3;
+        const SCRAP: u16 = 4;
+        let mut catalog = ItemCatalog::default();
+        catalog.rows[GUN as usize] = protocol::ItemRow {
+            cond_max: 400,
+            stack_max: 1,
+            ..Default::default()
+        };
+        catalog.rows[SCRAP as usize] = protocol::ItemRow {
+            stack_max: 100,
+            ..Default::default()
+        };
+        let mut def = RecipeDef {
+            out_count: 1,
+            n_inputs: 2,
+            ..RecipeDef::INERT
+        };
+        def.inputs[0] = (GUN, 1);
+        def.inputs[1] = (SCRAP, 10);
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        inv[0] = ItemStack {
+            item: GUN,
+            count: 1,
+            cond: 399,
+            skin: 0,
+        };
+        inv[1] = ItemStack {
+            item: SCRAP,
+            count: 50,
+            cond: 0,
+            skin: 0,
+        };
+        assert_eq!(
+            affordable(&def, &inv, &catalog),
+            0,
+            "a fired one pays for nothing"
+        );
+        let (lines, n) = ingredients(&def, 1, &inv, &catalog);
+        assert_eq!((lines[0].have, lines[0].worn), (0, 1));
+        assert!(lines[0].short());
+        assert_eq!(
+            (lines[1].have, lines[1].worn),
+            (50, 0),
+            "a stack counts by the unit"
+        );
+        assert!(worn_line(&catalog, &lines[..n]).is_some());
+
+        inv[0].cond = 400;
+        assert_eq!(affordable(&def, &inv, &catalog), 1, "a whole one pays");
+        let (lines, n) = ingredients(&def, 1, &inv, &catalog);
+        assert_eq!((lines[0].have, lines[0].worn), (1, 0));
+        assert_eq!(worn_line(&catalog, &lines[..n]), None);
     }
 
     #[test]

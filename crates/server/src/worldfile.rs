@@ -178,13 +178,13 @@ pub struct WorldBoot {
     /// When this world ends (`wipe.rs`). Set by `bin/shard.rs` from the
     /// schedule and the wipe state; off everywhere else.
     pub wipe: crate::wipe::Clock,
-    /// The highest connection generation any player id in the loaded world
-    /// carries — a body, a bag's owner, a lock's or a cupboard's list. A
-    /// restart resets the slot table, so without this the first connection
-    /// into a slot is minted an id the saved world already uses, and would
-    /// be handed what it owns. `net.rs` starts the slot table past it
-    /// (`SlotTable::start_past`).
-    pub id_floor: u32,
+    /// Per connection slot, the highest generation any player id in the
+    /// loaded world carries — a body, a bag's owner, a lock's or a
+    /// cupboard's list. A restart resets the slot table, so without this the
+    /// first connection into a slot is minted an id the saved world already
+    /// uses, and would be handed what it owns. `net.rs` starts each slot past
+    /// its own (`SlotTable::start_past`).
+    pub id_floors: [u32; sim_core::limits::MAX_PLAYERS],
 }
 
 impl WorldBoot {
@@ -198,23 +198,25 @@ impl WorldBoot {
             interval_ticks: u64::MAX,
             clamp: false,
             wipe: crate::wipe::Clock::off(),
-            id_floor: 0,
+            id_floors: [0; sim_core::limits::MAX_PLAYERS],
         }
     }
 }
 
-/// The highest connection generation among the player ids `world` holds
-/// (`WorldBoot::id_floor`). An id is `generation << 8 | slot` (`net.rs`);
-/// an animal's carries the mob tag and is no connection's.
-pub fn id_floor(world: &mut sim_core::world::World) -> u32 {
-    let mut floor = 0;
+/// Per slot, the highest connection generation among the player ids `world`
+/// holds (`WorldBoot::id_floors`). An id is `generation << 8 | slot`
+/// (`net.rs`); an animal's carries the mob tag and is no connection's.
+pub fn id_floors(world: &mut sim_core::world::World) -> [u32; sim_core::limits::MAX_PLAYERS] {
+    let mut floors = [0; sim_core::limits::MAX_PLAYERS];
     world.remap_player_ids(&mut |id| {
         if id & sim_core::limits::MOB_ID_TAG == 0 {
-            floor = floor.max(id >> 8);
+            if let Some(f) = floors.get_mut((id & 0xFF) as usize) {
+                *f = (*f).max(id >> 8);
+            }
         }
         id
     });
-    floor
+    floors
 }
 
 /// Rotate `<path>.1` → `.2` and copy `<path>` → `.1`, exactly as the player
@@ -563,7 +565,7 @@ pub fn open(
                 interval_ticks,
                 clamp: false,
                 wipe: crate::wipe::Clock::off(),
-                id_floor: 0,
+                id_floors: [0; sim_core::limits::MAX_PLAYERS],
             },
             WorldLoad {
                 created: true,
@@ -718,7 +720,7 @@ pub fn open(
         .filter(|(_, id)| world.is_sleeper(*id))
         .count();
     let tick = world.tick;
-    let id_floor = id_floor(world);
+    let id_floors = id_floors(world);
     Ok((
         WorldBoot {
             file,
@@ -727,7 +729,7 @@ pub fn open(
             interval_ticks,
             clamp: balance,
             wipe: crate::wipe::Clock::off(),
-            id_floor,
+            id_floors,
         },
         WorldLoad {
             created: false,
@@ -744,18 +746,24 @@ pub fn open(
 mod tests {
     use super::*;
 
-    /// The floor is the highest generation any player id in the world wears,
-    /// so a restarted shard mints past all of them (`SlotTable::start_past`).
+    /// A slot's floor is the highest generation any player id of that slot
+    /// in the world wears, so a restarted shard mints past all of them
+    /// (`SlotTable::start_past`).
     #[test]
     fn the_id_floor_is_the_highest_generation_a_player_id_wears() {
         use sim_core::world::Command;
         let mut w = sim_core::world::World::new(1);
-        assert_eq!(id_floor(&mut w), 0, "an empty world holds no ids");
+        assert!(
+            id_floors(&mut w).iter().all(|&f| f == 0),
+            "an empty world holds no ids"
+        );
         w.tick(&[
             Command::Join { id: (3 << 8) | 1 },
             Command::Join { id: (9 << 8) | 2 },
+            Command::Join { id: (4 << 8) | 2 },
         ]);
-        assert_eq!(id_floor(&mut w), 9);
+        let f = id_floors(&mut w);
+        assert_eq!((f[0], f[1], f[2], f[3]), (0, 3, 9, 0));
     }
 
     /// The header's offsets are a hand-written layout, which is the shape

@@ -38,6 +38,15 @@ use super::{ui, Net};
 #[derive(Component)]
 pub struct PauseRoot;
 
+/// The friends block under the invite: who of your Elo Pros friends is on,
+/// and where. Rewritten when `Friends::gen` moves (a read lands while the
+/// menu is up), never rebuilt.
+#[derive(Component)]
+pub struct PauseFriends;
+
+/// How many friends the block names before "+ n more".
+const FRIEND_ROWS: usize = 6;
+
 /// A verb. Ordered as drawn, and the order is the reference's: the way back
 /// into the game first, the way out of it last.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -127,7 +136,10 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
     let addr = if connecting.addr.is_empty() {
         String::new()
     } else {
-        format!("connected to {}", connecting.addr)
+        format!(
+            "connected to {}",
+            crate::ui::streamer::server(&connecting.addr)
+        )
     };
 
     // The invite. Drawn rather than copied to a clipboard because a clipboard
@@ -149,6 +161,10 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
     #[cfg(not(target_arch = "wasm32"))]
     let link_for = crate::deeplink::link_for;
     let invite = match connecting.addr.rsplit_once(':').map(|(h, _)| h) {
+        // Streamer mode: a viewer could follow the link (`ui::streamer`).
+        Some(host) if is_shareable(host) && crate::ui::streamer::on() => {
+            "invite link hidden (streamer mode)".to_string()
+        }
         Some(host) if is_shareable(host) => format!("invite  {}", link_for(&connecting.addr)),
         _ => String::new(),
     };
@@ -176,6 +192,15 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
             root.spawn((
                 ui::label(invite, 13.0, ui::FAINT),
                 Node {
+                    margin: UiRect::bottom(Val::Px(14.0)),
+                    ..default()
+                },
+            ));
+            root.spawn((
+                PauseFriends,
+                ui::label(String::new(), 13.0, ui::FRIEND),
+                Node {
+                    max_width: Val::Px(560.0),
                     margin: UiRect::bottom(Val::Px(14.0)),
                     ..default()
                 },
@@ -212,6 +237,44 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
                 },
             ));
         });
+}
+
+/// The friends block's text: the online ones, else what the read said.
+fn friend_lines(friends: &super::friends::Friends) -> String {
+    match &friends.view {
+        Some(v) => {
+            let mut lines = crate::friends::online_lines(v, crate::shot::now_secs(), FRIEND_ROWS);
+            if !friends.status.is_empty() {
+                lines.push(friends.status.clone());
+            }
+            lines.join("\n")
+        }
+        None if friends.me.is_some() => friends.status.clone(),
+        None => String::new(),
+    }
+}
+
+/// Redraw the friends block when the list moved.
+pub fn friends_block(
+    friends: Option<Res<super::friends::Friends>>,
+    mut shown: Local<Option<u64>>,
+    fresh: Query<(), Added<PauseFriends>>,
+    mut text: Query<&mut Text, With<PauseFriends>>,
+) {
+    let Some(friends) = friends else {
+        return;
+    };
+    // A screen just built draws on its first frame whatever the count says.
+    if *shown == Some(friends.gen) && fresh.is_empty() {
+        return;
+    }
+    *shown = Some(friends.gen);
+    let body = friend_lines(&friends);
+    for mut t in &mut text {
+        if t.0 != body {
+            t.0.clone_from(&body);
+        }
+    }
 }
 
 /// Mouse and keyboard, into one chosen verb.
@@ -305,7 +368,7 @@ pub fn act(
             menu.status = if connecting.addr.is_empty() {
                 "left the world".to_string()
             } else {
-                format!("left {}", connecting.addr)
+                format!("left {}", crate::ui::streamer::server(&connecting.addr))
             };
             next.set(Screen::Menu);
         }

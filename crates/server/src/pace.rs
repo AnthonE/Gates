@@ -80,7 +80,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         // A syringe on someone else is a mouthful's pace: one a second.
         ActionMsg::Consume { .. } | ActionMsg::Drink | ActionMsg::Treat { .. } => Kind::Mouth,
         ActionMsg::Vend { .. } | ActionMsg::Shop { .. } => Kind::Move,
-        ActionMsg::Wheel { .. } | ActionMsg::Slots { .. } => Kind::Move,
+        ActionMsg::Wheel { .. } | ActionMsg::Slots { .. } | ActionMsg::Sit { .. } => Kind::Move,
         ActionMsg::Swipe { .. } => Kind::Move,
         // A deposit moves a pack's worth of items, like a trade.
         ActionMsg::Arc { .. } => Kind::Move,
@@ -88,11 +88,14 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Use { .. } | ActionMsg::Team { .. } => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,
-        ActionMsg::Place { .. } | ActionMsg::Upgrade { .. } | ActionMsg::Rotate { .. } => {
-            Kind::Build
-        }
+        ActionMsg::Place { .. }
+        | ActionMsg::PlaceAt { .. }
+        | ActionMsg::PlaceFree { .. }
+        | ActionMsg::Upgrade { .. }
+        | ActionMsg::Rotate { .. } => Kind::Build,
         ActionMsg::Demolish { .. } => Kind::Demolish,
-        ActionMsg::Deploy { .. } => Kind::Deploy,
+        // A seed in the soil churns a joiner's plant walk like a deploy.
+        ActionMsg::Deploy { .. } | ActionMsg::Plant { .. } => Kind::Deploy,
         // Taking stock back out moves a pack's worth, like a trade; so does
         // handing a stack to someone.
         ActionMsg::Move { .. }
@@ -102,7 +105,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Container { .. }
         | ActionMsg::Loot
         | ActionMsg::Pickup { .. }
-        | ActionMsg::Pick { .. } => Kind::Take,
+        | ActionMsg::Pick { .. }
+        | ActionMsg::Tend { .. } => Kind::Take,
         ActionMsg::Craft { .. }
         | ActionMsg::CraftCancel { .. }
         | ActionMsg::CraftFastTrack { .. }

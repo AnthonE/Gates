@@ -673,10 +673,10 @@ fn doors_toggle_across_the_wire() {
     assert!(core.connect(1, id_of(1)));
     // A third client, a long way off. It is here for the aim: the door's
     // placement must not reach it (class-S interest, `NOW.md` §0n1 item
-    // 2), so it holds no record of the door, and nor must the knock. The
-    // door's STATE events still do (`EV_DOOR` is unfiltered; `core.rs`
-    // says why). Slot 3, not 2: this test adds a late joiner at slot 2
-    // further down.
+    // 2), so it holds no record of the door, and nor must the knock or the
+    // door's state events (`EV_DOOR` takes the placement's aim; `core.rs`
+    // says why that is safe). Slot 3, not 2: this test adds a late joiner at
+    // slot 2 further down.
     assert!(core.connect(3, id_of(3)));
     const FAR: usize = 3;
     let mut clients = vec![
@@ -886,14 +886,18 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        3,
-        "bolting a lock on must announce has_lock to EVERY client — three, \
-         including the one 400 m away, because `EV_DOOR` is deliberately \
-         unfiltered: a client keeps every deploy record it was ever told \
-         about, and a state change it never hears leaves that record wrong \
-         forever. Contrast the knock below, which is an instant and is \
-         filtered. And it must not announce it as locked — an unarmed lock \
-         is not a locked door"
+        2,
+        "bolting a lock on must announce has_lock to the two clients at the \
+         door and not the one 400 m away, which holds no record of it: \
+         `EV_DOOR` is aimed like the placement, and a client that walks back \
+         re-arms its walk and reads the door's bits off the record before it \
+         is near. And it must not announce it as locked — an unarmed lock is \
+         not a locked door"
+    );
+    assert!(
+        seen.iter()
+            .all(|(slot, m)| *slot != FAR || !matches!(m, protocol::EventMsg::Door { .. })),
+        "a door's state reached the client 400 m away"
     );
 
     // ...and arms it with a code. Now it is shut to everyone else.
@@ -962,8 +966,7 @@ fn doors_toggle_across_the_wire() {
         "a client 400 m from the door heard somebody knock on it"
     );
     // And the far client holds no record of the door at all: neither the
-    // aimed placement nor the aimed walk told it, and the unfiltered
-    // `EV_DOOR`s it did hear name an address it does not hold.
+    // aimed placement, the aimed walk nor the aimed door events told it.
     assert!(
         !clients[2]
             .1
@@ -1050,9 +1053,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        3,
-        "the door announcement must reach every client open and still \
-         locked — three, `EV_DOOR` being unfiltered (see above)"
+        2,
+        "the door announcement must reach both clients at the door open and \
+         still locked, and not the far one (see above)"
     );
     assert!(
         core.world
@@ -1147,9 +1150,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        4,
-        "the unlock must cross to all four clients with the leaf untouched \
-         — the fourth is 400 m off and `EV_DOOR` is unfiltered on purpose"
+        3,
+        "the unlock must cross to the three clients at the door with the \
+         leaf untouched — the fourth is 400 m off and holds no record of it"
     );
     for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c
@@ -1234,10 +1237,10 @@ fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
 /// (`reference/NETWORK.md` §9.2.1). The walk goes downward now, so the
 /// entry that moves is always one already sent and the cursor survives.
 ///
-/// The fixture is a 196-piece base whose upkeep clocks are staggered an
-/// hour apart, so decay takes it down over eight consecutive ticks —
-/// peaking at a tick that removes a whole sync batch, which is the
-/// condition that makes the amplifier bite — instead of in one cliff. It
+/// The fixture is an 86-piece base whose upkeep clocks are staggered an
+/// hour apart, so decay takes it down over consecutive ticks — peaking at
+/// a tick that removes a whole sync batch, which is the condition that
+/// makes the amplifier bite — instead of in one cliff. It
 /// stops with pieces still standing, so the convergence asserted at the
 /// end is convergence on a world with something in it.
 ///
@@ -1309,8 +1312,10 @@ fn a_removal_storm_leaves_every_walk_standing() {
     for _ in 0..64 {
         place(&mut core, 0);
     }
+    // Two an hour after it (v134's batch of eleven is a smaller walk step,
+    // so the storm has to outlast a walk with fewer pieces behind it).
     for hour in 1..=11u64 {
-        for _ in 0..12 {
+        for _ in 0..2 {
             place(&mut core, hour);
         }
     }
@@ -1476,10 +1481,12 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
     const HOURS: u64 = 3;
     /// The half that rots, all of it due in hour 0 so the sweep meets a
     /// whole tick's worth of overdue entries at once.
-    const DOOMED: usize = 4 * PIECE_SYNC_BATCH;
+    /// Two sweeps' worth (`UPKEEP_SWEEP_PER_TICK`), so the removals span
+    /// the joins below.
+    const DOOMED: usize = 128;
     /// The half that does not, and the reason the agreement at the end is
     /// not the agreement of two empty sets.
-    const STANDING: usize = 2 * PIECE_SYNC_BATCH;
+    const STANDING: usize = 64;
 
     // Laid before anyone connects, by `build::place` against a spare world
     // record for the sibling test's reason: 192 placements through the
@@ -1991,4 +1998,288 @@ fn a_late_joiner_sees_a_fire_burning() {
         clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
         "late joiner sees the burning fire cold"
     );
+}
+
+/// **A fire's lit bit is aimed, names its striker to the striker alone, and
+/// a walk back restates it.** `EV_OVEN` used to reach every client on the
+/// island with the presser's id. Now a client 500 m off is not told the
+/// fire went out — so it still holds it lit — and when it walks back, the
+/// re-armed deploy walk restates every converter in range, the cold ones
+/// too, and the fire is out on its screen as well.
+#[test]
+fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.cook = sim_core::oven::CookContent::probe_fixture();
+    let (cx, cz) = buildable_block(SEED, CX, CZ, 1, 1);
+    let m = sim_core::build::BUILD_CELL_M;
+    let base = ((cx as f32 + 0.5) * m, (cz as f32 + 0.5) * m);
+    core.world.dev_spawn = Some(base);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    // The fire, filled and struck: `a_late_joiner_sees_a_fire_burning`'s.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 6,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 4,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.deploys.len(), 1, "the fire was not placed");
+    let d = core.world.deploys.entries()[0];
+    let i = core
+        .world
+        .deploys
+        .box_index(sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc))
+        .expect("a fire is a container");
+    core.world.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 0,
+            count: 40,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    let strike = ActionMsg::Use {
+        cx: d.cx,
+        cz: d.cz,
+        level: d.level,
+        loc: d.loc,
+    };
+    act(&mut core, 0, strike);
+    let mut seen = Vec::new();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    assert!(
+        core.world.deploys.oven_states()[i].lit,
+        "the fire did not light"
+    );
+    let by = |slot: usize, seen: &[(usize, protocol::EventMsg)]| -> Vec<u32> {
+        seen.iter()
+            .filter_map(|(s, m)| match m {
+                protocol::EventMsg::Oven { by, .. } if *s == slot => Some(*by),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(by(0, &seen), [id_of(0)], "the striker hears its own id");
+    let other = by(1, &seen);
+    assert_eq!(other.len(), 1, "the client beside it hears it struck");
+    assert!(
+        other[0] != 0 && other[0] != id_of(0),
+        "and by a hand, not whose"
+    );
+    for (slot, c) in &clients {
+        assert!(
+            c.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+            "client {slot} sees it cold"
+        );
+    }
+
+    // Slot 1 walks 500 m off (its walks re-arm there), and the fire is put
+    // out behind it.
+    let w1 = world_slot(&core, id_of(1));
+    core.world.players[w1].body =
+        sim_core::movement::Body::at(SEED, hv(SEED), base.0 + 500.0, base.1);
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    act(&mut core, 0, strike);
+    let mut seen = Vec::new();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    assert!(
+        !core.world.deploys.oven_states()[i].lit,
+        "the fire did not go out"
+    );
+    assert!(!clients[0].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc));
+    assert!(
+        by(1, &seen).is_empty(),
+        "a client 500 m off was told the fire went out"
+    );
+    assert!(
+        clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "the far client was meant to hold the stale state the walk back repairs"
+    );
+
+    // Back to the fire: the re-arm's walk says it is out.
+    core.world.players[w1].body = sim_core::movement::Body::at(SEED, hv(SEED), base.0, base.1);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(
+        !clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "walking back left a fire burning that went out while it was away"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// Encode an action as a client does, and hand the server what it decodes:
+/// the wire's half of a verb, which `act` alone skips.
+fn act_wire(
+    core: &mut ShardCore,
+    slot: usize,
+    enc: impl FnOnce(&mut [u8]) -> Result<usize, protocol::WireError>,
+) {
+    let mut buf = [0u8; 256];
+    let n = enc(&mut buf).expect("the action encodes");
+    act(
+        core,
+        slot,
+        protocol::decode_action(&buf[..n]).expect("and decodes"),
+    );
+}
+
+/// A door hung in a doorway the grid cannot name — a turned base's — works
+/// across the wire end to end (freeform W4): the foundation, the doorway
+/// and the door placed by the lattice verbs, the bystander's use encoded as
+/// a client encodes it, its swing heard by both clients beside it, and both
+/// predictors sealed and unsealed with it.
+#[test]
+fn a_posed_door_swings_across_the_wire() {
+    use sim_core::build::LOC_NONE;
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 200,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: 4,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+
+    // A square foundation turned off the grid, its middle three metres off.
+    let yaw = 13_000u16;
+    let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
+    let (ox, oz) =
+        probe.to_world(sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at);
+    let (mx, mz) = (SPAWN.0 + 3.0, SPAWN.1);
+    let (x_cm, z_cm) = (((mx - ox) * 100.0) as i32, ((mz - oz) * 100.0) as i32);
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_place_free(0, x_cm, z_cm, yaw, false, 0, b)
+    });
+    pump(&mut core, &stats, &mut clients);
+    let base = *core.world.pieces.entries().first().expect("the foundation");
+    assert!(!base.on_grid(), "a turned foundation is posed");
+
+    // A doorway on its side nearest the spawn.
+    let frame = *core.world.pieces.frame(base.bld).unwrap();
+    let (sides, n) = base.sock.sides();
+    let d2 = |s: &sim_core::sock::Sock| {
+        let (x, z) = frame.to_world(s.at);
+        (x - SPAWN.0) * (x - SPAWN.0) + (z - SPAWN.1) * (z - SPAWN.1)
+    };
+    let side = *sides[..n]
+        .iter()
+        .min_by(|a, b| d2(a).total_cmp(&d2(b)))
+        .unwrap();
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_place_at(3, base.bld, 0, &side, b)
+    });
+    pump(&mut core, &stats, &mut clients);
+    let doorway = *core
+        .world
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == side)
+        .expect("the doorway");
+    let (cx, cz, level, loc) = doorway.target();
+    assert_eq!(loc, LOC_NONE);
+
+    // The door, at the doorway's spelled address.
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_deploy(2, cx, cz, level, loc, sim_core::footprint::Pose::CENTRE, b)
+    });
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(
+        core.world
+            .deploys
+            .find(cx, cz, level, loc)
+            .is_some_and(|d| !d.open),
+        "the door hangs shut"
+    );
+    let shut = |c: &ClientCore| {
+        c.pieces
+            .cols()
+            .hulls()
+            .find(sim_core::build::hull_key(doorway.id))
+            .is_some_and(|h| h.shut)
+    };
+    let open_in = |c: &ClientCore| {
+        c.deploys
+            .entries()
+            .iter()
+            .find(|d| (d.cx, d.cz, d.level, d.loc) == (cx, cz, level, loc))
+            .map(|d| d.open)
+    };
+    for (slot, c) in &clients {
+        assert_eq!(open_in(c), Some(false), "client {slot} holds the shut door");
+        assert!(shut(c), "client {slot}'s predictor walks into it");
+    }
+
+    // The bystander swings it, and swings it back.
+    for want in [true, false] {
+        act_wire(&mut core, 1, |b| {
+            protocol::encode_action_use(cx, cz, level, loc, b)
+        });
+        for _ in 0..2 {
+            pump(&mut core, &stats, &mut clients);
+        }
+        assert_eq!(
+            core.world.deploys.find(cx, cz, level, loc).map(|d| d.open),
+            Some(want),
+            "the sim swung it"
+        );
+        for (slot, c) in &clients {
+            assert_eq!(open_in(c), Some(want), "client {slot} heard the swing");
+            assert_eq!(shut(c), !want, "client {slot}'s predictor followed it");
+        }
+    }
 }

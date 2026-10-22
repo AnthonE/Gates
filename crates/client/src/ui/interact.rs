@@ -76,6 +76,9 @@ pub enum Verb {
     Recycler,
     /// A planter box (crops v0): a container that grows. `E` opens it.
     Planter,
+    /// A water catcher (farming v2): a barrel with one skin slot. `E` opens
+    /// it, the planter's panel, to leave an empty skin or take a full one.
+    Catcher,
     /// A player's vending machine (`sim_core::shop`): `E` opens its shop
     /// panel, the offers and Buy for anyone, the slots and the offer editor
     /// for its owner's crew. `handle` is its box key.
@@ -135,6 +138,11 @@ pub enum Verb {
     /// [`resolve_pick`], beside `Crate`'s [`resolve_open`], and folded into
     /// the pick the same way.
     Pick,
+    /// A crop (farming v2): `plant` is its wire record. Resolved by
+    /// [`resolve_plant`] against the plants' pick cylinders and folded in by
+    /// [`fold_plant`]: it wins over the planter it stands in, which keeps
+    /// the planter's address on the pick so `E` can still open it.
+    Plant,
     /// A work's terminal (`sim_core::works`, `ARC.md` F1): `handle` is the
     /// work. Resolved by nearness from the work's own spot (`sim_core::spot`),
     /// like `Trade` — the terminal is a place you walk up to.
@@ -156,6 +164,9 @@ pub enum Verb {
     /// One of THE GATE's slot machines: `handle` is the machine. By
     /// nearness.
     Slots,
+    /// A casino seat (`sim_core::seat`): `handle` is the seat, or
+    /// `seat::SEAT_NONE` to stand up. By nearness ([`resolve_seat`]).
+    Sit,
 }
 
 impl Verb {
@@ -202,15 +213,20 @@ impl Verb {
             Verb::Trade => 12,
             Verb::Swipe => 13,
             Verb::Pick => 14,
+            // Unreachable for `Take`'s reason: a plant is folded in by its
+            // own resolver, never scored against a deployable.
+            Verb::Plant => 25,
             Verb::Work => 15,
             Verb::Talk => 16,
             Verb::Read => 17,
             Verb::Turn => 18,
             Verb::Planter => 19,
+            Verb::Catcher => 26,
             Verb::Sleeper => 20,
             Verb::Shop => 21,
             Verb::Wheel => 22,
             Verb::Slots => 23,
+            Verb::Sit => 24,
         }
     }
 
@@ -237,15 +253,18 @@ impl Verb {
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
+            Verb::Plant => "CROP",
             Verb::Work => "WORK",
             Verb::Talk => "SPEAKER",
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
             Verb::Planter => "PLANTER",
+            Verb::Catcher => "WATER CATCHER",
             Verb::Sleeper => "SLEEPING PLAYER",
             Verb::Shop => "VENDING MACHINE",
             Verb::Wheel => "BIG WHEEL",
             Verb::Slots => "SLOT MACHINE",
+            Verb::Sit => "SEAT",
         }
     }
 }
@@ -288,6 +307,11 @@ pub struct Pick {
     /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
     /// prompt can say berries or hemp. Zero for every other verb.
     pub occupant: u8,
+    /// A `Verb::Plant`'s crop, as the wire stated it (farming v2).
+    pub plant: protocol::WirePlant,
+    /// The hand holds a full waterskin, so `E` on a growing bed plant
+    /// waters its planter. Stamped by the caller, as `lit` is.
+    pub water_in_hand: bool,
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
@@ -313,6 +337,10 @@ pub struct Pick {
     /// to take, and a recycler that pays the safe zone's share. Stamped by
     /// the caller, as `lit` is, from [`town_station`].
     pub public: bool,
+    /// Offers a speaker has that this player can still take
+    /// (`ui::offer::open_count`), so the prompt says there is something to
+    /// be had. Stamped by the caller, as `lit` is.
+    pub offers: u8,
     /// The swing in hand would land on THIS carcass: the hand butchers and
     /// nothing nearer along the look takes the blow (`SwingPick::bag` is
     /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, so
@@ -350,6 +378,75 @@ impl Pick {
                 )
             })
             .flatten();
+    }
+
+    /// The crop a `Verb::Plant` names: `farm::LOOK_NAMES`.
+    fn crop_name(&self) -> &'static str {
+        sim_core::farm::LOOK_NAMES
+            .get(self.plant.look as usize)
+            .copied()
+            .unwrap_or("CROP")
+    }
+
+    /// What `E` tends a `Verb::Plant` with (`farm::TEND_*`), or `None` when
+    /// it opens a bed plant's planter instead (a ground plant has none):
+    /// pick a ripe plant, clear a dead one, water a growing one — its
+    /// planter's tank, or a ground plant's own soil — from a full skin in
+    /// hand.
+    pub fn tend(&self) -> Option<u8> {
+        if self.verb != Verb::Plant {
+            return None;
+        }
+        let p = &self.plant;
+        match p.stage {
+            sim_core::farm::STAGE_RIPE => Some(sim_core::farm::TEND_PICK),
+            sim_core::farm::STAGE_DYING => Some(sim_core::farm::TEND_CLEAR),
+            s if sim_core::farm::is_growing(s) && self.water_in_hand => {
+                Some(sim_core::farm::TEND_WATER)
+            }
+            _ => None,
+        }
+    }
+
+    /// `C` cuts a `Verb::Plant` for clones (`farm::TEND_CLONE`): only from
+    /// sapling to mature, as the sim takes it.
+    pub fn can_clone(&self) -> bool {
+        self.verb == Verb::Plant && sim_core::farm::is_clonable(self.plant.stage)
+    }
+
+    /// A `Verb::Plant`'s readout under the prompt: crop, stage, health and
+    /// genome, and whether it thirsts — `CORN SAPLING · 80% · GGYHWX`. Empty
+    /// for every other verb.
+    pub fn info(&self) -> String {
+        if self.verb != Verb::Plant {
+            return String::new();
+        }
+        let p = &self.plant;
+        let genes = sim_core::farm::letters(p.genes);
+        format!(
+            "{}{}{}",
+            self.info_head(),
+            core::str::from_utf8(&genes).unwrap_or(""),
+            if p.dry { " · NEEDS WATER" } else { "" }
+        )
+    }
+
+    /// [`Self::info`] up to the genes, which the HUD draws in colour.
+    pub fn info_head(&self) -> String {
+        if self.verb != Verb::Plant {
+            return String::new();
+        }
+        let p = &self.plant;
+        let stage = sim_core::farm::STAGE_NAMES
+            .get(p.stage as usize)
+            .copied()
+            .unwrap_or("");
+        format!(
+            "{} {} · {}% · ",
+            self.crop_name(),
+            stage,
+            p.band as u32 * 10
+        )
     }
 
     /// The lock's half of a door's or a box's line: nothing bare, the
@@ -463,6 +560,8 @@ impl Pick {
             Verb::TechTree => "[E] TECH TREE".to_string(),
             Verb::Pick => match self.occupant {
                 o if o == Occupant::Hemp as u8 => "[E] PICK HEMP",
+                o if o == Occupant::WildCorn as u8 => "[E] PICK WILD CORN",
+                o if o == Occupant::WildPumpkin as u8 => "[E] PICK PUMPKIN",
                 o if o == Occupant::StonePile as u8 => "[E] PICK UP STONE",
                 o if o == Occupant::WoodPile as u8 => "[E] PICK UP WOOD",
                 o if o == Occupant::MetalPile as u8 => "[E] PICK UP METAL ORE",
@@ -471,13 +570,43 @@ impl Pick {
                 _ => "[E] PICK BERRIES",
             }
             .to_string(),
+            // What `E` does to a crop (farming v2), in the order the sim
+            // takes it: a ripe one is picked, a dead one cleared, a growing
+            // one watered from a full skin in hand, and otherwise a bed
+            // plant's planter opens — a ground plant has no fallback, and
+            // shows its line alone. The crop's own line is [`Self::info`].
+            // From sapling to mature `C` cuts it for clones, named beside.
+            Verb::Plant => {
+                let e = match self.tend() {
+                    Some(sim_core::farm::TEND_PICK) => format!("[E] PICK {}", self.crop_name()),
+                    Some(sim_core::farm::TEND_CLEAR) => {
+                        format!("[E] CLEAR DEAD {}", self.crop_name())
+                    }
+                    Some(_) => format!("[E] WATER {}", self.crop_name()),
+                    None if self.handle != 0 => "[E] OPEN PLANTER".to_string(),
+                    None => String::new(),
+                };
+                match (self.can_clone(), e.is_empty()) {
+                    (false, _) => e,
+                    (true, true) => "[C] TAKE CLONE".to_string(),
+                    (true, false) => format!("{e}  ·  [C] TAKE CLONE"),
+                }
+            }
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Shop => "[E] SHOP".to_string(),
             Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
             Verb::Slots => "[E] PLAY SLOTS".to_string(),
+            Verb::Sit if self.handle == sim_core::seat::SEAT_NONE as u32 => {
+                "[E] STAND UP".to_string()
+            }
+            Verb::Sit => "[E] SIT".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
-            Verb::Talk => "[E] TALK".to_string(),
+            Verb::Talk => match self.offers {
+                0 => "[E] TALK".to_string(),
+                1 => "[E] TALK  ·  1 OFFER".to_string(),
+                n => format!("[E] TALK  ·  {n} OFFERS"),
+            },
             Verb::Read => "[E] READ THE STONE".to_string(),
             Verb::Turn => format!(
                 "[E] TURN DIAL {} · SHOWS {}",
@@ -497,10 +626,22 @@ impl Pick {
             // A sheet names what it teaches with the panels' own words
             // (`research::teaching_label`, the spelling `stack_label` uses):
             // "Revolver Blueprint", not "Blueprint".
+            // A clone on the ground names its genome as the panels do.
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
-                crate::ui::research::teaching_label(catalog, self.item, self.teaches)
-                    .to_uppercase(),
+                match crate::ui::research::clone_genes(
+                    catalog,
+                    sim_core::gather::ItemStack {
+                        item: self.item,
+                        count: self.count.max(1),
+                        cond: self.cond,
+                        skin: 0,
+                    },
+                ) {
+                    Some(g) => crate::ui::research::clone_label(catalog, self.item, g),
+                    None => crate::ui::research::teaching_label(catalog, self.item, self.teaches),
+                }
+                .to_uppercase(),
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
@@ -614,6 +755,53 @@ pub fn resolve_casino(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
     match best {
         Some((verb, k, d2)) => Pick {
             verb,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The seat `E` would sit in, or a `None` pick: the nearest free one within
+/// the sim's own `SEAT_REACH_M` — or, `seated`, the one to stand up from.
+/// `taken` says whether somebody else sits in seat `k`. The stools at the
+/// machines are left to [`resolve_casino`]: a player sits on one by playing.
+pub fn resolve_seat(
+    x: f32,
+    z: f32,
+    town: &sim_core::town::Town,
+    seated: bool,
+    taken: impl Fn(usize) -> bool,
+) -> Pick {
+    use sim_core::town::{self, SeatKind, SEATS};
+    if !town.live {
+        return Pick::default();
+    }
+    if seated {
+        return Pick {
+            verb: Verb::Sit,
+            handle: sim_core::seat::SEAT_NONE as u32,
+            ..Pick::default()
+        };
+    }
+    let reach = sim_core::seat::SEAT_REACH_M;
+    let mut best: Option<(usize, f32)> = None;
+    for (k, seat) in SEATS.iter().enumerate() {
+        if seat.kind == SeatKind::Stool || taken(k) {
+            continue;
+        }
+        let Some((sx, sz)) = town::seat_world(town, k) else {
+            continue;
+        };
+        let d2 = (sx - x) * (sx - x) + (sz - z) * (sz - z);
+        if d2 <= reach * reach && best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Sit,
             handle: k as u32,
             d2,
             ..Pick::default()
@@ -929,6 +1117,9 @@ pub struct Aim<'a> {
     /// The eye's own ray, when the caller has one: a deployable placed
     /// freely is then picked only when the crosshair is ON it ([`Sight`]).
     pub sight: Option<Sight<'a>>,
+    /// The collision index, when the caller has one: where a door hung in
+    /// an edge the grid cannot name is (`deploy::posed_insert`).
+    pub cols: Option<&'a sim_core::collide::ColIndex>,
 }
 
 impl Aim<'_> {
@@ -942,6 +1133,7 @@ impl Aim<'_> {
             reach: REACH_M,
             radius: AIM_RADIUS_M,
             sight: None,
+            cols: None,
         }
     }
 }
@@ -1025,10 +1217,25 @@ pub fn sight_hit(s: &Sight<'_>, rect: &Rect, bottom: f32, top: f32) -> Option<f3
 }
 
 /// The doorway a door hangs in, on the ground: its cell's low-x or low-z
-/// edge, a wall's thickness deep.
-fn doorway_rect(rec: &DeployRec) -> Rect {
+/// edge, a wall's thickness deep — or, for a doorway the grid cannot name
+/// (its address spells the doorway's id, freeform W4), the strip along that
+/// doorway's own run about its middle.
+fn doorway_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> Rect {
     let c = sim_core::build::BUILD_CELL_M;
     let t = sim_core::collide::WALL_THICKNESS_M * 0.5;
+    if let Some(at) =
+        cols.and_then(|k| sim_core::deploy::posed_insert(k, rec.cx, rec.cz, rec.level, rec.loc))
+    {
+        // Local +x, `(c, −s)`, along the run.
+        return Rect {
+            x: at.x,
+            z: at.z,
+            hw: c * 0.5,
+            hd: t,
+            s: -at.run.1,
+            c: at.run.0,
+        };
+    }
     let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
     if rec.loc == sim_core::build::LOC_EDGE_XLO {
         Rect::aligned(x0 - t, z0, x0 + t, z0 + c)
@@ -1139,6 +1346,7 @@ pub fn resolve(
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
             sim_core::deploy::ARCH_PLANTER => Verb::Planter,
+            sim_core::deploy::ARCH_CATCHER => Verb::Catcher,
             sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
@@ -1154,6 +1362,7 @@ pub fn resolve(
             || verb == Verb::Fire
             || verb == Verb::Recycler
             || verb == Verb::Planter
+            || verb == Verb::Catcher
             || verb == Verb::Shop
             || verb == Verb::Research
         {
@@ -1182,7 +1391,10 @@ pub fn resolve(
             {
                 continue;
             }
-            let (hx, hz) = rec.hand_xz();
+            let (hx, hz) = match aim.cols {
+                Some(cols) => rec.hand_xz(cols),
+                None => sim_core::build::anchor(rec.cx, rec.cz, rec.loc),
+            };
             let r = aim.reach.min(LOOT_REACH_M);
             if (hx - aim.x) * (hx - aim.x) + (hz - aim.z) * (hz - aim.z) > r * r {
                 continue;
@@ -1200,7 +1412,7 @@ pub fn resolve(
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                if sight_hit(s, &doorway_rect(rec), bottom, top).is_none() {
+                if sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top).is_none() {
                     continue;
                 }
                 seen = true;
@@ -1300,7 +1512,6 @@ mod tests {
             locked: false,
             has_lock: false,
             dmg: 0,
-            grow: 0,
             keyed: false,
         }
     }
@@ -2219,14 +2430,134 @@ pub fn resolve_open(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> S
 /// `melee::pick_cast` — [`resolve_open`]'s cast, taking the nearest
 /// occupant only if a hand picks it — at the reach the sim checks
 /// (`gather::PICK_REACH_M`, measured from the same eye to the same swing
-/// volume), so the prompt never offers a pick `gather::pick` refuses.
-pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+/// volume), and in sight of the hand as the shard's `Command::Pick` asks
+/// (`reach::clear_from` to the plant lying where it stands), so the prompt
+/// never offers a pick the shard refuses.
+pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> SwingPick {
     let ray = at.ray(sim_core::gather::PICK_REACH_M);
     let seed = island.seed;
-    match melee::pick_cast(seed, &mut island.occupants(), &ray) {
-        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
-        None => SwingPick::default(),
+    let Some(hit) = melee::pick_cast(seed, &mut island.occupants(), &ray) else {
+        return SwingPick::default();
+    };
+    // The shard's hand: not through a wall.
+    let body = at.body();
+    let s = hit.slot;
+    let reached = sim_core::reach::clear_from(
+        seed,
+        island.haven,
+        cols,
+        island.doors,
+        sim_core::reach::eye_of(&body, at.crouched),
+        body.qy as f32 * sim_core::movement::POS_Y_Q,
+        sim_core::reach::Target::lying(
+            seed,
+            island.haven,
+            cols,
+            (quant_xz(s.x), quant_y(s.y), quant_xz(s.z)),
+        ),
+    );
+    if !reached {
+        return SwingPick::default();
     }
+    pick_of(at, hit.cx, hit.cz, hit.slot)
+}
+
+/// The plant the eye's ray meets first within `reach`, by its pick cylinder
+/// (`farm::pick_volume`, the sim's own reach volume): `(index into plants,
+/// squared distance along the ray)`. A ray that starts inside a cylinder
+/// meets it at once.
+pub fn resolve_plant(
+    plants: &[protocol::WirePlant],
+    eye: (f32, f32, f32),
+    dir: (f32, f32, f32),
+    reach: f32,
+) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, p) in plants.iter().enumerate() {
+        let (r, h) = sim_core::farm::pick_volume(p.look, p.stage);
+        let (cx, cy, cz) = p.pos();
+        // The span of `t` the ray is inside the circle, in xz.
+        let (ox, oz) = (eye.0 - cx, eye.2 - cz);
+        let a = dir.0 * dir.0 + dir.2 * dir.2;
+        let b = 2.0 * (ox * dir.0 + oz * dir.2);
+        let c = ox * ox + oz * oz - r * r;
+        let (t0, t1) = if a < 1e-9 {
+            if c > 0.0 {
+                continue;
+            }
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            let disc = b * b - 4.0 * a * c;
+            if disc < 0.0 {
+                continue;
+            }
+            let q = disc.sqrt();
+            ((-b - q) / (2.0 * a), (-b + q) / (2.0 * a))
+        };
+        // And inside the slab `cy ..= cy + h`.
+        let (y0, y1) = if dir.1.abs() < 1e-9 {
+            if eye.1 < cy || eye.1 > cy + h {
+                continue;
+            }
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            let (ta, tb) = ((cy - eye.1) / dir.1, (cy + h - eye.1) / dir.1);
+            (ta.min(tb), ta.max(tb))
+        };
+        let (enter, leave) = (t0.max(y0).max(0.0), t1.min(y1));
+        if enter > leave || enter > reach {
+            continue;
+        }
+        let d2 = enter * enter;
+        if best.is_none_or(|(_, bd)| d2 < bd) {
+            best = Some((i, d2));
+        }
+    }
+    best
+}
+
+/// Fold a plant the eye's ray meets ([`resolve_plant`]) into the `E` pick.
+/// `planter` is the plant's own planter off the mirror
+/// (`ui::farm::planter_of`), `None` for a ground plant; `feet` is the
+/// player's planar position, which every pick's `d2` is measured from.
+///
+/// The plant wins over the planter it stands in, and takes that planter's
+/// address so `E` can still open it. Against anything else, the pick's own
+/// law ([`resolve`]'s): the ray met the plant, so it is aimed at and beats
+/// whatever is merely near; against something else aimed at, the nearer to
+/// the feet wins. A plant in the next planter over is that planter's, so
+/// it carries its own planter's address, never the aimed one's.
+pub fn fold_plant(
+    aimed: Pick,
+    plant: Option<protocol::WirePlant>,
+    planter: Option<&DeployRec>,
+    feet: (f32, f32),
+) -> Pick {
+    let Some(rec) = plant else {
+        return aimed;
+    };
+    let own = planter.map(|d| box_key(d.cx, d.cz, d.level, d.loc));
+    let in_own = aimed.arch == sim_core::deploy::ARCH_PLANTER
+        && aimed.handle != 0
+        && own == Some(aimed.handle);
+    let (px, _, pz) = rec.pos();
+    let d2 = (px - feet.0) * (px - feet.0) + (pz - feet.1) * (pz - feet.1);
+    if !(aimed.is_none() || in_own || !aimed.aimed || d2 < aimed.d2) {
+        return aimed;
+    }
+    let mut out = Pick {
+        verb: Verb::Plant,
+        plant: rec,
+        d2,
+        aimed: true,
+        ..Default::default()
+    };
+    if let Some(d) = planter {
+        out.arch = sim_core::deploy::ARCH_PLANTER;
+        out.handle = box_key(d.cx, d.cz, d.level, d.loc);
+        (out.cx, out.cz, out.level, out.loc) = (d.cx, d.cz, d.level, d.loc);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -2853,5 +3184,190 @@ mod assist_tests {
         h.step(true, true, Some(p), 0.0);
         let more = GivePick { count: 5, ..p };
         assert_eq!(h.step(false, true, Some(more), 1.0), None);
+    }
+}
+
+#[cfg(test)]
+mod plant_tests {
+    use super::*;
+    use protocol::WirePlant;
+    use sim_core::farm::{LOOK_CORN, STAGE_DYING, STAGE_MATURE, STAGE_RIPE, STAGE_SAPLING};
+    use sim_core::movement::{quant_xz, quant_y};
+
+    fn corn(stage: u8, x: f32, y: f32, z: f32) -> WirePlant {
+        WirePlant {
+            id: 7,
+            look: LOOK_CORN,
+            stage,
+            spot: 1,
+            genes: 0,
+            band: 8,
+            dry: false,
+            qx: quant_xz(x),
+            qy: quant_y(y),
+            qz: quant_xz(z),
+        }
+    }
+
+    /// A planter body picked at 1 m, the ray from 1.6 m up looking along +z
+    /// and a little down.
+    fn planter_pick() -> Pick {
+        Pick {
+            verb: Verb::Planter,
+            arch: sim_core::deploy::ARCH_PLANTER,
+            handle: box_key(3, 4, 0, 0),
+            cx: 3,
+            cz: 4,
+            d2: 1.0,
+            aimed: true,
+            ..Default::default()
+        }
+    }
+
+    /// The planter record [`planter_pick`] picked.
+    fn bed(cx: u16) -> DeployRec {
+        DeployRec {
+            cx,
+            cz: 4,
+            ..DeployRec::default()
+        }
+    }
+
+    #[test]
+    fn a_plant_on_the_ray_beats_its_planter_and_one_beside_it_does_not() {
+        let eye = (100.0, 11.6, 100.0);
+        let n = (0.0f32, -0.3f32, 1.0f32);
+        let l = (n.0 * n.0 + n.1 * n.1 + n.2 * n.2).sqrt();
+        let dir = (n.0 / l, n.1 / l, n.2 / l);
+        // On the ray, 1.5 m out: the ray is at 11.15 m there, inside a
+        // 0.63 m sapling standing on 10.8 m soil.
+        let on = corn(STAGE_SAPLING, 100.0, 10.8, 101.5);
+        let hit = resolve_plant(&[on], eye, dir, sim_core::gather::PICK_REACH_M);
+        let (i, _) = hit.expect("the ray crosses the plant");
+        assert_eq!(i, 0);
+        let feet = (eye.0, eye.2);
+        let p = fold_plant(planter_pick(), Some(on), Some(&bed(3)), feet);
+        assert_eq!(
+            p.verb,
+            Verb::Plant,
+            "the plant beats the planter it stands in"
+        );
+        assert_eq!(
+            p.handle,
+            box_key(3, 4, 0, 0),
+            "and keeps the planter's address"
+        );
+        assert_eq!((p.cx, p.cz), (3, 4));
+        // In the next planter over: that planter's address, not the
+        // aimed one's, when it is the nearer of the two to the feet...
+        let far = Pick {
+            d2: 4.0,
+            ..planter_pick()
+        };
+        let p = fold_plant(far, Some(on), Some(&bed(5)), feet);
+        assert_eq!((p.verb, p.handle), (Verb::Plant, box_key(5, 4, 0, 0)));
+        // ...and an aimed planter nearer to the feet keeps the pick.
+        let near = Pick {
+            d2: 0.5,
+            ..planter_pick()
+        };
+        assert_eq!(
+            fold_plant(near, Some(on), Some(&bed(5)), feet).verb,
+            Verb::Planter
+        );
+        // Merely near, it loses to a plant the ray meets, however far.
+        let nearby = Pick {
+            aimed: false,
+            ..near
+        };
+        assert_eq!(
+            fold_plant(nearby, Some(on), Some(&bed(5)), feet).verb,
+            Verb::Plant
+        );
+        // 0.4 m beside the ray: outside a 0.3 m pick cylinder.
+        let beside = corn(STAGE_SAPLING, 100.4, 10.8, 101.5);
+        assert!(resolve_plant(&[beside], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
+        assert_eq!(
+            fold_plant(planter_pick(), None, None, feet).verb,
+            Verb::Planter,
+            "no plant leaves the planter's pick alone"
+        );
+        // Past reach: nothing.
+        let far = corn(STAGE_SAPLING, 100.0, 10.8, 104.0);
+        assert!(resolve_plant(&[far], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
+    }
+
+    #[test]
+    fn a_water_catcher_says_open() {
+        let p = Pick {
+            verb: Verb::Catcher,
+            arch: sim_core::deploy::ARCH_CATCHER,
+            handle: 0x0102_0304,
+            ..Default::default()
+        };
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] OPEN WATER CATCHER");
+    }
+
+    #[test]
+    fn a_crop_says_what_e_does_to_it() {
+        let at = |stage: u8, water: bool| Pick {
+            plant: corn(stage, 0.0, 0.0, 0.0),
+            water_in_hand: water,
+            ..fold_plant(
+                planter_pick(),
+                Some(corn(stage, 0.0, 0.0, 0.0)),
+                Some(&bed(3)),
+                (0.0, 0.0),
+            )
+        };
+        let cat = ItemCatalog::EMPTY;
+        assert_eq!(at(STAGE_RIPE, false).prompt(&cat), "[E] PICK CORN");
+        assert_eq!(at(STAGE_DYING, false).prompt(&cat), "[E] CLEAR DEAD CORN");
+        assert_eq!(
+            at(STAGE_SAPLING, true).prompt(&cat),
+            "[E] WATER CORN  ·  [C] TAKE CLONE"
+        );
+        let sapling = at(STAGE_SAPLING, false);
+        assert_eq!(sapling.prompt(&cat), "[E] OPEN PLANTER  ·  [C] TAKE CLONE");
+        // A clone is cut from sapling to mature, not before or after.
+        assert!(at(STAGE_MATURE, false).can_clone());
+        assert!(!at(sim_core::farm::STAGE_SEEDLING, false).can_clone());
+        assert!(!at(sim_core::farm::STAGE_FRUITING, false).can_clone());
+        assert_eq!(
+            at(sim_core::farm::STAGE_FRUITING, false).prompt(&cat),
+            "[E] OPEN PLANTER"
+        );
+        assert_eq!(sapling.info(), "CORN SAPLING · 80% · XXXXXX");
+        let mut dry = sapling;
+        dry.plant.dry = true;
+        dry.plant.genes = 2 + 2 * 5 + 3 * 25 + 4 * 125 + 625;
+        assert_eq!(dry.info(), "CORN SAPLING · 80% · GGYHWX · NEEDS WATER");
+        assert_eq!(sapling.tend(), None);
+        assert_eq!(at(STAGE_RIPE, true).tend(), Some(sim_core::farm::TEND_PICK));
+
+        // A ground plant has no planter: a skin waters it, and otherwise
+        // `E` says nothing (its info line still shows).
+        let ground = |stage: u8, water: bool| {
+            let mut p = corn(stage, 0.0, 0.0, 0.0);
+            p.spot = sim_core::farm::SPOT_GROUND;
+            Pick {
+                water_in_hand: water,
+                ..fold_plant(Pick::default(), Some(p), None, (0.0, 0.0))
+            }
+        };
+        assert_eq!(
+            ground(STAGE_SAPLING, true).prompt(&cat),
+            "[E] WATER CORN  ·  [C] TAKE CLONE"
+        );
+        assert_eq!(ground(STAGE_SAPLING, false).prompt(&cat), "[C] TAKE CLONE");
+        assert_eq!(
+            ground(sim_core::farm::STAGE_FRUITING, false).prompt(&cat),
+            ""
+        );
+        assert_eq!(
+            ground(sim_core::farm::STAGE_FRUITING, false).info(),
+            "CORN FRUITING · 80% · XXXXXX"
+        );
+        assert_eq!(ground(STAGE_RIPE, false).prompt(&cat), "[E] PICK CORN");
     }
 }

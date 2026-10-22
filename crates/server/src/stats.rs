@@ -5,10 +5,10 @@
 
 use client_core::core::{PLAYOUT_JITTER_K, PLAYOUT_SLEW_PER_S};
 use sim_core::limits::{
-    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
+    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, MAX_PLAYERS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
     REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Buckets in [`ShardStats::aim_stale_hist`]: one per tick for `0..=6`, and
 /// index 7 is **7 or more**.
@@ -22,6 +22,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// is why this exists beside `aim_stale_sum` rather than instead of it
 /// (`stats.rs`'s own argument for the lane-byte pairs, one level out).
 pub const AIM_STALE_BUCKETS: usize = 8;
+
+/// Rows of [`ShardStats::phase_hist`], one per `core::Phase` (net, prep,
+/// sim, interest, events, encode), and the last is the whole tick.
+pub const PHASE_ROWS: usize = 7;
+/// The whole-tick row of [`ShardStats::phase_hist`].
+pub const PHASE_TICK: usize = PHASE_ROWS - 1;
+/// Log2 microsecond buckets: index 0 is under a microsecond, index `b` is
+/// `[2^(b-1), 2^b)` µs, and the last is everything from ~0.5 s up.
+pub const PHASE_BUCKETS: usize = 21;
 
 /// Raw staleness a sample may carry before it is refused as unbelievable
 /// rather than folded into the distribution — **derived, not picked**.
@@ -71,13 +80,110 @@ const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
 /// `SNAPSHOT_INTERVAL_TICKS` apart, so one datagram of reordering is one
 /// snapshot of gap — the band is two of them.
 ///
-/// **"Persistent" is the operator reading a rate, not a state machine.**
-/// `favour_disagree` is a counter, matching the aim-staleness block's
-/// stated decision below against per-client tables; one bump is noise and a
-/// climbing rate on a quiet shard is the accusation.
+/// **"Persistent" is the operator reading a rate**: `favour_disagree` is a
+/// counter, matching the aim-staleness block's stated decision below
+/// against per-client tables; one bump is noise and a climbing rate on a
+/// quiet shard is the accusation. The round-trip check alone also waits
+/// out a run first ([`FAVOUR_DISAGREE_PERSIST_TICKS`]): its excess is what
+/// every honest client's late frame and jitter spike look like.
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the mint").
 pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
+
+/// Ticks a connection's acks must sit past its round-trip bound plus the
+/// band, on every datagram, before the excess counts as a disagreement
+/// (`ClientNetState::rtt_bounded_view`). The excess is clamped from the
+/// first datagram either way; this only decides who gets accused. A late
+/// render frame, a jitter spike, or quinn's smoothed reading catching up
+/// to a sudden rise passes; a client acking late on purpose is late on
+/// every datagram.
+pub const FAVOUR_DISAGREE_PERSIST_TICKS: u64 = TICK_HZ as u64;
+
+/// Ticks of ack age past the transport's own round trip a datagram may
+/// claim and still be paid (`ClientNetState::rtt_bounded_view`). The age at
+/// arrival is the round trip plus what quinn cannot see: the shard's drain
+/// at the next tick (up to one), the client's render frame between applying
+/// a snapshot and sending its ack (one tick at 30 fps, three at 10), and
+/// the round trip's jitter over quinn's smoothed reading.
+pub const RTT_AGE_SLACK_TICKS: u16 = 4;
+
+/// The most ack age (`now − view`, ticks) a round trip of `rtt_us`
+/// explains: the whole trip rounded up, plus [`RTT_AGE_SLACK_TICKS`].
+/// `None` for 0, the unmeasured value — a harness with no transport, or a
+/// connection its writer task has not sampled yet — which bounds nothing.
+pub fn rtt_age_bound(rtt_us: u32) -> Option<u16> {
+    if rtt_us == 0 {
+        return None;
+    }
+    let trip = (u64::from(rtt_us) * u64::from(TICK_HZ)).div_ceil(1_000_000);
+    Some(trip.min(u64::from(AIM_STALE_CEILING_TICKS)) as u16 + RTT_AGE_SLACK_TICKS)
+}
+
+/// The most favour, all terms together, that an ack age bound of
+/// `age_bound` ([`rtt_age_bound`], plus any pacing slack) explains: that
+/// age, the shipped `INTERP_DELAY_TICKS` for the playout, and the pose
+/// lag, under `REWIND_MAX_TICKS`. Exactly what a client acking late at a
+/// constant offset and reporting the shipped delay already gets.
+///
+/// **Why the total and not each term**: the age is capped at the bound
+/// (`rtt_bounded_view`) and the playout at what the ack history's jitter
+/// supports (`priced_playout`), but separately they stack. A client could
+/// saw-tooth its acks under the bound to fake jitter, raise its playout
+/// cap, then hold its age at the bound and claim both: three ticks past
+/// this cap on loopback (`tests/lagcomp_e2e.rs`). An honest jittery client
+/// does not stack them: a snapshot that lands late makes its ack older and
+/// the distance it draws behind that ack shorter by as much, and its age
+/// sits under the slack. Measured there on links short enough that this
+/// cap sits under `REWIND_MAX_TICKS`: up to 100 ms of jitter it cut no
+/// honest frame; at 140–160 ms the round trip's tail outruns the slack and
+/// it takes one tick off a few frames ([`FAVOUR_CAP_BAND_TICKS`]).
+pub fn favour_cap(age_bound: u16) -> u8 {
+    let cap = age_bound + u16::from(INTERP_DELAY_TICKS) + SNAPSHOT_POSE_LAG_TICKS
+        - u16::from(REWIND_ACK_BIAS_TICKS);
+    cap.min(u16::from(REWIND_MAX_TICKS)) as u8
+}
+
+/// Ticks a favour may run past [`favour_cap`] and be cut without being
+/// counted (`favour_playout_high`). A jittery honest link's tail runs one
+/// past it: the round trip's spread outruns [`RTT_AGE_SLACK_TICKS`], so a
+/// few of its frames lose that tick. A client stacking a faked playout on
+/// its age runs two to four past. Only the count moves; the cut does not.
+pub const FAVOUR_CAP_BAND_TICKS: u8 = 1;
+
+/// Each player slot's transport round trip, µs: quinn's smoothed RTT,
+/// stored by the connection's writer task on every wake (`net.rs`) and read
+/// by the sim thread at the favour mint's door (`ShardCore::tick`). A
+/// per-slot table, unlike the counters around it, because it is not a
+/// statistic: it bounds what a client's acks may claim. 0 is unmeasured
+/// (`rtt_age_bound`).
+///
+/// A client cannot raise it by acking snapshots late at the game level.
+/// A patched QUIC stack still can, by delaying its QUIC ACK frames: quinn
+/// samples `now − sent(largest_acked)`, and the `ack_delay` the peer
+/// reports only subtracts, so it can report 0. What that buys is the
+/// rewind an honest client on that round trip is owed, still capped by
+/// `REWIND_MAX_TICKS`; the browser build cannot do it at all.
+pub struct SlotRtt([AtomicU32; MAX_PLAYERS]);
+
+impl Default for SlotRtt {
+    fn default() -> Self {
+        Self(core::array::from_fn(|_| AtomicU32::new(0)))
+    }
+}
+
+impl SlotRtt {
+    /// Saturating at `u32::MAX` µs (71 minutes), far past every bound.
+    pub fn store(&self, slot: usize, us: u64) {
+        if let Some(a) = self.0.get(slot) {
+            a.store(us.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+        }
+    }
+
+    /// 0 (unmeasured) for a slot past the table: a spectator mints nothing.
+    pub fn load(&self, slot: usize) -> u32 {
+        self.0.get(slot).map_or(0, |a| a.load(Ordering::Relaxed))
+    }
+}
 
 /// Ticks of playout a claim may sit above the server's own reading of the
 /// client's jitter (`ClientNetState::note_ack_age`) and still be paid. The
@@ -281,6 +387,10 @@ pub struct ShardStats {
     /// `agent_seats` were taken — the seats kept for people doing their job,
     /// counted apart from `refused_full`, which is a shard with no room at all.
     pub refused_agents: AtomicU64,
+    /// People refused `REFUSE_AGENTS` at the hello of an agent-only shard
+    /// (`agents_only`): the door doing its job, counted apart from both of
+    /// the above.
+    pub refused_agents_only: AtomicU64,
     /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
     /// the door before claiming a slot (`admin::Bans`).
     pub refused_banned: AtomicU64,
@@ -421,6 +531,11 @@ pub struct ShardStats {
     pub bag_walk_completes: AtomicU64,
     pub bag_sync_skipped: AtomicU64,
     pub bag_events_skipped: AtomicU64,
+    /// And for the plant walk and `EV_PLANT` (farming v2): the same anchor,
+    /// over `world.farm`.
+    pub plant_walk_completes: AtomicU64,
+    pub plant_sync_skipped: AtomicU64,
+    pub plant_events_skipped: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,
@@ -514,6 +629,21 @@ pub struct ShardStats {
     pub voice_relayed: AtomicU64,
     /// Relayed voice frames a listener's full outbound ring refused.
     pub voice_out_drops: AtomicU64,
+    /// Captions (v138, `scribe.rs`): utterances long and loud enough to be
+    /// speech, ended by their talker.
+    pub caption_utterances: AtomicU64,
+    /// Utterances transcribed, and translations made.
+    pub caption_transcribed: AtomicU64,
+    pub caption_translated: AtomicU64,
+    /// Utterances and lines left uncaptioned because an hour's spend was gone.
+    pub caption_spent: AtomicU64,
+    /// Frames, lines, service calls and captions dropped by a full ring or
+    /// queue on the way.
+    pub caption_dropped: AtomicU64,
+    /// Service calls that failed.
+    pub caption_failures: AtomicU64,
+    /// Captions handed to a receiver's event ring.
+    pub caption_sent: AtomicU64,
     /// Joins that arrived as a *saved* character rather than a fresh one
     /// (`store.rs`). The one number that says persistence is doing anything:
     /// a shard with a save file whose `saves_restored` stays 0 while
@@ -588,6 +718,9 @@ pub struct ShardStats {
     /// a high-water mark rather than a current reading. A gauge of "now"
     /// across 100 connections has no single value; the worst does.
     pub net_rtt_us_max: AtomicU64,
+    /// Each connection's own round trip now, the bound on its acks
+    /// ([`SlotRtt`]).
+    pub slot_rtt_us: SlotRtt,
     /// Path MTU from the most recent sample, in bytes. A plain last-writer-
     /// wins gauge and deliberately not a min: what it answers is "did
     /// DPLPMTUD get above the 1 200 floor", and any recent connection
@@ -707,6 +840,9 @@ pub struct ShardStats {
     /// sim thread raised the shutdown flag, and `bin/shard.rs` exits once the
     /// flush is down for the supervisor to start the shard again.
     pub restart_due: AtomicBool,
+    /// The shard was booted agent-only (`agents_only`). Raised once at
+    /// spawn and never lowered: what `status.json` says this island is.
+    pub agents_only: AtomicBool,
     /// A restart asked for from outside the game (SIGUSR1, `bin/shard.rs`):
     /// its minutes plus one, 0 for none. The sim thread takes it on its
     /// once-a-second poll.
@@ -741,6 +877,10 @@ pub struct ShardStats {
     /// players than `MAX_SAVED_PLAYERS` holds, and somebody is losing a base
     /// every time it ticks up.
     pub saves_evicted: AtomicU64,
+    /// Records a full table would not file: a newcomer worth less than
+    /// everyone it could push out, or past the table's eviction budget
+    /// (`store.rs` `SaveStore::put`). A climb is a flood of new wallets.
+    pub saves_refused: AtomicU64,
     /// Records dropped because a ring between the sim, the index and the
     /// file was full. Bounded-everything's stated cost: freshness, never
     /// latency — the next sweep re-takes the same player.
@@ -882,6 +1022,15 @@ pub struct ShardStats {
     /// or above it. See [`AIM_STALE_BUCKETS`] for why the top edge is 7.
     pub aim_stale_hist: [AtomicU64; AIM_STALE_BUCKETS],
 
+    // ── Where a tick's time goes ──
+    //
+    // One log2-µs histogram per phase of the shard loop (`core::Phase`, plus
+    // the whole tick in the last row), filled every tick by `net::sim_thread`.
+    // Totals since boot, like every counter here: a window is two polls of
+    // `/status.json` and a subtraction. The max is the worst single tick.
+    pub phase_hist: [[AtomicU64; PHASE_BUCKETS]; PHASE_ROWS],
+    pub phase_max_us: [AtomicU64; PHASE_ROWS],
+
     // ── The favour actually granted (lagcomp slice 5) ──
     //
     // **Whether lag compensation is on, and how much of it a shard is
@@ -929,8 +1078,10 @@ pub struct ShardStats {
     pub favour_clamped: AtomicU64,
     /// Frames whose claimed view sat more than
     /// [`FAVOUR_DISAGREE_BAND_TICKS`] behind the server's own evidence of
-    /// what the client had received, so the claim was corrected down to the
-    /// evidence before a favour was minted (`ShardCore::push_input`).
+    /// what the client had received, or, on every datagram for
+    /// [`FAVOUR_DISAGREE_PERSIST_TICKS`], behind what its transport round
+    /// trip explains ([`rtt_age_bound`]), so the claim was corrected down
+    /// before a favour was minted (`ShardCore::push_input`).
     ///
     /// **One of the two counters here that accuse somebody** (with
     /// `favour_playout_high`), which is why both are in `anomaly::WATCHED`
@@ -940,9 +1091,10 @@ pub struct ShardStats {
     pub favour_disagree: AtomicU64,
     /// Frames whose minted favour was lowered by the playout bound: the
     /// reported playout (wire v61) sat above what this connection's own ack
-    /// history supports (`ClientNetState::playout_cap`), and the cap cost
-    /// it rewind. A client asking to be rewound further than its link
-    /// explains.
+    /// history supports (`ClientNetState::playout_cap`), or the whole
+    /// favour more than [`FAVOUR_CAP_BAND_TICKS`] above what its round trip
+    /// explains ([`favour_cap`]), and the cap cost it rewind. A client
+    /// asking to be rewound further than its link explains.
     pub favour_playout_high: AtomicU64,
 }
 
@@ -1030,6 +1182,37 @@ impl ShardStats {
         }
     }
 
+    /// File one phase's time for this tick (`row` is a `core::Phase` index
+    /// or [`PHASE_TICK`]).
+    pub fn record_phase(&self, row: usize, us: u64) {
+        let Some(hist) = self.phase_hist.get(row) else {
+            return;
+        };
+        let b = ((u64::BITS - us.leading_zeros()) as usize).min(PHASE_BUCKETS - 1);
+        Self::bump(&hist[b]);
+        self.phase_max_us[row].fetch_max(us, Ordering::Relaxed);
+    }
+
+    /// The bucket's upper edge in µs below which `pct` percent of a phase's
+    /// ticks fell — an over-estimate by at most 2×, which is the price of a
+    /// histogram that costs one atomic add a phase. Zero with no samples.
+    pub fn phase_pct_us(&self, row: usize, pct: u64) -> u64 {
+        let hist = &self.phase_hist[row];
+        let total: u64 = hist.iter().map(Self::get).sum();
+        if total == 0 {
+            return 0;
+        }
+        let want = (total * pct).div_ceil(100);
+        let mut seen = 0;
+        for (b, n) in hist.iter().enumerate() {
+            seen += Self::get(n);
+            if seen >= want {
+                return 1 << b;
+            }
+        }
+        1 << (PHASE_BUCKETS - 1)
+    }
+
     /// Publish a gauge — a number that is *read off* the world each tick
     /// rather than accumulated, so it must be assigned and never bumped.
     pub fn set(field: &AtomicU64, v: u64) {
@@ -1104,6 +1287,7 @@ impl ShardStats {
             "voice_out_drops" => &self.voice_out_drops,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
+            "saves_refused" => &self.saves_refused,
             "save_write_errors" => &self.save_write_errors,
             "world_save_errors" => &self.world_save_errors,
             "world_load_errors" => &self.world_load_errors,
@@ -1119,5 +1303,40 @@ impl ShardStats {
             "trust_sim_overflow" => &self.trust_sim_overflow,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bucket edges are where an off-by-one hides: 0 µs, 1 µs and a
+    /// power of two each land where `PHASE_BUCKETS`' doc says, and a
+    /// percentile reads back the upper edge of the bucket it falls in.
+    #[test]
+    fn phase_buckets_and_percentiles() {
+        let s = ShardStats::default();
+        for us in [0, 1, 2, 3, 1000, 1024] {
+            s.record_phase(PHASE_TICK, us);
+        }
+        let got: Vec<u64> = s.phase_hist[PHASE_TICK]
+            .iter()
+            .map(ShardStats::get)
+            .collect();
+        let mut want = vec![0u64; PHASE_BUCKETS];
+        want[0] = 1; // 0
+        want[1] = 1; // 1
+        want[2] = 2; // 2, 3
+        want[10] = 1; // 1000
+        want[11] = 1; // 1024
+        assert_eq!(got, want);
+        assert_eq!(ShardStats::get(&s.phase_max_us[PHASE_TICK]), 1024);
+        assert_eq!(s.phase_pct_us(PHASE_TICK, 50), 4);
+        assert_eq!(s.phase_pct_us(PHASE_TICK, 99), 2048);
+        assert_eq!(s.phase_pct_us(0, 50), 0);
+        // Past the top bucket, and a row that does not exist.
+        s.record_phase(0, u64::MAX);
+        assert_eq!(ShardStats::get(&s.phase_hist[0][PHASE_BUCKETS - 1]), 1);
+        s.record_phase(PHASE_ROWS, 5);
     }
 }

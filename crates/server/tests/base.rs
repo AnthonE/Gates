@@ -147,16 +147,28 @@ fn build(f: &mut Fixture, cx: u16, cz: u16) -> BasePlan {
     let mut plan = BasePlan::new(OWNER, cx, cz);
     // Two passes: the second is what a raid would get, refused wherever the
     // first already built. One command a tick, the wire's own rate.
+    // The ground floor's height as the body last stood on it.
+    let mut ground_qy = f.w.players[slot].body.qy;
     for _ in 0..2 * STARTER.len() {
         // Onto the op's spot (beside a door for its lock), as the profile
-        // walks it there.
+        // walks it there, and onto its storey (the box upstairs is put down
+        // from up there: a hand places only what it sees).
         let (x, z) = plan.stand(STARTER);
-        let qy = f.w.players[slot].body.qy;
+        let level = plan.stand_level(STARTER);
         let mut body = Body::at(SEED, &f.w.haven, x, z);
-        body.qy = body.qy.max(qy);
+        body.qy = if level == 0 {
+            body.qy.max(ground_qy)
+        } else {
+            let plate = f.w.pieces.cols().plate(cx, cz).expect("the core is built");
+            let floor = column_floor_y(SEED, &f.w.haven, cx, cz, plate);
+            movement::quant_y(floor + LEVEL_H_M * f32::from(level))
+        };
         f.w.players[slot].body = body;
         let cmd = base_step(&mut plan, f.rows, STARTER);
         f.w.tick(&[cmd]);
+        if level == 0 {
+            ground_qy = f.w.players[slot].body.qy;
+        }
     }
     plan
 }
@@ -222,7 +234,7 @@ fn a_bot_builds_the_whole_starter_base() {
     };
     assert_eq!(arch(cx, cz, 0, LOC_PLANE), Some(ARCH_HEARTH));
     // Two doors between the outside and the cupboard: the front one on the
-    // airlock triangle's west side, the inner one on its north side.
+    // airlock's west side, the inner one on its north side.
     let front = (cx + 1, cz + 1, 0, LOC_EDGE_XLO);
     let inner = (cx + 1, cz + 1, 0, LOC_EDGE_ZLO);
     for (name, (x, z, level, loc)) in [("front", front), ("inner", inner)] {
@@ -365,8 +377,8 @@ fn a_player_gets_in_through_both_doors_and_up_the_stairs() {
         f.w.pieces.cols().plate(cx, cz).expect("the core is built"),
     );
 
-    // The airlock triangle's cell: the front door on its west side, the
-    // inner door on its north side, the long side a diagonal wall.
+    // The airlock's cell: the front door on its west side, the inner door
+    // on its north side.
     let (ax, az) = (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M);
     let front = (cx + 1, cz + 1, 0, LOC_EDGE_XLO);
     let inner = (cx + 1, cz + 1, 0, LOC_EDGE_ZLO);

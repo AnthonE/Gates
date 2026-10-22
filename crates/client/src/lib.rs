@@ -76,6 +76,16 @@ pub mod deeplink;
 // once-per-change handoff). Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod discord;
 pub mod elo;
+// Friends from the Elo Pros platform: the list, who is playing where, and the
+// signed text that changes it. Pure and on every target; `render/friends.rs`
+// owns the reads and the signing.
+pub mod friends;
+// A player's profile card: their Elo Pros face, playtime and place on your
+// friends list. Pure; `render/profile.rs` owns the reads.
+pub mod profile;
+// Contacts (Rust's): the players you have met, with a mugshot, marked
+// friendly or enemy. Pure; `render/contacts.rs` watches, grabs and saves.
+pub mod contacts;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
 // `config`'s reason exactly: a path rule and a filename rule are pure, they
@@ -113,6 +123,10 @@ pub mod ui;
 // half a browser build has to re-express — so they belong where every target
 // compiles them rather than inside the native session below.
 pub mod net;
+
+/// The CAs desktop builds trust, minus the ones we have dropped.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tls;
 
 /// Recorded sessions for trailers: the file format a live session is taped
 /// to (`bin/record.rs`) and the replay `render::film` draws it back from.
@@ -367,7 +381,7 @@ pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint
         let cfg = match (pin.clone(), loopback) {
             (Some(digest), _) => roots.with_server_certificate_hashes([digest]).build(),
             (None, true) => roots.with_no_cert_validation().build(),
-            (None, false) => roots.with_native_certs().build(),
+            (None, false) => roots.with_custom_tls(crate::tls::webtransport()).build(),
         };
         Endpoint::client(cfg)
     };
@@ -805,6 +819,13 @@ impl Session {
         // the same string (`net::handshake::server_host`).
         if net::handshake::server_host(server).is_none() {
             return Err(format!("{server:?} is not a server address (host:port)").into());
+        }
+        if net::handshake::pin_refused(cert_hash, signs_as) {
+            return Err(format!(
+                "{server:?} is under this page's own host and has a real certificate; \
+                 a pinned certificate hash is refused for it"
+            )
+            .into());
         }
         let transport = net::web::open(server, cert_hash).await?;
 

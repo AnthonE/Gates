@@ -45,11 +45,14 @@
 
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
-use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_FEET, WEAR_HEAD};
+use sim_core::combat::{
+    ARMOR_MAX_PCT, WEAR_BODY, WEAR_FACE, WEAR_FEET, WEAR_HANDS, WEAR_HEAD, WEAR_LEGS, WEAR_SHIRT,
+};
 use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
-    deposit_refused, is_own, CONT_BODY, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
+    deposit_refused, deposits_into, is_own, CONT_BAG, CONT_BODY, CONT_BOX, CONT_MAX, CONT_SELF,
+    CONT_WEAR, CONT_WORLD,
 };
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
@@ -357,6 +360,45 @@ pub fn move_args(
     })
 }
 
+/// Is the open container a carcass or a body: a `CONT_BAG` that does not
+/// look like a pack ([`WireBag::kind`])? Those are exactly the bags the sim
+/// keys on a mob-tagged owner (`WireBag::of`: an animal's slot or
+/// `CORPSE_OWNER`), which `World::move_item` makes take-only. A bag not in
+/// the client's set answers `false`, and the shard still refuses.
+///
+/// [`WireBag::kind`]: protocol::event::WireBag::kind
+pub fn take_only_bag(cont_kind: u8, cont_handle: u32, bags: &[protocol::event::WireBag]) -> bool {
+    cont_kind == CONT_BAG
+        && bags
+            .iter()
+            .any(|b| b.id == cont_handle && b.kind != protocol::event::BAG_KIND_PACK)
+}
+
+/// Would this move put something into a take-only bag ([`take_only_bag`]):
+/// forward, or by a swap sending the occupant back? The sim's own
+/// `deposits_into`, asked as `World::move_item` asks it, so a drag, a
+/// right-click and the red edge refuse what the shard would.
+pub fn take_only_refused(
+    take_only: bool,
+    from_kind: u8,
+    to_kind: u8,
+    src: ItemStack,
+    dst: ItemStack,
+) -> bool {
+    take_only && deposits_into(CONT_BAG, from_kind, to_kind, src, dst)
+}
+
+/// [`refusal_text`] for what is open: `REFUSE_M_NO_INPUT` is a crate's and
+/// a carcass's alike (one code, the shard's), so the sentence is picked by
+/// the open kind, the way `note_refusal` picks the oven's by its machine.
+pub fn refusal_text_in(reason: u8, cont_kind: u8) -> &'static str {
+    if reason as u32 == sim_core::inventory::REFUSE_M_NO_INPUT && cont_kind == CONT_BAG {
+        "a carcass takes nothing - you can only take from it"
+    } else {
+        refusal_text(reason)
+    }
+}
+
 /// Why a move bounced, for the panel's status line. `sim_core`'s
 /// `REFUSE_M_*` in words; the numbers are the sim's and the sentences are
 /// this side's.
@@ -382,18 +424,19 @@ pub fn refusal_text(reason: u8) -> &'static str {
         // reaches this arm is the disagreement — a stale catalog, or a
         // slot the server knows about and this build does not.
         REFUSE_M_WEAR => "that is not what goes in that slot",
-        // The container's own refusal (v64). Named after the crate
-        // because `CONT_WORLD` is the only kind that gives it today and
-        // `container_title` calls that panel `CRATE` — the word on the
-        // screen and the word in the line are the same one.
+        // The container's own refusal (v64). Named after the crate, which
+        // `container_title` calls that panel; a carcass gives it too, and
+        // `refusal_text_in` says that one's sentence by the open kind.
         REFUSE_M_NO_INPUT => "that crate gives loot and takes none",
         // The research table's two (v73). Its slot rule names both slots,
         // because the fix is to put the thing in the OTHER one as often as
         // it is to take it away.
         REFUSE_M_TABLE => "the table takes one thing to research and its junk",
         REFUSE_M_BUSY => "the table is researching - wait for it to finish",
-        // THE GATE's "No Looting" (v92), Rust's popup.
-        REFUSE_M_SAFE => "you can't loot other players in a safe zone",
+        // THE GATE's "No Looting" (v92), Rust's popup. A bag lying in the
+        // zone is take-only for its owner too, so the same reason refuses
+        // a stash into one.
+        REFUSE_M_SAFE => "you can't loot other players, or stash in a bag, in a safe zone",
         // A give (v102): their pack, not a slot you dragged to.
         REFUSE_M_GIVE => "their pack has no room for that",
         _ => "refused",
@@ -429,6 +472,36 @@ pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
     }
     pct.min(ARMOR_MAX_PCT)
 }
+
+/// What a worn set keeps out of the cold, whole percent: the sum of every
+/// piece's `warmth_pct` in the slot its row names (clothing v1). Negative
+/// pieces (a road sign jacket) are summed in as they are, so the line says
+/// what the set nets. `exposure::target_chill` halves the keep when soaked,
+/// which the line does not try to say.
+pub fn worn_warmth(catalog: &ItemCatalog, worn: &[ItemStack]) -> i32 {
+    worn.iter()
+        .enumerate()
+        .take(WEAR_SLOTS)
+        .filter(|(i, s)| s.count > 0 && catalog.wear_slot(s.item as usize) as usize == i + 1)
+        .map(|(_, s)| catalog.warmth_pct(s.item as usize) as i32)
+        .sum()
+}
+
+/// What a worn set wards off of the Verdigris, whole percent, held to
+/// `[exposure] fel_ward_max`'s shipped 90 the way the sim holds it.
+pub fn worn_ward(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
+    let sum: u32 = worn
+        .iter()
+        .enumerate()
+        .take(WEAR_SLOTS)
+        .filter(|(i, s)| s.count > 0 && catalog.wear_slot(s.item as usize) as usize == i + 1)
+        .map(|(_, s)| catalog.ward_pct(s.item as usize) as u32)
+        .sum();
+    sum.min(WARD_SHOWN_MAX)
+}
+
+/// The most ward the panel says a set has: the shipped `fel_ward_max`.
+pub const WARD_SHOWN_MAX: u32 = 90;
 
 /// May this item be worn in wear-container slot `s`? The client's read of
 /// `sim_core::combat::wearable_in`, off the same catalog column.
@@ -650,7 +723,8 @@ pub fn quick_move(
         // The skin too, because `plan_move` asks it: two skins of one item
         // swap rather than merge there, so a top-up aimed across skins is
         // refused (or, at the whole count, a swap the plan never meant).
-        if there.item == src.item && there.skin == src.skin {
+        // And the condition, for the same reason: a clone's genes ride it.
+        if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
             let room = cap.saturating_sub(there.count);
             if room > 0 {
                 return finish(
@@ -1120,6 +1194,10 @@ pub fn wear_slot_label(s: usize) -> &'static str {
         Ok(WEAR_HEAD) => "HEAD",
         Ok(WEAR_BODY) => "BODY",
         Ok(WEAR_FEET) => "FEET",
+        Ok(WEAR_LEGS) => "LEGS",
+        Ok(WEAR_HANDS) => "HANDS",
+        Ok(WEAR_SHIRT) => "SHIRT",
+        Ok(WEAR_FACE) => "FACE",
         _ => "-",
     }
 }

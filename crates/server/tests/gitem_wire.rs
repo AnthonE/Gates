@@ -380,6 +380,61 @@ fn a_stack_that_lands_mid_walk_is_appended_not_restarted() {
     );
 }
 
+/// **The loose stacks are aimed.** A stack says what was dropped and where,
+/// so it used to be a map of every death's spill on the island: the walk sent
+/// the whole store to everyone. Now a client 500 m off is never sent a stack
+/// at somebody else's feet — not in its mirror, not in the bytes — and when it
+/// walks over, the re-arm restarts its walk and the stack arrives.
+#[test]
+fn a_stack_far_off_is_not_said_until_its_client_walks_to_it() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let mut warm = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut warm);
+    // Slot 1 lands 500 m off: a `Join` reads `dev_spawn` when it runs.
+    let far = (SPAWN.0 + 500.0, SPAWN.1);
+    core.world.dev_spawn = Some(far);
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+    pump(&mut core, &stats, &mut clients, &mut warm);
+    core.world.dev_spawn = Some(SPAWN);
+    for _ in 0..5 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+
+    let w0 = world_slot(&core, id_of(0));
+    let id = drop_one(&mut core, w0, FILLER, 3);
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let holds = |c: &ClientCore| c.ground_items().iter().any(|g| g.id == id);
+    assert!(holds(&clients[0].1), "the client beside it never got it");
+    assert!(
+        !holds(&clients[1].1),
+        "a stack 500 m off reached a standing client"
+    );
+    assert!(
+        !seen.iter().any(|(slot, m)| *slot == 1
+            && matches!(m, EventMsg::GItemSync { recs, count, .. }
+                if recs[..*count as usize].iter().any(|g| g.id == id))),
+        "the server put a stack 500 m off on the far client's lane"
+    );
+
+    // Walk over: one teleport past the re-arm distance.
+    let w1 = world_slot(&core, id_of(1));
+    core.world.players[w1].body = sim_core::movement::Body::at(SEED, hv(SEED), SPAWN.0, SPAWN.1);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        holds(&clients[1].1),
+        "walking to the stack did not deliver it"
+    );
+}
+
 /// An arrow standing in a body reaches every client as the body it is in
 /// and where in it and which way (`SUB_LODGED_SYNC`, wire v94), and when it
 /// comes out every client's set loses it — the same two halves as the loose

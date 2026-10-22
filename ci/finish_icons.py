@@ -139,6 +139,26 @@ PAINT = {
     "bone_helmet": dict(mat="bone", c=BONE),
     "ash_mask": dict(mat="cloth", c=("#9a978e", "#45433c")),
     "ash_suit": dict(mat="cloth", c=("#9a978e", "#45433c"), holes="#2f4a3c"),
+    # Clothing v1: Rust's clothes for every slot, and their teas.
+    "burlap_trousers": dict(mat="cloth", c=("#d2b985", "#8b7044")),
+    "burlap_shoes": dict(mat="cloth", c=("#d2b985", "#8b7044")),
+    "burlap_gloves": dict(mat="cloth", c=("#d2b985", "#8b7044")),
+    "hide_pants": dict(mat="leather", c=("#a8784c", "#5a3a20")),
+    "hide_boots": dict(mat="leather", c=("#a8784c", "#5a3a20")),
+    "hide_vest": dict(mat="leather", c=("#a8784c", "#5a3a20")),
+    "leather_gloves": dict(mat="leather", c=("#8a5a34", "#3e2614")),
+    "hoodie": dict(mat="cloth", c=("#8a96a4", "#3c4652")),
+    "pants": dict(mat="cloth", c=("#6c84a4", "#2c3c54")),
+    "jacket": dict(mat="cloth", c=("#7a8a5a", "#3a4626")),
+    "snow_jacket": dict(mat="cloth", c=("#eef4fa", "#8ea4bc"), holes="#c84a3a"),
+    "bandana": dict(mat="cloth", c=("#d4584a", "#842a20")),
+    "improvised_balaclava": dict(mat="cloth", c=("#c6b286", "#6e5a34")),
+    "beenie_hat": dict(mat="cloth", c=("#c45a3c", "#6e2a18")),
+    "warming_tea": dict(c=("#f0a060", "#a04420"), holes="#7a2a16"),
+    "strong_warming_tea": dict(c=("#e86a40", "#8a2a14"), holes="#5a1a0c"),
+    "cooling_tea": dict(c=("#a8d8f0", "#3a7aa8"), holes="#1e4a6e"),
+    "warding_tea": dict(c=("#8ac080", "#2e5a2c"), holes="#16301a"),
+    "healing_tea": dict(mat="organic", c=("#e88aa0", "#9c3048")),
     "fire_arrow": dict(c=FLAME),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),
@@ -488,8 +508,15 @@ def main():
             else:
                 renders = pathlib.Path(args[i + 1])
             del args[i : i + 2]
+    # `--only-renders`: just the stems the renders directory has, which is
+    # how the skins' pictures are made (`iconbake --skins`): no item's
+    # painted silhouette belongs in `assets/icons/skins/`.
+    only_renders = "--only-renders" in args
+    if only_renders:
+        args.remove("--only-renders")
     only = set(args)
-    stems = sorted(set(PAINT) | {p.stem for p in renders.glob("*.png")} | set(RENDER_OF))
+    rendered = {p.stem for p in renders.glob("*.png")}
+    stems = sorted(rendered if only_renders else set(PAINT) | rendered | set(RENDER_OF))
     todo = [s for s in stems if not only or s in only]
     missing = sorted(only - set(stems))
     if missing:

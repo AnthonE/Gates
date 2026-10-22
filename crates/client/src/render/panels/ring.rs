@@ -19,10 +19,11 @@
 //! resolves the pointer with, so what is drawn and what is picked cannot
 //! disagree — the wheel's oldest rule, kept.
 //!
-//! Colours are measured off the reference `building.jpeg` by locating the ring
+//! The band is measured off the reference `building.jpeg` by locating the ring
 //! programmatically (bright, low-saturation pixels; centre and radii from
-//! their distribution) rather than by eye: the band is `#f5e7dd` and the
-//! chosen wedge is `#d13f28`.
+//! their distribution) rather than by eye: `#f5e7dd`. The chosen wedge is our
+//! green, not the reference's red (operator, 2026-10-21), and like the
+//! reference's it runs a little past the rim, with no dividers on the band.
 
 use bevy::asset::{uuid_handle, RenderAssetUsages};
 use bevy::image::Image;
@@ -33,21 +34,22 @@ use crate::ui::build::{Rings, SHAPES};
 
 /// The cream of the ring band, `#f5e7dd`.
 pub const CREAM: [u8; 3] = [245, 231, 221];
-/// The chosen wedge, `#d13f28`.
-pub const CHOSEN: [u8; 3] = [209, 63, 40];
+/// The chosen wedge: `ui::MARK`, `#86b834`, the sigil's and PLAY's green.
+pub const CHOSEN: [u8; 3] = [134, 184, 52];
 /// How opaque the ring is over the world. The reference's sits over a
 /// *blurred* world, which we do not have; a touch of translucency keeps it
 /// from reading as a sticker without costing legibility.
 const RING_ALPHA: u8 = 242;
 
-/// Texture edge, px. The wheel is drawn at `2 * rim` ≈ 428 px, so 512 gives
-/// a little better than 1:1 and the wedge edges stay clean when a display
-/// scales it.
+/// Texture edge, px. The wheel is drawn at `2 * REACH * rim` ≈ 445 px, so
+/// 512 gives a little better than 1:1 and the wedge edges stay clean when a
+/// display scales it.
 const TEX: u32 = 512;
 
-/// Half the angular gap between two wedges, radians. Small — the reference's
-/// dividers are hairlines, not gutters.
-const GAP: f32 = 0.010;
+/// How far past the rim the chosen wedge reaches, as a multiple of the rim
+/// (measured off the reference: 175 px over a 170 px rim). The textures span
+/// this radius, so the wheel draws them that much larger than the rim.
+pub const REACH: f32 = 1.04;
 
 /// Supersampling per axis. Wedge edges are radial lines at every angle, so
 /// they alias badly at 1 spp; 3×3 is cheap once and clean.
@@ -114,13 +116,6 @@ fn covers(b: Band, r: f32, theta: f32, seg: Option<usize>) -> bool {
     // Segment i is centred on i*step, so its span is ±step/2 around that.
     let shifted = (theta + step * 0.5).rem_euclid(std::f32::consts::TAU);
     let idx = (shifted / step) as usize % b.segments;
-    // The gap is cut at both edges of every wedge, whether or not this call
-    // is drawing that wedge — otherwise the base ring and a highlight would
-    // disagree about where the divider is.
-    let within = shifted - idx as f32 * step;
-    if within < GAP || within > step - GAP {
-        return false;
-    }
     match seg {
         None => true,
         Some(s) => idx == s,
@@ -133,12 +128,17 @@ fn bake(rings: Rings, segments: usize, pick: Option<usize>, rgb: [u8; 3]) -> Ima
     let n = TEX as usize;
     let mut data = vec![0u8; n * n * 4];
     let half = TEX as f32 * 0.5;
-    // Texture units per wheel pixel: the texture spans the rim's diameter.
-    let scale = rings.rim / half;
+    // Wheel pixels per texture pixel: the texture spans `REACH * rim`.
+    let scale = rings.rim * REACH / half;
 
+    // The base band stops at the rim; a chosen wedge runs on to `REACH`.
     let band = Band {
         inner: rings.dead,
-        outer: rings.rim,
+        outer: if pick.is_some() {
+            rings.rim * REACH
+        } else {
+            rings.rim
+        },
         segments,
     };
 
@@ -249,15 +249,6 @@ mod tests {
         assert!(!covers(band(6), 99.0, 0.0, None), "inside the inner edge");
         assert!(!covers(band(6), 201.0, 0.0, None), "outside the rim");
         assert!(covers(band(6), 150.0, 0.0, None));
-    }
-
-    #[test]
-    fn a_divider_is_cut_at_every_boundary() {
-        let step = std::f32::consts::TAU / 6.0;
-        // Just inside the boundary between segment 0 and segment 1.
-        let edge = step * 0.5;
-        assert!(!covers(band(6), 150.0, edge - GAP * 0.5, None));
-        assert!(!covers(band(6), 150.0, edge + GAP * 0.5, None));
     }
 
     /// The hammer's band draws with the same arithmetic — each

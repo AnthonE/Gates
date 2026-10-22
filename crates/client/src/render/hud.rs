@@ -103,17 +103,42 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 ///
 /// They are px off the BOTTOM, and so is the announce stack that sits on them.
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
-const HOTBAR_CELL_PX: f32 = 46.0;
-/// A hotbar slot at rest, and its edge.
-const SLOT_BG: Color = Color::srgba(0.078, 0.071, 0.063, 0.58);
-const SLOT_EDGE: Color = Color::srgba(0.75, 0.72, 0.62, 0.35);
-/// The slot in your hand: Rust's selection blue, filled.
-const SLOT_SEL: Color = super::panels::CELL_SEL;
-const SLOT_SEL_EDGE: Color = Color::srgba(0.45, 0.68, 0.88, 0.95);
+const HOTBAR_CELL_PX: f32 = 54.0;
+const HOTBAR_GAP_PX: f32 = 4.0;
+/// The picture inside a belt cell, px: most of the cell, as Rust's are.
+const HOTBAR_ICON_PX: f32 = 44.0;
+/// A hotbar slot at rest: Rust's flat translucent grey, no edge.
+const SLOT_BG: Color = Color::srgba(0.36, 0.36, 0.34, 0.42);
+/// The slot in your hand: Rust's selection blue, translucent over the world
+/// (sampled off the reference frame, composite ≈ #3C5266).
+const SLOT_SEL: Color = Color::srgba(0.27, 0.40, 0.53, 0.72);
+/// A belt cell's count, and the same digits on the blue of the hand.
+const SLOT_COUNT: Color = Color::srgba(0.93, 0.92, 0.88, 0.95);
+const SLOT_COUNT_SEL: Color = Color::srgba(0.74, 0.84, 0.95, 1.0);
+/// The condition bar up a belt cell's left edge, px wide.
+const SLOT_COND_W: f32 = 3.0;
 
-/// Rust's notices sit over the vitals and are this wide — wider than a
-/// vital row, because an item name has to fit.
-const NOTICE_W: f32 = 212.0;
+/// The vitals column, px: an icon square and its bar, Rust's proportions.
+/// The notices and chips over the bars are the same width, so the column
+/// is one clean edge on both sides.
+const VITAL_ICON_PX: f32 = VITAL_BAR_H;
+const VITAL_ROW_GAP: f32 = 6.0;
+const VITAL_ROW_W: f32 = VITAL_ICON_PX + 2.0 + VITAL_BAR_W;
+/// The vitals' own trough and icon square: faint, so the fill is the thing
+/// read and the world shows through the rest.
+const VITAL_TROUGH: Color = Color::srgba(0.07, 0.07, 0.06, 0.40);
+const VITAL_ICON_BG: Color = Color::srgba(0.07, 0.07, 0.06, 0.30);
+const VITAL_ICON_INK: Color = Color::srgba(0.93, 0.93, 0.90, 0.80);
+/// A softer shadow than [`super::ui::TEXT_SHADOW`] for digits on a pale
+/// bar: enough to lift them, not enough to outline them.
+const SOFT_SHADOW: TextShadow = TextShadow {
+    offset: Vec2::splat(1.0),
+    color: Color::srgba(0.0, 0.0, 0.0, 0.35),
+};
+
+/// Rust's notices sit over the vitals and are this wide — the column's
+/// width, which is set by an item name having to fit.
+const NOTICE_W: f32 = VITAL_ROW_W;
 /// An item notice: Rust's olive (≈#506133), translucent.
 const NOTICE_BG: Color = Color::srgba(0.314, 0.380, 0.200, 0.86);
 const NOTICE_TEXT: Color = Color::srgba(0.96, 0.96, 0.92, 1.0);
@@ -382,11 +407,11 @@ fn line_box_px(font_size: f32) -> f32 {
     }
 }
 
-/// A vitals bar, px. The reference's are ~112 × 19 in a 1200-wide frame;
-/// these are the same proportion at 1280, and the height is what makes the
-/// icon square square. Cosmetic (`DECISIONS.md` §open, client cosmetics).
-pub const VITAL_BAR_W: f32 = 118.0;
-pub const VITAL_BAR_H: f32 = 19.0;
+/// A vitals bar, px. The reference's 1080p frame draws an icon square and a
+/// bar ~183 × 20; ours is a little wider so the notices over it fit an item
+/// name. The height is what makes the icon square square.
+pub const VITAL_BAR_W: f32 = 190.0;
+pub const VITAL_BAR_H: f32 = 20.0;
 
 /// What a line is worth when the sink is full.
 ///
@@ -1028,7 +1053,7 @@ impl Vital {
         }
     }
 
-    /// The baked icon's file stem, and the ASCII the square falls back to.
+    /// The baked icon's file stem.
     ///
     /// **The glyph was a placeholder that named itself as one and outlived
     /// three icon passes.** `+`, `~` and `*` sat in the bottom-right corner of
@@ -1037,10 +1062,12 @@ impl Vital {
     /// rather than through a material — the bars were authored and the thing
     /// labelling them was typography.
     ///
-    /// The fallback is not dead code and must stay: `icons::load` is a
-    /// `Startup` system, a shard can be entered before its handles settle, and
-    /// this module's own rule is to draw something truthful rather than an
-    /// empty square. It is the same shape `panels::inv` uses for item cells.
+    /// And it kept coming back after the icons landed: a join straight into a
+    /// shard (`--server`, the launcher's) builds the HUD on the `Loading`
+    /// transition, which runs before `Startup` and so before `icons::load`
+    /// has made its `Icons`. [`setup`] asks the asset server for the file
+    /// itself, which exists from the first frame and hands back the same
+    /// handle `icons::load` will.
     fn icon_stem(self) -> &'static str {
         match self {
             Vital::Hp => "vital_hp",
@@ -1049,20 +1076,23 @@ impl Vital {
         }
     }
 
-    /// What the square draws when the icon has not loaded.
-    fn glyph(self) -> &'static str {
+    /// The bar's fill. Paler and translucent next to the panels' opaque
+    /// `VITAL_*`: these sit on the world, and the reference's composite over
+    /// grass reads ≈ #A4B285, #8CA0B2 and #B79C80.
+    fn fill(self) -> Color {
         match self {
-            Vital::Hp => "+",
-            Vital::Water => "~",
-            Vital::Food => "*",
+            Vital::Hp => Color::srgba(0.70, 0.78, 0.52, 0.86),
+            Vital::Water => Color::srgba(0.56, 0.66, 0.77, 0.86),
+            Vital::Food => Color::srgba(0.80, 0.65, 0.50, 0.86),
         }
     }
 
-    fn fill(self) -> Color {
+    /// The number on the bar: a pale tint of the fill, as the reference's.
+    fn ink(self) -> Color {
         match self {
-            Vital::Hp => super::panels::VITAL_HP,
-            Vital::Water => super::panels::VITAL_WATER,
-            Vital::Food => super::panels::VITAL_FOOD,
+            Vital::Hp => Color::srgb(0.91, 0.96, 0.80),
+            Vital::Water => Color::srgb(0.86, 0.92, 1.0),
+            Vital::Food => Color::srgb(0.96, 0.86, 0.76),
         }
     }
 }
@@ -1086,6 +1116,15 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
+    /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
+    /// bandage closes it.
+    Bleeding,
+    /// The held breath (water pass, `World::breathe`): shown while any is
+    /// spent, red once the water is costing hp.
+    Breath,
+    /// The teas working in the body and the minutes they have left
+    /// (clothing v1).
+    Tea,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1140,20 +1179,52 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
 
-/// What the Verdigris chip says: the meter, and while it hurts, the way out.
-/// The player-facing name only — never the code's `fel`.
-pub fn fel_line(pct: u8, hurting: bool) -> String {
-    if hurting {
-        format!("VERDIGRIS {pct}% · GET OUT OF THE GREEN")
-    } else {
-        format!("VERDIGRIS {pct}%")
+/// What the BLEEDING chip says left of the hp it still owes: Rust's word,
+/// and what stops it.
+pub fn bleed_line() -> String {
+    "BLEEDING · BANDAGE IT".to_string()
+}
+
+const TEA_CHIP: Color = Color::srgba(0.42, 0.30, 0.18, 0.85);
+
+/// What the tea chip says: the teas working, by `sim_core::exposure::BREW_*`,
+/// and the minutes left — on the right for one tea, beside each name for
+/// more. `None` when nothing is brewing.
+pub fn tea_line(brew_min: &[u8; sim_core::exposure::BREW_KINDS]) -> Option<(String, String)> {
+    const NAMES: [&str; sim_core::exposure::BREW_KINDS] = ["WARMING", "COOLING", "WARDING"];
+    let on: Vec<(u8, &str)> = brew_min
+        .iter()
+        .zip(NAMES)
+        .filter(|(m, _)| **m > 0)
+        .map(|(m, n)| (*m, n))
+        .collect();
+    match on.as_slice() {
+        [] => None,
+        [(m, n)] => Some((format!("{n} TEA"), format!("{m}M"))),
+        many => Some((
+            many.iter()
+                .map(|(m, n)| format!("{n} {m}M"))
+                .collect::<Vec<_>>()
+                .join(" · "),
+            "TEA".to_string(),
+        )),
     }
 }
 
-/// What the COMFORT chip says: Rust's `COMFORT 50%`.
-pub fn comfort_line(comfort_pct: u8) -> String {
-    format!("COMFORT {comfort_pct}%")
+/// The worn warmth under which the COLD chip says to dress warmer: about a
+/// burlap tunic and hood.
+pub const DRESS_WARMER_PCT: i32 = 40;
+
+/// What the Verdigris chip says left of its meter: and while it hurts, the
+/// way out. The player-facing name only — never the code's `fel`.
+pub fn fel_line(hurting: bool) -> &'static str {
+    if hurting {
+        "VERDIGRIS · GET OUT OF THE GREEN"
+    } else {
+        "VERDIGRIS"
+    }
 }
 
 /// The world around the body, as the exposure chips read it: the client's
@@ -1183,11 +1254,11 @@ fn falling(w: ExposureWorld) -> &'static str {
     }
 }
 
-/// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
-/// rain on an open body, the sea, or drying out, fast beside a fire. Rain
-/// on an open body soaks it fire or no fire (`exposure::step`), so the
-/// rain still wins there.
-pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
+/// What the WET chip says left of its percentage (`NOW.md` §0wx item 3):
+/// why — the rain on an open body, the sea, or drying out, fast beside a
+/// fire. Rain on an open body soaks it fire or no fire (`exposure::step`),
+/// so the rain still wins there.
+pub fn wet_line(w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
@@ -1199,7 +1270,7 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     } else {
         "DRYING"
     };
-    format!("WET {wet_pct}% · {why}")
+    format!("WET · {why}")
 }
 
 /// The spill line: `n` units of `label` that did not fit and fell at the
@@ -1238,9 +1309,10 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     }
 }
 
-/// What the HOT chip says (climate v0): the air, and what cools a body —
-/// shade, the water, getting wet. Heatstroke while it is taking hp.
-pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> String {
+/// What the HOT chip says left of the air's temperature (climate v0): what
+/// cools a body — shade, the water, getting wet. Heatstroke while it is
+/// taking hp, and Rust's `TOO HOT` until then.
+pub fn hot_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let help = if w.underwater {
         "THE WATER COOLS YOU"
     } else if w.sheltered {
@@ -1250,18 +1322,66 @@ pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> Stri
     } else {
         "FIND SHADE OR WATER"
     };
-    let what = if hurting { "HEATSTROKE" } else { "HOT" };
-    format!("{what} · {air_c}°C · {help}")
+    let what = if hurting { "HEATSTROKE" } else { "TOO HOT" };
+    format!("{what} · {help}")
 }
+
+/// The COLD chip's hint when what is worn keeps little out (clothing v1):
+/// the answer a fire and a roof are not.
+fn dress_warmer(core: &client_core::core::ClientCore) -> &'static str {
+    if crate::ui::slots::worn_warmth(&core.catalog, &core.worn) < DRESS_WARMER_PCT {
+        " · DRESS WARMER"
+    } else {
+        ""
+    }
+}
+
+/// The words on the left of a chip.
+#[derive(Component)]
+pub struct ChipLabel(pub ExposureChip);
+
+/// The number on the right of a chip — Rust's `42°c`, `36%` — or nothing.
+#[derive(Component)]
+pub struct ChipValue(pub ExposureChip);
+
+impl ExposureChip {
+    /// Top to bottom over the vitals. The base's upkeep heads the stack
+    /// (NOW §0up 3): it is about the base, not the body.
+    const ALL: [ExposureChip; 10] = [
+        ExposureChip::Breath,
+        ExposureChip::Upkeep,
+        ExposureChip::Safe,
+        ExposureChip::Wet,
+        ExposureChip::Cold,
+        ExposureChip::Hot,
+        ExposureChip::Verdigris,
+        ExposureChip::Tea,
+        ExposureChip::Comfort,
+        ExposureChip::Bleeding,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|c| *c == self).unwrap_or(0)
+    }
+}
+
+/// What one chip says this frame: shown, its words, its number, its ink.
+type ChipSaid = (bool, String, String, Color);
 
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention. The
 /// upkeep chip likewise: shown while the shard keeps re-telling you your
 /// hearth's stock, which it does only inside your own claim.
+///
+/// Drawn as Rust draws them: a row the vitals' width, the words on the
+/// left and the number on the right (`TOO HOT ……… 42°C`).
+#[allow(clippy::type_complexity)]
 pub fn exposure(
     net: NonSend<super::Net>,
     sky: Option<Res<super::weather::WeatherNow>>,
-    mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
+    mut chips: Query<(&ExposureChip, &mut Node, &mut BackgroundColor)>,
+    mut labels: Query<(&ChipLabel, &mut Text), Without<ChipValue>>,
+    mut values: Query<(&ChipValue, &mut Text), Without<ChipLabel>>,
 ) {
     let core = &net.session.core;
     let mut w = sky.map_or_else(ExposureWorld::default, |n| ExposureWorld {
@@ -1282,31 +1402,49 @@ pub fn exposure(
     // so the larger of the two is the one hurting.
     let hot = core.heat_pct > core.cold_pct;
     let air = core.air_c;
-    for (chip, mut text, mut node, mut bg) in &mut chips {
-        let (show, want, colour) = match chip {
-            ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
-            ExposureChip::Comfort => (
-                core.comfort_pct > 0,
-                comfort_line(core.comfort_pct),
+    let hidden = || (false, String::new(), String::new(), WET_CHIP);
+    let say = |chip: ExposureChip| -> ChipSaid {
+        match chip {
+            ExposureChip::Wet if core.wet_pct > 0 => {
+                (true, wet_line(w), format!("{}%", core.wet_pct), WET_CHIP)
+            }
+            ExposureChip::Comfort if core.comfort_pct > 0 => (
+                true,
+                "COMFORT".to_string(),
+                format!("{}%", core.comfort_pct),
                 COMFORT_CHIP,
             ),
             // The one chip that costs hp says what stops it.
             ExposureChip::Cold if core.cold_hurting && !hot => (
                 true,
-                format!("{air}°C · {}", cold_line(true, core.wet_pct, w)),
+                format!("{}{}", cold_line(true, core.wet_pct, w), dress_warmer(core)),
+                format!("{air}°C"),
                 FREEZE_CHIP,
             ),
-            ExposureChip::Cold => (
-                core.cold_pct >= 25,
-                format!("{air}°C · {}", cold_line(false, core.wet_pct, w)),
+            ExposureChip::Cold if core.cold_pct >= 25 => (
+                true,
+                format!(
+                    "{}{}",
+                    cold_line(false, core.wet_pct, w),
+                    if core.cold_pct >= 50 {
+                        dress_warmer(core)
+                    } else {
+                        ""
+                    }
+                ),
+                format!("{air}°C"),
                 COLD_CHIP,
             ),
-            ExposureChip::Hot if core.cold_hurting && hot => {
-                (true, hot_line(true, air, core.wet_pct, w), FREEZE_CHIP)
-            }
-            ExposureChip::Hot => (
-                core.heat_pct >= 25,
-                hot_line(false, air, core.wet_pct, w),
+            ExposureChip::Hot if core.cold_hurting && hot => (
+                true,
+                hot_line(true, core.wet_pct, w),
+                format!("{air}°C"),
+                FREEZE_CHIP,
+            ),
+            ExposureChip::Hot if core.heat_pct >= 25 => (
+                true,
+                hot_line(false, core.wet_pct, w),
+                format!("{air}°C"),
                 HOT_CHIP,
             ),
             ExposureChip::Safe => {
@@ -1322,41 +1460,82 @@ pub fn exposure(
                             - sim_core::town::RESERVE_HALF_M,
                     );
                 match safe_chip(in_town, near_town, core.hostile_left(), core.holstered()) {
-                    Some((line, false)) => (true, line, SAFE_CHIP),
-                    Some((line, true)) => (true, line, HOSTILE_CHIP),
-                    None => (false, String::new(), SAFE_CHIP),
+                    Some((line, false)) => (true, line, String::new(), SAFE_CHIP),
+                    Some((line, true)) => (true, line, String::new(), HOSTILE_CHIP),
+                    None => hidden(),
                 }
             }
-            ExposureChip::Verdigris => (
-                core.fel_pct > 0,
-                fel_line(core.fel_pct, core.fel_hurting),
+            ExposureChip::Verdigris if core.fel_pct > 0 => (
+                true,
+                fel_line(core.fel_hurting).to_string(),
+                format!("{}%", core.fel_pct),
                 if core.fel_hurting {
                     FREEZE_CHIP
                 } else {
                     FEL_CHIP
                 },
             ),
+            // The hp the wound still owes is the chip's number.
+            ExposureChip::Bleeding if core.bleed > 0 => {
+                (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
+            }
+            ExposureChip::Breath if core.drowning => (
+                true,
+                "DROWNING — SURFACE".to_string(),
+                format!("{}%", core.breath_pct),
+                FREEZE_CHIP,
+            ),
+            ExposureChip::Breath if core.breath_pct < 100 => (
+                true,
+                "BREATH".to_string(),
+                format!("{}%", core.breath_pct),
+                WET_CHIP,
+            ),
+            ExposureChip::Tea => match tea_line(&core.brew_min) {
+                Some((line, left)) => (true, line, left, TEA_CHIP),
+                None => hidden(),
+            },
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
-                    Some((line, false)) => (true, line, UPKEEP_CHIP),
-                    Some((line, true)) => (true, line, FREEZE_CHIP),
-                    None => (false, String::new(), UPKEEP_CHIP),
+                    // `UPKEEP 7H 30M`: the clock is the chip's number.
+                    Some((line, false)) => match line.split_once(' ') {
+                        Some((what, left)) => {
+                            (true, what.to_string(), left.to_string(), UPKEEP_CHIP)
+                        }
+                        None => (true, line, String::new(), UPKEEP_CHIP),
+                    },
+                    Some((line, true)) => (true, line, String::new(), FREEZE_CHIP),
+                    None => hidden(),
                 }
             }
-        };
+            _ => hidden(),
+        }
+    };
+    let said: [ChipSaid; 10] = ExposureChip::ALL.map(say);
+    for (chip, mut node, mut bg) in &mut chips {
+        let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still
         // took its row left a gap between the vitals and the notices over
         // them.
-        let want_display = if show { Display::Flex } else { Display::None };
+        let want_display = if *show { Display::Flex } else { Display::None };
         if node.display != want_display {
             node.display = want_display;
         }
-        if show && text.0 != want {
-            text.0 = want;
+        if bg.0 != *colour {
+            bg.0 = *colour;
         }
-        if bg.0 != colour {
-            bg.0 = colour;
+    }
+    for (label, mut text) in &mut labels {
+        let (show, want, _, _) = &said[label.0.index()];
+        if *show && text.0 != *want {
+            text.0.clone_from(want);
+        }
+    }
+    for (value, mut text) in &mut values {
+        let (show, _, want, _) = &said[value.0.index()];
+        if *show && text.0 != *want {
+            text.0.clone_from(want);
         }
     }
 }
@@ -1388,6 +1567,20 @@ pub struct Plan;
 /// presses.
 #[derive(Component)]
 pub struct PromptLine;
+
+/// A crop's readout under the prompt (farming v2): `CORN SAPLING · 80% · `,
+/// then the six genes as spans, G/Y/H green and W/X red, then
+/// ` · NEEDS WATER` when it thirsts. Empty unless the pick is a crop.
+#[derive(Component)]
+pub struct PlantInfoLine;
+
+/// One span of [`PlantInfoLine`]: 0..6 the genes, 6 the thirst.
+#[derive(Component)]
+pub struct PlantInfoSpan(pub usize);
+
+/// A gene's colour on the readout: the good letters green, the bad red.
+const GENE_GOOD: Color = Color::srgb(0.45, 0.9, 0.4);
+const GENE_BAD: Color = Color::srgb(0.95, 0.38, 0.32);
 
 /// One row of the announce stack, under the prompt. Row 0 is the newest and
 /// sits where the single toast line always sat; the rest run downward.
@@ -1519,6 +1712,17 @@ pub fn hit_number(
 #[derive(Component)]
 pub struct Compass;
 
+/// The HUD's top-centre block — the compass, its marker row and the arc
+/// banner. A page's strip sits where it does, so it steps aside while one
+/// is up (`panels::hud_under_pages`), as Rust's compass does.
+#[derive(Component)]
+pub struct HudTop;
+
+/// The hotbar's row. On the inventory page the belt row is the hotbar
+/// (Rust's arrangement), so this one steps aside while it is up.
+#[derive(Component)]
+pub struct HotbarRow;
+
 /// Rust's death marker on the compass (operator, 2026-10-15): your last
 /// death, a skull riding the marker row over the bearing number at its
 /// bearing, with how far. Shown from the respawn until the next death moves
@@ -1535,15 +1739,110 @@ pub struct DeathMarkDisc;
 #[derive(Component)]
 pub struct DeathMarkText;
 
-/// The marker row: its top, a mark's size, and how far either side of the
-/// middle it reaches — `ui::death::COMPASS_HALF_SPAN_DEG` of bearing.
-const COMPASS_MARK_TOP: f32 = 3.0;
+// ---- the compass tape ---------------------------------------------------
+//
+// Rust's: a tape across the top centre, a tick every 5°, a number every 10°,
+// the eight points lettered with a ▼ over each, the middle notched and both
+// ends fading out. Spawned once as a pool of ticks that slide along under a
+// still middle; a tick that slides off one end comes back on the other with
+// the next bearing's words.
+
+/// How far either side of the middle the tape reaches, px —
+/// `ui::death::COMPASS_HALF_SPAN_DEG` of bearing, so a mark on the row
+/// under it and the number over it agree.
+const COMPASS_HALF_SPAN_PX: f32 = 230.0;
+const COMPASS_PX_PER_DEG: f32 = COMPASS_HALF_SPAN_PX / crate::ui::death::COMPASS_HALF_SPAN_DEG;
+/// A tick every this many degrees, and the pool that covers the span.
+const COMPASS_TICK_DEG: i32 = 5;
+const COMPASS_TICKS: usize =
+    (2.0 * crate::ui::death::COMPASS_HALF_SPAN_DEG) as usize / COMPASS_TICK_DEG as usize + 3;
+/// How many of the eight points can be on the tape at once.
+const COMPASS_POINTS: usize = (2.0 * crate::ui::death::COMPASS_HALF_SPAN_DEG) as usize / 45 + 1;
+/// Where a tick starts, where the words under it start, and how tall the
+/// tape is.
+const COMPASS_TICK_TOP: f32 = 4.0;
+const COMPASS_LABEL_TOP: f32 = 12.0;
+const COMPASS_TAPE_H: f32 = 32.0;
+/// A tick's box, wide enough for `350` centred under it, and the ▼'s
+/// widest row. Both are placed by their left edge, off the middle.
+const COMPASS_TICK_BOX: f32 = 40.0;
+const COMPASS_POINT_W: f32 = 9.0;
+/// A tick on a tenth degree and one on a fifth, px tall.
+const COMPASS_TICK_TALL: f32 = 7.0;
+const COMPASS_TICK_SHORT: f32 = 4.0;
+/// How far out, as a fraction of the half span, the tape starts to fade.
+const COMPASS_FADE_FROM: f32 = 0.55;
+/// The tape's ink: Rust's off-white, a touch translucent.
+const COMPASS_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.92);
+
+/// The marker row, under the tape: its top and a mark's size.
+const COMPASS_MARK_TOP: f32 = COMPASS_TAPE_H + 2.0;
 const COMPASS_MARK_PX: f32 = 16.0;
-const COMPASS_HALF_SPAN_PX: f32 = 170.0;
-/// The bearing number, under the marker row.
-const COMPASS_TOP: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX + 3.0;
+/// Where the compass and its marker row end, px off the top: what a banner
+/// under the compass stands below.
+pub const COMPASS_BOTTOM_PX: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX;
 /// The skull's red, the death screen's pin.
 const DEATH_MARK_INK: Color = Color::srgb(0.86, 0.17, 0.13);
+
+/// One tick of the tape's pool, and the two things it carries.
+#[derive(Component)]
+pub struct TapeTick(usize);
+#[derive(Component)]
+pub struct TapeTickMark(usize);
+#[derive(Component)]
+pub struct TapeLabel(usize);
+
+/// One of the ▼s over the eight points.
+#[derive(Component)]
+pub struct TapePoint(usize);
+#[derive(Component)]
+pub struct TapePointInk(usize);
+
+/// A map mark riding the marker row (Rust pins your marks to the compass):
+/// its badge in the mark's colour and its three characters and distance.
+#[derive(Component)]
+pub struct PinMark(usize);
+#[derive(Component)]
+pub struct PinMarkBadge(usize);
+#[derive(Component)]
+pub struct PinMarkText(usize);
+
+/// The eight points' letters, by bearing.
+fn point_name(bearing: i32) -> Option<&'static str> {
+    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+    let b = bearing.rem_euclid(360);
+    (b % 45 == 0).then(|| POINTS[(b / 45) as usize])
+}
+
+/// What the tape writes under a tick: a letter on the eight points, the
+/// bearing on every other tenth degree, nothing on the fives.
+fn tape_label(bearing: i32) -> Option<String> {
+    let b = bearing.rem_euclid(360);
+    match point_name(b) {
+        Some(p) => Some(p.to_string()),
+        None if b % 10 == 0 => Some(b.to_string()),
+        None => None,
+    }
+}
+
+/// Where pool tick `k` sits for a body facing `facing_deg`: the bearing it
+/// stands for, and its offset off the middle in degrees (negative is left).
+/// The pool starts one tick short of the left end, so it always covers the
+/// whole span whatever the heading.
+fn tape_tick(facing_deg: f32, k: usize) -> (i32, f32) {
+    let left = facing_deg - crate::ui::death::COMPASS_HALF_SPAN_DEG;
+    let first = (left / COMPASS_TICK_DEG as f32).floor() as i32 * COMPASS_TICK_DEG;
+    let bearing = first + k as i32 * COMPASS_TICK_DEG;
+    (bearing, bearing as f32 - facing_deg)
+}
+
+/// The tape's alpha at `off_deg` off the middle: full through the middle,
+/// gone at the ends.
+fn tape_fade(off_deg: f32) -> f32 {
+    let t = (off_deg.abs() / crate::ui::death::COMPASS_HALF_SPAN_DEG).min(1.0);
+    let f = ((t - COMPASS_FADE_FROM) / (1.0 - COMPASS_FADE_FROM)).clamp(0.0, 1.0);
+    1.0 - f * f * (3.0 - 2.0 * f)
+}
 
 /// The netcode readout under the build stamp: reconcile confirm rate and the
 /// live smoothing offset.
@@ -1616,25 +1915,23 @@ pub fn toggle_diagnostics(
 #[derive(Component)]
 pub struct PadRoot;
 
-/// The ammo readout — `loaded / ceiling` for the weapon in hand, blank for
-/// a hand that takes no magazine.
+/// The bow's readout — the arrow it looses and how many the pack holds,
+/// blank for any other hand. A gun's rounds are in its own belt cell, where
+/// Rust draws them (`update`).
 ///
-/// **Above the hotbar and right of centre**, which is the reference's own
-/// placement (`gameplayfoundbase.jpeg`, `generichighview.jpeg`): the number
-/// belongs near the hand it describes and away from the crosshair, because
-/// a count under the reticle is read on every shot whether or not the
-/// player asked. Bold and larger than a cell count for the reason the
-/// reference draws it larger — this is the one HUD number a firefight is
-/// actually steered by.
+/// **Above the hotbar and right of centre**: the number belongs near the
+/// hand it describes and away from the crosshair, because a count under the
+/// reticle is read on every shot whether or not the player asked.
 #[derive(Component)]
 pub struct AmmoText;
 
-pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
-    // The ammo readout, sitting one line above the hotbar and to the right
+pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
+    // Off the asset server rather than `icons::Icons`, which does not exist
+    // yet on a join straight into a shard ([`Vital::icon_stem`]).
+    let glyph = |stem: &str| -> Handle<Image> { server.load(format!("icons/{stem}.png")) };
+    // The bow's readout, sitting one line above the hotbar and to the right
     // of it. Spawned empty and left that way by `update` for every hand
-    // that takes no magazine, so a hatchet draws nothing rather than
-    // `0/0` — the ceiling is what says there is a readout at all
-    // (`ClientCore::mag`).
+    // that is not a bow.
     commands.spawn((
         super::WorldEntity,
         AmmoText,
@@ -1648,23 +1945,26 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             // cells is half the strip, and the gap is the strip's own.
             left: Val::Percent(50.0),
             margin: UiRect::left(Val::Px(
-                HOTBAR_CELL_PX * HOTBAR_SLOTS as f32 * 0.5 + 6.0 * 3.0 + 8.0,
+                HOTBAR_CELL_PX * HOTBAR_SLOTS as f32 * 0.5 + HOTBAR_GAP_PX * 3.0 + 8.0,
             )),
             ..default()
         },
         Pickable::IGNORE,
     ));
 
-    // The hotbar: six cells, bottom centre.
+    // The hotbar: six cells, bottom centre. Rust's belt: flat translucent
+    // tiles with no edge, the hand's one blue, a condition bar up the left
+    // side and the count bottom right.
     commands
         .spawn((
             super::WorldEntity,
+            HotbarRow,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(HOTBAR_BOTTOM_PX),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
-                column_gap: Val::Px(6.0),
+                column_gap: Val::Px(HOTBAR_GAP_PX),
                 ..default()
             },
             Pickable::IGNORE,
@@ -1676,7 +1976,6 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Node {
                         width: Val::Px(HOTBAR_CELL_PX),
                         height: Val::Px(HOTBAR_CELL_PX),
-                        border: UiRect::all(Val::Px(2.0)),
                         // The count sits bottom-right over the icon, which is
                         // the arrangement every inventory in the genre uses
                         // and the the one the reference `inventory` shows.
@@ -1685,21 +1984,21 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         ..default()
                     },
                     BackgroundColor(SLOT_BG),
-                    BorderColor::all(SLOT_EDGE),
                 ))
                 .with_children(|cell| {
                     // The icon fills the cell and is spawned EMPTY: a handle
                     // is set by `fill_cells` when the slot has something in
                     // it. Absolute so the count can overlap it rather than
                     // being laid out beside it.
+                    let inset = (HOTBAR_CELL_PX - HOTBAR_ICON_PX) * 0.5;
                     cell.spawn((
                         CellIcon(i),
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(3.0),
-                            top: Val::Px(3.0),
-                            width: Val::Px(36.0),
-                            height: Val::Px(36.0),
+                            left: Val::Px(inset + SLOT_COND_W * 0.5),
+                            top: Val::Px(inset - 1.0),
+                            width: Val::Px(HOTBAR_ICON_PX),
+                            height: Val::Px(HOTBAR_ICON_PX),
                             ..default()
                         },
                         ImageNode {
@@ -1719,11 +2018,11 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         SlotKey(i),
                         Text::new((i + 1).to_string()),
                         super::ui::font_bold(10.0),
-                        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.55)),
+                        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.50)),
                         super::ui::TEXT_SHADOW,
                         Node {
                             position_type: PositionType::Absolute,
-                            left: Val::Px(3.0),
+                            left: Val::Px(SLOT_COND_W + 3.0),
                             top: Val::Px(1.0),
                             ..default()
                         },
@@ -1732,37 +2031,32 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     cell.spawn((
                         CellCount(i),
                         Text::new(""),
-                        super::ui::font_bold(12.0),
-                        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+                        super::ui::font_bold(14.0),
+                        TextColor(SLOT_COUNT),
                         // Over a colour picture, a count needs its shadow.
                         super::ui::TEXT_SHADOW,
                         Node {
                             position_type: PositionType::Absolute,
-                            right: Val::Px(3.0),
-                            // Lifted off the edge by the pip's own height, so
-                            // the digits sit ON the cell rather than over the
-                            // durability bar. The count moved; the bar is the
-                            // thing anchored to the edge, because a bar that
-                            // floats is a bar that reads as a progress
-                            // indicator for the cell above it.
-                            bottom: Val::Px(super::panels::PIP_H_PX + 1.0),
+                            right: Val::Px(4.0),
+                            bottom: Val::Px(1.0),
                             ..default()
                         },
                         Pickable::IGNORE,
                     ));
-                    // The durability pip: spawned hidden, shown by `update`
-                    // for a worn tool only. Same three states as the
-                    // inventory panel's, drawn by the same numbers — the
-                    // hotbar and the bag must never disagree about how worn
-                    // the thing in your hand is.
+                    // The condition bar: up the cell's left edge, Rust's
+                    // place for it, spawned hidden and shown by `update` for
+                    // a worn tool only. Same three states as the inventory
+                    // panel's pip, decided by the same numbers — the hotbar
+                    // and the bag must never disagree about how worn the
+                    // thing in your hand is.
                     cell.spawn((
                         CellPip(i),
                         Node {
                             position_type: PositionType::Absolute,
                             left: Val::Px(0.0),
-                            right: Val::Px(0.0),
+                            top: Val::Px(0.0),
                             bottom: Val::Px(0.0),
-                            height: Val::Px(super::panels::PIP_H_PX),
+                            width: Val::Px(SLOT_COND_W),
                             ..default()
                         },
                         BackgroundColor(super::panels::PIP_TROUGH),
@@ -1773,8 +2067,11 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         trough.spawn((
                             CellPipFill(i),
                             Node {
-                                width: Val::Percent(0.0),
-                                height: Val::Percent(100.0),
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(0.0),
+                                right: Val::Px(0.0),
+                                bottom: Val::Px(0.0),
+                                height: Val::Percent(0.0),
                                 ..default()
                             },
                             BackgroundColor(super::panels::PIP_FILL),
@@ -1799,10 +2096,10 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 bottom: Val::Px(18.0),
                 right: Val::Px(20.0),
                 flex_direction: FlexDirection::Column,
-                // Flush right, so the notices over the bars can be wider
-                // than a bar without pushing the bars off the edge.
+                // Flush right, so a chip with a long sentence grows to the
+                // left rather than pushing the bars off the edge.
                 align_items: AlignItems::FlexEnd,
-                row_gap: Val::Px(3.0),
+                row_gap: Val::Px(VITAL_ROW_GAP),
                 ..default()
             },
             Pickable::IGNORE,
@@ -1897,31 +2194,43 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         Pickable::IGNORE,
                     ));
                 });
-            // Wet and cold (weather v0): two chips over the bars, hidden
-            // until there is something to say. The base's upkeep heads the
-            // stack (NOW §0up 3): it is about the base, not the body.
-            for chip in [
-                ExposureChip::Upkeep,
-                ExposureChip::Safe,
-                ExposureChip::Wet,
-                ExposureChip::Cold,
-                ExposureChip::Hot,
-                ExposureChip::Verdigris,
-                ExposureChip::Comfort,
-            ] {
+            // The status chips (weather v0 and on): Rust's full-width rows
+            // over the bars, `TOO HOT` on the left and `42°C` on the right,
+            // hidden until there is something to say.
+            for chip in ExposureChip::ALL {
                 stack.spawn((
                     chip,
-                    Text::new(""),
-                    super::ui::font_bold(13.0),
-                    TextColor(Color::srgb(0.97, 0.97, 0.98)),
                     BackgroundColor(WET_CHIP),
                     Node {
-                        align_self: AlignSelf::FlexEnd,
-                        padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                        min_width: Val::Px(VITAL_ROW_W),
+                        height: Val::Px(VITAL_BAR_H + 2.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::SpaceBetween,
+                        column_gap: Val::Px(12.0),
+                        padding: UiRect::horizontal(Val::Px(7.0)),
                         display: Display::None,
                         ..default()
                     },
                     Pickable::IGNORE,
+                    children![
+                        (
+                            ChipLabel(chip),
+                            Text::new(""),
+                            super::ui::font_bold(13.0),
+                            TextColor(Color::srgba(0.98, 0.95, 0.92, 0.95)),
+                            SOFT_SHADOW,
+                            Pickable::IGNORE,
+                        ),
+                        (
+                            ChipValue(chip),
+                            Text::new(""),
+                            super::ui::font_bold(14.0),
+                            TextColor(Color::srgba(0.98, 0.95, 0.92, 0.95)),
+                            SOFT_SHADOW,
+                            Pickable::IGNORE,
+                        ),
+                    ],
                 ));
             }
             for v in [Vital::Hp, Vital::Water, Vital::Food] {
@@ -1930,67 +2239,47 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         VitalRow(v),
                         Node {
                             flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(3.0),
+                            column_gap: Val::Px(2.0),
                             align_items: AlignItems::Center,
                             ..default()
                         },
                     ))
                     .with_children(|row| {
-                        // The icon square, left of the bar. The baked picture
-                        // when it is loaded, the ASCII glyph when it is not —
-                        // never an empty square.
+                        // The icon square, left of the bar.
                         //
-                        // The image is inset by 3 px on each side rather than
-                        // filling the trough: a 128 px silhouette scaled to the
-                        // bar's own 19 px height touches all four edges and
-                        // reads as a filled tile, and the cell is a *label* for
-                        // the bar beside it. Tinted with the vital's own fill,
-                        // so the icon and its bar are one colour and the row
-                        // reads as one object.
-                        let icon = icons.as_ref().and_then(|i| i.glyph(v.icon_stem()));
-                        let mut square = row.spawn((
+                        // Pale on a faint square, as the reference draws its
+                        // `+`, cup and fork: the bar carries the colour, the
+                        // cell is a *label* for it, and an icon inked in the
+                        // fill's own hue read as a fourth swatch.
+                        row.spawn((
                             Node {
-                                width: Val::Px(VITAL_BAR_H),
-                                height: Val::Px(VITAL_BAR_H),
+                                width: Val::Px(VITAL_ICON_PX),
+                                height: Val::Px(VITAL_ICON_PX),
                                 justify_content: JustifyContent::Center,
                                 align_items: AlignItems::Center,
                                 ..default()
                             },
-                            BackgroundColor(super::panels::VITAL_TROUGH),
+                            BackgroundColor(VITAL_ICON_BG),
+                            children![(
+                                ImageNode::new(glyph(v.icon_stem())).with_color(VITAL_ICON_INK),
+                                Node {
+                                    width: Val::Px(VITAL_ICON_PX - 5.0),
+                                    height: Val::Px(VITAL_ICON_PX - 5.0),
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            )],
                         ));
-                        match icon {
-                            Some(h) => {
-                                square.with_children(|c| {
-                                    c.spawn((
-                                        ImageNode::new(h).with_color(v.fill()),
-                                        Node {
-                                            width: Val::Px(VITAL_BAR_H - 6.0),
-                                            height: Val::Px(VITAL_BAR_H - 6.0),
-                                            ..default()
-                                        },
-                                        Pickable::IGNORE,
-                                    ));
-                                });
-                            }
-                            None => {
-                                square.with_children(|c| {
-                                    c.spawn((
-                                        Text::new(v.glyph().to_string()),
-                                        super::ui::font_bold(13.0),
-                                        TextColor(v.fill()),
-                                    ));
-                                });
-                            }
-                        }
                         // The bar: a trough, the fill over it, and the number
                         // over both. Only the fill's width animates.
                         row.spawn((
                             Node {
                                 width: Val::Px(VITAL_BAR_W),
                                 height: Val::Px(VITAL_BAR_H),
+                                align_items: AlignItems::Center,
                                 ..default()
                             },
-                            BackgroundColor(super::panels::VITAL_TROUGH),
+                            BackgroundColor(VITAL_TROUGH),
                             children![
                                 // Behind the fill: where it was a moment
                                 // ago, draining after it ([`vital_motion`]).
@@ -2021,14 +2310,13 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                                 (
                                     VitalNum(v),
                                     Node {
-                                        position_type: PositionType::Absolute,
-                                        left: Val::Px(6.0),
-                                        top: Val::Px(1.0),
+                                        margin: UiRect::left(Val::Px(7.0)),
                                         ..default()
                                     },
                                     Text::new(""),
-                                    super::ui::font_bold(13.0),
-                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                    super::ui::font_bold(14.0),
+                                    TextColor(v.ink()),
+                                    SOFT_SHADOW,
                                 ),
                             ],
                         ));
@@ -2221,6 +2509,35 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
+    // A crop's readout, a line under the prompt (farming v2).
+    commands
+        .spawn((
+            super::WorldEntity,
+            PlantInfoLine,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(PROMPT_TOP_PCT + 3.2),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Text::new(""),
+            super::ui::font(PROMPT_FONT_PX - 2.0),
+            TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+            super::ui::TEXT_SHADOW,
+            TextLayout::new_with_justify(Justify::Center),
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            for k in 0..=sim_core::farm::GENE_SLOTS {
+                c.spawn((
+                    PlantInfoSpan(k),
+                    TextSpan::new(""),
+                    super::ui::font_bold(PROMPT_FONT_PX - 2.0),
+                    TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+                ));
+            }
+        });
     // The announce stack. Absolutely positioned per row rather than a flex
     // column: every row then has a fixed home whether or not the ones above
     // it are live, so a line arriving does not shove the readout — a number
@@ -2267,13 +2584,127 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Pickable::IGNORE,
     ));
 
-    // The marker row over the compass, Rust's arrangement: marks ride a
-    // row at their bearing and the number reads under it. One mark today,
-    // the last death; a zero-width anchor at the screen's middle that the
-    // mark is placed off by `death_mark`.
+    // The compass tape, top centre (Rust's): a zero-width anchor at the
+    // screen's middle that every tick is placed off by `compass`. Spawned
+    // with the pool's ticks hidden; the first frame lays them out.
     commands
         .spawn((
             super::WorldEntity,
+            Compass,
+            HudTop,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0),
+                left: Val::Percent(50.0),
+                width: Val::Px(0.0),
+                height: Val::Px(COMPASS_TAPE_H),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|tape| {
+            for k in 0..COMPASS_TICKS {
+                tape.spawn((
+                    TapeTick(k),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        width: Val::Px(COMPASS_TICK_BOX),
+                        height: Val::Px(COMPASS_TAPE_H),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ))
+                .with_children(|tick| {
+                    tick.spawn((
+                        TapeTickMark(k),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            top: Val::Px(COMPASS_TICK_TOP),
+                            width: Val::Px(1.0),
+                            height: Val::Px(4.0),
+                            ..default()
+                        },
+                        BackgroundColor(COMPASS_INK),
+                        Pickable::IGNORE,
+                    ));
+                    tick.spawn((
+                        TapeLabel(k),
+                        Node {
+                            margin: UiRect::top(Val::Px(COMPASS_LABEL_TOP)),
+                            ..default()
+                        },
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(COMPASS_INK),
+                        super::ui::TEXT_SHADOW,
+                        TextLayout::new_with_justify(Justify::Center),
+                        Pickable::IGNORE,
+                    ));
+                });
+            }
+            // The ▼s over the eight points: four rows of a shrinking bar.
+            for p in 0..COMPASS_POINTS {
+                tape.spawn((
+                    TapePoint(p),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(COMPASS_TICK_TOP - 1.0),
+                        width: Val::Px(COMPASS_POINT_W),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ))
+                .with_children(|tri| {
+                    for w in [COMPASS_POINT_W, 7.0, 5.0, 3.0, 1.0] {
+                        tri.spawn((
+                            TapePointInk(p),
+                            Node {
+                                width: Val::Px(w),
+                                height: Val::Px(1.0),
+                                flex_shrink: 0.0,
+                                ..default()
+                            },
+                            BackgroundColor(COMPASS_INK),
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
+            }
+            // The middle: Rust's small dark notch with a light rim, over the
+            // tick it stands on.
+            tape.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(-2.0),
+                    top: Val::Px(1.0),
+                    width: Val::Px(4.0),
+                    height: Val::Px(10.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.05, 0.05, 0.05, 0.65)),
+                BorderColor::all(Color::srgba(0.95, 0.94, 0.90, 0.85)),
+                Pickable::IGNORE,
+            ));
+        });
+
+    // The marker row under the tape, Rust's arrangement: marks ride a row at
+    // their bearing. Your last death and your map marks; a zero-width anchor
+    // at the screen's middle that each mark is placed off by `death_mark`
+    // and `compass_pins`.
+    commands
+        .spawn((
+            super::WorldEntity,
+            HudTop,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(COMPASS_MARK_TOP),
@@ -2285,6 +2716,46 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             Pickable::IGNORE,
         ))
         .with_children(|row| {
+            for i in 0..crate::ui::map::PINS_MAX {
+                row.spawn((
+                    PinMark(i),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(4.0),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ))
+                .with_children(|mark| {
+                    mark.spawn((
+                        PinMarkBadge(i),
+                        Node {
+                            width: Val::Px(COMPASS_MARK_PX - 4.0),
+                            height: Val::Px(COMPASS_MARK_PX - 4.0),
+                            flex_shrink: 0.0,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::WHITE),
+                        BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                        Pickable::IGNORE,
+                    ));
+                    mark.spawn((
+                        PinMarkText(i),
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(Color::srgba(0.95, 0.93, 0.88, 0.9)),
+                        super::ui::TEXT_SHADOW,
+                        Pickable::IGNORE,
+                    ));
+                });
+            }
             row.spawn((
                 DeathMark,
                 Node {
@@ -2317,17 +2788,15 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ))
                 .with_children(|disc| {
-                    if let Some(h) = icons.as_ref().and_then(|i| i.glyph("map_death")) {
-                        disc.spawn((
-                            ImageNode::new(h),
-                            Node {
-                                width: Val::Px(COMPASS_MARK_PX * 0.7),
-                                height: Val::Px(COMPASS_MARK_PX * 0.7),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ));
-                    }
+                    disc.spawn((
+                        ImageNode::new(glyph("map_death")),
+                        Node {
+                            width: Val::Px(COMPASS_MARK_PX * 0.7),
+                            height: Val::Px(COMPASS_MARK_PX * 0.7),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
                 });
                 mark.spawn((
                     DeathMarkText,
@@ -2339,26 +2808,6 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ));
             });
         });
-
-    // The compass strip, top centre: a 90° window on the bearing, letters at
-    // the cardinals. `hud.js`'s shape, in text rather than in a canvas.
-    commands.spawn((
-        super::WorldEntity,
-        Compass,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(COMPASS_TOP),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Text::new(""),
-        super::ui::font_bold(15.0),
-        TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
-        super::ui::TEXT_SHADOW,
-        TextLayout::new_with_justify(Justify::Center),
-        Pickable::IGNORE,
-    ));
 
     // The viewmodel used to be spawned here, as two untextured `Cuboid`s
     // welded rigidly to the camera. It is `render::viewmodel` now — a textured
@@ -2376,9 +2825,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     net: NonSend<Net>,
-    mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
+    mut cells: Query<(&Cell, &mut BackgroundColor)>,
     mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
-    mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
+    mut counts: Query<(&CellCount, &mut Text, &mut TextColor), (Without<Plan>, Without<VitalNum>)>,
     mut ammo: Query<
         &mut Text,
         (
@@ -2401,18 +2850,26 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
+    sow: Option<Res<super::farm_ghost::PlantAimed>>,
+    // The bandage being wrapped on (`ui::wrap`) and the clock it reads,
+    // for the hand's line: one param, the system is at Bevy's sixteen.
+    wrap: (Option<Res<super::verbs::Bite>>, Res<Time>),
 ) {
     let core = &net.session.core;
 
-    // The ammo readout. `mag()` answers `(0, 0)` for a hand with no
-    // magazine AND for one whose magazine was last stated for a different
-    // item, so this needs no held-item test of its own — the staleness
-    // rule lives in one place (`ClientCore::mag_item`) rather than being
-    // re-derived by every reader.
+    // The magazine. `mag()` answers `(0, 0)` for a hand with no magazine
+    // AND for one whose magazine was last stated for a different item, so
+    // this needs no held-item test of its own — the staleness rule lives in
+    // one place (`ClientCore::mag_item`) rather than being re-derived by
+    // every reader. Drawn as Rust draws it: the rounds loaded, in the gun's
+    // own belt cell where its count would be (below).
+    let (loaded, ceiling) = core.mag();
+
+    // The readout over the belt, now the bow's alone: the arrow it looses
+    // is a choice (`R`), and the cell has no room to name it.
     if let Ok(mut text) = ammo.single_mut() {
-        let (loaded, ceiling) = core.mag();
         let want = if ceiling != 0 {
-            format!("{loaded} / {ceiling}")
+            String::new()
         } else if let Some(round) = core.bow_round() {
             // A bow's readout is the arrow it looses and how many of it
             // the pack holds — `R` picks the next kind (Rust's ammo pick).
@@ -2488,29 +2945,45 @@ pub fn update(
             // `R` turns only what stands freely; a door, a lock or an
             // insert goes where its doorway or box says. Kept while red,
             // when a turn is often what makes it fit.
-            let turns = crate::ui::structure::row_for_item(
-                &core.deploy_defs,
-                core.deploy_defs_have,
-                held.item,
-            )
-            .is_some_and(|row| {
-                matches!(
-                    core.deploy_defs.defs[row as usize].placement,
-                    sim_core::deploy::PLACE_GROUND
-                        | sim_core::deploy::PLACE_FOUNDATION
-                        | sim_core::deploy::PLACE_ANY
-                )
-            });
+            let turns =
+                crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
+                    .is_some_and(|row| {
+                        matches!(
+                            core.deploy_defs.defs[row as usize].placement,
+                            sim_core::deploy::PLACE_GROUND
+                                | sim_core::deploy::PLACE_FOUNDATION
+                                | sim_core::deploy::PLACE_ANY
+                        )
+                    });
             match (why.is_empty(), turns) {
                 (true, true) => format!("PLACE  {name}   (left click · [R] turn)"),
                 (true, false) => format!("PLACE  {name}   (left click)"),
                 (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
                 (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
+        } else if click == crate::ui::hold::Click::Plant {
+            // A seed says where its ghost stands: a bed, soft ground, or
+            // why the ground would refuse it.
+            crate::ui::hold::plant_hint(
+                &core.catalog,
+                &core.research,
+                held,
+                sow.as_ref().map_or_else(Default::default, |s| s.0),
+            )
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            let (bite, time) = &wrap;
+            let wrapping = bite
+                .as_deref()
+                .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
+            match wrapping {
+                Some(left) => format!(
+                    "WRAPPING  {}  {left:.1} s   (switch away to stop)",
+                    crate::ui::craft::item_label(&core.catalog, held.item).to_uppercase()
+                ),
+                None => crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit),
+            }
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {
@@ -2589,38 +3062,61 @@ pub fn update(
         // the page disagreed about both.
         let shown = sim_core::research::blueprint_target(&core.research, stack)
             .map_or(stack, |t| sim_core::gather::ItemStack { item: t, ..stack });
-        let [tr, tg, tb] =
-            crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
-        let tint = Color::srgb(tr, tg, tb);
-        if img.color != tint {
-            img.color = tint;
-        }
-        match crate::ui::icons::icon_stem(&core.catalog, shown).and_then(|s| art.verb(s)) {
-            Some(h) => {
+        // A skin with a model of its own shows its own picture.
+        let skinned = (stack.count > 0)
+            .then(|| art.skin(stack.skin))
+            .flatten()
+            .map(|h| (h, Color::WHITE));
+        let plain = || {
+            let [tr, tg, tb] =
+                crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
+            crate::ui::icons::icon_stem(&core.catalog, shown)
+                .and_then(|s| art.verb(s))
+                .map(|h| (h, Color::srgb(tr, tg, tb)))
+        };
+        match skinned.or_else(plain) {
+            Some((h, tint)) => {
+                if img.color != tint {
+                    img.color = tint;
+                }
                 if img.image != h {
                     img.image = h;
                 }
-                *vis = Visibility::Inherited;
+                // Through `set_if_neq`: a bare write marks every cell
+                // changed every frame, and visibility propagation re-walks it.
+                vis.set_if_neq(Visibility::Inherited);
             }
             // Hidden rather than cleared: an `ImageNode` with a default handle
             // draws Bevy's white placeholder square, which is a filled cell
             // claiming to hold something.
-            None => *vis = Visibility::Hidden,
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
-    for (slot, mut text) in counts.iter_mut() {
+    for (slot, mut text, mut ink) in counts.iter_mut() {
         let stack = core.inv.get(slot.0).copied().unwrap_or_default();
+        let held = slot.0 == net.sel as usize;
         // A count of 1 is not drawn: every cell would carry a "1" and the
-        // digit stops meaning "how many" and starts being decoration.
-        let want = if stack.count > 1 {
+        // digit stops meaning "how many" and starts being decoration. Rust
+        // writes a stack `x3`, and the gun in your hand its rounds, bare.
+        let want = if held && ceiling != 0 {
             let mut s = String::new();
-            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{}", stack.count));
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{loaded}"));
+            s
+        } else if stack.count > 1 {
+            let mut s = String::new();
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("x{}", stack.count));
             s
         } else {
             String::new()
         };
         if text.0 != want {
             text.0 = want;
+        }
+        let want_ink = if held { SLOT_COUNT_SEL } else { SLOT_COUNT };
+        if ink.0 != want_ink {
+            ink.0 = want_ink;
         }
     }
 
@@ -2654,22 +3150,19 @@ pub fn update(
         let frac =
             crate::ui::slots::pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize))
                 .unwrap_or(0.0);
+        // Up the cell's left edge, so the fraction is a height.
         let want = Val::Percent(frac * 100.0);
-        if node.width != want {
-            node.width = want;
+        if node.height != want {
+            node.height = want;
         }
     }
 
-    // **The slot in your hand is a solid blue tile**, Rust's own mark for
-    // it (≈#1F5D8D, the interface blue), where ours was an amber hairline
-    // that a colour picture drowned. Written only on a change: this runs
-    // every frame and a rewrite is a re-extract.
-    for (cell, mut border, mut bg) in cells.iter_mut() {
+    // **The slot in your hand is a blue tile**, Rust's own mark for it,
+    // where ours was an amber hairline that a colour picture drowned. No
+    // edge on any cell: the reference's belt is flat tiles. Written only on
+    // a change: this runs every frame and a rewrite is a re-extract.
+    for (cell, mut bg) in cells.iter_mut() {
         let selected = cell.0 == net.sel as usize;
-        let want_border = if selected { SLOT_SEL_EDGE } else { SLOT_EDGE };
-        if border.top != want_border {
-            *border = BorderColor::all(want_border);
-        }
         let want_bg = if selected { SLOT_SEL } else { SLOT_BG };
         if bg.0 != want_bg {
             *bg = BackgroundColor(want_bg);
@@ -2752,9 +3245,39 @@ pub fn gate_watch(
     }
     let in_world = screen.is_some_and(|s| *s.get() == super::Screen::InWorld);
     let panel_open = ui.is_some_and(|u| u.panel != super::panels::Panel::None);
-    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) && core.holstered() {
-        toast.warn("you can't draw a weapon in a safe zone");
+    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) {
+        if core.holstered() {
+            toast.warn("you can't draw a weapon in a safe zone");
+        } else if core.waterlogged() {
+            toast.warn("you can't shoot while swimming");
+        }
     }
+}
+
+/// What a vessel fact says (the water pass, `World::pour`): filled, and with
+/// what, or poured out, and what the water reached.
+pub fn vessel_line((poured, salt, doused, watered): (bool, bool, u16, u16)) -> String {
+    if !poured {
+        return if salt {
+            "filled it with salt water — boil it at a fire to drink it".to_string()
+        } else {
+            "filled it with fresh water".to_string()
+        };
+    }
+    let mut out = "poured it out".to_string();
+    if doused > 0 {
+        let s = if doused == 1 { "" } else { "s" };
+        out.push_str(&format!(", put out {doused} fire{s}"));
+    }
+    if watered > 0 {
+        let s = if watered == 1 { "" } else { "s" };
+        if salt {
+            out.push_str(&format!(" — the salt spoiled {watered} planter{s}"));
+        } else {
+            out.push_str(&format!(", watered {watered} planter{s}"));
+        }
+    }
+    out
 }
 
 /// Drain the core's feedback rings into the toast, and count the timers down.
@@ -2848,7 +3371,7 @@ pub fn feedback(
                 crate::ui::place::RESERVED_LINE.to_string()
             }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
-            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy_after(code, net.farm_sent),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
             super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
@@ -2883,7 +3406,7 @@ pub fn feedback(
     // A work changed (`ARC.md`): the whole island hears it, because what a
     // work gives it gives everybody.
     for &(index, what, by) in feed.work_events() {
-        let who = (by != 0).then(|| crate::ui::names::of(core, by));
+        let who = (by != 0).then(|| crate::ui::names::shown(core, by));
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
@@ -2901,7 +3424,7 @@ pub fn feedback(
             .get(mech as usize)
             .filter(|m| m.known)
             .map_or("A LOCK", |m| m.name());
-        let who = crate::ui::names::of(core, by);
+        let who = crate::ui::names::shown(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
 
@@ -2964,9 +3487,8 @@ pub fn feedback(
         // says nothing about hp rather than saying `-0`.
         let water = core.last_drink >> 16;
         let cost = core.last_drink & 0xffff;
-        toast.say(if water == 0 && cost == 0 {
-            // The fill (`survival::drink`): an empty vessel in hand.
-            "filled your waterskin".to_string()
+        toast.say(if let Some(v) = core.last_vessel {
+            vessel_line(v)
         } else if cost > 0 {
             format!("drank: +{water} water, -{cost} hp")
         } else {
@@ -3049,7 +3571,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
             Some(_) => "a pig".to_string(),
-            None => crate::ui::names::of(core, id),
+            None => crate::ui::names::shown(core, id),
         };
         if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
@@ -3163,20 +3685,20 @@ pub fn readout(
     // This player's own blows only (wire v77): the island-wide
     // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
     if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.own_struct_hit;
+        let (cx, cz, level, loc, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {
-            ro.wall = Some((cx, cz));
+            ro.wall = Some(cell_of(core, (cx, cz, level, loc)));
             ro.wall_left = left;
             ro.wall_max = max;
             ro.wall_secs = TOAST_SECS;
         }
     }
     if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
-        let (cx, cz, _, _, _, fuse) = core.charge_placed;
+        let (cx, cz, level, loc, _, fuse) = core.charge_placed;
         if fuse > 0 {
-            ro.charge = Some((cx, cz));
+            ro.charge = Some(cell_of(core, (cx, cz, level, loc)));
             ro.charge_secs = fuse as f32 / sim_core::limits::TICK_HZ as f32;
         }
     }
@@ -3488,10 +4010,10 @@ impl FrameMeter {
     }
 }
 
-/// The centre prompt and the compass.
-// Eight sources and each is a distinct input: the two picks, the swing,
-// the near structure, the look, the pad, and the two text nodes — plus the
-// give key's pick and the clock its hold runs on.
+/// The centre prompt.
+// Each source is a distinct input: the two picks, the swing, the near
+// structure, the pad and the text node — plus the give key's pick and the
+// clock its hold runs on.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt(
     // The catalog arrived with `Verb::Take` (ground items v0): a loose
@@ -3501,13 +4023,10 @@ pub fn prompt(
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
     near: Res<super::verbs::Near>,
-    look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
-    pins: Option<Res<super::map::MapPins>>,
     give: Res<super::verbs::Give>,
     time: Res<Time>,
-    mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
-    mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
+    mut prompts: Query<&mut Text, With<PromptLine>>,
     binds: Res<super::binds::Binds>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
@@ -3574,7 +4093,7 @@ pub fn prompt(
         let want = match give.pick.filter(|_| !pad.0.is_open()) {
             Some(p) => {
                 let core = &net.session.core;
-                let who = crate::ui::names::of(core, p.target);
+                let who = crate::ui::names::shown(core, p.target);
                 let left = give.hold.left(time.elapsed_secs_f64());
                 let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
                 if left.is_none() && !aimed.0.is_none() {
@@ -3591,7 +4110,7 @@ pub fn prompt(
             .filter(|_| !pad.0.is_open() && give.hold.left(0.0).is_none())
         {
             Some(target) => {
-                let who = crate::ui::names::of(&net.session.core, target);
+                let who = crate::ui::names::shown(&net.session.core, target);
                 let line = crate::ui::team::invite_prompt(&who);
                 if want.is_empty() {
                     line
@@ -3608,17 +4127,261 @@ pub fn prompt(
             text.0 = want;
         }
     }
-    if let Ok(mut text) = compass.single_mut() {
-        let mut want = compass_strip(look.yaw);
-        // The nearest of your map marks, the way the reference pins them to
-        // its compass: which (its label's three characters, or its number),
-        // how far, which way.
-        let [x, _, z] = net.session.core.predict.render_position();
-        if let Some((n, style, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
-            want.push_str(&mark_strip(n, style.compass_label(), d, b));
+}
+
+/// Slide the compass tape under its still middle: each pool tick takes the
+/// bearing it now stands for, its words when that moved, and its fade
+/// toward the ends; the ▼s ride the eight points in view.
+///
+/// The heading is [`crate::look::bearing_deg`], the map's own, so the tape
+/// and the map's arrow are one fact drawn twice and not two samples a frame
+/// apart.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn compass(
+    look: Res<super::input::Look>,
+    mut shown: Local<[Option<i32>; COMPASS_TICKS]>,
+    fresh: Query<(), Added<TapeLabel>>,
+    mut ticks: Query<(&TapeTick, &mut Node, &mut Visibility)>,
+    mut marks: Query<(&TapeTickMark, &mut Node, &mut BackgroundColor), Without<TapeTick>>,
+    mut labels: Query<(&TapeLabel, &mut Text, &mut TextFont, &mut TextColor)>,
+    mut points: Query<
+        (&TapePoint, &mut Node, &mut Visibility),
+        (Without<TapeTick>, Without<TapeTickMark>),
+    >,
+    mut inks: Query<(&TapePointInk, &mut BackgroundColor), Without<TapeTickMark>>,
+) {
+    let span = crate::ui::death::COMPASS_HALF_SPAN_DEG;
+    let facing = crate::look::bearing_deg(look.yaw);
+    // A HUD rebuilt for the next session starts with empty words.
+    if !fresh.is_empty() {
+        *shown = [None; COMPASS_TICKS];
+    }
+    let mut at = [(0i32, 0.0f32); COMPASS_TICKS];
+    for (k, a) in at.iter_mut().enumerate() {
+        *a = tape_tick(facing, k);
+    }
+    let tick = |k: usize| at[k.min(COMPASS_TICKS - 1)];
+
+    for (t, mut node, mut vis) in &mut ticks {
+        let (_, off) = tick(t.0);
+        let on = off.abs() <= span;
+        let want = if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
         }
+        let left = Val::Px(off * COMPASS_PX_PER_DEG - COMPASS_TICK_BOX * 0.5);
+        if on && node.left != left {
+            node.left = left;
+        }
+    }
+    for (m, mut node, mut bg) in &mut marks {
+        let (b, off) = tick(m.0);
+        let b = b.rem_euclid(360);
+        let tall = b % 10 == 0;
+        let h = if tall {
+            COMPASS_TICK_TALL
+        } else {
+            COMPASS_TICK_SHORT
+        };
+        let w = if tall { 2.0 } else { 1.0 };
+        // A point wears its ▼ instead of a tick.
+        let alpha = if point_name(b).is_some() {
+            0.0
+        } else {
+            tape_fade(off) * if tall { 1.0 } else { 0.7 }
+        };
+        let (top, left) = (
+            Val::Px(COMPASS_TICK_TOP + (COMPASS_TICK_TALL - h) * 0.5),
+            Val::Px((COMPASS_TICK_BOX - w) * 0.5),
+        );
+        if node.height != Val::Px(h) || node.left != left {
+            node.height = Val::Px(h);
+            node.width = Val::Px(w);
+            node.top = top;
+            node.left = left;
+        }
+        let ink = COMPASS_INK.with_alpha(COMPASS_INK.alpha() * alpha);
+        if bg.0 != ink {
+            bg.0 = ink;
+        }
+    }
+    for (l, mut text, mut font, mut colour) in &mut labels {
+        let k = l.0.min(COMPASS_TICKS - 1);
+        let (b, off) = at[k];
+        if shown[k] != Some(b) {
+            shown[k] = Some(b);
+            text.0 = tape_label(b).unwrap_or_default();
+            // The four winds largest, the four between them next, numbers
+            // smallest — Rust's `N` stands over its neighbours.
+            let size = match point_name(b) {
+                Some(_) if b.rem_euclid(90) == 0 => 17.0,
+                Some(_) => 14.0,
+                None => 12.0,
+            };
+            if font.font_size != size {
+                font.font_size = size;
+            }
+        }
+        let ink = COMPASS_INK.with_alpha(COMPASS_INK.alpha() * tape_fade(off));
+        if colour.0 != ink {
+            colour.0 = ink;
+        }
+    }
+
+    // The eight points in view, left to right.
+    let first = ((facing - span) / 45.0).ceil() as i32 * 45;
+    let mut point_at = [None; COMPASS_POINTS];
+    for (p, slot) in point_at.iter_mut().enumerate() {
+        let off = (first + 45 * p as i32) as f32 - facing;
+        if off.abs() <= span {
+            *slot = Some(off);
+        }
+    }
+    for (p, mut node, mut vis) in &mut points {
+        let at = point_at[p.0.min(COMPASS_POINTS - 1)];
+        let want = if at.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        if let Some(off) = at {
+            let left = Val::Px(off * COMPASS_PX_PER_DEG - COMPASS_POINT_W * 0.5);
+            if node.left != left {
+                node.left = left;
+            }
+        }
+    }
+    for (p, mut bg) in &mut inks {
+        let alpha = point_at[p.0.min(COMPASS_POINTS - 1)].map_or(0.0, tape_fade);
+        let ink = COMPASS_INK.with_alpha(COMPASS_INK.alpha() * alpha);
+        if bg.0 != ink {
+            bg.0 = ink;
+        }
+    }
+}
+
+/// Your map marks on the compass's marker row, the way the reference pins
+/// them: the mark's colour at its bearing, its label's three characters (or
+/// its number) and how far. Dimmed and held at the nearer end while it is
+/// behind you, as the death marker is.
+#[allow(clippy::type_complexity)]
+pub fn compass_pins(
+    net: NonSend<super::Net>,
+    look: Res<super::input::Look>,
+    pins: Option<Res<super::map::MapPins>>,
+    mut marks: Query<(&PinMark, &mut Node, &mut Visibility)>,
+    mut badges: Query<(&PinMarkBadge, &mut BackgroundColor)>,
+    mut texts: Query<(&PinMarkText, &mut Text, &mut TextColor)>,
+) {
+    let core = &net.session.core;
+    let [x, _, z] = core.predict.render_position();
+    let facing = crate::look::bearing_deg(look.yaw);
+    let pins = pins.as_ref().map(|p| &p.0);
+    let mark = |i: usize| {
+        let p = pins?;
+        let &to = p.marks().get(i)?;
+        Some((
+            crate::ui::death::compass_mark(facing, (x, z), to),
+            p.style(i),
+        ))
+    };
+    for (pin, mut node, mut vis) in &mut marks {
+        let m = mark(pin.0);
+        let want = if m.is_some() && !core.dead {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        if let Some((m, _)) = m {
+            let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
+            if node.left != left {
+                node.left = left;
+            }
+        }
+    }
+    for (pin, mut bg) in &mut badges {
+        let Some((m, style)) = mark(pin.0) else {
+            continue;
+        };
+        let [r, g, b] = style.rgb();
+        let alpha = if m.off_row { 0.45 } else { 1.0 };
+        let want = Color::srgba_u8(r, g, b, (alpha * 255.0) as u8);
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+    for (pin, mut text, mut ink) in &mut texts {
+        let Some((m, style)) = mark(pin.0) else {
+            continue;
+        };
+        let d = crate::ui::death::short_distance(m.dist_m);
+        let want = match style.compass_label() {
+            "" => format!("{} {d}", pin.0 + 1),
+            l => format!("{l} {d}"),
+        };
         if text.0 != want {
             text.0 = want;
+        }
+        let a = if m.off_row { 0.45 } else { 0.9 };
+        if ink.0.alpha() != a {
+            ink.0 = ink.0.with_alpha(a);
+        }
+    }
+}
+
+/// Write a crop's readout under the prompt from the `E` pick (farming v2).
+pub fn plant_info(
+    aimed: Res<Aimed>,
+    pad: Res<super::verbs::Pad>,
+    mut line: Query<&mut Text, With<PlantInfoLine>>,
+    mut spans: Query<(&PlantInfoSpan, &mut TextSpan, &mut TextColor)>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let pick = &aimed.0;
+    let show = pick.verb == crate::ui::interact::Verb::Plant && !pad.0.is_open();
+    let head = if show {
+        pick.info_head()
+    } else {
+        String::new()
+    };
+    if text.0 != head {
+        text.0 = head;
+    }
+    let genes = sim_core::farm::letters(pick.plant.genes);
+    for (span, mut t, mut col) in &mut spans {
+        let (want, colour) = if !show {
+            (String::new(), None)
+        } else if span.0 < sim_core::farm::GENE_SLOTS {
+            let c = genes[span.0];
+            let good = matches!(c, b'G' | b'Y' | b'H');
+            (
+                (c as char).to_string(),
+                Some(if good { GENE_GOOD } else { GENE_BAD }),
+            )
+        } else if pick.plant.dry {
+            (" · NEEDS WATER".to_string(), None)
+        } else {
+            (String::new(), None)
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+        if let Some(c) = colour {
+            if col.0 != c {
+                col.0 = c;
+            }
         }
     }
 }
@@ -3784,7 +4547,10 @@ pub fn pad_overlay(
                                     BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
                                     Pickable::IGNORE,
                                     children![(
+                                        // Dots in streamer mode: a code on
+                                        // stream is a door opened for a viewer.
                                         Text::new(match c {
+                                            Some(_) if crate::ui::streamer::on() => "•".to_string(),
                                             Some(d) => d.to_string(),
                                             None => String::new(),
                                         }),
@@ -4036,34 +4802,6 @@ fn swing_prompt(pick: &crate::ui::interact::SwingPick) -> String {
     } else {
         format!("[LMB] {label}")
     }
-}
-
-/// A map mark on the compass line: `      mark 2 · 340 m · 045°`, or
-/// `      HQ · 340 m · 045°` once it has a label (`label` is already the
-/// compass's three characters, `PinStyle::compass_label`).
-fn mark_strip(n: usize, label: &str, dist_m: f32, bearing: f32) -> String {
-    let d = if dist_m >= 1000.0 {
-        format!("{:.1} km", dist_m / 1000.0)
-    } else {
-        format!("{dist_m:.0} m")
-    };
-    if label.is_empty() {
-        format!("      mark {n} · {d} · {bearing:03.0}°")
-    } else {
-        format!("      {label} · {d} · {bearing:03.0}°")
-    }
-}
-
-/// The eight-point bearing plus degrees, e.g. `NE  045°`.
-///
-/// The number comes from [`crate::look::bearing_deg`] rather than from the
-/// free-running yaw, so this and the map's heading are one fact drawn twice
-/// and not two samples a frame apart.
-fn compass_strip(yaw: f32) -> String {
-    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    let deg = crate::look::bearing_deg(yaw);
-    let idx = (((deg / 45.0) + 0.5) as usize) % 8;
-    format!("{}   {:03.0}°", POINTS[idx], deg)
 }
 
 /// One of Rust's item notices over the vitals, by row — row 0 is the
@@ -4356,6 +5094,21 @@ pub fn pickups(
     }
 }
 
+/// The cell an event's piece address stands in: the address's own, or —
+/// for a spelled id (freeform W2, `build::spell_id`) — the cell the mirror
+/// files that piece under.
+fn cell_of(
+    core: &client_core::core::ClientCore,
+    (cx, cz, level, loc): (u16, u16, u8, u8),
+) -> (u16, u16) {
+    if sim_core::build::spelled_id(cx, cz, level, loc).is_none() {
+        return (cx, cz);
+    }
+    core.pieces
+        .find(cx, cz, level, loc)
+        .map_or((cx, cz), |r| (r.cx, r.cz))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4392,15 +5145,9 @@ mod tests {
             sheltered: true,
             ..Default::default()
         };
-        assert_eq!(
-            hot_line(false, 41, 0, open),
-            "HOT · 41°C · FIND SHADE OR WATER"
-        );
-        assert_eq!(
-            hot_line(true, 44, 0, shade),
-            "HEATSTROKE · 44°C · SHADE HELPS"
-        );
-        assert_eq!(hot_line(false, 38, 50, open), "HOT · 38°C · WET HELPS");
+        assert_eq!(hot_line(false, 0, open), "TOO HOT · FIND SHADE OR WATER");
+        assert_eq!(hot_line(true, 0, shade), "HEATSTROKE · SHADE HELPS");
+        assert_eq!(hot_line(false, 50, open), "TOO HOT · WET HELPS");
     }
 
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that
@@ -4411,19 +5158,19 @@ mod tests {
             rain: 0.8,
             ..Default::default()
         };
-        assert_eq!(wet_line(40, open_rain), "WET 40% · RAIN");
+        assert_eq!(wet_line(open_rain), "WET · RAIN");
         let roofed = ExposureWorld {
             sheltered: true,
             ..open_rain
         };
-        assert_eq!(wet_line(40, roofed), "WET 40% · DRYING UNDER A ROOF");
+        assert_eq!(wet_line(roofed), "WET · DRYING UNDER A ROOF");
         assert_eq!(cold_line(false, 0, open_rain), "COLD · RAIN");
         // Where the air freezes it is snow that falls (snow v0).
         let open_snow = ExposureWorld {
             snow: 1.0,
             ..open_rain
         };
-        assert_eq!(wet_line(40, open_snow), "WET 40% · SNOW");
+        assert_eq!(wet_line(open_snow), "WET · SNOW");
         assert_eq!(cold_line(false, 0, open_snow), "COLD · SNOW");
         assert_eq!(
             cold_line(false, 50, roofed),
@@ -4442,12 +5189,12 @@ mod tests {
             fire: true,
             ..open_rain
         };
-        assert_eq!(wet_line(40, fire_rain), "WET 40% · RAIN");
+        assert_eq!(wet_line(fire_rain), "WET · RAIN");
         let fire_roofed = ExposureWorld {
             fire: true,
             ..roofed
         };
-        assert_eq!(wet_line(40, fire_roofed), "WET 40% · DRYING BY A FIRE");
+        assert_eq!(wet_line(fire_roofed), "WET · DRYING BY A FIRE");
         assert_eq!(cold_line(false, 0, fire_rain), "COLD · RAIN · FIRE HELPS");
         assert_eq!(
             cold_line(false, 50, fire_roofed),
@@ -5511,15 +6258,53 @@ mod tests {
     fn the_compass_walks_the_sims_bearing() {
         // Yaw 0 is +Z is north. Yaw turns the view LEFT (`look.rs`'s header),
         // and east is `-X`, so a quarter turn lands on WEST.
-        assert!(compass_strip(0.0).starts_with('N'));
-        assert!(compass_strip(std::f32::consts::FRAC_PI_2).starts_with('W'));
-        assert!(compass_strip(std::f32::consts::PI).starts_with('S'));
-        assert!(compass_strip(3.0 * std::f32::consts::FRAC_PI_2).starts_with('E'));
+        // The tick nearest the middle: the wire's yaw is coarser than a
+        // degree, so the heading is rarely a whole one.
+        let middle = |yaw: f32| {
+            let facing = crate::look::bearing_deg(yaw);
+            (0..COMPASS_TICKS)
+                .map(|k| tape_tick(facing, k))
+                .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .and_then(|(b, _)| tape_label(b))
+        };
+        assert_eq!(middle(0.0).as_deref(), Some("N"));
+        assert_eq!(middle(std::f32::consts::FRAC_PI_2).as_deref(), Some("W"));
+        assert_eq!(middle(std::f32::consts::PI).as_deref(), Some("S"));
+        assert_eq!(
+            middle(3.0 * std::f32::consts::FRAC_PI_2).as_deref(),
+            Some("E")
+        );
         // And it wraps rather than reading 360.
-        assert!(compass_strip(std::f32::consts::TAU - 0.001).starts_with('N'));
-        // Due north prints `000`, not `-00` — `look::bearing_of`'s signed-zero
-        // trap, gated at the `{:03.0}` site that would have shown it.
-        assert_eq!(compass_strip(0.0), "N   000°");
+        assert_eq!(middle(std::f32::consts::TAU - 0.001).as_deref(), Some("N"));
+    }
+
+    /// The tape's pool covers the whole span at any heading — a tick
+    /// short at either end is a gap that opens as the player turns — and
+    /// its words are Rust's: letters on the eight points, numbers on the
+    /// tens, nothing on the fives.
+    #[test]
+    fn the_tape_covers_its_span_and_says_rusts_words() {
+        let span = crate::ui::death::COMPASS_HALF_SPAN_DEG;
+        for tenth in 0..3600 {
+            let facing = tenth as f32 * 0.1;
+            let offs: Vec<f32> = (0..COMPASS_TICKS).map(|k| tape_tick(facing, k).1).collect();
+            assert!(offs[0] <= -span, "{facing}: starts at {}", offs[0]);
+            assert!(
+                offs[COMPASS_TICKS - 1] >= span,
+                "{facing}: ends at {}",
+                offs[COMPASS_TICKS - 1]
+            );
+        }
+        assert_eq!(tape_label(0).as_deref(), Some("N"));
+        assert_eq!(tape_label(360).as_deref(), Some("N"));
+        assert_eq!(tape_label(-45).as_deref(), Some("NW"));
+        assert_eq!(tape_label(45).as_deref(), Some("NE"));
+        assert_eq!(tape_label(40).as_deref(), Some("40"));
+        assert_eq!(tape_label(350).as_deref(), Some("350"));
+        assert_eq!(tape_label(35), None);
+        // Faded out at the ends, solid through the middle.
+        assert_eq!(tape_fade(0.0), 1.0);
+        assert_eq!(tape_fade(span), 0.0);
     }
 
     // ---- the announce stack's geometry ----------------------------------

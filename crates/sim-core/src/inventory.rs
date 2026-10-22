@@ -237,14 +237,29 @@ pub fn takes_deposits(kind: u8) -> bool {
 /// other branch. A rule about two directions wants a case per direction
 /// **per plan** — `a_take_that_merges_out_of_a_crate_is_not_a_deposit` is
 /// that missing case.
+///
+/// "Different items" stopped being the swap test when `plan_move` began
+/// merging only on equal item, skin **and** cond: a worn hatchet taken onto
+/// a fresh one, or blank seeds onto clones, is a `Swap` of one item. So the
+/// backward arm now asks `plan_move`'s own merge predicate, negated
+/// (`a_take_onto_the_same_item_at_another_cond_is_a_deposit`).
 pub fn deposit_refused(from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
-    let forward = !takes_deposits(to_kind) && from_kind != to_kind && src.count > 0;
-    // Only a SWAP sends anything backwards, and only two different items
-    // swap (`plan_move`'s same-item branch returns a `Transfer` before the
-    // swap arm is reached, and a partial onto a different item is
-    // `REFUSE_M_NO_ROOM` rather than either).
-    let swapped_back =
-        !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0 && dst.item != src.item;
+    (!takes_deposits(to_kind) && deposits_into(to_kind, from_kind, to_kind, src, dst))
+        || (!takes_deposits(from_kind) && deposits_into(from_kind, from_kind, to_kind, src, dst))
+}
+
+/// Would this move put a stack into the `kind` side, forward or by a swap
+/// sending `dst` backwards? [`deposit_refused`] asks it of a kind that
+/// takes nothing; `World::move_item` asks it of one container, because a
+/// carcass is a `CONT_BAG` like a death bag, and take-only.
+pub fn deposits_into(kind: u8, from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
+    let forward = to_kind == kind && from_kind != kind && src.count > 0;
+    // Only a SWAP sends anything backwards, and everything `plan_move`
+    // will not merge swaps: its merge branch (equal item, skin and cond)
+    // returns a `Transfer` before the swap arm is reached, and a partial
+    // onto anything else is `REFUSE_M_NO_ROOM` rather than either.
+    let merges = dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond;
+    let swapped_back = from_kind == kind && to_kind != kind && dst.count > 0 && !merges;
     forward || swapped_back
 }
 
@@ -358,7 +373,9 @@ pub const REFUSE_M_BUSY: u32 = 12;
 /// reason added past 15 needs the width to move again.
 /// The bag is **another player's body in THE GATE's safe zone** — Rust's
 /// "No Looting" rule: a corpse or a sleeper's drop inside the zone opens
-/// only for its owner. An animal's bag is anyone's there as anywhere.
+/// only for its owner. An animal's bag is anyone's there as anywhere. And
+/// a deposit into any bag lying in the zone, its owner's own included: one
+/// there is take-only (`World::move_item`).
 pub const REFUSE_M_SAFE: u32 = 13;
 /// A **give** (`Command::Give`) found no room for any of the stack in the
 /// receiver's pack. Its own reason rather than `REFUSE_M_NO_ROOM`, for
@@ -375,12 +392,14 @@ pub const REFUSE_M_MAX: u32 = REFUSE_M_GIVE;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovePlan {
     /// `count` of `item` leaves the source slot for the destination,
-    /// which was either empty or already holding the same item with room.
+    /// which was either empty or already holding the same item, skin and
+    /// cond with room.
     Transfer { item: u16, count: u16 },
-    /// Two occupied slots holding different items exchange wholesale.
-    /// Only ever planned for a whole-stack ask — a partial drop onto a
-    /// different item is `REFUSE_M_NO_ROOM`, because there is no third
-    /// slot to put the remainder in and inventing one is how a dupe ships.
+    /// Two occupied slots that do not merge (a different item, skin or
+    /// cond) exchange wholesale. Only ever planned for a whole-stack ask —
+    /// a partial drop onto a stack it cannot merge with is
+    /// `REFUSE_M_NO_ROOM`, because there is no third slot to put the
+    /// remainder in and inventing one is how a dupe ships.
     Swap,
 }
 
@@ -421,8 +440,10 @@ pub fn plan_move(cap: u16, src: ItemStack, dst: ItemStack, count: u16) -> Result
         });
     }
     // Two skins of one item are two things to hold: they swap like two
-    // items, and a merge never has to pick whose look survives.
-    if dst.item == src.item && dst.skin == src.skin {
+    // items, and a merge never has to pick whose look survives. So are two
+    // conditions: a clone's `cond` is its genome (`farm.rs`), and a merge
+    // would quietly breed the source into the destination's genes.
+    if dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond {
         // `saturating_sub`: a destination already over its ladder yields
         // zero room and refuses, rather than wrapping into a huge one.
         let room = cap.saturating_sub(dst.count);
@@ -472,11 +493,11 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             // from `item` and `count` alone, dropped `cond`, and
             // **compiled either way**, so a moved tool arrived dead with
             // every gate green. Into an empty slot the source's condition
-            // travels; a merge keeps the destination's, and V7
-            // (condition ⇒ stack of 1) is what guarantees a merge is
-            // never asked to reconcile two conditions — a condition item
-            // at its one-stack ceiling refuses with `REFUSE_M_NO_ROOM`
-            // before this arm is reached. The skin is the same splice
+            // travels; a merge keeps the destination's, which is the
+            // source's too: `plan_move` merges only equal conditions (a
+            // clone's genes ride `cond`), and V7 (wear ⇒ stack of 1)
+            // refuses a worn item's merge with `REFUSE_M_NO_ROOM` before
+            // this arm is reached anyway. The skin is the same splice
             // one field on: it travels into an empty slot, and a merge
             // only ever joins two stacks wearing the same one
             // (`plan_move`).

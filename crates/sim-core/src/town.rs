@@ -437,6 +437,128 @@ pub const CASINO: [KitPart; 1 + WHEEL_TERMINALS.len() + SLOT_SPOTS.len()] = {
     out
 };
 
+/// The casino's roof (`render/casino.rs` draws it): a gable on timber posts,
+/// its ridge along X. The posts stand at the corners and halfway along the
+/// long sides, clear of the guards' beat; the eaves are over the wheel's
+/// sign and the ridge is over the wheel.
+pub const ROOF_X: [f32; 3] = [14.6, 24.9, 35.2];
+pub const ROOF_Z: [f32; 2] = [6.2, 23.6];
+pub const ROOF_EAVES_M: f32 = 6.6;
+pub const ROOF_RIDGE_M: f32 = 8.6;
+/// How far the sheets reach past the posts, metres.
+pub const ROOF_OVERHANG_M: f32 = 0.8;
+pub const ROOF_POST_HALF: f32 = 0.15;
+
+/// The roof's collided posts, then the roof itself as one drawn box at the
+/// eaves (`DECOR | ROOF`) so [`roofed`] keeps the rain off a body under it.
+pub const CASINO_ROOF: [KitPart; ROOF_X.len() * ROOF_Z.len() + 1] = {
+    let mut out = [part([0.0; 6], M::Timber); ROOF_X.len() * ROOF_Z.len() + 1];
+    let mut i = 0;
+    while i < ROOF_X.len() * ROOF_Z.len() {
+        let (x, z) = (ROOF_X[i % ROOF_X.len()], ROOF_Z[i / ROOF_X.len()]);
+        out[i] = part(
+            [
+                x - ROOF_POST_HALF,
+                0.0,
+                z - ROOF_POST_HALF,
+                x + ROOF_POST_HALF,
+                ROOF_EAVES_M,
+                z + ROOF_POST_HALF,
+            ],
+            M::Timber,
+        );
+        i += 1;
+    }
+    out[i] = part_f(
+        [
+            ROOF_X[0],
+            ROOF_EAVES_M,
+            ROOF_Z[0],
+            ROOF_X[ROOF_X.len() - 1],
+            ROOF_EAVES_M + 0.2,
+            ROOF_Z[1],
+        ],
+        M::Sheet,
+        DECOR | ROOF,
+    );
+    out
+};
+
+/// What a seat is drawn as (`render/casino.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeatKind {
+    Stool,
+    Armchair,
+}
+
+/// A seat (`seat.rs`): where a sitter's feet are, local (x, z), the way
+/// they face in quarter turns (0 is +Z, 1 is +X), and what it is. The seat
+/// itself stands behind the feet, where the sitting clip puts the hips
+/// (`render/casino.rs`). Drawn, never collided: a sitter is put on the spot
+/// and stands up wherever they step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Seat {
+    pub x: f32,
+    pub z: f32,
+    pub face: u8,
+    pub kind: SeatKind,
+}
+
+/// The lounge before the wheel: two rows of armchairs facing it, in the
+/// gaps between the terminals so the front row sees past their bettors.
+const LOUNGE_X: [f32; 2] = [21.85, 19.65];
+const LOUNGE_Z: [f32; 4] = [11.0, 13.0, 15.0, 17.0];
+
+const fn stool(x: f32, z: f32, face: u8) -> Seat {
+    Seat {
+        x,
+        z,
+        face,
+        kind: SeatKind::Stool,
+    }
+}
+
+/// Every seat: a stool at each slot machine and each wheel terminal, so a
+/// player sits down to play, then the lounge.
+pub const SEATS: [Seat;
+    SLOT_SPOTS.len() + WHEEL_TERMINALS.len() + LOUNGE_X.len() * LOUNGE_Z.len()] = {
+    let mut out = [stool(0.0, 0.0, 0);
+        SLOT_SPOTS.len() + WHEEL_TERMINALS.len() + LOUNGE_X.len() * LOUNGE_Z.len()];
+    let mut n = 0;
+    let mut k = 0;
+    while k < SLOT_SPOTS.len() {
+        out[n] = stool(SLOT_SPOTS[k].0, SLOT_SPOTS[k].1, 0);
+        n += 1;
+        k += 1;
+    }
+    let mut k = 0;
+    while k < WHEEL_TERMINALS.len() {
+        out[n] = stool(WHEEL_TERMINALS[k].0, WHEEL_TERMINALS[k].1, 1);
+        n += 1;
+        k += 1;
+    }
+    let mut k = 0;
+    while k < LOUNGE_X.len() * LOUNGE_Z.len() {
+        out[n] = Seat {
+            x: LOUNGE_X[k / LOUNGE_Z.len()],
+            z: LOUNGE_Z[k % LOUNGE_Z.len()],
+            face: 1,
+            kind: SeatKind::Armchair,
+        };
+        n += 1;
+        k += 1;
+    }
+    out
+};
+
+/// The seat at slot machine `k`, and at wheel terminal `k`.
+pub const fn slot_seat(k: usize) -> usize {
+    k
+}
+pub const fn terminal_seat(k: usize) -> usize {
+    SLOT_SPOTS.len() + k
+}
+
 /// Night lights, local (x, y, z) — drawn, never simulated.
 pub const LAMPS: [(f32, f32, f32); 12] = [
     (-5.8, 5.0, -30.0),
@@ -508,6 +630,17 @@ const _: () = {
     assert!(kit::well_formed(&MACHINES));
     assert!(kit::well_formed(&CASINO));
     assert!(kit::well_formed(&KEEPERS));
+    assert!(kit::well_formed(&CASINO_ROOF));
+    // The roof clears the wheel's sign and bulbs (7.07 m) where the stand's
+    // posts reach it, the eave line at its nearest.
+    assert!(
+        ROOF_EAVES_M
+            + (ROOF_RIDGE_M - ROOF_EAVES_M)
+                * (WHEEL_HUB.2 - WHEEL_RADIUS_M - STAND_MARGIN_M - ROOF_Z[0])
+                / ((ROOF_Z[1] - ROOF_Z[0]) * 0.5)
+            > 7.5
+    );
+    assert!(SEATS.len() < 255);
     // A keeper stands clear of the stall's face and of the trading spot.
     assert!(KEEPER_X + KEEPER_HALF < STALL_FACE_X);
     assert!(KEEPER_X - KEEPER_HALF - KIOSKS[1].0 > crate::collide::CAPSULE_RADIUS_M);
@@ -589,6 +722,7 @@ pub fn blocks(t: &Town, x: f32, z: f32, feet: f32, r: f32, h: f32) -> bool {
         || kit::blocks_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r, h)
         || kit::blocks_local(&CASINO, t.floor_y, 0, lx, lz, feet, r, h)
         || kit::blocks_local(&KEEPERS, t.floor_y, 0, lx, lz, feet, r, h)
+        || kit::blocks_local(&CASINO_ROOF, t.floor_y, 0, lx, lz, feet, r, h)
 }
 
 /// The highest town surface within a step of `feet` under a disc of radius
@@ -602,6 +736,15 @@ pub fn ground(t: &Town, x: f32, z: f32, feet: f32, r: f32) -> f32 {
         .max(kit::ground_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r))
         .max(kit::ground_local(&CASINO, t.floor_y, 0, lx, lz, feet, r))
         .max(kit::ground_local(&KEEPERS, t.floor_y, 0, lx, lz, feet, r))
+        .max(kit::ground_local(
+            &CASINO_ROOF,
+            t.floor_y,
+            0,
+            lx,
+            lz,
+            feet,
+            r,
+        ))
 }
 
 /// Whether a roof keeps the rain off a body here.
@@ -611,6 +754,7 @@ pub fn roofed(t: &Town, x: f32, z: f32, feet: f32) -> bool {
     }
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
     kit::roofed_local(PARTS, t.floor_y, lx, lz, feet)
+        || kit::roofed_local(&CASINO_ROOF, t.floor_y, lx, lz, feet)
 }
 
 /// Inside the safe zone: no player is hurt here and nobody hurts from here.
@@ -649,6 +793,12 @@ pub fn wheel_terminal_world(t: &Town, k: usize) -> Option<(f32, f32)> {
 pub fn slot_world(t: &Town, k: usize) -> Option<(f32, f32)> {
     let &(x, z) = SLOT_SPOTS.get(k)?;
     Some(kit::to_world(&t.placed(), x, z))
+}
+
+/// Seat `k`'s sitter spot in world space.
+pub fn seat_world(t: &Town, k: usize) -> Option<(f32, f32)> {
+    let s = SEATS.get(k)?;
+    Some(kit::to_world(&t.placed(), s.x, s.z))
 }
 
 /// Sentry `k`'s gun in world space: (x, y, z), metres.

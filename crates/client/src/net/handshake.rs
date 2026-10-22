@@ -465,6 +465,21 @@ pub fn page_domain<'a>(scheme: &str, hostname: &'a str, server: &str) -> Option<
     (dialled.eq_ignore_ascii_case(page) || under).then_some(hostname)
 }
 
+/// **A pin never rides with the page's own name.** `signs_as` (from
+/// [`page_domain`]) is the page vouching for the shard: the wallet sees its
+/// own origin in the domain line and does not warn. A certificate pin
+/// replaces the browser's check of who answered, so the two together let a
+/// link's `?hash=` pin a stranger's certificate for our own host, relay the
+/// real shard's challenge and be let in on the player's signature. A shard
+/// under the page's host has a real chain; a pin there is only ever somebody
+/// else's. Keyed on `signs_as`, which `page_domain` read through
+/// [`server_host`] — the dial's own parse — so no spelling of the address
+/// splits the two (`?server=game.elopros.com` with no port once slipped past
+/// the page's check).
+pub fn pin_refused(cert_hash: Option<&str>, signs_as: Option<&str>) -> bool {
+    signs_as.is_some() && cert_hash.is_some_and(|h| !h.trim().is_empty())
+}
+
 /// `localhost`, anything under it, and the loopback addresses in either
 /// IPv6 spelling.
 fn is_loopback_host(host: &str) -> bool {
@@ -547,7 +562,11 @@ pub fn auth_for(
             JoinError::Failed(format!(
                 "could not sign in as {}; approve the sign-in in your launcher or \
                  browser and try again",
-                short(address)
+                if crate::ui::streamer::on() {
+                    "your wallet".to_string()
+                } else {
+                    short(address)
+                }
             ))
         })?),
     };
@@ -579,6 +598,28 @@ pub fn welcome_from(frame: &[u8]) -> Result<Welcome, JoinError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The page's own host never takes a pin, however the address is spelt;
+    /// a stranger's shard (no `signs_as`) and an unpinned join are untouched.
+    #[test]
+    fn a_pin_is_refused_exactly_where_the_page_vouches() {
+        for server in [
+            "game.elopros.com",
+            "game.elopros.com:443",
+            "GAME.elopros.com:61234",
+        ] {
+            let signs = page_domain("https:", "elopros.com", server);
+            assert_eq!(signs, Some("elopros.com"), "{server}");
+            assert!(pin_refused(Some("ab12"), signs), "{server}");
+            assert!(!pin_refused(None, signs), "{server}");
+            assert!(!pin_refused(Some("  "), signs), "{server}");
+        }
+        let theirs = page_domain("https:", "elopros.com", "play.example:4433");
+        assert!(
+            !pin_refused(Some("ab12"), theirs),
+            "a community shard keeps its pin"
+        );
+    }
     use protocol::{
         encode_challenge, encode_refuse, encode_welcome, Address, Challenge, Refuse,
         MAX_STREAM_MSG_BYTES,

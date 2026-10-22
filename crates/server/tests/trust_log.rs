@@ -454,9 +454,14 @@ fn an_evicted_owner_keeps_their_wallet_in_the_row() {
     );
     let keyed_box = stand_a_box(&mut core, &stats, &haven, 0, owner, two[0]);
     let guest_box = stand_a_box(&mut core, &stats, &haven, 1, guest_owner, two[1]);
+    // The keyed owner logs off with empty pockets: a wallet's body that holds
+    // gear is held through a young sleep (`ShardCore::evict_victim`), and this
+    // test is about the row, not that policy.
+    let s = wslot(&core, owner);
+    core.world.players[s].inv = Default::default();
 
-    // Both owners log off, the keyed one first, so it is the longest asleep
-    // and the first join evicts it.
+    // Both owners log off. The two joins evict both: the guest first (a
+    // throwaway), then the keyed owner.
     assert!(core.disconnect(0).is_some());
     tick(&mut core, &stats);
     assert!(core.disconnect(1).is_some());

@@ -71,7 +71,8 @@ placement = "any"
 matter = "wood"
 hp = 100
 
-# A rug: walked over like the spikes, on the ground or a floor. Comfort is per
+# A rug: walked over like the spikes, on the ground or a floor, and anything
+# but another rug stands on it (`deploy::layers`). Comfort is per
 # mille within `comfort_radius_cm`: 15 % with no fire, on top of a fire's, and
 # the best rug in reach counts, so two rugs are one (`World::furnish_comfort`).
 [[deployable]]
@@ -92,6 +93,16 @@ archetype = "planter"
 placement = "any"
 matter = "wood"
 hp = 300
+
+# A water catcher (farming v2): a barrel under a tarp funnel. It banks rain
+# under open sky, fills a waterskin, and waters the planters and ground
+# plants within `catcher_reach_cm` (`cooking.toml` `[farm]`).
+[[deployable]]
+id = "item.water_catcher"
+archetype = "catcher"
+placement = "any"
+matter = "wood"
+hp = 150
 
 [[deployable]]
 id = "item.fire_pit"

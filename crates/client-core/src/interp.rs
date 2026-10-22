@@ -144,17 +144,17 @@ pub struct RemoteState {
     /// Crouched (wire v83, `Player::crouched`): the stance the sim tests
     /// hits against. Newer sample, `sleeping`'s reason.
     pub crouched: bool,
+    /// In a casino seat (wire v130, `Player::seat`). Newer sample,
+    /// `sleeping`'s reason.
+    pub seated: bool,
 }
 
-/// Metres of sea over a body's feet at which it is drawn swimming (NOW §0chr
-/// 1 / §0v 1): chest deep on the 1.8 m body. **Not a sim fact and not on the
-/// wire** — the sim's swim is a slow wade along the seabed (`movement.rs`
-/// `WADE_SPEED_MULT`), so a swimmer is wherever its feet are and the depth
-/// over them is the wire's own y against `SEA_LEVEL`. Lakes are carved at
-/// `SEA_LEVEL` too, so one number covers both. The body is drawn where the
-/// sim holds it, on the bottom: floating it to the surface would draw it
-/// somewhere the server does not hit.
-pub const SWIM_FEET_DEPTH_M: f32 = 1.2;
+/// Metres of water over a body's feet at which it is drawn swimming: the
+/// sim's own line (`movement::SWIM_DEPTH_M`, the water pass), where a body
+/// stops wading and floats. The sea and the lakes are both at `SEA_LEVEL`,
+/// so the wire's own y against it is the whole answer, and a swimmer is
+/// drawn where the sim holds it — at the surface, or under it diving.
+pub const SWIM_FEET_DEPTH_M: f32 = sim_core::movement::SWIM_DEPTH_M;
 
 /// How much shallower than [`SWIM_FEET_DEPTH_M`] a swimmer must come before
 /// it stands again. A body walking a rippled seabed at the threshold would
@@ -190,6 +190,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.held_skin = s.e.held_skin;
     out.airborne = !s.e.grounded;
     out.crouched = s.e.crouched;
+    out.seated = s.e.seated;
 }
 
 pub struct Interp {
@@ -442,6 +443,7 @@ impl Interp {
                 out.held_skin = s1.e.held_skin;
                 out.airborne = !s1.e.grounded;
                 out.crouched = s1.e.crouched;
+                out.seated = s1.e.seated;
                 out.live = true;
                 return true;
             }
@@ -472,6 +474,7 @@ mod tests {
             dead: false,
             wounded: false,
             crouched: false,
+            seated: false,
             yaw,
             pitch: 100,
             held: None,

@@ -73,6 +73,18 @@ impl Note {
             Some(Value::String(b)) => b.as_str(),
             Some(_) => return Err("report body must be a string".into()),
         };
+        // An agent's report is written by whatever steers it, and a long hex
+        // run is a key, not a bug (`external::peddles` says why).
+        if crate::external::hex_run(title) >= 32
+            || crate::external::hex_run(body) >= 32
+            || protocol::secret::holds_secret(title)
+            || protocol::secret::holds_secret(body)
+        {
+            return Err(
+                "a report may not carry a long hex string or a recovery phrase (a key or a hash)"
+                    .into(),
+            );
+        }
         Ok(Some(Note {
             kind,
             title: title.to_owned(),
@@ -304,6 +316,7 @@ fn send(desk: &Desk, r: Report, timeout_s: u64, threaded: bool) {
 
 fn post(url: &str, body: String, timeout_s: u64) -> Result<report::Receipt, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(Duration::from_secs(timeout_s)))
         .http_status_as_error(false)
         .build()
