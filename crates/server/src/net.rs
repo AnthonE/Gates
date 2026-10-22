@@ -499,6 +499,22 @@ fn same_source(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
     }
 }
 
+/// Watcher seats one source may hold at once: a quarter of the ceiling, so
+/// a single address cannot take every `?spectate=` seat on the shard. The
+/// player cap (`SEATS_PER_SOURCE`) counts only player seats, and a watcher's
+/// handshake permit is given back the moment it is seated.
+const WATCH_SEATS_PER_SOURCE: usize = MAX_SPECTATORS / 4;
+const _: () = assert!(WATCH_SEATS_PER_SOURCE >= 1 && WATCH_SEATS_PER_SOURCE < MAX_SPECTATORS);
+
+/// Watcher seats held by connections from `ip`'s source
+/// (`WATCH_SEATS_PER_SOURCE`).
+fn watch_seats_held(seats: &[SeatSlot; MAX_SPECTATORS], ip: std::net::IpAddr) -> usize {
+    seats
+        .iter()
+        .filter(|s| s.occupied && s.source.is_some_and(|x| same_source(x, ip)))
+        .count()
+}
+
 /// Live seats held by connections from `ip`'s source (`SEATS_PER_SOURCE`).
 fn seats_held(keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable, ip: std::net::IpAddr) -> usize {
     keys.iter()
@@ -1575,6 +1591,9 @@ struct SeatSlot {
     /// the seat was granted. The target is gone the moment either changes.
     target: usize,
     target_gen: u32,
+    /// The address it watches from, as `SourceGate` counts it, or `None`
+    /// for the shard's own host (`WATCH_SEATS_PER_SOURCE`).
+    source: Option<std::net::IpAddr>,
 }
 
 /// Wallets the per-join platform reads remember (`PlatformReads`): a full
@@ -1901,8 +1920,10 @@ async fn accept_loop(
             // written for, and installing first would overwrite that key.
             drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
             if done.hello.is_spectator() {
+                let source = sources.counted(done.connection.remote_address().ip());
                 install_spectator(
                     done,
+                    source,
                     &facts,
                     &mut ctrl_tx,
                     &keys,
@@ -3346,6 +3367,7 @@ fn pick_target(
 #[allow(clippy::too_many_arguments)]
 fn install_spectator(
     done: Handshaken,
+    source: Option<std::net::IpAddr>,
     facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
     keys: &[KeySlot; MAX_PLAYERS],
@@ -3384,6 +3406,11 @@ fn install_spectator(
             return;
         }
     };
+    if source.is_some_and(|ip| watch_seats_held(seats, ip) >= WATCH_SEATS_PER_SOURCE) {
+        ShardStats::bump(&stats.spectate_full);
+        spawn_refusal(connection, send, protocol::REFUSE_WATCH_FULL);
+        return;
+    }
     // A seat, within the shard's configured count (`spectate_seats` may be
     // below `MAX_SPECTATORS`; the tables are sized to the ceiling).
     let Some((i, generation)) =
@@ -3446,6 +3473,7 @@ fn install_spectator(
         generation,
         target,
         target_gen,
+        source,
     };
 
     // Welcomed AS the target's body: `player_id` is whose view this is, which
@@ -5684,6 +5712,33 @@ mod tests {
         let a: std::net::IpAddr = "2001:db8:aa:1::1".parse().unwrap();
         let b: std::net::IpAddr = "2001:db8:aa:ff00::1".parse().unwrap();
         assert_eq!(gate.net_bucket(a), gate.net_bucket(b), "but one /48");
+    }
+
+    /// **One address cannot take every watcher seat** (`WATCH_SEATS_PER_SOURCE`):
+    /// a watcher's handshake permit is gone once it is seated, so the seats
+    /// themselves are counted by source, a /64 as one, a swept seat as none.
+    #[test]
+    fn one_source_holds_at_most_its_share_of_the_watcher_seats() {
+        let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
+        let a: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8:5:6::1".parse().unwrap();
+        let v6_sibling: std::net::IpAddr = "2001:db8:5:6:abcd::2".parse().unwrap();
+        for (i, ip) in [Some(a), Some(a), Some(v6), None].into_iter().enumerate() {
+            seats[i] = SeatSlot {
+                occupied: true,
+                source: ip,
+                ..SeatSlot::default()
+            };
+        }
+        assert_eq!(watch_seats_held(&seats, a), 2);
+        assert_eq!(
+            watch_seats_held(&seats, v6_sibling),
+            1,
+            "a /64 is one source"
+        );
+        // A swept seat holds nothing.
+        seats[0] = SeatSlot::default();
+        assert_eq!(watch_seats_held(&seats, a), 1);
     }
 
     /// **A source's seats are its live tenants from that address (or /64)**:

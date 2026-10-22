@@ -2479,8 +2479,9 @@ pub fn hitscan(
 /// not rewound — they are not in `Rewind` — so a hit on one is solved
 /// against where it stands this tick.
 ///
-/// `secret` is the world's secret seed (`World::secret_seed`), the key of
-/// the cone's draw so a client that knows the seed, the tick and its slot
+/// `secret` is the cone's own channel of the world's salt (`World`'s
+/// `CH_CONE_KEY`), the key of the cone's draw so a client that knows the
+/// seed, the tick and its slot
 /// cannot work out where its next round will stray — and so time its
 /// shots for the draws that land dead on the line. `seed` itself is the
 /// seed's cone.
@@ -2687,8 +2688,8 @@ fn hitscan_in(
             } else {
                 0
             };
-        // Keyed on the world's secret (`World::secret_seed`), not the public
-        // seed: a client that knows the seed and the tick its shot runs on
+        // Keyed on the cone's channel of the world's salt (`World`'s
+        // `CH_CONE_KEY`), not the public seed: a client that knows the seed and the tick its shot runs on
         // could otherwise pre-invert the cone and fire with no spread. A
         // salted shot's key is a PRF of the secret (`rng::sip24`), not a mix
         // of it: the shooter reads ~20 bits of every key back off `EV_SHOT`

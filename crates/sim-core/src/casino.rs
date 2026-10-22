@@ -201,8 +201,17 @@ pub fn wheel_open(tick: u64) -> bool {
     wheel_phase(tick).1 < WHEEL_OPEN_TICKS
 }
 
+/// A spin's draw: a PRF of the salt (`rng::sip24`), not a splitmix mix of
+/// it. Every wheel result goes to every client and a slot pull shows ~12
+/// bits on a tick the spinner picks; splitmix inverts, so a mixed salt came
+/// back out of enough spins — and the salt keys the cone, the loot and the
+/// locks too. An unsalted world (the fixtures) draws as it always did.
 fn draw(seed: u64, salt: u64, channel: u64, a: u64, b: u64) -> u64 {
-    splitmix64(splitmix64(splitmix64(seed ^ salt.rotate_left(23) ^ channel) ^ a) ^ b)
+    if salt == 0 {
+        splitmix64(splitmix64(splitmix64(seed ^ channel) ^ a) ^ b)
+    } else {
+        crate::rng::sip24(salt, seed ^ channel, a, b)
+    }
 }
 
 /// `[0, bound)` from a draw, without modulo bias (Lemire, `rng::next_bounded`).

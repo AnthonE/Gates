@@ -3407,14 +3407,45 @@ impl World {
     }
 
     /// Whether the player in `slot` sees what a charge would be planted on
-    /// (`reach.rs`): a deployable the way the use verb sees it, a piece when
+    /// (`reach.rs`): a deployable on the line alone (no storey rule), a piece when
     /// the first thing built on the line to it is that piece. Planar reach
     /// alone let a raider at the outer wall plant on the cupboard, the box
     /// or the inner wall behind it. True when nothing stands at the address:
     /// `charge::place` names that refusal.
     fn charge_seen(&self, slot: usize, deploy: bool, addr: (u16, u16, u8, u8)) -> bool {
         if deploy {
-            return self.door_seen(slot, addr);
+            let Some(rec) = self.deploys.find(addr.0, addr.1, addr.2, addr.3) else {
+                return true;
+            };
+            let Some(def) = self.deploy.defs.get(rec.row as usize) else {
+                return true;
+            };
+            let (eye, feet) = self.hand(slot);
+            let cols = self.pieces.cols();
+            // The line alone, as for a piece (`reach::clear_piece`) and as
+            // `deploy_seen` places it: a door or a box a storey up in plain
+            // sight is a raider's to reach from the ground; a wall or a floor
+            // in the way still refuses.
+            let t = crate::reach::Target {
+                storey: false,
+                ..crate::reach::Target::deploy(
+                    self.seed,
+                    &self.haven,
+                    cols,
+                    rec,
+                    def.arch,
+                    (eye.0, eye.2),
+                )
+            };
+            return crate::reach::clear_from(
+                self.seed,
+                &self.haven,
+                cols,
+                self.card_door_bits,
+                eye,
+                feet,
+                t,
+            );
         }
         let Some(i) = self.pieces.find_index(addr.0, addr.1, addr.2, addr.3) else {
             return true;
@@ -4683,8 +4714,9 @@ impl World {
     /// A PRF of the salt (`rng::salted`, SipHash-2-4), not a mix of it: what
     /// a player reads back off these draws can at most name this seed, never
     /// the salt the casino and the mechs also key on. The cone, the one draw
-    /// that shows ~20 bits a shot, keys its own PRF on this in turn
-    /// (`ranged::hitscan_in`).
+    /// that shows ~20 bits a shot, keys a PRF on its own channel of the salt
+    /// (`CH_CONE_KEY`, `ranged::hitscan_in`), so naming this seed names no
+    /// shot.
     #[inline]
     pub fn secret_seed(&self) -> u64 {
         crate::rng::salted(self.seed, self.arc.salt, CH_SECRET_SEED)
@@ -9381,7 +9413,10 @@ impl World {
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
-            secret,
+            // The cone's own channel of the salt, not `secret`: the barrel,
+            // crate, gene, meal and dud draws mix `secret` through splitmix,
+            // so what they show can name it, and it must not name the cone.
+            crate::rng::salted(seed, self.arc.salt, CH_CONE_KEY),
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -10508,6 +10543,11 @@ fn stack_bytes(s: &ItemStack) -> [u8; 8] {
 /// [`World::secret_seed`]'s channel of the salt (`rng::salted`), apart from
 /// the respawn jitter's (`gather::respawn_seed`).
 const CH_SECRET_SEED: u64 = 0x7365_6372_6574_5f73;
+
+/// The gun cone's channel of the salt (`rng::salted`), apart from
+/// [`CH_SECRET_SEED`]'s: the cone shows the most of any draw, and the draws
+/// on the secret seed show enough to name that seed.
+const CH_CONE_KEY: u64 = 0x636f_6e65_5f6b_6579;
 
 #[cfg(test)]
 mod tests {
