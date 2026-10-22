@@ -2631,8 +2631,9 @@ pub struct World {
     /// Placed deployables + the hearth list — sim state, hashed.
     pub deploys: Deploys,
     /// Planted satchel charges with a fuse burning — sim state, hashed.
-    /// Small enough to sit inline (`MAX_LIVE_CHARGES` × 24 B ≈ 1.5 kB)
-    /// beside the stores it damages, unlike `backpacks` next door.
+    /// Its entries are on the heap (`MAX_LIVE_CHARGES` is a share a seat,
+    /// × 24 B ≈ 29 kB), boxed once at construction like `backpacks` next
+    /// door.
     pub charges: crate::charge::Charges,
     /// Fires fire arrows left burning — sim state, hashed. Inline for
     /// `charges`' reason, 2 kB.

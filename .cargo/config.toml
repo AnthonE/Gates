@@ -1,7 +1,8 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 135 kB — fixed-capacity by design (wall 4), and
-# (133 kB until a bow's draw put the tick it carries on to on every
+# `World` is 133 kB — fixed-capacity by design (wall 4), and
+# (135 kB until the live charges went to the heap, sized a share a seat;
+# 133 kB until a bow's draw put the tick it carries on to on every
 # player, which tipped `Player` over a 16-byte boundary;
 # 131 kB until a bleed and a held use put six fields on every player;
 # 130 kB until seeds from eating put what a meal leaves on every
