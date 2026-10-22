@@ -164,7 +164,8 @@ impl RockRing {
 /// formation is a few taps and stays on the frame; the mesh is one task per
 /// formation, [`BUILDS_PER_FRAME`] started a frame, and landed whole with its
 /// spires on the first frame that finds it done. In a browser that pool is
-/// the main thread, so there the cost is what it was, between frames.
+/// the main thread: the tasks run as microtasks once the update returns,
+/// before the frame paints, so there the cost is what it was.
 #[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,

@@ -50,7 +50,8 @@
 //! The cubemap is generated from the world seed. No asset, no shader, no
 //! download. **Since weather v0 it is composed, not baked once**: a tileable
 //! noise field is built at boot, and [`compose`] re-projects the deck from it
-//! every half second or so, a few rows a frame — the wind drifting it, the
+//! every half second or so (whole, on a worker; a few rows a frame in a
+//! browser, every second and a half) — the wind drifting it, the
 //! weather thickening and darkening it, its lit side facing the sun it is
 //! actually lit by, and the night's moon behind it. The stars are not in it:
 //! a texel is too big to be a star (`stars.rs`).
@@ -1485,11 +1486,12 @@ pub fn cloud_cubemap_with(seed: u64, backdrop: bool) -> Image {
 /// **Native composes on `AsyncComputeTaskPool`, a browser on the frame.** A
 /// whole cube is ~25 ms of arithmetic, and the deck drifts, so a new one is
 /// wanted every [`COMPOSE_INTERVAL_S`] for as long as the game runs. Spread
-/// over the frame at [`COMPOSE_BUDGET`] texels that was 3.2 ms of main
-/// thread in six of every ~30 frames, measured. A worker takes the whole
-/// cube and hands back the bytes, which go to the image as they are rather
-/// than cloned. In a browser that pool IS the main thread, so the budgeted
-/// pass stays: one 25 ms task would be one 25 ms frame.
+/// over the frame at the old native budget of 65,536 texels, that was 3.2 ms
+/// of main thread in six of every ~30 frames, measured. A worker takes the
+/// whole cube and hands back the bytes, which go to the image as they are
+/// rather than cloned. In a browser that pool IS the main thread, so the
+/// budgeted pass stays there, at a quarter of that budget (`COMPOSE_BUDGET`):
+/// one 25 ms task would be one 25 ms frame.
 #[derive(Resource)]
 pub struct SkyComposer {
     field: Arc<CloudField>,

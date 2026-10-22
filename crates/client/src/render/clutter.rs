@@ -892,8 +892,9 @@ pub fn stream(
         }
     }
 
-    // Land what finished, nearest first by construction (spawned that way).
-    // Bounded: each landing hands up to three meshes to the render world.
+    // Land what finished, in the map's order: tiles are spawned nearest
+    // first, so on a worker the near ones finish first. Bounded: each landing
+    // hands up to three meshes to the render world.
     for _ in 0..CLUTTER_FILLS_PER_FRAME * super::stream_boost() {
         let Some(key) = ring
             .building
@@ -988,7 +989,8 @@ pub fn stream(
     // Start the nearest missing tiles. The fill and the bake were ~2 ms a
     // tile on the frame, a tile a frame for as long as the player walks; on
     // a worker the frame pays only the landing above. In a browser that pool
-    // is the main thread, and the cost is what it was, between frames.
+    // is the main thread: the task runs as a microtask once this update
+    // returns, before the frame paints, so the cost is what it was.
     let pool = AsyncComputeTaskPool::get();
     let mut started = 0usize;
     for &(dx, dz) in &order[..n_order] {
