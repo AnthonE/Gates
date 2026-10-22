@@ -696,6 +696,7 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
     let pool = tree::CONIFER_POOL;
     let needle = tree::needle_image();
     let leaf = tree::leaf_image();
+    let frond = super::plants::frond_image();
     let w = CARD_W * pool as u32;
     let h = CARD_H;
     let mut level0 = vec![0u8; (w * h * 4) as usize];
@@ -706,6 +707,8 @@ pub fn bake_atlas() -> (Image, Vec<CardDims>) {
         // needles on an evergreen — the pine and the palm — leaves on a
         // broadleaf.
         let (card, gain, trunk) = match tree::SPECIES[tree::species_of(v)].tree_type {
+            // The palm's crown wears the frond card, its colour its own.
+            _ if tree::species_of(v) == tree::PALM => (&frond, 1.0, BARK_MEAN),
             bevy_procedural_tree::enums::TreeType::Evergreen => {
                 (&needle, tree::NEEDLE_MAP_GAIN, BARK_MEAN)
             }

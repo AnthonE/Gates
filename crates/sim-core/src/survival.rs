@@ -87,7 +87,7 @@ pub const TICKS_PER_MIN: u32 = TICK_HZ * 60;
 /// all-zero row means the item is not food: the whole table starts that
 /// way, so eating a stack of wood is the same non-event as swinging it at
 /// a person with no melee row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConsumableDef {
     /// Hit points delivered over `seconds` — not instantly (module note).
     pub health: u16,
@@ -103,14 +103,43 @@ pub struct ConsumableDef {
     /// immediately: negative draws the corruption out (the Charcoal Tonic,
     /// Rust's anti-rad pills).
     pub fel: i16,
+    /// Hp of bleeding it closes, as a negative (Rust's bandage −50).
+    pub bleed: i16,
+    /// Ticks in the hands before it lands (Rust's `MedicalTool`, the
+    /// bandage's wrap); zero is instant. See [`begin_use`].
+    pub use_ticks: u8,
+    /// What eating one leaves in the eater's hand (`NO_ITEM` for nothing),
+    /// `leaves_pm` per mille of the time: a cob leaves a corn seed, a
+    /// handful of berries now and then a berry seed (`World`'s consume arm).
+    pub leaves: u16,
+    pub leaves_pm: u16,
+}
+
+impl Default for ConsumableDef {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 impl ConsumableDef {
+    /// The row of an item that is not food.
+    pub const NONE: Self = Self {
+        health: 0,
+        food: 0,
+        water: 0,
+        seconds: 0,
+        fel: 0,
+        bleed: 0,
+        use_ticks: 0,
+        leaves: NO_ITEM,
+        leaves_pm: 0,
+    };
+
     /// Does this row do anything at all? The bake refuses a row that does
     /// not, so this is the sim's read of "is the held item food".
     #[inline]
     pub fn is_food(&self) -> bool {
-        self.health > 0 || self.food > 0 || self.water > 0 || self.fel != 0
+        self.health > 0 || self.food > 0 || self.water > 0 || self.fel != 0 || self.bleed != 0
     }
 }
 
@@ -187,17 +216,14 @@ pub struct SurvivalContent {
     /// Wet and cold (weather v0, `exposure.rs`): the other half of the body
     /// the clock keeps, baked from `[exposure]`. `EMPTY` disarms it.
     pub exposure: crate::exposure::ExposureContent,
+    /// Hp a minute an open wound costs (`Player::bleed`, Rust's 1 hp every
+    /// 3 s). The hit that opens it is `combat::hurt`'s.
+    pub bleed_hp_per_min: u16,
 }
 
 impl SurvivalContent {
     pub const EMPTY: Self = Self {
-        consumable: [ConsumableDef {
-            health: 0,
-            food: 0,
-            water: 0,
-            seconds: 0,
-            fel: 0,
-        }; MAX_ITEM_DEFS],
+        consumable: [ConsumableDef::NONE; MAX_ITEM_DEFS],
         belt_recovery: [false; MAX_ITEM_DEFS],
         revive: [false; MAX_ITEM_DEFS],
         max_food: 0,
@@ -215,6 +241,7 @@ impl SurvivalContent {
         vessels: [Vessel::NONE; MAX_VESSELS],
         vessel_count: 0,
         exposure: crate::exposure::ExposureContent::EMPTY,
+        bleed_hp_per_min: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -247,6 +274,7 @@ impl SurvivalContent {
             water: 30,
             seconds: 2,
             fel: 0,
+            ..ConsumableDef::NONE
         };
         c
     }
@@ -355,6 +383,10 @@ pub const REFUSE_C_SALT: u32 = 4;
 /// literal stops naming the ledger's top.
 pub const REFUSE_C_MAX: u32 = 4;
 
+/// The deepest a wound gets, in hp it owes: Rust's `bleeding` meter tops
+/// out at 100.
+pub const BLEED_MAX: u16 = 100;
+
 /// One rational step: add `num` to `acc`, take out whole units against
 /// `den`, keep the remainder. The one piece of arithmetic every meter in
 /// this module shares, so an exactness bug can only exist in one place.
@@ -388,6 +420,9 @@ pub enum Step {
     /// exactly as it is for `combat::Strike::Killed`, because the spawn
     /// ring needs the whole world and this function needs one player.
     Died,
+    /// An open wound took the last hp (`Player::bleed`): `Died`, with its
+    /// own sentence on the death screen.
+    BledOut,
 }
 
 /// One tick of the clock for one player: drain, then hurt, then heal.
@@ -439,6 +474,23 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
         }
     }
 
+    // 2b · Bleed. An open wound costs its rate until it has taken what it
+    // owes (Rust: 1 hp every 3 s); each hp it takes is one hp less owed.
+    let mut bled = false;
+    if p.bleed > 0 && !died {
+        let dmg = tick_units(&mut p.bleed_acc, sc.bleed_hp_per_min as u32, TICKS_PER_MIN);
+        if dmg > 0 {
+            let dmg = dmg.min(u32::from(p.bleed)) as u16;
+            p.bleed -= dmg;
+            // Unreduced, the clock's reason: the wound already got
+            // through the armor once, when it was opened.
+            bled = crate::combat::hurt_unreduced(p, dmg).died;
+        }
+        if p.bleed == 0 {
+            p.bleed_acc = 0;
+        }
+    }
+
     // 3 · Heal. A consumed row's health arrives over its seconds; the same
     // rational accumulator, numerator the total, denominator the span.
     if p.heal_rem > 0 {
@@ -449,7 +501,7 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
             // A heal cannot outrun a death that already happened this tick;
             // hp 0 is the end of the tick's story, and the respawn clears
             // the pending heal with the rest of the body.
-            if !died {
+            if !died && !bled {
                 let max = max_hp(p);
                 p.hp = (p.hp + give).min(max);
             }
@@ -461,6 +513,9 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
 
     if died {
         return Step::Died;
+    }
+    if bled {
+        return Step::BledOut;
     }
     if (p.food, p.water, p.hp) != before {
         announce(sc, p, events);
@@ -505,7 +560,10 @@ pub fn grant(sc: &SurvivalContent, p: &mut Player) {
     p.food_acc = 0;
     p.water_acc = 0;
     p.hurt_acc = 0;
+    p.bleed = 0;
+    p.bleed_acc = 0;
     clear_heal(p);
+    clear_use(p);
     crate::exposure::reset(p);
 }
 
@@ -600,6 +658,7 @@ pub fn consume(
     // allowed — hp is the one meter a player may top up deliberately.
     let would_feed = (def.food > 0 && p.food < sc.max_food)
         || (def.water > 0 && p.water < sc.max_water)
+        || (def.bleed < 0 && p.bleed > 0)
         || (def.fel < 0 && p.fel > 0)
         || def.fel > 0;
     if def.health == 0 && !would_feed {
@@ -636,6 +695,10 @@ pub fn consume(
     p.food = p.food.saturating_add(def.food).min(sc.max_food);
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
     p.fel = (i32::from(p.fel) + i32::from(def.fel)).clamp(0, 1000) as u16;
+    p.bleed = p.bleed.saturating_sub(def.bleed.unsigned_abs());
+    if p.bleed == 0 {
+        p.bleed_acc = 0;
+    }
     start_heal(def, p, heal_pct);
     events.push(
         EV_CONSUMED,
@@ -645,6 +708,59 @@ pub fn consume(
     );
     announce(sc, p, events);
     true
+}
+
+/// Start a use that takes time in the hands (Rust's `MedicalTool`, the
+/// bandage's wrap): nothing is spent until it lands in [`tick_use`], and a
+/// hand switched away before then cancels it. `false` when the row in
+/// `slot` is instant (or not a row at all), so the caller eats it now and
+/// [`consume`] gives any refusal. A second press mid-use does nothing.
+pub fn begin_use(sc: &SurvivalContent, slot: usize, p: &mut Player, tick: u64) -> bool {
+    let Some(stack) = p.inv.get(slot).copied().filter(|s| s.count > 0) else {
+        return false;
+    };
+    if !sc.armed() || !sc.row(stack.item).is_some_and(|d| d.use_ticks > 0) {
+        return false;
+    }
+    if p.use_at == 0 {
+        p.use_at = tick + u64::from(sc.consumable[stack.item as usize].use_ticks);
+        p.use_slot = slot as u8;
+        p.use_sel = p.frame.sel;
+        p.use_item = stack.item;
+    }
+    true
+}
+
+/// Land the use in the hands on its tick, or cancel it the tick the hand
+/// that began it is put away or the item leaves its slot. A cancel spends
+/// nothing and says nothing: the player is the one who switched.
+pub fn tick_use(
+    sc: &SurvivalContent,
+    p: &mut Player,
+    events: &mut EventQueue,
+    tick: u64,
+    heal_pct: u32,
+) {
+    if p.use_at == 0 {
+        return;
+    }
+    let slot = p.use_slot as usize;
+    let s = p.inv.get(slot).copied().unwrap_or_default();
+    if p.frame.sel != p.use_sel || s.count == 0 || s.item != p.use_item {
+        clear_use(p);
+    } else if tick >= p.use_at {
+        clear_use(p);
+        consume(sc, slot, p, events, heal_pct);
+    }
+}
+
+/// Drop any use in the hands. One place, `clear_heal`'s reason.
+#[inline]
+pub fn clear_use(p: &mut Player) {
+    p.use_at = 0;
+    p.use_slot = 0;
+    p.use_sel = 0;
+    p.use_item = NO_ITEM;
 }
 
 /// Is there water within `DRINK_REACH_M` of this body, planar? Five taps
@@ -968,6 +1084,7 @@ mod tests {
             water: 0,
             seconds: 1,
             fel: -400,
+            ..ConsumableDef::NONE
         };
         let drink = |sc: &SurvivalContent, fel: u16| {
             let mut p = player(sc);
@@ -1002,6 +1119,7 @@ mod tests {
             water: u16::MAX,
             seconds: 0,
             fel: 0,
+            ..ConsumableDef::NONE
         };
         let mut p = player(&sc);
         p.food = sc.max_food - 1;
@@ -1054,5 +1172,51 @@ mod tests {
         p.water = 50;
         step(&sc, &mut p, &mut q);
         assert_eq!(p.hurt_acc, 0, "the partial minute is forgiven, not banked");
+    }
+
+    /// A bandage: a wound bleeds a point every 3 s, the wrap spends nothing
+    /// until its last tick, switching hands cancels it, and landing it
+    /// closes the wound.
+    #[test]
+    fn a_wrap_lands_on_its_tick_and_closes_the_wound() {
+        let mut sc = SurvivalContent::probe_fixture();
+        sc.bleed_hp_per_min = 20;
+        sc.consumable[0].bleed = -50;
+        sc.consumable[0].use_ticks = 120;
+        let mut p = player(&sc);
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 2,
+            cond: 0,
+            skin: 0,
+        };
+        p.bleed = 60;
+        let mut q = EventQueue::default();
+        let hp = p.hp;
+        for _ in 0..90 {
+            step(&sc, &mut p, &mut q);
+        }
+        assert_eq!(
+            (p.hp, p.bleed),
+            (hp - 1, 59),
+            "1 hp per 3 s, owed down by one"
+        );
+
+        assert!(begin_use(&sc, 0, &mut p, 1000));
+        p.frame.sel = 1;
+        tick_use(&sc, &mut p, &mut q, 1001, 100);
+        assert_eq!(
+            (p.use_at, p.inv[0].count),
+            (0, 2),
+            "a hand put away spends nothing"
+        );
+
+        p.frame.sel = 0;
+        assert!(begin_use(&sc, 0, &mut p, 2000));
+        assert!(begin_use(&sc, 0, &mut p, 2050), "a second press mid-wrap");
+        tick_use(&sc, &mut p, &mut q, 2119, 100);
+        assert_eq!(p.inv[0].count, 2, "not before its tick");
+        tick_use(&sc, &mut p, &mut q, 2120, 100);
+        assert_eq!((p.inv[0].count, p.bleed, p.use_at), (1, 9, 0));
     }
 }

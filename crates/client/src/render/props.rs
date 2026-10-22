@@ -160,6 +160,15 @@ impl RingCards {
     }
 }
 
+/// A rock or ore model's material, its desert twin, the tint between them,
+/// and whether the twin is filled yet (`PropAssets::fill_twins`).
+type DesertTwin = (
+    Handle<StandardMaterial>,
+    Handle<StandardMaterial>,
+    [f32; 3],
+    bool,
+);
+
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
@@ -250,6 +259,17 @@ pub struct PropAssets {
     berry_fruit: Vec<Handle<Mesh>>,
     hemp_leaves: Vec<Handle<Mesh>>,
     hemp_stalk: Vec<Handle<Mesh>>,
+    /// The wild crops by the lakes (`Occupant::WildCorn`, `WildPumpkin`):
+    /// farming v2's own procedural looks (`render::crops`) at the ripe
+    /// stage's size, a pool each like hemp's. Their fruit — corn's two ears,
+    /// the vine's two pumpkins — is one mesh apiece, hidden while the plant
+    /// grows back ([`Grow::fruit`]).
+    corn_stalk: Vec<Handle<Mesh>>,
+    corn_leaves: Vec<Handle<Mesh>>,
+    corn_ears: Handle<Mesh>,
+    pumpkin_vine: Vec<Handle<Mesh>>,
+    pumpkin_leaves: Vec<Handle<Mesh>>,
+    pumpkin_fruit: Handle<Mesh>,
     /// What a shrub cell grows besides the leafy shrub (`plants::Scenery`),
     /// a pool each, indexed by yaw like the rest. A clump of wildflowers'
     /// stems and heads run `PLANT_POOL` to a palette.
@@ -258,8 +278,13 @@ pub struct PropAssets {
     juniper_leaves: Vec<Handle<Mesh>>,
     juniper_wood: Vec<Handle<Mesh>>,
     dead_wood: Vec<Handle<Mesh>>,
+    cycad_leaves: Vec<Handle<Mesh>>,
+    cycad_wood: Vec<Handle<Mesh>>,
     /// The desert's saguaros (`plants::cactus`), a pool like the scrub's.
     cactus: Vec<Handle<Mesh>>,
+    /// Each rock and ore model's desert twin ([`DesertTwin`]), filled once
+    /// the model has loaded.
+    desert_rock: Vec<DesertTwin>,
     flower_heads: Vec<Handle<Mesh>>,
     flower_base: Vec<Handle<Mesh>>,
     /// The shrub's and the berry bush's leaf material: alpha-MASKED, wearing
@@ -269,6 +294,16 @@ pub struct PropAssets {
     /// Hemp's leaf material: the same masked shape, wearing the drawn hemp
     /// leaf (`plants::hemp_leaf_image`).
     hemp_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// Corn's strap leaves: solid geometry, their colour in their vertices,
+    /// on hemp's stem bend.
+    corn_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A pumpkin vine's leaves: the masked card wearing the drawn pumpkin
+    /// leaf (`plants::pumpkin_leaf_image`).
+    pumpkin_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// Corn's ears, golden, and a pumpkin's skin (its colour in its
+    /// vertices, with a waxy sheen).
+    corn_ear: Handle<StandardMaterial>,
+    pumpkin_skin: Handle<StandardMaterial>,
     /// A shrub's or a berry bush's twigs, untextured, their colour in their
     /// vertices.
     plant_wood: Handle<StandardMaterial>,
@@ -283,6 +318,13 @@ pub struct PropAssets {
     /// A low pine's sprays: the conifers' needle card, on its own handle so
     /// it sways as a ground-rooted plant and not as a tree's crown.
     juniper_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A sago palm's fronds: the drawn frond card (`plants::frond_image`).
+    cycad_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A palm's crown: the same card, on its own handle so it sways as a
+    /// tree's crown and not as a ground-rooted plant.
+    palm_frond: [Handle<StandardMaterial>; TINT_POOL],
+    /// A palm's trunk: the drawn diamond bark (`tree::palm_bark_images`).
+    palm_bark: [Handle<StandardMaterial>; TINT_POOL],
     /// Wildflower stems and petals, their colour in their vertices.
     flower: Handle<StandardMaterial>,
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
@@ -1763,7 +1805,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 28] = [
+pub const OCCUPANTS: [Occupant; 30] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1792,6 +1834,8 @@ pub const OCCUPANTS: [Occupant; 28] = [
     Occupant::SulfurPile,
     Occupant::MushroomPatch,
     Occupant::Cactus,
+    Occupant::WildCorn,
+    Occupant::WildPumpkin,
 ];
 
 /// The roadside junk's colours, row for row with the sim's box tables.
@@ -1820,7 +1864,9 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         | Occupant::BerryBush
         | Occupant::Hemp
         | Occupant::Shrub
-        | Occupant::Cactus => return None,
+        | Occupant::Cactus
+        | Occupant::WildCorn
+        | Occupant::WildPumpkin => return None,
         // One blob serves all three ore nodes; they differ by material only.
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
             blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2)
@@ -1922,7 +1968,12 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
         // So do the plants (`plants.rs` builds them ground-rooted), which is
         // also the root height the foliage shader bends them from.
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => 0.0,
+        Occupant::BerryBush
+        | Occupant::Hemp
+        | Occupant::Shrub
+        | Occupant::Cactus
+        | Occupant::WildCorn
+        | Occupant::WildPumpkin => 0.0,
         // Centred meshes sat on the ground.
         Occupant::StonePile | Occupant::MetalPile | Occupant::SulfurPile => 0.1,
         Occupant::WoodPile => 0.11,
@@ -2133,6 +2184,19 @@ pub fn assets(
             (meshes.add(stalk), meshes.add(leaves))
         })
         .collect();
+    let corn: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (stalk, leaves) = plants::corn_stalk(v);
+            (meshes.add(stalk), meshes.add(leaves))
+        })
+        .collect();
+    let pumpkin: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (vine, leaves) = plants::pumpkin_vine(v);
+            (meshes.add(vine), meshes.add(leaves))
+        })
+        .collect();
+    let pumpkin_map = images.add(plants::pumpkin_leaf_image());
     let ferns: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
         .map(|v| {
             let (wood, leaves) = plants::fern(v);
@@ -2142,6 +2206,17 @@ pub fn assets(
     let junipers: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
         .map(|v| {
             let (wood, leaves) = plants::juniper(v);
+            (meshes.add(wood), meshes.add(leaves))
+        })
+        .collect();
+    let frond_map = images.add(plants::frond_image());
+    let (palm_bark_map, palm_bark_normal) = {
+        let (a, n) = tree::palm_bark_images();
+        (images.add(a), images.add(n))
+    };
+    let cycads: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::cycad(v);
             (meshes.add(wood), meshes.add(leaves))
         })
         .collect();
@@ -2271,6 +2346,12 @@ pub fn assets(
             .collect(),
         hemp_leaves: hemp.iter().map(|(_, l)| l.clone()).collect(),
         hemp_stalk: hemp.iter().map(|(s, _)| s.clone()).collect(),
+        corn_stalk: corn.iter().map(|(s, _)| s.clone()).collect(),
+        corn_leaves: corn.iter().map(|(_, l)| l.clone()).collect(),
+        corn_ears: meshes.add(wild_corn_ears()),
+        pumpkin_vine: pumpkin.iter().map(|(s, _)| s.clone()).collect(),
+        pumpkin_leaves: pumpkin.iter().map(|(_, l)| l.clone()).collect(),
+        pumpkin_fruit: meshes.add(wild_pumpkins()),
         fern_leaves: ferns.iter().map(|(_, l)| l.clone()).collect(),
         fern_wood: ferns.iter().map(|(w, _)| w.clone()).collect(),
         juniper_leaves: junipers.iter().map(|(_, l)| l.clone()).collect(),
@@ -2278,6 +2359,27 @@ pub fn assets(
         dead_wood: (0..PLANT_POOL as u32)
             .map(|v| meshes.add(plants::dead_scrub(v)))
             .collect(),
+        desert_rock: models
+            .pool(Occupant::Rock)
+            .iter()
+            .chain(models.pool(Occupant::StoneNode))
+            .chain(models.pool(Occupant::SulfurNode))
+            .map(|(_, m)| (m.clone(), DESERT_ROCK_TINT))
+            .chain(
+                models
+                    .pool(Occupant::MetalNode)
+                    .iter()
+                    .map(|(_, m)| (m.clone(), DESERT_METAL_TINT)),
+            )
+            .chain(
+                models
+                    .pickup(Occupant::StonePile)
+                    .map(|(_, m)| (m, DESERT_STONE_TINT)),
+            )
+            .map(|(m, tint)| (m, materials.add(StandardMaterial::default()), tint, false))
+            .collect(),
+        cycad_leaves: cycads.iter().map(|(_, l)| l.clone()).collect(),
+        cycad_wood: cycads.iter().map(|(w, _)| w.clone()).collect(),
         cactus: (0..PLANT_POOL as u32)
             .map(|v| meshes.add(plants::cactus(v)))
             .collect(),
@@ -2319,6 +2421,50 @@ pub fn assets(
                 ..default()
             })
         }),
+        palm_bark: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(palm_bark_map.clone()),
+                normal_map_texture: Some(palm_bark_normal.clone()),
+                perceptual_roughness: 0.92,
+                reflectance: fresnel::DIELECTRIC,
+                ..default()
+            })
+        }),
+        palm_frond: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(frond_map.clone()),
+                perceptual_roughness: 0.8,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(0.5),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        cycad_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(frond_map.clone()),
+                perceptual_roughness: 0.8,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
         flower: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.6,
@@ -2344,6 +2490,50 @@ pub fn assets(
                 double_sided: true,
                 ..default()
             })
+        }),
+        corn_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        pumpkin_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(pumpkin_map.clone()),
+                perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        corn_ear: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(0.62, 0.42, 0.04),
+            perceptual_roughness: 0.55,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
+        }),
+        pumpkin_skin: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.5,
+            reflectance: fresnel::DIELECTRIC,
+            ..default()
         }),
         plant_wood: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -2508,6 +2698,28 @@ pub fn assets(
 /// tree — the same trunk it blocks and the same wood it pays. **(knob)**
 pub const FEL_SNAG_AT: f32 = 0.45;
 
+/// What a rock or ore model's colour is multiplied by in the desert: its
+/// granite warmed to the reference's sandstone at the same luminance
+/// (`ground_splat::DESERT_ROCK_ALBEDO`'s reason). The models' photographs
+/// are pale already, and lifted (1.75, 1.4, 1.0) a stone node burnt out to a
+/// white dome. **(knob)**
+pub const DESERT_ROCK_TINT: [f32; 3] = [1.2, 1.0, 0.76];
+
+/// …and a metal node's: its model is pale already, and lifted with the rest
+/// it stood on the sand as a white dome. Darker, the reference's dark
+/// metal-ore rock. **(knob)**
+pub const DESERT_METAL_TINT: [f32; 3] = [0.6, 0.55, 0.5];
+
+/// …and a loose stone pickup's (`PICKUP_GLB`): its pale grey photo, at
+/// 2.4× in full desert sun, read as a white egg on the sand. Darker and
+/// warm, a lump of the sandstone round it. **(knob)**
+pub const DESERT_STONE_TINT: [f32; 3] = [0.78, 0.64, 0.47];
+
+/// The aridity a rock goes to sandstone at, and the spread of the line: a
+/// rock's own roll moves it within this band, so the desert's edge is a
+/// scatter of both rather than a line drawn through the boulders. **(knob)**
+pub const DESERT_ROCK_ARID: (f32, f32) = (0.3, 0.4);
+
 /// Whether the tree (or shrub) at `t` stands dead in the spread `now`: the
 /// one question the spawn, the ring's wither and the far cards all ask, so
 /// the same moment always gives the same answer and nothing churns.
@@ -2557,6 +2769,7 @@ pub fn stream(
             models,
         )
     });
+    a.fill_twins(&mut materials);
     if a.cards.is_none() {
         if let Some(c) = cards.as_ref() {
             a.cards = Some(RingCards {
@@ -2579,10 +2792,17 @@ pub fn stream(
                 (&a.leaf, Kind::Leaf),
                 (&a.bush_leaf, Kind::BushLeaf),
                 (&a.hemp_leaf, Kind::HempLeaf),
+                // Corn's straps are solid and bend with its stalk; the
+                // pumpkin's leaves are cards, on hemp's bend.
+                (&a.corn_leaf, Kind::HempStem),
+                (&a.pumpkin_leaf, Kind::HempLeaf),
                 // A fern's fronds are soft, on hemp's bend; a low pine is a
                 // woody mound, on the shrub's.
                 (&a.fern_leaf, Kind::HempLeaf),
                 (&a.juniper_leaf, Kind::BushLeaf),
+                (&a.cycad_leaf, Kind::BushLeaf),
+                (&a.palm_frond, Kind::Needle),
+                (&a.palm_bark, Kind::Bark),
             ] {
                 for h in pool {
                     f.register(h, kind);
@@ -3045,7 +3265,12 @@ pub fn spawn_slot(
             let i = usize::from(slot.species == terrain::BALL_CACTUS_SPECIES);
             a.cactus_models[i].clone().unwrap_or_default()
         }
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => {
+        Occupant::BerryBush
+        | Occupant::Hemp
+        | Occupant::Shrub
+        | Occupant::Cactus
+        | Occupant::WildCorn
+        | Occupant::WildPumpkin => {
             variant = (slot.yaw as usize) % PLANT_POOL;
             match a.plant(slot.occupant, key, variant, tint, scenery) {
                 Some(p) => (p.wood.clone(), p.wood_mat.clone()),
@@ -3142,6 +3367,24 @@ pub fn spawn_slot(
         }
         Occupant::None => return,
     };
+    // The desert's rock is sandstone: a rock or ore model there wears its
+    // desert twin.
+    let material = match slot.occupant {
+        Occupant::Rock
+        | Occupant::StoneNode
+        | Occupant::MetalNode
+        | Occupant::SulfurNode
+        | Occupant::StonePile => {
+            let (lo, hi) = DESERT_ROCK_ARID;
+            let line = lo + (hi - lo) * hash01(key, 0xde5e_7000);
+            if terrain::aridity(seed, slot.x, slot.z) > line {
+                a.desert_twin(&material).cloned().unwrap_or(material)
+            } else {
+                material
+            }
+        }
+        _ => material,
+    };
     let sink = SINK_M;
     let transform = Transform {
         translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
@@ -3172,6 +3415,8 @@ pub fn spawn_slot(
             | Occupant::SulfurPile
             | Occupant::MushroomPatch
             | Occupant::Cactus
+            | Occupant::WildCorn
+            | Occupant::WildPumpkin
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
@@ -3200,6 +3445,8 @@ pub fn spawn_slot(
         Occupant::BerryBush
             | Occupant::Hemp
             | Occupant::Shrub
+            | Occupant::WildCorn
+            | Occupant::WildPumpkin
             | Occupant::HavenShelter
             | Occupant::WaystationCanopy
     ))
@@ -3280,7 +3527,7 @@ pub fn spawn_slot(
     // leave its leaves standing in the air.
     if let Some(p) = a.plant(slot.occupant, key, variant, tint, scenery) {
         let leaves = p.leaves.map(|(m, mat)| (m, mat, false));
-        let fruit = p.fruit.map(|m| (m, &a.berry, true));
+        let fruit = p.fruit.map(|(m, mat)| (m, mat, true));
         for (mesh, mat, is_fruit) in leaves.into_iter().chain(fruit) {
             if harvestable {
                 let mut c = e.commands();
@@ -3819,13 +4066,49 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
 }
 
 /// One plant's meshes and the materials it wears ([`PropAssets::plant`]).
+/// Wild corn's two ears, leaning out from the stalk where a ripe bed plant's
+/// hang (`render::crops`), as one mesh in the plant's frame.
+fn wild_corn_ears() -> Mesh {
+    let h = sim_core::farm::LOOK_H_M[sim_core::farm::LOOK_CORN as usize];
+    let mut out: Option<Mesh> = None;
+    for (k, y) in [(0.0f32, 0.48f32), (std::f32::consts::PI, 0.58)] {
+        let dir = Vec3::new(k.sin(), 0.0, k.cos());
+        let ear = Mesh::from(Capsule3d::new(0.035, 0.11)).transformed_by(
+            Transform::from_translation(Vec3::Y * (h * y) + dir * 0.05)
+                .with_rotation(Quat::from_axis_angle(Vec3::new(dir.z, 0.0, -dir.x), 0.45)),
+        );
+        match out.as_mut() {
+            Some(m) => m.merge(&ear).expect("two capsules share their attributes"),
+            None => out = Some(ear),
+        }
+    }
+    out.expect("two ears")
+}
+
+/// A wild vine's two pumpkins on the ground among its leaves, where a ripe
+/// bed vine's lie (`crops::PUMPKIN_AT`), as one mesh.
+fn wild_pumpkins() -> Mesh {
+    let mut out: Option<Mesh> = None;
+    for (i, &(x, z, yaw)) in super::crops::PUMPKIN_AT.iter().enumerate() {
+        let p = plants::pumpkin(i as u32).transformed_by(
+            Transform::from_xyz(x, 0.0, z).with_rotation(Quat::from_rotation_y(yaw)),
+        );
+        match out.as_mut() {
+            Some(m) => m.merge(&p).expect("two pumpkins share their attributes"),
+            None => out = Some(p),
+        }
+    }
+    out.expect("two pumpkins")
+}
+
 struct Plant<'a> {
     wood: &'a Handle<Mesh>,
     wood_mat: &'a Handle<StandardMaterial>,
     /// Its leaves and their material — none on a dead scrub.
     leaves: Option<(&'a Handle<Mesh>, &'a Handle<StandardMaterial>)>,
-    /// A berry bush's berries, worn with `PropAssets::berry`.
-    fruit: Option<&'a Handle<Mesh>>,
+    /// A berry bush's berries, corn's ears, a vine's pumpkins: none until
+    /// the plant is grown ([`Grow::fruit`]).
+    fruit: Option<(&'a Handle<Mesh>, &'a Handle<StandardMaterial>)>,
 }
 
 impl PropAssets {
@@ -3863,6 +4146,11 @@ impl PropAssets {
             (Occupant::Shrub, Scenery::DeadScrub) => {
                 plant(&self.dead_wood[v], &self.plant_wood, None)
             }
+            (Occupant::Shrub, Scenery::Cycad) => plant(
+                &self.cycad_wood[v],
+                &self.plant_wood,
+                Some((&self.cycad_leaves[v], &self.cycad_leaf[tint])),
+            ),
             (Occupant::Shrub, Scenery::Flowers) => {
                 let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
                     % plants::FLOWER_PALETTES;
@@ -3884,7 +4172,10 @@ impl PropAssets {
                 wood: &self.berry_wood[v],
                 wood_mat: &self.plant_wood,
                 leaves: Some((&self.berry_leaves[v], &self.bush_leaf[tint])),
-                fruit: Some(&self.berry_fruit[v + if red_berries(key) { 0 } else { PLANT_POOL }]),
+                fruit: Some((
+                    &self.berry_fruit[v + if red_berries(key) { 0 } else { PLANT_POOL }],
+                    &self.berry,
+                )),
             },
             (Occupant::Hemp, _) => plant(
                 &self.hemp_stalk[v],
@@ -3894,6 +4185,20 @@ impl PropAssets {
             // The sim's cactus (`terrain::cactus_at`), whatever the spread:
             // it stands, and pricks, until it is swung down.
             (Occupant::Cactus, _) => plant(&self.cactus[v], &self.plant_wood, None),
+            // The wild crops: farming v2's ripe corn and pumpkin, stalk and
+            // vine on hemp's bend, and their fruit.
+            (Occupant::WildCorn, _) => Plant {
+                wood: &self.corn_stalk[v],
+                wood_mat: &self.hemp_wood,
+                leaves: Some((&self.corn_leaves[v], &self.corn_leaf[tint])),
+                fruit: Some((&self.corn_ears, &self.corn_ear)),
+            },
+            (Occupant::WildPumpkin, _) => Plant {
+                wood: &self.pumpkin_vine[v],
+                wood_mat: &self.hemp_wood,
+                leaves: Some((&self.pumpkin_leaves[v], &self.pumpkin_leaf[tint])),
+                fruit: Some((&self.pumpkin_fruit, &self.pumpkin_skin)),
+            },
             _ => return None,
         })
     }
@@ -3918,8 +4223,13 @@ impl PropAssets {
             ("foliage", &self.foliage),
             ("bush_leaf", &self.bush_leaf),
             ("hemp_leaf", &self.hemp_leaf),
+            ("corn_leaf", &self.corn_leaf),
+            ("pumpkin_leaf", &self.pumpkin_leaf),
             ("fern_leaf", &self.fern_leaf),
             ("juniper_leaf", &self.juniper_leaf),
+            ("cycad_leaf", &self.cycad_leaf),
+            ("palm_frond", &self.palm_frond),
+            ("palm_bark", &self.palm_bark),
             ("needle", &self.needle),
             ("leaf", &self.leaf),
             ("rock", &self.rock),
@@ -3938,6 +4248,8 @@ impl PropAssets {
             ("plant_wood", &self.plant_wood),
             ("hemp_wood", &self.hemp_wood),
             ("berry", &self.berry),
+            ("corn_ear", &self.corn_ear),
+            ("pumpkin_skin", &self.pumpkin_skin),
             ("flower", &self.flower),
             ("painted", &self.painted),
             ("oil_red", &self.oil_red),
@@ -3984,9 +4296,39 @@ impl PropAssets {
     /// bark for a conifer, birch for a broadleaf. The one place the choice is
     /// made, like [`Self::canopy_material`].
     pub fn trunk_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        if tree::species_of(variant) == tree::PALM {
+            return &self.palm_bark[tint_of(key)];
+        }
         match tree::SPECIES[tree::species_of(variant)].tree_type {
             bevy_procedural_tree::enums::TreeType::Evergreen => &self.bark[tint_of(key)],
             bevy_procedural_tree::enums::TreeType::Deciduous => &self.birch[tint_of(key)],
+        }
+    }
+    /// The desert twin of a rock or ore model's material
+    /// ([`Self::fill_twins`]).
+    pub fn desert_twin(&self, m: &Handle<StandardMaterial>) -> Option<&Handle<StandardMaterial>> {
+        self.desert_rock
+            .iter()
+            .find(|(src, ..)| src == m)
+            .map(|(_, d, ..)| d)
+    }
+    /// Fill each desert twin from its model's own material the first frame
+    /// that has loaded: the same maps, tinted. Until then a twin is the blank
+    /// default material — a white dome on the sand.
+    fn fill_twins(&mut self, materials: &mut Assets<StandardMaterial>) {
+        for (src, dst, tint, done) in self.desert_rock.iter_mut().filter(|t| !t.3) {
+            let Some(m) = materials.get(&*src) else {
+                continue;
+            };
+            let mut m = m.clone();
+            let c = m.base_color.to_linear();
+            m.base_color = Color::linear_rgba(
+                c.red * tint[0],
+                c.green * tint[1],
+                c.blue * tint[2],
+                c.alpha,
+            );
+            *done = materials.insert(dst.id(), m).is_ok();
         }
     }
     /// The foliage material a slot with this key draws — the bush, the far
@@ -4001,6 +4343,10 @@ impl PropAssets {
     /// ECS back cannot disagree.
     pub fn canopy_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
         let tint = tint_of(key);
+        // The palm's crown is fronds of the cycad's card (`tree::palm_crown`).
+        if tree::species_of(variant) == tree::PALM {
+            return &self.palm_frond[tint];
+        }
         match tree::SPECIES[tree::species_of(variant)].tree_type {
             bevy_procedural_tree::enums::TreeType::Evergreen => &self.needle[tint],
             bevy_procedural_tree::enums::TreeType::Deciduous => &self.leaf[tint],

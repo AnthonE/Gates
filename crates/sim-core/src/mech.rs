@@ -13,6 +13,11 @@
 //! on the island instead, in glyphs, on a stone somewhere else
 //! (`lore.rs`, an inscription whose text names the mechanism). Rust's
 //! puzzles are on YouTube; these change every wipe.
+//!
+//! **A dial is also a target.** An arrow that strikes a dial's drum turns
+//! it one notch, as a press does, from wherever it was loosed ([`shot`]),
+//! and the archer whose arrow shows the answer takes the reward. The lock
+//! can be worked from a sniper's perch, and scrambled from one.
 
 use crate::limits::{MAX_DIALS, MAX_MECHS};
 use crate::spot::Spot;
@@ -29,6 +34,10 @@ pub const DIAL_REACH_M: f32 = 2.0;
 pub const DIAL_PITCH_M: f32 = 1.6;
 /// The most notches a dial has.
 pub const MAX_VALUES: u8 = 10;
+/// A dial's drum as drawn (`lore_dial.glb`): 1.1 m across, its top 1.0 m
+/// off the ground under it. What an arrow strikes.
+pub const DRUM_R_M: f32 = 0.55;
+pub const DRUM_H_M: f32 = 1.0;
 
 /// One mechanism, baked from `content/arc.toml`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -169,6 +178,109 @@ pub fn dial_spot(def: &MechDef, d: usize) -> Spot {
     }
 }
 
+/// One dial's drum, where it stands: its foot on the ground, metres.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Drum {
+    pub mech: u8,
+    pub dial: u8,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+/// Every drum on the island, `n` of them, stood up once a tick for the
+/// arrows to meet (`ranged::Quarry`).
+#[derive(Clone, Copy, Debug)]
+pub struct Drums {
+    pub d: [Drum; MAX_MECHS * MAX_DIALS],
+    pub n: usize,
+}
+
+impl Drums {
+    pub const NONE: Drums = Drums {
+        d: [Drum {
+            mech: 0,
+            dial: 0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }; MAX_MECHS * MAX_DIALS],
+        n: 0,
+    };
+
+    /// Each dial of `mc` on the ground at its spot, where the client draws
+    /// its drum. A mechanism whose site is not on this island has none.
+    pub fn stand(mc: &MechContent, seed: u64, haven: &Haven) -> Drums {
+        let mut out = Drums::NONE;
+        for (k, def) in mc.defs.iter().enumerate().take(mc.count as usize) {
+            for d in 0..def.dials as usize {
+                let Some((x, _, z)) = crate::spot::world(haven, &dial_spot(def, d)) else {
+                    continue;
+                };
+                if out.n < out.d.len() {
+                    out.d[out.n] = Drum {
+                        mech: k as u8,
+                        dial: d as u8,
+                        x,
+                        y: crate::terrain::ground(seed, haven, x, z),
+                        z,
+                    };
+                    out.n += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// The first drum the segment `o + s·t` (millimetres) enters, as its
+    /// index and `t`. An arrow's own radius widens each drum.
+    pub fn first(&self, o: (f32, f32, f32), s: (f32, f32, f32)) -> Option<(usize, f32)> {
+        const MM: f32 = crate::ranged::MM_PER_M;
+        let o = (o.0 / MM, o.1 / MM, o.2 / MM);
+        let u = (s.0 / MM, s.1 / MM, s.2 / MM);
+        let r = DRUM_R_M + crate::ranged::ARROW_R_M;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, dr) in self.d.iter().enumerate().take(self.n) {
+            let span = crate::melee::cylinder_span(o, u, (dr.x, dr.z), r, dr.y, dr.y + DRUM_H_M);
+            if let Some((t, _)) = span {
+                if best.is_none_or(|b| t < b.1) {
+                    best = Some((i, t));
+                }
+            }
+        }
+        best
+    }
+}
+
+/// An arrow that struck a drum, handed to `World` to turn (`ranged::Quarry`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrumShot {
+    pub mech: u8,
+    pub dial: u8,
+    /// The archer's player id.
+    pub by: u32,
+}
+
+/// An arrow struck a dial: it turns one notch, from any range. `p` is the
+/// archer when they are still standing on the island, and takes the reward
+/// if the turn solves it; a solve with nobody to pay still rests the lock.
+#[allow(clippy::too_many_arguments)]
+pub fn shot(
+    mc: &MechContent,
+    state: &mut ArcState,
+    seed: u64,
+    tick: u64,
+    gc: &crate::gather::GatherContent,
+    s: DrumShot,
+    p: Option<&mut Player>,
+    events: &mut EventQueue,
+) {
+    let (k, d) = (s.mech as usize, s.dial as usize);
+    if mc.get(k).is_some_and(|def| d < def.dials as usize) {
+        turn(mc, state, seed, tick, gc, k, d, s.by, p, events);
+    }
+}
+
 /// One turn from `p`. Refusals are events.
 #[allow(clippy::too_many_arguments)]
 pub fn act(
@@ -207,30 +319,52 @@ pub fn act(
     if !crate::spot::within(haven, &dial_spot(&def, d), px, feet, pz, DIAL_REACH_M) {
         return refuse(events, REFUSE_A_REACH);
     }
+    turn(mc, state, seed, tick, gc, k, d, pid, Some(p), events);
+}
+
+/// Dial `d` of mechanism `k` turns one notch for player `who`, by hand or
+/// by arrow. The turn that shows the answer pays `p`, if there is one.
+#[allow(clippy::too_many_arguments)]
+fn turn(
+    mc: &MechContent,
+    state: &mut ArcState,
+    seed: u64,
+    tick: u64,
+    gc: &crate::gather::GatherContent,
+    k: usize,
+    d: usize,
+    who: u32,
+    p: Option<&mut Player>,
+    events: &mut EventQueue,
+) {
+    let def = mc.defs[k];
     let m = &mut state.mechs[k];
     if m.rest_until > tick {
-        return refuse(events, REFUSE_A_RESTING);
+        events.push(
+            EV_ARC_REFUSED,
+            who,
+            REFUSE_A_RESTING,
+            (OP_TURN as u32) << 8 | k as u32,
+        );
+        return;
     }
     m.dials[d] = (m.dials[d] + 1) % def.values.max(1);
-    events.push(
-        EV_ARC_DID,
-        pid,
-        OP_TURN as u32,
-        (target as u32) << 8 | arg as u32,
-    );
+    events.push(EV_ARC_DID, who, OP_TURN as u32, (k as u32) << 8 | d as u32);
     let want = answers(state.salt, seed, k, &def);
     if m.dials[..def.dials as usize] != want[..def.dials as usize] {
         return;
     }
     // Solved. The reward goes into the pack (a full pack keeps what fits),
     // and the lock rests and scrambles.
-    let cap = gc.stack_max_of(def.reward);
-    let cond = gc.cond_max_of(def.reward);
-    crate::gather::inv_add(&mut p.inv, def.reward, def.reward_n, cap, cond);
+    if let Some(p) = p {
+        let cap = gc.stack_max_of(def.reward);
+        let cond = gc.cond_max_of(def.reward);
+        crate::gather::inv_add(&mut p.inv, def.reward, def.reward_n, cap, cond);
+    }
     m.solves = m.solves.wrapping_add(1);
     m.rest_until = tick + def.rest_ticks as u64;
     for (j, v) in m.dials.iter_mut().enumerate().take(def.dials as usize) {
         *v = (want[j] + 1 + j as u8) % def.values.max(1);
     }
-    events.push(EV_MECH_SOLVED, target as u32, pid, 0);
+    events.push(EV_MECH_SOLVED, k as u32, who, 0);
 }

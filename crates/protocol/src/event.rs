@@ -28,7 +28,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_RUG, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_CATCHER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
@@ -66,8 +66,9 @@ pub const GROW_SYNC_BATCH: usize = 32;
 pub const NODE_STAGE_BATCH: usize = 32;
 
 /// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 444 bits with a gun's handling, v131's damage and v135's pour, and six of them
-/// would pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+/// row is 447 bits with a gun's handling, v131's damage, v135's fifth oven
+/// arch and v137's pour, and six of them would pass `MAX_EVENT_MSG_BYTES`
+/// (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
@@ -142,6 +143,12 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
 /// items v0).
 pub const GITEM_SYNC_BATCH: usize = 13;
+
+/// Plants one sync message carries (wire v135, farming v2). A record is
+/// [`PLANT_REC_BITS`] = 111 bits, so sixteen are ~225 B, inside
+/// `MAX_EVENT_MSG_BYTES`; the assert at `PLANT_SYNC_COUNT_BITS` holds it.
+/// Overflow policy: the next message continues the walk.
+pub const PLANT_SYNC_BATCH: usize = 16;
 
 /// Arrows in bodies one sync message carries (wire v94): the body, the
 /// round, where in it the arrow went in and which way. Fifteen bytes a
@@ -254,7 +261,7 @@ const SUB_CONSUME_REFUSED: u32 = 33;
 /// salt sea *costs* hp, and `SUB_HEALTH` is absolute, so a client that
 /// only heard the new hp could not name what took it.
 const SUB_DRANK: u32 = 34;
-/// `SUB_DRANK`'s kind (v135): a mouthful, a vessel filled, one poured out.
+/// `SUB_DRANK`'s kind (v137): a mouthful, a vessel filled, one poured out.
 const DRANK_KIND_BITS: u32 = 2;
 const DRANK_KIND_DRINK: u32 = 0;
 const DRANK_KIND_FILL: u32 = 1;
@@ -573,11 +580,12 @@ const SUB_ALPHABET: u32 = 88;
 /// `cond`. Sent to everyone when it changes and in full to a joiner, one
 /// per tick (`SUB_TAG`'s drip).
 const SUB_WORN: u32 = 89;
-/// A planter's beds as they are drawn (wire v100, crops v1): the address
-/// and two bits a bed (`sim_core::oven::planter_stages`). Broadcast on a
-/// change, `SUB_OVEN`'s posture; a joiner reads the same byte off the
-/// deploy record.
-const SUB_PLANTER: u32 = 90;
+/// One plant (wire v135, farming v2, sim `EV_PLANT` / `EV_PLANT_GONE`): a
+/// gone bit, then a [`WirePlant`], or the id and why it left. An upsert is
+/// aimed at the clients whose interest holds the plant; a removal is
+/// broadcast, so it never leaves a ghost. Code 90 was crops v1's planter
+/// beds, which this replaced.
+const SUB_PLANT: u32 = 90;
 /// A felled tree's stump was grubbed out (wire v101, sim
 /// `EV_STUMP_GRUBBED`): the cell, broadcast. A joiner reads the same fact
 /// off the slot sync's per-cell bit.
@@ -644,7 +652,11 @@ const SUB_WHEEL_PAID: u32 = 106;
 /// The receiver's pull of a slot machine's lever answered (wire v123,
 /// `EV_SLOTS` / `EV_SLOTS_REFUSED`). See `EventMsg::Slots`.
 const SUB_SLOTS: u32 = 107;
-const SUB_MAX: u32 = SUB_SLOTS;
+/// One batch of the plant walk (wire v135, farming v2): a reset bit, a
+/// count and up to [`PLANT_SYNC_BATCH`] records, at join and after a
+/// resync or a piece-anchor re-arm.
+const SUB_PLANT_SYNC: u32 = 108;
+const SUB_MAX: u32 = SUB_PLANT_SYNC;
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -977,6 +989,8 @@ const _: () = assert!(sim_core::deploy::REFUSE_D_MAX < (1 << REFUSE_D_BITS));
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
+/// A catalog total or first index: 0..=`MAX_ITEM_DEFS` (160) in eight bits
+/// (seven until v135, when the catalog outgrew 127 rows).
 const CATALOG_TOTAL_BITS: u32 = 8;
 const _: () = assert!(MAX_ITEM_DEFS < (1 << CATALOG_TOTAL_BITS));
 const CATALOG_COUNT_BITS: u32 = 4;
@@ -1101,15 +1115,14 @@ const PIECE_REC_BITS: usize = (PIECE_ID_BITS
 const _: () =
     assert!(FOOT_BITS + 4 * COEF_BITS + SOCK_DIR_BITS >= 2 * BUILD_CELL_BITS + BUILD_LOC_BITS);
 /// `write_deploy_rec`'s: address, row, the four state bits (v120's key
-/// bit the fourth), band, the pose's three bytes, the beds, and the exact
-/// hp (v102).
+/// bit the fourth), band, the pose's three bytes and the exact hp (v102).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
     + DEPLOY_ROW_BITS
     + 4
     + DMG_BAND_BITS
-    + 4 * 8
+    + 3 * 8
     + STRUCT_HP_BITS) as usize;
 // A full batch of either store's records still fits one message (v102's hp
 // took 16 bits a record): a field added after it must shrink the batch first.
@@ -1171,6 +1184,42 @@ const GITEM_REC_MAX_BITS: usize = 32
 const _: () = assert!(
     (KIND_BITS + SUB_BITS + 1 + GITEM_SYNC_COUNT_BITS) as usize
         + GITEM_SYNC_BATCH * GITEM_REC_MAX_BITS
+        <= MAX_EVENT_MSG_BYTES * 8
+);
+/// A plant record's fields (wire v135, farming v2): the look, the stage, the
+/// spot (0..6 in a bed, `farm::SPOT_GROUND` on the ground), the genome
+/// (base 5, six slots), the health band (0..=10) and the plant-sync batch
+/// count. Each is tied to its sim-core bound by an assert here.
+const PLANT_LOOK_BITS: u32 = 3;
+const PLANT_STAGE_BITS: u32 = 3;
+const PLANT_SPOT_BITS: u32 = 4;
+const PLANT_GENES_BITS: u32 = 14;
+const PLANT_BAND_BITS: u32 = 4;
+const PLANT_GONE_BITS: u32 = 3;
+const PLANT_SYNC_COUNT_BITS: u32 = 5;
+const _: () = assert!((sim_core::farm::LOOK_COUNT as u32) <= 1 << PLANT_LOOK_BITS);
+const _: () = assert!((sim_core::farm::STAGE_DYING as u32) < 1 << PLANT_STAGE_BITS);
+const _: () = assert!((sim_core::farm::SPOT_GROUND as u32) < 1 << PLANT_SPOT_BITS);
+const _: () = assert!(sim_core::farm::GENOME_VALUES <= 1 << PLANT_GENES_BITS);
+const _: () = assert!(10 < 1 << PLANT_BAND_BITS);
+const _: () = assert!((sim_core::farm::GONE_UPROOTED as u32) < 1 << PLANT_GONE_BITS);
+const _: () = assert!(PLANT_SYNC_BATCH < (1usize << PLANT_SYNC_COUNT_BITS));
+/// One [`WirePlant`]: id, look, stage, spot, genes, band, the dry bit and
+/// the soil point's three quanta — 111 bits.
+pub const PLANT_REC_BITS: usize = (32
+    + PLANT_LOOK_BITS
+    + PLANT_STAGE_BITS
+    + PLANT_SPOT_BITS
+    + PLANT_GENES_BITS
+    + PLANT_BAND_BITS
+    + 1
+    + 2 * POS_XZ_BITS
+    + POS_Y_BITS) as usize;
+const _: () = assert!(PLANT_REC_BITS == 111);
+// A full batch still fits one message: a field added to the record must
+// shrink the batch first.
+const _: () = assert!(
+    (KIND_BITS + SUB_BITS + 1 + PLANT_SYNC_COUNT_BITS) as usize + PLANT_SYNC_BATCH * PLANT_REC_BITS
         <= MAX_EVENT_MSG_BYTES * 8
 );
 /// Width of the lodged-arrow batch count — `GITEM_SYNC_COUNT_BITS`' shape.
@@ -1286,7 +1335,12 @@ pub struct ItemRow {
     /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
     /// downed body injects rather than starting the hand revive.
     pub revive: bool,
-    /// A water vessel with water in it (v135, the water pass,
+    /// Ticks it takes in the hands before it lands (v136,
+    /// `survival::ConsumableDef::use_ticks`, Rust's `MedicalTool`): a
+    /// bandage is held, a click wraps it on, and the client draws the wrap
+    /// for this long. 0 is eaten at once, off the belt key.
+    pub use_ticks: u8,
+    /// A water vessel with water in it (v137, the water pass,
     /// `SurvivalContent::vessel_full`): the right mouse pours it out.
     pub pour: bool,
     /// What the item is for the craft rail (v102, `craft::CLASS_*`):
@@ -1401,6 +1455,7 @@ impl ItemRow {
         oven: 0,
         holster: false,
         revive: false,
+        use_ticks: 0,
         pour: false,
         class: CLASS_OTHER,
         damage: 0,
@@ -1761,8 +1816,10 @@ pub enum EventMsg {
         /// (wire v113, `exposure::corrode`).
         fel_pct: u8,
         fel_hurting: bool,
+        /// The open wound, hp it still owes (wire v136, `Player::bleed`).
+        bleed: u8,
         /// The breath left, per cent, and whether the water is costing hp
-        /// (wire v135, `World::breathe`).
+        /// (wire v137, `World::breathe`).
         breath_pct: u8,
         drowning: bool,
     },
@@ -2110,14 +2167,17 @@ pub enum EventMsg {
         lit: bool,
         by: u32,
     },
-    /// The planter at the address now draws these beds (broadcast, wire
-    /// v100): two bits a bed, absolute, for `Oven`'s reason.
-    Planter {
-        cx: u16,
-        cz: u16,
-        level: u8,
-        loc: u8,
-        stages: u8,
+    /// A plant was planted or changed stage, dryness or health band (wire
+    /// v135, farming v2): the whole record, absolute.
+    Plant(WirePlant),
+    /// Plant `id` left the island (broadcast): `reason` is a
+    /// `sim_core::farm::GONE_*`.
+    PlantGone { id: u32, reason: u8 },
+    /// One batch of the plant walk. `reset` clears the client's set first.
+    PlantSync {
+        reset: bool,
+        recs: [WirePlant; PLANT_SYNC_BATCH],
+        count: u8,
     },
     /// A round left `shooter`'s weapon, aimed at (`yaw`, `pitch`)
     /// (broadcast).
@@ -2473,7 +2533,7 @@ pub enum EventMsg {
     /// their own events, so this one exists to say *why* they moved
     /// together (survival.rs).
     Drank { water: u16, hp_cost: u16 },
-    /// A water vessel in your hand changed (wire v135, the water pass, on
+    /// A water vessel in your hand changed (wire v137, the water pass, on
     /// `SUB_DRANK`'s subtype): filled — `poured` false, with the sea's salt
     /// when `salt` — or poured out, which put out `doused` fires and reached
     /// `watered` planters (dried them, with salt water). Own-fact.
@@ -3022,7 +3082,9 @@ pub fn encode_event_catalog(
         w.write_bit(row.holster)?;
         // The revive (v99).
         w.write_bit(row.revive)?;
-        // The pour (v135).
+        // The use in the hands (v136): ticks in a byte, the draw's posture.
+        w.write(row.use_ticks as u32, 8)?;
+        // The pour (v137).
         w.write_bit(row.pour)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
@@ -3633,10 +3695,10 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 90 bits (`DEPLOY_REC_BITS`),
-/// shared by the placed broadcast and the sync batches — the address, the
-/// row, the three state bits, the damage band, since wire v100 a planter's
-/// beds, since v102 the exact hp, and since wire v89 the **pose** (free
+/// One placed-deployable record on the wire (`DEPLOY_REC_BITS`), shared by
+/// the placed broadcast and the sync batches — the address, the row, the
+/// state bits, the damage band, since v102 the exact hp (v100's planter
+/// beds left at v135: plants ride `SUB_PLANT`), and since wire v89 the **pose** (free
 /// placement): the offset from the cell centre and the facing, a byte each,
 /// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
@@ -3674,8 +3736,6 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.ox as u8 as u32, 8)?;
     w.write(rec.pose.oz as u8 as u32, 8)?;
     w.write(rec.pose.yaw as u32, 8)?;
-    // A planter's beds (v100); zero for everything else.
-    w.write(rec.grow as u32, 8)?;
     // The exact hp (v102) — `write_piece_rec`'s note applies.
     w.write(rec.hp as u32, STRUCT_HP_BITS)?;
     // **No plate here, deliberately** (build plate v1). A deployable stands
@@ -3708,7 +3768,6 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             oz: r.read(8)? as u8 as i8,
             yaw: r.read(8)? as u8,
         },
-        grow: r.read(8)? as u8,
         hp: r.read(STRUCT_HP_BITS)? as u16,
         ..DeployRec::default()
     };
@@ -3784,7 +3843,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_RUG || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_CATCHER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -4019,32 +4078,6 @@ pub fn encode_event_auth(
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
     w.write(grant as u32, LOCK_GRANT_BITS)?;
-    Ok(w.finish())
-}
-
-/// The planter at the address now draws `stages` (broadcast) — see
-/// `EventMsg::Planter`.
-pub fn encode_event_planter(
-    cx: u16,
-    cz: u16,
-    level: u8,
-    loc: u8,
-    stages: u8,
-    buf: &mut [u8],
-) -> Result<usize, WireError> {
-    if cx as usize >= MAX_BUILD_COORD
-        || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_SOCKETS
-        || loc > loc_max(true)
-    {
-        return Err(WireError::Range);
-    }
-    let mut w = begin(buf, SUB_PLANTER)?;
-    w.write(cx as u32, BUILD_CELL_BITS)?;
-    w.write(cz as u32, BUILD_CELL_BITS)?;
-    w.write(level as u32, BUILD_LEVEL_BITS)?;
-    w.write(loc as u32, BUILD_LOC_BITS)?;
-    w.write(stages as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -4992,6 +5025,150 @@ impl WireGItem {
     }
 }
 
+/// One plant on the wire (wire v135, farming v2, `sim_core::farm::PlantRec`):
+/// what a client draws and what its prompt reads — the look, the stage,
+/// the spot, the genome (Rust's look-at readout, so every looker sees it),
+/// the health band, whether it is dry, and the soil point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WirePlant {
+    pub id: u32,
+    /// `farm::LOOK_*`.
+    pub look: u8,
+    /// `farm::STAGE_*`.
+    pub stage: u8,
+    /// 0..6 in a bed, `farm::SPOT_GROUND` on the ground.
+    pub spot: u8,
+    /// Base-5 digits, slot 0 lowest (`farm::gene`).
+    pub genes: u16,
+    /// Average health / 100, 0..=10.
+    pub band: u8,
+    pub dry: bool,
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+}
+
+impl WirePlant {
+    pub fn of(rec: &sim_core::farm::PlantRec, fc: &sim_core::farm::FarmContent) -> Self {
+        Self {
+            id: rec.id,
+            look: fc.crop(rec.crop).map_or(0, |c| c.look),
+            stage: rec.stage,
+            spot: rec.spot,
+            genes: rec.genes,
+            band: rec.band(),
+            dry: rec.flags & sim_core::farm::FL_DRY != 0,
+            qx: rec.qx,
+            qy: rec.qy,
+            qz: rec.qz,
+        }
+    }
+
+    /// The soil point, metres.
+    pub fn pos(&self) -> (f32, f32, f32) {
+        (
+            self.qx as f32 * sim_core::movement::POS_XZ_Q,
+            self.qy as f32 * sim_core::movement::POS_Y_Q,
+            self.qz as f32 * sim_core::movement::POS_XZ_Q,
+        )
+    }
+
+    /// In a planter's bed, not on the ground.
+    pub fn in_bed(&self) -> bool {
+        self.spot != sim_core::farm::SPOT_GROUND
+    }
+
+    /// Every field inside what the sim can hold.
+    fn in_range(&self) -> bool {
+        self.id != 0
+            && self.look < sim_core::farm::LOOK_COUNT
+            && self.stage <= sim_core::farm::STAGE_DYING
+            && (self.spot < sim_core::farm::PLANTER_SPOTS
+                || self.spot == sim_core::farm::SPOT_GROUND)
+            && (self.genes as u32) < sim_core::farm::GENOME_VALUES
+            && self.band <= 10
+    }
+}
+
+fn write_plant(w: &mut BitWriter, p: &WirePlant) -> Result<(), WireError> {
+    if !p.in_range()
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(p.qx as i64))
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(p.qz as i64))
+        || !(0..(1i64 << POS_Y_BITS)).contains(&(p.qy as i64 + POS_Y_BIAS as i64))
+    {
+        return Err(WireError::Range);
+    }
+    w.write(p.id, 32)?;
+    w.write(p.look as u32, PLANT_LOOK_BITS)?;
+    w.write(p.stage as u32, PLANT_STAGE_BITS)?;
+    w.write(p.spot as u32, PLANT_SPOT_BITS)?;
+    w.write(p.genes as u32, PLANT_GENES_BITS)?;
+    w.write(p.band as u32, PLANT_BAND_BITS)?;
+    w.write_bit(p.dry)?;
+    w.write(p.qx as u32, POS_XZ_BITS)?;
+    w.write((p.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
+    w.write(p.qz as u32, POS_XZ_BITS)?;
+    Ok(())
+}
+
+fn read_plant(r: &mut BitReader) -> Result<WirePlant, WireError> {
+    let p = WirePlant {
+        id: r.read(32)?,
+        look: r.read(PLANT_LOOK_BITS)? as u8,
+        stage: r.read(PLANT_STAGE_BITS)? as u8,
+        spot: r.read(PLANT_SPOT_BITS)? as u8,
+        genes: r.read(PLANT_GENES_BITS)? as u16,
+        band: r.read(PLANT_BAND_BITS)? as u8,
+        dry: r.read_bit()?,
+        qx: r.read(POS_XZ_BITS)? as i32,
+        qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
+        qz: r.read(POS_XZ_BITS)? as i32,
+    };
+    if !p.in_range() {
+        return Err(WireError::Malformed);
+    }
+    Ok(p)
+}
+
+/// One plant, planted or changed — see `EventMsg::Plant`.
+pub fn encode_event_plant(p: &WirePlant, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_PLANT)?;
+    w.write_bit(false)?;
+    write_plant(&mut w, p)?;
+    Ok(w.finish())
+}
+
+/// Plant `id` left (`farm::GONE_*`) — see `EventMsg::PlantGone`.
+pub fn encode_event_plant_gone(id: u32, reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if id == 0 || reason > sim_core::farm::GONE_UPROOTED {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_PLANT)?;
+    w.write_bit(true)?;
+    w.write(id, 32)?;
+    w.write(reason as u32, PLANT_GONE_BITS)?;
+    Ok(w.finish())
+}
+
+/// One batch of the plant walk — the loose stacks' shape. An empty batch
+/// is legal only as a `reset`: *no plant stands now*.
+pub fn encode_event_plant_sync(
+    reset: bool,
+    recs: &[WirePlant],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > PLANT_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_PLANT_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, PLANT_SYNC_COUNT_BITS)?;
+    for p in recs {
+        write_plant(&mut w, p)?;
+    }
+    Ok(w.finish())
+}
+
 /// One arrow standing in a body (wire v94): the body's id — a player's, or
 /// an animal's (`sim_core::mob::mob_id`) — the round it is, so `E` can name
 /// what it pulls out, and where in it it went in and which way, in that
@@ -5553,7 +5730,7 @@ pub fn encode_event_drank(water: u16, hp_cost: u16, buf: &mut [u8]) -> Result<us
 }
 
 /// A vessel filled or poured out — see `EventMsg::Vessel`. Rides the
-/// drink's subtype behind its kind field (v135), so the survival module's
+/// drink's subtype behind its kind field (v137), so the survival module's
 /// own-facts stay one family on the wire.
 pub fn encode_event_vessel(
     poured: bool,
@@ -5749,6 +5926,7 @@ pub fn encode_event_exposure(
         || x.comfort_pct > 100
         || x.heat_pct > 100
         || x.fel_pct > 100
+        || x.bleed > 100
         || x.breath_pct > 100
     {
         return Err(WireError::Range);
@@ -5762,6 +5940,7 @@ pub fn encode_event_exposure(
     w.write(x.air_c as u8 as u32, 8)?;
     w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(x.fel_hurting)?;
+    w.write(x.bleed as u32, EXPOSURE_PCT_BITS)?;
     w.write(x.breath_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(x.drowning)?;
     Ok(w.finish())
@@ -6408,6 +6587,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
+                    use_ticks: r.read(8)? as u8,
                     pour: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
                     damage: r.read(16)? as u16,
@@ -6845,7 +7025,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_RUG
+                if arch > ARCH_CATCHER
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -7520,13 +7700,34 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 kind: kind as u8,
             }
         }
-        SUB_PLANTER => EventMsg::Planter {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-            stages: r.read(8)? as u8,
-        },
+        SUB_PLANT => {
+            if r.read_bit()? {
+                let id = r.read(32)?;
+                let reason = r.read(PLANT_GONE_BITS)? as u8;
+                if id == 0 || reason > sim_core::farm::GONE_UPROOTED {
+                    return Err(WireError::Malformed);
+                }
+                EventMsg::PlantGone { id, reason }
+            } else {
+                EventMsg::Plant(read_plant(&mut r)?)
+            }
+        }
+        SUB_PLANT_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(PLANT_SYNC_COUNT_BITS)? as usize;
+            if count > PLANT_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [WirePlant::default(); PLANT_SYNC_BATCH];
+            for p in recs.iter_mut().take(count) {
+                *p = read_plant(&mut r)?;
+            }
+            EventMsg::PlantSync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
         SUB_OVEN => EventMsg::Oven {
             cx: r.read(BUILD_CELL_BITS)? as u16,
             cz: r.read(BUILD_CELL_BITS)? as u16,
@@ -7921,6 +8122,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let air_c = r.read(8)? as u8 as i8;
             let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let fel_hurting = r.read_bit()?;
+            let bleed = r.read(EXPOSURE_PCT_BITS)? as u8;
             let breath_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let drowning = r.read_bit()?;
             if wet_pct > 100
@@ -7928,6 +8130,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 || comfort_pct > 100
                 || heat_pct > 100
                 || fel_pct > 100
+                || bleed > 100
                 || breath_pct > 100
             {
                 return Err(WireError::Malformed);
@@ -7941,6 +8144,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
                 breath_pct,
                 drowning,
             }
@@ -8789,6 +8993,7 @@ mod tests {
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
                 revive: i % 3 == 0,
+                use_ticks: u8::MAX - 3 * i as u8,
                 pour: i % 4 == 1,
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
@@ -10498,6 +10703,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/face.rs"),
         },
         Module {
+            file: "farm.rs",
+            src: include_str!("../../sim-core/src/farm.rs"),
+        },
+        Module {
             file: "fire.rs",
             src: include_str!("../../sim-core/src/fire.rs"),
         },
@@ -10736,9 +10945,10 @@ mod wire_domains {
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
-            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123.
-            // 13 = DEATH_BY_DROWN at v135 (the water pass).
-            live_max: 13,
+            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123. 13 =
+            // DEATH_BY_BLEED at v136. 14 = DEATH_BY_DROWN at v137 (the water
+            // pass).
+            live_max: 14,
         },
         Domain {
             what: "move refusal",
@@ -10812,7 +11022,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 4,
             bits: REFUSE_C_BITS,
-            // 4 at v135: `REFUSE_C_SALT` (the water pass).
+            // 4 at v137: `REFUSE_C_SALT` (the water pass).
             live_max: 4,
         },
         Domain {
@@ -10862,7 +11072,7 @@ mod wire_domains {
             min_members: 17,
             bits: REFUSE_B_BITS,
             // 15 at wire v92: `REFUSE_B_SAFE`, no charge planted in THE
-            // GATE or on its stations. 16 at v135: `REFUSE_B_SWIMMING`.
+            // GATE or on its stations. 16 at v137: `REFUSE_B_SWIMMING`.
             live_max: 16,
         },
         Domain {
@@ -10885,10 +11095,11 @@ mod wire_domains {
             prefix: "pub const REFUSE_D_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 21,
+            min_members: 27,
             bits: REFUSE_D_BITS,
-            // 20 at v135: `REFUSE_D_SWIMMING`.
-            live_max: 20,
+            // 19 -> 25 at v135: farming v2's six. 26 at v137:
+            // `REFUSE_D_SWIMMING`.
+            live_max: 26,
         },
         Domain {
             what: "container kind",
@@ -10971,10 +11182,11 @@ mod wire_domains {
             exempt: &[],
             // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`;
             // 20 at v118: `ARCH_VENDING`; 22 at v123: the barbed barricade and
-            // the floor spikes; 23 at v126: the rug.
-            min_members: 23,
+            // the floor spikes; 23 at v126: the rug; 24 at v135: the water
+            // catcher.
+            min_members: 24,
             bits: ARCH_BITS,
-            live_max: 22,
+            live_max: 23,
         },
         Domain {
             what: "deploy matter",
@@ -11436,7 +11648,7 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
-            // What a `SUB_DRANK` says (v135, the water pass): the wire's own
+            // What a `SUB_DRANK` says (v137, the water pass): the wire's own
             // three kinds — a mouthful, a fill, a pour — and the decoder
             // refuses the fourth. Not a sim-core enumeration.
             "DRANK_KIND_BITS",
@@ -11545,6 +11757,18 @@ mod wire_domains {
             "GITEM_SYNC_COUNT_BITS",
             // The lodged-arrow batch (wire v94), the loose stacks' twin.
             "LODGED_SYNC_COUNT_BITS",
+            // A plant record (wire v135): the look, stage, spot, genome,
+            // band and gone reason, each bounded by a sim-core count or
+            // last value (`farm::LOOK_COUNT`, `STAGE_DYING`, `SPOT_GROUND`,
+            // `GENOME_VALUES`, `GONE_UPROOTED`) through a compile-time
+            // assert at the declaration, and the batch length.
+            "PLANT_LOOK_BITS",
+            "PLANT_STAGE_BITS",
+            "PLANT_SPOT_BITS",
+            "PLANT_GENES_BITS",
+            "PLANT_BAND_BITS",
+            "PLANT_GONE_BITS",
+            "PLANT_SYNC_COUNT_BITS",
             // A count bounded by `BAG_CAP`, which is a sim-core *cap* and
             // not an enumeration — `INV_COUNT_BITS`' and
             // `STOCK_COUNT_BITS`' shape, so it is classified with them.
@@ -11968,5 +12192,98 @@ mod assist_bounds {
             let n = w.finish();
             assert_eq!(decode_event(&buf[..n]), Err(WireError::Malformed));
         }
+    }
+}
+
+#[cfg(test)]
+mod plant_bounds {
+    use super::*;
+
+    fn corn() -> WirePlant {
+        WirePlant {
+            id: 9,
+            look: sim_core::farm::LOOK_CORN,
+            stage: sim_core::farm::STAGE_SAPLING,
+            spot: 2,
+            genes: 77,
+            band: 10,
+            dry: false,
+            qx: 1_000,
+            qy: 300,
+            qz: 2_000,
+        }
+    }
+
+    #[test]
+    fn a_plant_and_its_removal_round_trip() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let p = corn();
+        let n = encode_event_plant(&p, &mut buf).unwrap();
+        assert_eq!(decode_event(&buf[..n]).unwrap(), EventMsg::Plant(p));
+        let n = encode_event_plant_gone(9, sim_core::farm::GONE_UPROOTED, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..n]).unwrap(),
+            EventMsg::PlantGone { id: 9, reason: 4 }
+        );
+        let ground = WirePlant {
+            spot: sim_core::farm::SPOT_GROUND,
+            ..p
+        };
+        let n = encode_event_plant_sync(false, &[p, ground], &mut buf).unwrap();
+        let EventMsg::PlantSync { reset, recs, count } = decode_event(&buf[..n]).unwrap() else {
+            panic!("not a plant sync");
+        };
+        assert!(!reset && count == 2 && recs[0] == p && recs[1] == ground);
+        // An empty batch says only "clear": never without the reset.
+        assert!(encode_event_plant_sync(true, &[], &mut buf).is_ok());
+        assert_eq!(
+            encode_event_plant_sync(false, &[], &mut buf),
+            Err(WireError::Cap)
+        );
+    }
+
+    #[test]
+    fn a_plant_no_sim_holds_is_refused_both_ways() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let bad = [
+            WirePlant { id: 0, ..corn() },
+            WirePlant {
+                look: sim_core::farm::LOOK_COUNT,
+                ..corn()
+            },
+            WirePlant { spot: 6, ..corn() },
+            WirePlant { spot: 14, ..corn() },
+            WirePlant {
+                genes: sim_core::farm::GENOME_VALUES as u16,
+                ..corn()
+            },
+            WirePlant { band: 11, ..corn() },
+        ];
+        for p in bad {
+            assert_eq!(
+                encode_event_plant(&p, &mut buf),
+                Err(WireError::Range),
+                "{p:?}"
+            );
+            // The same record hand-written past the encoder's check.
+            let mut w = begin(&mut buf, SUB_PLANT).unwrap();
+            w.write_bit(false).unwrap();
+            w.write(p.id, 32).unwrap();
+            w.write(p.look as u32, PLANT_LOOK_BITS).unwrap();
+            w.write(p.stage as u32, PLANT_STAGE_BITS).unwrap();
+            w.write(p.spot as u32, PLANT_SPOT_BITS).unwrap();
+            w.write(p.genes as u32, PLANT_GENES_BITS).unwrap();
+            w.write(p.band as u32, PLANT_BAND_BITS).unwrap();
+            w.write_bit(p.dry).unwrap();
+            w.write(p.qx as u32, POS_XZ_BITS).unwrap();
+            w.write((p.qy + POS_Y_BIAS) as u32, POS_Y_BITS).unwrap();
+            w.write(p.qz as u32, POS_XZ_BITS).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_event(&buf[..n]), Err(WireError::Malformed), "{p:?}");
+        }
+        assert_eq!(
+            encode_event_plant_gone(9, sim_core::farm::GONE_UPROOTED + 1, &mut buf),
+            Err(WireError::Range)
+        );
     }
 }

@@ -262,7 +262,8 @@ fn add_to(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.skin == skin && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.skin == skin && s.cond == cond && s.count < stack_max
+        {
             let take = ((stack_max - s.count) as u32).min(left);
             s.count += take as u16;
             left -= take;

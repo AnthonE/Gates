@@ -332,41 +332,9 @@ pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Bat"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Bat"];
 
 const _: () = assert!(
-    MAX_ITEM_DEFS <= ItemMask::BITS,
-    "FoodBook and yield sets are ItemMask sets"
+    MAX_ITEM_DEFS <= ItemBits::CAP,
+    "FoodBook and yield sets are ItemBits masks"
 );
-
-/// A set of item indices: the food book's verdicts and a kind's yields.
-/// Two words since the water pass took the item table past 128.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ItemMask([u128; 2]);
-
-impl ItemMask {
-    pub const BITS: usize = 256;
-
-    pub fn has(&self, item: u16) -> bool {
-        let i = usize::from(item);
-        i < Self::BITS && self.0[i / 128] & (1 << (i % 128)) != 0
-    }
-
-    pub fn set(&mut self, item: u16) {
-        let i = usize::from(item);
-        if i < Self::BITS {
-            self.0[i / 128] |= 1 << (i % 128);
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0 == [0, 0]
-    }
-
-    /// The set holding `item` alone.
-    pub fn of(item: u16) -> Self {
-        let mut m = Self::default();
-        m.set(item);
-        m
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -503,20 +471,57 @@ impl Kind {
     }
 }
 
+/// A set of item indices, one bit each: 256 of them, so the whole catalog
+/// (`MAX_ITEM_DEFS`) fits. An index past the set is never in it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ItemBits([u128; 2]);
+
+impl ItemBits {
+    pub const CAP: usize = 256;
+
+    /// The set holding `item` alone (empty when `item` is past the set).
+    pub fn bit(item: u16) -> Self {
+        let mut b = Self::default();
+        b.set(item);
+        b
+    }
+
+    pub fn set(&mut self, item: u16) {
+        let i = usize::from(item);
+        if i < Self::CAP {
+            self.0[i / 128] |= 1 << (i % 128);
+        }
+    }
+
+    pub fn has(&self, item: u16) -> bool {
+        let i = usize::from(item);
+        i < Self::CAP && self.0[i / 128] & 1 << (i % 128) != 0
+    }
+
+    pub fn or(&mut self, other: Self) {
+        self.0[0] |= other.0[0];
+        self.0[1] |= other.0[1];
+    }
+
+    pub fn any(&self) -> bool {
+        self.0 != [0; 2]
+    }
+}
+
 /// What the eat verb has taught this body, per item index: the sim's own
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: ItemMask,
-    pub feeds: ItemMask,
-    pub waters: ItemMask,
-    pub tried: ItemMask,
+    pub not_food: ItemBits,
+    pub feeds: ItemBits,
+    pub waters: ItemBits,
+    pub tried: ItemBits,
 }
 
 impl FoodBook {
     /// Worth trying to eat: known to feed, or never tried and not refused.
     pub fn may_feed(&self, item: u16) -> bool {
-        usize::from(item) < ItemMask::BITS
+        usize::from(item) < ItemBits::CAP
             && (self.feeds.has(item) || (!self.tried.has(item) && !self.not_food.has(item)))
     }
 
@@ -592,7 +597,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [ItemMask; KINDS],
+    pub yields: [ItemBits; KINDS],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -989,6 +994,9 @@ pub struct Survivor {
     reload_at: Option<u32>,
     /// When armour or the belt was last seen to.
     dressed_at: Option<u32>,
+    /// The tick a bandage this bot is wrapping on has landed by (its
+    /// `use_ticks` and a second for the lane), while one is.
+    wrap_until: Option<u32>,
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
@@ -1244,6 +1252,7 @@ impl Survivor {
             ack_age: 1,
             reload_at: None,
             dressed_at: None,
+            wrap_until: None,
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
@@ -1745,6 +1754,11 @@ impl Survivor {
                     f.buttons |= sim_core::input::BTN_JUMP;
                 }
             }
+        }
+        // A bandage being wrapped on keeps the hand that began it up: a
+        // switch would put it away unspent (`survival::tick_use`).
+        if self.wrapping(view.newest_applied.unwrap_or_default()) {
+            f.sel = self.sel;
         }
         self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
@@ -4670,7 +4684,7 @@ impl Survivor {
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
-                if !room_for(core, ItemMask::of(item))
+                if !room_for(core, ItemBits::bit(item))
                     && !craft_fits(core, recipe, batch(core, recipe))
                 {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
@@ -5357,7 +5371,14 @@ impl Survivor {
     /// medkit is for a wound, not a scratch).
     fn dose(&mut self, core: &ClientCore, tick: u32, target_pct: u32, reflex: bool) -> Dosed {
         self.watch_dose(core, tick);
-        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ);
+        // A bandage answers when its wrap lands (`survival::begin_use`).
+        let wrap = match self.awaiting {
+            Some((Pending::Consume { item, .. }, _)) => {
+                u32::from(core.catalog.row(item as usize).use_ticks)
+            }
+            _ => 0,
+        };
+        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap);
         match verdict {
             Ok(Some(Verdict::Ok)) => {
                 if let Some(a) = self.goal.as_mut().filter(|a| a.goal == Goal::Heal) {
@@ -5477,6 +5498,14 @@ impl Survivor {
         }
     }
 
+    /// A bandage of mine is being wrapped on (`survival::begin_use`), by
+    /// its own clock: a goal that starts or ends mid-wrap drops the answer
+    /// it was waiting on, and the hands must still hold still.
+    fn wrapping(&self, tick: u32) -> bool {
+        self.wrap_until
+            .is_some_and(|until| (until.wrapping_sub(tick) as i32) > 0)
+    }
+
     /// Kit up between everything else, the way a player does when nothing
     /// presses: wear the best armour the pack holds for each slot (a move
     /// into the wear container, by the catalog's wear slot), and put a
@@ -5485,6 +5514,10 @@ impl Survivor {
     /// nobody is about, and the goal in hand is not one waiting on a move's
     /// answer of its own.
     fn dress(&mut self, core: &ClientCore, tick: u32, calm: bool) {
+        // Not under a wrap: moving the stack would put it away unspent.
+        if self.wrapping(tick) {
+            return;
+        }
         // Mid-walk through the doors a use or a code may go out any frame,
         // and a move in the outbox would take its place.
         let quiet = !self.builder.passing()
@@ -5632,6 +5665,10 @@ impl Survivor {
     fn consume(&mut self, core: &ClientCore, slot: usize, tick: u32) {
         let item = core.inv[slot].item;
         if self.queue(|buf| protocol::encode_action_consume(slot as u8, buf)) {
+            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            if wrap > 0 {
+                self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
+            }
             self.awaiting = Some((
                 Pending::Consume {
                     item,
@@ -8038,7 +8075,7 @@ fn out_of_town(core: &ClientCore, body: &EntityState) -> Option<Intent> {
 
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: ItemMask) -> bool {
+fn room_for(core: &ClientCore, yields: ItemBits) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
             || (yields.has(s.item) && s.count < core.catalog.row(s.item as usize).stack_max)
@@ -8134,7 +8171,7 @@ fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
     (0..INV_SLOTS).find(|&i| {
         let s = core.inv[i];
         s.count > 0
-            && usize::from(s.item) < ItemMask::BITS
+            && usize::from(s.item) < ItemBits::CAP
             && !book.tried.has(s.item)
             && !book.not_food.has(s.item)
             && core.catalog.row(usize::from(s.item)).food > 0
@@ -8256,7 +8293,7 @@ pub fn observe(
                     || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
-                    || !(room_for(core, ItemMask::of(def.output)) || craft_fits(core, r as u16, 1))
+                    || !(room_for(core, ItemBits::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {
                     continue;
                 }
@@ -9010,6 +9047,29 @@ mod tests {
 
     fn survivor() -> Survivor {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
+    }
+
+    /// The catalog outgrew one u128 (127 rows filled it): ids on both
+    /// sides of the word boundary and the catalog's last row each land in
+    /// their own bit, and nothing past the set is ever in it.
+    #[test]
+    fn item_bits_hold_ids_across_the_word_boundary() {
+        let ids = [0u16, 127, 128, MAX_ITEM_DEFS as u16 - 1];
+        assert_eq!(MAX_ITEM_DEFS, 160);
+        let mut all = ItemBits::default();
+        assert!(!all.any());
+        for &id in &ids {
+            let one = ItemBits::bit(id);
+            assert!(one.any() && one.has(id), "id {id}");
+            for &other in &ids {
+                assert_eq!(one.has(other), other == id, "id {id} vs {other}");
+            }
+            all.or(one);
+        }
+        assert!(ids.iter().all(|&id| all.has(id)));
+        assert!(!all.has(1) && !all.has(129) && !all.has(MAX_ITEM_DEFS as u16));
+        assert!(!ItemBits::bit(ItemBits::CAP as u16).any());
+        assert!(!all.has(u16::MAX));
     }
 
     /// A welcomed controller with a small catalog: Rock (3), Wood (5) and,
@@ -10356,7 +10416,7 @@ mod tests {
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);
-        assert!(!bot.memory.yields[Kind::Wood as usize].is_empty());
+        assert!(bot.memory.yields[Kind::Wood as usize].any());
         let core = bot.core.as_mut().unwrap();
         core.inv.fill(ItemStack {
             item: 6,

@@ -301,8 +301,9 @@ fn test_content() {
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
         // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18);
-        // → 130 for Rust's guns, their rounds, the rocket and C4 (guns v1).
-        (40..=130).contains(&(c.items.len() - fittings.len())),
+        // → 130 for Rust's guns, their rounds, the rocket and C4 (guns v1);
+        // → the catalog cap for farming v2 (`MAX_ITEM_DEFS` 160).
+        (40..=sim_core::limits::MAX_ITEM_DEFS).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -2381,6 +2382,15 @@ fn a_clock_with_no_answer_is_refused() {
          output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 3\n",
         "\n[gatherable.secondary]\noutput = \"item.cactus_flesh\"\nper_hit = 1\n",
+        // And the wild crops by the lakes, which feed as well.
+        "\n[[gatherable]]\nid = \"gather.wild_corn\"\narchetype = \"wild_corn\"\n\
+         output = \"item.corn\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 2\n\n\
+         [gatherable.secondary]\noutput = \"item.corn_seed\"\nper_hit = 1\n",
+        "\n[[gatherable]]\nid = \"gather.wild_pumpkin\"\narchetype = \"wild_pumpkin\"\n\
+         output = \"item.pumpkin\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 1\n\n\
+         [gatherable.secondary]\noutput = \"item.pumpkin_seed\"\nper_hit = 1\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2431,6 +2441,11 @@ fn a_clock_with_no_answer_is_refused() {
             *text = text.replace(
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 20",
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 0",
+            );
+            // And the pumpkin, which grows wild by the lakes.
+            *text = text.replace(
+                "id = \"item.pumpkin\"\nhealth = 0\nfood = 80\nwater = 30",
+                "id = \"item.pumpkin\"\nhealth = 0\nfood = 80\nwater = 0",
             );
         }
     }
@@ -3869,6 +3884,20 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
                 grew |= have.insert(k.output.as_str());
             }
         }
+        // A planted seed pays its crop's yield.
+        for k in &c.crops {
+            if have.contains(k.seed.as_str()) {
+                grew |= have.insert(k.yield_item.as_str());
+            }
+        }
+        // Eating a crop leaves its seed (`leaves`).
+        for con in &c.consumables {
+            if let Some(l) = &con.leaves {
+                if have.contains(con.id.as_str()) {
+                    grew |= have.insert(l.as_str());
+                }
+            }
+        }
         for r in &c.recipes {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
@@ -3960,16 +3989,17 @@ fn every_consumable_the_content_ships_is_reachable() {
          is made of them"
     );
 
-    // Corn grows in no node: the roadside food box is its one source (the
-    // planter's seed is cut from corn), so taking the box strands exactly it.
+    // Corn and pumpkin grow wild by the lakes (`gather.wild_corn`,
+    // `gather.wild_pumpkin`), so only the potato has the roadside food box
+    // as its one source: taking the box strands exactly it.
     let mut srcs = sources();
     strip_food_box(&mut srcs);
     let mutant =
         build(&srcs).expect("still valid — the bush and the patch keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec!["item.corn".to_string()],
-        "deleting the food box must strand exactly the corn"
+        vec!["item.potato".to_string()],
+        "deleting the food box must strand exactly the box's own crop"
     );
 
     // World containers v0 (2026-08-14) made the crate and the cache
@@ -3977,7 +4007,11 @@ fn every_consumable_the_content_ships_is_reachable() {
     // in one of their tables is reachable — the pre-widening walk (barrel
     // rows alone) called exactly this fixture stranded, which is the
     // regression this pins.
-    let corn_row = "    { item = \"item.corn\", weight = 50, count_min = 2, count_max = 4 },\n";
+    // The box's crops move together: corn, and the potato and the pumpkin
+    // seed that are the first potato and the first pumpkin.
+    let corn_row = "    { item = \"item.corn\", weight = 50, count_min = 2, count_max = 4 },\n    \
+                    { item = \"item.potato\", weight = 10, count_min = 1, count_max = 3 },\n    \
+                    { item = \"item.pumpkin_seed\", weight = 5, count_min = 1, count_max = 2 },\n";
     for table in ["loot.crate", "loot.cache"] {
         let mut srcs = sources();
         strip_food_box(&mut srcs);
@@ -4469,7 +4503,13 @@ fn a_blueprint_that_stacks_or_wears_is_refused() {
         "items.toml",
         from,
         "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1\ncondition_max = 100",
-        "must be stack 1 with no condition",
+        "a data condition cannot also wear",
+    );
+    refuses(
+        "items.toml",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"target\"",
+        "description = \"Read it to learn a recipe for good.\"",
+        "cond_carries = \"target\"",
     );
 }
 
@@ -4882,11 +4922,11 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 14,
-        "expected exactly fourteen solid rows — the hearth, the box (twice), the \
+        seen, 15,
+        "expected exactly fifteen solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade (twice: the barbed one), the planter, the auto turret and \
-         the vending machine — \
+         the barricade (twice: the barbed one), the planter, the auto turret, \
+         the vending machine and the water catcher — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \
@@ -5141,5 +5181,308 @@ fn a_bred_brain_bakes_onto_the_wolf_and_nowhere_else() {
     refused(
         with("mob.wolf", "genome = \"qg2:776t3gEAAkADgATA__8\""),
         "does not read as a bred wolf brain",
+    );
+}
+
+/// Farming v2 (`cooking.toml` `[farm]`): the stage shares must make one
+/// whole grow, and a seed plants one crop.
+#[test]
+fn a_farm_whose_stages_do_not_make_a_whole_grow_is_refused() {
+    refuses(
+        "cooking.toml",
+        "stage_pct = [5, 15, 20, 5, 25, 30]",
+        "stage_pct = [5, 15, 20, 5, 25, 25]",
+        "stage_pct sums to 95",
+    );
+    refuses(
+        "cooking.toml",
+        "stage_pct = [5, 15, 20, 5, 25, 30]",
+        "stage_pct = [0, 20, 20, 5, 25, 30]",
+        "above 0",
+    );
+    refuses(
+        "cooking.toml",
+        "seed = \"item.hemp_seed\"",
+        "seed = \"item.corn_seed\"",
+        "seed of two crops",
+    );
+    refuses(
+        "cooking.toml",
+        "look = \"hemp\"",
+        "look = \"cactus\"",
+        "no look",
+    );
+}
+
+/// Seeds from eating: a cob, a potato and a pumpkin always leave their seed,
+/// berries a quarter of the time, and a row that leaves nothing real, or
+/// leaves it past certain, is refused.
+#[test]
+fn eating_a_crop_leaves_its_seed() {
+    let c = build(&sources()).expect("shipped content");
+    let sc = c.bake_survival().expect("survival bakes");
+    for (food, seed, pm) in [
+        ("item.corn", "item.corn_seed", 1000),
+        ("item.potato", "item.potato_seed", 1000),
+        ("item.pumpkin", "item.pumpkin_seed", 1000),
+        ("item.berries", "item.berry_seed", 250),
+    ] {
+        let row = sc.consumable[c.item_index(food).unwrap() as usize];
+        assert_eq!(
+            (row.leaves, row.leaves_pm),
+            (c.item_index(seed).unwrap(), pm),
+            "{food}"
+        );
+    }
+    let meat = sc.consumable[c.item_index("item.cooked_meat").unwrap() as usize];
+    assert_eq!(
+        (meat.leaves, meat.leaves_pm),
+        (sim_core::gather::NO_ITEM, 0)
+    );
+    refuses(
+        "consumables.toml",
+        "leaves = \"item.berry_seed\"",
+        "leaves = \"item.berry_pit\"",
+        "is not an item",
+    );
+    refuses(
+        "consumables.toml",
+        "leaves_pm = 250",
+        "leaves_pm = 1250",
+        "outside 1..=1000",
+    );
+}
+
+/// The shipped farm reaches the sim at its stated numbers: seconds and
+/// plant-seconds × 30, the stage shares made cumulative.
+#[test]
+fn the_shipped_farm_bakes_to_its_numbers() {
+    let c = build(&sources()).expect("shipped content");
+    let fc = c.bake_cooking().expect("bake").farm;
+    assert_eq!(fc.crop_count, 5);
+    let corn = fc.crops[0];
+    assert_eq!(corn.look, sim_core::farm::LOOK_CORN);
+    assert_eq!(corn.seed, c.item_index("item.corn_seed").unwrap());
+    assert_eq!(corn.yield_item, c.item_index("item.corn").unwrap());
+    assert_eq!((corn.count, corn.grow_ticks, corn.clones), (4, 900 * 30, 2));
+    assert_eq!(fc.crops[1].look, sim_core::farm::LOOK_HEMP);
+    // The second wave: potato, pumpkin and the berry bush.
+    for (k, look, seed, yield_item, count, secs) in [
+        (
+            2,
+            sim_core::farm::LOOK_POTATO,
+            "item.potato_seed",
+            "item.potato",
+            5,
+            750,
+        ),
+        (
+            3,
+            sim_core::farm::LOOK_PUMPKIN,
+            "item.pumpkin_seed",
+            "item.pumpkin",
+            2,
+            1200,
+        ),
+        (
+            4,
+            sim_core::farm::LOOK_BERRY,
+            "item.berry_seed",
+            "item.berries",
+            6,
+            600,
+        ),
+    ] {
+        let crop = fc.crops[k];
+        assert_eq!(crop.look, look, "{seed}");
+        assert_eq!(crop.seed, c.item_index(seed).unwrap());
+        assert_eq!(crop.yield_item, c.item_index(yield_item).unwrap());
+        assert_eq!(
+            (crop.count, crop.grow_ticks, crop.clones),
+            (count, secs * 30, 2)
+        );
+        assert_eq!(fc.crop_of_item(crop.seed), Some(k as u8));
+    }
+    assert_eq!(fc.stage_end_pct, [5, 20, 40, 45, 70, 100]);
+    assert_eq!(
+        (fc.skin_wu, fc.planter_cap_wu, fc.rain_wu_s),
+        (3600 * 30, 7200 * 30, 6 * 30)
+    );
+    assert_eq!((fc.ripe_ticks, fc.dying_ticks), (10_800 * 30, 1800 * 30));
+    assert_eq!(fc.crop_of_item(corn.seed), Some(0));
+    assert_eq!((fc.good_gene_pm, fc.bad_w_pm), (500, 500));
+    assert_eq!((fc.g_pct, fc.y_pct, fc.h_pct, fc.w_pct), (10, 10, 10, 25));
+    assert_eq!(fc.clone_y_per, 2);
+    // The open ground: meadow and forest take a seed, nothing else does.
+    use sim_core::terrain::Biome;
+    let mut soil = [0u16; sim_core::terrain::BIOMES];
+    soil[Biome::Meadow as usize] = 550;
+    soil[Biome::Forest as usize] = 450;
+    assert_eq!(fc.soil_pm, soil);
+    assert_eq!((fc.ground_cap_wu, fc.ground_rain_wu_s), (1800 * 30, 3 * 30));
+    // The water catcher: three skins' barrel, its rain, its flow, 3 m.
+    assert_eq!(
+        (
+            fc.catcher_cap_wu,
+            fc.catcher_rain_wu_s,
+            fc.catcher_flow_wu_s,
+            fc.catcher_reach_cm
+        ),
+        (10_800 * 30, 20 * 30, 12 * 30, 300)
+    );
+    let dc = c.bake_deployables().expect("deployables bake");
+    let catcher = c.item_index("item.water_catcher").unwrap();
+    assert!(
+        dc.defs[..dc.def_count as usize]
+            .iter()
+            .any(|d| d.item == catcher && d.arch == sim_core::deploy::ARCH_CATCHER),
+        "the water catcher is no catcher deployable"
+    );
+    let cc = c.bake_cooking().expect("cooking bakes");
+    for skin in [fc.water_empty, fc.water_full] {
+        assert_eq!(
+            cc.roles(sim_core::deploy::ARCH_CATCHER, skin),
+            sim_core::oven::ROLE_FUEL
+        );
+    }
+}
+
+/// A catcher's barrel holds at least a skin, and its reach is a hand's walk.
+#[test]
+fn a_catcher_too_small_to_fill_a_skin_or_reaching_nowhere_is_refused() {
+    refuses(
+        "cooking.toml",
+        "catcher_water = 10800",
+        "catcher_water = 3000",
+        "less than a skin",
+    );
+    refuses(
+        "cooking.toml",
+        "catcher_reach_cm = 300",
+        "catcher_reach_cm = 0",
+        "within 1..=1000",
+    );
+}
+
+/// The ground's soil names biomes and stays per mille, and a ground plant's
+/// water holds at least the quarter skin a pour asks room for.
+#[test]
+fn a_farm_soil_off_the_biomes_or_a_ground_too_small_to_water_is_refused() {
+    let soil = "soil = { meadow = 550, forest = 450 }";
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550, swamp = 450 }",
+        "not a biome",
+    );
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 1550 }",
+        "past 1000 per mille",
+    );
+    refuses(
+        "cooking.toml",
+        "ground_water = 1800",
+        "ground_water = 800",
+        "quarter skin",
+    );
+    // The soil names exactly the sim's soft biomes (`farm::SOFT_SOIL`),
+    // which the client's planting ghost reads: no more, no fewer.
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550, forest = 450, beach = 100 }",
+        "is not soft ground",
+    );
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550 }",
+        "forest is soft ground",
+    );
+}
+
+/// A skin pours whole and turns into another item: a full skin and an empty
+/// one are two items and neither stacks, and a clone's Y bonus has a step.
+#[test]
+fn a_farm_skin_that_stacks_or_pours_into_itself_is_refused() {
+    refuses(
+        "cooking.toml",
+        "emptied = \"item.waterskin\"",
+        "emptied = \"item.waterskin_full\"",
+        "would leave the skin full",
+    );
+    refuses(
+        "items.toml",
+        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 1",
+        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 5",
+        "not 1",
+    );
+    refuses(
+        "cooking.toml",
+        "clone_y_per = 2",
+        "clone_y_per = 0",
+        "clone_y_per must be above 0",
+    );
+}
+
+/// Genes ride a seed's `cond` (a clone): the walls' ceiling for a seed is
+/// the genome count and for the blueprint its target, while a mint of
+/// either stays blank (`cond_max` 0).
+#[test]
+fn a_seed_carries_genes_and_the_blueprint_its_target_to_the_walls() {
+    let c = build(&sources()).expect("shipped content");
+    let gc = c.bake_gather().expect("bake");
+    let seed = c.item_index("item.corn_seed").unwrap();
+    let bp = c.item_index("item.blueprint").unwrap();
+    let wood = c.item_index("item.wood").unwrap();
+    assert_eq!(gc.cond_cap_of(seed), sim_core::farm::GENOME_VALUES as u16);
+    assert_eq!(gc.cond_cap_of(bp), sim_core::limits::MAX_ITEM_DEFS as u16);
+    assert_eq!((gc.cond_max_of(seed), gc.cond_max_of(bp)), (0, 0));
+    assert_eq!(gc.cond_cap_of(wood), 0);
+}
+
+/// Every crop seed carries genes and nothing else may; a data condition
+/// cannot wear; nothing that takes items blind to `cond` may take a seed;
+/// the gene knobs stay in range.
+#[test]
+fn genes_live_on_crop_seeds_alone_and_nothing_eats_them_blind() {
+    let corn_seed = "name = \"Corn Seed\"\nstack = 50\ntier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\ndescription = \"Hold it and plant one in a planter box.\"\ncond_carries = \"genes\"";
+    refuses(
+        "items.toml",
+        corn_seed,
+        &corn_seed.replace("\ncond_carries = \"genes\"", ""),
+        "a crop seed must carry cond_carries",
+    );
+    refuses(
+        "items.toml",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"target\"",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"genes\"",
+        "only a crop seed may",
+    );
+    refuses(
+        "items.toml",
+        corn_seed,
+        &corn_seed.replace("stack = 50", "stack = 1\ncondition_max = 100"),
+        "a data condition cannot also wear",
+    );
+    refuses(
+        "recipes.toml",
+        "seconds = 2\ninputs = [{ item = \"item.corn\", count = 1 }]",
+        "seconds = 2\ninputs = [{ item = \"item.corn\", count = 1 }, { item = \"item.hemp_seed\", count = 1 }]",
+        "carries genes",
+    );
+    refuses(
+        "cooking.toml",
+        "good_gene_pm = 500",
+        "good_gene_pm = 1001",
+        "past 1000 per mille",
+    );
+    refuses(
+        "cooking.toml",
+        "w_pct = 25",
+        "w_pct = 101",
+        "past 100 per cent",
     );
 }

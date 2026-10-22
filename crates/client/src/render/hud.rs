@@ -1116,6 +1116,9 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
+    /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
+    /// bandage closes it.
+    Bleeding,
     /// The held breath (water pass, `World::breathe`): shown while any is
     /// spent, red once the water is costing hp.
     Breath,
@@ -1173,6 +1176,13 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
+
+/// What the BLEEDING chip says left of the hp it still owes: Rust's word,
+/// and what stops it.
+pub fn bleed_line() -> String {
+    "BLEEDING · BANDAGE IT".to_string()
+}
 
 /// What the Verdigris chip says left of its meter: and while it hurts, the
 /// way out. The player-facing name only — never the code's `fel`.
@@ -1294,7 +1304,7 @@ pub struct ChipValue(pub ExposureChip);
 impl ExposureChip {
     /// Top to bottom over the vitals. The base's upkeep heads the stack
     /// (NOW §0up 3): it is about the base, not the body.
-    const ALL: [ExposureChip; 8] = [
+    const ALL: [ExposureChip; 9] = [
         ExposureChip::Breath,
         ExposureChip::Upkeep,
         ExposureChip::Safe,
@@ -1303,6 +1313,7 @@ impl ExposureChip {
         ExposureChip::Hot,
         ExposureChip::Verdigris,
         ExposureChip::Comfort,
+        ExposureChip::Bleeding,
     ];
 
     fn index(self) -> usize {
@@ -1412,6 +1423,10 @@ pub fn exposure(
                     FEL_CHIP
                 },
             ),
+            // The hp the wound still owes is the chip's number.
+            ExposureChip::Bleeding if core.bleed > 0 => {
+                (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
+            }
             ExposureChip::Breath if core.drowning => (
                 true,
                 "DROWNING — SURFACE".to_string(),
@@ -1441,7 +1456,7 @@ pub fn exposure(
             _ => hidden(),
         }
     };
-    let said: [ChipSaid; 8] = ExposureChip::ALL.map(say);
+    let said: [ChipSaid; 9] = ExposureChip::ALL.map(say);
     for (chip, mut node, mut bg) in &mut chips {
         let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still
@@ -1496,6 +1511,20 @@ pub struct Plan;
 /// presses.
 #[derive(Component)]
 pub struct PromptLine;
+
+/// A crop's readout under the prompt (farming v2): `CORN SAPLING · 80% · `,
+/// then the six genes as spans, G/Y/H green and W/X red, then
+/// ` · NEEDS WATER` when it thirsts. Empty unless the pick is a crop.
+#[derive(Component)]
+pub struct PlantInfoLine;
+
+/// One span of [`PlantInfoLine`]: 0..6 the genes, 6 the thirst.
+#[derive(Component)]
+pub struct PlantInfoSpan(pub usize);
+
+/// A gene's colour on the readout: the good letters green, the bad red.
+const GENE_GOOD: Color = Color::srgb(0.45, 0.9, 0.4);
+const GENE_BAD: Color = Color::srgb(0.95, 0.38, 0.32);
 
 /// One row of the announce stack, under the prompt. Row 0 is the newest and
 /// sits where the single toast line always sat; the rest run downward.
@@ -2424,6 +2453,35 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
+    // A crop's readout, a line under the prompt (farming v2).
+    commands
+        .spawn((
+            super::WorldEntity,
+            PlantInfoLine,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(PROMPT_TOP_PCT + 3.2),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Text::new(""),
+            super::ui::font(PROMPT_FONT_PX - 2.0),
+            TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+            super::ui::TEXT_SHADOW,
+            TextLayout::new_with_justify(Justify::Center),
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            for k in 0..=sim_core::farm::GENE_SLOTS {
+                c.spawn((
+                    PlantInfoSpan(k),
+                    TextSpan::new(""),
+                    super::ui::font_bold(PROMPT_FONT_PX - 2.0),
+                    TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+                ));
+            }
+        });
     // The announce stack. Absolutely positioned per row rather than a flex
     // column: every row then has a fixed home whether or not the ones above
     // it are live, so a line arriving does not shove the readout — a number
@@ -2736,6 +2794,10 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
+    sow: Option<Res<super::farm_ghost::PlantAimed>>,
+    // The bandage being wrapped on (`ui::wrap`) and the clock it reads,
+    // for the hand's line: one param, the system is at Bevy's sixteen.
+    wrap: (Option<Res<super::verbs::Bite>>, Res<Time>),
 ) {
     let core = &net.session.core;
 
@@ -2843,10 +2905,29 @@ pub fn update(
                 (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
                 (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
+        } else if click == crate::ui::hold::Click::Plant {
+            // A seed says where its ghost stands: a bed, soft ground, or
+            // why the ground would refuse it.
+            crate::ui::hold::plant_hint(
+                &core.catalog,
+                &core.research,
+                held,
+                sow.as_ref().map_or_else(Default::default, |s| s.0),
+            )
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            let (bite, time) = &wrap;
+            let wrapping = bite
+                .as_deref()
+                .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
+            match wrapping {
+                Some(left) => format!(
+                    "WRAPPING  {}  {left:.1} s   (switch away to stop)",
+                    crate::ui::craft::item_label(&core.catalog, held.item).to_uppercase()
+                ),
+                None => crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit),
+            }
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {
@@ -3234,7 +3315,7 @@ pub fn feedback(
                 crate::ui::place::RESERVED_LINE.to_string()
             }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
-            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy_after(code, net.farm_sent),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
             super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
@@ -4198,6 +4279,53 @@ pub fn compass_pins(
         let a = if m.off_row { 0.45 } else { 0.9 };
         if ink.0.alpha() != a {
             ink.0 = ink.0.with_alpha(a);
+        }
+    }
+}
+
+/// Write a crop's readout under the prompt from the `E` pick (farming v2).
+pub fn plant_info(
+    aimed: Res<Aimed>,
+    pad: Res<super::verbs::Pad>,
+    mut line: Query<&mut Text, With<PlantInfoLine>>,
+    mut spans: Query<(&PlantInfoSpan, &mut TextSpan, &mut TextColor)>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let pick = &aimed.0;
+    let show = pick.verb == crate::ui::interact::Verb::Plant && !pad.0.is_open();
+    let head = if show {
+        pick.info_head()
+    } else {
+        String::new()
+    };
+    if text.0 != head {
+        text.0 = head;
+    }
+    let genes = sim_core::farm::letters(pick.plant.genes);
+    for (span, mut t, mut col) in &mut spans {
+        let (want, colour) = if !show {
+            (String::new(), None)
+        } else if span.0 < sim_core::farm::GENE_SLOTS {
+            let c = genes[span.0];
+            let good = matches!(c, b'G' | b'Y' | b'H');
+            (
+                (c as char).to_string(),
+                Some(if good { GENE_GOOD } else { GENE_BAD }),
+            )
+        } else if pick.plant.dry {
+            (" · NEEDS WATER".to_string(), None)
+        } else {
+            (String::new(), None)
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+        if let Some(c) = colour {
+            if col.0 != c {
+                col.0 = c;
+            }
         }
     }
 }

@@ -1,8 +1,11 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 144 kB — fixed-capacity by design (wall 4), and
-# (125 kB until the water pass doubled `MAX_ITEM_DEFS` to 255 and every
-# per-item table with it;
+# `World` is 133 kB — fixed-capacity by design (wall 4), and
+# (131 kB until a bleed and a held use put six fields on every player;
+# 130 kB until seeds from eating put what a meal leaves on every
+# consumable row;
+# 125 kB until farming v2's catalog headroom took every per-item table
+# from 127 rows to 160 and the water catcher put its knobs on the farm's;
 # 124 kB until an unlock flag put a byte on every skin row;
 # 114 kB until guns v1 put sixteen magazines and a gun's cone on each
 # player and a rocket's landing ring on the arrows;

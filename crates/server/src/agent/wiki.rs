@@ -164,6 +164,9 @@ pub struct Page {
     pub cook_ticks: u16,
     /// A recycler takes it apart (`content/cooking.toml`'s recycler rows).
     pub recycles: bool,
+    /// What planting it grows (`NO_ITEM` for nothing): a seed's crop
+    /// (`content/cooking.toml`'s `[[crop]]` rows).
+    pub grows: u16,
 }
 
 impl Page {
@@ -189,6 +192,7 @@ impl Page {
         cooks: NO_ITEM,
         cook_ticks: 0,
         recycles: false,
+        grows: NO_ITEM,
     };
 
     pub fn swings(&self) -> bool {
@@ -338,7 +342,18 @@ impl Rules {
                     page.cook_ticks = u16::try_from(ticks).unwrap_or(u16::MAX);
                 }
                 content::schema::CookStation::Recycler => page.recycles = true,
-                content::schema::CookStation::Furnace | content::schema::CookStation::Planter => {}
+                content::schema::CookStation::Furnace => {}
+            }
+        }
+        for k in &content.crops {
+            let (Some(seed), Some(crop)) = (
+                content.item_index(&k.seed),
+                content.item_index(&k.yield_item),
+            ) else {
+                continue;
+            };
+            if let Some(page) = rules.pages.get_mut(usize::from(seed)) {
+                page.grows = crop;
             }
         }
         for w in &content.weapons {
@@ -495,6 +510,8 @@ impl Book {
             page.ranged.round = wire_of.get(round).copied().unwrap_or(NO_ITEM);
             let cooked = usize::from(page.cooks);
             page.cooks = wire_of.get(cooked).copied().unwrap_or(NO_ITEM);
+            let grown = usize::from(page.grows);
+            page.grows = wire_of.get(grown).copied().unwrap_or(NO_ITEM);
         }
         self.fuel = wire_of
             .get(usize::from(rules.fuel))
@@ -612,6 +629,16 @@ mod tests {
         assert_eq!(book.fuel(), wire("item.wood"));
         assert!(book.page(wire("item.gears")).recycles);
         assert_eq!(book.page(wire("item.wood")).cooks, NO_ITEM);
+        // What a seed grows.
+        for (seed, crop) in [
+            ("item.corn_seed", "item.corn"),
+            ("item.potato_seed", "item.potato"),
+            ("item.pumpkin_seed", "item.pumpkin"),
+            ("item.berry_seed", "item.berries"),
+        ] {
+            assert_eq!(book.page(wire(seed)).grows, wire(crop), "{seed}");
+        }
+        assert_eq!(book.page(wire("item.corn")).grows, NO_ITEM);
     }
 
     /// Where the wire disagrees, the wire is kept and the difference

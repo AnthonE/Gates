@@ -245,7 +245,11 @@ pub(crate) fn land(
     let merge = order.clone().find_map(|i| {
         let d = slots[i];
         let room = cap.saturating_sub(d.count);
-        (d.count > 0 && d.item == stack.item && d.skin == stack.skin && room > 0)
+        (d.count > 0
+            && d.item == stack.item
+            && d.skin == stack.skin
+            && d.cond == stack.cond
+            && room > 0)
             .then(|| (i as u8, count.min(room)))
     });
     merge.or_else(|| {

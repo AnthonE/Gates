@@ -263,11 +263,17 @@ dehydrate_hp_per_min = 5
 drink_water = 30
 drink_hp_cost = 3
 drink_water_salt = 15
+# Bleeding, Rust's: a hit (a blade, an arrow, a bullet, a bite, spikes) opens
+# a wound worth bleed_pct of the hp it took, and the wound costs
+# bleed_hp_per_min (theirs: 1 hp every 3 s) until it has taken that much or a
+# bandage closes it. Fire burns, it does not cut.
+bleed_pct = 20
+bleed_hp_per_min = 20
 
 # The water vessels: H with an empty one in hand at water fills it — fresh
 # where there is any, the sea's salt where the vessel holds it — the left
 # mouse drinks a fresh one, the right mouse pours either out (`World::pour`:
-# it puts out fires and waters planters, and salt water ruins a planter's).
+# it puts out fires and waters what grows, and salt water empties a tank).
 [[survival.vessels]]
 empty = "item.waterskin"
 fresh = "item.waterskin_full"

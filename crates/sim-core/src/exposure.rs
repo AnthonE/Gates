@@ -718,6 +718,9 @@ pub struct Readout {
     /// The Verdigris' meter, per cent, and whether it is costing hp.
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// The open wound, in hp it still owes (`Player::bleed`, at most
+    /// `survival::BLEED_MAX`): the BLEEDING chip.
+    pub bleed: u8,
     /// The breath left, per cent (100 out of the water), and whether the
     /// water is costing hp (water pass).
     pub breath_pct: u8,
@@ -735,6 +738,7 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         air_c: crate::climate::whole_c(p.air_dc),
         fel_pct: (p.fel / 10).min(100) as u8,
         fel_hurting: p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000,
+        bleed: p.bleed.min(crate::survival::BLEED_MAX) as u8,
         breath_pct: breath_pct(ec, p),
         drowning: ec.air_ticks > 0 && p.under > ec.air_ticks / 2,
     }

@@ -351,6 +351,11 @@ const SUBJECTS: &[Subject] = &[
     kit("pistol_round", [30.0, 0.0, 0.0]),
     kit("corn_seed", [0.0, 0.0, 0.0]),
     kit("hemp_seed", [0.0, 0.0, 0.0]),
+    kit("potato_seed", [0.0, 0.0, 0.0]),
+    kit("pumpkin_seed", [0.0, 0.0, 0.0]),
+    kit("berry_seed", [0.0, 0.0, 0.0]),
+    kit("potato", [0.0, 0.0, 0.0]),
+    kit("pumpkin", [0.0, 0.0, 0.0]),
     // The garments stand up in the hand; laid back for the camera.
     kit("burlap_tunic", [30.0, -20.0, 0.0]),
     kit("burlap_hood", [30.0, 0.0, 0.0]),
@@ -364,6 +369,7 @@ const SUBJECTS: &[Subject] = &[
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
     kit("wood_shutters", [90.0, 0.0, 0.0]),
+    kit("water_catcher", [0.0, 0.0, 0.0]),
     // Rust's tree items (2026-10-17; Meshy, 2026-10-18).
     long(
         "salvaged_hammer",

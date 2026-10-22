@@ -145,17 +145,14 @@ pub const SPECIES: [SpeciesDef; 3] = [
         bark_lo: BIRCH_BARK_LO,
         bark_hi: BIRCH_BARK_HI,
     },
-    // **The desert's palm** (`terrain::PALM_SPECIES`): a bare trunk and a
+    // **The desert's palm** (`terrain::PALM_SPECIES`): a ringed trunk and a
     // drooping crown of fronds at the top, the arid north's tree in the
-    // reference game. Generated as an `Evergreen` so it wears the pine's bark
-    // and needle sprigs — at frond scale a needle card reads as leaflets — in
-    // its own yellower greens. The shortest tree, so the sim's blocked
-    // ceiling (`OCCUPANT_TOP_M[Tree]`) is its drawn height.
+    // reference game. Built by [`palm`], not the generator; `Evergreen` only
+    // for what reads `tree_type`. Its bark colours are the trunk's ramp.
     SpeciesDef {
         tree_type: TreeType::Evergreen,
-        // 24 m, from 33 (operator, 2026-10-19: "kinda tall and not thick
-        // enough"): the same crown on a shorter, barely tapering trunk. The
-        // shortest species, so it sets `OCCUPANT_TOP_M[Tree]`.
+        // 12 m, the reference game's (operator, 2026-10-21), from 24. The
+        // sim blocks a palm to its own height (`terrain::PALM_TOP_M`).
         height_m: PALM_H,
         max_r_m: PALM_MAX_R,
         leaf_lo: PALM_LO,
@@ -169,9 +166,10 @@ pub const SPECIES: [SpeciesDef; 3] = [
 pub const PALM: usize = 2;
 const _: () = assert!(PALM == sim_core::terrain::PALM_SPECIES as usize);
 
-/// The palm's height, metres: the shortest tree, and the sim's blocked
-/// ceiling for every tree (`terrain::OCCUPANT_TOP_M`).
-pub const PALM_H: f32 = 24.0;
+/// The palm's height, metres: the reference game's palms, and the sim's
+/// blocked ceiling for a palm (`terrain::PALM_TOP_M`).
+pub const PALM_H: f32 = 12.0;
+const _: () = assert!(PALM_H == sim_core::terrain::PALM_TOP_M);
 
 /// The palm's radius ceiling, metres: its fronds' reach.
 pub const PALM_MAX_R: f32 = 8.4;
@@ -459,21 +457,15 @@ fn broadleaf_settings() -> TreeMeshSettings {
     }
 }
 
-/// The palm's parameters: one trunk, generated at full length so limbs and
-/// cards keep real sizes, and a single level of fronds from its top tenth.
-///
-/// - `start` 0.78: the fronds leave the top fifth of the trunk, layered
-///   into a full head rather than a flat disc, and the trunk below is bare — a palm's whole silhouette.
-/// - `angle` 104°: past horizontal, so the fronds arch out and droop. Droop
-///   is the ANGLE's job, never the force's (see [`conifer_settings`]).
-/// - Long thin limbs (`radius_factor` 0.05) carry the leaflet cards; the
-///   cards stand on most of each frond and leave its base bare.
-/// - `taper` 0.25: a near column, so the trunk reads thick up to the crown.
+/// The palm's parameters, for [`settings`]' callers alone: the generator no
+/// longer grows the palm ([`palm`] builds it, trunk and crown, since needle
+/// sprigs on limbs read as a lollipop), so this is a bare trunk and the one
+/// leaf an empty canopy mesh needs to have tangents.
 fn palm_settings() -> TreeMeshSettings {
     TreeMeshSettings {
         tree_type: TreeType::Evergreen,
         branch: BranchParams {
-            levels: BranchRecursionLevel::One,
+            levels: BranchRecursionLevel::Zero,
             angle: [0.0, 104.0, 0.0, 0.0],
             children: [34, 0, 0],
             force: BranchForce {
@@ -487,7 +479,9 @@ fn palm_settings() -> TreeMeshSettings {
             // 22 % that is 0–6.6 m, the long fronds lowest and the short new
             // ones upright at the crown.
             length: [PALM_H, 30.0, 0.0, 0.0],
-            trunk_base_radius: 0.24,
+            // Under the sim's cylinder: the crown no longer counts in the
+            // fit to height, so the trunk comes out a hair wider than it did.
+            trunk_base_radius: 0.236,
             radius_factor: [1.0, 0.05, 0.0, 0.0],
             sections: [12, 6, 0, 0],
             segments: [7, 3, 0, 0],
@@ -499,14 +493,368 @@ fn palm_settings() -> TreeMeshSettings {
             twist: [0.0, 0.0, 0.0, 0.0],
         },
         leaves: LeafParams {
-            leaf_billboard: LeafBillboard::Double,
+            leaf_billboard: LeafBillboard::Single,
             angle: 70.0,
-            count: 22,
-            start: 0.15,
-            size: 1.25,
-            size_variance: 0.3,
+            count: 1,
+            start: 0.9,
+            size: 0.1,
+            size_variance: 0.0,
         },
     }
+}
+
+/// How far a palm's crown leans off its root, metres, by form (`palm`):
+/// the reference game's palms bow, they do not stand like poles. **(knob)**
+pub const PALM_LEAN_M: [(f32, f32); 3] = [(0.4, 1.0), (2.0, 3.0), (2.4, 3.4)];
+
+/// A palm frond's length and width at full size, metres. **(knob)**
+pub const PALM_FROND_M: f32 = 3.9;
+const PALM_FROND_W: f32 = 1.0;
+
+/// What the frond card is multiplied by on a palm: the cycad's dark green
+/// lifted to the reference palms' sunlit yellow-green.
+const PALM_FROND_TINT: [f32; 3] = [1.45, 1.35, 0.95];
+/// …and on a dead frond hanging under the crown: straw-brown.
+const PALM_DEAD_TINT: [f32; 3] = [2.2, 1.45, 0.75];
+
+/// The palm trunk's radius at its foot, metres: under the sim's cylinder
+/// (`OCCUPANT_R_M`'s Tree row) with its leaf-scar lip on.
+const PALM_TRUNK_R: f32 = 0.225;
+/// The leaf-scar bands up the trunk: how far apart, metres, and how far each
+/// one's lip stands proud, as a share of the radius. **(knob)**
+const PALM_BAND_M: f32 = 0.42;
+const PALM_BAND_LIP: f32 = 0.06;
+/// How far the trunk runs straight up before it bends, metres: the foot
+/// stands on the sim's cylinder whatever the form.
+const PALM_FOOT_M: f32 = 1.5;
+
+/// A palm, `(bark, crown)`: built here rather than by the generator, whose
+/// limbs carried needle sprigs and read as a lollipop. The seed picks one of
+/// three forms the reference game mixes — near straight with a slight lean,
+/// curved in an S, or bowed well over — and the trunk follows that spine as a
+/// tube ringed with leaf-scar lips, wearing the diamond bark card
+/// ([`palm_bark_image`]). The crown is [`palm_crown`].
+pub fn palm(variant: usize) -> (Mesh, Mesh) {
+    use std::f32::consts::{PI, TAU};
+    let sp = &SPECIES[PALM];
+    let seed = hash2(0x9a1e_77a0, variant as u32);
+    let form = variant % SEEDS_PER_SPECIES;
+    let a = hash01(seed, 1) * TAU;
+    let dir = Vec3::new(a.sin(), 0.0, a.cos());
+    let across = Vec3::new(dir.z, 0.0, -dir.x);
+    let (lo, hi) = PALM_LEAN_M[form];
+    let lean = lo + (hi - lo) * hash01(seed, 2);
+    // The crown rises over the trunk's top, and the stretch below takes the
+    // tree to its height; this leaves it near 1.
+    let h = sp.height_m - 1.3;
+    let foot = PALM_FOOT_M / h;
+    let spine = move |t: f32| {
+        let u = ((t - foot) / (1.0 - foot)).clamp(0.0, 1.0);
+        let bend = match form {
+            0 => u * u,
+            1 => (1.0 - (u * PI).cos()) * 0.5,
+            _ => u.powf(1.6),
+        };
+        dir * (lean * bend) + Vec3::Y * (t * h)
+    };
+
+    let mut bark = Soup::default();
+    const SIDES: usize = 10;
+    let rings = ((h / PALM_BAND_M).round() as usize) * 3;
+    let ring = |j: usize| {
+        let t = j as f32 / rings as f32;
+        let c = spine(t);
+        let along = (spine((t + 0.01).min(1.0)) - spine((t - 0.01).max(0.0))).normalize();
+        let out = along.cross(across).normalize();
+        let y = t * h;
+        // Each band's lip at its foot, easing back up to the next.
+        let b = (y / PALM_BAND_M).fract();
+        let lip = 1.0 + PALM_BAND_LIP * (1.0 - b) * (1.0 - b);
+        let r = PALM_TRUNK_R * (1.0 - 0.2 * t) * lip;
+        (c, out, r, y)
+    };
+    for j in 0..rings {
+        let (c0, o0, r0, y0) = ring(j);
+        let (c1, o1, r1, y1) = ring(j + 1);
+        let mid = (c0 + c1) * 0.5;
+        let at = |c: Vec3, o: Vec3, r: f32, i: usize| {
+            let a = i as f32 / SIDES as f32 * TAU;
+            c + (across * a.cos() + o * a.sin()) * r
+        };
+        for i in 0..SIDES {
+            let (u0, u1) = (
+                i as f32 / SIDES as f32 * 2.0,
+                (i + 1) as f32 / SIDES as f32 * 2.0,
+            );
+            // The card is two bands tall, its v growing down the trunk.
+            let (v0, v1) = (-y0 / (2.0 * PALM_BAND_M), -y1 / (2.0 * PALM_BAND_M));
+            let (a0, a1) = (at(c0, o0, r0, i), at(c0, o0, r0, i + 1));
+            let (b0, b1) = (at(c1, o1, r1, i), at(c1, o1, r1, i + 1));
+            let white = |_: Vec3| [1.0, 1.0, 1.0, 1.0];
+            let round = |_: Vec3| 0.85;
+            // Wound outward: the bark material culls back faces.
+            bark.tri_uv(
+                [(a0, [u0, v0]), (a1, [u1, v0]), (b0, [u0, v1])],
+                white,
+                Some(mid),
+                round,
+            );
+            bark.tri_uv(
+                [(a1, [u1, v0]), (b1, [u1, v1]), (b0, [u0, v1])],
+                white,
+                Some(mid),
+                round,
+            );
+        }
+    }
+    let (top, _, top_r, _) = ring(rings);
+    // The crown's foot: a cap of the trunk under the fronds.
+    for i in 0..SIDES {
+        let a0 = i as f32 / SIDES as f32 * TAU;
+        let a1 = (i + 1) as f32 / SIDES as f32 * TAU;
+        let p = |a: f32| top + (across * a.cos() + Vec3::Y.cross(across) * a.sin()) * top_r;
+        let white = |_: Vec3| [1.0, 1.0, 1.0, 1.0];
+        bark.tri_uv(
+            [
+                (p(a0), [0.1, 0.0]),
+                (p(a1), [0.0, 0.0]),
+                (top + Vec3::Y * 0.15, [0.05, 0.1]),
+            ],
+            white,
+            None,
+            |_| 0.0,
+        );
+    }
+    let mut bark = bark.mesh();
+    let mut crown = palm_crown(variant, top);
+    // To the species' height exactly, vertically only (`grow`'s stretch).
+    let (th, _) = bounds(&[&bark, &crown]);
+    if th > f32::EPSILON {
+        let k = sp.height_m / th;
+        for m in [&mut bark, &mut crown] {
+            if let Some(p) = positions_mut(m) {
+                for v in p.iter_mut() {
+                    v[1] *= k;
+                }
+            }
+        }
+    }
+    band(
+        &mut bark,
+        sp.bark_lo,
+        sp.bark_hi,
+        0.0,
+        sp.height_m * BARK_BAND_TOP_FRAC,
+        true,
+    );
+    (bark, crown)
+}
+
+/// The palm bark card's edge, texels.
+pub const PALM_BARK_PX: u32 = 256;
+
+/// The palm's trunk, drawn: rows of diamond leaf-scars, each a plate whose
+/// lower lip stands proud over the one below, in fibrous grey-brown. Four
+/// across and two down per tile, matching [`palm`]'s UVs, so a scar is about
+/// [`PALM_BAND_M`] tall. `(albedo, normal)`, tileable both ways.
+pub fn palm_bark_images() -> (Image, Image) {
+    let n = PALM_BARK_PX;
+    let (albedo, normal) = palm_bark_rgba(n);
+    let make = |data: Vec<u8>, format: TextureFormat, filter: super::mipmap::Filter| {
+        let chained = super::mipmap::chain(&data, n, n, filter);
+        let mut img = Image::new(
+            Extent3d {
+                width: n,
+                height: n,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            format,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        );
+        img.data = Some(chained);
+        img.texture_descriptor.mip_level_count = super::mipmap::levels(n, n);
+        img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+            address_mode_u: bevy::image::ImageAddressMode::Repeat,
+            address_mode_v: bevy::image::ImageAddressMode::Repeat,
+            mag_filter: bevy::image::ImageFilterMode::Linear,
+            min_filter: bevy::image::ImageFilterMode::Linear,
+            mipmap_filter: bevy::image::ImageFilterMode::Linear,
+            anisotropy_clamp: super::textures::ANISOTROPY,
+            ..default()
+        });
+        img
+    };
+    (
+        make(
+            albedo,
+            TextureFormat::Rgba8UnormSrgb,
+            super::mipmap::Filter::Srgb,
+        ),
+        make(
+            normal,
+            TextureFormat::Rgba8Unorm,
+            super::mipmap::Filter::Normal,
+        ),
+    )
+}
+
+/// [`palm_bark_images`]' level 0s, RGBA8: albedo (sRGB) and tangent-space
+/// normal (linear).
+pub fn palm_bark_rgba(n: u32) -> (Vec<u8>, Vec<u8>) {
+    const COLS: f32 = 4.0;
+    const ROWS: f32 = 2.0;
+    let (hw, hh) = (0.5 / COLS, 0.5 / ROWS);
+    // How high the bark stands at (u, v), 0 in a crevice to 1 on a lip, and
+    // which scar it is on.
+    let height = |u: f32, v: f32| -> (f32, u32) {
+        let mut best = (f32::MAX, 0.0f32, 0u32);
+        let row = (v * ROWS).floor();
+        for dr in -1..=1 {
+            let r = row + dr as f32;
+            let shift = if (r as i32).rem_euclid(2) == 1 {
+                0.5
+            } else {
+                0.0
+            };
+            let col = (u * COLS - shift).floor();
+            for dc in -1..=1 {
+                let c = col + dc as f32;
+                let (cx, cy) = ((c + 0.5 + shift) / COLS, (r + 0.5) / ROWS);
+                let (dx, dy) = ((u - cx) / hw, (v - cy) / hh);
+                // Diamonds a little wider than their lattice, so each plate
+                // overlaps its neighbours and the one below shows under it.
+                let d = dx.abs() / 1.15 + dy.abs() / 1.3;
+                if d < best.0 {
+                    let id = ((r as i32).rem_euclid(ROWS as i32) as u32) * 8
+                        + (c as i32).rem_euclid(COLS as i32) as u32;
+                    best = (d, dy, id);
+                }
+            }
+        }
+        let (d, dy, id) = best;
+        // A plate tilts out toward its lower lip (dy grows down the card).
+        let tilt = 0.55 + 0.45 * (dy * 0.5 + 0.5).clamp(0.0, 1.0);
+        ((1.0 - d).max(0.0).powf(0.6) * tilt, id)
+    };
+    let nf = n as f32;
+    let fibre = |x: u32, y: u32| {
+        // Streaks along the plates: per column, broken every few texels.
+        hash01(x * 7 + 3, y / 9) * 0.6 + hash01(x, y) * 0.4
+    };
+    let mut albedo = vec![0u8; (n * n * 4) as usize];
+    let mut normal = vec![0u8; (n * n * 4) as usize];
+    let hmap: Vec<(f32, u32)> = (0..n * n)
+        .map(|i| height(((i % n) as f32 + 0.5) / nf, ((i / n) as f32 + 0.5) / nf))
+        .collect();
+    let crevice = Vec3::new(42.0, 36.0, 30.0);
+    let plate = Vec3::new(118.0, 104.0, 86.0);
+    let lip = Vec3::new(150.0, 136.0, 112.0);
+    for y in 0..n {
+        for x in 0..n {
+            let i = (y * n + x) as usize;
+            let (h, id) = hmap[i];
+            let f = fibre(x, y);
+            let c = if h < 0.12 {
+                crevice.lerp(plate, h / 0.12)
+            } else {
+                plate.lerp(lip, ((h - 0.12) / 0.88).powf(1.5))
+            } * (0.86 + 0.28 * f)
+                * (0.9 + 0.2 * hash01(id, 0x0ba4));
+            albedo[i * 4..i * 4 + 4].copy_from_slice(&[
+                c.x.min(255.0) as u8,
+                c.y.min(255.0) as u8,
+                c.z.min(255.0) as u8,
+                255,
+            ]);
+            // The slope of the height, wrapped at the tile's edges.
+            let at = |dx: i32, dy: i32| {
+                let xx = (x as i32 + dx).rem_euclid(n as i32) as u32;
+                let yy = (y as i32 + dy).rem_euclid(n as i32) as u32;
+                hmap[(yy * n + xx) as usize].0 + 0.08 * fibre(xx, yy)
+            };
+            let k = 4.0;
+            let du = (at(1, 0) - at(-1, 0)) * k;
+            let dv = (at(0, 1) - at(0, -1)) * k;
+            let nn = Vec3::new(-du, -dv, 1.0).normalize();
+            normal[i * 4..i * 4 + 4].copy_from_slice(&[
+                ((nn.x * 0.5 + 0.5) * 255.0) as u8,
+                ((nn.y * 0.5 + 0.5) * 255.0) as u8,
+                ((nn.z * 0.5 + 0.5) * 255.0) as u8,
+                255,
+            ]);
+        }
+    }
+    (albedo, normal)
+}
+
+/// A palm's crown: thirty-odd long fronds of the cycad's card
+/// (`plants::frond`) arching off `top`, the young ones upright at the heart
+/// and the old ones drooping under them, a few of the oldest dead and hanging
+/// straw-brown against the trunk. Its colour is its own, in the card and
+/// these vertices, so [`grow`] leaves it out of the canopy's bands.
+fn palm_crown(variant: usize, top: Vec3) -> Mesh {
+    let seed = hash2(0x9a1e_c400, variant as u32);
+    let mut s = Soup::default();
+    let dome = top - Vec3::Y * PALM_FROND_M;
+    let n = 30 + (hash01(seed, 1) * 9.0) as u32;
+    let yaw0 = hash01(seed, 2) * std::f32::consts::TAU;
+    const SEGS: usize = 10;
+    for k in 0..n {
+        // 0 the youngest frond at the heart, 1 the oldest under the crown.
+        let age = k as f32 / (n - 1) as f32;
+        let a = yaw0 + k as f32 * 2.399_963 + (hash01(seed, 10 + k) - 0.5) * 0.3;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let side = Vec3::new(out.z, 0.0, -out.x);
+        let dead = age > 0.82 && hash01(seed, 20 + k) < 0.55;
+        let len = PALM_FROND_M
+            * (0.62 + 0.38 * age.min(0.8) / 0.8)
+            * (0.88 + 0.24 * hash01(seed, 30 + k));
+        let (rise, droop) = if dead {
+            (-1.15, 0.2)
+        } else {
+            (
+                1.15 - 1.25 * age + (hash01(seed, 40 + k) - 0.5) * 0.3,
+                0.6 + 0.9 * age + (hash01(seed, 50 + k) - 0.5) * 0.3,
+            )
+        };
+        let base = top + out * 0.18 - Vec3::Y * (0.9 * age);
+        let mut spine = [base; SEGS + 1];
+        for i in 1..=SEGS {
+            let t = (i as f32 - 0.5) / SEGS as f32;
+            let e = rise - droop * t * t;
+            spine[i] = spine[i - 1] + (out * e.cos() + Vec3::Y * e.sin()) * (len / SEGS as f32);
+        }
+        let tint = if dead {
+            PALM_DEAD_TINT
+        } else {
+            PALM_FROND_TINT
+        };
+        let value = 0.85 + 0.25 * hash01(seed, 60 + k) - 0.2 * age;
+        let col = move |p: Vec3| {
+            // Darker toward the heart, where the crown shades itself.
+            let r = (p - top).length() / PALM_FROND_M;
+            let k = value * (0.6 + 0.4 * (r * 1.5).min(1.0));
+            [tint[0] * k, tint[1] * k, tint[2] * k, 1.0]
+        };
+        let fold = 0.4 + 0.25 * hash01(seed, 70 + k);
+        let width = PALM_FROND_W * if dead { 0.7 } else { 1.0 };
+        // A dead frond hangs close under the crown, not down the trunk.
+        let spine = if dead {
+            let mut s = spine;
+            for p in s.iter_mut() {
+                *p = base + (*p - base) * 0.55;
+            }
+            s
+        } else {
+            spine
+        };
+        // The leaflets' tips hang off the arch.
+        let tip = -0.75 - 0.35 * hash01(seed, 80 + k);
+        super::plants::frond(&mut s, &spine, side, width, fold, Some(tip), col, dome, 0.6);
+    }
+    s.mesh()
 }
 
 /// The parameter block for a species index. Public so `examples/tree_sweep.rs`
@@ -1204,6 +1552,9 @@ pub fn seed_settings(species: usize, variant: usize) -> TreeMeshSettings {
 /// measures candidate blocks through it, so a candidate is judged on the
 /// finished tree and not on the generator's raw output.
 pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh) {
+    if species == PALM {
+        return palm(variant);
+    }
     let sp = &SPECIES[species];
     // Seeded off the same mixer the rest of `props.rs` uses rather than the
     // raw index, so variant 0 and variant 1 are not neighbouring PRNG streams.
@@ -1220,8 +1571,6 @@ pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
     let lobe_of = match sp.tree_type {
-        // A palm's crown is its fronds as they grew: no cone to fit.
-        TreeType::Evergreen if species == PALM => None,
         TreeType::Evergreen => {
             shape_crown(&mut needles, variant);
             None
