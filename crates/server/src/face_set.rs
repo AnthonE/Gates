@@ -131,6 +131,7 @@ pub fn set_face(
 /// POST JSON, read JSON back; a refusal is the platform's own `error`.
 fn post(url: &str, body: &Value) -> Result<Value, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(TIMEOUT))
         .http_status_as_error(false)
         .build()

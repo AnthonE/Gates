@@ -20,7 +20,7 @@
 use bevy::math::Vec3;
 use bevy::pbr::FogFalloff;
 use client::render::fill::{linear_to_srgb, luminance, srgb_to_linear};
-use client::render::rig::{island_medium, AIR_DENSITY};
+use client::render::rig::{island_medium, AIR_DENSITY, HAZE_SCALE};
 use client::render::sky::{
     air_chroma, backdrop_at, browser_haze, cloud_cubemap_with, cube_dir, deck_hue, ground_air,
     haze_color, AIR_FLOOR, BAKE_BACKDROP, CLOUD_NITS, DECK_GAIN, HORIZON_DESAT, HORIZON_GAIN,
@@ -259,16 +259,17 @@ fn the_zenith_is_the_fills_brightness_over_pi() {
     assert!((srgb_to_linear(linear_to_srgb(v)) - v).abs() < 1e-5);
 }
 
-/// The air at the ground is Bevy's published earthlike medium at
-/// `AIR_DENSITY` — rebuilt here from the numbers in
-/// `bevy_pbr::medium::ScatteringMedium::earthlike`, never from the function
-/// under test. Counting the ozone tent, or leaving absorption out of
-/// extinction, each moves a channel.
+/// The air at the ground is the published earthlike medium at `AIR_DENSITY`
+/// — rebuilt here from Hillaire's numbers (Rayleigh as
+/// `bevy_pbr::medium::ScatteringMedium::earthlike` has it, Mie as Bevy 0.16's
+/// `Atmosphere::EARTH` had it before 0.18 swapped the pair), never from the
+/// function under test. Counting the ozone tent, leaving absorption out of
+/// extinction, or taking 0.18's swapped Mie each moves a channel.
 #[test]
 fn ground_air_is_the_published_medium_at_the_ground() {
     let (ext, scat) = ground_air(&island_medium());
     let rayleigh = Vec3::new(5.802e-6, 13.558e-6, 33.100e-6);
-    let (mie_abs, mie_scat) = (Vec3::splat(3.996e-6), Vec3::splat(0.444e-6));
+    let (mie_abs, mie_scat) = (Vec3::splat(0.444e-6), Vec3::splat(3.996e-6));
     let want_scat = (rayleigh + mie_scat) * AIR_DENSITY;
     let want_ext = (rayleigh + mie_scat + mie_abs) * AIR_DENSITY;
     for (got, want, what) in [
@@ -317,12 +318,14 @@ fn the_browser_zenith_is_the_colour_the_air_scatters() {
     );
 }
 
-/// The browser's haze is the desktop's air, coloured by the sky's own horizon,
-/// dimmed with the day, and carries no sun glow nobody owns.
+/// The browser's haze is the desktop's air over the desktop's sightline,
+/// coloured by the sky's own horizon, dimmed with the day, and carries no sun
+/// glow nobody owns.
 #[test]
 fn the_browser_haze_is_the_desktops_air_and_the_skys_horizon() {
     let fog = browser_haze(1.0);
     let (ext, scat) = ground_air(&island_medium());
+    let (ext, scat) = (ext * HAZE_SCALE, scat * HAZE_SCALE);
     match fog.falloff {
         FogFalloff::Atmospheric {
             extinction,

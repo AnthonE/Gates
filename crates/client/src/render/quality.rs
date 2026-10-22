@@ -31,7 +31,7 @@
 //! game.
 //!
 //! Render scale has its own target/presentation path in `render_scale.rs`.
-//! It is a graphics row, and every preset retains full resolution.
+//! It is a graphics row, and every preset but POTATO keeps full resolution.
 //!
 //! ## What is deliberately NOT a row
 //!
@@ -154,8 +154,8 @@ pub const SHADOW_PX_LADDER: [usize; 4] = [512, 1024, 2048, 4096];
 /// this ladder — a preset a stepper cannot return to would be a one-way trip.
 pub const TREE_LOD_LADDER: [f32; 5] = [35.0, MEDIUM_TREE_LOD_SWAP_M, 80.0, 120.0, 160.0];
 
-/// `Medium`'s tree swap distance, metres — named because a browser borrows it
-/// (see [`effective`]), so the two uses cannot drift apart.
+/// `Medium`'s tree swap distance, metres — named because a browser's `Low`
+/// borrows it (see [`preset`]), so the two uses cannot drift apart.
 pub const MEDIUM_TREE_LOD_SWAP_M: f32 = 55.0;
 
 /// **How many cascades this target can actually draw**, which is Bevy's
@@ -364,11 +364,40 @@ pub fn preset(q: Quality) -> Gfx {
             shadow_map_px: 2048,
             #[cfg(not(webgl2))]
             shadow_map_px: 1024,
-            tree_lod_swap_m: 35.0,
+            // A browser keeps the next rung up: LOW's 35 m is sized for a
+            // machine that cannot hold the frame, which a browser on an
+            // ordinary desktop is not, and a hull is ~55x cheaper than the
+            // tree it stands in for. POTATO is the rung that goes to 35.
+            tree_lod_swap_m: if cfg!(target_arch = "wasm32") {
+                MEDIUM_TREE_LOD_SWAP_M
+            } else {
+                35.0
+            },
+            clouds: Clouds::Low,
+        },
+        // The machine that cannot hold LOW: an integrated GPU from a decade
+        // ago, a Chromebook, a software rasterizer. Fill rate is what such a
+        // GPU runs out of first, so the world is drawn at 70% (half the
+        // pixels) and stretched; one short cascade keeps the contact shadows
+        // `ART.md` §8 asks for, and the forest is hulls past arm's length.
+        Quality::Potato => Gfx {
+            render_scale: POTATO_RENDER_SCALE,
+            ao: Ao::Off,
+            smaa: false,
+            taa: false,
+            bloom: false,
+            shadows: true,
+            cascades: 1,
+            shadow_m: 60.0,
+            shadow_map_px: 1024,
+            tree_lod_swap_m: TREE_LOD_LADDER[0],
             clouds: Clouds::Low,
         },
     }
 }
+
+/// POTATO's render scale, percent of each dimension (49% of the pixels).
+pub const POTATO_RENDER_SCALE: u8 = 70;
 
 /// What a fresh install gets **on this target**.
 ///
@@ -439,21 +468,10 @@ pub fn effective(g: Gfx) -> Gfx {
     // `#[require]` still fires, so the row pays for two prepasses that feed
     // nothing and then dies building their layout.
     //
-    // **The tree rung is a budget floor, not a capability, and it is the
-    // browser's existing behaviour written down where it can be read.**
-    // `Low`'s 35 m is sized for a machine that cannot hold the frame, which a
-    // browser on an ordinary desktop is not; a hull is ~55× cheaper than the
-    // tree it stands in for, so the page keeps the next rung up. A player who
-    // asks for more still gets more — it is a floor, not a pin.
+    // The browser's tree floor used to be here; it is a budget, not a
+    // capability, so it moved into `preset`'s LOW column and POTATO can go
+    // under it.
     //
-    // ⚠ That rung was first moved on 2026-09-13 because the first real
-    // browser session "read as a forest of hulls right up to the player", and
-    // that reading was wrong about the CAUSE: a hull at arm's length is
-    // inside any swap distance, so no distance can put it there. Those were
-    // the outer ring's hulls, left standing in every chunk the player walked
-    // into (`props::stream`'s hand-off, fixed the same day —
-    // `tests/ring_handoff.rs`). The distance stays on the argument above, not
-    // on that frame.
     // TAA wants a motion-vector prepass, which is the same storage-buffer
     // layout wall as the AO above.
     //
@@ -473,11 +491,6 @@ pub fn effective(g: Gfx) -> Gfx {
         taa: false,
         bloom: false,
         clouds: Clouds::Low,
-        ..g
-    };
-    #[cfg(target_arch = "wasm32")]
-    let g = Gfx {
-        tree_lod_swap_m: g.tree_lod_swap_m.max(MEDIUM_TREE_LOD_SWAP_M),
         ..g
     };
     // What the device has room for ([`GpuCaps`]). Occlusion is kept before

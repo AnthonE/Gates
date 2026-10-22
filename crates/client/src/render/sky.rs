@@ -238,15 +238,16 @@ pub fn haze_color(light: f32) -> Color {
 /// itself. A browser has no atmosphere (`rig.rs`), so it has no first owner,
 /// and until 2026-09-13 its distant hills arrived with no air on them at all.
 /// The falloff is `Atmospheric`, with [`ground_air`]'s two coefficients off
-/// `rig::island_medium`, so no number here is one anybody chose: a few percent
-/// of blue per kilometre, thin at island scale, as the desktop's air is.
+/// `rig::island_medium`, lengthened by the desktop's sightline scale
+/// (`rig::HAZE_SCALE`), so a far hill takes the same air on both targets.
 pub fn browser_haze(light: f32) -> DistanceFog {
     let (extinction, inscattering) = ground_air(&super::rig::island_medium());
+    let k = super::rig::HAZE_SCALE;
     DistanceFog {
         color: haze_color(light),
         falloff: FogFalloff::Atmospheric {
-            extinction,
-            inscattering,
+            extinction: extinction * k,
+            inscattering: inscattering * k,
         },
         ..default()
     }

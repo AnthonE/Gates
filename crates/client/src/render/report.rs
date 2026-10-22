@@ -528,6 +528,7 @@ fn encode_png(px: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
 #[cfg(not(target_arch = "wasm32"))]
 fn post(url: &str, body: String, timeout_s: u64) -> Result<Receipt, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(timeout_s)))
         .http_status_as_error(false)
         .build()

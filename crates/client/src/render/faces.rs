@@ -200,15 +200,9 @@ fn fetch(url: String, address: Address, pic: u32, tx: PicTx) {
 /// (refused, never truncated: a cut PNG is a broken one).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn get_bytes(url: &str, cap: usize) -> Option<Vec<u8>> {
-    // Timed out: a picture that never arrives would hold its in-flight slot,
-    // and four of them switched faces off for the session.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(
-            super::menu::FETCH_TIMEOUT_S,
-        )))
-        .build()
-        .into();
-    let mut res = agent.get(url).call().ok()?;
+    // Timed out (`tls::agent`): a picture that never arrives would hold its
+    // in-flight slot, and four of them switched faces off for the session.
+    let mut res = crate::tls::agent().get(url).call().ok()?;
     let bytes = res
         .body_mut()
         .with_config()

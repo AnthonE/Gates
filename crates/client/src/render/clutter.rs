@@ -704,7 +704,18 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     let seed = seed_of(e);
     match e.kind {
         Clutter::None => {}
-        Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
+        Clutter::Tuft => card(
+            s,
+            at,
+            yaw,
+            seed,
+            TUFT_H
+                * e.scale
+                * std::env::var("GATES_TUNE_TUFT")
+                    .ok()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(1.0),
+        ), // TUNE
         Clutter::Pebble | Clutter::Stone => {
             if let Some((size, hex)) = stone_of(e) {
                 stone(s, at, yaw, size, hex, seed);

@@ -149,12 +149,61 @@ pub const FAR_M: f32 = sim_core::terrain::ISLAND_SIZE;
 /// grey holds the rest.
 pub const AIR_DENSITY: f32 = 0.85;
 
-/// The island's air: earthlike, thickened by [`AIR_DENSITY`]. One function
-/// because two consumers read it — the desktop's atmosphere (`setup`) and the
+/// How many metres of air each metre between the eye and what it sees is
+/// hazed as: the atmosphere's `scene_units_to_m`, and the browser haze's
+/// coefficients scaled by the same factor (`sky::browser_haze`).
+///
+/// **This is the haze knob, and [`AIR_DENSITY`] is not.** Density thickens
+/// the whole column, so it extinguishes the sun on its way down and darkens
+/// the ground (its doc above measured exactly that). This lengthens the
+/// sightline and leaves the sun's path alone. Bevy scales the eye's position
+/// by the same factor, so a 40 m hill stands in the atmosphere at 400 m and
+/// its sky is drawn through slightly thinner air; at these heights against an
+/// 8 km Rayleigh scale that is a few percent. Earthlike air over a 4 km island
+/// is a few percent of blue per kilometre, and measured against the Rust
+/// frames (2026-10-21) our 200 m treelines stayed as green as the near
+/// ground where theirs had gone blue-grey. At 4 the treeline barely moved;
+/// at 10 blue loses ~4% at 100 m, ~12% at 300 m and ~36% at a kilometre,
+/// and the frame's near band and midtones stayed where they were.
+pub const HAZE_SCALE: f32 = 10.0;
+
+/// Clear sky added behind the cloud deck, in deck units at full sun: the
+/// air's own colour (`sky::air_chroma`) at this luminance, composited by the
+/// atmosphere like the clouds are (`cloud.wgsl`).
+///
+/// **The one sky term that is not physical, and it is deliberate.** The
+/// atmosphere lights its sky with the same sun the ground gets, so no
+/// exposure, density or tone curve brightens the sky without moving the
+/// ground or tinting the sun. Measured against the Rust frames
+/// (2026-10-21), their open sky reads about rgb(153, 189, 231) and ours
+/// rgb(105, 127, 159), some 2.3× in linear light, with the ground level
+/// between the two. At 0.5 the sky band reads 161 against their 157 and
+/// open sky rgb(133, 159, 200), with the near band unmoved at 80.
+pub const SKY_LIFT: f32 = 0.5;
+
+/// Mie, the aerosol term, as Hillaire's model publishes it and as Bevy 0.16
+/// shipped it (`Atmosphere::EARTH`): it mostly scatters. Bevy 0.18's
+/// `ScatteringMedium::earthlike` has the two values swapped, an aerosol that
+/// absorbs nine times what it scatters, which greys the horizon and veils
+/// every far thing in dark air instead of bright.
+pub const MIE_SCATTERING: f32 = 3.996e-6;
+/// See [`MIE_SCATTERING`].
+pub const MIE_ABSORPTION: f32 = 0.444e-6;
+
+/// The island's air: earthlike with its Mie term corrected
+/// ([`MIE_SCATTERING`]), thickened by [`AIR_DENSITY`]. One function because
+/// two consumers read it — the desktop's atmosphere (`setup`) and the
 /// browser's haze and sky colour (`sky::browser_haze`, `sky::air_chroma`) —
 /// and a medium written twice is two airs that drift.
 pub fn island_medium() -> ScatteringMedium {
-    ScatteringMedium::default().with_density_multiplier(AIR_DENSITY)
+    let mut medium = ScatteringMedium::default();
+    for term in medium.terms.iter_mut() {
+        if matches!(term.phase, bevy::pbr::PhaseFunction::Mie { .. }) {
+            term.scattering = Vec3::splat(MIE_SCATTERING);
+            term.absorption = Vec3::splat(MIE_ABSORPTION);
+        }
+    }
+    medium.with_density_multiplier(AIR_DENSITY)
 }
 
 /// The camera, and the only camera.
@@ -251,6 +300,9 @@ pub fn setup(
                 // gentle roll-off; what it is NOT is the browser's Khronos PBR
                 // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
                 // delivered a face arriving at linear 0.02 as 8/255.
+                // ACES Fitted was tried against the Rust frames (2026-10-21)
+                // for their bright whites and crushed the frame instead: p10
+                // 61 → 28, near band 80 → 49, near saturation 38% → 55%.
                 Tonemapping::TonyMcMapface,
                 // **The tonal instrument, and it is deliberately at identity.**
                 //
@@ -398,8 +450,10 @@ pub fn setup(
             // The island is 2 km across, not 32 km. Fitting the aerial-view
             // LUT to the world we actually draw is what puts its slices where
             // the geometry is instead of spending all 32 of them on the first
-            // 6% of the frustum.
-            aerial_view_lut_max_distance: FAR_M,
+            // 6% of the frustum. In atmosphere metres, so it scales with
+            // the sightline.
+            aerial_view_lut_max_distance: FAR_M * HAZE_SCALE,
+            scene_units_to_m: HAZE_SCALE,
             ..default()
         },
     ));

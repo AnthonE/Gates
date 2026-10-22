@@ -177,12 +177,6 @@ pub const STATUS_POLL_SECS: f32 = 10.0;
 /// misses it reads as `?` rather than as zero.
 pub const STATUS_TIMEOUT_S: u64 = 4;
 
-/// The whole of one document fetch — the shard list, a title manifest, a
-/// picture — connect to last byte. ureq has no timeout of its own, and a
-/// fetch that never finishes holds its thread and its in-flight slot for
-/// the rest of the session.
-pub const FETCH_TIMEOUT_S: u64 = 15;
-
 /// How long the connect screen waits before giving up, in seconds.
 ///
 /// **PROPOSED — `DECISIONS.md` §open, "connect timeout v0".** It exists
@@ -279,13 +273,9 @@ fn fetch_now(menu: &mut Menu) {
 /// One GET, capped. Separated so the thread body stays readable and so the
 /// cap is visible next to the read rather than buried in a builder chain.
 fn fetch_blocking(url: &str) -> Result<Vec<Shard>, String> {
-    // Timed out like the status read: ureq waits forever by default, and a
-    // stalled host held this thread (one per Refresh) for good.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(FETCH_TIMEOUT_S)))
-        .build()
-        .into();
-    let mut res = agent
+    // Timed out (`tls::agent`): ureq waits forever by default, and a stalled
+    // host held this thread (one per Refresh) for good.
+    let mut res = crate::tls::agent()
         .get(url)
         .call()
         .map_err(|e| format!("shard list: {e}"))?;
@@ -417,6 +407,7 @@ pub fn begin_status_poll(
 /// document fetched from another host.
 fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(STATUS_TIMEOUT_S)))
         .build()
         .into();

@@ -15,13 +15,17 @@ on:
     - cron: "0 8 * * *"
   workflow_dispatch: {}
 
+# Read-only token: nothing here writes, and a compromised step gets no more.
+permissions:
+  contents: read
+
 jobs:
   nightly:
     runs-on: ubuntu-latest
     # Same full suite and cold-cache budget as gates.yml.
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
       - name: toolchain
@@ -35,7 +39,7 @@ jobs:
           # read green locally.
           rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -68,7 +72,7 @@ jobs:
       - name: build server (release)
         run: cargo build --release -p server
       - name: upload the server
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: gates-nightly-${{ github.run_id }}
           retention-days: 14
@@ -106,7 +110,7 @@ jobs:
       matrix:
         platform: [linux-x86_64, win-x86_64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
           # `ci/depot.py` keys the build id on the commit — a shallow clone
@@ -115,7 +119,7 @@ jobs:
       - name: toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -257,7 +261,7 @@ jobs:
             sed -n 1,40p start.log; exit 1; }
           echo "the staged windows build starts and parses its arguments"
       - name: upload the depot
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: gates-depot-${{ matrix.platform }}-${{ github.run_id }}
           retention-days: 14
@@ -300,7 +304,7 @@ jobs:
         # this job is the early warning rather than the proof.
         target: [x86_64-pc-windows-gnu]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
       - name: toolchain
@@ -326,7 +330,7 @@ jobs:
       - name: the three -dev packages the host build script side still wants
         run: sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
       - name: cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -349,7 +353,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
       - name: the vendored SDK against scry-forge's sdk/SHA256SUMS
@@ -366,7 +370,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
       - name: the platform routes Gates calls, and the skin catalog
