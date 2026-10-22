@@ -462,7 +462,8 @@ pub struct ShardCore {
 
 /// How far a body must be from where the last standings minute found it for
 /// the walk alone to play the minute (`ShardCore::standings_minute`), in
-/// position quanta. A walk anywhere is ten times this a minute.
+/// position quanta. Under two seconds of walking: anyone going anywhere
+/// clears it, and someone circling a node or a base usually does.
 const MINUTE_WALK_Q: i64 = (MINUTE_WALK_M / sim_core::movement::POS_XZ_Q) as i64;
 /// [`MINUTE_WALK_Q`] in metres.
 const MINUTE_WALK_M: f32 = 5.0;
@@ -1481,8 +1482,9 @@ impl ShardCore {
                     let points = self.standings.rules.solved_points;
                     self.standings.deed(&k, &l, points, Some(&what));
                 }
-                // A swing that paid and a hit that landed play the minute
-                // (`standings_minute`): the sim's word, not the button's.
+                // A swing that paid (or a loot) and a hit that landed play
+                // the minute (`standings_minute`): the sim's word, not the
+                // button's.
                 EV_GATHER | EV_HIT => {
                     if let Some(slot) = self.client_slot_of(ev.a) {
                         self.played_minute[slot] = ev.a;
