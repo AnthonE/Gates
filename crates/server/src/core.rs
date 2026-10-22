@@ -8044,6 +8044,18 @@ impl ShardCore {
                                 .lock_passes(b.cx, b.cz, b.level, b.loc, p.id);
                             lock_refused = !ok;
                             ok
+                        })
+                        .filter(|&i| {
+                            // A player's turret shows its rounds only to
+                            // the hands it spares, the move verb's own
+                            // rule (`World::move_item`): a stranger who
+                            // could see the box could count its ammo.
+                            let w = &self.world;
+                            let ok = w.deploys.oven_states()[i].arch
+                                != sim_core::deploy::ARCH_TURRET
+                                || sim_core::shop::may_edit(&w.pieces, &w.deploys, i, p.id);
+                            lock_refused |= !ok;
+                            ok
                         }),
                     // A world container resolves against the store, never
                     // against terrain: `worldcont::open` already paid the

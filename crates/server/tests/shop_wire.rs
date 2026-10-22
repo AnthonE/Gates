@@ -12,7 +12,7 @@ use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_VENDING, PLACE_AN
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::CONT_BOX;
 use sim_core::movement::Body;
-use sim_core::shop::{REFUSE_SH_ALLOWED, SHOP_OP_BUY, SHOP_OP_SET};
+use sim_core::shop::{REFUSE_SH_ALLOWED, REFUSE_SH_CHANGED, SHOP_OP_BUY, SHOP_OP_SET};
 use sim_core::world::Command;
 
 const SEED: u64 = 20_260_804;
@@ -239,7 +239,14 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
         cond: 0,
         skin: 0,
     };
-    shop(&mut core, 1, key, ShopAct::Buy { row: 0, times: 2 });
+    let seen_buy = ShopAct::Buy {
+        row: 0,
+        times: 2,
+        item: CORN,
+        lot: 2,
+        price: 3,
+    };
+    shop(&mut core, 1, key, seen_buy);
     pump_n(&mut core, &stats, &mut clients, 6);
     let (_, r) = clients[1].1.shop_last_result();
     let r = r.expect("the buy is answered");
@@ -248,6 +255,26 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
     assert_eq!(
         sim_core::craft::inv_count(&core.world.players[w1].inv, CORN),
         4
+    );
+
+    // 3b · bait and switch: the owner reprices the row under the buyer's
+    //      view (a lot of one at three times the price). The buy names the
+    //      offer it saw, so it is refused and nothing moves.
+    let switch = ShopAct::Set {
+        row: 0,
+        item: CORN,
+        lot: 1,
+        price: 9,
+    };
+    shop(&mut core, 0, key, switch);
+    shop(&mut core, 1, key, seen_buy);
+    pump_n(&mut core, &stats, &mut clients, 6);
+    let (_, r) = clients[1].1.shop_last_result();
+    assert_eq!(r.unwrap().code as u32, REFUSE_SH_CHANGED);
+    assert_eq!(
+        sim_core::craft::inv_count(&core.world.players[w1].inv, JUNK),
+        4,
+        "the switched buy took no junk"
     );
 
     // 4 · the stranger may not set an offer, and is told why.

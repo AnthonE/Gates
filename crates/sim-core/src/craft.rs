@@ -292,9 +292,21 @@ pub struct CraftJob {
 /// Total units of `item` across the inventory (u32: 30 slots × u16 max
 /// overflows u16).
 pub fn inv_count(inv: &[ItemStack; INV_SLOTS], item: u16) -> u32 {
+    inv_count_whole(inv, item, 0)
+}
+
+/// [`inv_count`] over the stacks at condition `ceil` or better: what a
+/// craft may spend of an item that carries condition (`ceil` its
+/// `cond_max`; 0 counts every stack).
+///
+/// A recipe's input is whole or it is not an input: the queue keeps no
+/// record of the condition it took, so a cancel refunds at the ceiling
+/// (`cancel`), and a broken revolver queued into an autoturret came back
+/// mended.
+pub fn inv_count_whole(inv: &[ItemStack; INV_SLOTS], item: u16, ceil: u16) -> u32 {
     let mut total = 0u32;
     for s in inv.iter() {
-        if s.count > 0 && s.item == item {
+        if s.count > 0 && s.item == item && s.cond >= ceil {
             total += s.count as u32;
         }
     }
@@ -305,12 +317,17 @@ pub fn inv_count(inv: &[ItemStack; INV_SLOTS], item: u16) -> u32 {
 /// canonical empty representation). Returns what was actually removed —
 /// callers check availability first, so anything less is defensive.
 pub fn inv_take(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u32) -> u32 {
+    inv_take_whole(inv, item, amount, 0)
+}
+
+/// [`inv_take`] from the stacks [`inv_count_whole`] counts.
+pub fn inv_take_whole(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u32, ceil: u16) -> u32 {
     let mut left = amount;
     for s in inv.iter_mut() {
         if left == 0 {
             break;
         }
-        if s.count > 0 && s.item == item {
+        if s.count > 0 && s.item == item && s.cond >= ceil {
             let take = (s.count as u32).min(left);
             s.count -= take as u16;
             left -= take;
@@ -340,6 +357,7 @@ fn shift_left(jobs: &mut [CraftJob; CRAFT_QUEUE], from: usize) {
 #[allow(clippy::too_many_arguments)]
 pub fn enqueue(
     cc: &CraftContent,
+    gc: &GatherContent,
     sc: &crate::skin::SkinContent,
     unlocks: u32,
     dc: &DeployContent,
@@ -418,14 +436,26 @@ pub fn enqueue(
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_QUEUE_FULL, 0);
         return;
     };
+    // A tool or a weapon spent as an input must be whole, because a cancel
+    // refunds at the ceiling (`inv_count_whole`). That is an item carrying
+    // condition in a stack of one: the shipped revolver is the only such
+    // input. A stackable one exists only in the probe fixtures, which mint,
+    // merge and spend it by the count.
+    let ceil = |item: u16| {
+        if gc.stack_max_of(item) == 1 {
+            gc.cond_max_of(item)
+        } else {
+            0
+        }
+    };
     for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
-        if inv_count(&p.inv, item) < per as u32 * count as u32 {
+        if inv_count_whole(&p.inv, item, ceil(item)) < per as u32 * count as u32 {
             events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_INPUTS, 0);
             return;
         }
     }
     for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
-        inv_take(&mut p.inv, item, per as u32 * count as u32);
+        inv_take_whole(&mut p.inv, item, per as u32 * count as u32, ceil(item));
     }
     p.jobs[slot] = CraftJob {
         recipe,
@@ -705,7 +735,7 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut p = player(&[(1, 2), (2, 1)]);
 
-        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
+        enqueue(&cc, &gc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
         assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
         assert_eq!(ev.entries()[0].b, REFUSE_CR_SKIN, "not owned");
         assert_eq!(p.jobs[0].remaining, 0, "nothing queued");
@@ -714,11 +744,11 @@ mod tests {
         // Owned, but the skin does not fit this recipe's output.
         p.skins.insert(0);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 0, 1, 7, &mut ev);
+        enqueue(&cc, &gc, &sc, 0, &dc, &nod, 10, &mut p, 0, 1, 7, &mut ev);
         assert_eq!(ev.entries()[0].b, REFUSE_CR_SKIN, "item 2 is not item 3");
 
         let mut ev = EventQueue::default();
-        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
+        enqueue(&cc, &gc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
         assert_eq!(ev.len(), 0, "owned and fitting: queued");
         assert_eq!(p.jobs[0].skin, 7);
         step_nospill(&cc, &gc, p.craft_done_at, &mut p, &mut ev);
@@ -739,7 +769,7 @@ mod tests {
         let mut p = player(&[(1, 2), (2, 1)]);
 
         let mut ev = EventQueue::default();
-        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
         assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
         assert_eq!(ev.entries()[0].b, REFUSE_CR_OWNED, "not given the row");
         assert_eq!(p.jobs[0].remaining, 0, "nothing queued");
@@ -747,7 +777,7 @@ mod tests {
 
         p.skins.insert(0);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
         assert_eq!(ev.len(), 0, "owned: queued");
         step_nospill(&cc, &gc, p.craft_done_at, &mut p, &mut ev);
         let made = p.inv.iter().find(|s| s.item == 3).expect("made");
@@ -860,13 +890,63 @@ mod tests {
         assert_eq!(inv_take(&mut p.inv, 0, 9), 2, "partial take reports");
     }
 
+    /// A worn input is not an input (exploit sweep 2026-10): the queue
+    /// keeps no record of the condition it took and a cancel refunds at the
+    /// ceiling, so a broken revolver queued into an autoturret and
+    /// cancelled came back mended. Only whole stacks are spent; a worn one
+    /// is left where it lies, and a whole one round-trips whole.
+    #[test]
+    fn a_worn_input_is_not_spent_and_a_cancel_mends_nothing() {
+        let (mut cc, mut gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
+        // The shipped shape: recipe 0 wants one item 0, a stack of one
+        // carrying condition (the probe's 400), as the revolver is.
+        cc.recipes[0].inputs[0] = (0, 1);
+        gc.stack_max[0] = 1;
+        let broken = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        let mut p = player(&[]);
+        p.inv[0] = broken;
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 0, 1, 0, &mut ev);
+        let e = ev.entries()[ev.len() - 1];
+        assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_CR_INPUTS));
+        assert_eq!(p.inv[0], broken, "nothing spent");
+        assert_eq!(p.jobs[0], CraftJob::default());
+
+        // A whole one beside it is spent instead, and a cancel gives back
+        // that one, whole; the broken one stays broken.
+        p.inv[1] = ItemStack {
+            cond: 400,
+            ..broken
+        };
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 0, 1, 0, &mut ev);
+        assert!(ev.is_empty(), "queued: {:?}", ev.entries());
+        assert_eq!((p.inv[0], p.inv[1].count), (broken, 0), "the whole one");
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        cancel(&cc, &gc, &dc, &nod, 11, &mut p, 0, &mut spill);
+        assert_eq!(p.inv[0], broken, "a cancel mended the broken one");
+        assert_eq!(
+            p.inv[1],
+            ItemStack {
+                cond: 400,
+                ..broken
+            }
+        );
+    }
+
     #[test]
     fn enqueue_consumes_starts_and_step_pays() {
         let (cc, gc) = fixture();
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 10)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &SK, 0, &dc, &nod, 100, &mut p, 0, 2, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 100, &mut p, 0, 2, 0, &mut ev);
         assert!(ev.is_empty(), "no refusal");
         assert_eq!(
             p.jobs[0],
@@ -897,7 +977,7 @@ mod tests {
 
     #[test]
     fn refusals_name_their_reason_and_change_nothing() {
-        let (cc, _gc) = fixture();
+        let (cc, gc) = fixture();
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 100), (1, 100), (2, 100)]);
         let mut ev = EventQueue::default();
@@ -912,7 +992,7 @@ mod tests {
         ];
         for (recipe, count, reason) in cases {
             enqueue(
-                &cc, &SK, 0, &dc, &nod, 10, &mut p, recipe, count, 0, &mut ev,
+                &cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, recipe, count, 0, &mut ev,
             );
             let e = ev.entries()[ev.len() - 1];
             assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, reason));
@@ -921,12 +1001,12 @@ mod tests {
         // to the station — so the ordering above is a priority and not a
         // check that swallowed the other one.
         p.known |= 1 << 2;
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, REFUSE_CR_STATION));
         // Missing inputs: recipe 1 wants 2×item1 + 1×item2 per unit.
         let mut poor = player(&[(1, 1)]);
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut poor, 1, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut poor, 1, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.b, REFUSE_CR_INPUTS);
         assert_eq!(inv_count(&poor.inv, 1), 1, "nothing consumed on refusal");
@@ -934,11 +1014,11 @@ mod tests {
         // Queue full: fill all four, the fifth bounces.
         let mut busy = player(&[(0, 90)]);
         for _ in 0..CRAFT_QUEUE {
-            enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
+            enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
         }
         assert!(busy.jobs.iter().all(|j| j.remaining == 1));
         let before = ev.len();
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
         assert_eq!(ev.entries()[before].b, REFUSE_CR_QUEUE_FULL);
     }
 
@@ -947,12 +1027,12 @@ mod tests {
     /// ignored, and the head cannot be fast-tracked.
     #[test]
     fn fast_track_pulls_a_job_to_the_head() {
-        let (cc, _) = fixture();
+        let (cc, gc) = fixture();
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev);
-        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev);
         let before = p.jobs;
         fast_track(&cc, &dc, &nod, 55, &mut p, 1, 0);
         assert_eq!(p.jobs, before, "a wrong recipe moved the queue");
@@ -969,8 +1049,8 @@ mod tests {
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev); // 9 × item0
-        enqueue(&cc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev); // 4 × item1, 2 × item2
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev); // 9 × item0
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev); // 4 × item1, 2 × item2
         assert_eq!(inv_count(&p.inv, 0), 21);
         assert_eq!(p.craft_done_at, 52);
 
@@ -1046,7 +1126,7 @@ mod tests {
         use crate::build::{BuildContent, Pieces, LOC_PLANE};
         use crate::movement::Body;
 
-        let (cc, _gc) = fixture();
+        let (cc, gc) = fixture();
         let dc = crate::deploy::DeployContent::probe_fixture();
         let mut nod = Deploys::new();
         let mut ev = EventQueue::default();
@@ -1081,7 +1161,7 @@ mod tests {
         // Beside the bench, the workbench recipe enqueues — once its
         // blueprint is learned, which row 2 also wants (research v0).
         p.known |= 1 << 2;
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         assert_eq!(
             p.jobs[0],
             CraftJob {
@@ -1097,7 +1177,7 @@ mod tests {
         let mut far = player(&[(0, 10)]);
         far.known |= 1 << 2;
         far.body = Body::at(SEED, &hv(SEED), 2048.0 + STATION_RADIUS_M + 2.0, 2048.0);
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut far, 2, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut far, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_CR_STATION));
     }
@@ -1117,7 +1197,7 @@ mod tests {
         // and a tier-2 bench def appended past the shared set (the
         // `boxed_fixture` precedent — local to this test, so the parity
         // and replay worlds never see it).
-        let (mut cc, _gc) = fixture();
+        let (mut cc, gc) = fixture();
         cc.recipes[2].station = STATION_WORKBENCH2;
         let mut dc = crate::deploy::DeployContent::probe_fixture();
         let wb2_row = dc.def_count as usize;
@@ -1163,7 +1243,7 @@ mod tests {
             ev.entries()[ev.len() - 1].code,
             crate::world::EV_DEPLOY_PLACED
         );
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_CR_STATION));
 
@@ -1189,7 +1269,7 @@ mod tests {
             ev.entries()[ev.len() - 1].code,
             crate::world::EV_DEPLOY_PLACED
         );
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         assert_eq!(
             p.jobs[0],
             CraftJob {
@@ -1226,7 +1306,9 @@ mod tests {
             crate::footprint::Pose::CENTRE,
             &mut ev,
         );
-        enqueue(&cc1, &SK, 0, &dc, &only_wb2, 10, &mut q, 2, 1, 0, &mut ev);
+        enqueue(
+            &cc1, &gc, &SK, 0, &dc, &only_wb2, 10, &mut q, 2, 1, 0, &mut ev,
+        );
         assert_eq!(
             q.jobs[0],
             CraftJob {
@@ -1263,7 +1345,7 @@ mod tests {
         }
         let mut ev = EventQueue::default();
         let mut spill = [ItemStack::default(); INV_SLOTS];
-        enqueue(&cc, &SK, 0, &dc, &nod, 10, &mut p, 0, 2, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 10, &mut p, 0, 2, 0, &mut ev);
         step(&cc, &gc, &dc, &nod, 12, &mut p, &mut ev, &mut spill);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.code, EV_CRAFT_DONE);
@@ -1327,7 +1409,7 @@ mod tests {
         use crate::movement::Body;
         const SEED: u64 = 20260731;
 
-        let (mut cc, _gc) = fixture();
+        let (mut cc, gc) = fixture();
         cc.recipes[1].ticks = 40;
         let mut dc = crate::deploy::DeployContent::probe_fixture();
         let wb2 = dc.def_count;
@@ -1373,7 +1455,7 @@ mod tests {
                     crate::world::EV_DEPLOY_PLACED
                 );
             }
-            enqueue(&cc, &SK, 0, &dc, &nod, 100, &mut p, 1, 1, 0, &mut ev);
+            enqueue(&cc, &gc, &SK, 0, &dc, &nod, 100, &mut p, 1, 1, 0, &mut ev);
             assert_eq!(p.jobs[0].remaining, 1, "the craft queued");
             p.craft_done_at - 100
         };
@@ -1427,7 +1509,7 @@ mod tests {
             crate::footprint::Pose::CENTRE,
             &mut ev,
         );
-        enqueue(&cc, &SK, 0, &dc, &nod, 100, &mut p, 1, 3, 0, &mut ev);
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 100, &mut p, 1, 3, 0, &mut ev);
         assert_eq!(
             p.craft_done_at, 120,
             "the first unit starts at the bench: half"

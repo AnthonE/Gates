@@ -2215,3 +2215,97 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
         "the client's mirror of the body must agree with the store"
     );
 }
+
+// --- the turret: the view asks who it spares ------------------------------
+
+/// A player's turret carries no lock, and its box is shown only to the
+/// hands it spares (exploit sweep 2026-10), the move verb's own rule
+/// (`sim-core/tests/turret.rs`). Delete the turret filter in the view's
+/// resolution (`core.rs`) and the stranger is streamed its rounds.
+#[test]
+fn a_turret_shows_its_rounds_to_its_owner_and_not_a_stranger() {
+    use sim_core::deploy::{ARCH_TURRET, PLACE_ANY};
+    const TURRET_ITEM: u16 = 40;
+    let stats = ShardStats::default();
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.gather.stack_max[TURRET_ITEM as usize] = 1;
+    core.world.gather.item_count = core.world.gather.item_count.max(TURRET_ITEM + 1);
+    let mut d = DeployContent::probe_fixture();
+    let row = d.def_count;
+    d.defs[row as usize] = DeployDef {
+        arch: ARCH_TURRET,
+        placement: PLACE_ANY,
+        hp: 1000,
+        item: TURRET_ITEM,
+        ..DeployDef::INERT
+    };
+    d.def_count += 1;
+    core.world.deploy = d;
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x - 1.5, z);
+    core.world.players[w1].body = Body::at(SEED, hv(SEED), x + 1.5, z);
+    core.world.players[w0].inv[3] = ItemStack {
+        item: TURRET_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w0].frame.sel = 3;
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let key = box_key(cx, cz, 0, LOC_PLANE);
+    let i = core.world.deploys.box_index(key).expect("the turret's box");
+    let rounds = ItemStack {
+        item: FILLER,
+        count: COUNT_A,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.deploys.set_box_slot(i, SLOT_A, rounds);
+
+    let mut seen = Vec::new();
+    ask(&mut core, 1, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let got = syncs(&seen);
+    assert!(
+        got.iter().any(|(slot, ..)| *slot == 1),
+        "the refused view must degrade to the close: {got:?}"
+    );
+    assert!(
+        got.iter()
+            .filter(|(slot, ..)| *slot == 1)
+            .all(|(_, kind, _, _, rows)| *kind == CONT_SELF && rows.is_empty()),
+        "a turret's rounds crossed to a hand it does not spare: {got:?}"
+    );
+
+    let mut owner_seen = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut owner_seen);
+    }
+    let got = syncs(&owner_seen);
+    assert_eq!(got.len(), 1, "one open, one payment: {got:?}");
+    let (slot, kind, handle, _, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle), (0, CONT_BOX, key));
+    assert_eq!(
+        rows,
+        &vec![(SLOT_A as u8, rounds)],
+        "the owner sees its rounds"
+    );
+}

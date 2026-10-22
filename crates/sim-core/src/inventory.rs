@@ -244,14 +244,22 @@ pub fn takes_deposits(kind: u8) -> bool {
 /// backward arm now asks `plan_move`'s own merge predicate, negated
 /// (`a_take_onto_the_same_item_at_another_cond_is_a_deposit`).
 pub fn deposit_refused(from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
-    let forward = !takes_deposits(to_kind) && from_kind != to_kind && src.count > 0;
+    (!takes_deposits(to_kind) && deposits_into(to_kind, from_kind, to_kind, src, dst))
+        || (!takes_deposits(from_kind) && deposits_into(from_kind, from_kind, to_kind, src, dst))
+}
+
+/// Would this move put a stack into the `kind` side, forward or by a swap
+/// sending `dst` backwards? [`deposit_refused`] asks it of a kind that
+/// takes nothing; `World::move_item` asks it of one container, because a
+/// carcass is a `CONT_BAG` like a death bag, and take-only.
+pub fn deposits_into(kind: u8, from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
+    let forward = to_kind == kind && from_kind != kind && src.count > 0;
     // Only a SWAP sends anything backwards, and everything `plan_move`
     // will not merge swaps: its merge branch (equal item, skin and cond)
     // returns a `Transfer` before the swap arm is reached, and a partial
     // onto anything else is `REFUSE_M_NO_ROOM` rather than either.
     let merges = dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond;
-    let swapped_back =
-        !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0 && !merges;
+    let swapped_back = from_kind == kind && to_kind != kind && dst.count > 0 && !merges;
     forward || swapped_back
 }
 

@@ -3083,10 +3083,35 @@ impl World {
             );
             return;
         }
+        // What the body was born holding, and only that, is cut at the
+        // blade's rate: the species' rows and a site guard's, or a player
+        // corpse's share. The move verb keeps a carcass take-only; this is
+        // the second lock on the same door.
+        let Some(owner) = self.backpacks.entries().get(c.bag).map(|b| b.owner) else {
+            return;
+        };
+        let (mc, bc) = (&self.mob, &self.backpack);
+        let grown = |item: u16| {
+            let born = |r: &ItemStack| r.item == item && r.count > 0 && r.item != NO_ITEM;
+            if owner == crate::backpack::CORPSE_OWNER {
+                return bc.body.iter().any(born);
+            }
+            let Some(slot) = crate::mob::slot_of_id(owner) else {
+                return false;
+            };
+            let guard: &[ItemStack] = if crate::mob::guard_site_of(slot).is_some() {
+                &mc.guard_loot
+            } else {
+                &[]
+            };
+            let def = mc.def(crate::mob::kind_of(slot));
+            def.loot.iter().chain(guard).any(born)
+        };
         let cut = self.backpacks.butcher(
             c.bag,
             &self.gather,
             row.pct,
+            grown,
             &mut self.players[i],
             spill,
             &mut self.events,
@@ -3688,7 +3713,13 @@ impl World {
                 }
                 // A vending machine's stock and takings move only for the
                 // hands it answers to (`shop.rs`); anyone may look and buy.
-                if self.deploys.oven_states()[i].arch == deploy::ARCH_VENDING
+                // A player's turret's rounds likewise: the reference loots
+                // one only for its authorised, and ours are the hands it
+                // spares (`turret::spares`). It carries no lock, so this is
+                // all that keeps a passer-by from emptying or stuffing it.
+                // The server's container view asks the same (`core.rs`).
+                let arch = self.deploys.oven_states()[i].arch;
+                if (arch == deploy::ARCH_VENDING || arch == deploy::ARCH_TURRET)
                     && !crate::shop::may_edit(&self.pieces, &self.deploys, i, pid)
                 {
                     self.events
@@ -3835,6 +3866,20 @@ impl World {
         // than a version later: a take OUT of a crate onto an occupied
         // slot is a SWAP, and a swap puts the occupant *into* the crate.
         if inventory::deposit_refused(from_kind, to_kind, src, dst) {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
+            return;
+        }
+        // A carcass is take-only too, as the reference's corpses are: a
+        // mob-tagged owner (`may_loot`'s rule) — an animal's, a guard's, a
+        // player's corpse, wreckage. Load-bearing, not tidiness: a cut pays
+        // a carcass's stack at the blade's rate (`World::butcher`, 150% for
+        // a metal hatchet), so a stack parked in one came back half again.
+        // Both landing sites, as above.
+        if ground == inventory::CONT_BAG
+            && self.backpacks.entries()[ci].owner & crate::limits::MOB_ID_TAG != 0
+            && inventory::deposits_into(inventory::CONT_BAG, from_kind, to_kind, src, dst)
+        {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
             return;
@@ -6269,6 +6314,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     craft::enqueue(
                         &self.craft,
+                        &self.gather,
                         &self.skins,
                         self.works.unlocks,
                         &self.deploy,
@@ -7234,6 +7280,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
                     self.world_conts.open(
                         self.seed,
+                        self.arc.salt,
                         &self.scatter,
                         &self.haven,
                         self.pieces.cols(),
@@ -8427,10 +8474,20 @@ impl World {
                 // (`grounditem::rest_spot`), so loot can come to rest
                 // downhill of the barrel rather than floating at the
                 // height the barrel stood at.
+                // The roll draws on the world's secret too (`loot::salted`):
+                // the seed, the cell and the tick are all a client's, and
+                // the last swing's tick is one it chooses.
                 let mut items = [ItemStack::default(); INV_SLOTS];
                 let key = cell_key(cx, cz);
-                self.loot
-                    .roll_into(table as usize, &self.gather, seed, key, tick, &mut items);
+                let loot_seed = crate::loot::salted(seed, self.arc.salt);
+                self.loot.roll_into(
+                    table as usize,
+                    &self.gather,
+                    loot_seed,
+                    key,
+                    tick,
+                    &mut items,
+                );
                 let _ = qy;
                 self.ground_items.scatter(
                     &self.backpack,
