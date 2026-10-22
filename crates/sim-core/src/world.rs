@@ -7609,9 +7609,16 @@ impl World {
             return false;
         }
         let dmg = ((speed - FALL_SAFE_MPS) * FALL_HP_PER_MPS).min(u16::MAX as f32) as u16;
-        let id = self.players[i].id;
+        let p = self.players[i];
         if survival::fall(&mut self.players[i], dmg, &mut self.events) == survival::Step::Died {
-            self.down_or_die(i, id, DEATH_BY_FALL, NO_ITEM, 0, false);
+            if p.wounded {
+                // A downed body's drop only finishes what its downer
+                // started: credited under the stored facts, as the
+                // bleed-out credits them (`wound_tick`), not to the body.
+                self.die(i, p.death_by, p.death_cause, p.death_item, p.death_range_cm);
+            } else {
+                self.down_or_die(i, p.id, DEATH_BY_FALL, NO_ITEM, 0, false);
+            }
             return true;
         }
         false

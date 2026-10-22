@@ -12,8 +12,8 @@
 //! special case.
 
 use crate::stats::{
-    AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS, JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS,
-    PLAYOUT_CLAIM_MARGIN_TICKS,
+    AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS, FAVOUR_DISAGREE_PERSIST_TICKS,
+    JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS, PLAYOUT_CLAIM_MARGIN_TICKS,
 };
 use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
@@ -214,6 +214,10 @@ pub struct ClientNetState {
     /// bound on how stale its acks may claim to be (`rtt_bounded_view`).
     /// 0 is unmeasured and bounds nothing.
     pub transport_rtt_us: u32,
+    /// The world tick this connection's acks first sat past that bound
+    /// plus the band, every datagram since; `None` while they sit inside.
+    /// Only a run of `FAVOUR_DISAGREE_PERSIST_TICKS` is counted.
+    over_band_since: Option<u64>,
     /// The bound in force: the most playout favour is priced at. Never
     /// below `INTERP_DELAY_TICKS`, the delay every client starts at and
     /// every agent reports, so neither is ever capped. Not sim state:
@@ -539,6 +543,7 @@ impl ClientNetState {
             ack_note_tick: 0,
             playout_peak: (0, 0),
             transport_rtt_us: 0,
+            over_band_since: None,
             playout_cap: INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
@@ -819,27 +824,49 @@ impl ClientNetState {
         }
     }
 
-    /// The view a datagram arriving at `now` may claim: no staler than this
-    /// connection's transport round trip explains (`stats::rtt_age_bound`).
+    /// The most ack age this connection's transport round trip explains
+    /// (`stats::rtt_age_bound`), plus `extra`: the sim loop's own catch-up
+    /// slack (`ShardCore::note_pace_backlog`), which quinn never sees.
+    /// `None` while the round trip is unmeasured.
+    pub fn age_bound(&self, extra: u16) -> Option<u16> {
+        crate::stats::rtt_age_bound(self.transport_rtt_us).map(|b| b.saturating_add(extra))
+    }
+
+    /// The view a datagram arriving at `now` (world tick `tick`) may claim:
+    /// no staler than [`Self::age_bound`] explains.
     /// `findings/lagcomp-design-20260818.md` §6.2's wall-clock check, read
     /// off quinn rather than a clock: the ack-history cross-check in
     /// `ShardCore::push_input` cannot see a client that simply acks late,
     /// because its history is those same late acks, and holding them back
-    /// on a 20 ms link bought the whole `REWIND_MAX_TICKS`. A claim past
-    /// the band is counted as a disagreement. An age past
-    /// `AIM_STALE_CEILING_TICKS` (or a view from the future) is left for
-    /// `favour_for` to refuse outright: clamping it would turn a refused
-    /// ack into a paid one.
-    pub fn rtt_bounded_view(&mut self, now: u16, view: u16) -> u16 {
-        let Some(bound) = crate::stats::rtt_age_bound(self.transport_rtt_us) else {
+    /// on a 20 ms link bought the whole `REWIND_MAX_TICKS`. Acking late at
+    /// the game level cannot move quinn's round trip; delaying QUIC's own
+    /// ACK frames from a patched stack can (`stats::SlotRtt`), and buys
+    /// what an honest client on that trip is owed.
+    ///
+    /// The excess is clamped from the first datagram, but counted as a
+    /// disagreement only once every datagram has sat past the band for
+    /// `FAVOUR_DISAGREE_PERSIST_TICKS`: one late frame or a jitter spike
+    /// is not an accusation. An age past `AIM_STALE_CEILING_TICKS` (or a
+    /// view from the future) is left for `favour_for` to refuse outright:
+    /// clamping it would turn a refused ack into a paid one.
+    pub fn rtt_bounded_view(&mut self, now: u16, view: u16, tick: u64, extra: u16) -> u16 {
+        let Some(bound) = self.age_bound(extra) else {
             return view;
         };
         let age = now.wrapping_sub(view);
-        if age <= bound || age > AIM_STALE_CEILING_TICKS {
+        if age > AIM_STALE_CEILING_TICKS {
             return view;
         }
-        if age - bound > FAVOUR_DISAGREE_BAND_TICKS {
-            self.note_ack_regression();
+        if age <= bound + FAVOUR_DISAGREE_BAND_TICKS {
+            self.over_band_since = None;
+        } else {
+            let since = *self.over_band_since.get_or_insert(tick);
+            if tick.saturating_sub(since) >= FAVOUR_DISAGREE_PERSIST_TICKS {
+                self.note_ack_regression();
+            }
+        }
+        if age <= bound {
+            return view;
         }
         now.wrapping_sub(bound)
     }
@@ -1523,29 +1550,72 @@ mod tests {
     }
 
     /// The transport's round trip bounds how stale an ack may claim to be:
-    /// nothing until measured, a late claim cut to the bound and counted,
-    /// and an ack past the ceiling left for `favour_for` to refuse.
+    /// nothing until measured, a late claim cut to the bound, and an ack
+    /// past the ceiling left for `favour_for` to refuse.
     #[test]
     fn a_late_ack_is_held_to_the_round_trip() {
         let mut c = ClientNetState::new();
         c.reset(1);
         let now = 1000u16;
-        assert_eq!(c.rtt_bounded_view(now, now - 12), now - 12, "unmeasured");
+        assert_eq!(
+            c.rtt_bounded_view(now, now - 12, 0, 0),
+            now - 12,
+            "unmeasured"
+        );
         // 20 ms: one tick of trip, plus the slack.
         c.transport_rtt_us = 20_000;
         let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
-        // The field, not the drain: the drain has one reader
-        // (`lagcomp_measure::the_disagreement_relay_has_one_reader`).
-        assert_eq!(c.rtt_bounded_view(now, now - 3), now - 3);
-        assert_eq!(c.ack_regressions, 0);
-        assert_eq!(c.rtt_bounded_view(now, now - 12), now - bound);
-        assert_eq!(c.ack_regressions, 1);
+        assert_eq!(c.rtt_bounded_view(now, now - 3, 0, 0), now - 3);
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 0), now - bound);
+        // The sim loop's catch-up slack widens the bound by what it says.
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 3), now - bound - 3);
         let ancient = now.wrapping_sub(AIM_STALE_CEILING_TICKS + 1);
-        assert_eq!(c.rtt_bounded_view(now, ancient), ancient);
-        assert_eq!(c.rtt_bounded_view(now, now + 1), now + 1, "from the future");
+        assert_eq!(c.rtt_bounded_view(now, ancient, 0, 0), ancient);
+        assert_eq!(
+            c.rtt_bounded_view(now, now + 1, 0, 0),
+            now + 1,
+            "from the future"
+        );
         // 250 ms: eight ticks of trip, all of them owed.
         c.transport_rtt_us = 250_000;
-        assert_eq!(c.rtt_bounded_view(now, now - 12), now - 12);
+        assert_eq!(c.rtt_bounded_view(now, now - 12, 0, 0), now - 12);
+    }
+
+    /// Clamped from the first datagram, accused only when it persists: a
+    /// run of acks past the bound and the band counts once it has lasted
+    /// `FAVOUR_DISAGREE_PERSIST_TICKS`, and one datagram inside the band
+    /// (a spike that passed) starts the run over.
+    #[test]
+    fn only_a_persistent_late_ack_is_counted() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        let late = bound + FAVOUR_DISAGREE_BAND_TICKS + 1;
+        let p = FAVOUR_DISAGREE_PERSIST_TICKS;
+        // The field, not the drain: the drain has one reader
+        // (`lagcomp_measure::the_disagreement_relay_has_one_reader`).
+        for t in 0..p {
+            let now = 1000 + t as u16;
+            assert_eq!(c.rtt_bounded_view(now, now - late, t, 0), now - bound);
+        }
+        assert_eq!(c.ack_regressions, 0, "under a second of lateness");
+        // One honest datagram, and the run starts again.
+        assert_eq!(c.rtt_bounded_view(2000, 2000 - 2, p, 0), 2000 - 2);
+        for t in p + 1..2 * p + 1 {
+            c.rtt_bounded_view(2000, 2000 - late, t, 0);
+        }
+        assert_eq!(c.ack_regressions, 0, "the honest datagram reset the run");
+        c.rtt_bounded_view(2000, 2000 - late, 2 * p + 1, 0);
+        c.rtt_bounded_view(2000, 2000 - late, 2 * p + 1, 0);
+        assert_eq!(c.ack_regressions, 2, "every datagram once it persists");
+        // Within the band of the bound: clamped, never accused.
+        c.over_band_since = None;
+        for t in 0..3 * p {
+            let v = c.rtt_bounded_view(2000, 2000 - bound - FAVOUR_DISAGREE_BAND_TICKS, t, 0);
+            assert_eq!(v, 2000 - bound);
+        }
+        assert_eq!(c.ack_regressions, 2);
     }
 
     /// A starved tick earns its catch-up only when the body stood still on

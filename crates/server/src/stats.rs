@@ -80,13 +80,24 @@ const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
 /// `SNAPSHOT_INTERVAL_TICKS` apart, so one datagram of reordering is one
 /// snapshot of gap — the band is two of them.
 ///
-/// **"Persistent" is the operator reading a rate, not a state machine.**
-/// `favour_disagree` is a counter, matching the aim-staleness block's
-/// stated decision below against per-client tables; one bump is noise and a
-/// climbing rate on a quiet shard is the accusation.
+/// **"Persistent" is the operator reading a rate**: `favour_disagree` is a
+/// counter, matching the aim-staleness block's stated decision below
+/// against per-client tables; one bump is noise and a climbing rate on a
+/// quiet shard is the accusation. The round-trip check alone also waits
+/// out a run first ([`FAVOUR_DISAGREE_PERSIST_TICKS`]): its excess is what
+/// every honest client's late frame and jitter spike look like.
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the mint").
 pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
+
+/// Ticks a connection's acks must sit past its round-trip bound plus the
+/// band, on every datagram, before the excess counts as a disagreement
+/// (`ClientNetState::rtt_bounded_view`). The excess is clamped from the
+/// first datagram either way; this only decides who gets accused. A late
+/// render frame, a jitter spike, or quinn's smoothed reading catching up
+/// to a sudden rise passes; a client acking late on purpose is late on
+/// every datagram.
+pub const FAVOUR_DISAGREE_PERSIST_TICKS: u64 = TICK_HZ as u64;
 
 /// Ticks of ack age past the transport's own round trip a datagram may
 /// claim and still be paid (`ClientNetState::rtt_bounded_view`). The age at
@@ -108,12 +119,41 @@ pub fn rtt_age_bound(rtt_us: u32) -> Option<u16> {
     Some(trip.min(u64::from(AIM_STALE_CEILING_TICKS)) as u16 + RTT_AGE_SLACK_TICKS)
 }
 
+/// The most favour, all terms together, that an ack age bound of
+/// `age_bound` ([`rtt_age_bound`], plus any pacing slack) explains: that
+/// age, the shipped `INTERP_DELAY_TICKS` for the playout, and the pose
+/// lag, under `REWIND_MAX_TICKS`. Exactly what a client acking late at a
+/// constant offset and reporting the shipped delay already gets.
+///
+/// **Why the total and not each term**: the age is capped at the bound
+/// (`rtt_bounded_view`) and the playout at what the ack history's jitter
+/// supports (`priced_playout`), but separately they stack. A client could
+/// saw-tooth its acks under the bound to fake jitter, raise its playout
+/// cap, then hold its age at the bound and claim both: three ticks past
+/// this cap on loopback (`tests/lagcomp_e2e.rs`). An honest jittery client
+/// does not stack them: a snapshot that lands late makes its ack older and
+/// the distance it draws behind that ack shorter by as much, and its age
+/// sits under the slack. Measured on links of up to 150 ms of jitter, the
+/// cap never cut one.
+pub fn favour_cap(age_bound: u16) -> u8 {
+    let cap = age_bound + u16::from(INTERP_DELAY_TICKS) + SNAPSHOT_POSE_LAG_TICKS
+        - u16::from(REWIND_ACK_BIAS_TICKS);
+    cap.min(u16::from(REWIND_MAX_TICKS)) as u8
+}
+
 /// Each player slot's transport round trip, µs: quinn's smoothed RTT,
 /// stored by the connection's writer task on every wake (`net.rs`) and read
 /// by the sim thread at the favour mint's door (`ShardCore::tick`). A
 /// per-slot table, unlike the counters around it, because it is not a
-/// statistic: it bounds what a client's acks may claim, and a client cannot
-/// set it by acking late. 0 is unmeasured (`rtt_age_bound`).
+/// statistic: it bounds what a client's acks may claim. 0 is unmeasured
+/// (`rtt_age_bound`).
+///
+/// A client cannot raise it by acking snapshots late at the game level.
+/// A patched QUIC stack still can, by delaying its QUIC ACK frames: quinn
+/// samples `now − sent(largest_acked)`, and the `ack_delay` the peer
+/// reports only subtracts, so it can report 0. What that buys is the
+/// rewind an honest client on that round trip is owed, still capped by
+/// `REWIND_MAX_TICKS`; the browser build cannot do it at all.
 pub struct SlotRtt([AtomicU32; MAX_PLAYERS]);
 
 impl Default for SlotRtt {
@@ -1025,7 +1065,8 @@ pub struct ShardStats {
     pub favour_clamped: AtomicU64,
     /// Frames whose claimed view sat more than
     /// [`FAVOUR_DISAGREE_BAND_TICKS`] behind the server's own evidence of
-    /// what the client had received, or behind what its transport round
+    /// what the client had received, or, on every datagram for
+    /// [`FAVOUR_DISAGREE_PERSIST_TICKS`], behind what its transport round
     /// trip explains ([`rtt_age_bound`]), so the claim was corrected down
     /// before a favour was minted (`ShardCore::push_input`).
     ///
@@ -1037,9 +1078,10 @@ pub struct ShardStats {
     pub favour_disagree: AtomicU64,
     /// Frames whose minted favour was lowered by the playout bound: the
     /// reported playout (wire v61) sat above what this connection's own ack
-    /// history supports (`ClientNetState::playout_cap`), and the cap cost
-    /// it rewind. A client asking to be rewound further than its link
-    /// explains.
+    /// history supports (`ClientNetState::playout_cap`), or the whole
+    /// favour above what its round trip explains ([`favour_cap`]), and the
+    /// cap cost it rewind. A client asking to be rewound further than its
+    /// link explains.
     pub favour_playout_high: AtomicU64,
 }
 

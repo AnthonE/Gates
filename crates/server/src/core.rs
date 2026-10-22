@@ -232,6 +232,11 @@ enum Piece {
 pub struct ShardCore {
     pub world: World,
     pub clients: Box<[ClientNetState]>,
+    /// Ticks the sim loop's last catch-up sprint ran ahead of every
+    /// client's acks, and the world tick that slack lapses at
+    /// ([`Self::note_pace_backlog`]). Added to each connection's ack age
+    /// bound, which quinn's round trip cannot see.
+    pace_slack: (u16, u64),
     /// Joins/leaves queued between ticks (accept/cleanup driven). Overflow
     /// policy: refuse — the caller retries next tick.
     ///
@@ -753,6 +758,7 @@ impl ShardCore {
         Self {
             world: World::with_haven(seed, haven),
             clients: clients.into_boxed_slice(),
+            pace_slack: (0, 0),
             queued: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
             queued_len: 0,
             cmd_buf: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
@@ -2644,6 +2650,35 @@ impl ShardCore {
         Some((id, save))
     }
 
+    /// The sim loop is `behind` whole ticks late and about to sprint them
+    /// back to back (`net.rs`'s pacing, after a stall). The world tick then
+    /// races ahead of every client's acks with no change in any round trip,
+    /// so for the second after, while acks made before the sprint are still
+    /// arriving, each connection's age bound and favour cap allow
+    /// `behind + 1` more ticks. Without it every honest client was clamped
+    /// through each catch-up and counted as a disagreement.
+    pub fn note_pace_backlog(&mut self, behind: u16) {
+        if behind == 0 {
+            return;
+        }
+        let tick = self.world.tick;
+        let held = self.pace_slack_now();
+        self.pace_slack = (
+            held.max(behind.saturating_add(1)),
+            tick + u64::from(sim_core::limits::TICK_HZ),
+        );
+    }
+
+    /// The catch-up slack in force at this tick (`note_pace_backlog`).
+    fn pace_slack_now(&self) -> u16 {
+        let (slack, until) = self.pace_slack;
+        if self.world.tick <= until {
+            slack
+        } else {
+            0
+        }
+    }
+
     /// One decoded input datagram from this client: acks first (they ride
     /// every datagram), then the frame tail into the seq buffer, each frame
     /// stamped with the ack this datagram carried.
@@ -2686,12 +2721,16 @@ impl ShardCore {
     /// acks, so a client that acks late from the start agrees with itself
     /// and bought the whole rewind on any link. The table did get built —
     /// for a bound, not a counter (`ShardStats::slot_rtt_us`) — and quinn's
-    /// round trip now caps the claim too (`rtt_bounded_view`).
+    /// round trip now caps the claim too (`rtt_bounded_view`). Acking late
+    /// cannot move that round trip; a patched QUIC stack delaying its own
+    /// ACK frames can (`stats::SlotRtt`), and buys the rewind an honest
+    /// client on that trip is owed, under `REWIND_MAX_TICKS`.
     pub fn push_input(&mut self, slot: usize, dg: &InputDatagram) {
         // Read before the client is borrowed: `world` and `clients` are two
         // fields of one `self`, the `tick` loop's problem one method over.
         let now = self.world.tick as u16;
         let tick = self.world.tick; // the playout bound's decay clock, full width
+        let pace = self.pace_slack_now();
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
@@ -2728,7 +2767,7 @@ impl ShardCore {
         });
         // And no staler than the transport's round trip explains: the
         // history above is the client's own acks, so acking late fooled it.
-        let view = view.map(|v| c.rtt_bounded_view(now, v));
+        let view = view.map(|v| c.rtt_bounded_view(now, v, tick, pace));
         // The playout report is a level, not an edge: latest datagram
         // wins, exactly as the nudge and the gauges are levels in every
         // header going the other way. Clamped to the rails and capped at
@@ -2878,6 +2917,7 @@ impl ShardCore {
         // 16 bits, because `snapshot_ack` is: the subtraction is wrapping
         // and belongs to that method, not here.
         let now = self.world.tick as u16;
+        let pace = self.pace_slack_now();
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
             if !c.connected {
@@ -2937,11 +2977,20 @@ impl ShardCore {
                     // where the cap cost something: favour 0 is no
                     // measurable aim, and the ceiling would have bought
                     // the claim no more.
+                    //
+                    // And no more in all than the round trip explains
+                    // (`stats::favour_cap`): the age and the playout are
+                    // each bounded above, but a client faking jitter under
+                    // the age bound stacked the two.
                     let (playout, capped) = c.priced_playout();
-                    let favour = stats::favour_for(now, view, playout);
-                    if capped && favour > 0 && favour < sim_core::limits::REWIND_MAX_TICKS {
+                    let mut favour = stats::favour_for(now, view, playout);
+                    let cap = c.age_bound(pace).map_or(favour, stats::favour_cap);
+                    let cut =
+                        (capped && favour < sim_core::limits::REWIND_MAX_TICKS) || favour > cap;
+                    if cut && favour > 0 {
                         ShardStats::bump(&stats.favour_playout_high);
                     }
+                    favour = favour.min(cap);
                     stats.record_favour(favour);
                     // A throttle tick carries BOTH consumed frames — the
                     // older must still move the body (`InputPair`'s doc:
