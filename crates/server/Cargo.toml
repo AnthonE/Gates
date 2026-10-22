@@ -82,5 +82,8 @@ sha2 = "0.10"
 base64 = "0.22"
 
 [dev-dependencies]
+# Only for `tests/distrusted_roots.rs`: the root list ureq links, read as the
+# workspace resolves it. Already in the graph under ureq, so an edge, not a package.
+webpki-roots = "1"
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2", features = ["keccak"] }

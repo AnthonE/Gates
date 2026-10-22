@@ -138,3 +138,11 @@ debug = false
 # above depends on — and every gate runs `--release` regardless.
 [profile.dev.package.sim-core]
 opt-level = 3
+
+# webpki-roots, with the three eMudhra (emSign) roots removed after their
+# intermediates' keys were found brute-forceable (Oct 2026). ureq copies
+# `TLS_SERVER_ROOTS` wholesale and has no hook to filter it, so the list itself
+# is patched. `vendor/webpki-roots/README.md` says what changed and when to drop
+# it; `crates/server/tests/distrusted_roots.rs` keeps it that way.
+[patch.crates-io]
+webpki-roots = { path = "vendor/webpki-roots" }
