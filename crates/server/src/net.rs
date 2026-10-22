@@ -1014,6 +1014,8 @@ pub async fn spawn_shard(
             .map_err(|e| format!("ban file `{path}`: {e}"))?,
         None => crate::admin::Bans::new(),
     };
+    // The sim's copy, for the companion (`ShardCore::install_bans`).
+    let banned: Vec<PlayerKey> = bans.keys().to_vec();
 
     // The companion (`companion.rs`), only where the operator said. A bind
     // failure refuses the boot, as the status endpoint's does.
@@ -1117,6 +1119,7 @@ pub async fn spawn_shard(
                     answer_rx,
                     log,
                     admins,
+                    banned,
                     team_max,
                     trust,
                     companion,
@@ -4460,6 +4463,7 @@ fn sim_thread(
     mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
     admins: crate::admin::Admins,
+    banned: Vec<PlayerKey>,
     team_max: u8,
     trust: crate::trustlog::Tap,
     companion: crate::companion::Companion,
@@ -4473,6 +4477,7 @@ fn sim_thread(
     core.world.dev_spawn = dev_spawn;
     let (standing_rules, achievements) = install_tables(&mut core, tables);
     core.install_admins(admins);
+    core.install_bans(&banned);
     // The teams, kept beside the world save across a restart.
     core.teams = crate::team::Teams::open(
         team_max,

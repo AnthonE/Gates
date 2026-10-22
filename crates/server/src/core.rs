@@ -363,6 +363,12 @@ pub struct ShardCore {
     /// whose header says it holds no `ShardStats`: a list of addresses is
     /// data, not a side effect.
     admins: crate::admin::Admins,
+    /// The ban list as the companion sees it: an in-memory copy of the
+    /// accept loop's (never saved), seeded at boot and moved by the same
+    /// insert/unban the accept loop applies, under the same cap. A ban puts
+    /// the body to sleep and the sleeper stays; this is what keeps the
+    /// wallet off the companion's team view, chat and alerts meanwhile.
+    banned: crate::admin::Bans,
     /// The spectator seats (`NETCODE.md` §2.3): seat `i` is connection slot
     /// `MAX_PLAYERS + i`, and holds the connection slot it watches. `None` is
     /// an empty seat. A seat is **fed only while its target is still that
@@ -774,6 +780,7 @@ impl ShardCore {
             worn_seen: [WORN_NONE; MAX_PLAYERS],
             worn_dressed: 0,
             admins: crate::admin::Admins::none(),
+            banned: crate::admin::Bans::new(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
@@ -1231,6 +1238,13 @@ impl ShardCore {
             Some(slot) => *self.keys.get(slot)?.as_ref()?,
             None => self.sleepers.key_of(id)?,
         };
+        // A banned wallet is nobody to the companion: its sleeper stays on
+        // the island, but the page is a door too. Blank in the snap, it
+        // cannot sign in, and a session it already holds sees no team,
+        // hears no line and gets no alert.
+        if self.banned.contains(&key) {
+            return None;
+        }
         core::str::from_utf8(key.as_bytes())
             .ok()
             .map(str::to_ascii_lowercase)
@@ -1270,6 +1284,10 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        if self.banned.contains(&line.wallet) {
+            ShardStats::bump(&stats.chat_undelivered);
+            return;
+        }
         let id = (0..MAX_PLAYERS)
             .find(|&s| {
                 self.clients[s].connected
@@ -3634,6 +3652,13 @@ impl ShardCore {
         self.admins = admins;
     }
 
+    /// The ban list at boot, for the companion's copy (`banned`).
+    pub fn install_bans(&mut self, keys: &[PlayerKey]) {
+        for &k in keys {
+            let _ = self.banned.insert(k);
+        }
+    }
+
     /// Run one slash line on behalf of `from_slot` (admin v0).
     ///
     /// **Permission is the wallet's, never the client's claim.** The key
@@ -3811,6 +3836,9 @@ impl ShardCore {
                     self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
+                if let AdminAct::Ban { key, .. } = act {
+                    let _ = self.banned.insert(key);
+                }
                 logged = logged.with(id as i64, 0, 0);
             }
             AdminCmd::Unban { prefix } => {
@@ -3824,6 +3852,7 @@ impl ShardCore {
                     self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
+                let _ = self.banned.remove_prefix(&prefix);
                 logged = logged.note(prefix.as_bytes());
             }
             AdminCmd::Say { text } => {
