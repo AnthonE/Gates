@@ -1263,6 +1263,18 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROWS: usize = 128;
 
+/// Arrows one archer may have in flight at once (`ranged::draw`) — their
+/// share of `MAX_ARROWS`, so the store cannot be filled by a handful of
+/// accounts lobbing arrows high to keep them airborne for the whole
+/// `MAX_ARROW_LIFE_TICKS`, which refused every bow and rocket on the shard.
+/// The cadence alone allows seven: a bow nocks every 37 ticks and a lob
+/// lives 240. An aimed shot is down inside two seconds, so an archer
+/// shooting at anything holds one or two; four is a lob every cadence for
+/// over 3.7 s of flight, which is shooting at nothing past ~170 m.
+/// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy and in the
+/// same place — before the ammo leaves the quiver.
+pub const MAX_ARROWS_PER_OWNER: usize = 4;
+
 /// Stopped arrows not yet lying on the ground (`spent.rs`): the ones in a
 /// body, for at most the lodge, and the ones stopped this tick. Four full
 /// skies of arrows — nothing reaches this store without leaving

@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 61] = [
+    pub const RE_DERIVED: [&str; 62] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // A casino seat (`seat.rs`): a corpse stands up, and so does a new
@@ -860,6 +860,8 @@ mod carried_through_death {
         "bloom",
         "shot_at",
         "trigger_spent",
+        // …and a bow's draw is the arm's, not the person's.
+        "draw_on",
         "ws_cell",
         "ws_mark",
         "jobs",

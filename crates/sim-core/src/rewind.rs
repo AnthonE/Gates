@@ -170,13 +170,20 @@ impl Rewind {
     /// because "they don't move"; in this tree they do, and the exclusion
     /// buys nothing anyway — the ring is a fixed array, so skipping a slot
     /// saves zero bytes and adds a branch to the hot write.
+    ///
+    /// **A corpse is not.** It keeps its slot, its id and its body while
+    /// the death screen waits, so recorded as a pose it would answer for
+    /// the same id after the respawn: a shot favoured back across the wake
+    /// would land on the player now standing at the beach by hitting where
+    /// they died. Written empty, a dead tick falls back to the live body
+    /// as an empty slot's does.
     pub fn write_row(&mut self, tick: u64, players: &[Player; MAX_PLAYERS]) {
         let r = Self::row_of(tick);
         let row = &mut self.rows[r];
         let mut i = 0;
         while i < MAX_PLAYERS {
             let p = &players[i];
-            row[i] = if p.active {
+            row[i] = if p.active && !p.dead {
                 RewindPose::live(p)
             } else {
                 RewindPose::EMPTY

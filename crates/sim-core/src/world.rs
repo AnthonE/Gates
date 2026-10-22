@@ -1379,6 +1379,13 @@ pub struct Player {
     /// A semi-automatic fired on this pull, so the trigger has to come up
     /// before it fires again (`combat::Gun::semi`). Neither hashed nor saved.
     pub trigger_spent: bool,
+    /// The tick a bow's draw carries on to: `ranged::draw` writes `tick + 1`
+    /// on every tick it finds a drawn weapon in hand, and a bow it finds on
+    /// any other tick — moved into the selected slot, back out of the safe
+    /// zone, up off the ground — starts its draw then, aim held or not.
+    /// Neither hashed nor saved, `trigger_spent`'s rule: what it changes is
+    /// `next_swing`, which is both.
+    pub draw_on: u64,
     /// Weak-spot chase: the cell this player last landed a hit on
     /// (`NO_CELL` = none) and the mark there — its heading in the low byte,
     /// which way round it travels in `gather::WS_MARK_CCW`. Sim state.
@@ -1677,6 +1684,7 @@ impl Default for Player {
             bloom: 0,
             shot_at: 0,
             trigger_spent: false,
+            draw_on: 0,
             ws_cell: NO_CELL,
             ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -5490,6 +5498,7 @@ impl World {
                     bloom: 0,
                     shot_at: 0,
                     trigger_spent: false,
+                    draw_on: 0,
                     // Dry and warm: the store's record is a body that left
                     // the world, and it comes back the way a body wakes.
                     wet: 0,
@@ -8307,6 +8316,30 @@ impl World {
                 );
                 // A punch that met anything at all hurts the hand.
                 let punched = held == NO_ITEM && !matches!(reached, melee::Reached::Nothing);
+                // **A broken weapon lands no blow** (`NOW.md` §0dur 2): not
+                // on a body, an animal or a wall, as a broken bow looses
+                // nothing and a broken gun fires nothing. The node and the
+                // carcass refuse it in their own arms (`gather::land`,
+                // `butcher`). The broken tool's sentence, bounded by the
+                // swing cadence; `strike_due` held the slot to the one the
+                // swing was taken with.
+                let sel = self.players[i].frame.sel as usize;
+                let reached = match reached {
+                    melee::Reached::Body { .. }
+                    | melee::Reached::Mob(_)
+                    | melee::Reached::World { built: Some(_), .. }
+                        if self.combat.broken(self.players[i].inv[sel]) =>
+                    {
+                        self.events.push(
+                            EV_GATHER_REFUSED,
+                            self.players[i].id,
+                            ((held as u32) << 16) | gather::REFUSE_G_BROKEN,
+                            0,
+                        );
+                        melee::Reached::Nothing
+                    }
+                    r => r,
+                };
                 match reached {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
@@ -8928,6 +8961,8 @@ impl World {
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
+            // The world's secret, so the cone is not the seed's to read.
+            self.arc.salt,
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {

@@ -953,3 +953,50 @@ fn a_blow_at_a_wall_wears_the_weapon_and_a_conditionless_item_never() {
     assert!(swing_for_structure(&mut w, YAW_PLUS_X, chest) > 0);
     assert_eq!(held_cond(&w), 123, "an item with no condition was worn");
 }
+
+/// Whether the swing just landed was refused as a broken spear — the
+/// strike's own tick, which is the last one `swing_once` ran.
+fn refused_broken(w: &World) -> bool {
+    use sim_core::gather::REFUSE_G_BROKEN;
+    use sim_core::world::EV_GATHER_REFUSED;
+    w.events.entries().iter().any(|e| {
+        e.code == EV_GATHER_REFUSED && e.a == 1 && e.b == (SPEAR as u32) << 16 | REFUSE_G_BROKEN
+    })
+}
+
+/// **A broken weapon lands no blow** — on the man in front or on a wall —
+/// and says so in the broken tool's sentence, as a broken bow and a broken
+/// gun do (`NOW.md` §0dur 2). The same swing with one point of condition
+/// lands, so the refusal is the condition's and not the fixture's aim.
+#[test]
+fn a_broken_weapon_hurts_nobody_and_chips_nothing() {
+    let mut w = duel();
+    stand_east_of_attacker(&mut w, 1, 1.2);
+    let chest = look_at_height(&w, 1.0);
+    w.combat.cond_max[SPEAR as usize] = COND;
+    w.players[0].inv[0].cond = 0;
+    assert_eq!(
+        swing_at(&mut w, YAW_PLUS_X, chest),
+        0,
+        "a broken spear drew blood"
+    );
+    assert!(refused_broken(&w), "and the refusal was not said");
+    w.players[0].inv[0].cond = 1;
+    assert_eq!(swing_at(&mut w, YAW_PLUS_X, chest), SPEAR_DAMAGE);
+    assert!(!refused_broken(&w), "a whole spear was refused");
+
+    let mut w = duel();
+    let (cx, cz) = two_at_a_buildable_edge(&mut w);
+    let chest = look_at_height(&w, 1.0);
+    place_at(&mut w, cx, cz, PIECE_WALL, LOC_EDGE_XLO);
+    w.combat.cond_max[SPEAR as usize] = COND;
+    w.players[0].inv[0].cond = 0;
+    assert_eq!(
+        swing_for_structure(&mut w, YAW_PLUS_X, chest),
+        0,
+        "a broken spear chipped the wall"
+    );
+    assert!(refused_broken(&w), "and the refusal was not said");
+    w.players[0].inv[0].cond = 1;
+    assert!(swing_for_structure(&mut w, YAW_PLUS_X, chest) > 0);
+}
