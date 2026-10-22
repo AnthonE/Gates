@@ -212,6 +212,10 @@ population = $POPULATION
 # The patrol heli's first pass lands five minutes after boot and one burst
 # downs a body standing in the open: that was every probe death on a slow box.
 dev_heli = false
+# The sky the probe draws (\`--hour\`/\`--weather\`, noon and clear unpinned) is
+# the sky the shard runs: a storm the frame never shows still soaks and
+# chills the probe to death (\`--wipe-hour 50\` on seed 20260731).
+dev_env = "${WEATHER:-clear},${HOUR:-noon}"
 TOML
 if [ -n "$WIPE_HOUR" ]; then
   echo "dev_arc_hour = $WIPE_HOUR" >> "$CONF"
