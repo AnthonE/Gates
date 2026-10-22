@@ -5044,7 +5044,14 @@ impl World {
     fn die(&mut self, slot: usize, by: u32, cause: u8, item: u16, range_cm: u16) {
         // A copy of the body as it fell: the bag is built from it after
         // the slot is already being written, and `Player` is `Copy`.
-        let body = self.players[slot];
+        let mut body = self.players[slot];
+        // Fallen in a card doorway: out at the reader now, where the sweep
+        // puts the corpse when the leaf shuts on it (`card_door_sweep`), so
+        // the bag, the corpse and the death marker go with it. A bag's
+        // address is sent once (`Backpacks::stand_up`) and never moves, so
+        // one dropped in the leaf was sealed in the stone behind the door.
+        let zig = self.haven.ziggurat;
+        crate::monument::out_of_leaves(&zig, u32::MAX, &mut body.body);
         // **The announcement and the count live here** (wounded v0), and
         // not at the eight sites that reach the funnel. Until 2026-09-13
         // every kill site pushed `EV_DEATH` itself on the funnel's `died`
@@ -5066,11 +5073,16 @@ impl World {
         // height as the feet: a body that fell on a floor lies on it.
         let (fx, fz) = crate::yaw_lut::yaw_dir(body.frame.yaw);
         let back = crate::backpack::CORPSE_BACK_M;
-        let at = (
-            movement::quant_xz(body.body.qx as f32 * POS_XZ_Q - fx * back),
-            body.body.qy,
-            movement::quant_xz(body.body.qz as f32 * POS_XZ_Q - fz * back),
-        );
+        let mut corpse = movement::Body {
+            qx: movement::quant_xz(body.body.qx as f32 * POS_XZ_Q - fx * back),
+            qy: body.body.qy,
+            qz: movement::quant_xz(body.body.qz as f32 * POS_XZ_Q - fz * back),
+            ..movement::Body::default()
+        };
+        // Feet beside a doorway and the middle in it: the corpse goes out
+        // at the reader too.
+        crate::monument::out_of_leaves(&zig, u32::MAX, &mut corpse);
+        let at = (corpse.qx, corpse.qy, corpse.qz);
         self.backpacks
             .drop_corpse(&self.backpack, at, self.tick, &mut self.events);
         self.players[slot] = Player {
@@ -8071,11 +8083,7 @@ impl World {
     /// every door is shut on whoever slept in its doorway.
     fn out_of_shut_leaves(&mut self, slot: usize) {
         let z = self.haven.ziggurat;
-        for d in 0..crate::monument::CARD_DOORS {
-            if self.card_door_bits & (1 << d) == 0 {
-                crate::monument::out_of_leaf(&z, d, &mut self.players[slot].body);
-            }
-        }
+        crate::monument::out_of_leaves(&z, !self.card_door_bits, &mut self.players[slot].body);
     }
 
     pub fn tick(&mut self, commands: &[Command]) {

@@ -424,6 +424,18 @@ pub fn out_of_leaf(z: &Ziggurat, d: usize, body: &mut crate::movement::Body) -> 
     true
 }
 
+/// [`out_of_leaf`] for each door whose bit is set in `doors`; true if it
+/// moved.
+pub fn out_of_leaves(z: &Ziggurat, doors: u32, body: &mut crate::movement::Body) -> bool {
+    let mut moved = false;
+    for d in 0..CARD_DOORS {
+        if doors & (1 << d) != 0 {
+            moved |= out_of_leaf(z, d, body);
+        }
+    }
+    moved
+}
+
 /// The kit as JSON for `ci/site_kit.py` (`examples/kit_dump.rs`).
 pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
     let mut anchors = [("", 0.0, 0.0, 0.0); CRATES.len() + 2 * CARD_DOORS];

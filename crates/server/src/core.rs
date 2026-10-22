@@ -5114,6 +5114,9 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                // The whole island hears who opened a lock (`ARC.md` F7).
+                // It names no digit: the dials, which do, go only to the
+                // players near it (the arc drip).
                 EV_MECH_SOLVED => {
                     match protocol::encode_event_mech_solved(ev.a as u8, ev.b, &mut self.ev_buf) {
                         Ok(len) => {
@@ -7887,17 +7890,40 @@ impl ShardCore {
                 }
             }
         }
-        // Each mechanism's dials, whenever they move for anyone.
+        // Each mechanism's dials, whenever they move, to a player near it.
+        // One farther off hears only whether it rests, its dials left as it
+        // last saw them: the turn before a solve shows the answer but for
+        // one notch, and sent to every client it read this wipe's answer to
+        // the whole shard. The interest radius (208 m) is far past reading a
+        // drum's notch, so this is shorter; at the lock the drums are seen
+        // turning anyway.
+        const DIAL_SHOW_CM: i64 = 3_000;
+        let here = self.live_wslot(slot).map(|w| {
+            let b = self.world.players[w].body;
+            interest::body_cm(b.qx, b.qz)
+        });
         for k in 0..self.world.mech_def.count as usize {
             let def = self.world.mech_def.defs[k];
             let m = self.world.arc.mechs[k];
-            let seen = (m.dials, m.rest_until > self.world.tick);
-            if self.clients[slot].last_dials[k] == Some(seen) {
+            let near = here
+                .zip(sim_core::spot::world(&self.world.haven, &def.spot))
+                .is_some_and(|(at, (x, _, z))| {
+                    let lock = ((x * 100.0) as i64, (z * 100.0) as i64);
+                    interest::d2_cm(at, lock) <= DIAL_SHOW_CM * DIAL_SHOW_CM
+                });
+            let last = self.clients[slot].last_dials[k];
+            let dials = if near {
+                m.dials
+            } else {
+                last.map_or([0; sim_core::limits::MAX_DIALS], |(d, _)| d)
+            };
+            let seen = (dials, m.rest_until > self.world.tick);
+            if last == Some(seen) {
                 continue;
             }
             match protocol::encode_event_arc_dials(
                 k as u8,
-                &m.dials[..def.dials as usize],
+                &dials[..def.dials as usize],
                 seen.1,
                 &mut self.ev_buf,
             ) {
@@ -10481,6 +10507,53 @@ mod tests {
         core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(owned(&core, 256), founder.union(paid));
         assert_eq!(core.gifts.len(), 1);
+    }
+
+    /// A lock's dials go only to a player near it: the turn before a solve
+    /// shows the answer but for one notch. One far off hears only whether
+    /// it rests, and hears that from anywhere.
+    #[test]
+    fn a_locks_dials_reach_only_the_players_near_it() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.mech_def = sim_core::mech::MechContent::probe_fixture();
+        core.arc_text.mech_names = vec!["THE LOCK".into()];
+        assert!(core.connect(0, 256) && core.connect(1, 257));
+        core.tick_bare(&stats, |_, _, _| true);
+        let spot = core.world.mech_def.defs[0].spot;
+        let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
+        for (id, off) in [(256, 5.0), (257, 300.0)] {
+            let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
+            core.world.players[w].body =
+                sim_core::movement::Body::at(SEED, &core.world.haven, x + off, z);
+        }
+        let heard = |core: &mut ShardCore| {
+            let mut out = [None; 2];
+            for _ in 0..3 {
+                core.tick_bare(&stats, |lane, to, bytes| {
+                    if lane == Lane::Event && to < 2 {
+                        if let Ok(EventMsg::ArcDials { dials, resting, .. }) = decode_event(bytes) {
+                            out[to] = Some((dials[0], resting));
+                        }
+                    }
+                    true
+                });
+            }
+            out
+        };
+        heard(&mut core);
+        core.world.arc.mechs[0].dials[0] = 3;
+        assert_eq!(
+            heard(&mut core),
+            [Some((3, false)), None],
+            "a turn went to a player far from the lock"
+        );
+        core.world.arc.mechs[0].rest_until = core.world.tick + 1_000;
+        assert_eq!(
+            heard(&mut core),
+            [Some((3, true)), Some((0, true))],
+            "the rest went out with the dials, or not to everyone"
+        );
     }
 
     /// THE OUTFITTER's priced gift (the Abyss Rug): a wallet short of the

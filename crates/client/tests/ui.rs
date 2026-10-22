@@ -1357,7 +1357,7 @@ fn a_bush_is_picked_with_e_and_never_swung() {
         Occupant::BerryBush as u8,
         "a swing still lands on a bush"
     );
-    let pick = resolve_pick(aim, &mut island);
+    let pick = resolve_pick(aim, &mut island, w.pieces.cols());
     assert_eq!(
         pick.occupant,
         Occupant::BerryBush as u8,
@@ -2335,6 +2335,62 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         "no wall: the stance must reach the tree"
     );
     assert_eq!(pick(true), 0, "a wall across the look takes the swing");
+}
+
+/// **Nor is `E` offered on a bush through a wall**: the shard's
+/// `Command::Pick` asks for sight (`reach::clear_from`) and drops a pick
+/// through one without a word, so the prompt asks the same. The tree test's
+/// wiring above, aimed at a bush across a cell edge.
+#[test]
+fn a_wall_the_core_was_sent_shadows_the_bush() {
+    use client::ui::interact::resolve_pick;
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_piece_defs, encode_event_piece_placed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{BuildContent, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO};
+    use sim_core::movement::{Body, POS_Y_Q};
+
+    let seed = 7;
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, bx, by, bz) = find_slot(seed, Occupant::BerryBush).expect("seed 7 has a bush");
+    let (_, top) = swing_volume(Occupant::BerryBush);
+    let k = (bx / BUILD_CELL_M + 0.5).floor();
+    let edge = k * BUILD_CELL_M;
+    let px = if edge <= bx { edge - 0.4 } else { edge + 0.4 };
+    let py = Body::at(seed, &haven, px, bz).qy as f32 * POS_Y_Q;
+    let aim = aim_at(px, py, bz, bx, by + top * 0.5, bz);
+    let bc = BuildContent::probe_fixture();
+    let wall = PieceRec {
+        cx: k as u16,
+        cz: (bz / BUILD_CELL_M).floor() as u16,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 1,
+        hp: bc.pieces[1].hp,
+        ..PieceRec::default()
+    };
+    let pick = |with_wall: bool| {
+        let mut core = Box::new(ClientCore::new(seed, 1, 0));
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
+        core.on_stream(&buf[..len]).expect("defs apply");
+        if with_wall {
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
+            core.on_stream(&buf[..len]).expect("piece applies");
+        }
+        let (mut island, shadows) = swing_island(&mut core, 0);
+        resolve_pick(aim, &mut island, shadows.cols).occupant
+    };
+    assert_eq!(
+        pick(false),
+        Occupant::BerryBush as u8,
+        "no wall: the stance must reach the bush"
+    );
+    assert_eq!(pick(true), 0, "E was offered on a bush through a wall");
 }
 
 // ---------------------------------------------------------------------------

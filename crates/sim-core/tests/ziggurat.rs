@@ -415,16 +415,28 @@ fn a_sleeper_or_a_corpse_does_not_hold_a_card_door() {
         "the door shut on a body awake in it"
     );
 
+    // Dead and awake (on the death screen; `die` keeps it active where it
+    // fell): the door shuts and the corpse is put out at the reader.
+    open_for(&mut w, 5);
+    w.players[0].dead = true;
+    assert!(!w.players[0].sleeping, "setup: an awake corpse");
+    for _ in 0..40 {
+        w.tick(&[]);
+    }
+    assert_eq!(w.card_door_bits & 1, 0, "an awake corpse held the door");
+    assert!(at_reader(&w), "the awake corpse was left in the shut leaf");
+    w.players[0].dead = false;
+
     // Asleep: it shuts, and the body is put out at the reader.
     w.tick(&[Command::Leave { id: 1 }]);
-    w.players[0].body = in_door;
+    open_for(&mut w, 5);
     for _ in 0..40 {
         w.tick(&[]);
     }
     assert_eq!(w.card_door_bits & 1, 0, "a sleeper held the door");
     assert!(at_reader(&w), "the sleeper was left in the shut leaf");
 
-    // Dead (and asleep, a killed sleeper): the same.
+    // Dead and asleep (a killed sleeper): the same.
     open_for(&mut w, 5);
     w.players[0].dead = true;
     for _ in 0..40 {
@@ -445,4 +457,89 @@ fn a_sleeper_or_a_corpse_does_not_hold_a_card_door() {
     }]);
     assert!(!w.players[0].sleeping, "setup: the takeover woke the body");
     assert!(at_reader(&w), "a woken sleeper was left in the shut leaf");
+}
+
+/// A body killed in a card doorway leaves its bag at the reader with the
+/// corpse, not in the leaf: the door shuts on a corpse a second later, a
+/// bag's address never moves, and one dropped in the leaf was sealed in
+/// the stone (no hand reached it from either side until the door opened).
+#[test]
+fn a_bag_dropped_in_a_card_doorway_is_not_sealed_in_its_leaf() {
+    use sim_core::backpack::BackpackContent;
+    use sim_core::combat::CombatContent;
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::TICK_HZ;
+    use sim_core::movement::{quant_xz, quant_y, Body};
+    use sim_core::survival::SurvivalContent;
+    use sim_core::world::{Command, World};
+    let seed = 20_260_731;
+    let mut w = World::new(seed);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.backpack = BackpackContent::probe_fixture();
+    w.tick(&[Command::Join { id: 1 }]);
+    let z = w.haven.ziggurat;
+    assert!(z.live);
+    let b = monument::door_box(0).unwrap();
+    let (x, wz) = kit::to_world(&z.placed(), (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+    let at = |x: f32, y: f32, wz: f32| Body {
+        qx: quant_xz(x),
+        qy: quant_y(y),
+        qz: quant_xz(wz),
+        qvy: 0,
+        grounded: true,
+    };
+    // Awake in the open doorway (it holds the door), carrying something,
+    // and starving: the clock kills it there.
+    w.card_doors[0] = w.tick + 5;
+    w.players[0].body = at(x, z.floor_y, wz);
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    for _ in 0..120 * TICK_HZ {
+        w.tick(&[]);
+        if w.players[0].dead {
+            break;
+        }
+    }
+    assert!(w.players[0].dead, "setup: the clock never took the body");
+    for _ in 0..40 {
+        w.tick(&[]);
+    }
+    assert_eq!(
+        w.card_door_bits & 1,
+        0,
+        "setup: the door shut on the corpse"
+    );
+    let bag = w
+        .backpacks
+        .entries()
+        .iter()
+        .position(|r| r.owner == 1)
+        .expect("setup: the body dropped a bag");
+
+    // A hand at the reader, the door shut, reaches the bag.
+    w.tick(&[Command::Join { id: 2 }]);
+    let s = w
+        .players
+        .iter()
+        .position(|p| p.active && p.id == 2)
+        .unwrap();
+    let (rx, ry, rz) = monument::reader_world(&z, 0, false).unwrap();
+    w.players[s].body = at(rx, ry, rz);
+    assert!(
+        w.bag_reachable(bag, s),
+        "the bag was sealed in the shut leaf"
+    );
+    let r = w.backpacks.entries()[bag];
+    assert_eq!(
+        w.players[0].death_at,
+        Some((r.qx, r.qz)),
+        "the death marker is where the bag lies"
+    );
 }

@@ -364,9 +364,9 @@ fn turn(
     m.solves = m.solves.wrapping_add(1);
     m.rest_until = tick + def.rest_ticks as u64;
     // Scrambled a secret step (1..values) off the answer, drawn under the
-    // salt. It was `want + 1 + j`, a fixed function of the answer, and
-    // every client is sent the dials: after the first solve the whole
-    // shard could read this wipe's answer off the resting lock.
+    // salt. It was `want + 1 + j`, a fixed function of the answer, and the
+    // dials are sent to every player near the lock: after the first solve
+    // anyone passing could read this wipe's answer off the resting lock.
     let values = def.values.max(1);
     for (j, v) in m.dials.iter_mut().enumerate().take(def.dials as usize) {
         let h = crate::rng::sip24(
