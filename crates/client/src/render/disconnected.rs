@@ -145,8 +145,8 @@ pub fn watch(
         .and_then(protocol::refuse_text)
     {
         Some(why) if connecting.addr.is_empty() => why.to_string(),
-        Some(why) => format!("{}: {why}", connecting.addr),
-        None => line(&connecting.addr),
+        Some(why) => format!("{}: {why}", crate::ui::streamer::server(&connecting.addr)),
+        None => line(&crate::ui::streamer::server(&connecting.addr)),
     };
     menu.status = reason.line.clone();
     warn!("gates: {} - leaving the world", reason.line);

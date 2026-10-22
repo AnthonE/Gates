@@ -116,6 +116,7 @@ pub mod servers;
 pub mod skins;
 pub mod slots;
 pub mod spectate;
+pub mod streamer;
 pub mod structure;
 pub mod swing;
 pub mod team;

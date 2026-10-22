@@ -164,6 +164,32 @@ impl Composer {
     }
 }
 
+/// The speaker's name as drawn: [`Line::name`], or a made-up one in
+/// streamer mode (`ui::streamer`). Decided at draw time, so the scrollback
+/// keeps the real name and turning streamer mode off brings it back.
+pub fn shown_name(line: &Line) -> String {
+    shown_name_if(super::streamer::on(), line)
+}
+
+pub fn shown_name_if(streamer: bool, line: &Line) -> String {
+    if !streamer {
+        return line.name.clone();
+    }
+    let key = match line.face {
+        Some((a, _)) if !a.is_guest() => {
+            let hex = a.to_hex();
+            core::str::from_utf8(&hex).unwrap_or("").to_string()
+        }
+        _ => format!("#{}", line.speaker),
+    };
+    let name = super::streamer::alias(&key);
+    if line.name.ends_with(" (agent)") {
+        format!("{name} (agent)")
+    } else {
+        name
+    }
+}
+
 /// One line in the scrollback.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
@@ -265,9 +291,10 @@ impl Log {
             Some(code) => format!(" [{code}]"),
             None => String::new(),
         };
+        let name = shown_name(line);
         match tag {
-            "" => format!("{}{from}: ", line.name),
-            tag => format!("{tag} {}{from}: ", line.name),
+            "" => format!("{name}{from}: "),
+            tag => format!("{tag} {name}{from}: "),
         }
     }
 
@@ -291,6 +318,24 @@ mod tests {
             open: true,
             ..Composer::default()
         }
+    }
+
+    #[test]
+    fn streamer_mode_renames_a_line_at_draw_and_keeps_it_underneath() {
+        let l = Line {
+            speaker: 4,
+            name: "Ash".into(),
+            channel: Channel::Team,
+            text: "hi".into(),
+            face: None,
+            friend: false,
+            at: 0.0,
+            ..Line::default()
+        };
+        assert_eq!(shown_name_if(false, &l), "Ash");
+        let a = shown_name_if(true, &l);
+        assert_ne!(a, "Ash");
+        assert_eq!(l.name, "Ash", "the scrollback keeps the real name");
     }
 
     #[test]

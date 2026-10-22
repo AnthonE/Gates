@@ -268,7 +268,7 @@ fn act_blocking(
     let why = format!(
         "Gates: {} {} on your Elo Pros friends list",
         op.name(),
-        friends::short_wallet(&other)
+        friends::short_wallet_real(&other)
     );
     let sig = match elo.sign(&text, &why) {
         Ok(sig) => sig,
