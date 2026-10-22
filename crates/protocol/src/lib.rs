@@ -52,8 +52,8 @@ pub mod version;
 pub mod voice;
 
 pub use auth::{
-    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
-    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    companion_message, siwe_message, siwe_message_for, Address, Auth, Challenge, Signature,
+    ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};

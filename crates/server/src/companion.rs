@@ -24,9 +24,13 @@
 //!
 //! `domain` is the page's own host, so a wallet's domain check passes; it is
 //! used only if the shard accepts it (`siwe_domains`), else the shard's
-//! `domain`. An agent with an `agentkey` signs the default challenge with
-//! `AgentKey::sign_proof_hex(domain, nonce, issued_at)`: the message is the
-//! game's own sign-in text over a nonce only this listener issued, used once.
+//! `domain`. The message is the companion's own sign-in text
+//! (`protocol::companion_message`), never the game's: a signature collected
+//! here is no game login, so a page that is not this one gains nothing by
+//! asking for it. An agent with an `agentkey` signs with
+//! `AgentKey::sign_companion_hex(host, nonce, issued_at)`, where `host` is
+//! the host it dialled — never a `domain` the response named — over a nonce
+//! only this listener issued, used once.
 //! Only a wallet with a character on the island signs in (403 otherwise).
 //! Positions are whole metres in world axes; `grid` is the map's square.
 //!
@@ -442,16 +446,8 @@ impl Web {
         let sum = address.to_checksum_hex();
         let addr = core::str::from_utf8(&sum).unwrap_or("0x");
         let mut text = [0u8; SIWE_MESSAGE_MAX];
-        let n = protocol::siwe_message_for(
-            &domain,
-            &self.domain,
-            addr,
-            protocol::SLUG,
-            &nonce,
-            now,
-            &mut text,
-        )
-        .min(SIWE_MESSAGE_MAX);
+        let n = protocol::companion_message(&domain, &self.domain, addr, &nonce, now, &mut text)
+            .min(SIWE_MESSAGE_MAX);
         Response::json(
             200,
             serde_json::json!({
@@ -492,7 +488,7 @@ impl Web {
             address,
             signature: Signature(sig),
         };
-        let key = match crate::auth::verify_any(&self.accepts, &nonce, issued_at, &auth) {
+        let key = match crate::auth::verify_companion(&self.accepts, &nonce, issued_at, &auth) {
             Ok(k) => k,
             Err(e) => return Response::error(401, e.reason()),
         };
@@ -522,11 +518,26 @@ impl Web {
         self.sessions.retain(|_, (_, until)| *until > now);
         let mine = self.sessions.values().filter(|(w, _)| *w == wallet).count();
         if mine >= SESSIONS_PER_WALLET || self.sessions.len() >= SESSIONS_KEPT {
-            let only_mine = mine >= SESSIONS_PER_WALLET;
+            // At its own cap a wallet loses its own oldest. A full table loses
+            // the oldest of whichever wallet holds the most, so a crowd of
+            // wallets signing in over and over evicts itself before it evicts
+            // anybody's one session.
+            let whose = if mine >= SESSIONS_PER_WALLET {
+                wallet.clone()
+            } else {
+                let mut held: BTreeMap<&str, usize> = BTreeMap::new();
+                for (w, _) in self.sessions.values() {
+                    *held.entry(w.as_str()).or_default() += 1;
+                }
+                held.into_iter()
+                    .max_by_key(|&(_, n)| n)
+                    .map(|(w, _)| w.to_string())
+                    .unwrap_or_default()
+            };
             let oldest = self
                 .sessions
                 .iter()
-                .filter(|(_, (w, _))| !only_mine || *w == wallet)
+                .filter(|(_, (w, _))| *w == whose)
                 .min_by_key(|(_, (_, until))| *until)
                 .map(|(t, _)| t.clone());
             if let Some(t) = oldest {
@@ -927,7 +938,7 @@ mod tests {
         let nonce = c["nonce"].as_str().unwrap();
         let issued = c["issued_at"].as_u64().unwrap();
         let sig = key
-            .sign_proof_hex(c["domain"].as_str().unwrap(), nonce, issued)
+            .sign_companion_hex(c["domain"].as_str().unwrap(), nonce, issued)
             .unwrap();
         serde_json::json!({"address": a, "nonce": nonce, "issued_at": issued, "signature": hex(&sig.0)})
     }
@@ -1007,13 +1018,43 @@ mod tests {
         // Someone else's signature over my challenge recovers them, not me.
         let mut theirs = login_body(&mut w, &key(7), 1000);
         let sig = key(8)
-            .sign_proof_hex("game.test", theirs["nonce"].as_str().unwrap(), 1000)
+            .sign_companion_hex("game.test", theirs["nonce"].as_str().unwrap(), 1000)
             .unwrap();
         theirs["signature"] = hex(&sig.0).into();
         assert_eq!(
             w.handle(&post("/api/login", None, theirs), 1000).status,
             401
         );
+    }
+
+    /// **The companion's sign-in and the game's are two texts.** A game
+    /// login signature over a real companion challenge does not sign in, and
+    /// a companion signature is no game login — so a page that asks an agent
+    /// to "sign in to the companion" collects nothing the game takes.
+    #[test]
+    fn a_game_login_is_no_companion_sign_in_and_back() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0)]);
+        let a = addr(&key(7));
+        let c = body(&w.handle(&get(&format!("/api/challenge?address={a}"), None), 1000));
+        let (nonce, issued) = (
+            c["nonce"].as_str().unwrap(),
+            c["issued_at"].as_u64().unwrap(),
+        );
+        let game = key(7).sign_proof_hex("game.test", nonce, issued).unwrap();
+        let login = serde_json::json!({"address": a, "nonce": nonce, "issued_at": issued, "signature": hex(&game.0)});
+        assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 401);
+
+        let page = key(7)
+            .sign_companion_hex("game.test", nonce, issued)
+            .unwrap();
+        let auth = protocol::Auth {
+            address: key(7).address(),
+            signature: page,
+        };
+        let n = unhex::<NONCE_BYTES>(nonce).unwrap();
+        assert!(crate::auth::verify_any(&["game.test"], &n, issued, &auth).is_err());
+        assert!(crate::auth::verify_companion(&["game.test"], &n, issued, &auth).is_ok());
     }
 
     /// Signing in needs a body on the island, and one wallet holds a bounded
@@ -1031,6 +1072,23 @@ mod tests {
         }
         assert_eq!(w.handle(&get("/api/team", Some(&first)), 1100).status, 401);
         assert_eq!(w.handle(&get("/api/team", Some(&last)), 1100).status, 200);
+    }
+
+    /// A full session table evicts from the wallet holding the most, not the
+    /// oldest anybody holds: one honest session outlives a crowd's churn.
+    #[test]
+    fn a_full_table_evicts_the_crowd_before_the_one() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
+        let honest = sign_in(&mut w, &key(7), 1000);
+        for i in 0..SESSIONS_KEPT - 1 {
+            let crowd = format!("0x{:040x}", 0xc000 + i / SESSIONS_PER_WALLET);
+            w.sessions
+                .insert(format!("t{i}"), (crowd, 1001 + SESSION_SECS));
+        }
+        sign_in(&mut w, &key(8), 1002);
+        assert_eq!(w.sessions.len(), SESSIONS_KEPT);
+        assert_eq!(w.handle(&get("/api/team", Some(&honest)), 1003).status, 200);
     }
 
     /// A stranger's fresh keys spend no nonce (the island check comes
