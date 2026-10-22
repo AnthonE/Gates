@@ -63,12 +63,17 @@ pub fn converter_open(
     })
 }
 
+/// What a planter says to a seed dragged into it (farming v2): its one slot
+/// is the water tank, and a seed goes in the soil by hand.
+pub const PLANT_BY_HAND: &str = "plant seeds by hand: hold one, left click a bed";
+
 /// `REFUSE_M_OVEN` in words, for the converter that said it.
 pub fn oven_refusal(arch: u8) -> &'static str {
     match arch {
         sim_core::deploy::ARCH_FURNACE => "a furnace takes wood and ore",
         sim_core::deploy::ARCH_RECYCLER => "the recycler only takes what it can break down",
-        sim_core::deploy::ARCH_PLANTER => "a planter takes seeds, and a full waterskin",
+        sim_core::deploy::ARCH_PLANTER => PLANT_BY_HAND,
+        sim_core::deploy::ARCH_CATCHER => "a water catcher takes a waterskin",
         _ => refusal_text(REFUSE_M_OVEN as u8),
     }
 }
@@ -95,12 +100,14 @@ impl Section {
     }
 
     /// The band's name on a converter of `arch`: a planter's beds and its
-    /// harvest, every other converter's FUEL, INPUT and OUTPUT.
+    /// harvest, a catcher's skin slot, every other converter's FUEL, INPUT
+    /// and OUTPUT.
     pub fn label_for(self, arch: u8) -> &'static str {
         match (arch, self) {
             (sim_core::deploy::ARCH_PLANTER, Section::Fuel) => "WATER",
             (sim_core::deploy::ARCH_PLANTER, Section::Input) => "PLANTED",
             (sim_core::deploy::ARCH_PLANTER, Section::Output) => "HARVEST",
+            (sim_core::deploy::ARCH_CATCHER, Section::Fuel) => "WATER",
             _ => self.label(),
         }
     }
@@ -188,15 +195,23 @@ pub fn drop_refusal(
     let refuses = |slot: usize, item: u16| {
         roles_of(catalog, arch, item)
             .filter(|&r| !slot_takes(arch, slot, r))
-            .map(wrong_band)
+            .map(|r| {
+                // A planter's INPUT band has no slots: a seed goes in by hand.
+                if arch == sim_core::deploy::ARCH_PLANTER && home(r) == Some(Section::Input) {
+                    PLANT_BY_HAND
+                } else {
+                    wrong_band(r)
+                }
+            })
     };
     if to_kind == CONT_BOX && src.count > 0 {
         if let Some(why) = refuses(to_slot, src.item) {
             return Some(why);
         }
     }
-    let swap =
-        dst.count > 0 && (dst.item != src.item || dst.skin != src.skin) && units == src.count;
+    let swap = dst.count > 0
+        && (dst.item != src.item || dst.skin != src.skin || dst.cond != src.cond)
+        && units == src.count;
     if from_kind == CONT_BOX && swap {
         return refuses(from_slot, dst.item);
     }
@@ -249,7 +264,7 @@ pub fn fire_quick_move(
         let there = cont[s];
         if there.count == 0 {
             empty = empty.or(Some(s));
-        } else if there.item == src.item && there.skin == src.skin {
+        } else if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
             let room = cap.saturating_sub(there.count);
             if room > 0 {
                 pick = Some((s, Grab::Fit(room)));
@@ -261,8 +276,11 @@ pub fn fire_quick_move(
         let planter = arch == sim_core::deploy::ARCH_PLANTER;
         return Quick::Refused(match band {
             Section::Fuel if planter => "the planter is already watered",
+            Section::Fuel if arch == sim_core::deploy::ARCH_CATCHER => {
+                "the catcher already holds a skin"
+            }
             Section::Fuel => "the fire's fuel slot is full",
-            Section::Input if planter => "every bed is planted",
+            Section::Input if planter => PLANT_BY_HAND,
             Section::Input => "the grill is full",
             Section::Output if planter => "the harvest is full",
             Section::Output => "the fire's output is full",

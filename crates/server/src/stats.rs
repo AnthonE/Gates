@@ -434,6 +434,11 @@ pub struct ShardStats {
     pub bag_walk_completes: AtomicU64,
     pub bag_sync_skipped: AtomicU64,
     pub bag_events_skipped: AtomicU64,
+    /// And for the plant walk and `EV_PLANT` (farming v2): the same anchor,
+    /// over `world.farm`.
+    pub plant_walk_completes: AtomicU64,
+    pub plant_sync_skipped: AtomicU64,
+    pub plant_events_skipped: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,

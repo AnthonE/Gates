@@ -1902,6 +1902,10 @@ pub enum Biome {
 /// How many biomes there are — the length of every per-biome table.
 pub const BIOMES: usize = 6;
 
+/// The biomes' names in [`Biome`] order, as content spells them
+/// (`cooking.toml` `[farm] soil`).
+pub const BIOME_NAMES: [&str; BIOMES] = ["beach", "meadow", "forest", "highland", "desert", "fel"];
+
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
 /// spawns into it, so the spawn zone cannot drift away from the biome.
@@ -7047,6 +7051,19 @@ pub enum Occupant {
     /// pressed against it (`world::CACTUS_HP`). Drawn from a shrub cell
     /// after the draw is settled, so no other cell moves for it.
     Cactus = 28,
+    /// Wild corn: a shrub by a lake's fresh water ([`plant_of`]) that
+    /// rolled [`WILD_CORN_PERMILLE`]. A lake's shore lies under
+    /// [`BEACH_MAX_H`], so nearly every one stands on a lake's edge in the
+    /// Beach biome (measured: 59 on three seeds, 58 Beach, one Meadow; 55
+    /// with fresh water the nearest water). Picked by hand with `E` for corn
+    /// and a seed (`gather.wild_corn`), so the crop has a wild source the
+    /// way hemp does. Passable.
+    WildCorn = 29,
+    /// A wild pumpkin vine, [`WildCorn`]'s neighbour by the water
+    /// (`gather.wild_pumpkin`).
+    ///
+    /// [`WildCorn`]: Occupant::WildCorn
+    WildPumpkin = 30,
 }
 
 impl Occupant {
@@ -7055,7 +7072,14 @@ impl Occupant {
     /// pickup. Every one is passable and none blocks a swing, an arrow or a
     /// body.
     pub const fn is_plant(self) -> bool {
-        matches!(self, Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub) || self.is_pickup()
+        matches!(
+            self,
+            Occupant::BerryBush
+                | Occupant::Hemp
+                | Occupant::Shrub
+                | Occupant::WildCorn
+                | Occupant::WildPumpkin
+        ) || self.is_pickup()
     }
 
     /// A ground pickup — loose stone, wood, ore, mushrooms ([`plant_of`]).
@@ -7138,10 +7162,74 @@ const _: () = {
     }
 };
 
+/// Share of the scenery shrubs by a lake ([`fresh_water_near`]) that grow as
+/// wild corn, per mille. **(knob)**
+///
+/// Most of the island's lakes are small, and the ground within a few metres
+/// of one is under [`BEACH_MAX_H`], so a lake's shore is Beach and its
+/// meadow starts 25–30 m back: eight seeds hold 19–54 shrubs in reach of
+/// fresh water on a whole island, 11–30 of them a crop at these shares. So the share is high where it applies —
+/// three in five of those shrubs are a crop — and the 3 : 2 corn to
+/// pumpkin split is the design's.
+pub const WILD_CORN_PERMILLE: u16 = 360;
+/// And as a wild pumpkin, per mille, past the corn's share. **(knob)**
+pub const WILD_PUMPKIN_PERMILLE: u16 = 240;
+/// How far from a wild crop the fresh water it needs may be, metres: the
+/// outer ring of [`fresh_water_near`]'s taps; the inner is at half. **(knob)**
+pub const WILD_WATER_REACH_M: f32 = 24.0;
+
+/// Whether fresh water stands near (`x`, `z`): a tap under `SEA_LEVEL`
+/// whose water is a lake's (`open < 0.5`, the test `survival::water_in_reach`
+/// drinks fresh by), on eight bearings at half [`WILD_WATER_REACH_M`] and
+/// at it. Up to sixteen height taps, so only a shrub that already rolled a
+/// wild crop asks, and the first wet tap answers.
+fn fresh_water_near<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> bool {
+    for r in [WILD_WATER_REACH_M * 0.5, WILD_WATER_REACH_M] {
+        let d = r * core::f32::consts::FRAC_1_SQRT_2;
+        for (dx, dz) in [
+            (r, 0.0),
+            (-r, 0.0),
+            (0.0, r),
+            (0.0, -r),
+            (d, d),
+            (-d, d),
+            (d, -d),
+            (-d, -d),
+        ] {
+            let (h, open) = open_of(height_parts_in(c, seed, x + dx, z + dz));
+            if h < SEA_LEVEL && open < 0.5 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Which plant a cell that drew the bush column grows: its own hash channel,
 /// so the roll that put a plant there and the roll that says which plant are
 /// independent, and every cell that held a bush still holds a plant.
-pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
+///
+/// A Beach, Meadow or Forest shrub at (`x`, `z`) with a lake's fresh water
+/// in reach ([`fresh_water_near`]) may grow as wild corn or a wild pumpkin
+/// instead: the same hash's high bits, an independent roll, taken only on
+/// the scenery remainder, so no berry bush, hemp or pickup moves for it.
+/// Since a lake's shore is Beach and its meadow starts past the reach,
+/// they grow on lake shores; the sea's water is open and never counts, so
+/// a sea beach grows one only where a lake lies within reach of it too
+/// (`tests/wild_crops.rs` pins the census).
+pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, x: f32, z: f32, b: Biome) -> Occupant {
+    plant_in(&mut Direct, seed, cell_x, cell_z, x, z, b)
+}
+
+fn plant_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    cell_x: i32,
+    cell_z: i32,
+    x: f32,
+    z: f32,
+    b: Biome,
+) -> Occupant {
     let h = cell_hash(seed, cell_x, cell_z, CH_PLANT);
     let r = (h % 1000) as u16;
     let [berry, hemp] = PLANT_SHARES[b as usize];
@@ -7170,6 +7258,17 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
             Occupant::SulfurPile,
             Occupant::MushroomPatch,
         ][i.min(4)]
+    } else if matches!(b, Biome::Beach | Biome::Meadow | Biome::Forest) {
+        let w = ((h >> 48) % 1000) as u16;
+        if w < WILD_CORN_PERMILLE + WILD_PUMPKIN_PERMILLE && fresh_water_near(c, seed, x, z) {
+            if w < WILD_CORN_PERMILLE {
+                Occupant::WildCorn
+            } else {
+                Occupant::WildPumpkin
+            }
+        } else {
+            Occupant::Shrub
+        }
     } else {
         Occupant::Shrub
     }
@@ -7943,7 +8042,7 @@ fn scatter_in<C: Corners>(
                     1 => Occupant::StoneNode,
                     2 => Occupant::MetalNode,
                     3 => Occupant::SulfurNode,
-                    4 => plant_of(seed, cell_x, cell_z, biome(hy, moist, fel)),
+                    4 => plant_in(c, seed, cell_x, cell_z, x, z, biome(hy, moist, fel)),
                     5 => Occupant::Rock,
                     _ => Occupant::BarrelSlot,
                 };
@@ -9879,7 +9978,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 29] = [
+pub const OCCUPANT_R_M: [f32; 31] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -9940,6 +10039,8 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.0,           // SulfurPile
     0.0,           // MushroomPatch
     SAGUARO_R_M,   // Cactus — broad phase; the trunk and SAGUARO_ARM_BOXES are the volume
+    0.0,           // WildCorn — passable, like hemp
+    0.0,           // WildPumpkin
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9956,7 +10057,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
 /// 33 m and the pine 42 m; the sim cannot tell the species apart, so the
 /// shortest one wins and nothing invisible blocks above a palm). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 29] = [
+pub const OCCUPANT_TOP_M: [f32; 31] = [
     0.0,  // None
     24.0, // Tree — the palm's drawn height (2026-10-19)
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -9992,6 +10093,8 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.0,              // SulfurPile
     0.0,              // MushroomPatch
     CACTUS_TOP_M,     // Cactus
+    0.0,              // WildCorn
+    0.0,              // WildPumpkin
 ];
 
 /// Widest scale `scatter` can hand a slot. Both draws top out at
@@ -10098,6 +10201,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         | Occupant::SulfurPile
         | Occupant::MushroomPatch => (0.0, 0.0),
         Occupant::Cactus => (SAGUARO_R_M, CACTUS_TOP_M),
+        Occupant::WildCorn | Occupant::WildPumpkin => (0.0, 0.0),
     }
 }
 
@@ -10135,7 +10239,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 29 && OCCUPANT_TOP_M.len() == 29);
+    assert!(OCCUPANT_R_M.len() == 31 && OCCUPANT_TOP_M.len() == 31);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -10185,6 +10289,10 @@ const _: () = {
     assert!(occupant_volume(Occupant::Shrub).1 == OCCUPANT_TOP_M[22]);
     assert!(occupant_volume(Occupant::Cactus).0 == OCCUPANT_R_M[28]);
     assert!(occupant_volume(Occupant::Cactus).1 == OCCUPANT_TOP_M[28]);
+    assert!(occupant_volume(Occupant::WildCorn).0 == OCCUPANT_R_M[29]);
+    assert!(occupant_volume(Occupant::WildCorn).1 == OCCUPANT_TOP_M[29]);
+    assert!(occupant_volume(Occupant::WildPumpkin).0 == OCCUPANT_R_M[30]);
+    assert!(occupant_volume(Occupant::WildPumpkin).1 == OCCUPANT_TOP_M[30]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who

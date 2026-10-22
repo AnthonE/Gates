@@ -2112,6 +2112,7 @@ pub fn poll_connect(
                     session,
                     sel: 0,
                     light: false,
+                    farm_sent: None,
                 });
             });
             // `Loading`, not `InWorld`: the welcome names a seed and the seed

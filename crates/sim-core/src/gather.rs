@@ -109,7 +109,7 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 13;
+pub const GATHERABLE_KINDS: usize = 15;
 
 /// The felled tree's stump (`NOW.md` §0stump): the last gatherable row, and
 /// the one no `Occupant` names. It is the tree slot's second life — a
@@ -122,6 +122,12 @@ pub const STUMP_NODE: usize = 11;
 /// stump because the stump's row was there first and a row is a save's
 /// address for nothing, but a test's for plenty.
 pub const CACTUS_NODE: usize = 12;
+
+/// Wild corn by a lake (`Occupant::WildCorn`), picked by hand for corn and
+/// a seed; and the wild pumpkin beside it. Appended, as the cactus was.
+pub const WILD_CORN_NODE: usize = 13;
+/// See [`WILD_CORN_NODE`].
+pub const WILD_PUMPKIN_NODE: usize = 14;
 
 /// A harvested tree's `SlotLife::hits` once its stump is spent: nothing left
 /// to swing at until the sapling. Not a count any budget reaches.
@@ -212,8 +218,8 @@ pub const SAPLING_PM: u16 = 150;
 /// predictor and the server agree about a sapling's trunk exactly.
 pub const GROW_STAGES: u64 = 16;
 
-/// A picked plant grows back the same way, quicker: a berry bush or a hemp
-/// plant comes back as a sprout where it was picked and is grown three
+/// A picked plant grows back the same way, quicker: a berry bush, a hemp
+/// plant or a wild crop comes back as a sprout where it was picked and is grown three
 /// minutes later — and only then can be picked again, so a berry bush comes
 /// back bare and fruits when it is grown.
 pub const PLANT_GROW_TICKS: u64 = 5_400;
@@ -224,7 +230,11 @@ pub const PLANT_GROW_TICKS: u64 = 5_400;
 pub const fn grow_span(occ: u8) -> Option<u64> {
     if occ == Occupant::Tree as u8 {
         Some(TREE_GROW_TICKS)
-    } else if occ == Occupant::BerryBush as u8 || occ == Occupant::Hemp as u8 {
+    } else if occ == Occupant::BerryBush as u8
+        || occ == Occupant::Hemp as u8
+        || occ == Occupant::WildCorn as u8
+        || occ == Occupant::WildPumpkin as u8
+    {
         Some(PLANT_GROW_TICKS)
     } else {
         None
@@ -434,6 +444,12 @@ pub struct GatherContent {
     /// with no `cond_max` to spend, and V9 holds it under `u16::MAX`,
     /// which is what bounds `light::step`'s debit to one point a tick.
     pub light_burn: [u16; MAX_ITEM_DEFS],
+    /// A ceiling for `cond` used as DATA rather than wear (content
+    /// `cond_carries`): a seed's clone genes (`farm::GENOME_VALUES`) or a
+    /// blueprint's target plus one (`MAX_ITEM_DEFS`). Zero for everything
+    /// else. Only the condition walls read it ([`Self::cond_cap_of`]); a
+    /// mint still stamps `cond_max`, so every minted seed is a blank one.
+    pub cond_cap: [u16; MAX_ITEM_DEFS],
     pub item_count: u16,
 }
 
@@ -459,6 +475,18 @@ impl GatherContent {
     pub fn cond_max_of(&self, item: u16) -> u16 {
         if (item as usize) < MAX_ITEM_DEFS {
             self.cond_max[item as usize]
+        } else {
+            0
+        }
+    }
+
+    /// The highest `cond` a stack of `item` may legally carry: its wear
+    /// ceiling, or the data it carries (`cond_cap`), whichever is higher.
+    /// The save walls (`server/src/cond.rs`) and `World::clamp_conditions`
+    /// ask this; mints keep asking [`Self::cond_max_of`].
+    pub fn cond_cap_of(&self, item: u16) -> u16 {
+        if (item as usize) < MAX_ITEM_DEFS {
+            self.cond_max[item as usize].max(self.cond_cap[item as usize])
         } else {
             0
         }
@@ -492,6 +520,7 @@ impl GatherContent {
         stack_max: [0; MAX_ITEM_DEFS],
         cond_max: [0; MAX_ITEM_DEFS],
         light_burn: [0; MAX_ITEM_DEFS],
+        cond_cap: [0; MAX_ITEM_DEFS],
         item_count: 0,
     };
 
@@ -564,6 +593,8 @@ impl GatherContent {
             (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
             (0, 3, 0, 0, 0, 1, 5, 4),        // Stump: the tree's tool, a smaller pool
             (5, 2, 0, 0, 0, 0, 6, 3),        // Cactus: hemp's item off a tool
+            (4, 1, 2, 0, 0, NO_ITEM, 0, 0),  // WildCorn: a hand pickup
+            (4, 1, 1, 0, 0, NO_ITEM, 0, 0),  // WildPumpkin
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -613,6 +644,8 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         Occupant::SulfurPile => Some(9),
         Occupant::MushroomPatch => Some(10),
         Occupant::Cactus => Some(CACTUS_NODE),
+        Occupant::WildCorn => Some(WILD_CORN_NODE),
+        Occupant::WildPumpkin => Some(WILD_PUMPKIN_NODE),
         Occupant::None
         | Occupant::Rock
         | Occupant::BarrelSlot
@@ -632,17 +665,22 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
     }
 }
 
-/// Whether `E` picks this occupant by hand ([`pick`]): the berry bush and
-/// hemp. A shrub is scenery and has nothing to pick.
+/// Whether `E` picks this occupant by hand ([`pick`]): the berry bush, hemp,
+/// the wild crops by the lakes and the ground pickups. A shrub is scenery
+/// and has nothing to pick.
 #[inline]
 pub const fn pickable(o: Occupant) -> bool {
-    matches!(o, Occupant::BerryBush | Occupant::Hemp) || o.is_pickup()
+    matches!(
+        o,
+        Occupant::BerryBush | Occupant::Hemp | Occupant::WildCorn | Occupant::WildPumpkin
+    ) || o.is_pickup()
 }
 
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
-/// `None` for Rock, empty cells and every plant — the things a swing passes
-/// through. A berry bush or hemp is picked by hand with `E` ([`pick`],
-/// `Command::Pick`), never swung at (operator, 2026-10-02).
+/// `None` for Rock, empty cells and every [`pickable`] — the things a swing
+/// passes through. A berry bush, hemp, wild corn or pumpkin and a ground
+/// pickup are picked by hand with `E` ([`pick`], `Command::Pick`), never
+/// swung at (operator, 2026-10-02).
 #[inline]
 pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
@@ -677,6 +715,8 @@ fn occupant_of(target: usize) -> u32 {
                 9 => Occupant::SulfurPile,
                 10 => Occupant::MushroomPatch,
                 CACTUS_NODE => Occupant::Cactus,
+                WILD_CORN_NODE => Occupant::WildCorn,
+                WILD_PUMPKIN_NODE => Occupant::WildPumpkin,
                 // STUMP_NODE: what stood here was a tree.
                 _ => Occupant::Tree,
             }) as u32
@@ -774,9 +814,10 @@ pub struct ItemStack {
 /// loot roll pass `GatherContent::cond_max_of(item)` so a new tool arrives
 /// whole (Q3: re-craft IS the repair, so a crafted tool at 0 would repair
 /// nothing); a path moving an *existing* stack passes that stack's own
-/// `cond`, or looting would mend it. Top-ups never touch it: an item that
-/// stacks past 1 carries no condition (content rule V7), so there are
-/// never two conditions to reconcile.
+/// `cond`, or looting would mend it. Top-ups never touch it, and only join
+/// a stack at the same `cond`: an item that stacks past 1 carries no wear
+/// (content rule V7), but a clone's `cond` is its genome, and two genomes
+/// are two things to hold.
 pub fn inv_add(
     inv: &mut [ItemStack; INV_SLOTS],
     item: u16,
@@ -790,7 +831,8 @@ pub fn inv_add(
 /// [`inv_add`] for a mint that wears a skin (`skin.rs`): a finished craft
 /// whose job named one. Fresh stacks are stamped with it the way they are
 /// stamped with `cond`, and a top-up only ever joins a stack wearing the
-/// same skin, so two looks never merge into one.
+/// same skin AND the same `cond`, so two looks never merge into one and
+/// neither do two genomes (a clone's genes ride its `cond`, `farm.rs`).
 pub fn inv_add_skinned(
     inv: &mut [ItemStack; INV_SLOTS],
     item: u16,
@@ -807,7 +849,8 @@ pub fn inv_add_skinned(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.skin == skin && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.skin == skin && s.cond == cond && s.count < stack_max
+        {
             let take = (stack_max - s.count).min(left);
             s.count += take;
             left -= take;
@@ -877,6 +920,38 @@ pub fn inv_add_spilling_skinned(
         inv_add_skinned(spill, item, amount - added, stack_max, cond, skin);
     }
     added
+}
+
+/// [`inv_add_spilling`], sparing slot `spare` while it is empty: what tops
+/// up a matching stack does so anywhere, a fresh stack takes the first
+/// other empty slot, and only what still has nowhere to go takes `spare`,
+/// then the spill. For a payout into the hand that just emptied (a seed
+/// left by the last of a meal in the held hotbar slot), so the next click
+/// does not do something else with what it finds there. Deterministic, no
+/// allocation: the spared slot is masked for the first pass and put back.
+pub fn inv_add_spilling_sparing(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+    cond: u16,
+    spare: usize,
+) -> u16 {
+    let masked = spare < INV_SLOTS && inv[spare].count == 0;
+    if !masked {
+        return inv_add_spilling(inv, spill, item, amount, stack_max, cond);
+    }
+    let held = inv[spare];
+    // A placeholder no payout tops up: no item has this index.
+    inv[spare] = ItemStack {
+        item: NO_ITEM,
+        count: 1,
+        ..ItemStack::default()
+    };
+    let first = inv_add(inv, item, amount, stack_max, cond);
+    inv[spare] = held;
+    first + inv_add_spilling(inv, spill, item, amount - first, stack_max, cond)
 }
 
 /// How long a respawn held back by a base standing over the slot waits
@@ -1608,8 +1683,8 @@ pub fn land(
 /// whatever it offers is inside what this accepts.
 pub const PICK_REACH_M: f32 = crate::backpack::LOOT_REACH_M;
 
-/// Pick the berry bush or hemp at `(cx, cz)` by hand — `Command::Pick`, the
-/// `E` verb.
+/// Pick the [`pickable`] at `(cx, cz)` by hand — a berry bush, hemp, wild
+/// corn or pumpkin, a ground pickup — `Command::Pick`, the `E` verb.
 ///
 /// `slot` is what the world's scatter memo says stands in that cell; the
 /// cell itself came off the wire and is only a **claim**. Anything that is

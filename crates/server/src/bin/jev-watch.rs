@@ -242,6 +242,7 @@ fn run() -> Result<AppExit, String> {
         session,
         sel: 0,
         light: false,
+        farm_sent: None,
     });
     app.add_plugins(GatesRenderPlugin {
         start: Start {

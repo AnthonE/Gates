@@ -72,8 +72,8 @@ pub use event::{
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
     encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
     encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_planter, encode_event_recipes, encode_event_recovered,
-    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
+    encode_event_reload_refused, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
     encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
@@ -102,6 +102,10 @@ pub use event::{
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{
+    encode_event_plant, encode_event_plant_gone, encode_event_plant_sync, WirePlant,
+    PLANT_REC_BITS, PLANT_SYNC_BATCH,
+};
 pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{encode_event_shop, encode_event_shop_result, ShopRow, ShopView};
 pub use event::{
@@ -1281,7 +1285,27 @@ pub use voice::{
 /// building's frame, and its lattice footprint when the grid cannot name it
 /// (a grid bit picks); a piece address may be `LOC_NONE`, its id spelled in
 /// the other fields. `PIECE_SYNC_BATCH` 32 → 11.
-pub const PROTO_VER: u16 = 134;
+/// v135 — farming v2 (`sim_core::farm`), the water catcher and the wild
+/// crops, which counted 130..=132 on their own branch before main took
+/// 130..=134:
+/// - a deploy refusal admits 20..=25 (`REFUSE_D_PLANT_*`,
+///   `REFUSE_D_PLANTS_FULL`). The deploy record loses v100's `grow` byte and
+///   `SUB_PLANTER` is gone: `SUB_PLANT` (90) carries one plant or its removal
+///   and `SUB_PLANT_SYNC` (108) the join walk. `ACT_PLANT` (41) plants a seed
+///   from an inventory slot in a bed spot (or on the ground) and `ACT_TEND`
+///   (42) picks, clones, clears or waters one.
+/// - catalog headroom and the water catcher: `MAX_ITEM_DEFS` is 160, so the
+///   held field (`HELD_BITS`) and the catalog's total and first ride 8 bits
+///   (`HELD_NONE` is 255); a deploy archetype admits 23 (`ARCH_CATCHER`); and
+///   a catalog row's oven roles carry five arches (`OVEN_ROLE_BITS` 15). A
+///   record with no baseline to be a delta of (a zero-state snapshot, an
+///   overflow datagram) no longer spends the is_delta bit, which keeps the
+///   zero-state cap of 64 moving bodies inside `DATAGRAM_BUDGET_BYTES`.
+/// - wild corn/pumpkin occupants: both ends must scatter the same.
+///   `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
+///   shrub by a lake, and the client draws its scatter itself, so a client
+///   that does not plant them stands a shrub where the server picks a crop.
+pub const PROTO_VER: u16 = 135;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1385,15 +1409,15 @@ const _: () = assert!(sim_core::heli::Y_CEIL_Q < (1 << POS_Y_BITS) - POS_Y_BIAS)
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
 
-/// Width of the held-item field on an entity record (v56).
+/// Width of the held-item field on an entity record (v56; 8 bits since v135).
 ///
-/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
-/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
-/// value the ids cannot take. Derived-adjacent rather than typed — the
+/// Eight bits because seven do not fit the sentinel: `MAX_ITEM_DEFS` is
+/// 160, past the 127 ids seven bits hold beside "empty hand", which needs
+/// a value the ids cannot take. Derived-adjacent rather than typed — the
 /// gate `held_bits_hold_every_item_the_sim_can_define` fails if
 /// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
 /// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
-pub const HELD_BITS: u32 = 7;
+pub const HELD_BITS: u32 = 8;
 
 /// The wire's "empty hand" — the all-ones code point in [`HELD_BITS`],
 /// deliberately the far end of the field from id 0 so a truncated or
@@ -2189,6 +2213,16 @@ const _: () = assert!(sim_core::town::SEATS.len() < sim_core::seat::SEAT_NONE as
 /// foundation placed free (wire v134, freeform W2): a leading bit picks
 /// (`Command::PlaceAt` / `Command::PlaceFree`).
 const ACT_LATTICE: u32 = 40;
+/// Plant one seed from inventory slot `slot` (wire v135, farming v2,
+/// `Command::Plant`): in a bed spot of a planter, or on the ground.
+const ACT_PLANT: u32 = 41;
+/// Tend plant `plant` (wire v135, `Command::Tend`): `farm::TEND_*`.
+const ACT_TEND: u32 = 42;
+/// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
+const PLANT_SPOT_BITS: u32 = 3;
+const TEND_ACT_BITS: u32 = 2;
+const _: () = assert!((sim_core::farm::PLANTER_SPOTS as u32) <= 1 << PLANT_SPOT_BITS);
+const _: () = assert!((sim_core::farm::TEND_WATER as u32) < 1 << TEND_ACT_BITS);
 /// Widths of the casino's fields.
 const WHEEL_COLOUR_BITS: u32 = 3;
 const WHEEL_STAKE_BITS: u32 = 7;
@@ -2226,7 +2260,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_LATTICE;
+const ACT_MAX: u32 = ACT_TEND;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2617,6 +2651,13 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
+    /// Plant one seed from inventory slot `slot` (wire v135, farming v2).
+    /// The slot rides the wire, so the seed planted is the one the click
+    /// named; the item, the spot, reach and room are the sim's verdict.
+    Plant { slot: u8, target: PlantTarget },
+    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v135).
+    /// Stage, reach and the held skin are the sim's verdict.
+    Tend { plant: u32, act: u8 },
     /// Pick the plant at cell key `cell` (wire v91). `Container`'s
     /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
     /// whether it is in reach are the sim's verdict.
@@ -2727,6 +2768,64 @@ pub enum ActionMsg {
     /// yielding them. Nothing here reaches the sim, nothing here enters
     /// the WAL, and `World::state_hash` never sees it.
     Container { kind: u8, cont: u32 },
+}
+
+/// Where `ActionMsg::Plant` puts the seed: a spot in the bed of the planter
+/// whose box key is `host`, or the ground at position quanta `(qx, qz)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlantTarget {
+    Bed { host: u32, spot: u8 },
+    Ground { qx: i32, qz: i32 },
+}
+
+/// The plant verb — see `ActionMsg::Plant`. A bed spot past the planter's
+/// six, a host that is the ground's own marker, or a ground point off the
+/// position window is refused here, as the decoder refuses it.
+pub fn encode_action_plant(
+    slot: u8,
+    target: PlantTarget,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PLANT, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    match target {
+        PlantTarget::Bed { host, spot } => {
+            if host == sim_core::farm::HOST_GROUND || spot >= sim_core::farm::PLANTER_SPOTS {
+                return Err(WireError::Range);
+            }
+            w.write_bit(false)?;
+            w.write(host, 32)?;
+            w.write(spot as u32, PLANT_SPOT_BITS)?;
+        }
+        PlantTarget::Ground { qx, qz } => {
+            let window = 0..(1i64 << POS_XZ_BITS);
+            if !window.contains(&(qx as i64)) || !window.contains(&(qz as i64)) {
+                return Err(WireError::Range);
+            }
+            w.write_bit(true)?;
+            w.write(qx as u32, POS_XZ_BITS)?;
+            w.write(qz as u32, POS_XZ_BITS)?;
+        }
+    }
+    Ok(w.finish())
+}
+
+/// The tend verb — see `ActionMsg::Tend`. Plant 0 is no plant.
+pub fn encode_action_tend(plant: u32, act: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if plant == 0 || act > sim_core::farm::TEND_WATER {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_TEND, ACTION_SUB_BITS)?;
+    w.write(plant, 32)?;
+    w.write(act as u32, TEND_ACT_BITS)?;
+    Ok(w.finish())
 }
 
 /// The container verb — see `ActionMsg::Container`. A kind past
@@ -3633,6 +3732,34 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Swipe { door }
         }
         ACT_PICK => ActionMsg::Pick { cell: r.read(32)? },
+        ACT_PLANT => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            let target = if r.read_bit()? {
+                PlantTarget::Ground {
+                    qx: r.read(POS_XZ_BITS)? as i32,
+                    qz: r.read(POS_XZ_BITS)? as i32,
+                }
+            } else {
+                let host = r.read(32)?;
+                let spot = r.read(PLANT_SPOT_BITS)? as u8;
+                if host == sim_core::farm::HOST_GROUND || spot >= sim_core::farm::PLANTER_SPOTS {
+                    return Err(WireError::Malformed);
+                }
+                PlantTarget::Bed { host, spot }
+            };
+            ActionMsg::Plant { slot, target }
+        }
+        ACT_TEND => {
+            let plant = r.read(32)?;
+            let act = r.read(TEND_ACT_BITS)? as u8;
+            if plant == 0 {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Tend { plant, act }
+        }
         ACT_RESPAWN_GATE => ActionMsg::RespawnGate,
         ACT_ARC => ActionMsg::Arc {
             op: r.read(ARC_OP_BITS)? as u8,
@@ -4736,7 +4863,13 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     }
 
     fn encode_absolute(&mut self, e: &EntityState) -> Result<(), WireError> {
-        self.w.write_bit(false)?; // is_delta
+        // is_delta, only where a delta could stand: a zero-state snapshot
+        // and an overflow datagram have no baseline, so every record is
+        // absolute and the bit says nothing (v135: the bit the 8-bit held
+        // field needed back to keep the zero-state cap inside the budget).
+        if self.has_baseline {
+            self.w.write_bit(false)?;
+        }
         self.w.write(e.qx as u32, POS_XZ_BITS)?;
         self.w.write((e.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
@@ -4807,7 +4940,7 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     }
     // The hand, checked here for the reason the header states: up front,
     // so a `Range` refusal never needs a rollback. An id at or past
-    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit seven bits
+    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit eight bits
     // — it is a value the sim cannot mean, and the decoder refuses the
     // same band, so the two ends agree about what is representable.
     if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
@@ -4878,9 +5011,9 @@ impl SnapshotMore {
     }
 }
 
-/// Decode a snapshot overflow datagram. Total like [`decode_snapshot`]; a
-/// delta record is malformed here, since there is no baseline to read it
-/// against.
+/// Decode a snapshot overflow datagram. Total like [`decode_snapshot`];
+/// every record is absolute and spends no `is_delta` bit (v135), since
+/// there is no baseline to read a delta against.
 pub fn decode_snapshot_more(buf: &[u8]) -> Result<SnapshotMore, WireError> {
     let mut r = BitReader::new(buf);
     if r.read(KIND_BITS)? != KIND_SNAPSHOT_MORE {
@@ -4968,7 +5101,8 @@ fn decode_entity(
     baseline: &[EntityState],
 ) -> Result<EntityState, WireError> {
     let id = r.read(32)?;
-    let is_delta = r.read_bit()?;
+    // No baseline, no delta and no bit (`encode_absolute`).
+    let is_delta = baseline_age != 0 && r.read_bit()?;
     if !is_delta {
         let qx = r.read(POS_XZ_BITS)? as i32;
         let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
@@ -4999,9 +5133,7 @@ fn decode_entity(
             held_skin: read_held_skin(r)?,
         });
     }
-    if baseline_age == 0 {
-        return Err(WireError::Malformed);
-    }
+    // A delta is read only against a baseline (`is_delta` above).
     let b = baseline
         .iter()
         .find(|b| b.id == id)
@@ -5056,7 +5188,7 @@ fn read_held_skin(r: &mut BitReader) -> Result<u16, WireError> {
 
 /// The held-item field, with the band the sim cannot mean refused.
 ///
-/// `MAX_ITEM_DEFS..HELD_NONE` is 63 unreachable code points and a decoder
+/// `MAX_ITEM_DEFS..HELD_NONE` is 95 unreachable code points and a decoder
 /// that accepted them would hand the renderer an id no catalog row
 /// answers — a silent empty hand at best, and at worst a lookup that
 /// depends on which crate's bounds check runs first.
@@ -5156,10 +5288,12 @@ mod tests {
         ));
     }
 
-    /// A snapshot overflow datagram (v121) at its worst — 64 moving bodies,
-    /// every record absolute — still fits one datagram, round-trips, and the
-    /// decoder refuses what it can never mean: part 0, a delta record, and
-    /// the snapshot's own kind.
+    /// A snapshot overflow datagram (v121) of 64 moving bodies, every
+    /// record absolute and no skin in hand, still fits one datagram,
+    /// round-trips, and the decoder refuses what it can never mean: part 0
+    /// and the snapshot's own kind. (Since v135 a record here spends no
+    /// is_delta bit, so it cannot be a delta at all; that bit is what paid
+    /// for the held field's eighth.)
     #[test]
     fn a_full_overflow_datagram_fits_and_round_trips() {
         let mut buf = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
@@ -5196,7 +5330,7 @@ mod tests {
             SnapshotEncoder::begin_more(&mut buf, 1, 4).is_err(),
             "two bits"
         );
-        // A delta record has no baseline to stand on here.
+        // A snapshot, whose records may be deltas, is not an overflow.
         let header = SnapshotHeader {
             tick: 9,
             baseline_age: 1,
@@ -5285,9 +5419,9 @@ mod tests {
         }
         let len = enc.finish().expect("finish");
         // 64 entities × (32 id bits + 11 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 88 (1 is_delta + 17 + 14 + 17 +
-        // 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` + 1 lit), so a single
-        // missed lookup adds 77 bits and this bound catches it.
+        // at-rest absolute record is 32 + 89 (1 is_delta + 17 + 14 + 17 +
+        // 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` + 1 lit), so
+        // a single missed lookup adds 78 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
         let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 43).div_ceil(8);
         assert_eq!(
@@ -5298,8 +5432,8 @@ mod tests {
     }
 
     /// **The width is a claim about `sim-core`, so it is checked against
-    /// `sim-core`.** `HELD_BITS` is seven because six hold the ids and
-    /// none hold the sentinel; if `MAX_ITEM_DEFS` ever grows past what
+    /// `sim-core`.** `HELD_BITS` is eight because seven hold 127 ids and
+    /// `MAX_ITEM_DEFS` is 160; if `MAX_ITEM_DEFS` ever grows past what
     /// this field can carry alongside `HELD_NONE`, that is a wire
     /// widening and a `PROTO_VER` turn, exactly as `KIND_BITS` was at
     /// v27 — and it must fail here rather than silently truncating an id
@@ -5401,14 +5535,14 @@ mod tests {
             })
             .collect();
         let hands = encode(&moved);
-        // Nine bits a record since v77: the seven-bit id, the flame, and
+        // Ten bits a record since v135: the eight-bit id, the flame, and
         // the skin's presence bit (none of these hands is skinned). Eight
-        // records are 72 bits, so exactly nine bytes.
+        // records are 80 bits, so exactly ten bytes.
         assert_eq!(
             hands - still,
-            9,
-            "eight changed hands cost {} B over eight unchanged ones, not 9 \
-             — nine bits per record is the field, so this is the gate on the \
+            10,
+            "eight changed hands cost {} B over eight unchanged ones, not 10 \
+             — ten bits per record is the field, so this is the gate on the \
              flag doing anything at all",
             hands - still
         );
@@ -5447,7 +5581,7 @@ mod tests {
     }
 
     /// **And the decoder refuses the same band**, which is the half a
-    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 63 code
+    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 95 code
     /// points no catalog row answers; accepting one hands the renderer an
     /// id whose behaviour depends on which crate's bounds check runs
     /// first.
@@ -5802,11 +5936,12 @@ mod tests {
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
-        // and freeform building's lattice placement (v134) 40.
-        assert_eq!(ACT_MAX, ACT_LATTICE);
+        // freeform building's lattice placement (v134) 40, and farming v2's
+        // plant and tend (v135) 41 and 42.
+        assert_eq!(ACT_MAX, ACT_TEND);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            23,
+            21,
             "the spare action codes moved — say so where the count is written"
         );
     }
@@ -5848,6 +5983,78 @@ mod tests {
         };
         let n = encode_action_place_at(17, 0, 0, &off, &mut buf).unwrap();
         assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
+    #[test]
+    fn plant_and_tend_round_trip_and_refuse_what_no_sim_takes() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        for (slot, target) in [
+            (0, PlantTarget::Bed { host: 1, spot: 0 }),
+            (
+                29,
+                PlantTarget::Bed {
+                    host: 0x00AB_CDEF,
+                    spot: 5,
+                },
+            ),
+            (
+                7,
+                PlantTarget::Ground {
+                    qx: 0,
+                    qz: (1 << POS_XZ_BITS) - 1,
+                },
+            ),
+        ] {
+            let n = encode_action_plant(slot, target, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Plant { slot, target })
+            );
+        }
+        for (slot, target) in [
+            (30, PlantTarget::Bed { host: 1, spot: 0 }),
+            (0, PlantTarget::Bed { host: 1, spot: 6 }),
+            (
+                0,
+                PlantTarget::Bed {
+                    host: sim_core::farm::HOST_GROUND,
+                    spot: 0,
+                },
+            ),
+            (0, PlantTarget::Ground { qx: -1, qz: 0 }),
+            (
+                0,
+                PlantTarget::Ground {
+                    qx: 0,
+                    qz: 1 << POS_XZ_BITS,
+                },
+            ),
+        ] {
+            assert_eq!(
+                encode_action_plant(slot, target, &mut buf),
+                Err(WireError::Range)
+            );
+        }
+        // A seventh bed spot, written past the encoder.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_PLANT, ACTION_SUB_BITS).unwrap();
+        w.write(3, ACTION_SLOT_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(5, 32).unwrap();
+        w.write(6, PLANT_SPOT_BITS).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+
+        for act in 0..=sim_core::farm::TEND_WATER {
+            let n = encode_action_tend(42, act, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Tend { plant: 42, act })
+            );
+        }
+        assert_eq!(encode_action_tend(0, 0, &mut buf), Err(WireError::Range));
+        assert_eq!(encode_action_tend(1, 4, &mut buf), Err(WireError::Range));
     }
 
     #[test]

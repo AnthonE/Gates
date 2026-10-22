@@ -94,6 +94,16 @@ placement = "any"
 matter = "wood"
 hp = 300
 
+# A water catcher (farming v2): a barrel under a tarp funnel. It banks rain
+# under open sky, fills a waterskin, and waters the planters and ground
+# plants within `catcher_reach_cm` (`cooking.toml` `[farm]`).
+[[deployable]]
+id = "item.water_catcher"
+archetype = "catcher"
+placement = "any"
+matter = "wood"
+hp = 150
+
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"

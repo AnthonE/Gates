@@ -308,10 +308,12 @@ fn a_partial_spill_says_what_fit_and_what_fell() {
     let tree = w.gather.nodes[0];
     let room: u16 = 3;
     assert!(room < tree.hand_yield, "the fixture must overflow the room");
+    // At the condition a mint of it carries: a top-up joins only its own
+    // `cond` (a clone's genes ride it), and the fixture's wood wears.
     w.players[0].inv[INV_SLOTS - 1] = ItemStack {
         item: tree.output,
         count: STACK_MAX - room,
-        cond: 0,
+        cond: w.gather.cond_max_of(tree.output),
         skin: 0,
     };
 

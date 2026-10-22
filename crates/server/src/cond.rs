@@ -56,7 +56,8 @@ pub struct CondViolation {
     pub slot: usize,
     pub item: u16,
     pub cond: u16,
-    /// The ceiling content declares for `item` (0 = carries no condition).
+    /// The ceiling content declares for `item` (`GatherContent::cond_cap_of`;
+    /// 0 = carries no condition).
     pub max: u16,
 }
 
@@ -70,7 +71,9 @@ pub struct CondViolation {
 /// cannot reach this check.
 pub fn violation(stacks: &[ItemStack], gather: &GatherContent) -> Option<CondViolation> {
     stacks.iter().enumerate().find_map(|(slot, s)| {
-        let max = gather.cond_max_of(s.item);
+        // Wear's ceiling, or the data the item carries (a clone's genes, a
+        // blueprint's target): `cond_cap_of` is the higher of the two.
+        let max = gather.cond_cap_of(s.item);
         (s.count > 0 && s.cond > max).then_some(CondViolation {
             slot,
             item: s.item,
@@ -86,7 +89,7 @@ pub fn violation(stacks: &[ItemStack], gather: &GatherContent) -> Option<CondVio
 pub fn clamp(stacks: &mut [ItemStack], gather: &GatherContent) -> usize {
     let mut moved = 0;
     for s in stacks.iter_mut() {
-        let max = gather.cond_max_of(s.item);
+        let max = gather.cond_cap_of(s.item);
         if s.count > 0 && s.cond > max {
             s.cond = max;
             moved += 1;
@@ -145,5 +148,36 @@ mod tests {
             violation(&[stack(0, 1, 400), stack(0, 1, 65535)], &gc).map(|v| v.slot),
             Some(1)
         );
+    }
+
+    /// A data condition is legal up to what it carries: a seed's clone
+    /// genes up to the genome count, a blueprint's target up to the
+    /// catalog. The targeted blueprint used to trip the wall (its
+    /// `condition_max` is 0), so a world holding a learned paper refused
+    /// to boot.
+    #[test]
+    fn a_clone_and_a_targeted_blueprint_pass_the_wall() {
+        use sim_core::farm::GENOME_VALUES;
+        use sim_core::limits::MAX_ITEM_DEFS;
+        let mut gc = GatherContent::probe_fixture();
+        let (seed, paper) = (2u16, 11u16);
+        gc.cond_cap[seed as usize] = GENOME_VALUES as u16;
+        gc.cond_cap[paper as usize] = MAX_ITEM_DEFS as u16;
+        let stack = |item, count, cond| ItemStack {
+            item,
+            count,
+            cond,
+            skin: 0,
+        };
+        assert_eq!(violation(&[stack(seed, 3, 15_625)], &gc), None);
+        assert_eq!(
+            violation(&[stack(seed, 3, 15_626)], &gc).map(|v| v.max),
+            Some(15_625)
+        );
+        assert_eq!(violation(&[stack(paper, 1, 6)], &gc), None);
+        // A clamp after a balance edit keeps the genes.
+        let mut s = [stack(seed, 3, 1_234)];
+        assert_eq!(clamp(&mut s, &gc), 0);
+        assert_eq!(s[0].cond, 1_234);
     }
 }

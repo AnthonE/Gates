@@ -897,11 +897,11 @@ pub const EV_ARC_DID: u8 = 57;
 /// **Broadcast**: a lock opening is heard across the island.
 pub const EV_MECH_SOLVED: u8 = 58;
 
-/// EV_GROW: a = build cell key, b = level << 16 | loc << 8 | stages, c = 0.
-/// A planter's beds changed how they are drawn (crops v1): two bits a bed,
-/// `oven::planter_stages`. **Broadcast**, `EV_OVEN`'s posture: a crop in a
-/// planter is visible from outside the base it is in.
-pub const EV_GROW: u8 = 59;
+/// EV_PLANT: a = plant id, b = stage << 8 | flags, c = its store index at
+/// push time (a hint the server verifies). A plant was planted, or changed
+/// stage, dryness or health band (`farm.rs`). **Aimed** at the clients whose
+/// interest holds it.
+pub const EV_PLANT: u8 = 59;
 
 /// EV_STUMP_GRUBBED: a = cell key, b = 0, c = 0. A felled tree's stump was
 /// grubbed out (`gather::STUMP_GRUBBED`): the slot stays harvested until the
@@ -984,7 +984,12 @@ pub const PAID_SHORT: u32 = 0;
 pub const PAID_DONE: u32 = 1;
 pub const PAID_NO_BODY: u32 = 2;
 
-pub const EV_MAX: u8 = EV_PAID;
+/// EV_PLANT_GONE: a = plant id, b = `farm::GONE_*`, c = the hand that
+/// picked, cloned or cleared it, 0 otherwise. **Broadcast**, so a removal
+/// never leaves a ghost on a far client.
+pub const EV_PLANT_GONE: u8 = 74;
+
+pub const EV_MAX: u8 = EV_PLANT_GONE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2191,6 +2196,26 @@ pub enum Command {
         id: u32,
         cell: u32,
     },
+    /// Plant one unit of inventory slot `slot` (farming v2, `farm.rs`): in
+    /// spot `spot` of the planter whose box key is `host`, or in the open
+    /// ground at `(qx, qz)` (`movement::quant_xz`) when `host` is
+    /// `farm::HOST_GROUND` (`farm::ground_ok`). The slot
+    /// rides the wire, so the seed planted is the one the click named.
+    Plant {
+        id: u32,
+        slot: u8,
+        host: u32,
+        spot: u8,
+        qx: i32,
+        qz: i32,
+    },
+    /// Tend plant `plant` (`farm::TEND_*`): pick it, take a clone, clear a
+    /// dead one, or water it from the held skin. Anyone in reach may.
+    Tend {
+        id: u32,
+        plant: u32,
+        act: u8,
+    },
     /// Move `count` items between two slots (`inventory.rs`). `cont` names
     /// the one ground container this move touches — a bag id for
     /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, a
@@ -2606,6 +2631,8 @@ pub struct World {
     /// `world_conts` — it costs the tick nothing but one bounded expiry
     /// sweep over the live entries.
     pub ground_items: crate::grounditem::GroundItems,
+    /// Every living plant (`farm.rs`). Sim state, hashed and saved.
+    pub farm: crate::farm::Farm,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -2745,6 +2772,7 @@ impl World {
             rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
             ground_items: crate::grounditem::GroundItems::new(),
+            farm: crate::farm::Farm::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
@@ -3247,6 +3275,216 @@ impl World {
                 p,
                 at,
             )
+    }
+
+    /// [`Self::box_reachable`] for plant `i` (`farm.rs`): the eye within
+    /// `gather::PICK_REACH_M` of the nearest point of its pick cylinder, and
+    /// then a bed plant's planter in reach, or a ground plant in plain sight.
+    pub fn plant_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(rec)) = (self.players.get(slot), self.farm.entries().get(i)) else {
+            return false;
+        };
+        let look = self.cook.farm.crop(rec.crop).map_or(0, |c| c.look);
+        if !crate::farm::in_pick_reach(look, rec.stage, rec.pos(), crate::reach::eye(p)) {
+            return false;
+        }
+        if rec.host == crate::farm::HOST_GROUND {
+            let at = crate::reach::Target::lying(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                (rec.qx, rec.qy, rec.qz),
+            );
+            crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+        } else {
+            // A bed's planter, not whatever box took its address after a
+            // raid or decay: that plant is stale until self-heal uproots it.
+            self.deploys
+                .box_index(rec.host)
+                .filter(|&b| self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER)
+                .is_some_and(|b| self.box_reachable(b, slot))
+        }
+    }
+
+    /// `Command::Plant`'s body: a bed spot in a planter in reach, or the
+    /// open ground at `q` when `host` is `farm::HOST_GROUND`.
+    fn plant(
+        &mut self,
+        slot: usize,
+        inv_slot: u8,
+        host: u32,
+        spot: u8,
+        q: (i32, i32),
+    ) -> Result<(), u32> {
+        if host == crate::farm::HOST_GROUND {
+            return self.plant_ground(slot, inv_slot, q);
+        }
+        let Some(b) = self
+            .deploys
+            .box_index(host)
+            .filter(|&b| self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER)
+        else {
+            return Err(deploy::REFUSE_D_SPOT);
+        };
+        if !self.box_reachable(b, slot) {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        let rec = self.deploys.boxes()[b];
+        // The floor the planter is drawn, collides and is reached at, so
+        // the soil a plant roots in is the bed's (on bare ground the lowest
+        // terrain under it, not the column's band).
+        let feet = deploy::box_base_y(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            &rec,
+            deploy::ARCH_PLANTER,
+        );
+        crate::farm::plant_bed(
+            &self.cook.farm,
+            self.seed,
+            self.tick,
+            &mut self.farm,
+            &rec,
+            feet,
+            &mut self.players[slot],
+            inv_slot as usize,
+            spot,
+            &mut self.events,
+        )
+        .map(|_| ())
+    }
+
+    /// `Command::Plant` on the open ground (`farm::ground_ok`): a seed in the
+    /// named slot, the soil point within a hand's reach of the eye and in
+    /// plain sight of it, then the ground, the soil, the spacing and the caps.
+    fn plant_ground(&mut self, slot: usize, inv_slot: u8, q: (i32, i32)) -> Result<(), u32> {
+        let fc = &self.cook.farm;
+        let p = &self.players[slot];
+        let stack = p.inv.get(inv_slot as usize).copied().unwrap_or_default();
+        if stack.count == 0 || fc.crop_of_item(stack.item).is_none() {
+            return Err(deploy::REFUSE_D_PLANT_ITEM);
+        }
+        let (x, z) = (
+            q.0 as f32 * crate::movement::POS_XZ_Q,
+            q.1 as f32 * crate::movement::POS_XZ_Q,
+        );
+        let y = terrain::ground(self.seed, &self.haven, x, z);
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (q.0, crate::movement::quant_y(y), q.1),
+        );
+        if !crate::farm::in_sow_reach((x, y, z), crate::reach::eye(p))
+            || !crate::reach::clear(self.seed, &self.haven, cols, self.card_door_bits, p, at)
+        {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        // The scatter as the seed draws it (`farm::ground_clear`).
+        let mut occ = crate::occupy::Occupants {
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &crate::occupy::Pristine,
+            cache: &mut self.slot_cache,
+            doors: self.card_door_bits,
+        };
+        let (soil, y) = crate::farm::ground_ok(
+            fc,
+            self.seed,
+            &self.haven,
+            &mut occ,
+            &self.pieces,
+            &self.deploys,
+            &self.farm,
+            p.id,
+            x,
+            z,
+        )?;
+        crate::farm::plant_ground(
+            &self.cook.farm,
+            self.seed,
+            self.tick,
+            &mut self.farm,
+            &mut self.players[slot],
+            inv_slot as usize,
+            q,
+            soil,
+            y,
+            &mut self.events,
+        )
+        .map(|_| ())
+    }
+
+    /// Seeds from eating (Rust's): what eating `item` leaves in the eater's
+    /// hand, its row's `leaves_pm` of the time, rolled on the eater and the
+    /// tick. Into the pack, sparing the held hotbar slot if the meal emptied
+    /// it (so the next click there eats or does nothing, never sows), and
+    /// what will not fit in a bag at the feet.
+    fn leave_seed(&mut self, slot: usize, item: u16) {
+        let Some(def) = self.survival.row(item) else {
+            return;
+        };
+        if def.leaves == NO_ITEM || def.leaves_pm == 0 {
+            return;
+        }
+        let pid = self.players[slot].id;
+        let roll = crate::rng::splitmix64(
+            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
+        ) % 1000;
+        if roll >= u64::from(def.leaves_pm) {
+            return;
+        }
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let held = self.players[slot].frame.sel as usize;
+        let added = crate::gather::inv_add_spilling_sparing(
+            &mut self.players[slot].inv,
+            &mut spill,
+            def.leaves,
+            1,
+            self.gather.stack_max_of(def.leaves),
+            0,
+            held,
+        );
+        self.events.push(
+            EV_GATHER,
+            pid,
+            ((def.leaves as u32) << 16) | added as u32,
+            (1 - added) as u32,
+        );
+        self.drain_spill(slot, &mut spill);
+    }
+
+    /// `Command::Tend`'s body.
+    fn tend(&mut self, slot: usize, plant: u32, act: u8) -> Result<(), u32> {
+        let Some(i) = self.farm.index_of_id(plant) else {
+            return Err(deploy::REFUSE_D_SPOT);
+        };
+        if !self.plant_reachable(i, slot) {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let r = crate::farm::tend(
+            &self.cook.farm,
+            &self.gather,
+            &mut self.farm,
+            &mut self.deploys,
+            &mut self.players[slot],
+            i,
+            act,
+            &mut spill,
+            &mut self.events,
+        );
+        self.drain_spill(slot, &mut spill);
+        r
     }
 
     /// [`Self::box_reachable`] for world container `i` — the pad's crate, a
@@ -5300,11 +5538,11 @@ impl World {
     /// Every player id the world files anything under, through `f`: each
     /// body's own, the killer on each corpse, every owner — a bag's, a
     /// cupboard's, a box's, a lock's, a turret's, a death bag's, a planted
-    /// charge's, a fire's — every cupboard crew and lock list, each arrow
-    /// lodged in a body, and each works credit. [`World::rekey`] moves a
-    /// player's things with them to a new connection id through it, and the
-    /// server reads the highest id a saved world still holds through it
-    /// (`worldfile::id_floor`), so the two cannot disagree about what a
+    /// charge's, a fire's, a plant's — every cupboard crew and lock list,
+    /// each arrow lodged in a body, and each works credit. [`World::rekey`]
+    /// moves a player's things with them to a new connection id through it,
+    /// and the server reads the highest id a saved world still holds through
+    /// it (`worldfile::id_floor`), so the two cannot disagree about what a
     /// player owns.
     ///
     /// Arrows in flight and the per-tick scratch are not visited: they live
@@ -5329,6 +5567,8 @@ impl World {
         for w in self.works.w.iter_mut() {
             w.map_ids(f);
         }
+        // A ground plant's owner is its cap's key (`farm::ground_ok`).
+        self.farm.map_ids(f);
     }
 
     /// Everything `from` owns is `to`'s: the same player, back on a new
@@ -5538,7 +5778,9 @@ impl World {
         let mut moved = 0u32;
         let mut clamp = |stacks: &mut [ItemStack]| {
             for s in stacks.iter_mut() {
-                let max = gc.cond_max_of(s.item);
+                // A seed's genes and a blueprint's target are data, not
+                // wear: the ceiling is what the item may carry.
+                let max = gc.cond_cap_of(s.item);
                 if s.count > 0 && s.cond > max {
                     s.cond = max;
                     moved += 1;
@@ -6349,7 +6591,29 @@ impl World {
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    if deploy {
+                    // A planter with plants in it comes up empty or not at
+                    // all, a box's rule (farming v2).
+                    let key = deploy::box_key(cx, cz, level, loc);
+                    let planted = deploy
+                        && self.farm.has_host(key)
+                        && self.deploys.box_index(key).is_some_and(|b| {
+                            self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER
+                        });
+                    if planted {
+                        // Only a hand that could lift it hears it is planted.
+                        let why = deploy::pick_up_hand(
+                            &self.pieces,
+                            &self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                        )
+                        .err()
+                        .unwrap_or(deploy::REFUSE_D_NOT_EMPTY);
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    } else if deploy {
                         deploy::pick_up(
                             &self.deploy,
                             &self.gather,
@@ -6380,6 +6644,12 @@ impl World {
                             &mut self.events,
                             &mut spill,
                         );
+                    }
+                    // A planter that came up takes nothing of the farm's
+                    // with it (pick_up refuses a planted one; this is the
+                    // eager half of `farm::step`'s self-heal).
+                    if deploy && self.farm.has_host(key) && self.deploys.box_index(key).is_none() {
+                        self.farm.uproot_host(key, &mut self.events);
                     }
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
@@ -6691,7 +6961,12 @@ impl World {
             }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    survival::consume(
+                    let eaten = self.players[slot]
+                        .inv
+                        .get(inv as usize)
+                        .filter(|s| s.count > 0)
+                        .map_or(NO_ITEM, |s| s.item);
+                    if survival::consume(
                         &self.survival,
                         inv as usize,
                         &mut self.players[slot],
@@ -6701,7 +6976,9 @@ impl World {
                             self.works.unlocks,
                             crate::works::KNOB_HEAL_PCT,
                         ),
-                    );
+                    ) {
+                        self.leave_seed(slot, eaten);
+                    }
                 }
             }
             Command::Drop {
@@ -6911,6 +7188,27 @@ impl World {
                         &s,
                     );
                     self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Plant {
+                id,
+                slot: inv_slot,
+                host,
+                spot,
+                qx,
+                qz,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if let Err(why) = self.plant(slot, inv_slot, host, spot, (qx, qz)) {
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    }
+                }
+            }
+            Command::Tend { id, plant, act } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if let Err(why) = self.tend(slot, plant, act) {
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    }
                 }
             }
             Command::Move {
@@ -8546,30 +8844,6 @@ impl World {
         // sweeps that can remove the thing it is stepping — an oven that
         // decays this tick has already spent its period, which is the
         // ordering a raid and a decay have to agree on.
-        // A planter grows by day under open sky (crops v1): the shelter
-        // question a body asks of the rain, asked at the planter's feet.
-        // The same rain waters it.
-        let night = is_night(tick);
-        let wx = crate::weather::now(self.seed, tick, &self.env);
-        let rain_pm = wx.rain;
-        let day_tick = crate::weather::day_tick(tick, &self.env);
-        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
-        let air = &self.survival.exposure.air;
-        let planter_feet = |b: &crate::deploy::BoxRec| {
-            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level)
-        };
-        let open_sky = |b: &crate::deploy::BoxRec| {
-            let (x, z) = b.xz();
-            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, planter_feet(b))
-        };
-        // The air at the planter sets its pace (climate v0).
-        let crop_pm = |b: &crate::deploy::BoxRec| {
-            let (x, z) = b.xz();
-            let alt = planter_feet(b) - crate::terrain::SEA_LEVEL;
-            let t = crate::climate::air_dc(air, seed, x, z, alt, day_tick, &wx);
-            crate::climate::crop_pm(air, t)
-        };
         crate::oven::sweep(
             &self.cook,
             &self.gather,
@@ -8580,10 +8854,38 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
-            &open_sky,
-            &crop_pm,
+            &mut self.events,
+        );
+        // The farm (`farm.rs`), on the ovens' stride and right behind them:
+        // a plant grows by day under open sky — the shelter question a body
+        // asks of the rain, asked at its soil — and the same rain fills the
+        // planters' tanks.
+        // Night by the day clock everyone sees, not the raw tick: an
+        // admin `/time` moves `Env::day_offset`, and the sun with it.
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let night = is_night(day_tick);
+        let wx = crate::weather::now(self.seed, tick, &self.env);
+        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let feet_of = |b: &crate::deploy::BoxRec, arch: u8| {
+            deploy::box_base_y(seed, haven, pieces.cols(), b, arch)
+        };
+        let open_sky_at =
+            |x: f32, z: f32, y: f32| !crate::collide::roofed(seed, haven, pieces.cols(), x, z, y);
+        let ground_open = |x: f32, z: f32, y: f32| {
+            crate::farm::ground_cover(seed, haven, pieces.cols(), x, z, y).is_ok()
+        };
+        crate::farm::step(
+            &self.cook.farm,
+            &self.survival.exposure.air,
+            &mut self.farm,
+            &mut self.deploys,
+            tick,
             night,
-            rain_pm,
+            &wx,
+            day_tick,
+            &feet_of,
+            &open_sky_at,
+            &ground_open,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point
@@ -9344,6 +9646,23 @@ impl World {
             h.update(&buf);
             for c in ov.cook.iter() {
                 h.update(&c.to_le_bytes());
+            }
+            // A planter's or a catcher's tank (farming v2), only where there
+            // is one, so a world without one hashes as it did before.
+            if crate::oven::OvenState::arch_has_tank(ov.arch) {
+                h.update(&ov.water.to_le_bytes());
+            }
+        }
+        // The farm (`farm.rs`), only once it has ever held a plant (the
+        // fires' idiom): every field of every plant. The hint is a lookup
+        // accelerator and never folded.
+        if !self.farm.is_empty() || self.farm.next_id() > 1 {
+            h.update(&(self.farm.len() as u64).to_le_bytes());
+            h.update(&self.farm.next_id().to_le_bytes());
+            for p in self.farm.entries() {
+                let mut buf = [0u8; crate::farm::PLANT_BYTES];
+                crate::farm::pack(p, &mut buf);
+                h.update(&buf);
             }
         }
         h.update(&(self.backpacks.len() as u64).to_le_bytes());

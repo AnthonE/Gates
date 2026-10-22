@@ -1161,6 +1161,48 @@ fn a_take_that_merges_out_of_a_crate_is_not_a_deposit() {
     );
 }
 
+/// **A take onto the same item at another cond is a deposit**, because
+/// `plan_move` swaps it: stacks merge only on equal item, skin and cond, so
+/// a crate's fresh hatchet dragged onto a worn one, or its blank seeds onto
+/// a pack of clones, would put the player's stack into the crate. The skin
+/// is the same predicate's older half and is pinned beside it.
+#[test]
+fn a_take_onto_the_same_item_at_another_cond_is_a_deposit() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    let held = w.world_conts.entries()[0].items[0];
+    assert!(held.count > 0, "the fixture rolls a stack");
+    let mine = [
+        ItemStack {
+            cond: held.cond + 1234,
+            ..held
+        },
+        ItemStack {
+            skin: held.skin + 1,
+            ..held
+        },
+    ];
+    for m in mine {
+        w.players[0].inv[5] = m;
+        let before = w.world_conts.entries()[0].items;
+        take(&mut w, cx, cz, 0, 5, held.count);
+        assert_eq!(
+            answers(&w),
+            vec![(EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)],
+            "a whole-stack take onto {m:?} swaps, so it is a deposit"
+        );
+        assert_eq!(
+            w.world_conts.entries()[0].items,
+            before,
+            "the swap put {m:?} into the crate"
+        );
+        assert_eq!(w.players[0].inv[5], m, "and took it out of the pack");
+    }
+}
+
 /// The other half of the same rule: **taking more does not push the clock
 /// out.** A crate is armed once, by whatever disturbed it first, and
 /// every take after that reads the same tick — otherwise a player with

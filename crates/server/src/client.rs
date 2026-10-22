@@ -302,6 +302,11 @@ pub struct ClientNetState {
     pub gitem_sync_cursor: usize,
     /// The next loose-stack batch carries the reset bit.
     pub gitem_sync_reset: bool,
+    /// Plant walk cursor (farming v2): the deployables' shape — tail-down,
+    /// aimed, entries still owed — re-armed with the piece anchor.
+    pub plant_sync_cursor: usize,
+    /// The next plant batch carries the reset bit.
+    pub plant_sync_reset: bool,
     /// What the store looked like when this client's walk was last
     /// complete: `(next_id, len)`.
     ///
@@ -552,6 +557,8 @@ impl ClientNetState {
             bag_sync_cursor: 0,
             gitem_sync_cursor: 0,
             gitem_sync_reset: true,
+            plant_sync_cursor: 0,
+            plant_sync_reset: true,
             gitem_seen: (0, 0),
             lodged_sync_cursor: 0,
             lodged_sync_reset: true,
@@ -644,6 +651,8 @@ impl ClientNetState {
         self.gitem_sync_cursor = 0;
         self.gitem_sync_reset = true;
         self.gitem_seen = (0, 0);
+        self.plant_sync_cursor = 0;
+        self.plant_sync_reset = true;
         self.lodged_sync_cursor = 0;
         self.lodged_sync_reset = true;
         // The open container is *closed*, not resynced. Every other line

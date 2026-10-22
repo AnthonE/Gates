@@ -627,6 +627,13 @@ pub const ACHIEVEMENTS: &[Def] = &[
         Rule::Place(&["item.planter"]),
     ),
     building(
+        "PLACE_CATCHER",
+        "Rain Barrel",
+        "Place a water catcher",
+        "water_catcher",
+        Rule::Place(&["item.water_catcher"]),
+    ),
+    building(
         "PLACE_TURRET",
         "Sentry Duty",
         "Place an auto turret",

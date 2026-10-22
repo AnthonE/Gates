@@ -105,6 +105,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 i.id, i.condition_max, i.stack
             ));
         }
+        // A data `cond` (a clone's genes, a blueprint's target) is not wear:
+        // an item whose condition both wore and carried data would have its
+        // genes rewritten by every swing.
+        if i.cond_carries.is_some() && i.condition_max != 0 {
+            return Err(format!(
+                "item `{}`: cond_carries with condition_max {} — a data \
+                 condition cannot also wear",
+                i.id, i.condition_max
+            ));
+        }
         // --- torch fuel V8: a light spends condition, so it must have
         // some. `light_burn` is the predicate for *is this a light* as
         // well as its price (see the schema field), and a light with no
@@ -1013,6 +1023,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // catch it here, where the message can name the file.
         if con.food > u16::MAX as u32 || con.water > u16::MAX as u32 {
             return Err(format!("consumable `{}`: food/water overflows u16", con.id));
+        }
+        // Seeds from eating: the leftover is a real item, its chance a per
+        // mille, and a chance with nothing to leave is a typo.
+        match &con.leaves {
+            Some(l) => {
+                item_exists(l, "consumable leaves")?;
+                if con.leaves_pm == 0 || con.leaves_pm > 1000 {
+                    return Err(format!(
+                        "consumable `{}`: leaves_pm {} outside 1..=1000",
+                        con.id, con.leaves_pm
+                    ));
+                }
+            }
+            None if con.leaves_pm != 0 => {
+                return Err(format!(
+                    "consumable `{}`: leaves_pm {} with nothing to leave",
+                    con.id, con.leaves_pm
+                ));
+            }
+            None => {}
         }
     }
 
@@ -2240,7 +2270,6 @@ pub fn structural(c: &Content) -> Result<(), String> {
             CookStation::Fire => DeployArchetype::Fire,
             CookStation::Furnace => DeployArchetype::Furnace,
             CookStation::Recycler => DeployArchetype::Recycler,
-            CookStation::Planter => DeployArchetype::Planter,
         };
         if !c.deployables.iter().any(|d| d.archetype == arch) {
             return Err(format!(
@@ -2312,6 +2341,222 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // The farm (`content/cooking.toml` `[farm]` and `[[crop]]`, farming v2).
+    // Each rule refuses a farm that would plant and never pay, or pay and
+    // never water.
+    let fm = &c.farm;
+    let item_of = |id: &str| c.items.iter().find(|i| i.id == id);
+    for (what, id) in [("water", &fm.water), ("emptied", &fm.emptied)] {
+        let Some(it) = item_of(id) else {
+            return Err(format!("farm: {what} `{id}` is not an item"));
+        };
+        // One skin's water is one skin: a stack of full skins would turn
+        // whole for one skin's pour (a tend, a planter's slot, a catcher's
+        // fill rewrite the stack's item, not one of it).
+        if it.stack != 1 {
+            return Err(format!(
+                "farm: {what} `{id}` stacks to {}, not 1: a pour empties the whole stack",
+                it.stack
+            ));
+        }
+    }
+    if fm.water == fm.emptied {
+        return Err(format!(
+            "farm: water and emptied are both `{}`: a pour would leave the skin full",
+            fm.water
+        ));
+    }
+    if fm.clone_y_per == 0 {
+        return Err("farm: clone_y_per must be above 0".to_string());
+    }
+    if fm.stage_pct.contains(&0) {
+        return Err("farm: every stage_pct share must be above 0".to_string());
+    }
+    let pct: u32 = fm.stage_pct.iter().map(|&p| p as u32).sum();
+    if pct != 100 {
+        return Err(format!("farm: stage_pct sums to {pct}, not 100"));
+    }
+    if fm.ripe_seconds == 0 || fm.dying_seconds == 0 {
+        return Err("farm: ripe_seconds and dying_seconds must be above 0".to_string());
+    }
+    for (what, v) in [("good_gene_pm", fm.good_gene_pm), ("bad_w_pm", fm.bad_w_pm)] {
+        if v > 1000 {
+            return Err(format!("farm: {what} {v} is past 1000 per mille"));
+        }
+    }
+    for (what, v) in [
+        ("g_pct", fm.g_pct),
+        ("y_pct", fm.y_pct),
+        ("h_pct", fm.h_pct),
+        ("w_pct", fm.w_pct),
+    ] {
+        if v > 100 {
+            return Err(format!("farm: {what} {v} is past 100 per cent"));
+        }
+    }
+    for (biome, v) in &fm.soil {
+        if !sim_core::terrain::BIOME_NAMES.contains(&biome.as_str()) {
+            return Err(format!(
+                "farm: soil names `{biome}`, not a biome ({})",
+                sim_core::terrain::BIOME_NAMES.join(", ")
+            ));
+        }
+        if *v > 1000 {
+            return Err(format!("farm: soil `{biome}` {v} is past 1000 per mille"));
+        }
+    }
+    // The sim refuses a seed outside the soft biomes and the client's
+    // planting ghost reads the same table (`sim_core::farm::SOFT_SOIL`), so
+    // the soil names exactly those, each above 0: a soft biome at 0 would
+    // draw a green ghost the sim refuses, and any other biome could never
+    // be sown.
+    for (b, name) in sim_core::terrain::BIOME_NAMES.iter().enumerate() {
+        let soft = sim_core::farm::SOFT_SOIL[b];
+        let pm = fm.soil.get(*name).copied().unwrap_or(0);
+        if soft != (pm > 0) {
+            return Err(format!(
+                "farm: soil `{name}` is {pm}, but {name} is {}soft ground (sim_core::farm::SOFT_SOIL)",
+                if soft { "" } else { "not " }
+            ));
+        }
+    }
+    // A ground plant that soil takes must be one a skin can water: a pour
+    // is refused unless a quarter skin fits, so a tank under that would
+    // never take one.
+    if fm.soil.values().any(|&v| v > 0) && fm.ground_water < fm.skin_water.div_ceil(4) {
+        return Err(format!(
+            "farm: ground_water {} holds less than a quarter skin ({}), so no skin pours",
+            fm.ground_water, fm.skin_water
+        ));
+    }
+    if fm.skin_water == 0 || fm.skin_water > fm.planter_water {
+        return Err(format!(
+            "farm: a skin ({}) must hold water and fit a planter ({})",
+            fm.skin_water, fm.planter_water
+        ));
+    }
+    // A catcher fills a skin only once its barrel holds one, and waters a
+    // reach a hand could walk: a barrel under a skin fills nothing, and a
+    // reach of 0 or past 10 m is a typo.
+    if c.deployables
+        .iter()
+        .any(|d| d.archetype == DeployArchetype::Catcher)
+    {
+        if fm.catcher_water < fm.skin_water {
+            return Err(format!(
+                "farm: catcher_water {} holds less than a skin ({}), so no skin fills",
+                fm.catcher_water, fm.skin_water
+            ));
+        }
+        if !(1..=1000).contains(&fm.catcher_reach_cm) {
+            return Err(format!(
+                "farm: catcher_reach_cm {} is not within 1..=1000",
+                fm.catcher_reach_cm
+            ));
+        }
+    }
+    if !c
+        .deployables
+        .iter()
+        .any(|d| d.archetype == DeployArchetype::Planter)
+        && !c.crops.is_empty()
+    {
+        return Err("farm: crops with no planter to grow them in".to_string());
+    }
+    let mut crop_ids = BTreeSet::new();
+    let mut crop_seeds = BTreeSet::new();
+    for k in &c.crops {
+        if !crop_ids.insert(k.id.as_str()) {
+            return Err(format!("crop: `{}` appears twice", k.id));
+        }
+        if !sim_core::farm::LOOK_NAMES
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&k.look))
+        {
+            return Err(format!("crop: `{}` has no look `{}`", k.id, k.look));
+        }
+        let Some(seed) = item_of(&k.seed) else {
+            return Err(format!("crop: `{}` seed `{}` is not an item", k.id, k.seed));
+        };
+        if item_of(&k.yield_item).is_none() {
+            return Err(format!(
+                "crop: `{}` yield `{}` is not an item",
+                k.id, k.yield_item
+            ));
+        }
+        if !crop_seeds.insert(k.seed.as_str()) {
+            return Err(format!("crop: `{}` is the seed of two crops", k.seed));
+        }
+        // A seed stacks, and carries no condition: a plant's genes ride its
+        // clone's `cond`, and a wearing seed would rewrite them.
+        if seed.stack <= 1 || seed.condition_max != 0 {
+            return Err(format!(
+                "crop: seed `{}` must stack past 1 with condition_max 0",
+                k.seed
+            ));
+        }
+        if k.count == 0 || k.seconds == 0 {
+            return Err(format!("crop: `{}` pays nothing or grows in 0 s", k.id));
+        }
+        if (k.seconds as u64) * (sim_core::limits::TICK_HZ as u64) * 1000 > u32::MAX as u64 {
+            return Err(format!(
+                "crop: `{}` grows {} s, past what a plant can count",
+                k.id, k.seconds
+            ));
+        }
+    }
+
+    // Genes ride a seed's `cond` (`sim_core::farm`, a clone). Every crop
+    // seed carries them and nothing else may, and nothing that takes items
+    // cond-blind (a craft's inputs, a kiosk, a work's quota) may take a
+    // genes item: it would eat a prized clone as a blank seed.
+    use crate::schema::CondCarries;
+    for i in &c.items {
+        let is_seed = c.crops.iter().any(|k| k.seed == i.id);
+        let genes = i.cond_carries == Some(CondCarries::Genes);
+        if is_seed != genes {
+            return Err(format!(
+                "item `{}`: a crop seed must carry cond_carries = \"genes\", and \
+                 only a crop seed may",
+                i.id
+            ));
+        }
+    }
+    let genes_item = |id: &str| {
+        c.items
+            .iter()
+            .any(|i| i.id == id && i.cond_carries == Some(CondCarries::Genes))
+    };
+    for r in &c.recipes {
+        if let Some(s) = r.inputs.iter().find(|s| genes_item(&s.item)) {
+            return Err(format!(
+                "recipe `{}`: input `{}` carries genes, and a craft takes it \
+                 blind to them",
+                r.id, s.item
+            ));
+        }
+    }
+    for v in &c.vendors {
+        for o in &v.offer {
+            if genes_item(&o.pay) || genes_item(&o.get) {
+                return Err(format!(
+                    "vendor `{}`: an offer trades a genes item (`{}` for `{}`), \
+                     and a kiosk is blind to genes",
+                    v.name, o.pay, o.get
+                ));
+            }
+        }
+    }
+    for w in &c.works {
+        if let Some(s) = w.inputs.iter().find(|s| genes_item(&s.item)) {
+            return Err(format!(
+                "work `{}`: input `{}` carries genes, and a deposit takes it \
+                 blind to them",
+                w.id, s.item
+            ));
+        }
+    }
+
     // The research table (`content/research.toml`, research v0). Same
     // posture as the oven rules above: every one of these refuses a
     // *silently inert* sink rather than a taste call, because a coin with
@@ -2337,11 +2582,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
             t.blueprint
         ));
     };
-    if paper.stack != 1 || paper.condition_max != 0 {
+    if paper.stack != 1
+        || paper.condition_max != 0
+        || paper.cond_carries != Some(crate::schema::CondCarries::Target)
+    {
         return Err(format!(
-            "research: blueprint `{}` must be stack 1 with no condition — its \
-             `cond` names what it teaches",
+            "research: blueprint `{}` must be stack 1 with no condition and \
+             cond_carries = \"target\" — its `cond` names what it teaches",
             t.blueprint
+        ));
+    }
+    if let Some(i) = c
+        .items
+        .iter()
+        .find(|i| i.id != t.blueprint && i.cond_carries == Some(crate::schema::CondCarries::Target))
+    {
+        return Err(format!(
+            "item `{}`: cond_carries = \"target\" belongs to the research \
+             blueprint alone",
+            i.id
         ));
     }
     let bp = t.blueprint.as_str();

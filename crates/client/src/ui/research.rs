@@ -72,8 +72,35 @@ pub fn is_paper(rc: &ResearchContent, s: ItemStack) -> bool {
 /// What a stack is called: `"Revolver Blueprint"` for paper with a target,
 /// the item's own label for everything else — a blank sheet included,
 /// which is honestly just "Blueprint".
+///
+/// A clone (farming v2) is named for its crop and genome: a seed — the
+/// catalog's planter roles call it one — whose `cond` carries genes + 1
+/// reads `"Corn Clone · GGYHWX"` ([`clone_label`]). Its icon stays the seed's.
 pub fn stack_label(catalog: &ItemCatalog, rc: &ResearchContent, s: ItemStack) -> String {
+    if let Some(genes) = clone_genes(catalog, s) {
+        return clone_label(catalog, s.item, genes);
+    }
     teaching_label(catalog, s.item, blueprint_target(rc, s))
+}
+
+/// A clone's genome: a seed stack (its catalog roles at a planter include
+/// `ROLE_INPUT`) whose `cond` is genes + 1 (`farm::clone_genes`). `None`
+/// for a blank seed and for everything that is no seed.
+pub fn clone_genes(catalog: &ItemCatalog, s: ItemStack) -> Option<u16> {
+    if crate::ui::hold::is_seed(catalog, s) {
+        sim_core::farm::clone_genes(s.cond)
+    } else {
+        None
+    }
+}
+
+/// `"Corn Clone · GGYHWX"`: the seed's name without its `" Seed"`, then the
+/// genome slot 0 first (`farm::letters`).
+pub fn clone_label(catalog: &ItemCatalog, item: u16, genes: u16) -> String {
+    let name = item_label(catalog, item);
+    let base = name.strip_suffix(" Seed").unwrap_or(&name);
+    let g = sim_core::farm::letters(genes);
+    format!("{base} Clone · {}", core::str::from_utf8(&g).unwrap_or(""))
 }
 
 /// [`stack_label`] once the target is already read: `item` named after what

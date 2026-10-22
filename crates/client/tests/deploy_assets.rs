@@ -274,3 +274,36 @@ fn the_kiosk_machine_draws_its_box() {
         );
     }
 }
+
+/// A crop's generated plant (`render::crops::CROP_GLB`) is loaded the way a
+/// deployable is, one primitive and one material, and drawn at its soil
+/// point scaled by its stage: so it stands on its root at y = 0, does not
+/// glow, and is the height the sim picks it at (`farm::LOOK_H_M`), give or
+/// take what its leaves droop. Its fruit (`FRUIT_GLB`) is a held model and
+/// `tests/held_assets.rs` holds it.
+#[test]
+fn each_crop_model_is_the_plant_the_sim_picks() {
+    use client::render::crops::{CROP_GLB, FRUIT_GLB};
+    use sim_core::farm::LOOK_H_M;
+    for (look, rel) in CROP_GLB.iter().enumerate() {
+        let Some(rel) = rel else { continue };
+        let g = Glb::open(&asset_path(rel));
+        assert_eq!(g.primitives().len(), 1, "{rel}: one primitive");
+        let mats = g.json["materials"].as_array().map_or(0, |m| m.len());
+        assert_eq!(mats, 1, "{rel}: one material");
+        assert!(g.min_y().abs() < 1e-3, "{rel} has min.y {:+.4}", g.min_y());
+        let lit = g.json["materials"][0]
+            .get("emissiveFactor")
+            .is_some_and(|f| (0..3).any(|k| f[k].as_f64().unwrap_or(0.0) > 1e-6));
+        assert!(!lit, "{rel} glows");
+        let h = g.extent()[1];
+        let want = LOOK_H_M[look];
+        assert!(
+            h <= want + 1e-3 && h >= want * 0.7,
+            "{rel} is {h:.3} m tall and the sim picks look {look} at {want:.2}"
+        );
+    }
+    for rel in FRUIT_GLB.iter().flatten() {
+        assert!(asset_path(rel).is_file(), "{rel} does not ship");
+    }
+}

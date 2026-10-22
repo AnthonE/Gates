@@ -221,8 +221,6 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
-    // Its hold on the core ends here; the island below takes the core mutably.
-    drop(lying);
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
@@ -236,6 +234,50 @@ pub fn resolve(
         aimed.0.verb,
         interact::Verb::Recycler | interact::Verb::Research | interact::Verb::TechTree
     ) && interact::town_station(&core.haven().town, aimed.0.cx, aimed.0.cz);
+    // A crop under the crosshair (farming v2), by its pick cylinder: it
+    // wins over the planter it stands in, and carries its own planter's
+    // address so `E` still opens the tank when there is nothing to tend.
+    {
+        let plants = core.plants.entries();
+        let hit = interact::resolve_plant(
+            plants,
+            (eye[0], eye[1], eye[2]),
+            (dir[0], dir[1], dir[2]),
+            sim_core::gather::PICK_REACH_M,
+        )
+        .map(|(i, _)| plants[i]);
+        let planter = hit.and_then(|p| {
+            crate::ui::farm::planter_of(
+                &p,
+                core.deploys.entries(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+                |d| span(d, sim_core::deploy::ARCH_PLANTER).0,
+            )
+        });
+        // The shard's hand test, as the deploy pick asks it: a crop behind
+        // a wall or a window is not offered, since the tend would be refused.
+        let hit = hit.filter(|p| {
+            crate::ui::farm::plant_in_sight(
+                p,
+                planter,
+                |d| reach(d, sim_core::deploy::ARCH_PLANTER),
+                |q| lying(q, [0; 3]),
+            )
+        });
+        aimed.0 = interact::fold_plant(aimed.0, hit, planter, (x, z));
+        if aimed.0.verb == Verb::Plant {
+            let held = core.inv.get(sel as usize).copied().unwrap_or_default();
+            aimed.0.water_in_hand = held.count > 0
+                && crate::ui::farm::is_water(crate::ui::oven::roles_of(
+                    &core.catalog,
+                    sim_core::deploy::ARCH_PLANTER,
+                    held.item,
+                ));
+        }
+    }
+    // Its hold on the core ends here; the island below takes the core mutably.
+    drop(lying);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
@@ -1076,9 +1118,30 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
-        Verb::Planter => {
-            // A planter is a box that grows: `E` opens it and the panel is
-            // where the seeds go in and the harvest comes out.
+        // A crop (farming v2): pick it ripe, clear it dead, water a growing
+        // one from the skin in hand; otherwise open a bed plant's planter
+        // (a ground plant's `E` does nothing else).
+        Verb::Plant => {
+            if let Some(act) = pick.tend() {
+                let plant = pick.plant.id;
+                if send(net, toast, "tend", |buf| {
+                    protocol::encode_action_tend(plant, act, buf)
+                }) {
+                    net.farm_sent = Some(act);
+                }
+            } else if pick.handle != 0 {
+                let handle = pick.handle;
+                if send(net, toast, "open", |buf| {
+                    protocol::encode_action_container(CONT_BOX, handle, buf)
+                }) {
+                    open_panel(ui);
+                }
+            }
+        }
+        Verb::Planter | Verb::Catcher => {
+            // A planter's one slot is its water tank (farming v2): `E` opens
+            // it; seeds go in the soil by hand. A catcher's is the skin it
+            // fills.
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)
@@ -1320,6 +1383,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
 /// on the press and taken back a tick later is worse than a flame that
 /// arrives a tick late.
 fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
+    // A crop between sapling and mature (farming v2): `C` cuts it for
+    // clones, its seed carrying its genes. The plant is consumed.
+    if pick.verb == Verb::Plant {
+        if pick.can_clone() {
+            let plant = pick.plant.id;
+            send(net, toast, "clone", |buf| {
+                protocol::encode_action_tend(plant, sim_core::farm::TEND_CLONE, buf)
+            });
+        } else {
+            toast.warn("a clone is cut from a sapling to a mature plant");
+        }
+        return;
+    }
     // A recycler takes the same key and the same action: `ACT_USE` carries
     // an address, and `oven::toggle` switches whatever converter stands
     // there. The refusal that separates them is the sim's — a fire with
