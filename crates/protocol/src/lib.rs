@@ -39,6 +39,7 @@
 //! arbitrary bytes (client-driven on the server side), and the golden
 //! suite flips bits to prove it.
 
+#![forbid(unsafe_code)]
 /// Admin commands, parsed out of a chat line — no wire bytes of their own
 /// (`admin.rs`'s header has the transport argument).
 pub mod admin;
