@@ -493,6 +493,7 @@ impl BlastMobs {
 #[allow(clippy::too_many_arguments)]
 pub fn tick_fuses(
     seed: u64,
+    secret: u64,
     haven: &crate::terrain::Haven,
     bc: &BuildContent,
     dc: &DeployContent,
@@ -523,7 +524,7 @@ pub fn tick_fuses(
             charges.remove_at(i);
             continue;
         }
-        if let Some(item) = dud(seed, cc, &c) {
+        if let Some(item) = dud(secret, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
             let (x, z) = epicentre(pieces, deploys, &c);
             let y = floor_y(seed, haven, pieces, deploys, &c) + 0.8;

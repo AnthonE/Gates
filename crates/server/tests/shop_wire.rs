@@ -239,7 +239,16 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
         cond: 0,
         skin: 0,
     };
-    shop(&mut core, 1, key, ShopAct::Buy { row: 0, times: 2 });
+    shop(
+        &mut core,
+        1,
+        key,
+        ShopAct::Buy {
+            row: 0,
+            times: 2,
+            terms: want.terms(),
+        },
+    );
     pump_n(&mut core, &stats, &mut clients, 6);
     let (_, r) = clients[1].1.shop_last_result();
     let r = r.expect("the buy is answered");

@@ -39,6 +39,7 @@
 //! arbitrary bytes (client-driven on the server side), and the golden
 //! suite flips bits to prove it.
 
+#![forbid(unsafe_code)]
 /// Admin commands, parsed out of a chat line — no wire bytes of their own
 /// (`admin.rs`'s header has the transport argument).
 pub mod admin;
@@ -52,8 +53,8 @@ pub mod version;
 pub mod voice;
 
 pub use auth::{
-    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
-    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    companion_message, siwe_message, siwe_message_for, Address, Auth, Challenge, Signature,
+    ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1324,6 +1325,8 @@ pub use voice::{
 /// v138 — captions: `SUB_CAPTION` carries what a nearby player said out
 /// loud as text, or a line translated into the receiver's language
 /// (`lang.rs`).
+/// v139 — a shop buy names the offer it was shown (`ACT_SHOP` buy carries
+/// item, lot and price after `times`); a row rewritten since is refused.
 /// v139 — clothing v1: seven wear slots (`WEAR_SLOTS` 3 → 7: legs, hands,
 /// shirt, face), so `EventMsg::Worn` carries seven and a catalog row's
 /// `wear_slot` is three bits; the row carries its `warmth_pct` and
@@ -3083,7 +3086,12 @@ pub fn encode_action_shop(key: u32, act: ShopAct, buf: &mut [u8]) -> Result<usiz
             w.write(price as u32, 16)?;
         }
         ShopAct::Clear { .. } => {}
-        ShopAct::Buy { times, .. } => w.write(times as u32, 5)?,
+        ShopAct::Buy { times, terms, .. } => {
+            w.write(times as u32, 5)?;
+            w.write(terms.item as u32, 16)?;
+            w.write(terms.lot as u32, 16)?;
+            w.write(terms.price as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3154,7 +3162,12 @@ fn shop_act_ok(act: &ShopAct) -> bool {
     match *act {
         ShopAct::Set { item, lot, .. } => lot > 0 && (item as usize) < MAX_ITEM_DEFS,
         ShopAct::Clear { .. } => true,
-        ShopAct::Buy { times, .. } => times > 0 && times <= sim_core::shop::SHOP_TIMES_MAX,
+        ShopAct::Buy { times, terms, .. } => {
+            times > 0
+                && times <= sim_core::shop::SHOP_TIMES_MAX
+                && terms.lot > 0
+                && (terms.item as usize) < MAX_ITEM_DEFS
+        }
     }
 }
 
@@ -4107,6 +4120,11 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 sim_core::shop::SHOP_OP_BUY => ShopAct::Buy {
                     row,
                     times: r.read(5)? as u8,
+                    terms: sim_core::shop::ShopOffer {
+                        item: r.read(16)? as u16,
+                        lot: r.read(16)? as u16,
+                        price: r.read(16)? as u16,
+                    },
                 },
                 _ => return Err(WireError::Malformed),
             };

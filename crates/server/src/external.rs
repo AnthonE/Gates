@@ -60,6 +60,12 @@ const TLDS: [&str; 24] = [
 /// one thing it must never be steered into is pointing people at a site or
 /// a wallet. A person's chat is theirs; this is the agents' rule only.
 pub fn peddles(text: &str) -> bool {
+    // A key, a hash or a wallet without its `0x`, anywhere in the line: a
+    // harness talked into reading the agent's key file must not be able to
+    // say it (the key file is 64 bare hex digits, inside one chat line).
+    if hex_run(text) >= 16 {
+        return true;
+    }
     let lower = text.to_ascii_lowercase();
     lower
         .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')')
@@ -88,6 +94,16 @@ pub fn peddles(text: &str) -> bool {
                 None => false,
             }
         })
+}
+
+/// The longest run of consecutive hex digits in `text`.
+pub fn hex_run(text: &str) -> usize {
+    let (mut best, mut run) = (0, 0);
+    for b in text.bytes() {
+        run = if b.is_ascii_hexdigit() { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    best
 }
 
 enum Line {
@@ -136,6 +152,12 @@ impl External {
         let mut child = Command::new(program)
             .args(args)
             .env_remove("TYPESAFE_API_KEY")
+            // The bot's own voice keys (`agent_voice.rs`): the child is
+            // somebody else's program and gets none of this process's paid
+            // services. (`OPENAI_API_KEY` stays: it is as likely the child's
+            // own key as the voice's fallback.)
+            .env_remove("GATES_VOICE_KEY")
+            .env_remove("ELEVENLABS_API_KEY")
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -410,6 +432,8 @@ mod voice_tests {
             "WWW.LOOT.NET",
             "pay 0xDEADBEEF01",
             "(see scam.xyz)",
+            "my key is 4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318",
+            "key=4c0883a69102937d",
         ] {
             assert!(peddles(bad), "{bad}");
         }
@@ -419,6 +443,7 @@ mod voice_tests {
             "0x5 damage lol",
             "ok... going home",
             "3.5 hp left",
+            "deadbeef cafe 2024",
             "",
         ] {
             assert!(!peddles(fine), "{fine}");

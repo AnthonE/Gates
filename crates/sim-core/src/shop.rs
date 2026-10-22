@@ -106,6 +106,9 @@ pub enum ShopAct {
     Buy {
         row: u8,
         times: u8,
+        /// The offer the buyer was shown. A row rewritten since is refused
+        /// rather than charged on terms nobody agreed to.
+        terms: ShopOffer,
     },
 }
 
@@ -388,14 +391,16 @@ pub fn apply(
             }
             deploys.shops_mut().clear(key, row);
         }
-        ShopAct::Buy { times, .. } => {
+        ShopAct::Buy { times, terms, .. } => {
             let coin = dc.shop_coin;
             if times == 0 || times > SHOP_TIMES_MAX || coin == NO_SHOP_COIN {
                 refuse(events, REFUSE_SH_KIND);
                 return;
             }
             let o = deploys.shops().offers(key)[row];
-            if !o.live() {
+            // The buy names the terms it was shown: the owner may reprice
+            // at will, but never between a buyer's look and their press.
+            if !o.live() || o != terms {
                 refuse(events, REFUSE_SH_OFFER);
                 return;
             }

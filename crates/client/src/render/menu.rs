@@ -273,6 +273,8 @@ fn fetch_now(menu: &mut Menu) {
 /// One GET, capped. Separated so the thread body stays readable and so the
 /// cap is visible next to the read rather than buried in a builder chain.
 fn fetch_blocking(url: &str) -> Result<Vec<Shard>, String> {
+    // Timed out (`tls::agent`): ureq waits forever by default, and a stalled
+    // host held this thread (one per Refresh) for good.
     let mut res = crate::tls::agent()
         .get(url)
         .call()

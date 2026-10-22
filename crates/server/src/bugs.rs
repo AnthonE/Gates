@@ -73,6 +73,11 @@ impl Note {
             Some(Value::String(b)) => b.as_str(),
             Some(_) => return Err("report body must be a string".into()),
         };
+        // An agent's report is written by whatever steers it, and a long hex
+        // run is a key, not a bug (`external::peddles` says why).
+        if crate::external::hex_run(title) >= 32 || crate::external::hex_run(body) >= 32 {
+            return Err("a report may not carry a long hex string (a key or a hash)".into());
+        }
         Ok(Some(Note {
             kind,
             title: title.to_owned(),

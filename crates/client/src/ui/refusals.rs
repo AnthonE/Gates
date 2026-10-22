@@ -272,7 +272,7 @@ pub fn shop(code: u8) -> String {
     use sim_core::shop::*;
     match code as u32 {
         REFUSE_SH_REACH => "step up to the machine".into(),
-        REFUSE_SH_OFFER => "that offer is not up".into(),
+        REFUSE_SH_OFFER => "that offer changed or is gone — look again".into(),
         REFUSE_SH_STOCK => "sold out".into(),
         REFUSE_SH_FUNDS => "you cannot pay for that".into(),
         REFUSE_SH_FULL => "no room in your pack for that".into(),

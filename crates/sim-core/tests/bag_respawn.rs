@@ -131,6 +131,25 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
 /// floor above it.
 fn place_bag_on(w: &mut World, cx: u16, cz: u16, level: u8) {
     stand(w, cx, cz);
+    // On the storey the bag goes on: a hand puts nothing down through the
+    // floor over its head (`World::deploy_seen`).
+    if level > 0 {
+        let rec = sim_core::deploy::DeployRec {
+            cx,
+            cz,
+            level,
+            loc: LOC_PLANE,
+            ..Default::default()
+        };
+        let y = sim_core::deploy::body_base_y(
+            w.seed,
+            &w.haven,
+            w.pieces.cols(),
+            &rec,
+            sim_core::deploy::ARCH_BAG,
+        );
+        w.players[0].body.qy = sim_core::movement::quant_y(y);
+    }
     w.players[0].inv[10] = ItemStack {
         item: BAG_ITEM,
         count: 1,

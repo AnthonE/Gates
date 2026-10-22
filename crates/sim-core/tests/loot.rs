@@ -362,3 +362,16 @@ fn two_barrels_roll_independently() {
         "every cell rolls the same barrel — cell is unused"
     );
 }
+
+/// **Loot, cones, genes and duds key on a secret, not the public seed.**
+/// Every client is told the seed (it draws terrain from it) and can aim a
+/// press at a known tick, so a draw keyed on the seed alone is one a client
+/// can time. An unsalted world reads back its seed exactly — which is why no
+/// pinned hash moved — and a salted one does not.
+#[test]
+fn timeable_draws_key_on_the_arc_secret() {
+    let mut w = World::new(SEED);
+    assert_eq!(w.secret_seed(), SEED, "an unsalted world is its seed");
+    w.arc.salt = 0x5EC2_E7ED_0000_0001;
+    assert_ne!(w.secret_seed(), SEED, "a salted one is not");
+}

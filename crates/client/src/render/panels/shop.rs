@@ -23,7 +23,7 @@ const PANEL_W: f32 = 760.0;
 
 /// A buy: the row and how many lots.
 #[derive(Component, Clone, Copy)]
-pub struct ShopBuy(pub u8, pub u8);
+pub struct ShopBuy(pub u8, pub u8, pub sim_core::shop::ShopOffer);
 
 /// Which part of a draft offer a stepper moves.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,7 +139,7 @@ pub fn build_screen(
                     kit::button(
                         line,
                         &format!("BUY ×{n}"),
-                        ShopBuy(r as u8, n),
+                        ShopBuy(r as u8, n, row.terms()),
                         afford && lots >= n as u16,
                     );
                 }
@@ -249,6 +249,7 @@ pub fn clicks(
                 ShopAct::Buy {
                     row: b.0,
                     times: b.1,
+                    terms: b.2,
                 },
                 "buying…",
             );

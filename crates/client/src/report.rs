@@ -627,7 +627,12 @@ impl Report {
     /// any other, since a payload can quote a chat line or a shard's name.
     pub fn crash(location: String, payload: &str, at: u64) -> Self {
         let mut r = Report::new(Kind::Crash, "the client panicked", "", at, Build::here());
-        let (message, cut) = many_lines(payload, BODY_MAX, BODY_LINES_MAX);
+        // Sent without the player pressing anything, so it carries no file
+        // path that names them: an `io::Error` quotes `/home/<name>/…`.
+        let home = home_dir();
+        let payload = redact_home(payload, home.as_deref());
+        let location = redact_home(&location, home.as_deref());
+        let (message, cut) = many_lines(&payload, BODY_MAX, BODY_LINES_MAX);
         r.truncated |= cut;
         r.crash = Some(Crash { location, message });
         r
@@ -1346,4 +1351,37 @@ pub fn fence_for(body: &str) -> String {
         }
     }
     "`".repeat(longest.max(2) + 1)
+}
+
+/// The player's home directory, as the OS names it; `None` on the web.
+fn home_dir() -> Option<String> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .filter(|h| h.len() > 1)
+}
+
+/// `text` with every `home` in it written `~`.
+fn redact_home(text: &str, home: Option<&str>) -> String {
+    match home {
+        Some(h) => text.replace(h, "~"),
+        None => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A crash report never carries the player's home directory: it is sent
+    /// without a press, and a path there names them.
+    #[test]
+    fn a_crash_report_writes_the_home_directory_as_a_tilde() {
+        let msg = "No such file: /home/ana/.gates/agent.key at /home/ana/x";
+        assert_eq!(
+            redact_home(msg, Some("/home/ana")),
+            "No such file: ~/.gates/agent.key at ~/x"
+        );
+        assert_eq!(redact_home(msg, None), msg);
+    }
 }
