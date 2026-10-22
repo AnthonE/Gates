@@ -217,7 +217,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0xED8E_B926_1565_BEF1` at the bigger boulders** (2026-10-17, wipe): every
 /// boulder and stray 1.4× (`boulder.rs`), so the scatter they veto moved,
 /// with the GATE guards and vending machines (#348), which moved it unpinned.
-const GOLDEN_TERRAIN_HASH: u64 = 0xED8E_B926_1565_BEF1;
+/// **Moved → `0xAD0B_54B4_D360_9EE5` at THE GATE's 92 m pylons** (2026-10-22, wipe,
+/// `town::GATE_*`): the gate's boxes and the fallen blocks moved; no height
+/// did.
+const GOLDEN_TERRAIN_HASH: u64 = 0xAD0B_54B4_D360_9EE5;
 
 #[test]
 fn test_terrain_golden() {

@@ -125,7 +125,7 @@ fn the_compound_blocks_at_its_walls_and_opens_at_its_gates() {
     let mut lx = -town::PORT_R;
     while lx <= town::PORT_R {
         let (x, z) = kit::to_world(&p, lx, 0.0);
-        if fabs(lx) > 14.5 || fabs(lx) < 5.0 {
+        if fabs(lx) > town::GATE_DAIS[3] + 0.5 || fabs(lx) < town::GATE_DAIS[0] - 0.5 {
             assert!(
                 !occ.blocks(seed, x, z, feet),
                 "cross street blocked at local x {lx}"
@@ -139,9 +139,9 @@ fn the_compound_blocks_at_its_walls_and_opens_at_its_gates() {
         assert!(occ.blocks(seed, x, z, feet), "wall open at {wx},{wz}");
     }
     // A pylon too, and the dais is a step.
-    let (x, z) = kit::to_world(&p, 9.5, 0.0);
+    let (x, z) = kit::to_world(&p, 26.0, 0.0);
     assert!(occ.blocks(seed, x, z, feet + 0.5));
-    let (x, z) = kit::to_world(&p, 6.0 + CAPSULE_RADIUS_M, 5.0);
+    let (x, z) = kit::to_world(&p, town::GATE_DAIS[0] + 1.0, 5.0);
     assert!(!occ.blocks(seed, x, z, feet));
     assert!(occ.ground(seed, x, z, feet) >= feet + 0.5 - 1e-3);
 }
