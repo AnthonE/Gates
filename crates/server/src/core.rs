@@ -10070,7 +10070,10 @@ mod tests {
         let exits = core.standings.exits;
         core.standings = crate::standings::Standings::off();
         core.standings.exits = exits;
-        assert_eq!(hear(&mut core, 2), said("come back", protocol::ARC_GIFT_NONE));
+        assert_eq!(
+            hear(&mut core, 2),
+            said("come back", protocol::ARC_GIFT_NONE)
+        );
         assert_eq!(junk(&core, 258), 150, "the price came back");
         assert!(core.mints.is_empty() && owned(&core, 258).is_empty());
     }
