@@ -3686,9 +3686,12 @@ impl World {
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
                     return;
                 }
-                // A vending machine's stock and takings move only for the
-                // hands it answers to (`shop.rs`); anyone may look and buy.
-                if self.deploys.oven_states()[i].arch == deploy::ARCH_VENDING
+                // A vending machine's stock and takings, and a turret's
+                // rounds, move only for the hands the machine answers to
+                // (`turret::spares`): anyone may look at a shop and buy, but
+                // nobody the gun would shoot may unload it by hand.
+                let arch = self.deploys.oven_states()[i].arch;
+                if (arch == deploy::ARCH_VENDING || arch == deploy::ARCH_TURRET)
                     && !crate::shop::may_edit(&self.pieces, &self.deploys, i, pid)
                 {
                     self.events

@@ -3836,9 +3836,11 @@ pub fn pick_up(
     let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
-    // A vending machine comes up only for the hands it answers to: on open
-    // ground anyone may lift a box, but a shop's stock is not anyone's.
-    if def.arch == ARCH_VENDING && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
+    // A vending machine or a turret comes up only for the hands it answers
+    // to: on open ground anyone may lift a box, but a shop's stock is not
+    // anyone's, and a gun is not disarmed by walking off with it.
+    if (def.arch == ARCH_VENDING || def.arch == ARCH_TURRET)
+        && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;

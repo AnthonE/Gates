@@ -8086,10 +8086,22 @@ impl ShardCore {
                             // this box's. An oven carries no lock
                             // (`lockable`) and passes as bare.
                             let b = self.world.deploys.boxes()[i];
+                            // A turret's rounds are shown only to the hands
+                            // it answers to, as the move verb allows them
+                            // (`World::move_item`): its ammo count is raid
+                            // intelligence. A shop's stock is anyone's look.
                             let ok = self
                                 .world
                                 .deploys
-                                .lock_passes(b.cx, b.cz, b.level, b.loc, p.id);
+                                .lock_passes(b.cx, b.cz, b.level, b.loc, p.id)
+                                && (self.world.deploys.oven_states()[i].arch
+                                    != sim_core::deploy::ARCH_TURRET
+                                    || sim_core::shop::may_edit(
+                                        &self.world.pieces,
+                                        &self.world.deploys,
+                                        i,
+                                        p.id,
+                                    ));
                             lock_refused = !ok;
                             ok
                         }),
