@@ -325,6 +325,9 @@ pub struct Persisted {
     /// opt-in is what "enables it" means, and `reference/VOICE.md` §9.1 is
     /// what the other default costs.
     pub discord_share_server: bool,
+    /// Streamer mode (`ui::streamer`): made-up names, no wallets, no server
+    /// addresses on screen. Off by default.
+    pub streamer_mode: bool,
     /// The individual graphics rows, where the file overrode the preset.
     /// See [`GfxFile`] — a `None` is a key the file did not carry.
     pub gfx: GfxFile,
@@ -435,6 +438,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "shake" => num(&mut v.shake, value),
             "discord_presence" => flag(&mut v.discord_presence, value),
             "discord_share_server" => flag(&mut v.discord_share_server, value),
+            "streamer_mode" => flag(&mut v.streamer_mode, value),
             // ── the individual graphics rows ──────────────────────────────
             //
             // Each writes into an `Option`, so "absent" and "present and
@@ -619,6 +623,7 @@ pub fn serialize(
         "discord_share_server = {}\n",
         v.discord_share_server
     ));
+    s.push_str(&format!("streamer_mode = {}\n", v.streamer_mode));
     // The individual graphics rows. Written only where the caller has a value
     // — `render/settings.rs` always has one for every row, so a file the game
     // wrote carries all eight, and the `Option` is what lets a *test* (or a
@@ -779,6 +784,7 @@ mod tests {
             shake: 1.0,
             discord_presence: false,
             discord_share_server: true,
+            streamer_mode: false,
             // Empty on purpose: the overlay tests below are about the
             // preset/override mechanics, and a fixture that already carried
             // an override could not tell "the file said so" from "the
@@ -813,6 +819,7 @@ mod tests {
             shake: 0.5,
             discord_presence: true,
             discord_share_server: false,
+            streamer_mode: true,
             gfx: GfxFile {
                 ao: Some(Ao::Ultra),
                 smaa: Some(false),

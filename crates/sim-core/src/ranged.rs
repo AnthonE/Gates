@@ -647,6 +647,12 @@ pub struct Quarry<'a> {
     pub mc: &'a crate::mob::MobContent,
     pub hits: &'a mut [MobShot; MAX_ARROWS],
     pub n: usize,
+    /// The mechanisms' drums. An arrow that meets one turns its dial
+    /// (`mech::shot`); a bullet passes through.
+    pub drums: &'a crate::mech::Drums,
+    /// The drums struck, `nd` of them, for `World` to turn.
+    pub struck: &'a mut [crate::mech::DrumShot; MAX_ARROWS],
+    pub nd: usize,
 }
 
 impl Quarry<'_> {
@@ -661,6 +667,13 @@ impl Quarry<'_> {
         if self.n < self.hits.len() {
             self.hits[self.n] = hit;
             self.n += 1;
+        }
+    }
+
+    fn strike(&mut self, s: crate::mech::DrumShot) {
+        if self.nd < self.struck.len() {
+            self.struck[self.nd] = s;
+            self.nd += 1;
         }
     }
 }
@@ -1354,6 +1367,45 @@ fn step_in(
             let beast = q
                 .first((ox, oy, oz), (sx, sy, sz))
                 .filter(|m| m.t <= stop_t && best.is_none_or(|b| m.t < b.enter));
+            // A dial's drum it meets first turns that dial, and the arrow
+            // drops off the stone there.
+            let drum = q.drums.first((ox, oy, oz), (sx, sy, sz)).filter(|&(_, t)| {
+                t <= stop_t && best.is_none_or(|b| t < b.enter) && beast.is_none_or(|m| t < m.t)
+            });
+            if let Some((i, t)) = drum {
+                let dr = q.drums.d[i];
+                q.strike(crate::mech::DrumShot {
+                    mech: dr.mech,
+                    dial: dr.dial,
+                    by: a.owner,
+                });
+                push_impact(
+                    events,
+                    SURF_WORLD,
+                    IMPACT_ARROW,
+                    (ox, oy, oz),
+                    (sx, sy, sz),
+                    t,
+                );
+                a.qx = crate::fmath::floor_i32(ox + sx * t);
+                a.qy = crate::fmath::floor_i32(oy + sy * t);
+                a.qz = crate::fmath::floor_i32(oz + sz * t);
+                land(
+                    seed,
+                    tick,
+                    cc,
+                    spent,
+                    &mut arrows.lit,
+                    ix,
+                    &a,
+                    None,
+                    [0; 3],
+                    [0; 3],
+                    None,
+                );
+                arrows.a[ix].life = 0;
+                continue;
+            }
             if let Some(m) = beast {
                 q.push(MobShot {
                     slot: m.slot,
@@ -1448,7 +1500,7 @@ fn step_in(
             });
             let dmg = crate::combat::part_damage(a.damage, part, a.head_pct, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
-            let h = crate::combat::hurt_cutting(cc, v, dmg);
+            let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             // The scaled number on both events, not the bow's column.
@@ -2452,8 +2504,15 @@ fn hitscan_in(
         // A corpse and a sleeper do not shoot. `World::tick`'s player loop
         // has already refused them the arm; this pass runs outside that
         // loop, so it restates the rule rather than inheriting it — and the
-        // safe zone's with it: a gun cannot be drawn there.
-        if !p.active || p.dead || p.sleeping || p.hp == 0 || p.safe {
+        // safe zone's with it: a gun cannot be drawn there. Nor fired by a
+        // swimmer (`combat::waterlogged`).
+        if !p.active
+            || p.dead
+            || p.sleeping
+            || p.hp == 0
+            || p.safe
+            || crate::movement::swimming(&p.body)
+        {
             continue;
         }
         let item = held_item(p);
@@ -2715,7 +2774,7 @@ fn hitscan_in(
             let dmg = h.damage.min(u32::from(u16::MAX)) as u16;
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0).
-            let hurt = crate::combat::hurt_cutting(cc, v, dmg);
+            let hurt = crate::combat::hurt(cc, v, dmg);
             let (vid, left, vmax) = (v.id, hurt.left as u32, v.hp_max as u32);
             // A beam has no flight to reverse, so the bearing is the muzzle
             // to the victim's **live** body — `strike`'s rule: it is an

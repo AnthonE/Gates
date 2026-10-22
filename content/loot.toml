@@ -314,8 +314,9 @@ entries = [
 ]
 
 # Rust's roadside food box: opened, pays food and nothing else — their corn
-# and their tins (the cooked meat). Forage is not in it: berries and
-# mushrooms are picked.
+# and their tins (the cooked meat), a few potatoes, and now and then a packet
+# of pumpkin seed (the one crop no food here leaves a seed of, until a
+# pumpkin is grown). Forage is not in it: berries and mushrooms are picked.
 [[loot_table]]
 id = "loot.food"
 container = "food"
@@ -325,4 +326,6 @@ hits = 1
 entries = [
     { item = "item.corn", weight = 10, count_min = 2, count_max = 4 },
     { item = "item.cooked_meat", weight = 8, count_min = 1, count_max = 3 },
+    { item = "item.potato", weight = 6, count_min = 1, count_max = 3 },
+    { item = "item.pumpkin_seed", weight = 3, count_min = 1, count_max = 2 },
 ]

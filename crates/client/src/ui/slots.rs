@@ -682,7 +682,8 @@ pub fn quick_move(
         // The skin too, because `plan_move` asks it: two skins of one item
         // swap rather than merge there, so a top-up aimed across skins is
         // refused (or, at the whole count, a swap the plan never meant).
-        if there.item == src.item && there.skin == src.skin {
+        // And the condition, for the same reason: a clone's genes ride it.
+        if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
             let room = cap.saturating_sub(there.count);
             if room > 0 {
                 return finish(

@@ -68,9 +68,9 @@ use sim_core::world::{
     EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
-    EV_PAID, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID, EV_WHEEL_REFUSED,
-    EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
+    EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
+    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -413,6 +413,11 @@ pub struct ShardCore {
     pub online: crate::online::Online,
     /// The companion's end of its rings (`companion.rs`). Not sim state.
     pub companion: crate::companion::Companion,
+    /// The scribe's end of its rings (`scribe.rs`): captions. Not sim state.
+    pub scribe: crate::scribe::Scribe,
+    /// The language each player reads captions in (`/lang`, v138), 0 for
+    /// none. Not sim state.
+    langs: [u8; MAX_PLAYERS],
     /// Bases recently alerted as under attack, by hearth address, and when:
     /// one alert per base per `companion::RAID_QUIET_TICKS`.
     raid_quiet: [(u64, u64); 16],
@@ -778,6 +783,8 @@ impl ShardCore {
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
             companion: crate::companion::Companion::off(),
+            scribe: crate::scribe::Scribe::off(),
+            langs: [0; MAX_PLAYERS],
             raid_quiet: [(u64::MAX, 0); 16],
             raid_checks: 0,
             teams: crate::team::Teams::default(),
@@ -2397,6 +2404,7 @@ impl ShardCore {
             self.evicted.forget(k);
         }
         self.keys[slot] = key;
+        self.langs[slot] = 0;
         self.clients[slot].reset(id);
         let wallet = self.key_str(slot);
         self.achievements.join(slot, wallet.as_deref());
@@ -3225,6 +3233,30 @@ impl ShardCore {
                         arg,
                     },
                     ActionMsg::Pick { cell } => Command::Pick { id: c.id, cell },
+                    ActionMsg::Plant { slot, target } => {
+                        let (host, spot, qx, qz) = match target {
+                            protocol::PlantTarget::Bed { host, spot } => (host, spot, 0, 0),
+                            protocol::PlantTarget::Ground { qx, qz } => (
+                                sim_core::farm::HOST_GROUND,
+                                sim_core::farm::SPOT_GROUND,
+                                qx,
+                                qz,
+                            ),
+                        };
+                        Command::Plant {
+                            id: c.id,
+                            slot,
+                            host,
+                            spot,
+                            qx,
+                            qz,
+                        }
+                    }
+                    ActionMsg::Tend { plant, act } => Command::Tend {
+                        id: c.id,
+                        plant,
+                        act,
+                    },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
@@ -3669,6 +3701,31 @@ impl ShardCore {
             return;
         }
 
+        // `/lang` is everybody's: the language their captions are
+        // translated into (v138). The client's own at join is quiet.
+        if let AdminCmd::Lang { lang, quiet } = cmd {
+            if from_slot < MAX_PLAYERS {
+                self.langs[from_slot] = lang;
+            }
+            if !quiet {
+                let line = self.lang_line(from_slot);
+                self.answer(from_slot, line, stats, send);
+            }
+            return;
+        }
+        if let AdminCmd::LangWhat = cmd {
+            let line = self.lang_line(from_slot);
+            self.answer(from_slot, line, stats, send);
+            let codes: Vec<&str> = protocol::LANGS.iter().map(|(c, _)| *c).collect();
+            self.answer(
+                from_slot,
+                format!("/lang <code> or /lang off: {}", codes.join(" ")),
+                stats,
+                send,
+            );
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -3878,7 +3935,9 @@ impl ShardCore {
             | AdminCmd::WipeWhen
             | AdminCmd::Top
             | AdminCmd::Achievements
-            | AdminCmd::Team { .. } => return,
+            | AdminCmd::Team { .. }
+            | AdminCmd::Lang { .. }
+            | AdminCmd::LangWhat => return,
         }
         ops.log.push(logged);
     }
@@ -3945,11 +4004,11 @@ impl ShardCore {
             // No position ⇒ nothing to measure a radius from. A line
             // typed inside the one-tick window between the welcome and
             // the join command landing is dropped, not guessed at.
-            let Some(from_w) = self.live_wslot(from_slot) else {
+            let mut hears = [false; MAX_CONNS];
+            if !self.chat_audience(from_slot, msg.channel, &mut hears) {
                 ShardStats::bump(&stats.chat_undelivered);
                 continue;
-            };
-            let own = self.world.players[from_w].body;
+            }
             // The team channel (v108) reaches the speaker's team wherever
             // they are, and nobody else. A player with no team is told so
             // rather than heard by no one.
@@ -3976,27 +4035,17 @@ impl ShardCore {
                     continue;
                 }
             };
-            for to_slot in 0..MAX_PLAYERS {
-                if !self.clients[to_slot].connected {
+            // The languages it reached, for the scribe to translate into.
+            let mut langs = 0u32;
+            for (to_slot, &hears) in hears.iter().enumerate().take(MAX_PLAYERS) {
+                if !hears {
                     continue;
-                }
-                if msg.channel == protocol::Channel::Team {
-                    if !team.contains(&self.clients[to_slot].id) {
-                        continue;
-                    }
-                } else if !msg.channel.is_global() {
-                    let Some(to_w) = self.live_wslot(to_slot) else {
-                        continue;
-                    };
-                    let p = self.world.players[to_w].body;
-                    let dx = (p.qx - own.qx) as i64 * 3;
-                    let dz = (p.qz - own.qz) as i64 * 3;
-                    if dx * dx + dz * dz > CHAT_LOCAL_CM * CHAT_LOCAL_CM {
-                        continue;
-                    }
                 }
                 if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
                     ShardStats::bump(&stats.ev_sent);
+                    if self.langs[to_slot] != 0 {
+                        langs |= 1 << self.langs[to_slot];
+                    }
                 } else {
                     // Deliberately no `ev_resync` here, unlike every other
                     // event: a resync restarts the harvested/piece/deploy
@@ -4005,6 +4054,153 @@ impl ShardCore {
                     ShardStats::bump(&stats.chat_undelivered);
                 }
             }
+            // To the record, and translated for those who read another
+            // language (`scribe.rs`).
+            if self.scribe.on() {
+                let wallet = self.keys[from_slot];
+                if !self
+                    .scribe
+                    .read(from_slot, from_id, wallet, msg.channel, &msg.text, langs)
+                {
+                    ShardStats::bump(&stats.caption_dropped);
+                }
+            }
+        }
+        self.pump_captions(stats, send);
+    }
+
+    /// Who a line `from_slot` says on `channel` reaches now (ALPHA.md §1):
+    /// every connected player for global, the speaker's team for team, and
+    /// for local everyone within `CHAT_LOCAL_CM` planar of the speaker, the
+    /// speaker included (the echo is the delivery receipt). `false`, and
+    /// nobody, when the speaker has no body to measure from.
+    fn chat_audience(
+        &self,
+        from_slot: usize,
+        channel: protocol::Channel,
+        hears: &mut [bool; MAX_CONNS],
+    ) -> bool {
+        hears.fill(false);
+        let Some(from_w) = self.live_wslot(from_slot) else {
+            return false;
+        };
+        let own = self.world.players[from_w].body;
+        let team = self.teams.team_of(self.clients[from_slot].id);
+        for (to_slot, hears) in hears.iter_mut().enumerate().take(MAX_PLAYERS) {
+            if !self.clients[to_slot].connected {
+                continue;
+            }
+            *hears = match channel {
+                protocol::Channel::Team => team.contains(&self.clients[to_slot].id),
+                protocol::Channel::Global => true,
+                protocol::Channel::Local => {
+                    let Some(to_w) = self.live_wslot(to_slot) else {
+                        continue;
+                    };
+                    let p = self.world.players[to_w].body;
+                    let dx = (p.qx - own.qx) as i64 * 3;
+                    let dz = (p.qz - own.qz) as i64 * 3;
+                    dx * dx + dz * dz <= CHAT_LOCAL_CM * CHAT_LOCAL_CM
+                }
+            };
+        }
+        true
+    }
+
+    /// Captions back from the scribe (v138), each to whoever hears its
+    /// talker now: the voice radius for words said out loud, the talker
+    /// included (they see what was heard), and the line's channel for a
+    /// typed one. A translation goes only to those who read its language.
+    /// A talker who left, died or slept meanwhile is captioned to nobody.
+    fn pump_captions(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let mut hears = [false; MAX_CONNS];
+        while let Some(said) = self.scribe.pop() {
+            let slot = said.slot as usize;
+            let c = said.caption;
+            if slot >= MAX_PLAYERS
+                || !self.clients[slot].connected
+                || self.clients[slot].id != c.from
+            {
+                continue;
+            }
+            if c.voice {
+                if self.voice_reach(slot, &mut hears).is_none() {
+                    continue;
+                }
+                hears[slot] = true;
+            } else if !self.chat_audience(slot, c.channel, &mut hears) {
+                continue;
+            }
+            let len = match protocol::encode_event_caption(&c, &mut self.ev_buf) {
+                Ok(len) => len,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                }
+            };
+            for (to, &hears) in hears.iter().enumerate().take(MAX_PLAYERS) {
+                if !hears || (said.to_lang != 0 && self.langs[to] != said.to_lang) {
+                    continue;
+                }
+                if send(Lane::Event, to, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.caption_sent);
+                } else {
+                    ShardStats::bump(&stats.chat_undelivered);
+                }
+            }
+        }
+    }
+
+    /// Voice frames from `slot` just relayed to `hears` (v138): to the
+    /// scribe, with the languages their listeners read. Voice no player
+    /// heard is not sent; nothing is when captions are off.
+    pub fn scribe_hear(
+        &mut self,
+        slot: usize,
+        frames: &[protocol::VoiceFrame],
+        hears: &[bool; MAX_CONNS],
+        stats: &ShardStats,
+    ) {
+        if !self.scribe.on() || slot >= MAX_PLAYERS {
+            return;
+        }
+        let mut heard = false;
+        let mut langs = 0u32;
+        for (&hears, &lang) in hears.iter().zip(&self.langs) {
+            if hears {
+                heard = true;
+                if lang != 0 {
+                    langs |= 1 << lang;
+                }
+            }
+        }
+        if !heard {
+            return;
+        }
+        let (id, wallet) = (self.clients[slot].id, self.keys[slot]);
+        for f in frames {
+            if !self.scribe.hear(slot, id, wallet, f, langs) {
+                ShardStats::bump(&stats.caption_dropped);
+            }
+        }
+    }
+
+    /// What `/lang` says back: the asker's caption language, or that there
+    /// is none, and whether this shard captions at all.
+    fn lang_line(&self, slot: usize) -> String {
+        let lang = self.langs.get(slot).copied().unwrap_or(0);
+        let on = if self.scribe.on() {
+            ""
+        } else {
+            " (this shard has captions off)"
+        };
+        match protocol::lang_name(lang) {
+            Some(name) => format!("Captions and chat translated into {name}{on}."),
+            None => format!("Translation off{on}."),
         }
     }
 
@@ -4753,7 +4949,9 @@ impl ShardCore {
                     // A meal and a drink are also heard by whoever is near.
                     match ev.code {
                         EV_CONSUMED => self.hear(ev.a, DEED_MEAL, (ev.b >> 16) as u16),
-                        EV_DRANK => self.hear(ev.a, DEED_DRINK, NO_ITEM),
+                        EV_DRANK if (ev.b >> 16) as u16 == sim_core::survival::DRANK_DRINK => {
+                            self.hear(ev.a, DEED_DRINK, NO_ITEM)
+                        }
                         _ => {}
                     }
                     let Some(slot) = self.client_slot_of(ev.a) else {
@@ -4770,7 +4968,23 @@ impl ShardCore {
                         EV_CONSUMED => {
                             encode_event_consumed((ev.b >> 16) as u16, ev.b as u8, &mut self.ev_buf)
                         }
-                        EV_DRANK => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
+                        EV_DRANK => match (ev.b >> 16) as u16 {
+                            sim_core::survival::DRANK_FILL => protocol::encode_event_vessel(
+                                false,
+                                ev.b as u16 != 0,
+                                0,
+                                0,
+                                &mut self.ev_buf,
+                            ),
+                            sim_core::survival::DRANK_POUR => protocol::encode_event_vessel(
+                                true,
+                                ev.c & sim_core::survival::POURED_SALT != 0,
+                                ev.b as u16,
+                                ev.c as u16,
+                                &mut self.ev_buf,
+                            ),
+                            _ => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
+                        },
                         _ => {
                             // NOW.md §5b: the wire field is four bits and
                             // the reason domain is 1..=REFUSE_C_MAX — the
@@ -5344,44 +5558,61 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
-                EV_GROW => {
-                    // A planter's beds (crops v1): aimed like `EV_DOOR`, for
-                    // its reason — the walk record carries the beds byte,
-                    // so a client that missed a stage reads it back before
-                    // it is near enough to see the planter.
-                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
-                    let level = (ev.b >> 16) as u8;
-                    let loc = (ev.b >> 8) as u8;
-                    let stages = ev.b as u8;
-                    let owner = self
-                        .world
-                        .deploys
-                        .find(cx, cz, level, loc)
-                        .map_or(0, |d| d.owner);
-                    let at = interest::cell_cm(cx, cz);
-                    match protocol::encode_event_planter(
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        stages,
-                        &mut self.ev_buf,
-                    ) {
+                EV_PLANT => {
+                    // Farming v2: the record as it stands at drain, found
+                    // by the index hint (verified by id) or by a scan. A
+                    // plant gone again this tick has its own EV_PLANT_GONE.
+                    let entries = self.world.farm.entries();
+                    let rec = match entries.get(ev.c as usize) {
+                        Some(r) if r.id == ev.a => Some(*r),
+                        _ => self.world.farm.index_of_id(ev.a).map(|i| entries[i]),
+                    };
+                    let Some(rec) = rec else {
+                        continue;
+                    };
+                    let wp = protocol::WirePlant::of(&rec, &self.world.cook.farm);
+                    let at = interest::body_cm(rec.qx, rec.qz);
+                    match protocol::encode_event_plant(&wp, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 let c = &self.clients[slot];
                                 if !c.connected {
                                     continue;
                                 }
+                                // The plant walk's predicate (owner
+                                // exempt), against the same anchor: a
+                                // stage turned after a client's walk can
+                                // only reach it here.
                                 if c.piece_anchor_valid
                                     && !interest::owned_in_interest(
                                         c.piece_anchor_cm,
                                         c.id,
-                                        owner,
+                                        rec.owner,
                                         at,
                                     )
                                 {
-                                    ShardStats::bump(&stats.deploy_events_skipped);
+                                    ShardStats::bump(&stats.plant_events_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // The plant walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_PLANT_GONE => {
+                    // Broadcast, so a removal never leaves a ghost on a
+                    // client the upsert was filtered from.
+                    match protocol::encode_event_plant_gone(ev.a, ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -7315,6 +7546,7 @@ impl ShardCore {
                 c.piece_sync_cursor = len;
                 c.deploy_sync_cursor = self.world.deploys.len();
                 c.bag_sync_cursor = self.world.backpacks.len();
+                c.plant_sync_cursor = self.world.farm.len();
                 ShardStats::bump(&stats.piece_walk_rearms);
             }
         }
@@ -7468,10 +7700,6 @@ impl ShardCore {
                         src.cx, src.cz, src.level, src.loc,
                     ))
                     .map(|i| self.world.deploys.oven_states()[i]);
-                // A planter's beds (crops v1), off the oven row's mirror.
-                dst.grow = oven
-                    .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
-                    .map_or(0, |o| o.bank as u8);
                 lit[n] = oven.is_some_and(|o| o.is_converter() && o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
@@ -7633,6 +7861,67 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Plant walk (farming v2, wire v135): the deployable walk's shape
+        // over `world.farm` — tail-down, aimed from the same anchor, the
+        // planter exempt. Tail-down is what makes the store's swap-remove
+        // harmless: a record moved below the cursor is sent again (the
+        // client upserts by id), and one moved above it was already sent.
+        // A plant planted after the walk began arrives as its EV_PLANT.
+        let c = &self.clients[slot];
+        let plants = self.world.farm.entries();
+        let owed = if c.plant_sync_reset {
+            plants.len()
+        } else {
+            c.plant_sync_cursor.min(plants.len())
+        };
+        if c.piece_anchor_valid && (c.plant_sync_reset || owed > 0) {
+            let window = PIECE_SCAN_BATCH.min(owed);
+            let mut batch = [protocol::WirePlant::default(); protocol::PLANT_SYNC_BATCH];
+            let mut n = 0usize;
+            let mut scanned = 0usize;
+            for p in plants[owed - window..owed].iter().rev() {
+                scanned += 1;
+                let at = interest::body_cm(p.qx, p.qz);
+                if !interest::owned_in_interest(anchor, viewer, p.owner, at) {
+                    continue;
+                }
+                batch[n] = protocol::WirePlant::of(p, &self.world.cook.farm);
+                n += 1;
+                if n == protocol::PLANT_SYNC_BATCH {
+                    break;
+                }
+            }
+            batch[..n].reverse();
+            let rest = owed - scanned;
+            let done = |c: &mut ClientNetState| {
+                c.plant_sync_reset = false;
+                c.plant_sync_cursor = rest;
+                ShardStats::add(&stats.plant_sync_skipped, (scanned - n) as u64);
+                if rest == 0 {
+                    ShardStats::bump(&stats.plant_walk_completes);
+                }
+            };
+            if n > 0 || c.plant_sync_reset {
+                match protocol::encode_event_plant_sync(
+                    c.plant_sync_reset,
+                    &batch[..n],
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            done(&mut self.clients[slot]);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                done(&mut self.clients[slot]);
             }
         }
 
@@ -8545,9 +8834,7 @@ impl ShardCore {
             return None;
         }
         let s = p.inv[sel];
-        // Past the held field's reach (`MAX_HELD_DEFS`): not a hand item,
-        // since the bake ranks those first, so the hand reads empty.
-        if s.count == 0 || s.item == NO_ITEM || s.item as usize >= sim_core::limits::MAX_HELD_DEFS {
+        if s.count == 0 || s.item == NO_ITEM {
             return None;
         }
         Some(s.item)

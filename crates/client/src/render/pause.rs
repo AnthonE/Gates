@@ -136,7 +136,10 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
     let addr = if connecting.addr.is_empty() {
         String::new()
     } else {
-        format!("connected to {}", connecting.addr)
+        format!(
+            "connected to {}",
+            crate::ui::streamer::server(&connecting.addr)
+        )
     };
 
     // The invite. Drawn rather than copied to a clipboard because a clipboard
@@ -158,6 +161,10 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
     #[cfg(not(target_arch = "wasm32"))]
     let link_for = crate::deeplink::link_for;
     let invite = match connecting.addr.rsplit_once(':').map(|(h, _)| h) {
+        // Streamer mode: a viewer could follow the link (`ui::streamer`).
+        Some(host) if is_shareable(host) && crate::ui::streamer::on() => {
+            "invite link hidden (streamer mode)".to_string()
+        }
         Some(host) if is_shareable(host) => format!("invite  {}", link_for(&connecting.addr)),
         _ => String::new(),
     };
@@ -361,7 +368,7 @@ pub fn act(
             menu.status = if connecting.addr.is_empty() {
                 "left the world".to_string()
             } else {
-                format!("left {}", connecting.addr)
+                format!("left {}", crate::ui::streamer::server(&connecting.addr))
             };
             next.set(Screen::Menu);
         }

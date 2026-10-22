@@ -27,10 +27,12 @@ pub const MAX_INPUT_FRAMES: usize = 10;
 
 /// Class-D entity records **one snapshot** may carry — a per-datagram wire
 /// count, not a world cap (NETCODE.md §9 budgets table: typical ~15 / cap
-/// 64). It is what `COUNT_BITS = 7` can name and what 1,100 B can hold, and
-/// the encoder refuses the 65th record of a single datagram.
+/// 64). It is what `COUNT_BITS = 7` can name, and the encoder refuses the
+/// 65th record of a single datagram. It is not a byte bound: the datagram's
+/// `DATAGRAM_BUDGET_BYTES` is the other one, and on wide records (every
+/// field absolute, a skinned item in hand) the bytes run out first.
 /// Overflow policy: **defer** — the priority accumulator keeps accruing
-/// what didn't fit (DESIGN.md §5.5).
+/// what didn't fit, or an overflow datagram carries it (DESIGN.md §5.5).
 ///
 /// ⚠ **It reads like an interest-set cap and it is not one by itself.** A
 /// client's interest set is cumulative across snapshots — a delta names
@@ -361,20 +363,12 @@ const _: () = assert!(
 /// §open.
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
-/// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. 255 is the
-/// most the wire's 8-bit held field can name beside its empty-hand code
-/// (`protocol::HELD_NONE`); past it, that field widens. 127 → 255 at
-/// clothing v1, when Rust's clothes and teas found the table full.
-pub const MAX_ITEM_DEFS: usize = 255;
-
-/// Item indices a hand can be seen holding: the wire's 7-bit held field
-/// (`protocol::HELD_BITS`) beside its empty-hand code. The bake ranks every
-/// hand item (`slot = "hand"`) ahead of the rest, so they all land under
-/// this; anything else held is drawn as an empty hand. The snapshot is a
-/// byte under its datagram budget at 64 bodies, so the field did not widen
-/// when `MAX_ITEM_DEFS` did (clothing v1).
-pub const MAX_HELD_DEFS: usize = 127;
+/// Item definitions the sim preallocates for (CONTENT.md §2). The content
+/// bake refuses a set past this. 160 leaves farming v2's rows headroom
+/// (127 filled the old 7-bit held field); the wire's held field is 8 bits
+/// since v135, so anything up to 255 fits beside its empty-hand code
+/// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
+pub const MAX_ITEM_DEFS: usize = 160;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -875,6 +869,30 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// here for the same reason: nothing is lost by refusing a box that was
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOXES: usize = 1_024;
+
+/// Living plants on the island at once, in planter beds and on the open
+/// ground (`farm.rs`). One fixed store; a farm period visits at most
+/// `ceil(MAX_PLANTS / 15)` of them. Overflow policy: **refuse** the
+/// planting with `REFUSE_D_PLANTS_FULL` — the seed stays in the hand.
+pub const MAX_PLANTS: usize = 4_096;
+
+/// Of [`MAX_PLANTS`], how many may stand in the open ground, island-wide
+/// and per sower (`farm::ground_ok`). A ground plant never dies before it
+/// ripens, so these are what bound a field sown to spam. Overflow policy:
+/// **refuse** the planting with `REFUSE_D_PLANTS_FULL`.
+pub const MAX_GROUND_PLANTS: usize = 512;
+pub const MAX_GROUND_PLANTS_PER_OWNER: usize = 48;
+
+/// Water catchers standing at once, island-wide (`deploy::ARCH_CATCHER`).
+/// Each one scans the boxes and the ground plants every tenth farm period
+/// to water what stands within its reach, so this bounds that scan.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+pub const MAX_CATCHERS: usize = 128;
+
+/// Crop rows the sim preallocates for (`content/cooking.toml` `[[crop]]`).
+/// Structural cap like [`MAX_COOK_ROWS`]: the bake refuses a set past it.
+/// A plant stores its crop as this table's index.
+pub const MAX_CROPS: usize = 8;
 
 /// Authored world containers that have ever been opened at once
 /// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a

@@ -87,13 +87,13 @@ fn panel(
     let team = core.team();
     let [x, _, z] = core.predict.render_position();
     let mut lines: Vec<(String, u8)> = crate::ui::team::rows(team, core.player_id, [x, z], |id| {
-        crate::ui::names::of(core, id)
+        crate::ui::names::shown(core, id)
     })
     .into_iter()
     .map(|r| (r.text, r.state))
     .collect();
     if team.invite != 0 && team.count == 0 {
-        let who = crate::ui::names::of(core, team.invite);
+        let who = crate::ui::names::shown(core, team.invite);
         lines.push((crate::ui::team::invited_line(&who), 0));
     }
     if lines == shown.lines {
@@ -151,7 +151,7 @@ fn marks(
         match place {
             Some((px, m, d)) => {
                 let label =
-                    crate::ui::team::mark_label(&crate::ui::names::of(core, m.id), m.state, d);
+                    crate::ui::team::mark_label(&crate::ui::names::shown(core, m.id), m.state, d);
                 if text.0 != label {
                     text.0 = label;
                 }

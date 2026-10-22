@@ -181,9 +181,8 @@ fn main() {
     let (slot, target) = goldens::action_treat();
     let len = protocol::encode_action_treat(slot, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[152], &buf[..len]);
-    // A planter's beds (v100).
-    let (cx, cz, level, loc, stages) = goldens::event_planter();
-    let len = protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap();
+    // One plant (v135), in v100's planter-beds slot.
+    let len = protocol::encode_event_plant(&goldens::event_plant(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[153], &buf[..len]);
     // A grubbed stump (v101).
     let (cx, cz) = goldens::event_stump_grubbed();
@@ -285,6 +284,29 @@ fn main() {
     let len =
         protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[183], &buf[..len]);
+    // Farming v2 (v135).
+    let (id, reason) = goldens::event_plant_gone();
+    let len = protocol::encode_event_plant_gone(id, reason, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[184], &buf[..len]);
+    let (reset, recs) = goldens::event_plant_sync();
+    let len = protocol::encode_event_plant_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[185], &buf[..len]);
+    let (slot, target) = goldens::action_plant_bed();
+    let len = protocol::encode_action_plant(slot, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[186], &buf[..len]);
+    let (slot, target) = goldens::action_plant_ground();
+    let len = protocol::encode_action_plant(slot, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[187], &buf[..len]);
+    let (plant, act) = goldens::action_tend();
+    let len = protocol::encode_action_tend(plant, act, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[188], &buf[..len]);
+    // The water pass (v137).
+    let (poured, salt, doused, watered) = goldens::event_vessel();
+    let len = protocol::encode_event_vessel(poured, salt, doused, watered, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[189], &buf[..len]);
+    // Captions (v138).
+    let len = protocol::encode_event_caption(&goldens::event_caption(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[190], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

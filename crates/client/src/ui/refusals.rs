@@ -86,7 +86,7 @@ pub const RESEARCH: [&str; 8] = [
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 16] = [
+pub const BUILD: [&str; 17] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -109,6 +109,8 @@ pub const BUILD: [&str; 16] = [
     // THE GATE (v92): a charge in the safe zone, or on the town's own
     // stations — Rust's monuments are not raided.
     "not in THE GATE",
+    // The water pass (v131): a swimmer builds nothing.
+    "not while swimming",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.
@@ -117,7 +119,7 @@ pub const BUILD: [&str; 16] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 20] = [
+pub const DEPLOY: [&str; 27] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -144,6 +146,14 @@ pub const DEPLOY: [&str; 20] = [
     "keypad locked out",
     "that lock remembers too many already",
     "empty it first",
+    // Farming v2 (`sim_core::farm`).
+    "not something you can plant",
+    "something is already growing there",
+    "nothing will grow here",
+    "too many plants",
+    "not ready",
+    "already watered",
+    "not while swimming",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
@@ -164,7 +174,7 @@ pub const DEPLOY: [&str; 20] = [
 /// `EV_CONSUME_REFUSED`. So the sentences are worded to be true of
 /// whichever verb was pressed: only code 1 may name food, only code 3 may
 /// name water, and code 2 — the one both verbs reach — names neither.
-pub const CONSUME: [&str; 4] = [
+pub const CONSUME: [&str; 5] = [
     // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
     // because the refusal ring never carries it, and unreachable through
     // `hud::feedback`, which reads the landed half off `Feed::consumed`.
@@ -172,6 +182,9 @@ pub const CONSUME: [&str; 4] = [
     "that is not something you can eat",
     "already full — that would be wasted",
     "no water within reach",
+    // The water pass (v131): the sea is not for the mouth, or the vessel
+    // in hand holds salt.
+    "that's salt water — boil it at a fire first",
 ];
 
 /// `sim_core::gather`'s `REFUSE_G_*: u32` — a gather swing the node
@@ -316,6 +329,19 @@ pub fn build(code: u8) -> String {
 /// Why the deployable would not go down.
 pub fn deploy(code: u8) -> String {
     text(&DEPLOY, code as u32)
+}
+
+/// [`deploy`], told which farm verb the client last sent (`farm_sent`, a
+/// tend's act or `None` for a seed): `REFUSE_D_PLANT_ITEM` answers a pour
+/// without a full skin in hand as well as a seed that is not one, and the
+/// two read differently.
+pub fn deploy_after(code: u8, farm_sent: Option<u8>) -> String {
+    if code as u32 == sim_core::deploy::REFUSE_D_PLANT_ITEM
+        && farm_sent == Some(sim_core::farm::TEND_WATER)
+    {
+        return "no full waterskin in hand".to_string();
+    }
+    deploy(code)
 }
 
 /// Why the eat or the drink did nothing.
@@ -508,6 +534,41 @@ mod tests {
             "that lock remembers too many already"
         );
         assert_eq!(deploy(REFUSE_D_NOT_EMPTY as u8), "empty it first");
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_ITEM as u8),
+            "not something you can plant"
+        );
+        // The same code after a pour: the skin, not the seed.
+        let item = sim_core::deploy::REFUSE_D_PLANT_ITEM as u8;
+        assert_eq!(
+            deploy_after(item, Some(sim_core::farm::TEND_WATER)),
+            "no full waterskin in hand"
+        );
+        assert_eq!(deploy_after(item, None), "not something you can plant");
+        assert_eq!(
+            deploy_after(item, Some(sim_core::farm::TEND_PICK)),
+            "not something you can plant"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_SPOT as u8),
+            "something is already growing there"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_SOIL as u8),
+            "nothing will grow here"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANTS_FULL as u8),
+            "too many plants"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_STAGE as u8),
+            "not ready"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_WATER as u8),
+            "already watered"
+        );
 
         assert_eq!(
             build(REFUSE_B_WINDOW as u8),

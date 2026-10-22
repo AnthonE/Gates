@@ -103,9 +103,15 @@ pub const SKY_FILL_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
 /// more than two stops under the lit ground — the operator's frames showed
 /// whole hillsides in shade as near-black bands. Games lift the shade side
 /// well above a photograph's; ×2.5 keeps the shadow reading as shadow.
+///
+/// **×1.8 since 2026-10-21** (operator, against the reference's desert):
+/// at ×2.5 a palm's shadow on the sand was a pale smudge where the
+/// reference's is a dark, hard shape. Still over the ×1.7 that blacked out
+/// the hillsides, and the thinner air (`rig::AIR_DENSITY`) puts more sun on
+/// the lit side than that frame had.
 pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * SKY_FILL_SCALE;
 /// Multiple of `lux::AMBIENT_DAYLIGHT` the sky half delivers at the zenith.
-pub const SKY_FILL_SCALE: f32 = 2.5;
+pub const SKY_FILL_SCALE: f32 = 1.8;
 
 /// The island's ground mix — **measured over the whole world square, which is
 /// the half this constant used to get wrong**.

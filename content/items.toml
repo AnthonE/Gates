@@ -210,6 +210,7 @@ rarity = "rare"
 slot = "none"
 class = "other"
 description = "Read it to learn a recipe for good."
+cond_carries = "target"
 
 # --- T0, the naked era -------------------------------------------------
 
@@ -378,9 +379,11 @@ slot = "hand"
 class = "construction"
 description = "A free-standing wooden barrier to fight behind."
 
-# A water vessel, empty and full: H at fresh water with the empty one in
-# hand fills it, and drinking the full one gives the empty one back
-# (balance.toml `[survival]` vessel, `survival::drink`).
+# The water vessels, empty, fresh and salt: H at water with the empty one in
+# hand fills it — fresh at a lake, salt at the sea — drinking the fresh one
+# gives the empty one back, a salt one boils fresh on a camp fire
+# (`cooking.toml`), and the right mouse pours either out (balance.toml
+# `[[survival.vessels]]`, `survival::drink`, `World::pour`).
 [[item]]
 id = "item.waterskin"
 name = "Waterskin"
@@ -901,7 +904,7 @@ class = "food"
 description = "Grown in a planter. Good food, and seeds for the next crop."
 
 # Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
-# `cooking.toml`'s `planter` rows). Corn seed comes out of a corn cob
+# `cooking.toml`'s `[[crop]]` rows). Corn seed comes out of a corn cob
 # (`recipes.toml`), the cob out of a food box; hemp seed off a picked hemp
 # plant.
 [[item]]
@@ -912,7 +915,8 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
-description = "Plant it in a planter box to grow corn."
+description = "Hold it and plant one in a planter box."
+cond_carries = "genes"
 
 [[item]]
 id = "item.hemp_seed"
@@ -922,7 +926,64 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
-description = "Plant it in a planter box to grow cloth."
+description = "Hold it and plant one in a planter box."
+cond_carries = "genes"
+
+# Farming v2's second wave (`cooking.toml`'s potato, pumpkin and berry
+# crops). A potato and a pumpkin are food that leaves its seed when eaten
+# (`consumables.toml` `leaves`); berries leave one now and then.
+[[item]]
+id = "item.potato"
+name = "Potato"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Dug from a planter. Filling, and an eye in it for the next crop."
+
+[[item]]
+id = "item.potato_seed"
+name = "Potato Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "A cut eye. Plant one in a planter box or soft ground."
+cond_carries = "genes"
+
+[[item]]
+id = "item.pumpkin"
+name = "Pumpkin"
+stack = 5
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Slow to grow and heavy to carry. A meal and a drink in one."
+
+[[item]]
+id = "item.pumpkin_seed"
+name = "Pumpkin Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "Scraped from a pumpkin. Plant one where it has room to sprawl."
+cond_carries = "genes"
+
+[[item]]
+id = "item.berry_seed"
+name = "Berry Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "Spat out of a handful of berries. It grows the bush back."
+cond_carries = "genes"
 
 [[item]]
 id = "item.planter"
@@ -932,7 +993,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
-description = "Grows seeds by daylight under open sky, on water or rain."
+description = "Six beds. Grows by daylight under open sky, on water or rain."
 
 [[item]]
 id = "item.autoturret"
@@ -1483,6 +1544,51 @@ slot = "body"
 class = "clothing"
 description = "A sealed suit, hood and boots in one. Keeps out the cold and the green."
 
+# Farming v2's water catcher: a tarp funnel over a barrel. It banks rain,
+# fills an empty waterskin left in it, and waters what grows near it.
+[[item]]
+id = "item.water_catcher"
+name = "Water Catcher"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Catches rain. Fills a waterskin and waters planters within 3 m."
+
+# --- the water pass's vessels ---------------------------------------------
+
+[[item]]
+id = "item.waterskin_salt"
+name = "Salt Waterskin"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Sea water. Boil it on a camp fire to drink it, or pour it on a fire."
+
+# The jug: twice a skin of lake water, for a base's planters and a long walk
+# inland. Fresh only — sea water is boiled in a skin.
+[[item]]
+id = "item.water_jug"
+name = "Water Jug"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Empty. Holds two skins of fresh water — fill it at a lake."
+
+[[item]]
+id = "item.water_jug_full"
+name = "Full Water Jug"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Fresh water: a long drink, or a fire put out."
 # --- clothing v1: Rust's seven clothing slots --------------------------------
 # Rust's cloth and hide pieces for the slots armor v0 never had: the legs,
 # the hands, the shirt under the body piece and the face under the hat. Names,

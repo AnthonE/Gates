@@ -647,14 +647,21 @@ fn board_column(
             Some(a) if friends.is_some_and(|f| f.has(&a)) => crate::render::ui::FRIEND,
             _ => TEXT,
         };
-        standing_row(p, wallet, b.name(i), |r| {
+        // A row's name as drawn: an alias in streamer mode (`ui::streamer`),
+        // keyed by the row's wallet.
+        let hex = wallet.map(|a| a.to_hex());
+        let name = crate::ui::names::shown_text(
+            b.name(i),
+            hex.as_ref().and_then(|h| core::str::from_utf8(h).ok()),
+        );
+        standing_row(p, wallet, &name, |r| {
             kit::cell(r, format!("#{}", i + 1), 26.0, TEXT_DIM);
             kit::cell(
                 r,
                 if mine {
-                    format!("{} (you)", b.name(i))
+                    format!("{name} (you)")
                 } else {
-                    b.name(i).to_string()
+                    name.clone()
                 },
                 168.0,
                 ink,

@@ -746,6 +746,10 @@ tokio = { version = "1", features = ["sync"] }
 # `ureq` opens a `TcpStream`. A tab has none of the three and never will.
 # ---------------------------------------------------------------------------
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The system's language, sent as `/lang` so captions arrive translated into
+# it (`render/chat.rs`). Already in the lock through Bevy's text stack; the
+# browser asks `navigator.language` instead.
+sys-locale = "0.3"
 # **The GPU-compressed texture path, native only.** Cargo unions features
 # across target tables, so a desktop build sees exactly the bevy feature set it
 # saw before this split; a browser build sees the same list minus the one C++

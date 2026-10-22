@@ -236,9 +236,12 @@ use crate::worldcont::WorldContRec;
 /// (the id counter, then each live building's frame) comes before the
 /// pieces, and every piece record grew its id, building and lattice
 /// footprint (+16), so no older file reads.
-/// **30 — clothing v1**: every body's `PlayerSave` grew four worn stacks
-/// (+32), and its tail bleeding and the teas (+24); no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 30;
+/// **30 — farming v2** (`farm.rs`): every container's oven state carries the
+/// planter's water tank (+4), and the plants ride a section after the shops
+/// (a count, the next id, then each plant), so no older file reads.
+/// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
+/// (+32), and its tail the teas (+18); no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 31;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -314,11 +317,10 @@ pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
 /// the weak-spot pair, the four death-screen facts, `craft_done_at`, wet and
-/// cold (8), the Verdigris (6), and bleeding (6) with the teas (6 each,
-/// format 29).
+/// cold (8), the Verdigris (6), and the teas (6 each, format 31).
 /// The magazine rode here from format 12 to 22; it is `PlayerSave`'s now.
 const PLAYER_TAIL_BYTES: usize =
-    4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + 6 + 6 * crate::exposure::BREW_KINDS + SKIN_WORDS * 8;
+    4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + 6 * crate::exposure::BREW_KINDS + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -369,8 +371,9 @@ const HEARTH_BYTES: usize = 10 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4
 /// container carries the state — a storage box's says `ARCH_BOX` and is
 /// six zeroed bytes plus twelve zeroed counters, which is the price of
 /// the two stores staying one store (`deploy::holds_items`).
-/// Four more at format 19: the body slot and the pose.
-const BOX_BYTES: usize = 13 + BOX_SLOTS * STACK_BYTES + 6 + BOX_SLOTS * 2;
+/// Four more at format 19: the body slot and the pose. Four more at 29: the
+/// planter's water.
+const BOX_BYTES: usize = 13 + BOX_SLOTS * STACK_BYTES + 6 + BOX_SLOTS * 2 + 4;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
 /// counters — the whole `LockRec`, because every field of it is hashed
@@ -435,7 +438,9 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_FIRES * FIRE_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES
     + 2
-    + crate::limits::MAX_SHOPS * SHOP_BYTES;
+    + crate::limits::MAX_SHOPS * SHOP_BYTES
+    + 6
+    + crate::limits::MAX_PLANTS * crate::farm::PLANT_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
 /// (wall 3) — the reason crosses to a server that can print, and nothing
@@ -516,6 +521,9 @@ pub enum WorldSaveError {
     /// A work slot names a state past lit, or a mechanism's dial a notch
     /// past `mech::MAX_VALUES`.
     BadWork,
+    /// A plant names a crop, stage, genome, spot or id that cannot be, or
+    /// two plants share an id (format 30).
+    BadPlant,
 }
 
 impl WorldSaveError {
@@ -544,6 +552,9 @@ impl WorldSaveError {
             Self::BadExposure => "a body is wetter or colder than a body can be",
             Self::BadSlotLife => "a felled slot claims to be regrowing too",
             Self::BadWork => "a work claims a state past lit, or a dial a notch past ten",
+            Self::BadPlant => {
+                "a plant names an impossible crop, stage, spot or id, or a place another holds"
+            }
         }
     }
 }
@@ -705,9 +716,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         // The Verdigris (format 24): hashed, so saved.
         o.u16(p.fel);
         o.u32(p.fel_acc);
-        // Bleeding and the teas (format 30): hashed, so saved.
-        o.u16(p.bleed);
-        o.u32(p.bleed_acc);
+        // The teas (format 31): hashed, so saved.
         for b in p.brew.iter() {
             o.bytes(&b.to_le_bytes());
         }
@@ -804,6 +813,14 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for c in ov.cook.iter() {
             o.u16(*c);
         }
+        // Only a planter or a catcher has a tank, and the decoder refuses
+        // water on anything else: a stray value must not make the save
+        // unbootable.
+        o.u32(if OvenState::arch_has_tank(ov.arch) {
+            ov.water
+        } else {
+            0
+        });
     }
     for l in w.deploys.locks() {
         o.u16(l.cx);
@@ -926,6 +943,14 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
             o.u16(row.price);
         }
     }
+    // The plants (format 30): a count, the next id, then each plant.
+    o.u16(w.farm.len() as u16);
+    o.u32(w.farm.next_id());
+    for p in w.farm.entries() {
+        let mut b = [0u8; crate::farm::PLANT_BYTES];
+        crate::farm::pack(p, &mut b);
+        o.bytes(&b);
+    }
 
     if o.at > o.buf.len() {
         return Err(WorldSaveError::Truncated);
@@ -1021,6 +1046,22 @@ impl<'a> R<'a> {
             skin,
         })
     }
+}
+
+/// One saved plant can be: a crop the table can hold, a stage that exists,
+/// a genome in range, a bed spot or the ground spot (and the host to match),
+/// an id below the next, and a deadline exactly when ripe or dying.
+fn plant_ok(p: &crate::farm::PlantRec, next_id: u32) -> bool {
+    use crate::farm::{GENOME_VALUES, HOST_GROUND, PLANTER_SPOTS, SPOT_GROUND, STAGE_DYING};
+    let timed = p.stage >= crate::farm::STAGE_RIPE;
+    (p.crop as usize) < crate::limits::MAX_CROPS
+        && p.stage <= STAGE_DYING
+        && (p.genes as u32) < GENOME_VALUES
+        && (p.spot < PLANTER_SPOTS || p.spot == SPOT_GROUND)
+        && ((p.host == HOST_GROUND) == (p.spot == SPOT_GROUND))
+        && p.id != 0
+        && p.id < next_id
+        && ((p.deadline != 0) == timed)
 }
 
 /// A **build**-grid address: pieces, deployables, hearths, boxes and
@@ -1167,8 +1208,6 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cold_acc = r.u32()?;
         let fel = r.u16()?;
         let fel_acc = r.u32()?;
-        let bleed = r.u16()?;
-        let bleed_acc = r.u32()?;
         let mut brew = [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS];
         for b in brew.iter_mut() {
             let mut raw = [0u8; 6];
@@ -1257,14 +1296,19 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             air_dc: 0,
             fel,
             fel_acc,
-            bleed,
-            bleed_acc,
             brew,
+            under: 0,
             skins,
             safe: false,
             hostile: 0,
             comfort: 0,
             calm: 0,
+            bleed: 0,
+            bleed_acc: 0,
+            use_at: 0,
+            use_slot: 0,
+            use_sel: 0,
+            use_item: crate::gather::NO_ITEM,
             gate_spawn: false,
             gate_spawn_at: 0,
             // Not on disk: a restored body's life clock starts at the load.
@@ -1491,7 +1535,6 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             locked: false,
             // Not saved — see the piece load above.
             dmg: 0,
-            grow: 0,
             keyed: false,
         };
         bag_ready[i] = ready;
@@ -1563,6 +1606,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         for c in cook.iter_mut() {
             *c = r.u16()?;
         }
+        let water = r.u32()?;
         if !build_addr_ok(cx, cz, level) || loc >= 16 {
             return Err(WorldSaveError::AddressOutOfRange);
         }
@@ -1573,6 +1617,11 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // would be a container that is neither box nor oven, and every
         // reader downstream would disagree about which.
         if !crate::deploy::holds_items(arch) {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        // Only a planter or a catcher has a tank; anything else's is the
+        // hash's blind spot.
+        if water != 0 && !OvenState::arch_has_tank(arch) {
             return Err(WorldSaveError::BadContentRow);
         }
         *b = BoxRec {
@@ -1590,6 +1639,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             burn,
             bank,
             cook,
+            water,
         };
     }
 
@@ -2022,6 +2072,35 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         shops[k] = rec;
     }
 
+    // --- the plants (format 30) ---------------------------------------------
+    let n_plants = r.count(crate::limits::MAX_PLANTS)?;
+    let next_plant = r.u32()?;
+    let mut plants = crate::boxed_array::<crate::farm::PlantRec, { crate::limits::MAX_PLANTS }>(
+        crate::farm::PlantRec::default(),
+    );
+    for k in 0..n_plants {
+        let mut b = [0u8; crate::farm::PLANT_BYTES];
+        b.copy_from_slice(r.take(crate::farm::PLANT_BYTES)?);
+        let p = crate::farm::unpack(&b);
+        // One plant to an id, and one to a place: a bed spot holds one
+        // plant (`farm::plant_bed` refuses a taken spot), and so does a
+        // ground point (the spacing `farm::ground_ok` keeps).
+        if !plant_ok(&p, next_plant)
+            || plants[..k].iter().any(|q| {
+                q.id == p.id
+                    || (q.host == p.host
+                        && if p.host == crate::farm::HOST_GROUND {
+                            (q.qx, q.qz) == (p.qx, p.qz)
+                        } else {
+                            q.spot == p.spot
+                        })
+            })
+        {
+            return Err(WorldSaveError::BadPlant);
+        }
+        plants[k] = p;
+    }
+
     // --- commit -----------------------------------------------------------
     // Nothing above this line touched `w`. Every refusal returns with the
     // world exactly as the caller had it, which is what lets a shard report
@@ -2055,6 +2134,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &locks[..n_locks],
     );
     w.deploys.restore_shops(&shops[..n_shops]);
+    w.farm.restore(&plants[..n_plants], next_plant);
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
@@ -2149,8 +2229,8 @@ mod tests {
         // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
         // 124 → 92 at format 23: the magazine moved into `PlayerSave`.
         // 92 → 98 at format 24: the Verdigris' meter and its remainder.
-        // 98 → 122 at format 30: bleeding (6) and three teas (6 each).
-        assert_eq!(PLAYER_TAIL_BYTES, 122);
+        // 98 → 116 at format 31: three teas (6 each).
+        assert_eq!(PLAYER_TAIL_BYTES, 116);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
@@ -2164,10 +2244,10 @@ mod tests {
         // 493 → 499 at format 24: the Verdigris in the tail. 499 → 515 at
         // format 27: the blueprint mask's high word and the feet's stack in
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
-        // 547 → 603 at format 30: four more worn stacks in `PlayerSave`
-        // (+32), bleeding and the teas in the tail (+24) (clothing v1).
+        // 547 → 597 at format 31: four more worn stacks in `PlayerSave`
+        // (+32), the teas in the tail (+18) (clothing v1).
         assert_eq!(
-            PLAYER_BYTES, 603,
+            PLAYER_BYTES, 597,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2178,12 +2258,12 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 603                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + bleeding + teas at 30)
+            + 100 * 597                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 1_024 * 139                   // containers: 13 + 12 eight-byte stacks + the oven's 30
+            + 1_024 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
@@ -2192,21 +2272,22 @@ mod tests {
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
-            + 2 + 64 * 40; // vending offers (format 26): a count, then key + 6 rows of item, lot, price
-                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                           // 56 -> 62 at format 10: a tenth count, plus the
-                           // spent store's `u32` eviction counter beside the
-                           // body one. 62 -> 64 at format 14: an eleventh
-                           // count for the loose stacks. No head field beside
-                           // it — `next_id` is derived by the loader from the
-                           // ids it installs (`GroundItems::restore`), unlike
-                           // a bag's, and a head field duplicating a
-                           // derivable one is a second place for it to be
-                           // wrong. 64 -> 90 at format 15: the admin's sky and
-                           // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                           // fires' count. 92 -> 1380 at format 21: the
-                           // works, every slot whether or not content
-                           // names one (`MAX_WORKS` × `WORK_BYTES`).
+            + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
+            + 6 + 4_096 * 58; // plants (format 30): a count and the next id, then each plant
+                              // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                              // 56 -> 62 at format 10: a tenth count, plus the
+                              // spent store's `u32` eviction counter beside the
+                              // body one. 62 -> 64 at format 14: an eleventh
+                              // count for the loose stacks. No head field beside
+                              // it — `next_id` is derived by the loader from the
+                              // ids it installs (`GroundItems::restore`), unlike
+                              // a bag's, and a head field duplicating a
+                              // derivable one is a second place for it to be
+                              // wrong. 64 -> 90 at format 15: the admin's sky and
+                              // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                              // fires' count. 92 -> 1380 at format 21: the
+                              // works, every slot whether or not content
+                              // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
@@ -2317,10 +2398,13 @@ mod tests {
         // 5_071_332 at format 29: buildings (freeform W3) — the id counter
         // and a building count (6), 4,096 frames × 16, and 16 more bytes on
         // each of 32,768 pieces.
-        // 5_076_932 at format 30: four more worn stacks, bleeding and three
-        // teas, 56 bytes on 100 bodies (clothing v1).
+        // 5_313_002 at format 30: the planter's water on 1,024 containers,
+        // and the plants' tail, 6 + 4,096 × 58 (farming v2).
+        assert_eq!(crate::farm::PLANT_BYTES, 58);
+        // 5_318_002 at format 31: four more worn stacks and three teas, 50
+        // bytes on 100 bodies (clothing v1).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_076_932,
+            WORLD_SAVE_MAX_BYTES, 5_318_002,
             "the world save ceiling moved"
         );
     }

@@ -1116,10 +1116,14 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
-    /// Rust's bleeding (clothing v1, `exposure::bleed`): shown while a wound
-    /// runs, saying what stops it.
+    /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
+    /// bandage closes it.
     Bleeding,
-    /// The teas working in the body and the minutes they have left.
+    /// The held breath (water pass, `World::breathe`): shown while any is
+    /// spent, red once the water is costing hp.
+    Breath,
+    /// The teas working in the body and the minutes they have left
+    /// (clothing v1).
     Tea,
 }
 
@@ -1175,11 +1179,15 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
-const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.9);
-const TEA_CHIP: Color = Color::srgba(0.42, 0.30, 0.18, 0.85);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
 
-/// What the BLEEDING chip says beside the hp still to run: what stops it.
-pub const BLEED_LINE: &str = "BLEEDING · USE A BANDAGE";
+/// What the BLEEDING chip says left of the hp it still owes: Rust's word,
+/// and what stops it.
+pub fn bleed_line() -> String {
+    "BLEEDING · BANDAGE IT".to_string()
+}
+
+const TEA_CHIP: Color = Color::srgba(0.42, 0.30, 0.18, 0.85);
 
 /// What the tea chip says: the teas working, by `sim_core::exposure::BREW_*`,
 /// and the minutes left — on the right for one tea, beside each name for
@@ -1339,16 +1347,17 @@ pub struct ChipValue(pub ExposureChip);
 impl ExposureChip {
     /// Top to bottom over the vitals. The base's upkeep heads the stack
     /// (NOW §0up 3): it is about the base, not the body.
-    const ALL: [ExposureChip; 9] = [
+    const ALL: [ExposureChip; 10] = [
+        ExposureChip::Breath,
         ExposureChip::Upkeep,
         ExposureChip::Safe,
         ExposureChip::Wet,
         ExposureChip::Cold,
         ExposureChip::Hot,
         ExposureChip::Verdigris,
-        ExposureChip::Bleeding,
         ExposureChip::Tea,
         ExposureChip::Comfort,
+        ExposureChip::Bleeding,
     ];
 
     fn index(self) -> usize {
@@ -1466,12 +1475,21 @@ pub fn exposure(
                     FEL_CHIP
                 },
             ),
-            // Rust's bleeding row: what stops it, and the hp still to run.
-            ExposureChip::Bleeding if core.bleed > 0 => (
+            // The hp the wound still owes is the chip's number.
+            ExposureChip::Bleeding if core.bleed > 0 => {
+                (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
+            }
+            ExposureChip::Breath if core.drowning => (
                 true,
-                BLEED_LINE.to_string(),
-                format!("{}", core.bleed),
-                BLEED_CHIP,
+                "DROWNING — SURFACE".to_string(),
+                format!("{}%", core.breath_pct),
+                FREEZE_CHIP,
+            ),
+            ExposureChip::Breath if core.breath_pct < 100 => (
+                true,
+                "BREATH".to_string(),
+                format!("{}%", core.breath_pct),
+                WET_CHIP,
             ),
             ExposureChip::Tea => match tea_line(&core.brew_min) {
                 Some((line, left)) => (true, line, left, TEA_CHIP),
@@ -1494,7 +1512,7 @@ pub fn exposure(
             _ => hidden(),
         }
     };
-    let said: [ChipSaid; 9] = ExposureChip::ALL.map(say);
+    let said: [ChipSaid; 10] = ExposureChip::ALL.map(say);
     for (chip, mut node, mut bg) in &mut chips {
         let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still
@@ -1549,6 +1567,20 @@ pub struct Plan;
 /// presses.
 #[derive(Component)]
 pub struct PromptLine;
+
+/// A crop's readout under the prompt (farming v2): `CORN SAPLING · 80% · `,
+/// then the six genes as spans, G/Y/H green and W/X red, then
+/// ` · NEEDS WATER` when it thirsts. Empty unless the pick is a crop.
+#[derive(Component)]
+pub struct PlantInfoLine;
+
+/// One span of [`PlantInfoLine`]: 0..6 the genes, 6 the thirst.
+#[derive(Component)]
+pub struct PlantInfoSpan(pub usize);
+
+/// A gene's colour on the readout: the good letters green, the bad red.
+const GENE_GOOD: Color = Color::srgb(0.45, 0.9, 0.4);
+const GENE_BAD: Color = Color::srgb(0.95, 0.38, 0.32);
 
 /// One row of the announce stack, under the prompt. Row 0 is the newest and
 /// sits where the single toast line always sat; the rest run downward.
@@ -2477,6 +2509,35 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
+    // A crop's readout, a line under the prompt (farming v2).
+    commands
+        .spawn((
+            super::WorldEntity,
+            PlantInfoLine,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(PROMPT_TOP_PCT + 3.2),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Text::new(""),
+            super::ui::font(PROMPT_FONT_PX - 2.0),
+            TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+            super::ui::TEXT_SHADOW,
+            TextLayout::new_with_justify(Justify::Center),
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            for k in 0..=sim_core::farm::GENE_SLOTS {
+                c.spawn((
+                    PlantInfoSpan(k),
+                    TextSpan::new(""),
+                    super::ui::font_bold(PROMPT_FONT_PX - 2.0),
+                    TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+                ));
+            }
+        });
     // The announce stack. Absolutely positioned per row rather than a flex
     // column: every row then has a fixed home whether or not the ones above
     // it are live, so a line arriving does not shove the readout — a number
@@ -2789,6 +2850,10 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
+    sow: Option<Res<super::farm_ghost::PlantAimed>>,
+    // The bandage being wrapped on (`ui::wrap`) and the clock it reads,
+    // for the hand's line: one param, the system is at Bevy's sixteen.
+    wrap: (Option<Res<super::verbs::Bite>>, Res<Time>),
 ) {
     let core = &net.session.core;
 
@@ -2896,10 +2961,29 @@ pub fn update(
                 (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
                 (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
+        } else if click == crate::ui::hold::Click::Plant {
+            // A seed says where its ghost stands: a bed, soft ground, or
+            // why the ground would refuse it.
+            crate::ui::hold::plant_hint(
+                &core.catalog,
+                &core.research,
+                held,
+                sow.as_ref().map_or_else(Default::default, |s| s.0),
+            )
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            let (bite, time) = &wrap;
+            let wrapping = bite
+                .as_deref()
+                .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
+            match wrapping {
+                Some(left) => format!(
+                    "WRAPPING  {}  {left:.1} s   (switch away to stop)",
+                    crate::ui::craft::item_label(&core.catalog, held.item).to_uppercase()
+                ),
+                None => crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit),
+            }
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {
@@ -3161,9 +3245,39 @@ pub fn gate_watch(
     }
     let in_world = screen.is_some_and(|s| *s.get() == super::Screen::InWorld);
     let panel_open = ui.is_some_and(|u| u.panel != super::panels::Panel::None);
-    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) && core.holstered() {
-        toast.warn("you can't draw a weapon in a safe zone");
+    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) {
+        if core.holstered() {
+            toast.warn("you can't draw a weapon in a safe zone");
+        } else if core.waterlogged() {
+            toast.warn("you can't shoot while swimming");
+        }
     }
+}
+
+/// What a vessel fact says (the water pass, `World::pour`): filled, and with
+/// what, or poured out, and what the water reached.
+pub fn vessel_line((poured, salt, doused, watered): (bool, bool, u16, u16)) -> String {
+    if !poured {
+        return if salt {
+            "filled it with salt water — boil it at a fire to drink it".to_string()
+        } else {
+            "filled it with fresh water".to_string()
+        };
+    }
+    let mut out = "poured it out".to_string();
+    if doused > 0 {
+        let s = if doused == 1 { "" } else { "s" };
+        out.push_str(&format!(", put out {doused} fire{s}"));
+    }
+    if watered > 0 {
+        let s = if watered == 1 { "" } else { "s" };
+        if salt {
+            out.push_str(&format!(" — the salt spoiled {watered} planter{s}"));
+        } else {
+            out.push_str(&format!(", watered {watered} planter{s}"));
+        }
+    }
+    out
 }
 
 /// Drain the core's feedback rings into the toast, and count the timers down.
@@ -3257,7 +3371,7 @@ pub fn feedback(
                 crate::ui::place::RESERVED_LINE.to_string()
             }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
-            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy_after(code, net.farm_sent),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
             super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
@@ -3292,7 +3406,7 @@ pub fn feedback(
     // A work changed (`ARC.md`): the whole island hears it, because what a
     // work gives it gives everybody.
     for &(index, what, by) in feed.work_events() {
-        let who = (by != 0).then(|| crate::ui::names::of(core, by));
+        let who = (by != 0).then(|| crate::ui::names::shown(core, by));
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
@@ -3310,7 +3424,7 @@ pub fn feedback(
             .get(mech as usize)
             .filter(|m| m.known)
             .map_or("A LOCK", |m| m.name());
-        let who = crate::ui::names::of(core, by);
+        let who = crate::ui::names::shown(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
 
@@ -3373,9 +3487,8 @@ pub fn feedback(
         // says nothing about hp rather than saying `-0`.
         let water = core.last_drink >> 16;
         let cost = core.last_drink & 0xffff;
-        toast.say(if water == 0 && cost == 0 {
-            // The fill (`survival::drink`): an empty vessel in hand.
-            "filled your waterskin".to_string()
+        toast.say(if let Some(v) = core.last_vessel {
+            vessel_line(v)
         } else if cost > 0 {
             format!("drank: +{water} water, -{cost} hp")
         } else {
@@ -3458,7 +3571,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
             Some(_) => "a pig".to_string(),
-            None => crate::ui::names::of(core, id),
+            None => crate::ui::names::shown(core, id),
         };
         if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
@@ -3980,7 +4093,7 @@ pub fn prompt(
         let want = match give.pick.filter(|_| !pad.0.is_open()) {
             Some(p) => {
                 let core = &net.session.core;
-                let who = crate::ui::names::of(core, p.target);
+                let who = crate::ui::names::shown(core, p.target);
                 let left = give.hold.left(time.elapsed_secs_f64());
                 let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
                 if left.is_none() && !aimed.0.is_none() {
@@ -3997,7 +4110,7 @@ pub fn prompt(
             .filter(|_| !pad.0.is_open() && give.hold.left(0.0).is_none())
         {
             Some(target) => {
-                let who = crate::ui::names::of(&net.session.core, target);
+                let who = crate::ui::names::shown(&net.session.core, target);
                 let line = crate::ui::team::invite_prompt(&who);
                 if want.is_empty() {
                     line
@@ -4226,6 +4339,53 @@ pub fn compass_pins(
     }
 }
 
+/// Write a crop's readout under the prompt from the `E` pick (farming v2).
+pub fn plant_info(
+    aimed: Res<Aimed>,
+    pad: Res<super::verbs::Pad>,
+    mut line: Query<&mut Text, With<PlantInfoLine>>,
+    mut spans: Query<(&PlantInfoSpan, &mut TextSpan, &mut TextColor)>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let pick = &aimed.0;
+    let show = pick.verb == crate::ui::interact::Verb::Plant && !pad.0.is_open();
+    let head = if show {
+        pick.info_head()
+    } else {
+        String::new()
+    };
+    if text.0 != head {
+        text.0 = head;
+    }
+    let genes = sim_core::farm::letters(pick.plant.genes);
+    for (span, mut t, mut col) in &mut spans {
+        let (want, colour) = if !show {
+            (String::new(), None)
+        } else if span.0 < sim_core::farm::GENE_SLOTS {
+            let c = genes[span.0];
+            let good = matches!(c, b'G' | b'Y' | b'H');
+            (
+                (c as char).to_string(),
+                Some(if good { GENE_GOOD } else { GENE_BAD }),
+            )
+        } else if pick.plant.dry {
+            (" · NEEDS WATER".to_string(), None)
+        } else {
+            (String::new(), None)
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+        if let Some(c) = colour {
+            if col.0 != c {
+                col.0 = c;
+            }
+        }
+    }
+}
+
 /// Place the death marker on the compass's row each frame: off the middle
 /// by its bearing from you against your heading, dimmed and held at the
 /// nearer end while it is behind you, with how far beside it. Hidden with
@@ -4387,7 +4547,10 @@ pub fn pad_overlay(
                                     BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
                                     Pickable::IGNORE,
                                     children![(
+                                        // Dots in streamer mode: a code on
+                                        // stream is a door opened for a viewer.
                                         Text::new(match c {
+                                            Some(_) if crate::ui::streamer::on() => "•".to_string(),
                                             Some(d) => d.to_string(),
                                             None => String::new(),
                                         }),

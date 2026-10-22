@@ -159,6 +159,7 @@
   .group::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
   .spacer { flex: 1; }
   .fine { margin: 0; color: var(--faint); font-size: 12.5px; }
+  .field.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .fine a { color: var(--dim); }
 
   /* ── buttons ─────────────────────────────────────────────────────────────── */
@@ -693,6 +694,9 @@
         <label class="field" for="hash">Certificate SHA-256</label>
         <input class="text num" id="hash" placeholder="only for a self-signed dev server" spellcheck="false" autocomplete="off">
         <p class="fine">A dev server prints its certificate hash when it starts. A public server needs none.</p>
+        <div class="group">Streaming</div>
+        <label class="field check"><input type="checkbox" id="streamer"> Streamer mode</label>
+        <p class="fine">Hides your wallet, server addresses, the map seed, other players' names and door codes, here and in the game. The game's Settings → Social has the same switch.</p>
       </div>
       <div class="pane">
         <div class="pane-head">Controls</div>

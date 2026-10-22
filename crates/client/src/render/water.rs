@@ -471,6 +471,18 @@ pub const EXTINCT: [f32; 3] = [0.62, 0.16, 0.22];
 /// the other side.
 pub const SCATTER_ALBEDO: [f32; 3] = [0.018, 0.125, 0.100];
 
+/// A lake's extinction per metre (water pass, 2026-10-21): murkier than the
+/// sea, and browner — fresh water standing over a soft bed carries silt and
+/// what leaves drop in it, so blue goes first and green furthest. The
+/// reference's lakes read as water from the shore at any depth; with the
+/// sea's [`EXTINCT`] a two-metre lake was clear enough to read as sand from a
+/// hill, and the map's blue looked like it was somewhere else.
+pub const LAKE_EXTINCT: [f32; 3] = [0.85, 0.50, 0.95];
+
+/// A lake's single-scattering albedo: [`SCATTER_ALBEDO`]'s argument with
+/// the silt in it — a darker, olive-teal body.
+pub const LAKE_SCATTER: [f32; 3] = [0.035, 0.090, 0.060];
+
 /// The most opaque the sea ever gets. Short of 1 on purpose: a fully opaque
 /// water surface has no depth cue left at all, and the last few per cent of
 /// transmittance are what keep a headland's underwater slope readable.
@@ -1169,6 +1181,12 @@ pub struct WaterParams {
     pub shore: Vec4,
     /// x `F0`, y [`GLINT_A2_NEAR`], z [`GLINT_A2_FAR`], w [`GLINT_FAR_M`].
     pub glint: Vec4,
+    /// xyz [`LAKE_EXTINCT`], w spare: what a lake's water reads by, blended
+    /// in by the vertex's lake share (its colour's red is the open-sea
+    /// share, `terrain::height_open`).
+    pub lake: Vec4,
+    /// xyz [`LAKE_SCATTER`], w spare.
+    pub lake_scatter: Vec4,
 }
 
 impl WaterParams {
@@ -1202,6 +1220,8 @@ impl WaterParams {
             hour: Vec4::new(light, noon_y, TWILIGHT_SKY, SKY_FALLOFF),
             shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, phase),
             glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),
+            lake: Vec4::new(LAKE_EXTINCT[0], LAKE_EXTINCT[1], LAKE_EXTINCT[2], 0.0),
+            lake_scatter: Vec4::new(LAKE_SCATTER[0], LAKE_SCATTER[1], LAKE_SCATTER[2], 0.0),
         }
     }
 
@@ -1499,6 +1519,10 @@ pub fn setup(
     // UV1 rather than COLOR: two floats, not four, and nothing in Bevy's
     // standard path reads a second UV set unless a texture asks for it.
     let shore = vec![[0.0f32, DEEP_SENTINEL_M]; count];
+    // The open-sea share in red (`terrain::height_open`): 1 the sea, 0 a
+    // lake. The shader overwrites the base colour, so the vertex colour Bevy
+    // multiplies into it tints nothing; it only carries the share.
+    let lakes = vec![[1.0f32, 1.0, 1.0, 1.0]; count];
     let uvs = vec![[0.0f32, 0.0]; count];
     // The tangent is CONSTANT and is written exactly once. The UVs are world
     // XZ over the tile, so `∂P/∂u` is `+X` everywhere no matter where the grid
@@ -1526,6 +1550,7 @@ pub fn setup(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, shore);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, lakes);
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     mesh.insert_indices(Indices::U32(indices));
 
@@ -2036,6 +2061,12 @@ pub fn animate(
                 // in with `with_foam`'s own arithmetic.
                 col[i] = [(wash + sea.surf_foam[i]).clamp(0.0, 1.0), sea.depth[i]];
             }
+        }
+    }
+    if let Some(VertexAttributeValues::Float32x4(lakes)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    {
+        for (slot, open) in lakes.iter_mut().zip(sea.open.iter()) {
+            slot[0] = *open;
         }
     }
 }

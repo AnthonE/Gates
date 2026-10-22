@@ -1,11 +1,11 @@
 //! Clothing v1: Rust's rule for what a worn set does about the cold (a share
 //! of it, never a fixed amount), the teas, waterproofing, drying in the cold,
-//! bleeding and the bandage, and the two-layer pieces' clashes.
+//! and the two-layer pieces' clashes.
 
 use sim_core::combat::{self, ArmorDef, CombatContent, WEAR_BODY, WEAR_SHIRT};
 use sim_core::exposure::{self, Brew, ExposureContent, Inputs, BREW_WARM, NO_FLOOR};
 use sim_core::gather::ItemStack;
-use sim_core::survival::{self, ConsumableDef, Step, SurvivalContent};
+use sim_core::survival::{self, ConsumableDef, SurvivalContent};
 use sim_core::world::{EventQueue, Player};
 
 fn body() -> Player {
@@ -178,56 +178,6 @@ fn clothes_do_not_dry_below_freezing_but_by_a_fire() {
     };
     exposure::step(&ec, &fire, &mut p, &mut ev);
     assert_eq!(p.wet, 495 - ec.dry_fire_per_s);
-}
-
-#[test]
-fn a_cut_bleeds_out_at_its_rate_and_a_bandage_stanches_it() {
-    let mut ec = ExposureContent::probe_fixture();
-    ec.bleed_hp_per_min = 20;
-    let mut p = body();
-    exposure::cut(&mut p, 40, 20, 100);
-    assert_eq!(p.bleed, 8, "a fifth of a 40-point blow");
-    let mut ev = EventQueue::default();
-    // A third of a point a second: one point every three seconds.
-    for _ in 0..3 {
-        exposure::bleed(&ec, &mut p, &mut ev);
-    }
-    assert_eq!((p.hp, p.bleed), (99, 7));
-    assert!(!exposure::regens(&ec, &p), "nothing mends while it runs");
-    exposure::stanch(&mut p, 50);
-    assert_eq!((p.bleed, p.bleed_acc), (0, 0));
-    // It never runs past what it was owed.
-    exposure::cut(&mut p, 5, 20, 100);
-    for _ in 0..60 {
-        exposure::bleed(&ec, &mut p, &mut ev);
-    }
-    assert_eq!((p.hp, p.bleed), (98, 0));
-    // The pool is capped.
-    exposure::cut(&mut p, 1000, 20, 100);
-    assert_eq!(p.bleed, 100);
-}
-
-#[test]
-fn a_wound_can_kill() {
-    let mut ec = ExposureContent::probe_fixture();
-    ec.bleed_hp_per_min = 60;
-    let mut p = body();
-    p.hp = 1;
-    p.bleed = 5;
-    let mut ev = EventQueue::default();
-    assert_eq!(exposure::bleed(&ec, &mut p, &mut ev), Step::Died);
-}
-
-#[test]
-fn a_cutting_blow_opens_a_wound_and_a_burn_does_not() {
-    let mut cc = CombatContent::probe_fixture();
-    cc.bleed_pct = 20;
-    cc.bleed_max = 100;
-    let mut p = body();
-    combat::hurt_cutting(&cc, &mut p, 30);
-    assert_eq!(p.bleed, 6);
-    combat::hurt(&cc, &mut p, 30);
-    assert_eq!(p.bleed, 6, "a plain hurt (a fire, a blast) does not bleed");
 }
 
 #[test]

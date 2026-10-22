@@ -246,6 +246,15 @@ const ROUTES: &[(&str, bool, bool, &str)] = &[
          standing when it bit",
     ),
     (
+        "world.rs",
+        false,
+        true,
+        "drowning (the water pass, `World::breathe`) — the breath ran out: \
+         metabolic, like the cold, so a plate does not breathe for you. The \
+         drowning itself points nowhere (the water is on every side); the \
+         file announces `EV_HURT` for the bites it also lands",
+    ),
+    (
         "survival.rs",
         false,
         false,
@@ -492,13 +501,7 @@ fn scan() -> Scan {
                 || text.trim_start().starts_with("pub fn ")
                 || text.trim_start().starts_with("pub(crate) fn ");
             if !declares {
-                // `hurt_cutting` is `hurt` that also opens a wound (clothing
-                // v1): reduced, the same route.
-                for (needle, reduced) in [
-                    ("hurt_unreduced(", false),
-                    ("hurt(", true),
-                    ("hurt_cutting(", true),
-                ] {
+                for (needle, reduced) in [("hurt_unreduced(", false), ("hurt(", true)] {
                     if text.contains(needle) {
                         calls.push(Call {
                             file: name.clone(),

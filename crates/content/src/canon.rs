@@ -56,6 +56,12 @@ pub fn hash(c: &Content) -> u64 {
         // contents that disagree on it would run the same WAL to different
         // inventories (torch fuel v0).
         h.u(i.light_burn);
+        // What a data `cond` carries sets the save walls' ceiling.
+        h.u(match i.cond_carries {
+            None => 0,
+            Some(crate::schema::CondCarries::Genes) => 1,
+            Some(crate::schema::CondCarries::Target) => 2,
+        });
     }
 
     h.s("gatherables");
@@ -258,6 +264,16 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.fel as u32);
         h.u(u32::from(con.belt_recovery));
         h.u(u32::from(con.revive));
+        match &con.leaves {
+            None => h.u(0),
+            Some(l) => {
+                h.u(1);
+                h.s(l);
+            }
+        }
+        h.u(con.leaves_pm);
+        h.u(con.bleed as u32);
+        h.u(con.use_seconds);
     }
 
     h.s("deployables");
@@ -475,9 +491,53 @@ pub fn hash(c: &Content) -> u64 {
     h.u(c.fuel.seconds);
     h.s(&c.fuel.byproduct);
     h.u(c.fuel.byproduct_pct);
-    h.s(&c.planter.item);
-    h.s(&c.planter.emptied);
-    h.u(c.planter.seconds);
+    // The farm, whole (every field reaches `bake_farm`), and the crops in
+    // file order: a plant stores its crop as an index, so the order is the
+    // layout (`layout_hash`) and the rows are state.
+    let fm = &c.farm;
+    h.s("farm");
+    h.s(&fm.water);
+    h.s(&fm.emptied);
+    h.u(fm.skin_water);
+    h.u(fm.planter_water);
+    h.u(fm.rain_water);
+    for p in fm.stage_pct {
+        h.u(p as u32);
+    }
+    h.u(fm.ripe_seconds);
+    h.u(fm.dying_seconds);
+    for v in [
+        fm.good_gene_pm,
+        fm.bad_w_pm,
+        fm.g_pct,
+        fm.y_pct,
+        fm.h_pct,
+        fm.w_pct,
+        fm.clone_y_per,
+        fm.ground_water,
+        fm.ground_rain,
+        fm.catcher_water,
+        fm.catcher_rain,
+        fm.catcher_flow,
+        fm.catcher_reach_cm,
+    ] {
+        h.u(v);
+    }
+    h.u(fm.soil.len() as u32);
+    for (biome, v) in &fm.soil {
+        h.s(biome);
+        h.u(*v);
+    }
+    h.u(c.crops.len() as u32);
+    for k in &c.crops {
+        h.s(&k.id);
+        h.s(&k.look);
+        h.s(&k.seed);
+        h.s(&k.yield_item);
+        h.u(k.count);
+        h.u(k.seconds);
+        h.u(k.clones);
+    }
     h.u(c.cooks.len() as u32);
     let mut cooks: Vec<&Cook> = c.cooks.iter().collect();
     cooks.sort_by_key(|k| format!("{}\u{0}{}", k.station as u32, k.input));
@@ -525,8 +585,15 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.spawn_hp);
     h.u(sv.spawn_food);
     h.u(sv.spawn_water);
-    h.s(sv.vessel.as_deref().unwrap_or(""));
-    h.s(sv.vessel_full.as_deref().unwrap_or(""));
+    h.u(sv.drink_water_salt.map_or(u32::MAX, |w| w));
+    h.u(sv.vessels.len() as u32);
+    for v in &sv.vessels {
+        h.s(&v.empty);
+        h.s(&v.fresh);
+        h.s(v.salt.as_deref().unwrap_or(""));
+    }
+    h.u(sv.bleed_pct);
+    h.u(sv.bleed_hp_per_min);
 
     let ex = &c.balance.exposure;
     h.s("exposure");
@@ -580,6 +647,8 @@ pub fn hash(c: &Content) -> u64 {
         ex.fel_ward_max,
         ex.fel_pocket_per_s,
         ex.snow_wet_pm,
+        ex.air_s,
+        ex.drown_hp_per_s,
     ] {
         h.u(v);
     }
@@ -721,5 +790,10 @@ pub fn layout_hash(c: &Content) -> u64 {
     }
     h.s("glyphs");
     h.s(&c.glyphs.alphabet);
+    // A plant saves its crop as an index into this order.
+    h.s("crops");
+    for k in &c.crops {
+        h.s(&k.id);
+    }
     h.0.digest()
 }

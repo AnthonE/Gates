@@ -68,6 +68,9 @@ pub struct Contacts {
 impl Contacts {
     /// The mugshot to draw for `wallet`, once it is loaded.
     pub fn pic(&self, wallet: &str) -> Option<Handle<Image>> {
+        if crate::ui::streamer::on() {
+            return None; // a mugshot is a face (`ui::streamer`)
+        }
         self.pics
             .iter()
             .find(|(w, _)| w == wallet)

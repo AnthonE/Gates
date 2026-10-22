@@ -45,9 +45,8 @@
 //! the air the body feels and floor how cold it gets, cool the heat, or
 //! ward off the Verdigris, for minutes. A waterproof piece (the hazmat
 //! suit) never gets wet, and clothes do not dry below freezing but by a
-//! fire. **Bleeding** ([`bleed`]) is Rust's too: a cut, a bite, an arrow or
-//! a round leaves a share of what it dealt to run out of the body at a
-//! third of a point a second, until a bandage stanches it.
+//! fire. Nothing mends while a wound is still bleeding (Rust's;
+//! `survival::step` bleeds it).
 //!
 //! `EMPTY` disarms it: content with no `[exposure]` plays the game it did.
 
@@ -185,9 +184,12 @@ pub struct ExposureContent {
     /// fast at twice the air, and not at all at or under freezing but by a
     /// fire. Zero keeps the old flat rate.
     pub dry_ref_dc: i16,
-    /// Bleeding ([`bleed`]): hit points a minute the wound runs out at
-    /// (Rust's third of a point a second is 20).
-    pub bleed_hp_per_min: u16,
+    /// Drowning (water pass): the breath a body holds with its mouth under,
+    /// in ticks, and what it costs a second once that runs out — ramping in
+    /// from half the breath gone, the reference's shape (`World::breathe`).
+    /// Zero air is drowning disarmed.
+    pub air_ticks: u16,
+    pub drown_hp_per_s: u16,
 }
 
 impl ExposureContent {
@@ -249,7 +251,8 @@ impl ExposureContent {
         warm_full_pm: 0,
         waterproof: [false; MAX_ITEM_DEFS],
         dry_ref_dc: 0,
-        bleed_hp_per_min: 0,
+        air_ticks: 0,
+        drown_hp_per_s: 0,
     };
 
     /// Is exposure armed? A zero chill rate means nothing ever moves.
@@ -768,52 +771,6 @@ pub fn corrode(
     Step::Quiet
 }
 
-/// One second of bleeding for one body (Rust's): the wound runs out at
-/// `bleed_hp_per_min` until what it was owed is spent, and every point it
-/// runs is a point of hp. Not a hit: armor does not blunt it. Its own
-/// accumulator, because a body can bleed and freeze in the same second.
-pub fn bleed(ec: &ExposureContent, p: &mut Player, events: &mut EventQueue) -> Step {
-    if p.bleed == 0 || ec.bleed_hp_per_min == 0 {
-        p.bleed_acc = 0;
-        return Step::Quiet;
-    }
-    let owed = tick_units(&mut p.bleed_acc, ec.bleed_hp_per_min as u32, 60);
-    let dmg = owed.min(p.bleed as u32) as u16;
-    p.bleed -= dmg;
-    if p.bleed == 0 {
-        p.bleed_acc = 0;
-    }
-    if dmg == 0 || p.hp == 0 {
-        return Step::Quiet;
-    }
-    if crate::combat::hurt_unreduced(p, dmg).died {
-        return Step::Died;
-    }
-    events.push(EV_HEALTH, p.id, p.hp as u32, p.hp_max as u32);
-    Step::Changed
-}
-
-/// A blow that cuts (a swing, a bite, an arrow, a round) opens a wound: a
-/// share of the hp it dealt still to run out (Rust's 0.2 × damage), held
-/// to `max`.
-#[inline]
-pub fn cut(p: &mut Player, dealt: u16, pct: u8, max: u16) {
-    if pct == 0 || dealt == 0 {
-        return;
-    }
-    let add = (dealt as u32 * pct as u32).div_ceil(100);
-    p.bleed = (p.bleed as u32 + add).min(max as u32) as u16;
-}
-
-/// A bandage (or a medkit) stanches `by` points of the wound.
-#[inline]
-pub fn stanch(p: &mut Player, by: u16) {
-    p.bleed = p.bleed.saturating_sub(by);
-    if p.bleed == 0 {
-        p.bleed_acc = 0;
-    }
-}
-
 /// The regen rate's denominator: a minute, times the stomach's per cent
 /// and comfort's per mille scales in `step`.
 const REGEN_DEN: u32 = 60 * 100 * 1000;
@@ -900,8 +857,6 @@ pub fn reset(p: &mut Player) {
     p.comfort = 0;
     p.fel = 0;
     p.fel_acc = 0;
-    p.bleed = 0;
-    p.bleed_acc = 0;
     p.brew = [Brew::NONE; BREW_KINDS];
 }
 
@@ -920,10 +875,15 @@ pub struct Readout {
     /// The Verdigris' meter, per cent, and whether it is costing hp.
     pub fel_pct: u8,
     pub fel_hurting: bool,
-    /// Hit points still to bleed out, capped at a byte (clothing v1).
-    pub bleed: u8,
     /// Minutes left on each tea, rounded up, by `BREW_*`; 0 for none.
     pub brew_min: [u8; BREW_KINDS],
+    /// The open wound, in hp it still owes (`Player::bleed`, at most
+    /// `survival::BLEED_MAX`): the BLEEDING chip.
+    pub bleed: u8,
+    /// The breath left, per cent (100 out of the water), and whether the
+    /// water is costing hp (water pass).
+    pub breath_pct: u8,
+    pub drowning: bool,
 }
 
 #[inline]
@@ -937,9 +897,21 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         air_c: crate::climate::whole_c(p.air_dc),
         fel_pct: (p.fel / 10).min(100) as u8,
         fel_hurting: p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000,
-        bleed: p.bleed.min(u8::MAX as u16) as u8,
         brew_min: p
             .brew
             .map(|b| b.left_s.div_ceil(60).min(u8::MAX as u16) as u8),
+        bleed: p.bleed.min(crate::survival::BLEED_MAX) as u8,
+        breath_pct: breath_pct(ec, p),
+        drowning: ec.air_ticks > 0 && p.under > ec.air_ticks / 2,
     }
+}
+
+/// The breath a body has left, per cent of [`ExposureContent::air_ticks`].
+#[inline]
+pub fn breath_pct(ec: &ExposureContent, p: &Player) -> u8 {
+    if ec.air_ticks == 0 {
+        return 100;
+    }
+    let left = ec.air_ticks.saturating_sub(p.under) as u32;
+    (left * 100 / ec.air_ticks as u32) as u8
 }

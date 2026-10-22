@@ -424,6 +424,12 @@ ELSEWHERE = {
     "keycard_blue": "keycards.py",
     "keycard_red": "keycards.py",
     "abyss_rug": "abyss_rug.py",
+    "water_catcher": "water_catcher.py",
+    "potato": "crops.py",
+    "potato_seed": "crops.py",
+    "pumpkin": "crops.py",
+    "pumpkin_seed": "crops.py",
+    "berry_seed": "crops.py",
 }
 
 # Ours, and NOT an item — so it cannot live in `OURS`, which is held equal to

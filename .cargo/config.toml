@@ -1,9 +1,13 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 153 kB — fixed-capacity by design (wall 4), and
-# (152 kB until main's casino seats and freeform buildings met clothing v1
-# in one merge; 125 kB until clothing v1 took the item tables from 127 rows
-# to 255;
+# `World` is 139 kB — fixed-capacity by design (wall 4), and
+# (133 kB until clothing v1 put the teas on every player and the
+# waterproof and warmth rows on the exposure table;
+# 131 kB until a bleed and a held use put six fields on every player;
+# 130 kB until seeds from eating put what a meal leaves on every
+# consumable row;
+# 125 kB until farming v2's catalog headroom took every per-item table
+# from 127 rows to 160 and the water catcher put its knobs on the farm's;
 # 124 kB until an unlock flag put a byte on every skin row;
 # 114 kB until guns v1 put sixteen magazines and a gun's cone on each
 # player and a rocket's landing ring on the arrows;

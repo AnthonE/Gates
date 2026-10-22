@@ -665,6 +665,10 @@ pub struct CombatContent {
     /// 100 for that reason and it is the one field of this struct whose
     /// inert value is not zero.
     pub arrow_break_pct: u16,
+    /// The share of the hp a hit takes that opens a wound, per cent
+    /// (`[survival] bleed_pct`, Rust's bleeding): `hurt` adds it to
+    /// `Player::bleed`, which the survival clock bleeds out. Zero is none.
+    pub bleed_pct: u16,
     /// Ticks an arrow that DEALT DAMAGE waits before it may be taken back
     /// (`globals.arrow_lodge_s` × `TICK_HZ`, baked). A missed arrow is
     /// takeable on the tick it lands, so this number prices exactly one
@@ -685,11 +689,6 @@ pub struct CombatContent {
     /// What a punch that landed takes off the puncher (`fist.self_damage`),
     /// never the last hit point ([`knuckles`]).
     pub fist_self_damage: u16,
-    /// Bleeding (Rust's, clothing v1): the per cent of what a cutting blow
-    /// dealt that is left to run out of the body (`exposure::cut`), and the
-    /// most a body can be owed. Zero is no bleeding.
-    pub bleed_pct: u8,
-    pub bleed_max: u16,
 }
 
 /// A worn piece at condition zero protects at this per cent of its row —
@@ -777,6 +776,7 @@ impl CombatContent {
         // row silently giving ammunition back forever) is the one that
         // cannot be noticed by looking at the game.
         arrow_break_pct: 100,
+        bleed_pct: 0,
         arrow_lodge_ticks: 0,
         cond_max: [0; MAX_ITEM_DEFS],
         shot_wear: [0; MAX_ITEM_DEFS],
@@ -790,8 +790,6 @@ impl CombatContent {
             wear: 0,
         },
         fist_self_damage: 0,
-        bleed_pct: 0,
-        bleed_max: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -1289,6 +1287,16 @@ pub fn holstered(cc: &CombatContent, gc: &crate::gather::GatherContent, p: &Play
     p.safe && drawn_weapon(cc, gc, held_item(p))
 }
 
+/// A swimmer with a bow, a gun or a charge in hand: the reference fires
+/// nothing but melee in the water, so the hand does nothing (`World::tick`).
+#[inline]
+pub fn waterlogged(cc: &CombatContent, p: &Player) -> bool {
+    let item = held_item(p);
+    item != NO_ITEM
+        && crate::movement::swimming(&p.body)
+        && (cc.held_ranged(item).is_some() || cc.held_throw(item).is_some())
+}
+
 /// Whether the safe zone protects this body: inside it and not hostile.
 #[inline]
 pub fn protected(v: &Player) -> bool {
@@ -1318,22 +1326,25 @@ pub fn knuckles(cc: &CombatContent, p: &mut Player, events: &mut EventQueue) {
 
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
+    let h = burn(cc, v, raw);
+    // Rust's bleeding: a hit opens a wound worth a share of what got
+    // through the armor, and the survival clock bleeds it out
+    // (`survival::step`) until a bandage closes it.
+    let opened = (u32::from(h.dealt) * u32::from(cc.bleed_pct) / 100) as u16;
+    v.bleed = v
+        .bleed
+        .saturating_add(opened)
+        .min(crate::survival::BLEED_MAX);
+    h
+}
+
+/// [`hurt`] without the wound: fire scorches, it does not cut. Armor still
+/// blunts it and wears for it, exactly as for a hit.
+#[inline]
+pub fn burn(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     let pct = worn_pct(cc, v);
     wear_worn(cc, v, raw);
     debit(v, reduce(raw, pct))
-}
-
-/// [`hurt`] for a blow that cuts — a swing, a bite, an arrow, a round
-/// (Rust's Slash, Stab, Bite, Arrow and Bullet): what it dealt opens a
-/// wound unless it killed (`exposure::cut`). Fire, a cactus and a blast do
-/// not bleed.
-#[inline]
-pub fn hurt_cutting(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
-    let h = hurt(cc, v, raw);
-    if !h.died {
-        crate::exposure::cut(v, h.dealt, cc.bleed_pct, cc.bleed_max);
-    }
-    h
 }
 
 /// Each worn piece that counts loses the share of the blow it took: the
@@ -1738,7 +1749,7 @@ pub fn strike_body(
     // where the attacker is now.
     let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
-    let Hurt { left, died, .. } = hurt_cutting(cc, v, dmg);
+    let Hurt { left, died, .. } = hurt(cc, v, dmg);
     events.push(
         EV_HIT,
         attacker_id,

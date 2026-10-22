@@ -237,6 +237,37 @@ hand = 10
 output = "item.hemp_seed"
 per_hit = 1
 
+# Wild corn and a wild pumpkin by the lakes (`terrain::plant_of`'s fresh-water
+# roll): the crops' wild source, as hemp is cloth's. Picked by hand like hemp,
+# each pays its crop and a seed to plant, and grows back the way hemp does.
+[[gatherable]]
+id = "gather.wild_corn"
+archetype = "wild_corn"
+output = "item.corn"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 2
+
+[gatherable.secondary]
+output = "item.corn_seed"
+per_hit = 1
+
+[[gatherable]]
+id = "gather.wild_pumpkin"
+archetype = "wild_pumpkin"
+output = "item.pumpkin"
+hits = 1
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+hand = 1
+
+[gatherable.secondary]
+output = "item.pumpkin_seed"
+per_hit = 1
+
 # Rust's collectibles: what lies on the ground for a naked spawn to pick up
 # with `E` before it has a tool — loose stone, a wood pile, a lump of ore, a
 # patch of mushrooms (`terrain::plant_of` places them out of the bush

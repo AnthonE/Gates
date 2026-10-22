@@ -151,6 +151,7 @@ impl Keypad {
         let mut code = String::with_capacity(DIGITS);
         for c in self.cells() {
             code.push(match c {
+                Some(_) if super::streamer::on() => '•',
                 Some(d) => (b'0' + d) as char,
                 None => '_',
             });

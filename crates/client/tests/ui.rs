@@ -1256,7 +1256,13 @@ fn a_rock_is_not_a_target() {
     assert_eq!(swing_label(8), "");
     // A berry bush and hemp are picked with `E`, never swung at, and a
     // shrub is scenery.
-    for o in [Occupant::BerryBush, Occupant::Hemp, Occupant::Shrub] {
+    for o in [
+        Occupant::BerryBush,
+        Occupant::Hemp,
+        Occupant::Shrub,
+        Occupant::WildCorn,
+        Occupant::WildPumpkin,
+    ] {
         assert_eq!(swing_label(o as u8), "", "{o:?}");
     }
 }
@@ -1275,6 +1281,8 @@ fn the_pick_prompt_names_the_plant() {
     };
     assert_eq!(prompt(Occupant::BerryBush), "[E] PICK BERRIES");
     assert_eq!(prompt(Occupant::Hemp), "[E] PICK HEMP");
+    assert_eq!(prompt(Occupant::WildCorn), "[E] PICK WILD CORN");
+    assert_eq!(prompt(Occupant::WildPumpkin), "[E] PICK PUMPKIN");
 }
 
 /// **A bush is `E`, not the left button** (operator, 2026-10-02). Looking at
