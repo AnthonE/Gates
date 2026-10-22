@@ -2278,18 +2278,17 @@ impl Plugin for GatesRenderPlugin {
         // this frame's thunder off the queue. Not on a capture, a plate or a
         // film: their frames are gates.
         // The camera rides the drawn swell (`water::ride`): after it is
-        // rewritten from `Eye`, and after the swell is advanced. Everywhere but
-        // a film, whose camera is the film's (`film::aim`).
-        if !filming {
-            app.add_systems(
-                Update,
-                water::ride
-                    .after(rig::follow_eye)
-                    .after(water::animate)
-                    .run_if(world_placed)
-                    .run_if(world_running),
-            );
-        }
+        // rewritten from `Eye`, and after the swell is advanced. A film's too,
+        // which only lifts it clear of a crest: the sea's face test needs the
+        // camera above the drawn sea whenever the eye is above the line.
+        app.add_systems(
+            Update,
+            water::ride
+                .after(rig::follow_eye)
+                .after(water::animate)
+                .run_if(world_placed)
+                .run_if(world_running),
+        );
         if self.capture.is_none() && !filming && !plate {
             app.init_resource::<shake::Shake>().add_systems(
                 Update,

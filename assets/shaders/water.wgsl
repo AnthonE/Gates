@@ -132,7 +132,7 @@ const WAKE_LEN_M: f32 = 0.3;
 const WAKE_BAND_M: f32 = 0.6;
 // The ripple's peak slope at full strength, and one over its envelope's
 // half-width squared (0.22 m): a few ripples deep.
-const WAKE_SLOPE: f32 = 0.12;
+const WAKE_SLOPE: f32 = 0.3;
 const WAKE_ENV: f32 = 20.66;
 const TAU: f32 = 6.28318530718;
 
@@ -534,11 +534,11 @@ fn wake_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, fp: f32) -> vec4<f32>
                     let dir = q * inv;
                     let x = r - front;
                     let life = max(1.0 - d.z / WAKE_LIFE_S, 0.0);
-                    let a = WAKE_SLOPE * d.w * life * life * exp(-x * x * WAKE_ENV)
-                        * inverseSqrt(1.0 + 2.0 * r);
+                    let a = WAKE_SLOPE * d.w * life * exp(-x * x * WAKE_ENV)
+                        * inverseSqrt(1.0 + r);
                     let c = max(max(abs(dot(fx, dir)), abs(dot(fy, dir))), fp * water.crest.w) / WAKE_LEN_M;
                     let keep = footprint_keep(water.field.z * c);
-                    g += (a * keep * cos(TAU * x / WAKE_LEN_M)) * dir;
+                    g += (a * keep * cos(reduced(x / WAKE_LEN_M))) * dir;
                     a2 += 0.5 * a * a * (1.0 - keep * keep);
                 }
                 // A body that went in hard (strength over 1): white where it
@@ -628,14 +628,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let dndx = dpdx(N);
     let dndy = dpdy(N);
     let n_var = 0.5 * (dot(dndx, dndx) + dot(dndy, dndy));
-    // The sea is a height field: from above it, a back face under the eye is
-    // the far slope of a crest, behind its near slope, and from below a front
-    // face over the eye is a farther wave, behind the window. The sea writes
-    // no depth, so either would show through (dark teeth under every crest).
-    // `under` is the flat sea's (`WeatherNow::underwater`), so a crest the eye
-    // is inside, over or under it, keeps its faces.
-    let eye_y = view.world_position.y;
-    if select(!is_front && wp.y < eye_y, is_front && wp.y > eye_y, water.under.x > 0.5) {
+    // The sea is a height field: from above it, a back face is the far slope
+    // of a crest, behind its near slope, and from below a front face is a
+    // farther wave, behind the window. The sea writes no depth, so either
+    // would show through (dark teeth under every crest). `under` is the flat
+    // sea's (`WeatherNow::underwater`), and the camera rides the drawn sea so
+    // that it is under it exactly then (`water::ride_offset`).
+    if is_front == (water.under.x > 0.5) {
         discard;
     }
 

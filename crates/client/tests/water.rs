@@ -1496,6 +1496,37 @@ fn a_swimmer_leaves_a_wake_and_a_diver_none() {
         "a diver's wake"
     );
 
+    // Two swimmers side by side both have wakes; of five, the four nearest
+    // (the order the sources come in) do.
+    let crowd = |bodies: u32| {
+        let mut w = Wakes::default();
+        for k in 0..180 {
+            let x = 3900.0 + SWIM_SPEED * dt * k as f32;
+            let sources: Vec<WakeSource> = (0..bodies)
+                .map(|b| WakeSource {
+                    key: 10 + b,
+                    feet: Vec3::new(x, SEA_LEVEL - FLOAT_DEPTH_M, 2040.0 + 4.0 * b as f32),
+                    still: false,
+                })
+                .collect();
+            w.step(dt, &sources);
+        }
+        let (boxes, _) = w.pack(centre);
+        let mut zs: Vec<f32> = boxes
+            .iter()
+            .filter(|b| b.w >= 9.0)
+            .map(|b| (centre.y + b.y).round())
+            .collect();
+        zs.sort_by(f32::total_cmp);
+        zs
+    };
+    assert_eq!(crowd(2), [2040.0, 2044.0], "two swimmers, two wakes");
+    assert_eq!(
+        crowd(5),
+        [2040.0, 2044.0, 2048.0, 2052.0],
+        "the nearest four"
+    );
+
     let mut w = Wakes::default();
     let fall = |y: f32| WakeSource {
         key: 3,

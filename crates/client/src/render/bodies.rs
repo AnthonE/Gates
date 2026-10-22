@@ -300,12 +300,15 @@ pub fn stream(
         // A floater is drawn lifted (`swim_lift`) and riding the drawn swell,
         // capped (`water::Sea::swimmer_ride`); the gait reads the feet, so the
         // swim clips still see the depth the sim swims at.
+        // On a bed rather than afloat, never drawn below its own feet: and no
+        // gate on `airborne`, so touching the bottom does not pop the body.
         let feet = Vec3::new(rs.x, rs.y, rs.z);
-        let ride = match sea.as_deref() {
-            Some(sea) if rs.airborne => sea.swimmer_ride(rs.x, rs.y, rs.z),
-            _ => 0.0,
-        };
-        let pos = feet + Vec3::Y * (swim_lift(rs.y) + ride);
+        let lift = swim_lift(rs.y);
+        let ride = sea
+            .as_deref()
+            .map_or(0.0, |sea| sea.swimmer_ride(rs.x, rs.y, rs.z));
+        let ride = if rs.airborne { ride } else { ride.max(-lift) };
+        let pos = feet + Vec3::Y * (lift + ride);
         // The wire has carried yaw since the first snapshot and nothing ever
         // read it: bodies faced +Z no matter where they were looking or
         // walking. A capsule hid that; a figure with a face cannot.

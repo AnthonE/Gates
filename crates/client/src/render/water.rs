@@ -2858,9 +2858,9 @@ pub const WAKE_LEN_M: f32 = 0.3;
 pub const WAKE_FRONT_M: f32 = 0.15;
 /// How far either side of its front a ring's ripple reaches, metres.
 pub const WAKE_BAND_M: f32 = 0.6;
-/// Water over the feet before a body leaves a wake, metres. Ankle-deep
-/// splashing is the droplets' (`fx::world::footstep`).
-pub const WAKE_WET_M: f32 = 0.15;
+/// Water over the feet before a body leaves a wake, metres: a wade stirs
+/// rings from the ankle up (the spray of a run is `fx::world::footstep`'s).
+pub const WAKE_WET_M: f32 = 0.05;
 /// The deepest feet that still stir a wake, metres under the surface: a
 /// floating swimmer's (`movement::FLOAT_DEPTH_M`) plus 0.3. A diver deeper
 /// leaves none; between, the wake fades.
@@ -2921,6 +2921,15 @@ impl WakeSlot {
     }
 }
 
+/// What one body did since last frame ([`Wakes::step`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct Stir {
+    at: Vec2,
+    jumped: bool,
+    entry: Option<f32>,
+    fade: f32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct WakeTrack {
     key: Option<u32>,
@@ -2940,10 +2949,13 @@ pub struct Wakes {
 }
 
 impl Wakes {
-    /// Age every drop by `dt` and lay this frame's from `sources`, the
-    /// nearest first: a body with no slot yet takes a free one, so the
-    /// nearest wet bodies have wakes.
+    /// Age every drop by `dt` and lay this frame's from `sources`, nearest
+    /// first (the eye's own first). The four nearest bodies stirring the
+    /// water hold the slots: a body keeps its slot while it is still among
+    /// them, and gives it up only to one that is, so two swimmers never trade
+    /// one slot back and forth.
     pub fn step(&mut self, dt: f32, sources: &[WakeSource]) {
+        let sources = &sources[..sources.len().min(WAKE_TRACKS)];
         for slot in &mut self.slots {
             slot.since += dt;
             for d in &mut slot.drops {
@@ -2956,7 +2968,9 @@ impl Wakes {
         for t in &mut self.tracks {
             t.seen = false;
         }
-        for src in sources {
+        // What every body did since last frame, before any slot moves.
+        let mut stir = [Stir::default(); WAKE_TRACKS];
+        for (src, st) in sources.iter().zip(&mut stir) {
             let prev = self.retrack(src.key, src.feet);
             let at = Vec2::new(src.feet.x, src.feet.z);
             let jumped = prev.is_some_and(|p| {
@@ -2969,33 +2983,48 @@ impl Wakes {
                 let vy = (p.y - src.feet.y) / dt;
                 (p.y >= line && src.feet.y < line && vy > WAKE_ENTRY_SPEED).then_some(vy)
             });
-            let fade = wake_fade(SEA_LEVEL - src.feet.y);
-            if fade <= 0.0 && entry.is_none() {
-                continue;
-            }
-            let Some(i) = self.slot_for(src.key, at) else {
-                continue;
+            *st = Stir {
+                at,
+                jumped,
+                entry,
+                fade: wake_fade(SEA_LEVEL - src.feet.y),
             };
-            let slot = &mut self.slots[i];
-            if jumped {
-                slot.last = at;
-                slot.since = 0.0;
-            } else if let Some(vy) = entry {
-                slot.lay(at, 1.0 + (vy / 4.0).min(1.0));
-            } else {
-                let moved = slot.last.distance(at);
-                if moved >= WAKE_STEP_M {
-                    let speed = moved / slot.since.max(dt).max(1e-3);
-                    let swim = sim_core::movement::SWIM_SPEED;
-                    slot.lay(at, (speed / swim).clamp(0.3, 1.0) * fade);
-                } else if slot.since >= WAKE_TREAD_S && !src.still {
-                    slot.lay(at, 0.25 * fade);
-                }
-            }
         }
         for t in &mut self.tracks {
             if !t.seen {
                 t.key = None;
+            }
+        }
+        let mut wanted = [None; WAKE_BODIES];
+        let stirring = sources
+            .iter()
+            .zip(&stir)
+            .filter(|(_, st)| st.fade > 0.0 || st.entry.is_some());
+        for (w, (src, _)) in wanted.iter_mut().zip(stirring) {
+            *w = Some(src.key);
+        }
+        for (src, st) in sources.iter().zip(&stir) {
+            if !wanted.contains(&Some(src.key)) {
+                continue;
+            }
+            let Some(i) = self.slot_for(src.key, st.at, &wanted) else {
+                continue;
+            };
+            let slot = &mut self.slots[i];
+            if st.jumped {
+                slot.last = st.at;
+                slot.since = 0.0;
+            } else if let Some(vy) = st.entry {
+                slot.lay(st.at, 1.0 + (vy / 4.0).min(1.0));
+            } else {
+                let moved = slot.last.distance(st.at);
+                if moved >= WAKE_STEP_M {
+                    let speed = moved / slot.since.max(dt).max(1e-3);
+                    let swim = sim_core::movement::SWIM_SPEED;
+                    slot.lay(st.at, (speed / swim).clamp(0.3, 1.0) * st.fade);
+                } else if slot.since >= WAKE_TREAD_S && !src.still {
+                    slot.lay(st.at, 0.25 * st.fade);
+                }
             }
         }
     }
@@ -3019,16 +3048,24 @@ impl Wakes {
         None
     }
 
-    /// The body's slot, or a free one (never held, or every drop gone) made
-    /// its own, starting at `at`.
-    fn slot_for(&mut self, key: u32, at: Vec2) -> Option<usize> {
+    /// The body's slot, or one made its own starting at `at`: a slot never
+    /// held, then a faded wake no wanted body holds, then any slot no wanted
+    /// body holds.
+    fn slot_for(&mut self, key: u32, at: Vec2, wanted: &[Option<u32>]) -> Option<usize> {
         if let Some(i) = self.slots.iter().position(|s| s.key == Some(key)) {
             return Some(i);
         }
+        let spare = |s: &WakeSlot| !wanted.contains(&s.key);
         let i = self
             .slots
             .iter()
-            .position(|s| s.key.is_none() || s.live().next().is_none())?;
+            .position(|s| s.key.is_none())
+            .or_else(|| {
+                self.slots
+                    .iter()
+                    .position(|s| spare(s) && s.live().next().is_none())
+            })
+            .or_else(|| self.slots.iter().position(spare))?;
         self.slots[i] = WakeSlot {
             key: Some(key),
             last: at,
@@ -3109,8 +3146,14 @@ pub fn lay_wakes(
         if !core.interp.sample(body.0, tick, &mut rs) || rs.dead {
             continue;
         }
-        // Nearest first, after the eye's own; past the table, the farthest
-        // goes.
+        // Bodies in the water before bodies out of it (which only matter for
+        // a dive's splash), each nearest first, after the eye's own; past the
+        // table, the last goes.
+        let d2 = if SEA_LEVEL - rs.y >= WAKE_WET_M {
+            d2
+        } else {
+            d2 + 1.0e6
+        };
         let mut i = n.min(WAKE_TRACKS - 1);
         if n == WAKE_TRACKS && d2 >= far[i] {
             continue;
@@ -3135,13 +3178,13 @@ pub fn lay_wakes(
 // The camera rides the swell.
 // ---------------------------------------------------------------------------
 
-/// Under a roof (a dock, a foundation over the shallows) the camera rises at
-/// most this far off the eye, metres: a crest must not lift it through the
-/// floor.
-pub const RIDE_SHELTER_M: f32 = 0.15;
 /// The least the camera keeps over the drawn surface while the eye is above
-/// the sea, metres (less only as the eye itself nears the line).
-pub const RIDE_CLEAR_M: f32 = 0.05;
+/// the sea, metres (less only as the eye itself nears the line): more than
+/// the near plane reaches below the camera, so a lifted view never clips it.
+pub const RIDE_CLEAR_M: f32 = 0.15;
+/// Within this of the line the ride eases to the full, metres, so the camera
+/// meets the surface just as the eye meets the line, swimming or not.
+const RIDE_MEET_M: f32 = 0.3;
 /// How fast a swim eases in and out of the ride, seconds.
 const RIDE_EASE_S: f32 = 0.3;
 
@@ -3159,14 +3202,16 @@ pub fn ride_offset(eye_y: f32, h: f32, swim: f32) -> f32 {
     let e = eye_y - SEA_LEVEL;
     let hr = h - SEA_LEVEL;
     if e >= 0.0 {
-        (eye_y + swim * hr).max(h + e.min(RIDE_CLEAR_M)) - eye_y
+        let s = swim.max(1.0 - e / RIDE_MEET_M);
+        (eye_y + s * hr).max(h + e.min(RIDE_CLEAR_M)) - eye_y
     } else {
         let deep = surface_bounds().1 + 0.1;
         (1.0 + e / deep).clamp(0.0, 1.0) * hr
     }
 }
 
-/// The drawn camera rides the swell ([`ride_offset`]). Presentation only:
+/// The drawn camera rides the swell ([`ride_offset`]); a film's, which never
+/// swims, is only lifted clear of a crest. Presentation only:
 /// `Eye` is never written, so aim, picks, the listener, the underwater test
 /// and every streamer keep the sim's eye, and only the view (and the hands,
 /// its children) moves. After `rig::follow_eye`, which rewrites the camera
@@ -3176,7 +3221,6 @@ pub fn ride(
     eye: Res<Eye>,
     sea: Res<Sea>,
     time: Res<Time>,
-    weather: Option<Res<WeatherNow>>,
     mut cam: Query<&mut Transform, With<super::rig::EyeCam>>,
     mut mode: Local<(bool, f32)>,
 ) {
@@ -3187,10 +3231,10 @@ pub fn ride(
     let Some(h) = sea.drawn_at(eye.pos.x, eye.pos.z) else {
         return;
     };
-    let mut dy = ride_offset(eye.pos.y, h, mode.1);
-    if weather.as_deref().is_some_and(|w| w.sheltered) {
-        dy = dy.min(RIDE_SHELTER_M);
-    }
+    // Uncapped, even under a dock: a capped ride would leave the camera
+    // inside a crest the sea's face test (`water.wgsl`) takes it to be above,
+    // and that is a hole in the sea.
+    let dy = ride_offset(eye.pos.y, h, mode.1);
     if let Ok(mut t) = cam.single_mut() {
         t.translation.y = eye.pos.y + dy;
     }

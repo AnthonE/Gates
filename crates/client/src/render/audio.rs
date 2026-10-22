@@ -1492,7 +1492,13 @@ pub fn remote_hands(
             hands.held = Some(now);
         }
         if anim.airborne {
-            hands.air_s += dt;
+            // Floating is not falling: a swim banks no air time, or hauling
+            // out (or touching the bottom) would land like a jump.
+            if anim.swimming {
+                hands.air_s = 0.0;
+            } else {
+                hands.air_s += dt;
+            }
             continue;
         }
         if hands.air_s >= REMOTE_LAND_AIR_S {
