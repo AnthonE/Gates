@@ -474,6 +474,20 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
+/// A team-channel line, typed or translated: the team's, never a seat's.
+/// Consent to be watched is the target's own (`HELLO_AGENT`,
+/// `HELLO_WATCHABLE`); a teammate typing to the team gave none, and a human
+/// on an agent's team was read live by an anonymous watcher of the agent.
+/// The team drip is withheld from seats for the same reason. Voice captions
+/// ride the local channel and stay: a seat already hears that voice.
+fn team_only(bytes: &[u8]) -> bool {
+    match protocol::decode_event(bytes) {
+        Ok(protocol::EventMsg::Chat { channel, .. }) => channel == protocol::Channel::Team,
+        Ok(protocol::EventMsg::Caption(c)) => c.channel == protocol::Channel::Team,
+        _ => false,
+    }
+}
+
 /// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
 /// `ShardStats::phase_hist` files them. The index is the histogram row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3416,7 +3430,12 @@ impl ShardCore {
         {
             let mut mirrored = |lane: Lane, slot: usize, bytes: &[u8]| -> bool {
                 let ok = send(lane, slot, bytes);
-                if watched && lane == Lane::Event && slot < MAX_PLAYERS {
+                if watched
+                    && lane == Lane::Event
+                    && slot < MAX_PLAYERS
+                    && mirror.iter().any(|&t| t as usize == slot)
+                    && !team_only(bytes)
+                {
                     for (i, &t) in mirror.iter().enumerate() {
                         if t as usize == slot && !send(Lane::Event, MAX_PLAYERS + i, bytes) {
                             refused[i] = true;
@@ -10265,6 +10284,52 @@ mod tests {
         for (i, msgs) in out.iter().enumerate().skip(MAX_PLAYERS) {
             if i != seat {
                 assert!(msgs.is_empty(), "seat slot {i} heard {msgs:?}");
+            }
+        }
+    }
+
+    /// **A seat never hears its target's team channel.** The target's
+    /// teammate typed to the team, not to a watcher of the agent beside them
+    /// (`team_only`); a global line still reaches the seat as before.
+    #[test]
+    fn a_seat_never_hears_its_targets_team_channel() {
+        const OTHER: u32 = PLAYER + 1;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        assert!(core.connect(1, OTHER));
+        core.tick_bare(&stats, |_, _, _| true);
+        let seat = MAX_PLAYERS + 2;
+        assert!(core.connect_spectator(seat, PLAYER, 0), "seated");
+        core.tick_bare(&stats, |_, _, _| true);
+        core.teams
+            .op(PLAYER, protocol::TEAM_OP_INVITE, OTHER, 0, |_| Ok(()))
+            .unwrap();
+        core.teams
+            .op(OTHER, protocol::TEAM_OP_ACCEPT, PLAYER, 0, |_| Ok(()))
+            .unwrap();
+        let chats = |msgs: &[Vec<u8>]| -> Vec<protocol::Channel> {
+            msgs.iter()
+                .filter_map(|b| match decode_event(b) {
+                    Ok(EventMsg::Chat { channel, .. }) => Some(channel),
+                    _ => None,
+                })
+                .collect()
+        };
+        for channel in [protocol::Channel::Team, protocol::Channel::Global] {
+            core.world.tick(&[]);
+            core.push_chat(
+                1,
+                ChatMsg {
+                    channel,
+                    text: protocol::chat::ChatText::sanitize(b"meet at the hill").unwrap(),
+                },
+            );
+            let out = fanned(&mut core, &stats);
+            assert_eq!(chats(&out[0]), vec![channel], "the target hears it");
+            let heard = chats(&out[seat]);
+            match channel {
+                protocol::Channel::Team => assert!(heard.is_empty(), "team line mirrored"),
+                _ => assert_eq!(heard, vec![channel], "a global line still reaches the seat"),
             }
         }
     }
