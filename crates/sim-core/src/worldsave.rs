@@ -2246,7 +2246,7 @@ mod tests {
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 1_024 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
+            + 2_048 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
@@ -2385,9 +2385,11 @@ mod tests {
         // and the plants' tail, 6 + 4,096 × 58 (farming v2).
         // 5_341_402 with no format change: the live charges' cap raised from
         // 64 to every seat's share (1,200) — a count, so old saves load.
+        // 5_487_834 with no format change: the containers' cap raised from
+        // 1,024 to 2,048 once each hand's share was capped, 1,024 × 143.
         assert_eq!(crate::farm::PLANT_BYTES, 58);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_341_402,
+            WORLD_SAVE_MAX_BYTES, 5_487_834,
             "the world save ceiling moved"
         );
     }

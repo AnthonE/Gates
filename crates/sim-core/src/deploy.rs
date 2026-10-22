@@ -167,8 +167,8 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or on a crew
-/// with its owner where it stands (`turret::spares`).
+/// rounds a gun on top spends on anybody who is not its owner or on every
+/// crew its owner is on where it stands (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
@@ -520,7 +520,9 @@ pub const REFUSE_D_DOOR: u32 = 11;
 /// full-rights lock op from a guest or a stranger (lock v1). One reason
 /// for every half, because all of them are the same sentence — *this lock
 /// does not know you* — and a client that could tell them apart would
-/// learn something about the lock it was refused by.
+/// learn something about the lock it was refused by. Also a stranger's
+/// lift of a bag still cooling down, for the same reason
+/// ([`REFUSE_D_BAG_SPENT`] is its owner's).
 pub const REFUSE_D_OWNER: u32 = 12;
 /// A use press on an oven with nothing in it that burns (oven v0,
 /// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
@@ -567,8 +569,19 @@ pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// Not from the water (water pass): a swimmer puts nothing down
 /// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
 pub const REFUSE_D_SWIMMING: u32 = 26;
+/// One hand's share of a shard-wide store is placed already: its
+/// containers (`limits::MAX_BOXES_PER_OWNER`) or its turrets
+/// (`limits::MAX_TURRETS_PER_OWNER`). Its own reason rather than
+/// `REFUSE_D_FULL`: the world is not full, this hand's share is, and the
+/// fix is to take one of yours up.
+pub const REFUSE_D_OWN_CAP: u32 = 27;
+/// A pickup named a sleeping bag still cooling down from a respawn
+/// (`Deploys::bag_ready`): lifted and set back down it would be born ready.
+/// Told to the bag's owner only; any other hand hears `REFUSE_D_OWNER`, so
+/// the refusal does not tell a stranger somebody just woke there.
+pub const REFUSE_D_BAG_SPENT: u32 = 28;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_SWIMMING;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_BAG_SPENT;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -3273,18 +3286,22 @@ pub fn place_deploy(
     }
     // Checked before the insert for the same reason the hearth cap is: the
     // record below cannot be written into a full store, so the append that
-    // follows the insert needs no second guard. Each hand's share of that
-    // store is capped too (`MAX_BOXES_PER_OWNER`), or one player's cheap
-    // boxes kept every fire and furnace on the shard from being placed.
-    if holds_items(def.arch)
-        && (deploys.boxes.len == MAX_BOXES
-            || deploys.boxes.entries[..deploys.boxes.len]
-                .iter()
-                .filter(|b| b.owner == p.id)
-                .count()
-                >= MAX_BOXES_PER_OWNER)
-    {
+    // follows the insert needs no second guard.
+    if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
+    // Each hand's share of that store is capped too
+    // (`MAX_BOXES_PER_OWNER`), or one player's cheap boxes kept every fire
+    // and furnace on the shard from being placed.
+    if holds_items(def.arch)
+        && deploys.boxes.entries[..deploys.boxes.len]
+            .iter()
+            .filter(|b| b.owner == p.id)
+            .count()
+            >= MAX_BOXES_PER_OWNER
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
         return;
     }
     // The turret table is shard-wide (`MAX_TURRETS`), so one hand may hold
@@ -3296,7 +3313,7 @@ pub fn place_deploy(
             .count()
             >= MAX_TURRETS_PER_OWNER
     {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
         return;
     }
     // The catchers' own cap: each one's watering scan is bounded by it.
@@ -3653,12 +3670,12 @@ pub fn use_door(
     Some(deploys.entries[i].owner)
 }
 
-/// A key lock also opens for its owner's hearth crew: anyone on a crew
-/// with the lock's owner, on a hearth whose claim covers the door
-/// (`claim::shares_crew`). Rust shares a key lock by crafting keys; the
-/// crew is ours. Not "on every crew here": a raider's own hearth on a
-/// foundation beside a hearthless base claims its doors too, and that rule
-/// let the raider through every key lock in it.
+/// A key lock also opens for its owner's hearth crew: anyone on every crew
+/// the lock's owner is on, of the hearths whose claim covers the door
+/// (`claim::shares_crew`; `crew_op` on leave and clear). Rust shares a key
+/// lock by crafting keys; the crew is ours. Not "on every crew here": a
+/// raider's own hearth on a foundation beside a hearthless base claims its
+/// doors too, and that rule let the raider through every key lock in it.
 fn key_crew_passes(
     pieces: &Pieces,
     deploys: &Deploys,
@@ -3917,12 +3934,18 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
-    // A spent bag stays down until it is ready again: lifted and set back
-    // down it would be born ready (`Deploys::insert`), and the cooldown
-    // would last one pickup. The bag's own refusal, the nearest sentence
-    // the wire has for "not this bag, not yet".
+    // A spent bag stays down until it is ready again, for every hand:
+    // lifted and set back down it would be born ready (`Deploys::insert`),
+    // and the cooldown would last one pickup — a friend's included, handed
+    // back. Why is the owner's to hear; anyone else hears the lock's
+    // sentence rather than that somebody just woke here.
     if def.arch == ARCH_BAG && deploys.bag_ready[i] > tick {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_BAG_CAP, 0);
+        let why = if rec.owner == p.id {
+            REFUSE_D_BAG_SPENT
+        } else {
+            REFUSE_D_OWNER
+        };
+        events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
         return;
     }
     // A container comes up empty or not at all.
@@ -4014,6 +4037,14 @@ pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
 /// base — which is the shape of betrayal this record exists to be able to
 /// count, and the shape whose whole meaning is whether the owner was
 /// there.
+///
+/// **A hand's turrets, vending machine and key locks answer to the crews
+/// that hand is on** (`turret::spares`, `key_crew_passes`): every crew
+/// here its owner is on. So a leave or a clear withdraws them from that
+/// crew — the leaver's from the crew they left, every other member's from
+/// the clearer — and a rejoin gives them back. That is Rust's model, where
+/// each turret and lock carries its own authorisation, and it is what keeps
+/// a clear from handing the clearer every other member's guns.
 #[allow(clippy::too_many_arguments)]
 pub fn crew_op(
     deploys: &mut Deploys,
@@ -9547,6 +9578,96 @@ mod tests {
         assert!(!press(&mut deploys, &mut pieces, 13), "a stranger");
     }
 
+    /// **A hand's turret and key lock answer to the crews that hand is on**
+    /// (review 5, claims#0; Rust's per-turret, per-lock authorisation). The
+    /// owner and a member on the base's hearth, the owner's turret spot and
+    /// key lock in its claim: the member is spared and let through. The
+    /// owner leaves, and the member is neither while the owner still is.
+    /// The member clears the hearth and gains nothing of the owner's — the
+    /// old rule's takeover. The owner rejoins through the hearth's code
+    /// lock, and the member has both back.
+    #[test]
+    fn a_hands_turret_and_key_lock_follow_the_crews_it_is_on() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert!(deploys
+            .locks
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .is_key());
+
+        const MATE: u32 = 11;
+        const STRANGER: u32 = 13;
+        let mut mate = player_at_cell(CX, CZ, &[]);
+        mate.id = MATE;
+        deploys.push_hearth_for_test(CX, CZ, 0, owner.id);
+        let _ = deploys.hearths_mut()[0].crew.add(MATE);
+        // The hearth's code lock, bolted on by the owner: it remembers them.
+        assert!(deploys
+            .locks
+            .insert(crate::lock::LockRec::fresh(CX, CZ, 0, LOC_PLANE, owner.id)));
+        let oid = owner.id;
+        let (x, z) = deploys
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .place_xz(pieces.cols());
+        let spared = |d: &Deploys, id| crate::turret::spares(&pieces, d, oid, x, z, id);
+        let passes = |d: &Deploys, id| {
+            d.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, id)
+                || key_crew_passes(&pieces, d, CX, CZ, 0, LOC_EDGE_XLO, id)
+        };
+        let op = |d: &mut Deploys, p: &Player, op: u8| {
+            let mut ev = EventQueue::default();
+            crew_op(d, p, CX, CZ, 0, op, &mut ev);
+        };
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
+
+        // The owner leaves: their gun and lock leave the crew with them.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_LEAVE);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(!spared(&deploys, MATE), "the gun stayed with the crew");
+        assert!(!passes(&deploys, MATE), "the key lock stayed with the crew");
+        assert!(spared(&deploys, oid) && passes(&deploys, oid));
+
+        // The member clears the hearth to themselves: nothing of the
+        // owner's comes with it.
+        op(&mut deploys, &mate, ACCESS_OP_CREW_CLEAR);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(
+            !spared(&deploys, MATE) && !passes(&deploys, MATE),
+            "a clear handed the clearer the owner's gun and lock"
+        );
+
+        // The owner walks back in on the hearth's lock: both are back.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_JOIN);
+        assert!(deploys.hearths()[0].crew.contains(oid));
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
+    }
+
     /// **A spent bag stays down** (exploit sweep 2, base-life#1): lifted and
     /// set back down it would be born ready, and the cooldown would last one
     /// pickup. Ready again, it comes up.
@@ -9602,7 +9723,15 @@ mod tests {
         let r = lift(&mut deploys, &mut pieces, &mut p, 101);
         assert_eq!(
             (r.0, r.2),
-            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_CAP)
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_SPENT)
+        );
+        // Anyone else is refused too, and not told why.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        let r = lift(&mut deploys, &mut pieces, &mut friend, 101);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER)
         );
         assert_eq!(deploys.len(), 1, "the spent bag came up");
         lift(&mut deploys, &mut pieces, &mut p, 100 + BAG_COOLDOWN_TICKS);
@@ -9655,7 +9784,10 @@ mod tests {
             last(&ev)
         };
         let r = place(&mut deploys, &mut pieces, &mut p);
-        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
         // A box of somebody else's in that row, and the same placement goes.
         deploys.boxes.entries[0].owner = 9;
         let r = place(&mut deploys, &mut pieces, &mut p);
@@ -9740,7 +9872,10 @@ mod tests {
             last(&ev)
         };
         let r = place(&mut deploys, &mut pieces, &mut p);
-        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
         let i = deploys.find_index(100, 100, 0, LOC_PLANE).unwrap();
         deploys.remove_at(i, &dc);
         let r = place(&mut deploys, &mut pieces, &mut p);

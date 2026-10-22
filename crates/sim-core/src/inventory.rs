@@ -373,7 +373,9 @@ pub const REFUSE_M_BUSY: u32 = 12;
 /// reason added past 15 needs the width to move again.
 /// The bag is **another player's body in THE GATE's safe zone** — Rust's
 /// "No Looting" rule: a corpse or a sleeper's drop inside the zone opens
-/// only for its owner. An animal's bag is anyone's there as anywhere.
+/// only for its owner. An animal's bag is anyone's there as anywhere. And
+/// a deposit into any bag lying in the zone, its owner's own included: one
+/// there is take-only (`World::move_item`).
 pub const REFUSE_M_SAFE: u32 = 13;
 /// A **give** (`Command::Give`) found no room for any of the stack in the
 /// receiver's pack. Its own reason rather than `REFUSE_M_NO_ROOM`, for

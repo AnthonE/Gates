@@ -706,7 +706,7 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 /// Turrets one player may have placed (`deploy::place_deploy`): more than
 /// [`TURRET_INTERFERENCE`] in one place never all fire anyway, and the
 /// [`MAX_TURRETS`] table is shard-wide, so one hand may not hold all of it.
-/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 
@@ -890,15 +890,20 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// on it. Overflow policy: **refuse** the placement with
 /// `REFUSE_D_FULL` — the same posture `MAX_HEARTHS` takes, and correct
 /// here for the same reason: nothing is lost by refusing a box that was
-/// never placed. Proposed default, DECISIONS.md §open (box v0).
-pub const MAX_BOXES: usize = 1_024;
+/// never placed. Proposed default, DECISIONS.md §open (box v0). 2,048
+/// since each hand's share was capped ([`MAX_BOXES_PER_OWNER`]): at 1,024
+/// sixteen accounts filled it. A count, not a stride, so old saves load.
+pub const MAX_BOXES: usize = 2_048;
 /// Of [`MAX_BOXES`], how many one player may have placed — boxes, fires,
 /// furnaces, planters, turrets, every container (`deploy::holds_items`).
 /// The store is shard-wide and a small box is cheap, so without a share one
 /// player kept every fire, furnace and box on the island from being placed.
-/// Overflow policy: **refuse** with `REFUSE_D_FULL`, as for the store.
+/// Overflow policy: **refuse** with `REFUSE_D_OWN_CAP` (the store's own is
+/// `REFUSE_D_FULL`).
 pub const MAX_BOXES_PER_OWNER: usize = 64;
-const _: () = assert!(MAX_BOXES >= 16 * MAX_BOXES_PER_OWNER);
+// Every container stands on a deploy record, and filling the store takes
+// thirty-two hands' whole shares.
+const _: () = assert!(MAX_BOXES <= MAX_DEPLOYS && MAX_BOXES >= 32 * MAX_BOXES_PER_OWNER);
 
 /// Living plants on the island at once, in planter beds and on the open
 /// ground (`farm.rs`). One fixed store; a farm period visits at most

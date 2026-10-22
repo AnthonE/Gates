@@ -1327,7 +1327,9 @@ pub use voice::{
 /// v139 — a shop buy (`ACT_SHOP`, `SHOP_OP_BUY`) carries the offer it was
 /// pressed against (item, lot and price, 16 bits each, after `times`), and
 /// a shop refusal admits 10 (`REFUSE_SH_CHANGED`): the owner can no longer
-/// swap the row between the buyer's view and the buy.
+/// swap the row between the buyer's view and the buy. A deploy refusal
+/// admits 27 and 28 (`REFUSE_D_OWN_CAP`, one hand's share of the containers
+/// or turrets; `REFUSE_D_BAG_SPENT`, a bag still cooling down).
 pub const PROTO_VER: u16 = 139;
 
 /// This game's slug in the elo catalog.

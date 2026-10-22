@@ -17,11 +17,22 @@
 //! The reference hangs a third authorisation list on the turret
 //! (`roster.rs`'s header). A list is state a save has to carry, and a new
 //! saved list is a world-format change, which is a wipe. So v0 asks the
-//! question building already answers: its owner, and whoever shares a crew
-//! with its owner on a hearth whose claim covers it (`claim::crew_cover`).
-//! Not "on every crew here": a stranger's hearth 16–18 m off the base's edge
-//! reaches the spot too, and that rule turned the base's turrets on its own
-//! crew. A turret outside its owner's claims spares its owner alone.
+//! question building already answers: its owner, and whoever is on every
+//! crew its owner is on, of the hearths whose claim covers it
+//! (`claim::crew_cover`). Not "on every crew here": a stranger's hearth
+//! 16–18 m off the base's edge reaches the spot too, and that rule turned the
+//! base's turrets on its own crew. A turret outside its owner's claims spares
+//! its owner alone.
+//!
+//! **So a hand's turrets answer to the crews that hand is on**, and so do
+//! its vending machine and its key locks (`deploy::key_crew_passes`). The
+//! owner leaving a crew or clearing it withdraws them from that crew, and so
+//! does a hearth placed fresh over the base, crewed by its placer alone
+//! until the others rejoin; rejoining gives them back. That is Rust's
+//! model, where each turret and lock carries its own authorisation and a
+//! cupboard's list never spoke for it. The old rule asked only who was on
+//! the crew here, whoever the owner was, so one member's clear handed the
+//! clearer every other member's guns.
 //!
 //! ## The table is derived, not kept
 //!
@@ -68,8 +79,8 @@ pub const fn is_turret_slot(slot: usize) -> bool {
 /// The gun's height over the turret's base, metres.
 pub const GUN_M: f32 = 0.9;
 
-/// **Who a player's machine answers to**: its owner, and whoever shares a
-/// crew with its owner on a hearth whose claim covers `(x, z)`
+/// **Who a player's machine answers to**: its owner, and whoever is on
+/// every crew its owner is on, of the hearths whose claim covers `(x, z)`
 /// (`claim::shares_crew`). Outside its owner's claims, the owner alone. The
 /// turret spares exactly these; the vending machine (`shop.rs`) lets exactly
 /// these stock it and set its offers.
@@ -111,15 +122,15 @@ pub struct Turret {
 
 impl Turret {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 33] {
-        let mut b = [0u8; 33];
+    pub fn hash_bytes(&self) -> [u8; 34] {
+        let mut b = [0u8; 34];
         b[0] = self.live as u8;
         b[1..3].copy_from_slice(&self.cx.to_le_bytes());
         b[3..5].copy_from_slice(&self.cz.to_le_bytes());
         b[5] = self.level;
         b[6] = self.loc;
         b[7..11].copy_from_slice(&self.owner.to_le_bytes());
-        b[11..33].copy_from_slice(&self.gun.hash_bytes());
+        b[11..34].copy_from_slice(&self.gun.hash_bytes());
         b
     }
 
@@ -274,7 +285,7 @@ pub fn step(
         // A dry gun lets its target go and looks at nobody; so does one
         // jammed by the turrets around it (module doc).
         if rounds_in(deploys, bi, def.ammo) == 0 || jammed(&recs, &hot, k, (x, z)) {
-            *s = Sentry::default();
+            s.drop_target();
             continue;
         }
         // Looks are spread over the cadence by index, so the turrets do not
