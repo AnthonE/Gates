@@ -1377,6 +1377,178 @@ fn the_water_uniform_declares_the_same_fields_on_both_sides() {
     let host = fields(&rust, "pub struct WaterParams {", "pub ");
     assert_eq!(shader, host, "water.wgsl and WaterParams disagree");
     assert!(shader.len() >= 9, "the parse matched nothing: {shader:?}");
+    // Names agree; so must the arrays' lengths, which the names do not show.
+    // A shorter host refuses the pipeline at boot, a longer one shifts
+    // nothing it binds.
+    let body = wgsl.split_once("struct Water {").expect("struct Water").1;
+    let body = body.split_once("\n}").expect("unterminated struct").0;
+    let vec4s: u64 = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .map(|l| match l.split_once("array<vec4<f32>,") {
+            Some((_, n)) => n
+                .trim()
+                .trim_end_matches(">,")
+                .trim()
+                .parse::<u64>()
+                .expect(l),
+            None => {
+                assert!(l.ends_with("vec4<f32>,"), "not a vec4 field: {l}");
+                1
+            }
+        })
+        .sum();
+    use bevy::render::render_resource::ShaderType;
+    assert_eq!(
+        WaterParams::min_size().get(),
+        16 * vec4s,
+        "water.wgsl's struct Water and WaterParams differ in size"
+    );
+}
+
+/// **The wakes' rings are one set of numbers.** `water.wgsl` spreads the
+/// rings `water::Wakes` lays; the shared constants must be the same on both
+/// sides, or the boxes the CPU packs would clip the rings the GPU draws.
+#[test]
+fn the_wake_rings_are_spread_by_the_same_numbers() {
+    let wgsl = std::fs::read_to_string(WATER_WGSL).expect("water.wgsl");
+    let shader = |name: &str| -> f32 {
+        let line = wgsl
+            .lines()
+            .find(|l| l.starts_with(&format!("const {name}: f32 = ")))
+            .unwrap_or_else(|| panic!("no `const {name}` in water.wgsl"));
+        let v = line.split_once('=').expect(line).1;
+        v.trim().trim_end_matches(';').parse().expect(line)
+    };
+    for (name, host) in [
+        ("WAKE_FRONT_M", WAKE_FRONT_M),
+        ("WAKE_SPEED", WAKE_SPEED),
+        ("WAKE_LIFE_S", WAKE_LIFE_S),
+        ("WAKE_LEN_M", WAKE_LEN_M),
+        ("WAKE_BAND_M", WAKE_BAND_M),
+    ] {
+        assert_eq!(shader(name), host, "{name}");
+    }
+}
+
+/// **A swimmer leaves a wake, a diver none, and a body that goes in hard a
+/// splash.** One body swimming at `SWIM_SPEED` on the float line for three
+/// seconds keeps most of a wake's drops alive, each laid a stride apart; the
+/// same swim a metre deeper than the float line lays nothing; a fall through
+/// the surface lays a drop stronger than any stroke's; a teleport lays no
+/// burst along the jump; and the packed uniform puts every drop back where it
+/// was laid.
+#[test]
+fn a_swimmer_leaves_a_wake_and_a_diver_none() {
+    use bevy::math::Vec3;
+    use sim_core::movement::{FLOAT_DEPTH_M, SWIM_SPEED};
+    let dt = 1.0 / 60.0;
+    let swim = |depth: f32| {
+        let mut w = Wakes::default();
+        for k in 0..180 {
+            let feet = Vec3::new(
+                3900.0 + SWIM_SPEED * dt * k as f32,
+                SEA_LEVEL - depth,
+                2048.0,
+            );
+            w.step(
+                dt,
+                &[WakeSource {
+                    key: 7,
+                    feet,
+                    still: false,
+                }],
+            );
+        }
+        w
+    };
+    let w = swim(FLOAT_DEPTH_M);
+    let centre = Vec2::new(3896.0, 2040.0);
+    let (boxes, drops) = w.pack(centre);
+    let n = boxes[0].w as usize;
+    assert!(
+        (9..=WAKE_DROPS).contains(&n),
+        "{n} live drops behind a swimmer"
+    );
+    assert_eq!(boxes[1].w, 0.0, "one body, one box");
+    let mut xs: Vec<f32> = drops[..n]
+        .iter()
+        .map(|d| centre.x + boxes[0].x + d.x)
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    for p in xs.windows(2) {
+        let gap = p[1] - p[0];
+        assert!(
+            (WAKE_STEP_M - 0.05..WAKE_STEP_M + 0.05).contains(&gap),
+            "drops {gap} m apart"
+        );
+    }
+    for d in &drops[..n] {
+        assert!(d.w > 0.9 && d.w <= 1.0, "a stroke's strength {}", d.w);
+        let r = Vec2::new(d.x, d.y).length();
+        let reach = boxes[0].z.sqrt();
+        assert!(r + WAKE_FRONT_M + WAKE_SPEED * d.z + WAKE_BAND_M <= reach + 1e-3);
+    }
+    assert_eq!(
+        swim(FLOAT_DEPTH_M + 1.0).pack(centre).0[0].w,
+        0.0,
+        "a diver's wake"
+    );
+
+    let mut w = Wakes::default();
+    let fall = |y: f32| WakeSource {
+        key: 3,
+        feet: Vec3::new(3900.0, y, 2048.0),
+        still: false,
+    };
+    w.step(dt, &[fall(1.0)]);
+    w.step(dt, &[fall(SEA_LEVEL - 0.1)]);
+    w.step(dt, &[fall(SEA_LEVEL - 0.2)]);
+    let (boxes, drops) = w.pack(centre);
+    assert_eq!(boxes[0].w, 1.0, "one splash");
+    assert!(drops[0].w > 1.0, "the splash is a stroke's {}", drops[0].w);
+
+    let mut w = Wakes::default();
+    let at = |x: f32| WakeSource {
+        key: 5,
+        feet: Vec3::new(x, SEA_LEVEL - FLOAT_DEPTH_M, 2048.0),
+        still: false,
+    };
+    w.step(dt, &[at(3900.0)]);
+    w.step(dt, &[at(3950.0)]);
+    w.step(dt, &[at(3950.01)]);
+    assert_eq!(w.pack(centre).0[0].w, 0.0, "a teleport lays a burst");
+}
+
+/// **The camera is under the drawn sea exactly when the eye is under
+/// `SEA_LEVEL`**, which the fog, the shell, the sound and the sea's face test
+/// all go by: for every eye height and every height the sea can be drawn at,
+/// riding or only lifted clear, mid-ease or not.
+#[test]
+fn the_riding_camera_is_under_the_sea_only_with_the_eye() {
+    let (up, down) = surface_bounds();
+    for i in 0..=400 {
+        let e = -3.0 + 6.0 * i as f32 / 400.0;
+        for j in 0..=200 {
+            let h = SEA_LEVEL - down + (up + down) * j as f32 / 200.0;
+            for swim in [0.0, 0.3, 1.0] {
+                let eye = SEA_LEVEL + e;
+                let cam = eye + ride_offset(eye, h, swim);
+                assert_eq!(
+                    cam < h,
+                    eye < SEA_LEVEL,
+                    "eye {eye}, sea {h}, swim {swim}: camera {cam}"
+                );
+            }
+        }
+    }
+    // A floater rides the swell at its own height over the line.
+    let float = SEA_LEVEL + 0.2;
+    assert!((float + ride_offset(float, 0.7, 1.0) - 0.9).abs() < 1e-5);
+    assert!((float + ride_offset(float, -0.5, 1.0) + 0.3).abs() < 1e-5);
+    // Someone standing on the beach does not move.
+    assert_eq!(ride_offset(2.0, 0.0, 0.0), 0.0);
 }
 
 /// Every derivative in the fragment is taken before its first branch, and no

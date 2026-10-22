@@ -95,7 +95,7 @@ use bevy::shader::ShaderRef;
 use sim_core::terrain::{self, SEA_LEVEL};
 
 use super::weather::WeatherNow;
-use super::{Eye, WorldEntity, WorldId};
+use super::{Eye, Net, WorldEntity, WorldId};
 
 // ---------------------------------------------------------------------------
 // The mesh: a uniform core with a geometric skirt.
@@ -1571,8 +1571,10 @@ pub fn refracted_path(cos_i: f32) -> f32 {
 }
 
 /// The per-material uniform. Field order and names must match `struct Water`
-/// in `water.wgsl` exactly (`tests/water.rs` scrapes both).
-#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+/// in `water.wgsl` exactly (`tests/water.rs` scrapes both). No `Default`: the
+/// standard library stops at 32-element arrays, and [`WaterParams::new`] is
+/// the constructor.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct WaterParams {
     /// xyz [`EXTINCT`], w [`ALPHA_MAX`].
     pub optics: Vec4,
@@ -1647,6 +1649,13 @@ pub struct WaterParams {
     pub rain: Vec4,
     /// xyz the drop layers' cycle counts, w [`GLINT_RAIN_A2`].
     pub rain_cycle: Vec4,
+    /// The wakes ([`Wakes::pack`]): per body, xy its box's centre off
+    /// `field.xy`, z the box's radius squared, w its live drops. Live boxes
+    /// first.
+    pub wake_box: [Vec4; WAKE_BODIES],
+    /// Per body, [`WAKE_DROPS`] slots: xy the drop off its box's centre, z
+    /// its age in seconds, w its strength. Live drops first.
+    pub wake: [Vec4; WAKE_SLOTS],
 }
 
 impl WaterParams {
@@ -1723,6 +1732,8 @@ impl WaterParams {
             ),
             rain: Vec4::ZERO,
             rain_cycle: Vec4::new(0.0, 0.0, 0.0, GLINT_RAIN_A2),
+            wake_box: [Vec4::ZERO; WAKE_BODIES],
+            wake: [Vec4::ZERO; WAKE_SLOTS],
         }
     }
 
@@ -2034,6 +2045,13 @@ pub struct Sea {
     cell: Option<(i32, i32)>,
     /// Per-wave phase, advanced by `ω·dt` and wrapped — never `k·x − ω·t`.
     phase: [f32; WAVE_COUNT],
+    /// The swell the GPU last drew ([`animate`]): its phases folded around
+    /// `folded_at`, the weather's gains and the breakers' cycles. What
+    /// [`Sea::drawn_at`] reads, so the CPU's heights are the picture's.
+    folded: [f32; WAVE_COUNT],
+    folded_at: Vec2,
+    state: SeaState,
+    surf_cycles: f32,
     /// The ripple layer's scroll, wrapped into one tile so it cannot drift
     /// into the range where an `f32` UV loses its low bits.
     drift: Vec2,
@@ -2069,6 +2087,63 @@ impl Sea {
     pub fn centre(&self) -> Option<Vec2> {
         self.cell
             .map(|(cx, cz)| Vec2::new(cx as f32 * SNAP_M, cz as f32 * SNAP_M))
+    }
+
+    /// The sea's height as drawn at world `(x, z)`: the vertex stage's
+    /// [`surface_local`] at the three corners of the grid triangle under the
+    /// point, blended as the rasterizer blends them. `None` before the first
+    /// sweep or off the grid. It reads the swell [`animate`] last drew.
+    pub fn drawn_at(&self, x: f32, z: f32) -> Option<f32> {
+        let c = self.centre()?;
+        let n = self.coords.len();
+        if n < 2 || self.depth.len() != n * n {
+            return None;
+        }
+        let cell = |v: f32| {
+            let i = self.coords.partition_point(|&k| k <= v);
+            (1..n).contains(&i).then(|| i - 1)
+        };
+        let (lx, lz) = (x - c.x, z - c.y);
+        let (ix, iz) = (cell(lx)?, cell(lz)?);
+        let u = (lx - self.coords[ix]) / (self.coords[ix + 1] - self.coords[ix]);
+        let v = (lz - self.coords[iz]) / (self.coords[iz + 1] - self.coords[iz]);
+        // Each corner off the centre the phases were folded around: the same
+        // world phase whether or not a snap has moved the grid since.
+        let off = c - self.folded_at;
+        let h = |i: usize, j: usize| {
+            let (vx, vz) = (self.coords[i] + off.x, self.coords[j] + off.y);
+            let st = self.statics(i, j);
+            surface_local(vx, vz, &self.folded, self.surf_cycles, &self.state, &st).h
+        };
+        // `(a, c, b)` and `(b, c, d)` (`setup`): the diagonal runs b to c.
+        let dh = if u + v <= 1.0 {
+            let ha = h(ix, iz);
+            ha + u * (h(ix + 1, iz) - ha) + v * (h(ix, iz + 1) - ha)
+        } else {
+            let hd = h(ix + 1, iz + 1);
+            hd + (1.0 - u) * (h(ix, iz + 1) - hd) + (1.0 - v) * (h(ix + 1, iz) - hd)
+        };
+        Some(SEA_LEVEL + dh)
+    }
+
+    /// How far another player's floating swimmer is drawn off its feet to
+    /// ride the drawn swell, metres: the surface's height under it, capped at
+    /// [`SWIM_RIDE_CAP_M`] (the server shoots at the flat float line), at full
+    /// on the float line and gone by the bottom of `bodies::swim_lift`'s band,
+    /// so a diver is drawn where it is.
+    pub fn swimmer_ride(&self, x: f32, feet_y: f32, z: f32) -> f32 {
+        use sim_core::movement::{FLOAT_DEPTH_M, SWIM_DEPTH_M};
+        let d = SEA_LEVEL - feet_y;
+        if d <= SWIM_DEPTH_M {
+            return 0.0;
+        }
+        let w = 1.0 - smooth(FLOAT_DEPTH_M + 0.05, FLOAT_DEPTH_M + 0.15, d);
+        if w <= 0.0 {
+            return 0.0;
+        }
+        self.drawn_at(x, z).map_or(0.0, |h| {
+            w * (h - SEA_LEVEL).clamp(-SWIM_RIDE_CAP_M, SWIM_RIDE_CAP_M)
+        })
     }
 
     // ── The five caches, read-only, for the gate ──────────────────────────
@@ -2303,8 +2378,11 @@ pub fn setup(
 /// Drop the sea's caches when the world goes. The entity is a `WorldEntity`
 /// and goes with the rest; this is the resource that would otherwise carry one
 /// island's depths into the next one.
-pub fn teardown(mut sea: ResMut<Sea>) {
+pub fn teardown(mut sea: ResMut<Sea>, wakes: Option<ResMut<Wakes>>) {
     *sea = Sea::default();
+    if let Some(mut w) = wakes {
+        *w = Wakes::default();
+    }
 }
 
 /// A re-centre the coordinate table lets the last sweep answer.
@@ -2645,6 +2723,7 @@ pub fn animate(
     weather: Option<Res<WeatherNow>>,
     composer: Option<Res<super::sky::SkyComposer>>,
     settings: Option<Res<super::settings::Settings>>,
+    wakes: Option<Res<Wakes>>,
 ) {
     let Some(centre) = sea.centre() else {
         return;
@@ -2685,6 +2764,10 @@ pub fn animate(
         .as_deref()
         .map_or(SeaState::CALM, |w| SeaState::of_wind(w.wind));
     let folded = fold_phases(&sea.phase, centre);
+    sea.folded = folded;
+    sea.folded_at = centre;
+    sea.state = state;
+    sea.surf_cycles = sea.surf_phase / std::f32::consts::TAU;
 
     let Some(h) = sea.material.clone() else {
         return;
@@ -2720,6 +2803,13 @@ pub fn animate(
     m.extension.params.rain = Vec4::new(rain, p0, p1, p2);
     let [c0, c1, c2] = sea.rain_cycle.map(|c| c as f32);
     m.extension.params.rain_cycle = Vec4::new(c0, c1, c2, GLINT_RAIN_A2);
+    // The wakes, off the centre the phases were folded around this frame, so
+    // they never slide on a snap.
+    if let Some(w) = wakes.as_deref() {
+        let (boxes, drops) = w.pack(centre);
+        m.extension.params.wake_box = boxes;
+        m.extension.params.wake = drops;
+    }
     // POTATO draws the swell's normal per vertex; a change re-specializes the
     // pipeline (`WaterKey`), so it is written only when it moves.
     let potato = is_potato(settings.as_deref());
@@ -2735,5 +2825,373 @@ pub fn animate(
         if m.extension.sky != *c.cube() {
             m.extension.sky = c.cube().clone();
         }
+    }
+}
+
+fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+// ---------------------------------------------------------------------------
+// Wakes: what swimmers and waders leave on the sea.
+// ---------------------------------------------------------------------------
+
+/// Bodies whose wakes are drawn at once: the eye's own and the nearest three.
+pub const WAKE_BODIES: usize = 4;
+/// Drops a body's wake holds: at a swim, a little over one wake's life.
+pub const WAKE_DROPS: usize = 12;
+/// The uniform's drop slots ([`WaterParams::wake`]).
+pub const WAKE_SLOTS: usize = WAKE_BODIES * WAKE_DROPS;
+/// A drop is laid every this many metres a body moves through the water.
+pub const WAKE_STEP_M: f32 = 0.45;
+/// ... and every this many seconds a body treads water in one place.
+pub const WAKE_TREAD_S: f32 = 1.0;
+/// A drop's ring dies this many seconds after it is laid.
+pub const WAKE_LIFE_S: f32 = 2.6;
+/// How fast a ring spreads, m/s: a 0.3 m ripple's. It is what sets the V,
+/// about 26° either side of a swimmer's track.
+pub const WAKE_SPEED: f32 = 0.7;
+/// The ripple's wavelength, metres.
+pub const WAKE_LEN_M: f32 = 0.3;
+/// Where a ring starts, metres from its drop: the body's own width.
+pub const WAKE_FRONT_M: f32 = 0.15;
+/// How far either side of its front a ring's ripple reaches, metres.
+pub const WAKE_BAND_M: f32 = 0.6;
+/// Water over the feet before a body leaves a wake, metres. Ankle-deep
+/// splashing is the droplets' (`fx::world::footstep`).
+pub const WAKE_WET_M: f32 = 0.15;
+/// The deepest feet that still stir a wake, metres under the surface: a
+/// floating swimmer's (`movement::FLOAT_DEPTH_M`) plus 0.3. A diver deeper
+/// leaves none; between, the wake fades.
+pub const WAKE_MAX_DEPTH_M: f32 = sim_core::movement::FLOAT_DEPTH_M + 0.3;
+/// A body going in faster than this, m/s, throws a splash ring.
+pub const WAKE_ENTRY_SPEED: f32 = 1.5;
+/// A frame that moves a body further than this is a teleport, not a stroke.
+pub const WAKE_JUMP_M: f32 = 4.0;
+/// Bodies farther than this from the eye leave no wake.
+pub const WAKE_NEAR_M: f32 = 40.0;
+/// Bodies followed at once for a dive's splash.
+pub const WAKE_TRACKS: usize = 16;
+/// The key the eye's own body is followed under (wire ids never reach it).
+pub const WAKE_OWN: u32 = u32::MAX;
+/// The most another player's swimmer is drawn off the flat float line to
+/// ride the swell, metres ([`Sea::swimmer_ride`]).
+pub const SWIM_RIDE_CAP_M: f32 = 0.5;
+
+/// How much wake a body with its feet `depth` metres under the surface
+/// stirs, `0..=1`: none ankle-deep, full to the float line, gone by
+/// [`WAKE_MAX_DEPTH_M`].
+pub fn wake_fade(depth: f32) -> f32 {
+    if depth < WAKE_WET_M {
+        return 0.0;
+    }
+    1.0 - smooth(sim_core::movement::FLOAT_DEPTH_M, WAKE_MAX_DEPTH_M, depth)
+}
+
+/// One body in or near the water this frame, for [`Wakes::step`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WakeSource {
+    pub key: u32,
+    pub feet: Vec3,
+    /// Asleep: it floats, but does not tread.
+    pub still: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct WakeSlot {
+    key: Option<u32>,
+    /// xy where it was laid (world), z its age (s), w its strength (0 none).
+    drops: [Vec4; WAKE_DROPS],
+    next: usize,
+    last: Vec2,
+    since: f32,
+}
+
+impl WakeSlot {
+    fn lay(&mut self, at: Vec2, strength: f32) {
+        self.drops[self.next] = Vec4::new(at.x, at.y, 0.0, strength);
+        self.next = (self.next + 1) % WAKE_DROPS;
+        self.last = at;
+        self.since = 0.0;
+    }
+
+    fn live(&self) -> impl Iterator<Item = &Vec4> {
+        self.drops.iter().filter(|d| d.w > 0.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct WakeTrack {
+    key: Option<u32>,
+    feet: Vec3,
+    seen: bool,
+}
+
+/// The wakes on the sea: per body a ring of drops, each a ring of ripples
+/// spreading from where it was laid, which together draw the V behind a
+/// swimmer, and a splash where a body went in. Fixed arrays: nothing is
+/// allocated after start-up. [`lay_wakes`] feeds it and [`animate`] packs it
+/// into the uniform (`water.wgsl` draws it).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct Wakes {
+    slots: [WakeSlot; WAKE_BODIES],
+    tracks: [WakeTrack; WAKE_TRACKS],
+}
+
+impl Wakes {
+    /// Age every drop by `dt` and lay this frame's from `sources`, the
+    /// nearest first: a body with no slot yet takes a free one, so the
+    /// nearest wet bodies have wakes.
+    pub fn step(&mut self, dt: f32, sources: &[WakeSource]) {
+        for slot in &mut self.slots {
+            slot.since += dt;
+            for d in &mut slot.drops {
+                d.z += dt;
+                if d.z >= WAKE_LIFE_S {
+                    *d = Vec4::ZERO;
+                }
+            }
+        }
+        for t in &mut self.tracks {
+            t.seen = false;
+        }
+        for src in sources {
+            let prev = self.retrack(src.key, src.feet);
+            let at = Vec2::new(src.feet.x, src.feet.z);
+            let jumped = prev.is_some_and(|p| {
+                Vec2::new(p.x, p.z).distance(at) > WAKE_JUMP_M
+                    || (p.y - src.feet.y).abs() > WAKE_JUMP_M
+            });
+            // The splash: feet through the surface, fast and downward.
+            let line = SEA_LEVEL - WAKE_WET_M;
+            let entry = prev.filter(|_| !jumped && dt > 0.0).and_then(|p| {
+                let vy = (p.y - src.feet.y) / dt;
+                (p.y >= line && src.feet.y < line && vy > WAKE_ENTRY_SPEED).then_some(vy)
+            });
+            let fade = wake_fade(SEA_LEVEL - src.feet.y);
+            if fade <= 0.0 && entry.is_none() {
+                continue;
+            }
+            let Some(i) = self.slot_for(src.key, at) else {
+                continue;
+            };
+            let slot = &mut self.slots[i];
+            if jumped {
+                slot.last = at;
+                slot.since = 0.0;
+            } else if let Some(vy) = entry {
+                slot.lay(at, 1.0 + (vy / 4.0).min(1.0));
+            } else {
+                let moved = slot.last.distance(at);
+                if moved >= WAKE_STEP_M {
+                    let speed = moved / slot.since.max(dt).max(1e-3);
+                    let swim = sim_core::movement::SWIM_SPEED;
+                    slot.lay(at, (speed / swim).clamp(0.3, 1.0) * fade);
+                } else if slot.since >= WAKE_TREAD_S && !src.still {
+                    slot.lay(at, 0.25 * fade);
+                }
+            }
+        }
+        for t in &mut self.tracks {
+            if !t.seen {
+                t.key = None;
+            }
+        }
+    }
+
+    /// The body's feet last frame, if it was followed, and this frame's
+    /// recorded in their place.
+    fn retrack(&mut self, key: u32, feet: Vec3) -> Option<Vec3> {
+        if let Some(t) = self.tracks.iter_mut().find(|t| t.key == Some(key)) {
+            let prev = t.feet;
+            t.feet = feet;
+            t.seen = true;
+            return Some(prev);
+        }
+        if let Some(t) = self.tracks.iter_mut().find(|t| t.key.is_none()) {
+            *t = WakeTrack {
+                key: Some(key),
+                feet,
+                seen: true,
+            };
+        }
+        None
+    }
+
+    /// The body's slot, or a free one (never held, or every drop gone) made
+    /// its own, starting at `at`.
+    fn slot_for(&mut self, key: u32, at: Vec2) -> Option<usize> {
+        if let Some(i) = self.slots.iter().position(|s| s.key == Some(key)) {
+            return Some(i);
+        }
+        let i = self
+            .slots
+            .iter()
+            .position(|s| s.key.is_none() || s.live().next().is_none())?;
+        self.slots[i] = WakeSlot {
+            key: Some(key),
+            last: at,
+            ..WakeSlot::default()
+        };
+        Some(i)
+    }
+
+    /// The uniform's two arrays ([`WaterParams::wake_box`],
+    /// [`WaterParams::wake`]) off the grid centre `centre`: live bodies and
+    /// live drops first, each body boxed by how far its rings reach.
+    pub fn pack(&self, centre: Vec2) -> ([Vec4; WAKE_BODIES], [Vec4; WAKE_SLOTS]) {
+        let mut boxes = [Vec4::ZERO; WAKE_BODIES];
+        let mut drops = [Vec4::ZERO; WAKE_SLOTS];
+        let mut b = 0;
+        for slot in &self.slots {
+            let Some(first) = slot.live().next() else {
+                continue;
+            };
+            let (mut lo, mut hi) = (first.xy(), first.xy());
+            for d in slot.live() {
+                lo = lo.min(d.xy());
+                hi = hi.max(d.xy());
+            }
+            let mid = (lo + hi) * 0.5;
+            let mut reach = 0.0f32;
+            let mut n = 0;
+            for d in slot.live() {
+                let ring = WAKE_FRONT_M + WAKE_SPEED * d.z + WAKE_BAND_M;
+                reach = reach.max(d.xy().distance(mid) + ring);
+                drops[b * WAKE_DROPS + n] = Vec4::new(d.x - mid.x, d.y - mid.y, d.z, d.w);
+                n += 1;
+            }
+            boxes[b] = Vec4::new(mid.x - centre.x, mid.y - centre.y, reach * reach, n as f32);
+            b += 1;
+        }
+        (boxes, drops)
+    }
+}
+
+/// Feed [`Wakes`] the bodies in the water this frame. The eye's own is its
+/// body's feet (`ClientCore::eye_position`: smooth, and the watched body's
+/// when spectating); the nearest players' are the interpolator's own sample,
+/// never the drawn root, which is lifted and rides the swell.
+pub fn lay_wakes(
+    net: NonSend<Net>,
+    eye: Res<Eye>,
+    time: Res<Time>,
+    mut wakes: ResMut<Wakes>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+) {
+    let core = &net.session.core;
+    let mut sources = [WakeSource::default(); WAKE_TRACKS];
+    let mut far = [0.0f32; WAKE_TRACKS];
+    let mut n = 0;
+    if eye.placed && !core.dead {
+        let [x, y, z] = core.eye_position();
+        sources[0] = WakeSource {
+            key: WAKE_OWN,
+            feet: Vec3::new(x, y, z),
+            still: false,
+        };
+        n = 1;
+    }
+    let own = n;
+    let tick = core.render_tick();
+    let mut rs = client_core::interp::RemoteState::default();
+    let eye_xz = Vec2::new(eye.pos.x, eye.pos.z);
+    for (body, t) in &bodies {
+        // A film that draws the watched body has it as a `Body` too.
+        if body.0 == core.player_id {
+            continue;
+        }
+        let d2 = Vec2::new(t.translation.x, t.translation.z).distance_squared(eye_xz);
+        if d2 > WAKE_NEAR_M * WAKE_NEAR_M || t.translation.y > SEA_LEVEL + 6.0 {
+            continue;
+        }
+        if !core.interp.sample(body.0, tick, &mut rs) || rs.dead {
+            continue;
+        }
+        // Nearest first, after the eye's own; past the table, the farthest
+        // goes.
+        let mut i = n.min(WAKE_TRACKS - 1);
+        if n == WAKE_TRACKS && d2 >= far[i] {
+            continue;
+        }
+        while i > own && far[i - 1] > d2 {
+            sources[i] = sources[i - 1];
+            far[i] = far[i - 1];
+            i -= 1;
+        }
+        sources[i] = WakeSource {
+            key: body.0,
+            feet: Vec3::new(rs.x, rs.y, rs.z),
+            still: rs.sleeping,
+        };
+        far[i] = d2;
+        n = (n + 1).min(WAKE_TRACKS);
+    }
+    wakes.step(time.delta_secs(), &sources[..n]);
+}
+
+// ---------------------------------------------------------------------------
+// The camera rides the swell.
+// ---------------------------------------------------------------------------
+
+/// Under a roof (a dock, a foundation over the shallows) the camera rises at
+/// most this far off the eye, metres: a crest must not lift it through the
+/// floor.
+pub const RIDE_SHELTER_M: f32 = 0.15;
+/// The least the camera keeps over the drawn surface while the eye is above
+/// the sea, metres (less only as the eye itself nears the line).
+pub const RIDE_CLEAR_M: f32 = 0.05;
+/// How fast a swim eases in and out of the ride, seconds.
+const RIDE_EASE_S: f32 = 0.3;
+
+/// How far the drawn camera moves off the eye at `eye_y` over a drawn surface
+/// at `h` ([`Sea::drawn_at`]), `swim` the eased share of a swim.
+///
+/// **The camera is under the drawn surface exactly when the eye is under
+/// `SEA_LEVEL`**, which is what the fog, the shell, the sound and the sea's
+/// face test (`water.wgsl`, `WeatherNow::underwater`) all go by. Above, a
+/// swimmer rides the surface at its own height over the line and anyone
+/// else is only lifted clear of a crest. Below, the ride fades with depth
+/// over more than the deepest trough, so the camera never crosses the
+/// surface.
+pub fn ride_offset(eye_y: f32, h: f32, swim: f32) -> f32 {
+    let e = eye_y - SEA_LEVEL;
+    let hr = h - SEA_LEVEL;
+    if e >= 0.0 {
+        (eye_y + swim * hr).max(h + e.min(RIDE_CLEAR_M)) - eye_y
+    } else {
+        let deep = surface_bounds().1 + 0.1;
+        (1.0 + e / deep).clamp(0.0, 1.0) * hr
+    }
+}
+
+/// The drawn camera rides the swell ([`ride_offset`]). Presentation only:
+/// `Eye` is never written, so aim, picks, the listener, the underwater test
+/// and every streamer keep the sim's eye, and only the view (and the hands,
+/// its children) moves. After `rig::follow_eye`, which rewrites the camera
+/// from `Eye` every frame, and after [`animate`], so it reads the swell the
+/// GPU draws this frame.
+pub fn ride(
+    eye: Res<Eye>,
+    sea: Res<Sea>,
+    time: Res<Time>,
+    weather: Option<Res<WeatherNow>>,
+    mut cam: Query<&mut Transform, With<super::rig::EyeCam>>,
+    mut mode: Local<(bool, f32)>,
+) {
+    let feet = eye.pos.y - eye.height;
+    mode.0 = client_core::interp::swimming(feet, mode.0);
+    let k = 1.0 - (-time.delta_secs() / RIDE_EASE_S).exp();
+    mode.1 += (if mode.0 { 1.0 } else { 0.0 } - mode.1) * k;
+    let Some(h) = sea.drawn_at(eye.pos.x, eye.pos.z) else {
+        return;
+    };
+    let mut dy = ride_offset(eye.pos.y, h, mode.1);
+    if weather.as_deref().is_some_and(|w| w.sheltered) {
+        dy = dy.min(RIDE_SHELTER_M);
+    }
+    if let Ok(mut t) = cam.single_mut() {
+        t.translation.y = eye.pos.y + dy;
     }
 }

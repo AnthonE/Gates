@@ -510,3 +510,57 @@ fn the_uniform_folds_around_the_drawn_centre() {
     assert_eq!(Vec2::new(tf.translation.x, tf.translation.z), centre);
     assert_eq!(params.phase.to_array(), folded);
 }
+
+/// **The CPU's height is the drawn one.** `Sea::drawn_at`, which the riding
+/// camera and the swimmers read, is the vertex stage at the corners of the
+/// grid triangle under a point, blended as the rasterizer blends them: equal
+/// to `surface_local` at a vertex, the mean of its ends halfway along an edge
+/// or the shared diagonal, and nothing off the grid.
+#[test]
+fn the_drawn_height_is_the_drawn_triangles() {
+    let mut app = app(beach_eye());
+    app.add_systems(Update, water::animate.after(water::stream));
+    app.update();
+    let sea = app.world().resource::<Sea>();
+    let centre = sea.centre().expect("the sweep ran");
+    let (phase, surf_phase) = sea.phases();
+    let folded = water::fold_phases(&phase, centre);
+    let cycles = surf_phase / std::f32::consts::TAU;
+    let coords = sea.coords().to_vec();
+    let vertex = |i: usize, j: usize| {
+        let v = sea.statics(i, j);
+        let calm = water::SeaState::CALM;
+        sim_core::terrain::SEA_LEVEL
+            + water::surface_local(coords[i], coords[j], &folded, cycles, &calm, &v).h
+    };
+    let mid = coords.len() / 2;
+    let mut moved = 0.0f32;
+    for (i, j) in [
+        (mid, mid),
+        (mid + 5, mid - 3),
+        (mid + 20, mid + 1),
+        (mid + 28, mid),
+    ] {
+        let (x, z) = (centre.x + coords[i], centre.y + coords[j]);
+        let (dx, dz) = (coords[i + 1] - coords[i], coords[j + 1] - coords[j]);
+        let at = |x: f32, z: f32| sea.drawn_at(x, z).expect("on the grid");
+        assert!(
+            (at(x, z) - vertex(i, j)).abs() < 1e-3,
+            "at vertex ({i}, {j})"
+        );
+        let edge = 0.5 * (vertex(i, j) + vertex(i + 1, j));
+        assert!(
+            (at(x + 0.5 * dx, z) - edge).abs() < 1e-3,
+            "halfway along ({i}, {j})"
+        );
+        let diagonal = 0.5 * (vertex(i + 1, j) + vertex(i, j + 1));
+        let across = at(x + 0.5 * dx, z + 0.5 * dz);
+        assert!(
+            (across - diagonal).abs() < 1e-3,
+            "across the diagonal at ({i}, {j})"
+        );
+        moved = moved.max((vertex(i, j) - sim_core::terrain::SEA_LEVEL).abs());
+    }
+    assert!(moved > 0.05, "a flat sea proves nothing: {moved}");
+    assert!(sea.drawn_at(centre.x + 1.0e5, centre.y).is_none());
+}

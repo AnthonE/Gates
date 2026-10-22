@@ -104,6 +104,12 @@ struct Water {
     rain: vec4<f32>,
     // xyz the drop layers' cycle counts, w `GLINT_RAIN_A2`.
     rain_cycle: vec4<f32>,
+    // The wakes (`water::Wakes::pack`): per body, xy its box's centre off
+    // `field.xy`, z the box's radius squared, w its live drops. Live first.
+    wake_box: array<vec4<f32>, 4>,
+    // Per body, 12 slots: xy the drop off its box's centre, z its age in
+    // seconds, w its strength. Live first.
+    wake: array<vec4<f32>, 48>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -115,6 +121,19 @@ struct Water {
 
 // Deep by fiat: `water::DEEP_SENTINEL_M`. Saturates every curve here.
 const DEEP_M: f32 = 64.0;
+
+// The wakes' rings (`water::WAKE_*`; `tests/water.rs` holds the shared ones
+// equal): where a ring starts, how fast it spreads, how long it lives, the
+// ripple's wavelength and how far either side of the front it reaches.
+const WAKE_FRONT_M: f32 = 0.15;
+const WAKE_SPEED: f32 = 0.7;
+const WAKE_LIFE_S: f32 = 2.6;
+const WAKE_LEN_M: f32 = 0.3;
+const WAKE_BAND_M: f32 = 0.6;
+// The ripple's peak slope at full strength, and one over its envelope's
+// half-width squared (0.22 m): a few ripples deep.
+const WAKE_SLOPE: f32 = 0.12;
+const WAKE_ENV: f32 = 20.66;
 const TAU: f32 = 6.28318530718;
 
 // ---------------------------------------------------------------------------
@@ -485,6 +504,56 @@ fn rain_layer(p: vec2<f32>, density: f32, phase: f32, cycle: f32, salt: i32, fp:
     return vec3<f32>(slope, speck);
 }
 
+// The wakes at `local` (`water::Wakes`): the slope their rings put on the
+// surface, a young entry ring's splash, and the slope variance the pixel
+// cannot resolve, `(gx, gz, splash, a2)`. Each drop's ring spreads from where
+// it was laid at `WAKE_SPEED` and dies at `WAKE_LIFE_S`; laid along a moving
+// body's track, their fronts draw the V. A ripple finer than the pixel retires
+// on its footprint along the ring (`swell_px_term`'s law) into the glint.
+// No derivatives here: the caller's `fx`, `fy` and `fp` are taken before any
+// branch. Loop bounds come from the uniform, and nothing breaks out early.
+fn wake_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, fp: f32) -> vec4<f32> {
+    var g = vec2<f32>(0.0);
+    var splash = 0.0;
+    var a2 = 0.0;
+    for (var b = 0; b < 4; b = b + 1) {
+        let bx = water.wake_box[b];
+        let lb = local - bx.xy;
+        if bx.w > 0.0 && dot(lb, lb) < bx.z {
+            let n = min(i32(bx.w), 12);
+            for (var j = 0; j < n; j = j + 1) {
+                let d = water.wake[b * 12 + j];
+                let q = lb - d.xy;
+                let rr = dot(q, q);
+                let front = WAKE_FRONT_M + WAKE_SPEED * d.z;
+                let lo = max(front - WAKE_BAND_M, 0.0);
+                let hi = front + WAKE_BAND_M;
+                if rr < hi * hi && rr > lo * lo {
+                    let inv = inverseSqrt(max(rr, 1e-6));
+                    let r = rr * inv;
+                    let dir = q * inv;
+                    let x = r - front;
+                    let life = max(1.0 - d.z / WAKE_LIFE_S, 0.0);
+                    let a = WAKE_SLOPE * d.w * life * life * exp(-x * x * WAKE_ENV)
+                        * inverseSqrt(1.0 + 2.0 * r);
+                    let c = max(max(abs(dot(fx, dir)), abs(dot(fy, dir))), fp * water.crest.w) / WAKE_LEN_M;
+                    let keep = footprint_keep(water.field.z * c);
+                    g += (a * keep * cos(TAU * x / WAKE_LEN_M)) * dir;
+                    a2 += 0.5 * a * a * (1.0 - keep * keep);
+                }
+                // A body that went in hard (strength over 1): white where it
+                // broke the surface, for the ring's first third of a second.
+                if d.w > 1.0 && d.z < 0.35 && rr < 0.25 {
+                    let s = (d.w - 1.0) * (1.0 - smoothstep(0.0, 0.35, d.z))
+                        * (1.0 - smoothstep(0.1, 0.5, sqrt(rr)));
+                    splash = max(splash, s);
+                }
+            }
+        }
+    }
+    return vec4<f32>(g, splash, a2);
+}
+
 // A pixel's foam (`water::foam_px`, line for line): the whitecaps, the shore
 // wash surging with the bores (or with the swell's `s0` where none runs) and
 // the bore itself, phased per pixel off `cs`, the distance to dry ground in
@@ -642,6 +711,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.N = N;
         foam = max(foam, 0.3 * r.z);
     }
+    // The wakes: rings off swimmers and waders, and a splash where a body
+    // went in. Seen from below too, where `N` faces down, so the slope's sign
+    // follows the face.
+    var wake_a2 = 0.0;
+    if water.wake_box[0].w > 0.0 {
+        let wk = wake_px(local, fx, fy, fp);
+        N = normalize(N - select(-1.0, 1.0, is_front) * vec3<f32>(wk.x, 0.0, wk.y));
+        pbr_input.N = N;
+        foam = max(foam, min(wk.z, 1.0));
+        wake_a2 = wk.w;
+    }
     // The lip: a noisy band a few decimetres up whatever stands in the water,
     // lapping with the breakers' phase.
     if contact {
@@ -698,7 +778,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let sky = sky_radiance(R, Rd, daylight_tint()) * view.exposure;
         // The rain dulls the glitter it lands on.
         let wet = water.rain_cycle.w * water.rain.x;
-        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var, hid + wet) * smooth_share;
+        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var, hid + wet + wake_a2) * smooth_share;
         // 6 · Premultiplied: the sky replaces what Fresnel takes from below.
         color = vec4<f32>(
             color.rgb * (1.0 - F) + sky * F + glint,

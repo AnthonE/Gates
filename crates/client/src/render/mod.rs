@@ -782,6 +782,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<audio::Engine>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
+            .init_resource::<water::Wakes>()
             .insert_non_send_resource(screen::Connecting::default());
 
         // Settings come off disk ONCE, here — before the first frame, so the
@@ -1716,6 +1717,15 @@ impl Plugin for GatesRenderPlugin {
                     .after(sky::compose)
                     .run_if(world_running),
                 water::build_open_map.run_if(world_running),
+                // The wakes, off the bodies this frame's stream placed, into
+                // the uniform `animate` writes. Ordered against what it reads,
+                // not the whole `Stream` set.
+                water::lay_wakes
+                    .after(bodies::stream)
+                    .after(water::stream)
+                    .before(water::animate)
+                    .run_if(world_placed)
+                    .run_if(world_running),
             ),
         )
         // The tree count cap (`reference/FORESTS.md` §8 gate 7): after the
@@ -2267,11 +2277,25 @@ impl Plugin for GatesRenderPlugin {
         // and the frame's contacts are resolved, before the audio chain takes
         // this frame's thunder off the queue. Not on a capture, a plate or a
         // film: their frames are gates.
+        // The camera rides the drawn swell (`water::ride`): after it is
+        // rewritten from `Eye`, and after the swell is advanced. Everywhere but
+        // a film, whose camera is the film's (`film::aim`).
+        if !filming {
+            app.add_systems(
+                Update,
+                water::ride
+                    .after(rig::follow_eye)
+                    .after(water::animate)
+                    .run_if(world_placed)
+                    .run_if(world_running),
+            );
+        }
         if self.capture.is_none() && !filming && !plate {
             app.init_resource::<shake::Shake>().add_systems(
                 Update,
                 shake::apply
                     .after(rig::follow_eye)
+                    .after(water::ride)
                     .after(impact::snap)
                     .before(audio::water)
                     .run_if(world_placed)
