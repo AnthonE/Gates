@@ -1704,10 +1704,19 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave. After `stream`: a snap
         // moves the grid centre, and the phases are folded around the centre
-        // drawn this frame (`water::fold_phases`).
+        // drawn this frame (`water::fold_phases`). After the weather and the
+        // deck it reads, so a dive turns Snell's window on the frame the
+        // underwater fog comes in.
         .add_systems(
             Update,
-            water::animate.after(water::stream).run_if(world_running),
+            (
+                water::animate
+                    .after(water::stream)
+                    .after(weather::update)
+                    .after(sky::compose)
+                    .run_if(world_running),
+                water::build_open_map.run_if(world_running),
+            ),
         )
         // The tree count cap (`reference/FORESTS.md` §8 gate 7): after the
         // streamer has spawned this frame's chunk, before `reband_trees`

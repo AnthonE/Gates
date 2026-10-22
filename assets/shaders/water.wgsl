@@ -72,9 +72,9 @@ struct Water {
     shore: vec4<f32>,
     // x F0, y `GLINT_A2_NEAR`, z `GLINT_A2_FAR`, w `GLINT_FAR_M`.
     glint: vec4<f32>,
-    // xyz `water::LAKE_EXTINCT`, w spare.
+    // xyz `water::LAKE_EXTINCT`, w one over the island's size (the open map).
     lake: vec4<f32>,
-    // xyz `water::LAKE_SCATTER`, w spare.
+    // xyz `water::LAKE_SCATTER`, w one over `DEPTH_R_M`.
     lake_scatter: vec4<f32>,
     // A wave of `water::WAVES` a slot: xy its direction, z one over its length
     // (cycles a metre), w its amplitude.
@@ -86,7 +86,8 @@ struct Water {
     // x the weather's gain on the breakers, y one over `SURF_LEN_M`, z
     // `SURF_TRAIL_RAD`, w `SURF_FOAM_MAX / SURF_AMP_M`.
     surf: vec4<f32>,
-    // x `CREST_FOAM_FROM`, y `CREST_FOAM_SPAN`, z `CREST_FOAM_MAX`, w spare.
+    // x `CREST_FOAM_FROM`, y `CREST_FOAM_SPAN`, z `CREST_FOAM_MAX`, w one over
+    // `PX_ANISO_MAX`.
     crest: vec4<f32>,
     // x `BREAKER_FROM_M`, y `BREAKER_SPAN_M`, z `WASH_FLOOR`, w `FOAM_SURGE_FLOOR`.
     breaker: vec4<f32>,
@@ -108,6 +109,9 @@ struct Water {
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var sky_cube: texture_cube<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var sky_sampler: sampler;
+// How much of the water is open sea, over the island (`water::OPEN_MAP_TEX`).
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var open_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var open_sampler: sampler;
 
 // Deep by fiat: `water::DEEP_SENTINEL_M`. Saturates every curve here.
 const DEEP_M: f32 = 64.0;
@@ -385,28 +389,44 @@ fn sun_glint(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, world_normal: vec3<f32>,
     return total * view.exposure;
 }
 
+// How much of the first directional light reaches `wp` (1 unshadowed).
+fn sun_shadow(wp: vec3<f32>, world_normal: vec3<f32>, flags: u32) -> f32 {
+    if lights.n_directional_lights == 0u
+            || (flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) == 0u
+            || (lights.directional_lights[0].flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u {
+        return 1.0;
+    }
+    let view_z = dot(vec4<f32>(
+        view.view_from_world[0].z,
+        view.view_from_world[1].z,
+        view.view_from_world[2].z,
+        view.view_from_world[3].z
+    ), vec4<f32>(wp, 1.0));
+    return shadows::fetch_directional_shadow(0u, vec4<f32>(wp, 1.0), world_normal, view_z);
+}
+
 // The swell at one pixel (`water::swell_px`, line for line): its gradient,
 // the gradient the deck is reflected off, and the slope variance the pixel
-// cannot resolve. Every wave retires on the pixel's footprint along it, not
-// on the mesh spacing (`band_weight`'s law), so the swell shapes the
-// reflection far past the mesh's core.
+// cannot resolve. Every wave retires on the pixel's footprint along it (and
+// on its long side, past `PX_ANISO_MAX`), not on the mesh spacing
+// (`band_weight`'s law), so the swell shapes the reflection far past the
+// mesh's core.
 struct SwellPx {
     g: vec2<f32>,
     gd: vec2<f32>,
     hidden: f32,
 }
 
-// `water::footprint_keep`.
-fn footprint_keep(f: f32, len: f32) -> f32 {
-    return 1.0 - smoothstep(0.25 * len, 0.5 * len, f);
+// `water::footprint_keep`, `c` the footprint in the wave's cycles.
+fn footprint_keep(c: f32) -> f32 {
+    return 1.0 - smoothstep(0.25, 0.5, c);
 }
 
 fn swell_px_term(acc: SwellPx, w: vec4<f32>, phase: f32, gain: f32, shoal: f32,
-                 local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>) -> SwellPx {
-    let f = max(abs(dot(fx, w.xy)), abs(dot(fy, w.xy)));
-    let len = 1.0 / w.z;
-    let keep = footprint_keep(water.field.z * f, len);
-    let keep_d = footprint_keep(water.field.w * f, len);
+                 local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, floor: f32) -> SwellPx {
+    let c = max(max(abs(dot(fx, w.xy)), abs(dot(fy, w.xy))), floor) * w.z;
+    let keep = footprint_keep(water.field.z * c);
+    let keep_d = footprint_keep(water.field.w * c);
     let s = wave_shape(reduced(dot(w.xy, local) * w.z + phase));
     let ak = w.w * gain * shoal * TAU * w.z;
     var o = acc;
@@ -416,12 +436,13 @@ fn swell_px_term(acc: SwellPx, w: vec4<f32>, phase: f32, gain: f32, shoal: f32,
     return o;
 }
 
-fn swell_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, shoal: f32) -> SwellPx {
+fn swell_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, fp: f32, shoal: f32) -> SwellPx {
     var o = SwellPx(vec2<f32>(0.0), vec2<f32>(0.0), 0.0);
-    o = swell_px_term(o, water.waves[0], water.phase.x, water.swell.x, shoal, local, fx, fy);
-    o = swell_px_term(o, water.waves[1], water.phase.y, water.swell.y, shoal, local, fx, fy);
-    o = swell_px_term(o, water.waves[2], water.phase.z, water.swell.z, shoal, local, fx, fy);
-    o = swell_px_term(o, water.waves[3], water.phase.w, water.swell.w, shoal, local, fx, fy);
+    let floor = fp * water.crest.w;
+    o = swell_px_term(o, water.waves[0], water.phase.x, water.swell.x, shoal, local, fx, fy, floor);
+    o = swell_px_term(o, water.waves[1], water.phase.y, water.swell.y, shoal, local, fx, fy, floor);
+    o = swell_px_term(o, water.waves[2], water.phase.z, water.swell.z, shoal, local, fx, fy, floor);
+    o = swell_px_term(o, water.waves[3], water.phase.w, water.swell.w, shoal, local, fx, fy, floor);
     return o;
 }
 
@@ -449,6 +470,9 @@ fn rain_layer(p: vec2<f32>, density: f32, phase: f32, cycle: f32, salt: i32, fp:
     let cyc = (i32(cycle) + i32(floor(t))) & 4095;
     let key = cell + vec2<i32>(cyc * 7919, cyc * 6271 + salt * 131);
     let live = step(hash2(key + vec2<i32>(3, 0)), water.rain.x);
+    if live == 0.0 {
+        return vec3<f32>(0.0);
+    }
     let dv = fract(q) - (0.35 + 0.3 * vec2<f32>(hash2(key), hash2(key + vec2<i32>(0, 1))));
     let r = length(dv);
     let front = 0.3 * ph;
@@ -495,8 +519,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let fp = max(length(fx), length(fy));
     let local = wp.xz - water.field.xy;
     let V0 = normalize(view.world_position.xyz - wp);
-    // The swell's own surge, which the wash breathes with where no bore runs.
-    let s0 = sin(reduced(dot(water.waves[0].xy, local) * water.waves[0].z + water.phase.x));
+    // How much of this water is open sea rather than lake: the vertex's own
+    // sample near the eye, and the island's open map out past `DEPTH_R_M`,
+    // where no vertex is sampled and the skirt is too coarse to find a lake.
+    let far = smoothstep(0.7, 1.0, max(abs(local.x), abs(local.y)) * water.lake_scatter.w);
+    let open_v = clamp(in.color.r, 0.0, 1.0);
+    let open_m = textureSampleLevel(open_map, open_sampler, wp.xz * water.lake.w, 0.0).r;
+    let open = mix(open_v, min(open_v, open_m), far);
     var vin = in;
     // `color` carries the foam's inputs past red (the lake share): Bevy must
     // not multiply them into the base colour it builds.
@@ -509,13 +538,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #else
     // The swell per pixel, over the breaker's normal from the vertex. The
     // shoaling is the vertex column's (the prepass depth would halo a leg).
-    let shoal = smoothstep(0.0, water.px.x, in.uv_b.y) * clamp(in.color.r, 0.0, 1.0);
-    let sw = swell_px(local, fx, fy, shoal);
+    let shoal = smoothstep(0.0, water.px.x, in.uv_b.y) * open;
+    let sw = swell_px(local, fx, fy, fp, shoal);
     let nb = normalize(in.world_normal);
     let gb = -nb.xz / max(nb.y, 0.2);
     var ns = normalize(vec3<f32>(-(sw.g.x + gb.x), 1.0, -(sw.g.y + gb.y)));
-    // A face turned past the eye at the horizon is bent back to graze.
-    ns = normalize(ns + V0 * select(0.0, max(0.0, water.px.y - dot(ns, V0)), is_front));
+    // A face turned past the eye at the horizon is bent back to graze, but
+    // never past the flat sea's own grazing angle: far out the flat sea shows
+    // the eye less than the floor, and bending it would dim the whole far sea.
+    let graze = min(water.px.y, max(dot(nb, V0), 0.0));
+    ns = normalize(ns + V0 * select(0.0, max(0.0, graze - dot(ns, V0)), is_front));
     vin.world_normal = ns;
     let n_deck_up = normalize(vec3<f32>(-(sw.gd.x + gb.x), 1.0, -(sw.gd.y + gb.y)));
     let hid = sw.hidden;
@@ -527,10 +559,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let dndx = dpdx(N);
     let dndy = dpdy(N);
     let n_var = 0.5 * (dot(dndx, dndx) + dot(dndy, dndy));
+    // The sea is a height field: from above it, a back face under the eye is
+    // the far slope of a crest, behind its near slope, and from below a front
+    // face over the eye is a farther wave, behind the window. The sea writes
+    // no depth, so either would show through (dark teeth under every crest).
+    // `under` is the flat sea's (`WeatherNow::underwater`), so a crest the eye
+    // is inside, over or under it, keeps its faces.
+    let eye_y = view.world_position.y;
+    if select(!is_front && wp.y < eye_y, is_front && wp.y > eye_y, water.under.x > 0.5) {
+        discard;
+    }
 
     // 1 · The water behind this pixel, vertical metres.
 #ifdef VERTEX_UVS_B
-    var foam = foam_px(in.uv_b.x, in.color.g, in.color.b, in.color.a, s0, cw);
+    // With no wash and no bore (the open sea), `foam_px` is the caps alone.
+    var foam = clamp(in.uv_b.x, 0.0, 1.0);
+    if in.color.g > 0.0 || in.color.a > 0.0 {
+        // The swell's own surge, which the wash breathes with where no bore runs.
+        let s0 = sin(reduced(dot(water.waves[0].xy, local) * water.waves[0].z + water.phase.x));
+        foam = foam_px(in.uv_b.x, in.color.g, in.color.b, in.color.a, s0, cw);
+    }
     var dz = max(in.uv_b.y, 0.0);
 #else
     var foam = 0.0;
@@ -552,9 +600,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #endif
 
     // 2 · The body, over the refracted path. A lake is murkier than the sea:
-    // its optics blend in by the vertex's lake share (`water::LAKE_EXTINCT`).
+    // its optics blend in by the lake share (`water::LAKE_EXTINCT`).
 #ifdef VERTEX_COLORS
-    let lake = 1.0 - clamp(in.color.r, 0.0, 1.0);
+    let lake = 1.0 - open;
 #else
     let lake = 0.0;
 #endif
@@ -575,19 +623,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // octave settles to its mean before it is finer than a pixel.
     let dist = length(view.world_position.xyz - wp);
     let settle = smoothstep(25.0, 90.0, dist);
-    let fine = mix(vnoise(wp.xz * 0.9 + vec2<f32>(5.0, 11.0)), 0.5, settle);
-    let clump = vnoise(wp.xz * 0.3) * 0.6 + fine * 0.4;
-    foam = clamp(foam * (0.25 + 1.3 * clump), 0.0, 1.0);
+    if foam > 0.0 {
+        let fine = mix(vnoise(wp.xz * 0.9 + vec2<f32>(5.0, 11.0)), 0.5, settle);
+        let clump = vnoise(wp.xz * 0.3) * 0.6 + fine * 0.4;
+        foam = clamp(foam * (0.25 + 1.3 * clump), 0.0, 1.0);
+    }
     // Rain on the water near the eye: three layers of spreading rings and
     // their splashes, none where a drop is finer than the pixel.
-    if water.rain.x > 0.0 && fp < 0.1 / 2.6 {
-        let r0 = rain_layer(wp.xz, 2.6, water.rain.y, water.rain_cycle.x, 1, fp);
-        let r1 = rain_layer(wp.xz, 4.5, water.rain.z, water.rain_cycle.y, 2, fp);
-        let r2 = rain_layer(wp.xz, 6.4, water.rain.w, water.rain_cycle.z, 3, fp);
-        let g = r0.xy + r1.xy + r2.xy;
-        N = normalize(N - vec3<f32>(g.x, 0.0, g.y));
+    if water.rain.x > 0.0 && fp * 2.6 < 0.1 {
+        var r = rain_layer(wp.xz, 2.6, water.rain.y, water.rain_cycle.x, 1, fp);
+        if fp * 4.5 < 0.1 {
+            r += rain_layer(wp.xz, 4.5, water.rain.z, water.rain_cycle.y, 2, fp);
+        }
+        if fp * 6.4 < 0.1 {
+            r += rain_layer(wp.xz, 6.4, water.rain.w, water.rain_cycle.z, 3, fp);
+        }
+        N = normalize(N - vec3<f32>(r.x, 0.0, r.y));
         pbr_input.N = N;
-        foam = max(foam, 0.3 * (r0.z + r1.z + r2.z));
+        foam = max(foam, 0.3 * r.z);
     }
     // The lip: a noisy band a few decimetres up whatever stands in the water,
     // lapping with the breakers' phase.
@@ -617,7 +670,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.material.reflectance = vec3<f32>(0.0);
     // SSAO at this pixel is the seabed's, not the water's.
     pbr_input.diffuse_occlusion = vec3<f32>(1.0);
-    var color = apply_pbr_lighting(pbr_input);
+    // From below, only foam reads the lit body (Snell's window, 5b).
+    var color = body;
+    if is_front || water.under.x < 0.5 || foam > 0.0 {
+        color = apply_pbr_lighting(pbr_input);
+    }
 
     // Where the ripple normal turns faster than the pixels can follow, the
     // mirror reads it as speckle — at a grazing view one ripple swings the
@@ -660,17 +717,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let Nr = normalize(mix(N, wn, calm));
         let I = -V;
         let t = refract(I, Nr, water.scatter.w);
-        let td = refract(I, -n_deck_up, water.scatter.w);
-        let tu = select(vec3<f32>(0.0, 1.0, 0.0), t, dot(t, t) > 0.5);
-        let tdu = select(vec3<f32>(0.0, 1.0, 0.0), td, dot(td, td) > 0.5);
-        let ct = max(dot(t, -Nr), 0.0);
+        let ct = clamp(dot(t, -Nr), 0.0, 1.0);
         let F = water.glint.x + (1.0 - water.glint.x) * pow(1.0 - ct, 5.0);
         let rim = smoothstep(0.0, 0.25, ct);
-        let up = normalize(vec3<f32>(tu.x, max(tu.y, 0.0) + 1e-3, tu.z));
-        let upd = normalize(vec3<f32>(tdu.x, max(tdu.y, 0.0) + 1e-3, tdu.z));
-        let window = sky_radiance(up, upd, daylight_tint()) * view.exposure * (1.0 - F);
+        // Past the critical angle `refract` gives nothing and `rim` is 0: the
+        // sky is looked up only where some of it shows, and dimmed where the
+        // sun is shadowed (a foundation or a pier over the water).
+        var window = vec3<f32>(0.0);
+        if rim > 0.0 {
+            let td = refract(I, -n_deck_up, water.scatter.w);
+            let tdu = select(vec3<f32>(0.0, 1.0, 0.0), td, dot(td, td) > 0.5);
+            let up = normalize(vec3<f32>(t.x, max(t.y, 0.0) + 1e-3, t.z));
+            let upd = normalize(vec3<f32>(tdu.x, max(tdu.y, 0.0) + 1e-3, tdu.z));
+            let lit = 0.2 + 0.8 * sun_shadow(wp, pbr_input.world_normal, pbr_input.flags);
+            window = sky_radiance(up, upd, daylight_tint()) * view.exposure * (1.0 - F) * lit;
+        }
         let mirror = fog.base_color.rgb * shell_shade(reflect(I, Nr).y);
-        color = vec4<f32>(mix(mirror, window + F * mirror, rim * (1.0 - foam)), 1.0);
+        // Foam is lit from above and seen through: Bevy's body, foam and all.
+        let body_lit = color.rgb / max(color.a, 1e-4);
+        color = vec4<f32>(mix(mix(mirror, window + F * mirror, rim), body_lit, foam), 1.0);
     }
 
     // Fog and the rest of Bevy's post-lighting work act on the straight

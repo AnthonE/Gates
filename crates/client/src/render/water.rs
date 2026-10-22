@@ -148,6 +148,16 @@ pub const DEPTH_R_M: f32 = 220.0;
 /// arithmetic.
 pub const DEEP_SENTINEL_M: f32 = 64.0;
 
+/// The island's open-water map, texels a side over [`terrain::ISLAND_SIZE`]
+/// (32 m each). Past [`DEPTH_R_M`] no vertex is sampled, and the skirt's
+/// vertices are too far apart to find a lake if they were, so the fragment
+/// reads how much of the water is open sea off this map instead: a far lake
+/// stays calm and lake-coloured rather than taking the sea's swell.
+pub const OPEN_MAP_TEX: usize = 128;
+/// Rows of the open map built a frame ([`build_open_map`]): 256 height taps,
+/// the whole island in about a second.
+const OPEN_MAP_ROWS: usize = 2;
+
 // ---------------------------------------------------------------------------
 // The waves.
 // ---------------------------------------------------------------------------
@@ -218,12 +228,19 @@ pub const PX_FOOTPRINT_K: f32 = 1.0;
 /// footprint, because the deck has no mips and a swell finer than that turns
 /// its noise into glitter (`water.wgsl`'s `sky_radiance`).
 pub const DECK_FOOTPRINT_K: f32 = 2.0;
+/// How far a pixel's footprint may stretch down the view before its long
+/// side counts too. A crest holds together only a few wavelengths along its
+/// length, so a footprint that long averages even a crest running down the
+/// view ray; without it the long-crested swell fans to a point on the
+/// horizon. 16, as anisotropic filtering caps it.
+pub const PX_ANISO_MAX: f32 = 16.0;
 /// `E[ds²]` of [`shape`] over a whole cycle: `(1 + sin θ)² cos² θ` averages
 /// to ⅝. A wave's slope variance is this times `(a·k)²`.
 pub const SHAPE_SLOPE_VAR: f32 = 0.625;
 /// The least `N·V` a front-facing pixel's swell normal may show the eye. A
 /// wave face turned past the view at the horizon reflects the sea under it,
-/// which a mirror sky cannot draw; it is bent back to graze instead.
+/// which a mirror sky cannot draw; it is bent back to graze instead, at
+/// most to the flat sea's own `N·V` (the far flat sea shows the eye less).
 pub const HORIZON_NDOTV: f32 = 0.05;
 /// How far ahead of a breaker's crest its front softens, metres: the white
 /// arrives over this, not in one pixel.
@@ -1147,12 +1164,12 @@ pub fn hidden_slope(state: &SeaState) -> f32 {
     SHAPE_SLOPE_VAR * v
 }
 
-/// How much of a wave of length `len_m` a footprint of `footprint_m` keeps:
-/// [`band_weight`]'s law, in the form the fragment writes it
-/// (`1 − smoothstep(len/4, len/2, f)`), with the pixel for the mesh spacing.
-pub fn footprint_keep(footprint_m: f32, len_m: f32) -> f32 {
-    let (lo, hi) = (0.25 * len_m, 0.5 * len_m);
-    let t = ((footprint_m - lo) / (hi - lo)).clamp(0.0, 1.0);
+/// How much of a wave a footprint keeps, `cycles` the footprint in the
+/// wave's own lengths: [`band_weight`]'s law, in the form the fragment
+/// writes it (`1 − smoothstep(¼, ½, c)`), with the pixel for the mesh
+/// spacing.
+pub fn footprint_keep(cycles: f32) -> f32 {
+    let t = ((cycles - 0.25) / 0.25).clamp(0.0, 1.0);
     1.0 - t * t * (3.0 - 2.0 * t)
 }
 
@@ -1189,12 +1206,13 @@ pub fn swell_px(
         gd: Vec2::ZERO,
         hidden: 0.0,
     };
+    let floor = fx.length().max(fy.length()) / PX_ANISO_MAX;
     for (i, w) in WAVES.iter().enumerate() {
         let dir = Vec2::from_array(w.dir);
-        let f = fx.dot(dir).abs().max(fy.dot(dir).abs());
-        let keep = footprint_keep(PX_FOOTPRINT_K * f, w.len_m);
-        let keep_d = footprint_keep(DECK_FOOTPRINT_K * f, w.len_m);
         let inv_len = 1.0 / w.len_m;
+        let c = fx.dot(dir).abs().max(fy.dot(dir).abs()).max(floor) * inv_len;
+        let keep = footprint_keep(PX_FOOTPRINT_K * c);
+        let keep_d = footprint_keep(DECK_FOOTPRINT_K * c);
         let (_, ds) = shape(reduced(
             (w.dir[0] * lx + w.dir[1] * lz) * inv_len + folded[i],
         ));
@@ -1588,11 +1606,12 @@ pub struct WaterParams {
     pub shore: Vec4,
     /// x `F0`, y [`GLINT_A2_NEAR`], z [`GLINT_A2_FAR`], w [`GLINT_FAR_M`].
     pub glint: Vec4,
-    /// xyz [`LAKE_EXTINCT`], w spare: what a lake's water reads by, blended
-    /// in by the vertex's lake share (its colour's red is the open-sea
-    /// share, `terrain::height_open`).
+    /// xyz [`LAKE_EXTINCT`], w one over the island's size (the open map's
+    /// span): what a lake's water reads by, blended in by the lake share (the
+    /// vertex colour's red is the open-sea share, `terrain::height_open`;
+    /// past [`DEPTH_R_M`], the open map's).
     pub lake: Vec4,
-    /// xyz [`LAKE_SCATTER`], w spare.
+    /// xyz [`LAKE_SCATTER`], w one over [`DEPTH_R_M`].
     pub lake_scatter: Vec4,
     /// The swell, a wave of [`WAVES`] a slot: xy its direction, z one over
     /// its length (cycles a metre), w its amplitude, metres. The vertex stage
@@ -1661,8 +1680,18 @@ impl WaterParams {
             hour: Vec4::new(light, noon_y, TWILIGHT_SKY, SKY_FALLOFF),
             shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, phase),
             glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),
-            lake: Vec4::new(LAKE_EXTINCT[0], LAKE_EXTINCT[1], LAKE_EXTINCT[2], 0.0),
-            lake_scatter: Vec4::new(LAKE_SCATTER[0], LAKE_SCATTER[1], LAKE_SCATTER[2], 0.0),
+            lake: Vec4::new(
+                LAKE_EXTINCT[0],
+                LAKE_EXTINCT[1],
+                LAKE_EXTINCT[2],
+                1.0 / terrain::ISLAND_SIZE,
+            ),
+            lake_scatter: Vec4::new(
+                LAKE_SCATTER[0],
+                LAKE_SCATTER[1],
+                LAKE_SCATTER[2],
+                1.0 / DEPTH_R_M,
+            ),
             waves: WAVES.map(|w| Vec4::new(w.dir[0], w.dir[1], 1.0 / w.len_m, w.amp_m)),
             phase: Vec4::ZERO,
             swell: Vec4::ONE,
@@ -1672,7 +1701,12 @@ impl WaterParams {
                 SURF_TRAIL_RAD,
                 SURF_FOAM_MAX / SURF_AMP_M,
             ),
-            crest: Vec4::new(CREST_FOAM_FROM, CREST_FOAM_SPAN, CREST_FOAM_MAX, 0.0),
+            crest: Vec4::new(
+                CREST_FOAM_FROM,
+                CREST_FOAM_SPAN,
+                CREST_FOAM_MAX,
+                1.0 / PX_ANISO_MAX,
+            ),
             breaker: Vec4::new(BREAKER_FROM_M, BREAKER_SPAN_M, WASH_FLOOR, FOAM_SURGE_FLOOR),
             field: Vec4::new(0.0, 0.0, PX_FOOTPRINT_K, DECK_FOOTPRINT_K),
             px: Vec4::new(
@@ -1725,6 +1759,13 @@ pub struct WaterExt {
     #[texture(101, dimension = "cube")]
     #[sampler(102)]
     pub sky: Handle<Image>,
+    /// How much of the water is open sea, over the island ([`OPEN_MAP_TEX`]).
+    /// With the deck that is two textures of our own, the ground's two: the
+    /// pipeline is at `quality::FRAGMENT_TEXTURES` and a third would not fit
+    /// a browser.
+    #[texture(103)]
+    #[sampler(104)]
+    pub open: Handle<Image>,
     /// POTATO: the swell's normal per vertex, as it was before it was drawn
     /// per pixel — the shader's `WATER_VERTEX_NORMALS` ([`WaterKey`]).
     pub vertex_normals: bool,
@@ -1806,6 +1847,71 @@ impl MaterialExtension for WaterExt {
 /// A 1×1 black cube: the sky before the deck exists. A `Skybox` hangs on the
 /// camera a system later than the sea is built (`sky::setup` runs after the
 /// rig), and an extension field cannot wait.
+/// The open map before it is built: all open sea, which is what every
+/// unsampled vertex already assumes.
+fn open_map_blank() -> Image {
+    let mut image = Image::new(
+        Extent3d {
+            width: OPEN_MAP_TEX as u32,
+            height: OPEN_MAP_TEX as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        vec![255u8; OPEN_MAP_TEX * OPEN_MAP_TEX],
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
+}
+
+/// One row of the open map: the open-sea share at each texel's centre
+/// (`terrain::height_open`), 0..255. The shader samples it at `wp.xz` over
+/// the island's size.
+pub fn open_map_row(lat: &mut terrain::Lattice, seed: u64, row: usize, out: &mut [u8]) {
+    let span = terrain::ISLAND_SIZE / OPEN_MAP_TEX as f32;
+    let z = (row as f32 + 0.5) * span;
+    for (i, t) in out.iter_mut().enumerate() {
+        let x = (i as f32 + 0.5) * span;
+        *t = (terrain::height_open_memo(lat, seed, x, z).1 * 255.0).round() as u8;
+    }
+}
+
+/// Build the open map a few rows a frame ([`OPEN_MAP_ROWS`]) and hand it to
+/// the GPU whole once it is done: one upload, not one a row.
+pub fn build_open_map(
+    mut sea: ResMut<Sea>,
+    world: Res<WorldId>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if sea.open_seed != Some(world.seed) {
+        sea.open_seed = Some(world.seed);
+        sea.open_rows = 0;
+        sea.open_texels = vec![255; OPEN_MAP_TEX * OPEN_MAP_TEX];
+    }
+    if sea.open_rows >= OPEN_MAP_TEX {
+        return;
+    }
+    let mut lat = terrain::Lattice::new();
+    let Sea {
+        open_texels,
+        open_rows,
+        ..
+    } = &mut *sea;
+    let end = (*open_rows + OPEN_MAP_ROWS).min(OPEN_MAP_TEX);
+    for row in *open_rows..end {
+        let out = &mut open_texels[row * OPEN_MAP_TEX..(row + 1) * OPEN_MAP_TEX];
+        open_map_row(&mut lat, world.seed, row, out);
+    }
+    *open_rows = end;
+    if end < OPEN_MAP_TEX {
+        return;
+    }
+    if let Some(image) = sea.open_map.as_ref().and_then(|h| images.get_mut(h)) {
+        image.data = Some(sea.open_texels.clone());
+    }
+}
+
 fn black_cube() -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -1825,7 +1931,11 @@ fn black_cube() -> Image {
     image
 }
 
-fn water_material(ripples: Handle<Image>, sky: Handle<Image>) -> WaterMaterial {
+fn water_material(
+    ripples: Handle<Image>,
+    sky: Handle<Image>,
+    open: Handle<Image>,
+) -> WaterMaterial {
     ExtendedMaterial {
         base: StandardMaterial {
             // White: the shader writes the body colour itself, off the depth.
@@ -1853,6 +1963,7 @@ fn water_material(ripples: Handle<Image>, sky: Handle<Image>) -> WaterMaterial {
         extension: WaterExt {
             params: WaterParams::noon(),
             sky,
+            open,
             vertex_normals: false,
         },
     }
@@ -1912,6 +2023,12 @@ pub struct Sea {
     // frame.
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<WaterMaterial>>,
+    /// The open map ([`OPEN_MAP_TEX`]): its image, the texels being built,
+    /// the world they are built for and the rows done.
+    open_map: Option<Handle<Image>>,
+    open_texels: Vec<u8>,
+    open_seed: Option<u64>,
+    open_rows: usize,
     /// The snapped grid centre, in [`SNAP_M`] cells. `None` until the first
     /// build.
     cell: Option<(i32, i32)>,
@@ -2072,6 +2189,7 @@ pub fn setup(
     mut materials: ResMut<Assets<WaterMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut sea: ResMut<Sea>,
+    settings: Option<Res<super::settings::Settings>>,
 ) {
     let coords = axis_coords();
     let spacing = axis_spacing(&coords);
@@ -2133,10 +2251,16 @@ pub fn setup(
     let reach_m = coords.last().copied().unwrap_or(0.0);
 
     let mesh = meshes.add(mesh);
-    let material = materials.add(water_material(
+    let open_map = images.add(open_map_blank());
+    let mut material = water_material(
         images.add(ripple_map()),
         images.add(black_cube()),
-    ));
+        open_map.clone(),
+    );
+    // Keyed before the sea is first drawn, so POTATO never compiles the
+    // per-pixel pipeline it will not use (`animate` follows a change).
+    material.extension.vertex_normals = is_potato(settings.as_deref());
+    let material = materials.add(material);
 
     sea.coords = coords;
     sea.spacing = spacing;
@@ -2152,6 +2276,7 @@ pub fn setup(
     sea.surf_phase = 0.0;
     sea.mesh = Some(mesh.clone());
     sea.material = Some(material.clone());
+    sea.open_map = Some(open_map);
     sea.cell = None;
     sea.phase = [0.0; WAVE_COUNT];
     sea.drift = Vec2::ZERO;
@@ -2497,6 +2622,11 @@ fn write_statics(sea: &Sea, mesh: &mut Mesh, ox: f32, oz: f32) {
     }
 }
 
+/// POTATO draws the swell's normal per vertex (`WaterKey`).
+fn is_potato(settings: Option<&super::settings::Settings>) -> bool {
+    settings.is_some_and(|s| s.quality == crate::config::Quality::Potato)
+}
+
 /// Advance the swell and hand this frame's sea to the GPU.
 ///
 /// **The surface is the vertex stage's now** (`water.wgsl`, [`surface_local`]
@@ -2592,9 +2722,7 @@ pub fn animate(
     m.extension.params.rain_cycle = Vec4::new(c0, c1, c2, GLINT_RAIN_A2);
     // POTATO draws the swell's normal per vertex; a change re-specializes the
     // pipeline (`WaterKey`), so it is written only when it moves.
-    let potato = settings
-        .as_deref()
-        .is_some_and(|s| s.quality == crate::config::Quality::Potato);
+    let potato = is_potato(settings.as_deref());
     if m.extension.vertex_normals != potato {
         m.extension.vertex_normals = potato;
     }

@@ -479,10 +479,19 @@ fn the_swell_per_pixel_is_the_swell() {
             assert_eq!(px.hidden, 0.0);
         }
     }
+    // A footprint drawn out down a crest still averages the crest away.
+    for (i, w) in WAVES.iter().enumerate() {
+        let down = Vec2::new(-w.dir[1], w.dir[0]) * 10.0 * w.len_m;
+        let mut one = state;
+        one.swell = core::array::from_fn(|j| if j == i { state.swell[j] } else { 0.0 });
+        let px = swell_px(1.0, 2.0, &folded, &one, 1.0, Vec2::ZERO, down);
+        assert!(px.g.length() < 1e-6, "a {} m crest survives", w.len_m);
+        assert!(px.hidden > 0.0);
+    }
     for w in WAVES {
         for k in 0..400 {
             let f = k as f32 * w.len_m / 300.0;
-            let (a, b) = (footprint_keep(f, w.len_m), band_weight(f, w.len_m));
+            let (a, b) = (footprint_keep(f / w.len_m), band_weight(f, w.len_m));
             assert!(
                 (a - b).abs() < 1e-6,
                 "{} m wave at {f} m: {a} against {b}",
