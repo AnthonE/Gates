@@ -837,7 +837,15 @@ impl GroundSplatParams {
             // material draws the heart alone.
             blight_now: Vec4::new(sim_core::blight::F0, 0.0, 0.0, 0.0),
             blight_ward: Vec4::ZERO,
-            turf: Vec4::new(TURF_ALBEDO[0], TURF_ALBEDO[1], TURF_ALBEDO[2], std::env::var("GATES_TUNE_TURF_NEAR").ok().and_then(|v| v.parse().ok()).unwrap_or(TURF_NEAR)), // TUNE
+            turf: Vec4::new(
+                TURF_ALBEDO[0],
+                TURF_ALBEDO[1],
+                TURF_ALBEDO[2],
+                std::env::var("GATES_TUNE_TURF_NEAR")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(TURF_NEAR),
+            ), // TUNE
             blight_discs: [Vec4::ZERO; BLIGHT_DISCS],
         }
     }
