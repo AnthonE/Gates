@@ -420,13 +420,17 @@ fn the_profile_card_offers_the_button_that_fits() {
     v.friends.push(row());
     assert_eq!(rel(Some(me), Some(&v), &them), Rel::Friend);
 
-    let ops = |r| acts(r).iter().map(|(_, op)| *op).collect::<Vec<_>>();
-    assert_eq!(ops(Rel::Stranger), [Op::Ask]);
-    assert_eq!(ops(Rel::AskedYou), [Op::Accept, Op::Decline]);
-    assert_eq!(ops(Rel::AskedThem), [Op::Cancel]);
-    assert_eq!(ops(Rel::Friend), [Op::Remove]);
+    let ops = |r, b| acts(r, b).iter().map(|(_, op)| *op).collect::<Vec<_>>();
+    assert_eq!(ops(Rel::Stranger, false), [Op::Ask, Op::Block]);
+    assert_eq!(ops(Rel::Stranger, true), [Op::Unblock]);
+    assert_eq!(
+        ops(Rel::AskedYou, false),
+        [Op::Accept, Op::Decline, Op::Block]
+    );
+    assert_eq!(ops(Rel::AskedThem, false), [Op::Cancel, Op::Block]);
+    assert_eq!(ops(Rel::Friend, false), [Op::Invite, Op::Remove, Op::Block]);
     for r in [Rel::SignedOut, Rel::Me, Rel::Buddy, Rel::Unknown] {
-        assert!(acts(r).is_empty(), "{r:?}");
+        assert!(acts(r, false).is_empty(), "{r:?}");
     }
 }
 
@@ -454,5 +458,56 @@ fn the_profile_card_counts_gates_hours() {
             "0xABCDEF0000000000000000000000000000000000"
         ),
         "https://elopros.com/profile.html?who=0xabcdef0000000000000000000000000000000000"
+    );
+}
+
+/// Steam's corner notices: a new ask, a new invite, a friend starting to play
+/// Gates, each once; nothing about presence on a blind read.
+#[test]
+fn a_reread_says_what_changed_once() {
+    let v = view();
+    assert_eq!(v.invites_in.len(), 1, "the fixture carries an invite");
+    assert_eq!(v.invites_in[0].label(), "ash");
+    assert!(v.invites_in[0].at.is_some());
+    assert!(
+        friends::notices(&v, &v).is_empty(),
+        "the same list twice says nothing"
+    );
+
+    let mut old = v.clone();
+    old.asks_in.clear();
+    old.invites_in.clear();
+    for f in &mut old.friends {
+        f.online = false;
+    }
+    let said = friends::notices(&old, &v);
+    assert!(
+        said.iter().any(|s| s.ends_with("wants to be your friend")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|s| s == "ash invited you to play - Esc to join"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|s| s == "ash is now playing Gates"),
+        "{said:?}"
+    );
+
+    let mut blind = v.clone();
+    blind.presence = Some(friends::Presence {
+        reachable: Some(false),
+        why: None,
+    });
+    let said = friends::notices(&old, &blind);
+    assert!(!said.iter().any(|s| s.contains("now playing")), "{said:?}");
+
+    let mut again = v.clone();
+    again.invites_in[0].at = again.invites_in[0].at.map(|t| t + 60);
+    assert_eq!(
+        friends::notices(&v, &again),
+        ["ash invited you to play - Esc to join"],
+        "a fresh invite from the same friend is said again"
     );
 }

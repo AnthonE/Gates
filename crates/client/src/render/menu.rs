@@ -1462,6 +1462,12 @@ fn friends_pane(body: &mut ChildSpawnerCommands, browse: &Browse, friends: &Frie
         }
         let now = crate::shot::now_secs();
         if let Some(v) = &friends.view {
+            if !v.invites_in.is_empty() {
+                head(pane, "INVITED YOU TO PLAY");
+                for i in v.invites_in.iter().take(ASK_ROWS) {
+                    invite_row(pane, i, now);
+                }
+            }
             let everyone: Vec<&crate::friends::Friend> = v.everyone().collect();
             head(
                 pane,
@@ -1575,6 +1581,29 @@ fn friend_row(pane: &mut ChildSpawnerCommands, f: &crate::friends::Friend, now: 
     friend_line(pane, f, crate::friends::presence_line(f, now), &buttons);
 }
 
+/// A friend asking you into their game: JOIN when they are on a server.
+fn invite_row(pane: &mut ChildSpawnerCommands, f: &crate::friends::Friend, now: u64) {
+    let Some(a) = f.address() else {
+        return;
+    };
+    let when =
+        f.at.map(|t| crate::friends::ago(now.saturating_sub(t)))
+            .unwrap_or_default();
+    let line = match f.on_gates() {
+        Some(_) => format!(
+            "invited you {when} · {}",
+            crate::friends::presence_line(f, now)
+        ),
+        None => format!("invited you {when} · not on a server yet"),
+    };
+    let join: &[(&'static str, bool, Pick)] = if f.on_gates().is_some() {
+        &[("JOIN", true, Pick::FriendJoin(a))]
+    } else {
+        &[]
+    };
+    friend_line(pane, f, line, join);
+}
+
 fn ask_row(pane: &mut ChildSpawnerCommands, ask: &crate::friends::Ask, incoming: bool, now: u64) {
     let Some(a) = protocol::Address::from_hex(ask.wallet.as_bytes()) else {
         return;
@@ -1592,6 +1621,7 @@ fn ask_row(pane: &mut ChildSpawnerCommands, ask: &crate::friends::Ask, incoming:
         &[
             ("ACCEPT", true, Pick::FriendOp(Op::Accept, a)),
             ("DECLINE", false, Pick::FriendOp(Op::Decline, a)),
+            ("BLOCK", false, Pick::FriendOp(Op::Block, a)),
         ]
     } else {
         &[("CANCEL", false, Pick::FriendOp(Op::Cancel, a))]

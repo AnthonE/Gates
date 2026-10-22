@@ -186,13 +186,24 @@ pub fn rel_line(rel: Rel) -> &'static str {
     }
 }
 
-/// The friends buttons the card offers, primary first.
-pub fn acts(rel: Rel) -> &'static [(&'static str, Op)] {
+/// The friends buttons the card offers, primary first. `blocked` is a
+/// wallet this player blocked this session: the platform never serves a
+/// block list, so the client only knows the ones it made.
+pub fn acts(rel: Rel, blocked: bool) -> &'static [(&'static str, Op)] {
     match rel {
-        Rel::Stranger => &[("ADD FRIEND", Op::Ask)],
-        Rel::AskedYou => &[("ACCEPT", Op::Accept), ("DECLINE", Op::Decline)],
-        Rel::AskedThem => &[("CANCEL REQUEST", Op::Cancel)],
-        Rel::Friend => &[("REMOVE FRIEND", Op::Remove)],
+        Rel::Stranger if blocked => &[("UNBLOCK", Op::Unblock)],
+        Rel::Stranger => &[("ADD FRIEND", Op::Ask), ("BLOCK", Op::Block)],
+        Rel::AskedYou => &[
+            ("ACCEPT", Op::Accept),
+            ("DECLINE", Op::Decline),
+            ("BLOCK", Op::Block),
+        ],
+        Rel::AskedThem => &[("CANCEL REQUEST", Op::Cancel), ("BLOCK", Op::Block)],
+        Rel::Friend => &[
+            ("INVITE TO GAME", Op::Invite),
+            ("REMOVE FRIEND", Op::Remove),
+            ("BLOCK", Op::Block),
+        ],
         Rel::SignedOut | Rel::Me | Rel::Buddy | Rel::Unknown => &[],
     }
 }

@@ -31,6 +31,51 @@ pub const GLOBAL_PREFIX: &str = "/g ";
 /// they are. The client's, like `/g `.
 pub const TEAM_PREFIX: &str = "/t ";
 
+/// `/w <friend> <words>`: a whisper to an Elo Pros friend, wherever they are,
+/// carried on the hive (`crate::hive`), never on the shard.
+pub const WHISPER_PREFIX: &str = "/w ";
+/// `/r <words>`: answer whoever whispered last.
+pub const REPLY_PREFIX: &str = "/r ";
+
+/// A typed whisper: to a friend named by the player, or a reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Whispered {
+    /// `/w <who> <text>`: `who` as typed (a name or a wallet).
+    To(String, String),
+    /// `/r <text>`.
+    Reply(String),
+}
+
+/// The line as a whisper, if it is one. `/w ash` with nothing to say is a
+/// whisper with no words: `Some` with an empty text, so the caller can say
+/// why nothing went.
+pub fn whisper(line: &str) -> Option<Whispered> {
+    if let Some(rest) = line.strip_prefix(REPLY_PREFIX) {
+        return Some(Whispered::Reply(rest.trim().to_string()));
+    }
+    if line.trim_end() == "/r" {
+        return Some(Whispered::Reply(String::new()));
+    }
+    let rest = line
+        .strip_prefix(WHISPER_PREFIX)
+        .or_else(|| (line.trim_end() == "/w").then_some(""))?;
+    let rest = rest.trim_start();
+    let (who, text) = rest.split_once(' ').unwrap_or((rest, ""));
+    Some(Whispered::To(who.to_string(), text.trim().to_string()))
+}
+
+/// Which way a whisper went, on a line in the scrollback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Whisper {
+    /// A line said on the shard.
+    #[default]
+    No,
+    /// A friend whispered this to you.
+    From,
+    /// You whispered this to them; the relay took it.
+    To,
+}
+
 /// How many lines the scrollback holds. Bounded like every other client
 /// store (wall 4); the oldest is evicted.
 pub const LOG_CAP: usize = 24;
@@ -216,6 +261,8 @@ pub struct Line {
     /// voice line, `protocol::caption_key` of the text for a typed one. A
     /// translation finds its line by it.
     pub key: u16,
+    /// A whisper between friends rather than a line on the shard.
+    pub whisper: Whisper,
 }
 
 /// The scrollback: bounded, oldest evicted.
@@ -282,6 +329,12 @@ impl Log {
     /// reading the same conversation read the same names. Words said out
     /// loud are `[Voice]`; a translation names the language it came from.
     pub fn head(line: &Line) -> String {
+        let name = shown_name(line);
+        match line.whisper {
+            Whisper::From => return format!("[Whisper] {name}: "),
+            Whisper::To => return format!("[To {name}]: "),
+            Whisper::No => {}
+        }
         let tag = if line.voice {
             "[Voice]"
         } else {
@@ -291,7 +344,6 @@ impl Log {
             Some(code) => format!(" [{code}]"),
             None => String::new(),
         };
-        let name = shown_name(line);
         match tag {
             "" => format!("{name}{from}: "),
             tag => format!("{tag} {name}{from}: "),
@@ -343,6 +395,30 @@ mod tests {
         let (channel, text) = composed("hello").outgoing().expect("sends");
         assert_eq!(channel, Channel::Global);
         assert_eq!(text.as_bytes(), b"hello");
+    }
+
+    #[test]
+    fn a_whisper_names_a_friend_then_says_something() {
+        use super::{whisper, Whispered};
+        assert_eq!(
+            whisper("/w ash meet at  the gate "),
+            Some(Whispered::To("ash".into(), "meet at  the gate".into()))
+        );
+        assert_eq!(
+            whisper("/w ash"),
+            Some(Whispered::To("ash".into(), String::new()))
+        );
+        assert_eq!(
+            whisper("/w"),
+            Some(Whispered::To(String::new(), String::new()))
+        );
+        assert_eq!(
+            whisper("/r on my way"),
+            Some(Whispered::Reply("on my way".into()))
+        );
+        assert_eq!(whisper("/r"), Some(Whispered::Reply(String::new())));
+        assert_eq!(whisper("/wave"), None);
+        assert_eq!(whisper("hello /w ash"), None);
     }
 
     #[test]

@@ -2,11 +2,12 @@
 //! server browser's Friends rail, the pause menu's list, and the mark on a
 //! friend's nametag and chat line all read [`Friends`].
 //!
-//! **Read when it is looked at, never on a timer** (`FRIENDS.md` §5): on
-//! entering the menu, on picking FRIENDS or its REFRESH, once on the first
-//! entry to a world (when the player's own tag lands), and on opening the Esc
-//! menu. A change takes the list its act answered with rather than asking
-//! again.
+//! **Read when it is looked at**: on entering the menu, on picking FRIENDS or
+//! its REFRESH, once on the first entry to a world (when the player's own tag
+//! lands), and on opening the Esc menu — and every [`REFRESH_S`] besides, the
+//! pace presence itself moves at, so Steam's corner notices (an ask, an
+//! invite, a friend starting to play) can fire. A change takes the list its
+//! act answered with rather than asking again.
 //!
 //! A change is prepare → sign → act, and signing goes through the elo
 //! launcher's consent prompt, so it is desktop only: a page changes its list
@@ -29,6 +30,10 @@ pub const SIGNED_OUT: &str = "Sign in to see your friends.";
 const READING: &str = "reading your friends list...";
 /// What a read that failed says, before why.
 const READ_FAILED: &str = "couldn't read your friends list";
+/// The slow re-read, seconds: presence lags about a minute and a half anyway.
+pub const REFRESH_S: f32 = 90.0;
+/// Notices held for a surface to show; past it the oldest go.
+const MAX_NOTICES: usize = 8;
 /// How long one platform round trip may take, natively.
 #[cfg(not(target_arch = "wasm32"))]
 const HTTP_TIMEOUT_S: u64 = 15;
@@ -43,7 +48,8 @@ enum Landed {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Acted {
         me: Address,
-        got: Result<(View, String), String>,
+        op: friends::Op,
+        got: Result<(View, String, String), String>,
     },
 }
 
@@ -71,6 +77,14 @@ pub struct Friends {
     reading: Option<Address>,
     /// Read once the player's own tag lands, on the first world entry.
     want_world: bool,
+    /// Wallets this player blocked this session, lowercase hex. The platform
+    /// never serves a block list, so these are the only ones the client knows.
+    blocked: Vec<String>,
+    /// What changed between reads, for the HUD to say (`friends::notices`).
+    pub notices: Vec<String>,
+    /// A friend's server picked from inside a world: the menu dials it once
+    /// the world is left.
+    pub pending_join: Option<String>,
     tx: Tx,
     rx: Rx,
 }
@@ -88,6 +102,9 @@ impl Default for Friends {
             acting: false,
             reading: None,
             want_world: false,
+            blocked: Vec::new(),
+            notices: Vec::new(),
+            pending_join: None,
             tx,
             rx,
         }
@@ -147,6 +164,11 @@ impl Friends {
         self.view.as_ref().map_or(0, |v| v.asks_in.len())
     }
 
+    /// This player blocked `who` this session.
+    pub fn blocked(&self, who: &Address) -> bool {
+        self.blocked.contains(&hex(*who))
+    }
+
     pub fn say(&mut self, line: impl Into<String>) {
         self.status = line.into();
         self.gen += 1;
@@ -167,12 +189,13 @@ impl Friends {
         self.acting = true;
         self.say(match op {
             friends::Op::Ask => "looking them up - then approve the ask in your launcher",
+            friends::Op::Invite => "approve the invite in your launcher",
             _ => "approve it in your launcher",
         });
         let (origin, tx, target) = (self.origin.clone(), self.tx.clone(), target.to_string());
         std::thread::spawn(move || {
             let got = act_blocking(&origin, me, op, &target);
-            let _ = tx.send(Landed::Acted { me, got });
+            let _ = tx.send(Landed::Acted { me, op, got });
         });
     }
 }
@@ -205,7 +228,7 @@ fn read(url: String, me: Address, tx: Tx) {
 /// (the platform's `{"error": ...}` is the sentence to show). Status 0 is
 /// "never reached".
 #[cfg(not(target_arch = "wasm32"))]
-fn http(url: &str, post: Option<&str>, cap: usize) -> (u16, Vec<u8>) {
+pub(crate) fn http(url: &str, post: Option<&str>, cap: usize) -> (u16, Vec<u8>) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(HTTP_TIMEOUT_S)))
@@ -239,7 +262,7 @@ fn act_blocking(
     me: Address,
     op: friends::Op,
     target: &str,
-) -> Result<(View, String), String> {
+) -> Result<(View, String, String), String> {
     use crate::elo::SignError;
     use friends::Lookup;
 
@@ -266,11 +289,17 @@ fn act_blocking(
     let text = friends::check_offered(&me_hex, op, &other, crate::shot::now_secs(), &offered)?;
 
     let mut elo = crate::elo::Elo::discover(None, env!("CARGO_PKG_VERSION"));
-    let why = format!(
-        "Gates: {} {} on your Elo Pros friends list",
-        op.name(),
-        friends::short_wallet_real(&other)
-    );
+    let why = match op {
+        friends::Op::Invite => format!(
+            "Gates: invite {} to join your game",
+            friends::short_wallet_real(&other)
+        ),
+        _ => format!(
+            "Gates: {} {} on your Elo Pros friends list",
+            op.name(),
+            friends::short_wallet_real(&other)
+        ),
+    };
     let sig = match elo.sign(&text, &why) {
         Ok(sig) => sig,
         // The player's signer is their browser, and the change finishes
@@ -318,7 +347,7 @@ fn act_blocking(
     );
     let view = friends::parse_act(status, &body)?;
     let done = op.done(&view, &other).to_string();
-    Ok((view, done))
+    Ok((view, done, other))
 }
 
 /// Take what landed. A read for someone who is no longer signed in is
@@ -344,6 +373,12 @@ pub fn pump(
                 }
                 match got {
                     Ok(view) => {
+                        if let Some(old) = &friends.view {
+                            let new = friends::notices(old, &view);
+                            friends.notices.extend(new);
+                            let over = friends.notices.len().saturating_sub(MAX_NOTICES);
+                            friends.notices.drain(..over);
+                        }
                         friends.set = FriendSet::of(&view);
                         friends.view = Some(view);
                         if friends.status == READING {
@@ -355,13 +390,20 @@ pub fn pump(
                     }
                 }
             }
-            Landed::Acted { me, got } => {
+            Landed::Acted { me, op, got } => {
                 friends.acting = false;
                 if friends.me != Some(me) {
                     continue;
                 }
                 match got {
-                    Ok((view, done)) => {
+                    Ok((view, done, other)) => {
+                        match op {
+                            friends::Op::Block if !friends.blocked.contains(&other) => {
+                                friends.blocked.push(other)
+                            }
+                            friends::Op::Unblock => friends.blocked.retain(|w| *w != other),
+                            _ => {}
+                        }
                         friends.set = FriendSet::of(&view);
                         friends.view = Some(view);
                         friends.status = done;
@@ -380,10 +422,76 @@ pub fn pump(
     }
 }
 
-/// Entering the menu: the signed-in player's list.
-pub fn on_menu(mut friends: ResMut<Friends>, who: Res<Who>, menu: Res<Menu>) {
+/// Entering the menu: the signed-in player's list, and a friend's server
+/// picked from the Esc menu, dialled now that the world is left.
+pub fn on_menu(
+    mut friends: ResMut<Friends>,
+    who: Res<Who>,
+    menu: Res<Menu>,
+    mut connecting: NonSendMut<super::screen::Connecting>,
+    mut next: ResMut<NextState<super::Screen>>,
+) {
     let origin = crate::ui::names::origin_of(menu.servers_url.as_deref());
     friends.ask(&origin, who_address(&who));
+    if let Some(addr) = friends.pending_join.take() {
+        match crate::shardlist::check_addr(&addr) {
+            Ok(()) => {
+                connecting.addr = addr;
+                connecting.rx = None;
+                next.set(super::Screen::Connecting);
+            }
+            Err(why) => friends.say(format!("can't join that server: {why}")),
+        }
+    }
+}
+
+/// The slow re-read, while signed in, so a notice can fire without the
+/// player opening anything.
+pub fn refresh(mut friends: ResMut<Friends>, time: Res<Time>, mut since: Local<f32>) {
+    if friends.me.is_none() || friends.acting {
+        *since = 0.0;
+        return;
+    }
+    *since += time.delta_secs();
+    if *since < REFRESH_S {
+        return;
+    }
+    *since = 0.0;
+    let (origin, me) = (friends.origin.clone(), friends.me);
+    friends.ask(&origin, me);
+}
+
+/// Say what changed: in the world on the HUD's toast line, at the menu on
+/// the friends status line. The Esc menu holds them; it lists invites itself.
+pub fn notify(
+    mut friends: ResMut<Friends>,
+    toast: Option<ResMut<super::hud::Toast>>,
+    screen: Res<State<super::Screen>>,
+    menu: Option<ResMut<Menu>>,
+) {
+    if friends.notices.is_empty() {
+        return;
+    }
+    match screen.get() {
+        super::Screen::InWorld => {
+            let Some(mut toast) = toast else {
+                return;
+            };
+            for line in friends.notices.drain(..) {
+                toast.say(line);
+            }
+        }
+        super::Screen::Menu => {
+            if let Some(last) = friends.notices.pop() {
+                friends.notices.clear();
+                friends.say(last);
+                if let Some(mut menu) = menu {
+                    menu.dirty = true;
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Entering a world: read once the player's own tag lands.
@@ -478,7 +586,7 @@ pub fn fill_pics(
 /// Wire the reads in. Registered beside the faces and, like them, not on a
 /// capture run: a gate whose frames depend on a network read is not a gate.
 pub fn register(app: &mut App) {
-    app.add_systems(Update, (pump, fill_pics))
+    app.add_systems(Update, (refresh, pump, notify, fill_pics).chain())
         .add_systems(OnEnter(super::Screen::Loading), arm_world)
         .add_systems(Update, on_world.run_if(in_state(super::Screen::InWorld)))
         .add_systems(OnEnter(super::Screen::Paused), on_paused);

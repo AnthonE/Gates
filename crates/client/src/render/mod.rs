@@ -105,6 +105,8 @@ pub mod contacts;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dms;
 pub mod faces;
 /// Elo Pros friends: read when looked at, marked on nametags and chat.
 pub mod friends;
@@ -1100,7 +1102,13 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnExit(Screen::Paused), ui::despawn_all::<pause::PauseRoot>)
         .add_systems(
             Update,
-            (pause::click, pause::keys, pause::act, pause::friends_block)
+            (
+                pause::click,
+                pause::keys,
+                pause::act,
+                pause::friends_block,
+                pause::friend_click,
+            )
                 .chain()
                 .run_if(in_state(Screen::Paused)),
         )
@@ -2314,6 +2322,8 @@ impl Plugin for GatesRenderPlugin {
             voice::register(app);
             faces::register(app);
             friends::register(app);
+            #[cfg(not(target_arch = "wasm32"))]
+            dms::register(app);
             profile::register(app);
             contacts::register(app);
             paint::register(app);

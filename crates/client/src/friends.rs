@@ -1,6 +1,7 @@
 //! Friends from the Elo Pros platform: the list a wallet keeps there, who on
 //! it is playing Gates and on which shard, and the signed text that asks,
-//! accepts, declines, cancels, removes, blocks or unblocks one.
+//! accepts, declines, cancels, removes, blocks or unblocks one, or invites a
+//! friend into the game.
 //!
 //! The platform owns the list (`docs/client/FRIENDS.md` in
 //! `AnthonE/scry-forge`, `meter/friends.py`): `GET /api/friends/{wallet}` is
@@ -46,10 +47,12 @@ pub enum Op {
     Remove,
     Block,
     Unblock,
+    /// Steam's "Invite to game": the friend's list shows where you are.
+    Invite,
 }
 
 impl Op {
-    pub const ALL: [Op; 7] = [
+    pub const ALL: [Op; 8] = [
         Op::Ask,
         Op::Accept,
         Op::Decline,
@@ -57,6 +60,7 @@ impl Op {
         Op::Remove,
         Op::Block,
         Op::Unblock,
+        Op::Invite,
     ];
 
     pub fn name(self) -> &'static str {
@@ -68,13 +72,14 @@ impl Op {
             Op::Remove => "remove",
             Op::Block => "block",
             Op::Unblock => "unblock",
+            Op::Invite => "invite",
         }
     }
 
     /// The key the other wallet goes under in `args`.
     pub fn key(self) -> &'static str {
         match self {
-            Op::Ask | Op::Cancel => "to",
+            Op::Ask | Op::Cancel | Op::Invite => "to",
             Op::Accept | Op::Decline => "from",
             Op::Remove | Op::Block | Op::Unblock => "wallet",
         }
@@ -95,6 +100,7 @@ impl Op {
             Op::Remove => "Removed.",
             Op::Block => "Blocked.",
             Op::Unblock => "Unblocked.",
+            Op::Invite => "Invited. They'll see it in Gates.",
         }
     }
 }
@@ -122,6 +128,9 @@ pub struct View {
     pub asks_in: Vec<Ask>,
     #[serde(default, deserialize_with = "or_default")]
     pub asks_out: Vec<Ask>,
+    /// Friends asking you into their game: their row, plus `at`.
+    #[serde(default, deserialize_with = "or_default")]
+    pub invites_in: Vec<Friend>,
     #[serde(default)]
     pub presence: Option<Presence>,
 }
@@ -149,6 +158,9 @@ pub struct Friend {
     /// Set on a row of [`View::buddies`].
     #[serde(default)]
     pub buddy: Option<Buddy>,
+    /// When the invite was sent, on a row of [`View::invites_in`].
+    #[serde(default)]
+    pub at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -229,7 +241,7 @@ pub fn view_of(v: serde_json::Value) -> Result<View, String> {
     }
     let mut view: View = serde_json::from_value(v).map_err(|e| format!("friends list: {e}"))?;
     view.wallet.make_ascii_lowercase();
-    for rows in [&mut view.friends, &mut view.buddies] {
+    for rows in [&mut view.friends, &mut view.buddies, &mut view.invites_in] {
         rows.retain(|f| wallet_ok(&f.wallet));
         for f in rows.iter_mut() {
             f.wallet.make_ascii_lowercase();
@@ -271,6 +283,46 @@ impl View {
     pub fn find(&self, wallet: &Address) -> Option<&Friend> {
         self.everyone().find(|f| f.address() == Some(*wallet))
     }
+}
+
+/// What changed between two reads of one list that a player would want told
+/// in the game, Steam's corner popups: a new ask, a new invite, a friend
+/// starting to play Gates. Nothing on a blind read, which says nobody is on.
+pub fn notices(old: &View, new: &View) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in &new.asks_in {
+        if !old.asks_in.iter().any(|o| o.wallet == a.wallet) {
+            let who = Friend {
+                wallet: a.wallet.clone(),
+                name: a.name.clone(),
+                ..Default::default()
+            };
+            out.push(format!("{} wants to be your friend", who.label()));
+        }
+    }
+    for i in &new.invites_in {
+        if !old
+            .invites_in
+            .iter()
+            .any(|o| o.wallet == i.wallet && o.at == i.at)
+        {
+            out.push(format!("{} invited you to play - Esc to join", i.label()));
+        }
+    }
+    if new.blind() || old.blind() {
+        return out;
+    }
+    for f in new.everyone() {
+        let was = old
+            .everyone()
+            .find(|o| o.wallet == f.wallet)
+            .and_then(Friend::on_gates)
+            .is_some();
+        if f.on_gates().is_some() && !was {
+            out.push(format!("{} is now playing Gates", f.label()));
+        }
+    }
+    out
 }
 
 impl Friend {
