@@ -1741,6 +1741,20 @@ impl Survivor {
             .strides
             .ahead_of(body.map_or([0.0; 3], |b| pressed_eye(b, intent.buttons)));
         let mut f = self.hands.drive(&intent, &self.tracks, eye, base);
+        // In the water (the water pass) an agent swims at the surface and
+        // never dives: a look down at what it walks toward would steer it
+        // under, and nothing here counts its breath. Under anyway — knocked
+        // off a ledge, say — it comes up.
+        if let Some(b) = body {
+            let feet = b.qy as f32 * sim_core::movement::POS_Y_Q;
+            if sim_core::movement::swimming_at(feet) {
+                f.pitch = f.pitch.max(crate::agent::intent::LEVEL_PITCH);
+                f.buttons &= !sim_core::input::BTN_CROUCH;
+                if sim_core::movement::mouth_under(feet) {
+                    f.buttons |= sim_core::input::BTN_JUMP;
+                }
+            }
+        }
         // A bandage being wrapped on keeps the hand that began it up: a
         // switch would put it away unspent (`survival::tick_use`).
         if self.wrapping(view.newest_applied.unwrap_or_default()) {
@@ -7670,7 +7684,9 @@ impl Survivor {
                 _ => {}
             }
         }
-        if flags & APPLIED_DRANK != 0 {
+        // A vessel filled or poured rides the drink's flag too; only a
+        // mouthful is a drink.
+        if flags & APPLIED_DRANK != 0 && core.last_vessel.is_none() {
             self.stats.drinks += 1;
             if matches!(self.awaiting, Some((Pending::Drink, _))) {
                 self.verdict = Some(Verdict::Ok);

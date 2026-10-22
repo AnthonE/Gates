@@ -379,9 +379,11 @@ slot = "hand"
 class = "construction"
 description = "A free-standing wooden barrier to fight behind."
 
-# A water vessel, empty and full: H at fresh water with the empty one in
-# hand fills it, and drinking the full one gives the empty one back
-# (balance.toml `[survival]` vessel, `survival::drink`).
+# The water vessels, empty, fresh and salt: H at water with the empty one in
+# hand fills it — fresh at a lake, salt at the sea — drinking the fresh one
+# gives the empty one back, a salt one boils fresh on a camp fire
+# (`cooking.toml`), and the right mouse pours either out (balance.toml
+# `[[survival.vessels]]`, `survival::drink`, `World::pour`).
 [[item]]
 id = "item.waterskin"
 name = "Waterskin"
@@ -1553,3 +1555,37 @@ rarity = "common"
 slot = "hand"
 class = "items"
 description = "Catches rain. Fills a waterskin and waters planters within 3 m."
+
+# --- the water pass's vessels ---------------------------------------------
+
+[[item]]
+id = "item.waterskin_salt"
+name = "Salt Waterskin"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Sea water. Boil it on a camp fire to drink it, or pour it on a fire."
+
+# The jug: twice a skin of lake water, for a base's planters and a long walk
+# inland. Fresh only — sea water is boiled in a skin.
+[[item]]
+id = "item.water_jug"
+name = "Water Jug"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Empty. Holds two skins of fresh water — fill it at a lake."
+
+[[item]]
+id = "item.water_jug_full"
+name = "Full Water Jug"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Fresh water: a long drink, or a fire put out."

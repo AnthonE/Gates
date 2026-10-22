@@ -1119,6 +1119,9 @@ pub enum ExposureChip {
     /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
     /// bandage closes it.
     Bleeding,
+    /// The held breath (water pass, `World::breathe`): shown while any is
+    /// spent, red once the water is costing hp.
+    Breath,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1301,7 +1304,8 @@ pub struct ChipValue(pub ExposureChip);
 impl ExposureChip {
     /// Top to bottom over the vitals. The base's upkeep heads the stack
     /// (NOW §0up 3): it is about the base, not the body.
-    const ALL: [ExposureChip; 8] = [
+    const ALL: [ExposureChip; 9] = [
+        ExposureChip::Breath,
         ExposureChip::Upkeep,
         ExposureChip::Safe,
         ExposureChip::Wet,
@@ -1423,6 +1427,18 @@ pub fn exposure(
             ExposureChip::Bleeding if core.bleed > 0 => {
                 (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
             }
+            ExposureChip::Breath if core.drowning => (
+                true,
+                "DROWNING — SURFACE".to_string(),
+                format!("{}%", core.breath_pct),
+                FREEZE_CHIP,
+            ),
+            ExposureChip::Breath if core.breath_pct < 100 => (
+                true,
+                "BREATH".to_string(),
+                format!("{}%", core.breath_pct),
+                WET_CHIP,
+            ),
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1440,7 +1456,7 @@ pub fn exposure(
             _ => hidden(),
         }
     };
-    let said: [ChipSaid; 8] = ExposureChip::ALL.map(say);
+    let said: [ChipSaid; 9] = ExposureChip::ALL.map(say);
     for (chip, mut node, mut bg) in &mut chips {
         let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still
@@ -3173,9 +3189,39 @@ pub fn gate_watch(
     }
     let in_world = screen.is_some_and(|s| *s.get() == super::Screen::InWorld);
     let panel_open = ui.is_some_and(|u| u.panel != super::panels::Panel::None);
-    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) && core.holstered() {
-        toast.warn("you can't draw a weapon in a safe zone");
+    if in_world && !panel_open && mouse.just_pressed(MouseButton::Left) {
+        if core.holstered() {
+            toast.warn("you can't draw a weapon in a safe zone");
+        } else if core.waterlogged() {
+            toast.warn("you can't shoot while swimming");
+        }
     }
+}
+
+/// What a vessel fact says (the water pass, `World::pour`): filled, and with
+/// what, or poured out, and what the water reached.
+pub fn vessel_line((poured, salt, doused, watered): (bool, bool, u16, u16)) -> String {
+    if !poured {
+        return if salt {
+            "filled it with salt water — boil it at a fire to drink it".to_string()
+        } else {
+            "filled it with fresh water".to_string()
+        };
+    }
+    let mut out = "poured it out".to_string();
+    if doused > 0 {
+        let s = if doused == 1 { "" } else { "s" };
+        out.push_str(&format!(", put out {doused} fire{s}"));
+    }
+    if watered > 0 {
+        let s = if watered == 1 { "" } else { "s" };
+        if salt {
+            out.push_str(&format!(" — the salt spoiled {watered} planter{s}"));
+        } else {
+            out.push_str(&format!(", watered {watered} planter{s}"));
+        }
+    }
+    out
 }
 
 /// Drain the core's feedback rings into the toast, and count the timers down.
@@ -3385,9 +3431,8 @@ pub fn feedback(
         // says nothing about hp rather than saying `-0`.
         let water = core.last_drink >> 16;
         let cost = core.last_drink & 0xffff;
-        toast.say(if water == 0 && cost == 0 {
-            // The fill (`survival::drink`): an empty vessel in hand.
-            "filled your waterskin".to_string()
+        toast.say(if let Some(v) = core.last_vessel {
+            vessel_line(v)
         } else if cost > 0 {
             format!("drank: +{water} water, -{cost} hp")
         } else {

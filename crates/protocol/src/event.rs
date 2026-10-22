@@ -66,9 +66,9 @@ pub const GROW_SYNC_BATCH: usize = 32;
 pub const NODE_STAGE_BATCH: usize = 32;
 
 /// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 446 bits with a gun's handling, v131's damage and v135's fifth
-/// oven arch, and six of them would pass `MAX_EVENT_MSG_BYTES` (the assert
-/// at `CATALOG_ROW_MAX_BITS`).
+/// row is 447 bits with a gun's handling, v131's damage, v135's fifth oven
+/// arch and v137's pour, and six of them would pass `MAX_EVENT_MSG_BYTES`
+/// (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
@@ -261,6 +261,11 @@ const SUB_CONSUME_REFUSED: u32 = 33;
 /// salt sea *costs* hp, and `SUB_HEALTH` is absolute, so a client that
 /// only heard the new hp could not name what took it.
 const SUB_DRANK: u32 = 34;
+/// `SUB_DRANK`'s kind (v137): a mouthful, a vessel filled, one poured out.
+const DRANK_KIND_BITS: u32 = 2;
+const DRANK_KIND_DRINK: u32 = 0;
+const DRANK_KIND_FILL: u32 = 1;
+const DRANK_KIND_POUR: u32 = 2;
 /// The death screen closed and a body woke (wire v16, world.rs). 36th of
 /// the 64 a 6-bit field holds, so no other event message moved for it.
 const SUB_RESPAWN: u32 = 35;
@@ -1335,6 +1340,9 @@ pub struct ItemRow {
     /// bandage is held, a click wraps it on, and the client draws the wrap
     /// for this long. 0 is eaten at once, off the belt key.
     pub use_ticks: u8,
+    /// A water vessel with water in it (v137, the water pass,
+    /// `SurvivalContent::vessel_full`): the right mouse pours it out.
+    pub pour: bool,
     /// What the item is for the craft rail (v102, `craft::CLASS_*`):
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
@@ -1419,7 +1427,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + 3 * 16
     + 2 * 8
     + OVEN_ROLE_BITS as usize
-    + 2
+    + 3
     + ITEM_CLASS_BITS as usize
     + 16
     + 1
@@ -1448,6 +1456,7 @@ impl ItemRow {
         holster: false,
         revive: false,
         use_ticks: 0,
+        pour: false,
         class: CLASS_OTHER,
         damage: 0,
         gun: None,
@@ -1809,6 +1818,10 @@ pub enum EventMsg {
         fel_hurting: bool,
         /// The open wound, hp it still owes (wire v136, `Player::bleed`).
         bleed: u8,
+        /// The breath left, per cent, and whether the water is costing hp
+        /// (wire v137, `World::breathe`).
+        breath_pct: u8,
+        drowning: bool,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -2520,6 +2533,16 @@ pub enum EventMsg {
     /// their own events, so this one exists to say *why* they moved
     /// together (survival.rs).
     Drank { water: u16, hp_cost: u16 },
+    /// A water vessel in your hand changed (wire v137, the water pass, on
+    /// `SUB_DRANK`'s subtype): filled — `poured` false, with the sea's salt
+    /// when `salt` — or poured out, which put out `doused` fires and reached
+    /// `watered` planters (dried them, with salt water). Own-fact.
+    Vessel {
+        poured: bool,
+        salt: bool,
+        doused: u16,
+        watered: u16,
+    },
     /// `victim` was killed by `killer` — broadcast, because a death is a
     /// world fact like a placement, and the kill feed the reference frames
     /// carry bottom-left is built from exactly this.
@@ -3061,6 +3084,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The use in the hands (v136): ticks in a byte, the draw's posture.
         w.write(row.use_ticks as u32, 8)?;
+        // The pour (v137).
+        w.write_bit(row.pour)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
         // The damage a hit does (v131), full width.
@@ -5697,8 +5722,38 @@ pub fn encode_event_drank(water: u16, hp_cost: u16, buf: &mut [u8]) -> Result<us
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_DRANK)?;
+    w.write(DRANK_KIND_DRINK, DRANK_KIND_BITS)?;
     w.write(water as u32, 16)?;
     w.write(hp_cost as u32, 16)?;
+    w.write_bit(false)?;
+    Ok(w.finish())
+}
+
+/// A vessel filled or poured out — see `EventMsg::Vessel`. Rides the
+/// drink's subtype behind its kind field (v137), so the survival module's
+/// own-facts stay one family on the wire.
+pub fn encode_event_vessel(
+    poured: bool,
+    salt: bool,
+    doused: u16,
+    watered: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !poured && (doused != 0 || watered != 0) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DRANK)?;
+    w.write(
+        if poured {
+            DRANK_KIND_POUR
+        } else {
+            DRANK_KIND_FILL
+        },
+        DRANK_KIND_BITS,
+    )?;
+    w.write(doused as u32, 16)?;
+    w.write(watered as u32, 16)?;
+    w.write_bit(salt)?;
     Ok(w.finish())
 }
 
@@ -5872,6 +5927,7 @@ pub fn encode_event_exposure(
         || x.heat_pct > 100
         || x.fel_pct > 100
         || x.bleed > 100
+        || x.breath_pct > 100
     {
         return Err(WireError::Range);
     }
@@ -5885,6 +5941,8 @@ pub fn encode_event_exposure(
     w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(x.fel_hurting)?;
     w.write(x.bleed as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.breath_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.drowning)?;
     Ok(w.finish())
 }
 
@@ -6530,6 +6588,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
                     use_ticks: r.read(8)? as u8,
+                    pour: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
                     damage: r.read(16)? as u16,
                     gun: if r.read_bit()? {
@@ -7855,12 +7914,34 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::ConsumeRefused { reason }
         }
         SUB_DRANK => {
-            let water = r.read(16)? as u16;
-            let hp_cost = r.read(16)? as u16;
-            if water == 0 && hp_cost == 0 {
-                return Err(WireError::Malformed);
+            let kind = r.read(DRANK_KIND_BITS)?;
+            let a = r.read(16)? as u16;
+            let b = r.read(16)? as u16;
+            let salt = r.read_bit()?;
+            match kind {
+                DRANK_KIND_DRINK => {
+                    if (a == 0 && b == 0) || salt {
+                        return Err(WireError::Malformed);
+                    }
+                    EventMsg::Drank {
+                        water: a,
+                        hp_cost: b,
+                    }
+                }
+                DRANK_KIND_FILL if a == 0 && b == 0 => EventMsg::Vessel {
+                    poured: false,
+                    salt,
+                    doused: 0,
+                    watered: 0,
+                },
+                DRANK_KIND_POUR => EventMsg::Vessel {
+                    poured: true,
+                    salt,
+                    doused: a,
+                    watered: b,
+                },
+                _ => return Err(WireError::Malformed),
             }
-            EventMsg::Drank { water, hp_cost }
         }
         SUB_DEATH => {
             let victim = r.read(32)?;
@@ -8042,12 +8123,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let fel_hurting = r.read_bit()?;
             let bleed = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let breath_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let drowning = r.read_bit()?;
             if wet_pct > 100
                 || cold_pct > 100
                 || comfort_pct > 100
                 || heat_pct > 100
                 || fel_pct > 100
                 || bleed > 100
+                || breath_pct > 100
             {
                 return Err(WireError::Malformed);
             }
@@ -8061,6 +8145,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 fel_pct,
                 fel_hurting,
                 bleed,
+                breath_pct,
+                drowning,
             }
         }
         SUB_ENV => {
@@ -8908,6 +8994,7 @@ mod tests {
                 holster: i % 2 == 0,
                 revive: i % 3 == 0,
                 use_ticks: u8::MAX - 3 * i as u8,
+                pour: i % 4 == 1,
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
@@ -10859,8 +10946,9 @@ mod wire_domains {
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
             // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123. 13 =
-            // DEATH_BY_BLEED at v136.
-            live_max: 13,
+            // DEATH_BY_BLEED at v136. 14 = DEATH_BY_DROWN at v137 (the water
+            // pass).
+            live_max: 14,
         },
         Domain {
             what: "move refusal",
@@ -10932,9 +11020,10 @@ mod wire_domains {
             // and this module reads the constant itself — not the scrape —
             // wherever it bounds the field.
             exempt: &["MAX"],
-            min_members: 3,
+            min_members: 4,
             bits: REFUSE_C_BITS,
-            live_max: 3,
+            // 4 at v137: `REFUSE_C_SALT` (the water pass).
+            live_max: 4,
         },
         Domain {
             what: "casino refusal",
@@ -10980,11 +11069,11 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 16,
+            min_members: 17,
             bits: REFUSE_B_BITS,
             // 15 at wire v92: `REFUSE_B_SAFE`, no charge planted in THE
-            // GATE or on its stations.
-            live_max: 15,
+            // GATE or on its stations. 16 at v137: `REFUSE_B_SWIMMING`.
+            live_max: 16,
         },
         Domain {
             what: "craft refusal",
@@ -11006,10 +11095,11 @@ mod wire_domains {
             prefix: "pub const REFUSE_D_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 26,
+            min_members: 27,
             bits: REFUSE_D_BITS,
-            // 19 -> 25 at v135: farming v2's six.
-            live_max: 25,
+            // 19 -> 25 at v135: farming v2's six. 26 at v137:
+            // `REFUSE_D_SWIMMING`.
+            live_max: 26,
         },
         Domain {
             what: "container kind",
@@ -11558,6 +11648,10 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // What a `SUB_DRANK` says (v137, the water pass): the wire's own
+            // three kinds — a mouthful, a fill, a pour — and the decoder
+            // refuses the fourth. Not a sim-core enumeration.
+            "DRANK_KIND_BITS",
             // A piece record's freeform half (v134): its id, bounded by
             // `build::MAX_PIECE_ID`, and its building, `MAX_BUILDINGS` —
             // both const-asserted equal to their widths; a frame's origin

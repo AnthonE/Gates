@@ -254,17 +254,34 @@ food_minutes_to_empty = 180
 water_minutes_to_empty = 120
 starve_hp_per_min = 3
 dehydrate_hp_per_min = 5
-drink_water = 25
-drink_hp_cost = 2
-# The water vessel: H at fresh water with the empty skin in hand fills it.
-vessel = "item.waterskin"
-vessel_full = "item.waterskin_full"
+# The water pass (2026-10-21): a lake's mouthful is the reference's fresh
+# water, +30, free; the sea's is half that and dearer, 15 for 3 hp — the
+# reference stopped letting you drink the sea at all once lakes, rivers and
+# a purifier answered thirst, and ours keeps it as the answer that is always
+# there, now plainly the worse one. Living off the sea runs 8 drinks an hour
+# = 24 hp an hour; a lake, or a skin of sea boiled at a fire, costs nothing.
+drink_water = 30
+drink_hp_cost = 3
+drink_water_salt = 15
 # Bleeding, Rust's: a hit (a blade, an arrow, a bullet, a bite, spikes) opens
 # a wound worth bleed_pct of the hp it took, and the wound costs
 # bleed_hp_per_min (theirs: 1 hp every 3 s) until it has taken that much or a
 # bandage closes it. Fire burns, it does not cut.
 bleed_pct = 20
 bleed_hp_per_min = 20
+
+# The water vessels: H with an empty one in hand at water fills it — fresh
+# where there is any, the sea's salt where the vessel holds it — the left
+# mouse drinks a fresh one, the right mouse pours either out (`World::pour`:
+# it puts out fires and waters what grows, and salt water empties a tank).
+[[survival.vessels]]
+empty = "item.waterskin"
+fresh = "item.waterskin_full"
+salt = "item.waterskin_salt"
+
+[[survival.vessels]]
+empty = "item.water_jug"
+fresh = "item.water_jug_full"
 
 # Wet, cold and heat (weather v0, climate v0, `sim_core::exposure`) — the
 # reference's exposure: rain soaks you unless something is overhead (their
@@ -376,6 +393,12 @@ fel_pocket_per_s = 20
 # at half the rain's rate — the reference's `weather.wetness_snow` 0.2 against
 # `wetness_rain` 0.4. Per mille of the rain's.
 snow_wet_pm = 500
+# Drowning (water pass, `World::breathe`): the reference's oxygen — ten
+# seconds of breath with the mouth under, nothing owed for the first half,
+# then a ramp to 20 hp a second at none, so a full body is gone in about
+# 12.5 s. Surfacing gives the whole breath back in a second.
+air_s = 10
+drown_hp_per_s = 20
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at

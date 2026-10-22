@@ -300,6 +300,10 @@ fn main() {
     let (plant, act) = goldens::action_tend();
     let len = protocol::encode_action_tend(plant, act, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[188], &buf[..len]);
+    // The water pass (v137).
+    let (poured, salt, doused, watered) = goldens::event_vessel();
+    let len = protocol::encode_event_vessel(poured, salt, doused, watered, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[189], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

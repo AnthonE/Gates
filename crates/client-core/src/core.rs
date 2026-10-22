@@ -2026,6 +2026,10 @@ pub struct ClientCore {
     /// `APPLIED_DRANK` (`client_drank`, named here until 2026-08-15, was
     /// the deleted C-ABI bridge).
     pub last_drink: u32,
+    /// The last vessel fact (wire v131, `EventMsg::Vessel`), when the last
+    /// `APPLIED_DRANK` was one rather than a mouthful: (poured, salt, fires
+    /// put out, planters reached).
+    pub last_vessel: Option<(bool, bool, u16, u16)>,
     /// The last move's address, `sim_core::inventory::addr`'s pack
     /// verbatim, and the refusal reason (0 = the move landed). Read
     /// together by `render/panels/mod.rs::sync_refusals` and the panel's
@@ -2152,6 +2156,10 @@ pub struct ClientCore {
     /// The open wound, hp it still owes (`EventMsg::Exposure`): BLEEDING
     /// while it is above zero.
     pub bleed: u8,
+    /// The breath the owner has left, per cent, and whether the water is
+    /// costing hp (wire v137, `World::breathe`).
+    pub breath_pct: u8,
+    pub drowning: bool,
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2530,6 +2538,7 @@ impl ClientCore {
             consume_refusal_head: 0,
             consume_refusal_len: 0,
             last_drink: 0,
+            last_vessel: None,
             last_move: 0,
             move_seq: 0,
             last_move_refused: 0,
@@ -2570,6 +2579,8 @@ impl ClientCore {
             fel_pct: 0,
             fel_hurting: false,
             bleed: 0,
+            breath_pct: 100,
+            drowning: false,
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -4013,6 +4024,17 @@ impl ClientCore {
             }
             EventMsg::Drank { water, hp_cost } => {
                 self.last_drink = ((water as u32) << 16) | hp_cost as u32;
+                self.last_vessel = None;
+                flags |= APPLIED_DRANK;
+            }
+            EventMsg::Vessel {
+                poured,
+                salt,
+                doused,
+                watered,
+            } => {
+                self.last_drink = 0;
+                self.last_vessel = Some((poured, salt, doused, watered));
                 flags |= APPLIED_DRANK;
             }
             EventMsg::Health { hp, max } => {
@@ -4185,6 +4207,8 @@ impl ClientCore {
                 fel_pct,
                 fel_hurting,
                 bleed,
+                breath_pct,
+                drowning,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4195,6 +4219,8 @@ impl ClientCore {
                 self.fel_pct = fel_pct;
                 self.fel_hurting = fel_hurting;
                 self.bleed = bleed;
+                self.breath_pct = breath_pct;
+                self.drowning = drowning;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
@@ -5147,6 +5173,19 @@ impl ClientCore {
             .get(item as usize)
             .is_some_and(|r| r.holster)
             && sim_core::town::safe(&self.haven().town, x, z)
+    }
+
+    /// A swimmer with a bow or a gun in hand (`sim_core::combat::waterlogged`):
+    /// the sim fires nothing but melee from the water, so the arm stays down.
+    pub fn waterlogged(&self) -> bool {
+        let item = self.held_item();
+        item != NO_ITEM
+            && sim_core::movement::swimming_at(self.predict.position()[1])
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.gun.is_some() || r.draw_ticks > 0)
     }
 
     /// Forget the open ground container. The server's close lands here, and

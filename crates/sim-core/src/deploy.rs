@@ -563,8 +563,11 @@ pub const REFUSE_D_PLANTS_FULL: u32 = 23;
 pub const REFUSE_D_PLANT_STAGE: u32 = 24;
 /// The planter's tank has no room for a skin.
 pub const REFUSE_D_PLANT_WATER: u32 = 25;
+/// Not from the water (water pass): a swimmer puts nothing down
+/// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
+pub const REFUSE_D_SWIMMING: u32 = 26;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_PLANT_WATER;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_SWIMMING;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -2770,7 +2773,7 @@ pub fn body_site(
             base_y: floor,
         }
     } else if level == 0 && !on_plane && matches!(placement, PLACE_GROUND | PLACE_ANY) {
-        if !crate::build::foundation_terrain_ok(seed, haven, rect.x, rect.z) {
+        if !crate::build::deploy_terrain_ok(seed, haven, rect.x, rect.z) {
             return Err(REFUSE_D_TERRAIN);
         }
         let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -3047,6 +3050,10 @@ pub fn place_deploy(
     pose: Pose,
     events: &mut EventQueue,
 ) {
+    if crate::movement::swimming(&p.body) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SWIMMING, 0);
+        return;
+    }
     if row >= dc.def_count {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
         return;

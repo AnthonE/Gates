@@ -86,7 +86,7 @@ pub const RESEARCH: [&str; 8] = [
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 16] = [
+pub const BUILD: [&str; 17] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -109,6 +109,8 @@ pub const BUILD: [&str; 16] = [
     // THE GATE (v92): a charge in the safe zone, or on the town's own
     // stations — Rust's monuments are not raided.
     "not in THE GATE",
+    // The water pass (v131): a swimmer builds nothing.
+    "not while swimming",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.
@@ -117,7 +119,7 @@ pub const BUILD: [&str; 16] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 26] = [
+pub const DEPLOY: [&str; 27] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -151,6 +153,7 @@ pub const DEPLOY: [&str; 26] = [
     "too many plants",
     "not ready",
     "already watered",
+    "not while swimming",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
@@ -171,7 +174,7 @@ pub const DEPLOY: [&str; 26] = [
 /// `EV_CONSUME_REFUSED`. So the sentences are worded to be true of
 /// whichever verb was pressed: only code 1 may name food, only code 3 may
 /// name water, and code 2 — the one both verbs reach — names neither.
-pub const CONSUME: [&str; 4] = [
+pub const CONSUME: [&str; 5] = [
     // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
     // because the refusal ring never carries it, and unreachable through
     // `hud::feedback`, which reads the landed half off `Feed::consumed`.
@@ -179,6 +182,9 @@ pub const CONSUME: [&str; 4] = [
     "that is not something you can eat",
     "already full — that would be wasted",
     "no water within reach",
+    // The water pass (v131): the sea is not for the mouth, or the vessel
+    // in hand holds salt.
+    "that's salt water — boil it at a fire first",
 ];
 
 /// `sim_core::gather`'s `REFUSE_G_*: u32` — a gather swing the node

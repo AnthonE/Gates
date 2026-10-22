@@ -1275,6 +1275,16 @@ pub fn holstered(cc: &CombatContent, gc: &crate::gather::GatherContent, p: &Play
     p.safe && drawn_weapon(cc, gc, held_item(p))
 }
 
+/// A swimmer with a bow, a gun or a charge in hand: the reference fires
+/// nothing but melee in the water, so the hand does nothing (`World::tick`).
+#[inline]
+pub fn waterlogged(cc: &CombatContent, p: &Player) -> bool {
+    let item = held_item(p);
+    item != NO_ITEM
+        && crate::movement::swimming(&p.body)
+        && (cc.held_ranged(item).is_some() || cc.held_throw(item).is_some())
+}
+
 /// Whether the safe zone protects this body: inside it and not hostile.
 #[inline]
 pub fn protected(v: &Player) -> bool {

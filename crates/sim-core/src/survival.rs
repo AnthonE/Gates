@@ -143,6 +143,26 @@ impl ConsumableDef {
     }
 }
 
+/// How many water vessels content may author (a skin, a jug, ...).
+pub const MAX_VESSELS: usize = 4;
+
+/// One water vessel: the item empty, full of fresh water, and full of salt
+/// (`NO_ITEM` for a vessel that is never filled with it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Vessel {
+    pub empty: u16,
+    pub fresh: u16,
+    pub salt: u16,
+}
+
+impl Vessel {
+    pub const NONE: Self = Self {
+        empty: NO_ITEM,
+        fresh: NO_ITEM,
+        salt: NO_ITEM,
+    };
+}
+
 /// The whole survival ruleset the sim knows. Construction input like the
 /// seed and the gather table; the WAL pins the content hash it was baked
 /// from (CONTENT.md §0).
@@ -182,11 +202,17 @@ pub struct SurvivalContent {
     /// authors no drink still boots.
     pub drink_water: u16,
     pub drink_hp_cost: u16,
-    /// The water vessel, empty and full (`NO_ITEM` for none): holding the
-    /// empty one at fresh water, `drink` fills it instead; drinking the full
-    /// one (a consumable row) hands the empty one back.
-    pub vessel: u16,
-    pub vessel_full: u16,
+    /// A mouthful of the SEA, water units (water pass): less than a lake's
+    /// `drink_water`, and it still costs `drink_hp_cost`. Zero refuses salt
+    /// water outright (`REFUSE_C_SALT`), the reference's own rule since 2016.
+    pub drink_water_salt: u16,
+    /// The water vessels (water pass): what each holds empty, fresh and
+    /// salt. Holding an empty one at water, `drink` fills it instead; a full
+    /// fresh one is a consumable row whose drinking hands the empty one
+    /// back; a salt one is boiled fresh at a fire (`cooking.toml`); either
+    /// pours (`World::pour`). The first `vessel_count` rows are live.
+    pub vessels: [Vessel; MAX_VESSELS],
+    pub vessel_count: u8,
     /// Wet and cold (weather v0, `exposure.rs`): the other half of the body
     /// the clock keeps, baked from `[exposure]`. `EMPTY` disarms it.
     pub exposure: crate::exposure::ExposureContent,
@@ -211,8 +237,9 @@ impl SurvivalContent {
         dehydrate_hp_per_min: 0,
         drink_water: 0,
         drink_hp_cost: 0,
-        vessel: crate::gather::NO_ITEM,
-        vessel_full: crate::gather::NO_ITEM,
+        drink_water_salt: 0,
+        vessels: [Vessel::NONE; MAX_VESSELS],
+        vessel_count: 0,
         exposure: crate::exposure::ExposureContent::EMPTY,
         bleed_hp_per_min: 0,
     };
@@ -240,6 +267,7 @@ impl SurvivalContent {
         // only the happy path.
         c.drink_water = 25;
         c.drink_hp_cost = 20;
+        c.drink_water_salt = 25;
         c.consumable[0] = ConsumableDef {
             health: 20,
             food: 40,
@@ -249,6 +277,38 @@ impl SurvivalContent {
             ..ConsumableDef::NONE
         };
         c
+    }
+
+    /// The live vessel rows.
+    #[inline]
+    pub fn vessels(&self) -> &[Vessel] {
+        &self.vessels[..(self.vessel_count as usize).min(MAX_VESSELS)]
+    }
+
+    /// The vessel `item` is the empty one of.
+    #[inline]
+    pub fn vessel_empty(&self, item: u16) -> Option<Vessel> {
+        if item == NO_ITEM {
+            return None;
+        }
+        self.vessels().iter().copied().find(|v| v.empty == item)
+    }
+
+    /// The vessel `item` is a full one of, and whether what it holds is salt.
+    #[inline]
+    pub fn vessel_full(&self, item: u16) -> Option<(Vessel, bool)> {
+        if item == NO_ITEM {
+            return None;
+        }
+        self.vessels().iter().find_map(|v| {
+            if v.fresh == item {
+                Some((*v, false))
+            } else if v.salt == item {
+                Some((*v, true))
+            } else {
+                None
+            }
+        })
     }
 
     /// The consumable row of an item, or `None` when the hand is empty, the
@@ -310,6 +370,9 @@ pub const REFUSE_C_FULL: u32 = 2;
 /// at dry ground. Announced rather than swallowed for `REFUSE_C_NOT_FOOD`'s
 /// reason: the player needs to learn where the verb works.
 pub const REFUSE_C_NO_WATER: u32 = 3;
+/// Salt water (water pass): the content refuses the sea to the mouth
+/// (`drink_water_salt` zero), or the vessel in hand holds salt — boil it.
+pub const REFUSE_C_SALT: u32 = 4;
 /// The highest reason above — `DEATH_BY_MAX`'s posture for this ledger.
 /// The wire field is four bits, so a forged `reason` in 4..=15 fits the
 /// width (zero the encoder already refuses); the server refuses the whole
@@ -318,7 +381,7 @@ pub const REFUSE_C_NO_WATER: u32 = 3;
 /// because `protocol`'s domain scrape reads this block as text and its
 /// exempt list is a wire-pass edit; `tests/domain_ledger.rs` fails if the
 /// literal stops naming the ledger's top.
-pub const REFUSE_C_MAX: u32 = 3;
+pub const REFUSE_C_MAX: u32 = 4;
 
 /// The deepest a wound gets, in hp it owes: Rust's `bleeding` meter tops
 /// out at 100.
@@ -581,7 +644,13 @@ pub fn consume(
         return false;
     }
     let Some(def) = sc.row(stack.item) else {
-        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
+        // A vessel of sea water is not drunk: it is boiled first.
+        let why = if sc.vessel_full(stack.item).is_some_and(|(_, salt)| salt) {
+            REFUSE_C_SALT
+        } else {
+            REFUSE_C_NOT_FOOD
+        };
+        events.push(EV_CONSUME_REFUSED, p.id, why, 0);
         return false;
     };
     // Refuse a consume that could not do anything: a full pair and no heal
@@ -598,10 +667,13 @@ pub fn consume(
     }
 
     p.inv[slot].count -= 1;
-    if p.inv[slot].count == 0 && stack.item == sc.vessel_full && sc.vessel != NO_ITEM {
+    let drunk = sc
+        .vessel_full(stack.item)
+        .filter(|(v, _)| v.fresh == stack.item);
+    if let (0, Some((v, _))) = (p.inv[slot].count, drunk) {
         // A drunk vessel is an empty one, in the same slot.
         p.inv[slot] = crate::gather::ItemStack {
-            item: sc.vessel,
+            item: v.empty,
             count: 1,
             cond: 0,
             skin: stack.skin,
@@ -731,6 +803,23 @@ fn water_in_reach(seed: u64, x: f32, z: f32) -> Option<bool> {
     wet.then_some(!fresh)
 }
 
+/// What an `EV_DRANK` reports (water pass): a mouthful (`b`'s low half the
+/// water it restored, `c` the hp it cost), a vessel filled (`b`'s low half
+/// 1 for salt), or one poured out (`World::pour`: `b`'s low half the fires
+/// it put out, `c` the planters it reached, with [`POURED_SALT`] set when
+/// it was salt). The kind rides `b`'s high half — [`drank_b`].
+pub const DRANK_DRINK: u16 = 0;
+pub const DRANK_FILL: u16 = 1;
+pub const DRANK_POUR: u16 = 2;
+/// A pour's `c` flag: the water was salt, so the planters it reached went dry.
+pub const POURED_SALT: u32 = 1 << 16;
+
+/// `EV_DRANK`'s `b`: the kind over the count.
+#[inline]
+pub fn drank_b(kind: u16, n: u16) -> u32 {
+    (u32::from(kind) << 16) | u32::from(n)
+}
+
 /// Drink from the water at your feet — thirst's real answer, and the first
 /// verb in this module that reads the world instead of the inventory.
 ///
@@ -759,17 +848,27 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
         return Step::Quiet;
     };
-    // An empty vessel in hand at fresh water fills instead of drinking.
+    // An empty vessel in hand fills instead of drinking: with fresh water
+    // where there is any, else with the sea when the vessel holds salt.
     let sel = p.frame.sel as usize;
-    if !salt
-        && sc.vessel != NO_ITEM
-        && sel < p.inv.len()
-        && p.inv[sel].count == 1
-        && p.inv[sel].item == sc.vessel
-    {
-        p.inv[sel].item = sc.vessel_full;
-        events.push(EV_DRANK, p.id, 0, 0);
-        return Step::Changed;
+    let held = p.inv.get(sel).copied().unwrap_or_default();
+    if let Some(v) = sc.vessel_empty(held.item).filter(|_| held.count == 1) {
+        let into = if salt { v.salt } else { v.fresh };
+        if into != NO_ITEM {
+            p.inv[sel].item = into;
+            events.push(EV_DRANK, p.id, drank_b(DRANK_FILL, salt as u16), 0);
+            return Step::Changed;
+        }
+    }
+    let gulp = if salt {
+        sc.drink_water_salt
+    } else {
+        sc.drink_water
+    };
+    if gulp == 0 {
+        // The content keeps the sea from the mouth, the reference's rule.
+        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_SALT, 0);
+        return Step::Quiet;
     }
     if p.water >= sc.max_water {
         // Refuse rather than charge: a full meter would pay hp for
@@ -782,13 +881,18 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     // delivers the water — the ordering `step` uses for the same reason
     // (drain, then hurt: the tick a thing happens is the tick it counts).
     let before = p.water;
-    p.water = p.water.saturating_add(sc.drink_water).min(sc.max_water);
+    p.water = p.water.saturating_add(gulp).min(sc.max_water);
     let restored = p.water - before;
     // The funnel, **unreduced**: the hp *is* the price of the drink, and a
     // helmet is not a desalinator. `dealt` rather than the raw cost, so
     // `EV_DRANK` reports what the body actually paid.
     let took = crate::combat::hurt_unreduced(p, if salt { sc.drink_hp_cost } else { 0 });
-    events.push(EV_DRANK, p.id, restored as u32, took.dealt as u32);
+    events.push(
+        EV_DRANK,
+        p.id,
+        drank_b(DRANK_DRINK, restored),
+        took.dealt as u32,
+    );
     announce(sc, p, events);
     // The "a body already at zero is not killed twice" guard this line
     // used to spell out by hand now lives in `combat::debit`, which is the
@@ -1035,8 +1139,12 @@ mod tests {
     #[test]
     fn a_drunk_vessel_comes_back_empty() {
         let mut sc = SurvivalContent::probe_fixture();
-        sc.vessel = 3;
-        sc.vessel_full = 0;
+        sc.vessels[0] = Vessel {
+            empty: 3,
+            fresh: 0,
+            salt: NO_ITEM,
+        };
+        sc.vessel_count = 1;
         let mut p = player(&sc);
         p.water = 0;
         p.inv[2] = ItemStack {

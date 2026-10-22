@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 189] = [
+pub const FIXTURES: [&str; 190] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -339,6 +339,9 @@ pub const FIXTURES: [&str; 189] = [
     "action_plant_bed.bin",
     "action_plant_ground.bin",
     "action_tend.bin",
+    // The water pass (v137): a vessel poured out — salt, two fires put out,
+    // one planter's tank emptied.
+    "event_vessel.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -503,7 +506,7 @@ pub fn action_arc() -> (u8, u8, u8) {
 }
 
 /// The exposure event: soaked, freezing past hurt, half comfort by a fire,
-/// a hard frost.
+/// a hard frost, and under water past half a breath.
 pub fn exposure() -> sim_core::exposure::Readout {
     sim_core::exposure::Readout {
         wet_pct: 64,
@@ -515,6 +518,8 @@ pub fn exposure() -> sim_core::exposure::Readout {
         fel_pct: 40,
         fel_hurting: false,
         bleed: 27,
+        breath_pct: 30,
+        drowning: true,
     }
 }
 
@@ -680,6 +685,12 @@ pub fn event_cont_close() -> (u8, u32, bool) {
 /// exists to pin.
 pub fn event_drank() -> (u16, u16) {
     (37, 2)
+}
+
+/// A salt pour that put out two fires and reached one planter:
+/// (poured, salt, doused, watered).
+pub fn event_vessel() -> (bool, bool, u16, u16) {
+    (true, true, 2, 1)
 }
 
 fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {

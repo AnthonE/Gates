@@ -2132,7 +2132,7 @@ pub fn swap(
             // **Holstered in THE GATE** (Rust: no weapon can be drawn in a
             // safe zone): the hands are empty until you step out. A
             // deployable is held as a blueprint (`sheet`), not in the fist.
-            if core.holstered() || click == crate::ui::hold::Click::Deploy {
+            if core.holstered() || core.waterlogged() || click == crate::ui::hold::Click::Deploy {
                 (None, 0, None)
             } else {
                 (
@@ -2904,7 +2904,9 @@ pub fn animate(
         _ => Quat::IDENTITY,
     };
     // Holstered in THE GATE the fist is empty (`swap`), so it is the rest hand.
-    let holstered = net.as_deref().is_some_and(|n| n.session.core.holstered());
+    let holstered = net
+        .as_deref()
+        .is_some_and(|n| n.session.core.holstered() || n.session.core.waterlogged());
     let want = hand_fit(def.filter(|_| !holstered));
     let k = 1.0 - (-VIEWMODEL_HAND_RATE * dt).exp();
     let fit = match m.fit {

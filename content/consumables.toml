@@ -150,3 +150,11 @@ health = 0
 food = 0
 water = 100
 seconds = 2
+
+# A full jug: two skins at once, so a slower drink.
+[[consumable]]
+id = "item.water_jug_full"
+health = 0
+food = 0
+water = 200
+seconds = 4

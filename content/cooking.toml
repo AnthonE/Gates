@@ -60,6 +60,18 @@ output = "item.burnt_meat"
 station = "fire"
 seconds = 15
 
+# Salt water boils fresh (the water pass): the reference's campfire water
+# purifier, without its separate deployable — a vessel of sea water on the
+# grill comes off drinkable. The time is the price, and the wood that burns
+# while it boils: the reference purifies 4:1 over a few minutes, and a skin
+# here is half a minute. A jug holds lake water only.
+[[cook]]
+input = "item.waterskin_salt"
+output = "item.waterskin_full"
+station = "fire"
+seconds = 30
+
+
 # --- the furnace ----------------------------------------------------------
 #
 # Rust's smelt: ore goes into the furnace with wood, you light it, and every

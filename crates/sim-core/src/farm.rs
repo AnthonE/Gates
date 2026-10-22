@@ -1143,6 +1143,50 @@ fn catcher_visit(
     ovens[i].water = water;
 }
 
+/// A vessel poured out at `(x, z)` (water pass, `World::pour`): one skin's
+/// worth shared, box order then store order, among the planters and growing
+/// ground plants within `r` of it, as a catcher's sprinkle shares its
+/// barrel. Salt water empties every such tank instead. How many it reached.
+pub fn pour(
+    fc: &FarmContent,
+    farm: &mut Farm,
+    boxes: &[BoxRec],
+    ovens: &mut [crate::oven::OvenState],
+    (x, z): (f32, f32),
+    r: f32,
+    salt: bool,
+) -> u16 {
+    let near = |px: f32, pz: f32| {
+        let (dx, dz) = (px - x, pz - z);
+        dx * dx + dz * dz <= r * r
+    };
+    let mut left = fc.skin_wu;
+    let mut reached = 0u16;
+    let mut give = |bank: &mut u32, cap: u32| {
+        if salt {
+            *bank = 0;
+        } else {
+            let pour = cap.saturating_sub(*bank).min(left);
+            *bank += pour;
+            left -= pour;
+        }
+        reached += 1;
+    };
+    for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+        let (px, pz) = b.xz();
+        if st.arch == ARCH_PLANTER && near(px, pz) {
+            give(&mut st.water, fc.planter_cap_wu);
+        }
+    }
+    for p in farm.entries[..farm.len].iter_mut() {
+        let (px, _, pz) = p.pos();
+        if p.host == HOST_GROUND && is_growing(p.stage) && near(px, pz) {
+            give(&mut p.water, fc.ground_cap_wu);
+        }
+    }
+    reached
+}
+
 // ---------------------------------------------------------------- verbs
 
 /// Plant one unit of `p.inv[slot]` in spot `spot` of the planter `b`
