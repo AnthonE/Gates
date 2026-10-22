@@ -335,7 +335,7 @@ impl CloudParams {
             // toward the horizon (where `DeckLight` starts warming the deck),
             // so a dusk sky is the atmosphere's orange, not greyed by blue.
             lift: (Vec3::from_array(sky::air_chroma())
-                * super::rig::SKY_LIFT
+                * std::env::var("GATES_TUNE_SKY_LIFT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(super::rig::SKY_LIFT) // TUNE
                 * p.light
                 * (p.sun.y / 0.25).clamp(0.0, 1.0)
                 * (1.0 - p.dark)
