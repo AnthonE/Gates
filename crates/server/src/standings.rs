@@ -106,6 +106,11 @@ const IDLE_MINUTES: u32 = 10;
 /// The same killer taking the same victim again within this many ticks
 /// (an hour) is not another kill on the boards.
 pub const KILL_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
+/// Minutes a victim must have played this wipe for killing them to count on
+/// a shard that pays ([`Standings::kill`]), or the purse's own floor when
+/// that is lower: an alt walked into a gun costs real play first, and a
+/// newcomer is still a kill long before the purse would pay them.
+pub const KILL_VICTIM_MIN_MINUTES: u32 = 30;
 /// One rekindle deed per wallet per work within this many ticks (an hour).
 pub const REKINDLE_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
 /// Pairs [`Recent`] remembers. A pair older than its window, or pushed out
@@ -1151,7 +1156,7 @@ impl Standings {
     /// nobody we rank. The death always counts; the kill does not when the
     /// same killer took the same wallet within the hour
     /// ([`KILL_REPEAT_TICKS`]), nor, on a shard that pays, when the victim
-    /// has not played the purse's `min_minutes` (a guest never has): alts
+    /// has not played [`KILL_VICTIM_MIN_MINUTES`] (a guest never has): alts
     /// walked into one gun would otherwise be a fight board of their own.
     pub fn kill(&mut self, killer: Option<(&str, &str)>, victim: Option<(&str, &str)>, now: u64) {
         if let Some(row) = victim.and_then(|(k, l)| self.row(k, l)) {
@@ -1165,7 +1170,7 @@ impl Standings {
             let played = victim
                 .and_then(|(v, _)| self.rows.get(v))
                 .map_or(0, |r| r.played);
-            if played < self.prizes.min_minutes {
+            if played < KILL_VICTIM_MIN_MINUTES.min(self.prizes.min_minutes) {
                 return;
             }
         }
@@ -2060,7 +2065,8 @@ mod tests {
     }
 
     /// The same pair again within the hour is no new kill, and a purse
-    /// counts only victims who played its minutes. Deaths always count.
+    /// counts only victims who played the kill floor (or its own, if lower).
+    /// Deaths always count.
     #[test]
     fn a_kill_counts_once_an_hour_a_pair_and_only_on_a_player() {
         let mut s = Standings::off();
@@ -2087,6 +2093,19 @@ mod tests {
         s.minute(dave, "", false);
         s.kill(alice, Some((dave, "")), 0);
         assert_eq!(s.row_of(ALICE).unwrap().kills, 4);
+
+        // A purse that pays only at 720 minutes still counts a victim at
+        // the kill floor: the boards are not for twelve-hour players only.
+        s.prizes.min_minutes = 720;
+        let erin = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        for _ in 1..KILL_VICTIM_MIN_MINUTES {
+            s.minute(erin, "", false);
+        }
+        s.kill(alice, Some((erin, "")), 0);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 4, "one minute short");
+        s.minute(erin, "", false);
+        s.kill(alice, Some((erin, "")), 0);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 5);
     }
 
     /// The rekindle deed is once an hour per wallet and work.
