@@ -456,8 +456,9 @@ pub struct ShardCore {
     /// extraction, and to everyone when the exchange changes.
     bank_owed: [bool; MAX_PLAYERS],
     /// Per slot, the id of the tenant that acted since the last standings
-    /// minute (an action the sim ran, a swing that paid, a hit), 0 for none:
-    /// such a minute is played ([`Self::standings_minute`]).
+    /// minute (an outcome the sim reported for its own act, never a verb
+    /// merely sent: `note_standings`), 0 for none: such a minute is played
+    /// ([`Self::standings_minute`]).
     played_minute: [u32; MAX_PLAYERS],
     /// Per slot, `(tenant id, qx, qz)`: where the last standings minute
     /// found its body. A minute whose body ended [`MINUTE_WALK_M`] from
@@ -500,11 +501,16 @@ const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
 /// The grids, in whole metres, a far report (v113) is snapped to for a
 /// listener past the class-S radius (`ShardCore::send_report`): the finest
-/// whose `q × 8` m covers the listener's distance, so a cell is about an
-/// eighth of it (±3.5° of bearing) at every range and never a fixed-size
-/// position fix. Powers of two, so the cells nest: a listener moving
-/// between bands cannot narrow the place by overlapping two grids.
+/// whose `q × 8` m covers the listener's distance to the coarsest cell's
+/// centre, so a cell is about an eighth of it (±3.5° of bearing) at every
+/// range and never a fixed-size position fix. Powers of two, so the cells
+/// nest: a listener moving between bands cannot narrow the place by
+/// overlapping two grids, and every far report names the coarsest cell.
 const REPORT_FAR_Q_M: [i64; 4] = [32, 64, 128, 256];
+// Inside the class-S radius a report is the metre, whatever its reach.
+const _: () = assert!(
+    GUN_REPORT_CM > interest::PIECE_INTEREST_CM && BLAST_REPORT_CM > interest::PIECE_INTEREST_CM
+);
 
 /// One encoded far report: where it was (planar centimetres), the bytes.
 type FarReport = ((i64, i64), [u8; 16], usize);
@@ -1158,8 +1164,9 @@ impl ShardCore {
 
     /// A minute of play for every connected wallet that played it: alive,
     /// awake, and since the last one either its body went
-    /// [`MINUTE_WALK_M`] or it acted (`played_minute`). Both are what the
-    /// server saw, never what a client's input bits claim. What a purse's
+    /// [`MINUTE_WALK_M`] or the sim reported an outcome of its own act
+    /// (`played_minute`). Both are what the server saw, never what a
+    /// client's input bits or a blind verb claim. What a purse's
     /// `prize_min_minutes`, `extract_min_minutes` and the gifts are
     /// measured in, so a wallet parked on the island, dead or asleep earns
     /// none of them. From the boundary loop's minute.
@@ -1454,14 +1461,34 @@ impl ShardCore {
         Some((key, String::new()))
     }
 
+    /// `id` played this minute (`standings_minute`), on the sim's word.
+    fn note_played(&mut self, id: u32) {
+        if let Some(slot) = self.client_slot_of(id) {
+            self.played_minute[slot] = id;
+        }
+    }
+
     /// This tick's events, tallied: what was given to the works, the deeds,
-    /// the kills. After `World::tick`, before the events are routed.
-    fn note_standings(&mut self) {
+    /// the kills, and who played the minute. After `World::tick` ran
+    /// `cmd_buf[..n]`, before the events are routed.
+    ///
+    /// A minute is played by an outcome the sim reported for the player's
+    /// own act, one that cost something or changed the world: a swing or a
+    /// loot that paid, a hit, a shot, a craft queued, a deposit, an
+    /// extraction, a lesson, a meal, a piece, deployable or charge placed.
+    /// Never by a refusal, nor by a verb that can be sent blind at no cost
+    /// (a drink, a reload, a slot move, a talk, a respawn), nor by a queue
+    /// finishing on its own.
+    fn note_standings(&mut self, n: usize) {
         use sim_core::works::{WORK_EV_LIT, WORK_EV_REKINDLED};
+        use sim_core::world::TRUST_GIVE;
+        // Slots whose craft the sim refused this tick (`MAX_PLAYERS` <= 128).
+        let mut craft_refused = 0u128;
         for i in 0..self.world.events.len() {
             let ev = self.world.events.entries()[i];
             match ev.code {
                 EV_GAVE => {
+                    self.note_played(ev.a);
                     if let Some((k, l)) = self.standing_who(ev.a) {
                         self.standings.gave(&k, &l, (ev.b >> 16) as u16, ev.c);
                     }
@@ -1478,6 +1505,7 @@ impl ShardCore {
                     self.note_work_deed(ev);
                 }
                 EV_EXTRACTED => {
+                    self.note_played(ev.a);
                     if let Some((k, l)) = self.standing_who(ev.a) {
                         self.standings.extracted(&k, &l, ev.c);
                     }
@@ -1498,12 +1526,39 @@ impl ShardCore {
                     let points = self.standings.rules.solved_points;
                     self.standings.deed(&k, &l, points, Some(&what));
                 }
-                // A swing that paid (or a loot) and a hit that landed play
-                // the minute (`standings_minute`): the sim's word, not the
-                // button's.
-                EV_GATHER | EV_HIT => {
+                // Each names its actor in `a`: the striker, the shooter, the
+                // learner, the eater (or the hand on a syringe).
+                EV_HIT | EV_SHOT | EV_RESEARCH | EV_CONSUMED => self.note_played(ev.a),
+                // A swing or a loot that paid. A give's receipt names the
+                // receiver, who only stood there: the act was the giver's.
+                EV_GATHER => {
+                    let given = self
+                        .world
+                        .trust
+                        .rows()
+                        .iter()
+                        .any(|r| r.verb == TRUST_GIVE && r.counterparty == ev.a);
+                    if !given {
+                        self.note_played(ev.a);
+                    }
+                }
+                // The owner is the hand that placed it (`place_deploy`).
+                EV_DEPLOY_PLACED => self.note_played(ev.c),
+                // A piece and a charge name nobody: the tick's own command
+                // does, as the achievements match them.
+                EV_PIECE_PLACED => {
+                    if let Some((id, _)) = self.piece_by(&self.cmd_buf[..n], ev) {
+                        self.note_played(id);
+                    }
+                }
+                EV_CHARGE_PLACED => {
+                    if let Some(id) = self.charge_by(&self.cmd_buf[..n], ev) {
+                        self.note_played(id);
+                    }
+                }
+                EV_CRAFT_REFUSED => {
                     if let Some(slot) = self.client_slot_of(ev.a) {
-                        self.played_minute[slot] = ev.a;
+                        craft_refused |= 1 << slot;
                     }
                 }
                 EV_DEATH => {
@@ -1516,6 +1571,22 @@ impl ShardCore {
                     );
                 }
                 _ => {}
+            }
+        }
+        // A craft the sim queued (it took the inputs) plays the minute; a
+        // queued craft says nothing, so it is the command a live body sent
+        // with no refusal beside it. Its units landing later
+        // (`EV_CRAFT_DONE`) do not: four jobs of slow crafts would play
+        // hours of minutes for a body that walked away.
+        for i in 0..n {
+            let Command::Craft { id, .. } = self.cmd_buf[i] else {
+                continue;
+            };
+            let Some(slot) = self.client_slot_of(id) else {
+                continue;
+            };
+            if craft_refused & (1 << slot) == 0 && self.world.live_slot_of(id).is_some() {
+                self.played_minute[slot] = id;
             }
         }
     }
@@ -3486,17 +3557,15 @@ impl ShardCore {
                         count,
                     },
                 };
-                // An action the sim runs plays the minute
-                // (`standings_minute`); a look into a bag, a team verb never
-                // got here.
-                self.played_minute[slot] = c.id;
+                // Nothing is played here: what the sim makes of it is
+                // (`note_standings`).
                 n += 1;
             }
         }
         mark(Phase::Sim);
         self.world.tick(&self.cmd_buf[..n]);
         mark(Phase::Interest);
-        self.note_standings();
+        self.note_standings(n);
         self.note_achievements(n);
         // The boards, rebuilt at most every five seconds; whatever moved
         // them since the last look is owed to everyone.
@@ -5172,8 +5241,13 @@ impl ShardCore {
                                     ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
-                                // Its removal is owed here now (`held_tiles`).
-                                self.clients[slot].mark_tile(acx, acz);
+                                // Its removal is owed here now (`held_tiles`),
+                                // by its tile when the anchor sent it and by
+                                // id to its owner from anywhere: the deploy
+                                // walk's rule.
+                                if self.point_event_visible(slot, at) {
+                                    self.clients[slot].mark_tile(acx, acz);
+                                }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -6378,7 +6452,15 @@ impl ShardCore {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
-                                if tile.is_some_and(|(x, z)| !self.clients[slot].holds_tile(x, z)) {
+                                // An owner's own deployable reaches it by id:
+                                // its walks send it those from anywhere and
+                                // mark no tile for them (`drip_client`).
+                                // `drop_deploy` names the owner in `c`.
+                                let own = !piece && ev.c == self.clients[slot].id;
+                                if !own
+                                    && tile
+                                        .is_some_and(|(x, z)| !self.clients[slot].holds_tile(x, z))
+                                {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
@@ -6983,6 +7065,25 @@ impl ShardCore {
     /// the seat (`EV_DOOR`'s re-arm argument). The targets' drips run first
     /// in `tick`, so a seat re-arms in the tick its target does.
     fn arm_walks(&mut self, slot: usize, stats: &ShardStats) {
+        // A seat hears removals only through its target's map: when that
+        // map is forgotten (`ClientNetState::held_epoch`), the seat re-walks
+        // its pieces and deployables from a reset too, re-marking the map
+        // as it goes (`mark_held`), or a wall that fell in a forgotten tile
+        // would stand on the seat's screen.
+        let seat = slot
+            .checked_sub(MAX_PLAYERS)
+            .and_then(|i| self.watching.get(i).copied().flatten());
+        if let Some(seat) = seat {
+            let epoch = self.clients[seat.target].held_epoch;
+            let c = &mut self.clients[slot];
+            if c.seen_held_epoch != epoch {
+                c.seen_held_epoch = epoch;
+                c.piece_sync_cursor = 0;
+                c.piece_sync_reset = true;
+                c.deploy_sync_cursor = 0;
+                c.deploy_sync_reset = true;
+            }
+        }
         let Some(w) = self.live_wslot(slot) else {
             return;
         };
@@ -8147,10 +8248,17 @@ impl ShardCore {
             wire[..n].reverse();
             lit[..n].reverse();
             let reset = c.deploy_sync_reset;
-            // Marked at the cell the predicate above measured.
+            // Marked at the cell the predicate above measured, and only for
+            // a record the anchor sent. The owner's exemption walks its own
+            // from anywhere, and marking those tiles would hand it every
+            // removal around them: a cheap bed beside a base would be a raid
+            // radar on it. Its own removals reach it by id instead
+            // (`route_events`).
             for d in &wire[..n] {
                 let (x, z) = interest::deploy_cell(d, &self.world.pieces);
-                self.mark_held(slot, x, z);
+                if interest::point_in_interest(anchor, interest::cell_cm(x, z)) {
+                    self.mark_held(slot, x, z);
+                }
             }
             let rest = owed - scanned;
             let done = |c: &mut ClientNetState| {
@@ -9003,10 +9111,18 @@ impl ShardCore {
         Some((Self::report(kind, qx, qy, qz, 1)?, (kind, qx, qy, qz)))
     }
 
-    /// Send `slot` the report in `r` that its distance earns, if its body is
-    /// within `reach_cm` of it at all: to the metre inside the class-S
-    /// radius, past it snapped to the finest of `REPORT_FAR_Q_M` that is
-    /// about an eighth of the distance. True when one was sent.
+    /// Send `slot` the report in `r` that its distance earns, if it is
+    /// within `reach_cm` at all: to the metre inside the class-S radius,
+    /// past it snapped to the finest of `REPORT_FAR_Q_M` that is about an
+    /// eighth of the distance. True when one was sent.
+    ///
+    /// Past the metre no edge is measured to the exact place, or each would
+    /// be a range ring on the source that a listener could step across: the
+    /// band is chosen from the centre of the coarsest cell, which every far
+    /// report names, and the reach is measured to the centre of the cell
+    /// this report names. Neither then says more than the report itself; the
+    /// reach moves by up to that cell's half-diagonal (23 m to 90 m inside a
+    /// gun's 400 m).
     fn send_report(
         &self,
         slot: usize,
@@ -9018,22 +9134,36 @@ impl ShardCore {
         let Some(d2) = self.d2_body_cm(slot, at) else {
             return false;
         };
-        if d2 > reach_cm * reach_cm {
-            return false;
-        }
         let near = interest::PIECE_INTEREST_CM;
         if d2 <= near * near {
             return send(Lane::Event, slot, &fine[..n]);
         }
+        let coarsest = REPORT_FAR_Q_M[REPORT_FAR_Q_M.len() - 1];
+        let Some(dc2) = self.d2_body_cm(slot, Self::far_cell_cm(at, coarsest)) else {
+            return false;
+        };
         // The cell that is an eighth of the distance: `q` m out to `8q` m.
         let q_m = REPORT_FAR_Q_M
             .into_iter()
-            .find(|&q| d2 <= (q * 800) * (q * 800))
-            .unwrap_or(REPORT_FAR_Q_M[REPORT_FAR_Q_M.len() - 1]);
+            .find(|&q| dc2 <= (q * 800) * (q * 800))
+            .unwrap_or(coarsest);
+        let Some(dq2) = self.d2_body_cm(slot, Self::far_cell_cm(at, q_m)) else {
+            return false;
+        };
+        if dq2 > reach_cm * reach_cm {
+            return false;
+        }
         match Self::report(kind, qx, qy, qz, q_m) {
             Some((_, far, m)) => send(Lane::Event, slot, &far[..m]),
             None => false,
         }
+    }
+
+    /// The centre, in planar centimetres, of the `q_m` m report cell that
+    /// holds `at`: the place a far report on that grid names (`report`).
+    fn far_cell_cm(at: (i64, i64), q_m: i64) -> (i64, i64) {
+        let c = |cm: i64| ((cm / 100).div_euclid(q_m) * q_m + q_m / 2) * 100;
+        (c(at.0), c(at.1))
     }
 
     /// The squared planar distance, in centimetres, from `slot`'s body to
@@ -9832,6 +9962,12 @@ mod tests {
         let w: Vec<usize> = (0..3)
             .map(|s| core.live_wslot(s).expect("joined"))
             .collect();
+        // The shooter at the middle of its coarsest report cell, which the
+        // bands are measured from (`send_report`).
+        let middle = |q: i32| ((i64::from(q) * 3 / 100).div_euclid(256) * 256 + 128) as f32;
+        let b = core.world.players[w[0]].body;
+        core.world.players[w[0]].body =
+            sim_core::movement::Body::at(SEED, &core.world.haven, middle(b.qx), middle(b.qz));
         let me = core.world.players[w[0]].body;
         // 300 m and 600 m off: past the 208 m interest radius both; inside
         // a gun's 400 m one of them; inside a blast's 1500 m both.
@@ -9843,6 +9979,8 @@ mod tests {
             core.tick_bare(&stats, |_, _, _| true);
         }
         core.world.tick(&[]);
+        // Where the shot is heard from, settled.
+        let me = core.world.players[w[0]].body;
         let blast = sim_core::world::impact_a(0, sim_core::ranged::IMPACT_BLAST, me.qx);
         core.world
             .events
@@ -9894,6 +10032,47 @@ mod tests {
             [protocol::REPORT_BLAST],
             "a gun stops at 400 m"
         );
+    }
+
+    /// A far report's band is no range ring on the source (`send_report`):
+    /// two blasts in one coarsest cell, 254 m and 346 m from a listener, are
+    /// both snapped to the grid the cell's centre 300 m off earns. Measured
+    /// to the exact place, the nearer came on the 32 m grid, and stepping
+    /// across that edge told the listener how far the source was.
+    #[test]
+    fn a_far_reports_band_is_no_range_ring_on_the_source() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        assert!(core.connect(0, PLAYER));
+        core.tick_bare(&stats, |_, _, _| true);
+        let w = core.live_wslot(0).expect("joined");
+        // The middle of a coarsest cell, and the listener 300 m off it.
+        let (cx, cz) = (2176.0f32, 2176.0f32);
+        core.world.players[w].body =
+            sim_core::movement::Body::at(SEED, &core.world.haven, cx, cz + 300.0);
+        for _ in 0..3 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        core.world.tick(&[]);
+        let q = |m: f32| (m * 100.0 / 3.0) as i32;
+        let dzs = [46.0f32, -46.0];
+        for dz in dzs {
+            let a = sim_core::world::impact_a(0, sim_core::ranged::IMPACT_BLAST, q(cx));
+            core.world.events.push(EV_IMPACT, a, q(cz + dz) as u32, 0);
+        }
+        let mut got = Vec::new();
+        core.pump_events(&stats, &mut |lane, slot, bytes: &[u8]| {
+            if lane == Lane::Event && slot == 0 {
+                if let Ok(EventMsg::Report { x, z, .. }) = decode_event(bytes) {
+                    got.push((i64::from(x), i64::from(z)));
+                }
+            }
+            true
+        });
+        // `report`'s snap, of the metre the body quanta name.
+        let on64 = |m: f32| (i64::from(q(m)) * 3 / 100).div_euclid(64) * 64 + 32;
+        let want: Vec<_> = dzs.iter().map(|&dz| (on64(cx), on64(cz + dz))).collect();
+        assert_eq!(got, want, "a band edge sits on the source");
     }
 
     /// A core with one connected client, its join landed, and the event
@@ -10439,12 +10618,16 @@ mod tests {
 
     /// A standings minute is played only by a wallet that moved or acted in
     /// it, alive and awake: parked alts earn no `extract_min_minutes`. The
-    /// walk is the body's, measured from where the last minute found it;
-    /// input bits that go nowhere and a look into a bag are not play.
+    /// walk is the body's, measured from where the last minute found it; an
+    /// act is an outcome the sim reported for the player's own verb. Input
+    /// bits that go nowhere, a look into a bag, a verb sent blind or refused,
+    /// a queue landing on its own and an item handed over are not play.
     #[test]
     fn a_minute_counts_only_when_it_was_played() {
         let stats = ShardStats::default();
         let mut core = Box::new(ShardCore::new(SEED));
+        core.world.gather = GatherContent::probe_fixture();
+        core.world.craft = sim_core::craft::CraftContent::probe_fixture();
         let key = PlayerKey::new(format!("0x{:040x}", 0xc3).as_bytes()).unwrap();
         let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
         assert!(core.connect_as(0, 256, Some(key), None).is_some());
@@ -10492,14 +10675,112 @@ mod tests {
         core.tick_bare(&stats, |_, _, _| true);
         core.standings_minute();
         assert_eq!(played(&core), 1, "a look into a bag");
+        // Whether the sim said `code` to the player this tick.
+        let said = |core: &ShardCore, code: u8| {
+            core.world
+                .events
+                .entries()
+                .iter()
+                .any(|e| e.code == code && e.a == 256)
+        };
+        // The stock client's blind verbs: a drink, run or refused, and a
+        // reload an empty hand refuses.
         core.push_action(0, ActionMsg::Drink);
         core.tick_bare(&stats, |_, _, _| true);
+        core.push_action(0, ActionMsg::Reload);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(said(&core, EV_RELOAD_REFUSED), "an empty hand");
         core.standings_minute();
-        assert_eq!(played(&core), 2, "an action the sim ran");
+        assert_eq!(played(&core), 1, "a refused action is not play");
+        let craft = ActionMsg::Craft {
+            recipe: 0,
+            count: 1,
+            skin: sim_core::skin::NO_SKIN,
+        };
+        core.push_action(0, craft);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(said(&core, EV_CRAFT_REFUSED), "no inputs");
+        core.standings_minute();
+        assert_eq!(played(&core), 1, "a craft the sim refused");
+        core.world.players[w].inv[0] = ItemStack {
+            item: 0,
+            count: 3,
+            cond: 0,
+            skin: 0,
+        };
+        core.push_action(0, craft);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(core.world.players[w].jobs[0].remaining, 1, "queued");
+        core.standings_minute();
+        assert_eq!(played(&core), 2, "a craft the sim queued");
+        for _ in 0..4 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert_eq!(core.world.players[w].jobs[0].remaining, 0, "landed");
+        core.standings_minute();
+        assert_eq!(played(&core), 2, "a queue landing on its own");
+        // A swing that paid, as the sim reports it.
+        core.world.events.push(EV_GATHER, 256, 2 << 16 | 1, 0);
+        core.note_standings(0);
+        core.standings_minute();
+        assert_eq!(played(&core), 3, "an outcome the sim reported");
+        // Another hand gives this one wood: the receipt is the giver's act.
+        assert!(core.connect(1, 257), "the giver");
+        core.tick_bare(&stats, |_, _, _| true);
+        let g = ShardCore::world_slot_of(&core.world, 257).expect("seated");
+        let t = core.world.players[w].body;
+        let pos = sim_core::movement::POS_XZ_Q;
+        core.world.players[g].body = sim_core::movement::Body::at(
+            SEED,
+            &core.world.haven,
+            t.qx as f32 * pos,
+            t.qz as f32 * pos - 1.5,
+        );
+        core.world.players[g].inv[3] = ItemStack {
+            item: 2,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        // The giver's look at the taker's chest (`tests/give.rs`'s aim).
+        let a = core.world.players[g].body;
+        let rise = (t.qy - a.qy) as f32 * sim_core::movement::POS_Y_Q + 0.3 - 1.6;
+        let pitch = (0..=255u8)
+            .max_by(|&x, &y| {
+                let ((xc, xs), (yc, ys)) = (sim_core::pitch_dir(x), sim_core::pitch_dir(y));
+                (xc * 1.5 + xs * rise).total_cmp(&(yc * 1.5 + ys * rise))
+            })
+            .unwrap();
+        let mut dg = InputDatagram::new(0, 0, 4);
+        for seq in 1..=4 {
+            dg.push(sim_core::input::InputFrame {
+                seq,
+                pitch,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        core.push_input(1, &dg);
+        for _ in 0..6 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        core.push_action(
+            1,
+            ActionMsg::Give {
+                slot: 3,
+                count: 5,
+                target: 256,
+            },
+        );
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(said(&core, EV_GATHER), "the wood arrived");
+        assert_eq!(core.world.players[g].inv[3].count, 25, "and left the giver");
+        core.standings_minute();
+        assert_eq!(played(&core), 3, "an item handed over");
         step(&mut core, MINUTE_WALK_M + 1.0);
         core.world.players[w].dead = true;
         core.standings_minute();
-        assert_eq!(played(&core), 2, "dead");
+        assert_eq!(played(&core), 3, "dead");
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name
@@ -11372,6 +11653,91 @@ mod tests {
             said.contains(&missed),
             "a harvest made while the client was far was never said on its walk back"
         );
+        assert_eq!(core.clients[0].sync_cursor, 0, "the walk never finished");
+    }
+
+    /// **A respawn wave mid-walk that shrinks the store under the cursor is
+    /// clamped, and the harvest at the bottom is still said.** The missed
+    /// harvest is the store's first entry, so the walk reaches it last; the
+    /// wave lands after the first window and swap-removes half the store,
+    /// leaving fewer entries than the cursor still owes. Read unclamped, the
+    /// next window indexes past the store and takes the shard down.
+    #[test]
+    fn a_respawn_wave_under_the_harvested_cursor_is_clamped() {
+        use sim_core::terrain::Occupant;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let w = core.live_wslot(0).expect("joined");
+        let home = core.world.players[w].body;
+        let (hx, hz) = ((home.qx * 3 / 800) as u16, (home.qz * 3 / 800) as u16);
+        core.world.players[w].body.qz = home.qz + 500 * 100 / 3;
+        for _ in 0..3 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert!(core.world.slot_lives.is_empty());
+        // Behind the far client's back: the missed harvest (index 0), the
+        // rocks the wave takes (1..=128), then stumps that stay (129..=256).
+        let later = core.world.tick + 100_000;
+        let missed = (hx - 3, hz - 3);
+        let doomed = |i: u16| (hx + 1 + i % 16, hz + i / 16);
+        let stump = |i: u16| (hx + 1 + i % 16, hz + 8 + i / 16);
+        {
+            let (lives, events) = (&mut core.world.slot_lives, &mut core.world.events);
+            assert!(lives.harvest(missed.0, missed.1, Occupant::Rock, later, events));
+            for i in 0..128 {
+                let (x, z) = doomed(i);
+                assert!(lives.harvest(x, z, Occupant::Rock, later, events));
+            }
+            for i in 0..128 {
+                let (x, z) = stump(i);
+                assert!(lives.harvest(x, z, Occupant::Rock, later, events));
+            }
+        }
+        let len = core.world.slot_lives.len();
+        assert_eq!(len, 257);
+
+        // Walk back: the first tick re-arms and says the top window; then
+        // the doomed rocks respawn, and the store drops below the cursor.
+        core.world.players[w].body.qx = home.qx;
+        core.world.players[w].body.qz = home.qz;
+        let mut said = Vec::new();
+        for t in 0..8 {
+            if t == 1 {
+                assert_eq!(core.clients[0].sync_cursor, len - SLOT_SYNC_BATCH);
+                let now = core.world.tick;
+                let (lives, events) = (&mut core.world.slot_lives, &mut core.world.events);
+                for i in 0..128 {
+                    let (x, z) = doomed(i);
+                    assert!(lives.harvest(x, z, Occupant::Rock, now, events));
+                }
+            }
+            core.tick_bare(&stats, |lane, slot, bytes| {
+                if lane == Lane::Event && slot == 0 {
+                    if let Ok(EventMsg::SlotSync { cells, count, .. }) = decode_event(bytes) {
+                        said.extend_from_slice(&cells[..count as usize]);
+                    }
+                }
+                true
+            });
+            if t == 1 {
+                let left = core.world.slot_lives.len();
+                assert_eq!(left, 129, "the wave never landed");
+                assert!(
+                    len - SLOT_SYNC_BATCH > left,
+                    "the store never fell under the cursor"
+                );
+                assert_eq!(
+                    core.clients[0].sync_cursor,
+                    left - SLOT_SYNC_BATCH,
+                    "the cursor was not clamped to the store"
+                );
+            }
+        }
+        assert!(
+            said.contains(&missed),
+            "the harvest at the bottom was never said"
+        );
+        assert!((0..128).all(|i| said.contains(&stump(i))));
         assert_eq!(core.clients[0].sync_cursor, 0, "the walk never finished");
     }
 
