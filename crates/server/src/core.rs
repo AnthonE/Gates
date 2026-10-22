@@ -365,6 +365,10 @@ pub struct ShardCore {
     /// stale copy the accept loop read. In memory only: after a restart the
     /// store's copy is what a victim gets back.
     evicted: EvictMemo,
+    /// The id each evicted body wore, by key ([`EvictIds`]), for the
+    /// `Rekey` that hands a returning victim back their base. Kept beside
+    /// the world file across a restart.
+    pub evict_ids: EvictIds,
     /// The wallets this shard trusts with the admin lane (admin v0). Pure
     /// config, read once at boot and never written — the same standing as
     /// the baked content tables, and the reason it may live on a struct
@@ -529,6 +533,18 @@ const OVEN_BY_SOMEONE: u32 = u32::MAX;
 /// records a tick into a ring of `EVENT_RING_CAP`.
 const WORN_DRIP_PER_TICK: usize = 8;
 
+/// Minutes a wallet must play this wipe (`standings_minute`) before its
+/// sleeper is protected from eviction ([`ShardCore::evict_victim`]) and its
+/// eviction's id row outranks a throwaway's ([`EvictIds`]). The standings'
+/// idle line: a row under it is the one a full standings table gives away.
+const EVICT_SETTLED_MINUTES: u32 = 10;
+
+/// How long a settled wallet's sleeper stays in the world under slot
+/// pressure: half an hour, long enough to cover the fight or the online raid
+/// a log-off would otherwise dodge. A join that finds only such bodies is
+/// refused (`REFUSE_FULL`), which is the full-shard answer.
+const EVICT_MIN_SLEEP_TICKS: u64 = 30 * 60 * sim_core::limits::TICK_HZ as u64;
+
 /// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
 /// `ShardStats::phase_hist` files them. The index is the histogram row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -678,9 +694,8 @@ impl SleeperIndex {
     }
 }
 
-/// One eviction record: whose, the record, the put's stamp, and the id the
-/// evicted body wore.
-type EvictRow = (PlayerKey, PlayerSave, u64, u32);
+/// One eviction record: whose, the record, and the put's stamp.
+type EvictRow = (PlayerKey, PlayerSave, u64);
 
 /// The sim's own copy of every eviction record it has handed out, by key
 /// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
@@ -705,10 +720,7 @@ type EvictRow = (PlayerKey, PlayerSave, u64, u32);
 /// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
 /// allocates.
 ///
-/// It also keeps the id the evicted body wore: the victim's bags, locks and
-/// cupboards are still filed under it, and the rejoin moves them to the new
-/// body (`Command::Rekey`). A restart forgets this, and those things stay
-/// with the old id, which `SlotTable::start_past` keeps anyone from wearing.
+/// The id the evicted body wore is not kept here: [`EvictIds`] has it.
 struct EvictMemo {
     entries: Box<[Option<EvictRow>]>,
     /// The next put's stamp: oldest-first replacement with no ties when one
@@ -724,37 +736,204 @@ impl EvictMemo {
         }
     }
 
-    /// The record filed for `key` and the id its body wore.
-    fn find(&self, key: &PlayerKey) -> Option<(PlayerSave, u32)> {
+    /// The record filed for `key`.
+    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
         self.entries
             .iter()
             .flatten()
-            .find(|(k, _, _, _)| k == key)
-            .map(|(_, s, _, id)| (*s, *id))
+            .find(|(k, _, _)| k == key)
+            .map(|(_, s, _)| *s)
     }
 
     fn forget(&mut self, key: &PlayerKey) {
         for e in self.entries.iter_mut() {
-            if e.map(|(k, _, _, _)| k == *key).unwrap_or(false) {
+            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
                 *e = None;
             }
         }
     }
 
-    /// File `save` and the evicted body's `id` under `key`, replacing any
-    /// earlier one for the same key, else into a free row, else over the
-    /// oldest put.
-    fn put(&mut self, key: &PlayerKey, save: PlayerSave, id: u32) {
+    /// File `save` under `key`, replacing any earlier one for the same key,
+    /// else into a free row, else over the oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
         self.forget(key);
-        let stamp = |e: &Option<EvictRow>| e.map_or(0, |(_, _, n, _)| n);
+        let stamp = |e: &Option<EvictRow>| e.map_or(0, |(_, _, n)| n);
         let row = self
             .entries
             .iter()
             .position(|e| e.is_none())
             .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
         if let Some(i) = row {
-            self.entries[i] = Some((*key, save, self.next, id));
+            self.entries[i] = Some((*key, save, self.next));
             self.next += 1;
+        }
+    }
+}
+
+/// One id row ([`EvictIds`]): whose, the id their evicted body wore, the
+/// put's stamp, and whether the wallet had settled in
+/// ([`EVICT_SETTLED_MINUTES`]).
+type IdRow = (PlayerKey, u32, u64, bool);
+
+/// The file [`EvictIds`] is kept in beside the world save.
+pub fn evict_ids_path(base: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}.evicted", base.display()))
+}
+
+/// Whose bodies were evicted, by key, and the id each wore: the victim's
+/// bags, locks, cupboards and turrets are still filed under that id, and
+/// their return moves them to the new body (`Command::Rekey`, `connect_as`).
+///
+/// **Its own table, because losing a row costs a base.** Without the
+/// `Rekey` a returning victim's cupboard refuses them and their own turrets
+/// shoot them. This used to ride the 100-row [`EvictMemo`], where a script
+/// joining fresh wallets pushed a real victim out in a hundred evictions,
+/// and a restart forgot it outright. So:
+/// - sized like the store (`MAX_SAVED_PLAYERS`), and a full table gives up
+///   the oldest row of a wallet that never settled in before any settled
+///   one's, and files no unsettled newcomer over a table of settled rows;
+/// - kept beside the world file (`<world>.evicted`, on the world save's
+///   cadence like the teams, archived with it at a wipe), so a restart that
+///   brings the world back brings back who owns what in it.
+///
+/// A row is spent when its key is admitted (a body is theirs again) and
+/// never otherwise expires. Rows are `Copy` and boxed at `new`, so a put
+/// never allocates; the file's text is made off the tick, at a world save.
+pub struct EvictIds {
+    entries: Box<[Option<IdRow>]>,
+    /// The next put's stamp (oldest-first within a rank).
+    next: u64,
+    file: Option<std::path::PathBuf>,
+    /// Rows moved since the last file handed over.
+    dirty: bool,
+}
+
+impl Default for EvictIds {
+    fn default() -> Self {
+        Self::open(None)
+    }
+}
+
+impl EvictIds {
+    /// Kept in `file` across a restart, if there is one. Dirty from the
+    /// start, so the first world save writes the file even when it holds
+    /// nothing: a fresh world must not inherit a stale one's rows.
+    pub fn open(file: Option<std::path::PathBuf>) -> Self {
+        Self {
+            entries: vec![None; crate::store::MAX_SAVED_PLAYERS].into_boxed_slice(),
+            next: 0,
+            file,
+            dirty: true,
+        }
+    }
+
+    /// The id `key`'s evicted body wore.
+    pub fn find(&self, key: &PlayerKey) -> Option<u32> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|(k, ..)| k == key)
+            .map(|&(_, id, ..)| id)
+    }
+
+    fn forget(&mut self, key: &PlayerKey) {
+        for e in self.entries.iter_mut() {
+            if e.is_some_and(|(k, ..)| k == *key) {
+                *e = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// File `id` under `key`, replacing any earlier row for the key, else
+    /// into a free row, else over the lowest-ranked one (unsettled before
+    /// settled, then oldest). An unsettled key over a table of settled rows
+    /// is not filed.
+    fn put(&mut self, key: &PlayerKey, id: u32, settled: bool) {
+        self.forget(key);
+        let rank = |e: &Option<IdRow>| e.map_or((false, 0), |(_, _, n, s)| (s, n));
+        let row = match self.entries.iter().position(|e| e.is_none()) {
+            Some(i) => Some(i),
+            None => (0..self.entries.len())
+                .min_by_key(|&i| rank(&self.entries[i]))
+                .filter(|&i| settled || !rank(&self.entries[i]).0),
+        };
+        if let Some(i) = row {
+            self.entries[i] = Some((*key, id, self.next, settled));
+            self.next += 1;
+            self.dirty = true;
+        }
+    }
+
+    /// One row per line, oldest first: the key in hex, the id, and `1` for
+    /// a settled wallet.
+    fn to_text(&self) -> String {
+        let mut rows: Vec<&IdRow> = self.entries.iter().flatten().collect();
+        rows.sort_by_key(|(_, _, n, _)| *n);
+        let mut out = String::new();
+        for (k, id, _, settled) in rows {
+            out.push_str(&format!(
+                "{} {id} {}\n",
+                crate::team::hex(k.as_bytes()),
+                u8::from(*settled)
+            ));
+        }
+        out
+    }
+
+    /// Put back the rows [`Self::to_text`] wrote, oldest first, keeping
+    /// only those `keep` accepts. A line that does not parse is skipped.
+    /// Returns how many were kept.
+    fn restore(&mut self, text: &str, keep: impl Fn(u32) -> bool) -> usize {
+        let mut kept = 0;
+        for line in text.lines() {
+            let mut w = line.split_whitespace();
+            let (Some(k), Some(id), Some(settled)) = (w.next(), w.next(), w.next()) else {
+                continue;
+            };
+            let Some(key) = crate::team::unhex(k).and_then(|raw| PlayerKey::new(&raw)) else {
+                continue;
+            };
+            let Ok(id) = id.parse::<u32>() else {
+                continue;
+            };
+            if keep(id) {
+                self.put(&key, id, settled == "1");
+                kept += 1;
+            }
+        }
+        kept
+    }
+
+    /// Hand the file over again at the next save: the last write failed.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// The file for the store thread if a row moved since the last one
+    /// (`net.rs` take_world_save, on the world save's cadence). `None` with
+    /// no file or nothing new. The caller checks the ring for room first.
+    pub fn take_write(&mut self) -> Option<crate::slot::FileMsg> {
+        let path = self.file.clone()?;
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        Some(crate::slot::FileMsg {
+            path,
+            text: self.to_text(),
+        })
+    }
+
+    /// Read the rows back at boot, after the world they name has loaded,
+    /// keeping those `keep` accepts. No file is no rows.
+    pub fn load(&mut self, keep: impl Fn(u32) -> bool) -> std::io::Result<usize> {
+        let Some(path) = self.file.clone() else {
+            return Ok(0);
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(self.restore(&text, keep)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e),
         }
     }
 }
@@ -821,6 +1000,7 @@ impl ShardCore {
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
             evicted: EvictMemo::new(),
+            evict_ids: EvictIds::default(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
             wipe: crate::wipe::Clock::off(),
@@ -2360,28 +2540,46 @@ impl ShardCore {
         })
     }
 
-    /// The eviction policy — **the longest-asleep sleeper**, ties broken on
-    /// slot index — moved here from `World::seat` with two-phase eviction:
-    /// the same scan `seat` ran when it evicted on its own authority, minus
-    /// bodies this window has already spoken for. The server owns the pick
-    /// because only the server can file the victim's save before the world
-    /// forgets the body; the world only obeys the id (`Command::Evict`),
-    /// which keeps the choice in the command stream (wall 5).
+    /// Whether the wallet `key` has settled in this wipe: played
+    /// [`EVICT_SETTLED_MINUTES`]. A guest (no key) never has.
+    fn settled(&self, key: Option<&PlayerKey>) -> bool {
+        key.and_then(|k| core::str::from_utf8(k.as_bytes()).ok())
+            .is_some_and(|k| self.played_of(k) >= EVICT_SETTLED_MINUTES)
+    }
+
+    /// The eviction policy, picked by the server because only the server can
+    /// file the victim's save before the world forgets the body; the world
+    /// only obeys the id (`Command::Evict`), which keeps the choice in the
+    /// command stream (wall 5). Bodies this window already spoke for are
+    /// skipped.
+    ///
+    /// **Throwaways first, and a settled body is safe while its sleep is
+    /// young.** Longest-asleep alone let anyone evict any sleeper by churning
+    /// guest joins: log off mid-fight or mid-raid, script a few hundred
+    /// joins, and the body (gear and all) left the world within seconds, to
+    /// come back later where it lay. So a guest's body, or a wallet that has
+    /// not settled in ([`Self::settled`]), goes before anyone else's, and a
+    /// settled wallet's body only once it has slept
+    /// [`EVICT_MIN_SLEEP_TICKS`]. Longest-asleep within each, ties on slot.
+    /// `None` when every sleeper is protected: the join is refused
+    /// (`connect_as`), never seated over a body that must stay.
     fn evict_victim(&self) -> Option<u32> {
-        let mut pick: Option<usize> = None;
+        let now = self.world.tick;
+        let mut pick: Option<(bool, u64, usize)> = None;
         for (i, p) in self.world.players.iter().enumerate() {
             if !p.active || !p.sleeping || self.spoken_for(p.id) {
                 continue;
             }
-            let older = match pick {
-                None => true,
-                Some(b) => p.slept_at < self.world.players[b].slept_at,
-            };
-            if older {
-                pick = Some(i);
+            let settled = self.settled(self.sleepers.key_of(p.id).as_ref());
+            if settled && now.saturating_sub(p.slept_at) < EVICT_MIN_SLEEP_TICKS {
+                continue;
+            }
+            let rank = (settled, p.slept_at, i);
+            if pick.is_none_or(|b| rank < b) {
+                pick = Some(rank);
             }
         }
-        pick.map(|i| self.world.players[i].id)
+        pick.map(|(_, _, i)| self.world.players[i].id)
     }
 
     /// Players with a live connection right now — the number the status
@@ -2505,6 +2703,10 @@ impl ShardCore {
     /// raid not included. The record this function kept at the pick
     /// ([`EvictMemo`]) outranks it whenever the world has no body for the
     /// key (NOW §0y 2).
+    ///
+    /// `None` ⇒ refused, and nothing was spent: the command queue is full,
+    /// or the join needs a slot and no sleeper may give one up
+    /// ([`Self::evict_victim`]). The accept loop closes it `REFUSE_FULL`.
     #[must_use]
     pub fn connect_as(
         &mut self,
@@ -2535,15 +2737,15 @@ impl ShardCore {
             .filter(|&s| !self.spoken_for(s));
         // No body, so a record: this shard's own eviction record first, the
         // store's (as the accept loop read it) only if it has none. Peeked,
-        // not taken — it is spent below only once the join is queued. The
-        // eviction record also names the id the evicted body wore, which
-        // still owns its bags, locks and cupboards: they follow the wallet
-        // to the new body (`Command::Rekey`, after the join).
-        let memo = key
-            .filter(|_| sleeper.is_none())
-            .and_then(|k| self.evicted.find(&k));
-        let save = memo.map(|(s, _)| s).or(save);
-        let former = memo.map(|(_, was)| was).filter(|&was| was != id);
+        // not taken — it is spent below only once the join is queued. And
+        // the id an evicted body wore ([`EvictIds`]), which still owns its
+        // bags, locks and cupboards: they follow the wallet to the new body
+        // (`Command::Rekey`, after the join).
+        let gone = key.filter(|_| sleeper.is_none());
+        let save = gone.and_then(|k| self.evicted.find(&k)).or(save);
+        let former = gone
+            .and_then(|k| self.evict_ids.find(&k))
+            .filter(|&was| was != id);
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -2553,43 +2755,42 @@ impl ShardCore {
         // `Evict`, then the join — all inside one window, so the tick
         // applies them back to back and the join lands on the freed slot.
         let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
-            match self.evict_victim() {
-                Some(victim) => {
-                    // Room for every command or none: an `Evict` whose
-                    // join was then refused by a full queue would delete a
-                    // body and seat nobody in its place.
-                    let n = 2 + usize::from(former.is_some());
-                    if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
-                        return None;
-                    }
-                    // The record comes off the live body NOW — the current
-                    // state, raid included, not the one frozen at the
-                    // victim's leave. A keyless victim is a guest: no
-                    // record to file, and never was one.
-                    // `zip` rather than `and_then(|k| …map(|s| (k, s)))`: same
-                    // pair, and `save_of` is a pure `&self` lookup
-                    // (`world.rs`) so evaluating it eagerly costs a slot
-                    // lookup on the guest path and changes nothing else.
-                    let record = self.sleepers.key_of(victim).zip(self.world.save_of(victim));
-                    if let Some((k, s)) = record.as_ref() {
-                        // The arrow points at a body the command below is
-                        // about to remove. The record is kept for the
-                        // victim's return, which may beat the store to it,
-                        // with the id their things are filed under.
-                        self.sleepers.forget(k);
-                        self.evicted.put(k, *s, victim);
-                    }
-                    let roomed = self.queue(Command::Evict { id: victim });
-                    debug_assert!(roomed, "room for two was checked above");
-                    record
-                }
-                // Every slot holds an awake body (or a sleeper this window
-                // already spoke for). Queue the join anyway: the world
-                // refuses it silently, which is the full-shard behaviour
-                // that predates sleepers, and the accept path hard-caps
-                // connections ahead of this.
-                None => None,
+            // No victim: every slot holds an awake body, a sleeper this
+            // window already spoke for, or a settled player's body still
+            // inside its protected sleep (`evict_victim`). Refused, before
+            // anything is spent: a join queued anyway would be refused
+            // silently by the world, after this had used up the joiner's
+            // eviction record and id row on a seat that never came. The
+            // caller closes the link with `REFUSE_FULL`.
+            let victim = self.evict_victim()?;
+            // Room for every command or none: an `Evict` whose join was
+            // then refused by a full queue would delete a body and seat
+            // nobody in its place.
+            let n = 2 + usize::from(former.is_some());
+            if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                return None;
             }
+            // The record comes off the live body NOW — the current state,
+            // raid included, not the one frozen at the victim's leave. A
+            // keyless victim is a guest: no record to file, and never was
+            // one. `zip` rather than `and_then(|k| …map(|s| (k, s)))`: same
+            // pair, and `save_of` is a pure `&self` lookup (`world.rs`) so
+            // evaluating it eagerly costs a slot lookup on the guest path
+            // and changes nothing else.
+            let record = self.sleepers.key_of(victim).zip(self.world.save_of(victim));
+            if let Some((k, s)) = record.as_ref() {
+                // The arrow points at a body the command below is about to
+                // remove. The record is kept for the victim's return, which
+                // may beat the store to it, and the id their things are
+                // filed under.
+                let settled = self.settled(Some(k));
+                self.sleepers.forget(k);
+                self.evicted.put(k, *s);
+                self.evict_ids.put(k, victim, settled);
+            }
+            let roomed = self.queue(Command::Evict { id: victim });
+            debug_assert!(roomed, "room for two was checked above");
+            record
         } else {
             None
         };
@@ -2618,8 +2819,10 @@ impl ShardCore {
             self.sleepers.forget(k);
             // Whichever door opened, the world has a body for this key now,
             // and every record the store gets for it from here on is newer
-            // than an eviction's.
+            // than an eviction's. The id row is spent with it: the `Rekey`
+            // above moved what the old id owned.
             self.evicted.forget(k);
+            self.evict_ids.forget(k);
         }
         self.keys[slot] = key;
         self.langs[slot] = 0;
@@ -2702,6 +2905,27 @@ impl ShardCore {
         let mut ids = vec![(PlayerKey::PLACEHOLDER, 0); MAX_PLAYERS];
         let n = self.identities(&mut ids);
         self.teams.load(&ids[..n])
+    }
+
+    /// The ids evicted bodies wore ([`EvictIds`]), back from their file for
+    /// the world this boot loaded. Boot only, after the load.
+    ///
+    /// A row is kept only while its id is safe to hand on: no body in the
+    /// world wears it, and it is not past the generation the slot table will
+    /// start that slot from (`worldfile::id_floors`, the same walk the boot
+    /// made). An id past it owns nothing in this world, else the floor would
+    /// cover it, and the slot table may mint it again — a `Rekey` from it
+    /// would then hand its new wearer's things to somebody else.
+    pub fn load_evict_ids(&mut self) -> std::io::Result<usize> {
+        let floors = crate::worldfile::id_floors(&mut self.world);
+        let world = &self.world;
+        self.evict_ids.load(|id| {
+            id & sim_core::limits::MOB_ID_TAG == 0
+                && floors
+                    .get((id & 0xFF) as usize)
+                    .is_some_and(|&f| id >> 8 <= f)
+                && !world.players.iter().any(|p| p.active && p.id == id)
+        })
     }
 
     pub fn adopt_identities(&mut self, idents: &[(PlayerKey, u32)]) {
@@ -8595,6 +8819,11 @@ impl ShardCore {
             // A box shut by its lock, rather than gone or out of reach —
             // the one close the player is owed a reason for.
             let mut lock_refused = false;
+            // Another player's bag or a sleeper's pack inside THE GATE's
+            // safe zone: the move verb refuses it (`REFUSE_M_SAFE`, Rust's
+            // "No Looting"), so the view must not stream it either — else
+            // anyone at the gate reads every parked sleeper's kit.
+            let mut safe_refused = false;
             let live = if p.dead {
                 None
             } else {
@@ -8603,7 +8832,13 @@ impl ShardCore {
                         .world
                         .backpacks
                         .index_of_id(handle)
-                        .filter(|&i| self.world.bag_reachable(i, c.own_wslot)),
+                        .filter(|&i| self.world.bag_reachable(i, c.own_wslot))
+                        .filter(|&i| {
+                            let w = &self.world;
+                            let ok = w.backpacks.may_loot(i, p.id, &w.haven.town);
+                            safe_refused = !ok;
+                            ok
+                        }),
                     CONT_BOX => self
                         .world
                         .deploys
@@ -8652,8 +8887,21 @@ impl ShardCore {
                         .index_of(handle)
                         .filter(|&i| self.world.world_cont_reachable(i, c.own_wslot)),
                     // A sleeper's pack: the move verb's own resolution, so
-                    // a sleeper that woke, died or was evicted shuts it.
-                    CONT_BODY => self.world.body_loot_index(handle, c.own_wslot),
+                    // a sleeper that woke, died or was evicted shuts it,
+                    // and its own safe-zone rule (`World::move_item`).
+                    CONT_BODY => self
+                        .world
+                        .body_loot_index(handle, c.own_wslot)
+                        .filter(|&i| {
+                            let b = self.world.players[i].body;
+                            let ok = !sim_core::town::safe(
+                                &self.world.haven.town,
+                                b.qx as f32 * sim_core::movement::POS_XZ_Q,
+                                b.qz as f32 * sim_core::movement::POS_XZ_Q,
+                            );
+                            safe_refused = !ok;
+                            ok
+                        }),
                     // **The body does not ride here any more.** It had
                     // this arm from armor v1 to 2026-08-28 and resolved
                     // to `Some(0)` — no store, no reach, no lock, the one
@@ -8687,6 +8935,22 @@ impl ShardCore {
                     if lock_refused {
                         if let Ok(len) = encode_event_deploy_refused(
                             sim_core::deploy::REFUSE_D_OWNER as u8,
+                            &mut self.ev_buf,
+                        ) {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                    }
+                    // And the safe zone, as the move verb says it: the
+                    // client's "No Looting" toast.
+                    if safe_refused {
+                        if let Ok(len) = encode_event_move_refused(
+                            sim_core::inventory::REFUSE_M_SAFE as u8,
+                            kind,
+                            0,
+                            CONT_SELF,
+                            0,
                             &mut self.ev_buf,
                         ) {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -11751,19 +12015,91 @@ mod tests {
             hp: n as u16,
             ..PlayerSave::EMPTY
         };
-        // The id the evicted body wore rides with its record.
-        let rec = |n: usize| Some((save(n), n as u32 + 1));
         let mut memo = EvictMemo::new();
         for n in 0..MAX_PLAYERS {
-            memo.put(&key(n), save(n), n as u32 + 1);
+            memo.put(&key(n), save(n));
         }
-        memo.put(&key(3), save(1000), 1001);
-        assert_eq!(memo.find(&key(3)), rec(1000), "re-filed in place");
-        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS), MAX_PLAYERS as u32 + 1);
+        memo.put(&key(3), save(1000));
+        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
         assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
-        assert_eq!(memo.find(&key(1)), rec(1));
-        assert_eq!(memo.find(&key(MAX_PLAYERS)), rec(MAX_PLAYERS));
+        assert_eq!(memo.find(&key(1)), Some(save(1)));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
         memo.forget(&key(1));
         assert_eq!(memo.find(&key(1)), None);
+    }
+
+    /// **Churn cannot push a real victim's id out** (the session#1
+    /// finding). A settled wallet's row outlives any number of throwaway
+    /// evictions after it, even with the table full; and a full table of
+    /// settled rows files no throwaway at all.
+    #[test]
+    fn evicted_ids_keep_a_settled_row_through_throwaway_churn() {
+        let key = |s: String| PlayerKey::new(s.as_bytes()).unwrap();
+        let cap = crate::store::MAX_SAVED_PLAYERS;
+        let mut ids = EvictIds::default();
+        let victim = key("victim".into());
+        ids.put(&victim, 0x0105, true);
+        for n in 0..cap + 500 {
+            ids.put(&key(format!("sybil-{n}")), 0x1000 + n as u32, false);
+        }
+        assert_eq!(ids.find(&victim), Some(0x0105), "churned out");
+        assert_eq!(
+            ids.find(&key("sybil-0".into())),
+            None,
+            "oldest throwaway goes"
+        );
+        assert_eq!(
+            ids.find(&key(format!("sybil-{}", cap + 499))),
+            Some(0x1000 + cap as u32 + 499)
+        );
+        // A table of settled rows: a throwaway is not filed over it, a
+        // settled newcomer takes the oldest.
+        let mut full = EvictIds::default();
+        for n in 0..cap {
+            full.put(&key(format!("real-{n}")), n as u32 + 1, true);
+        }
+        full.put(&key("throwaway".into()), 9, false);
+        assert_eq!(full.find(&key("throwaway".into())), None);
+        assert_eq!(full.find(&key("real-0".into())), Some(1));
+        full.put(&key("settled".into()), 10, true);
+        assert_eq!(full.find(&key("settled".into())), Some(10));
+        assert_eq!(full.find(&key("real-0".into())), None);
+        full.forget(&key("settled".into()));
+        assert_eq!(full.find(&key("settled".into())), None);
+    }
+
+    /// The ids survive a restart through their file: written whole, oldest
+    /// first, read back for the rows the boot's `keep` accepts, and a
+    /// broken line costs only itself.
+    #[test]
+    fn evicted_ids_round_trip_through_their_file() {
+        let key = |s: &str| PlayerKey::new(s.as_bytes()).unwrap();
+        let mut path = std::env::temp_dir();
+        path.push(format!("gates-evicted-{}.world", std::process::id()));
+        let file = evict_ids_path(&path);
+        let _ = std::fs::remove_file(&file);
+        let mut ids = EvictIds::open(Some(file.clone()));
+        let msg = ids.take_write().expect("a fresh table writes once");
+        assert!(msg.text.is_empty());
+        assert!(ids.take_write().is_none(), "nothing moved since");
+        ids.put(&key("0xaa"), 0x0201, true);
+        ids.put(&key("0xbb"), 0x0302, false);
+        ids.put(&key("0xcc"), 0x0403, true);
+        let msg = ids.take_write().expect("rows moved");
+        assert_eq!(msg.path, file);
+        std::fs::write(&file, format!("{}not a row\n", msg.text)).unwrap();
+
+        let mut back = EvictIds::open(Some(file.clone()));
+        // The boot's rule stands in: 0x0403 is worn by a body again.
+        let n = back.load(|id| id != 0x0403).expect("reads");
+        assert_eq!(n, 2);
+        assert_eq!(back.find(&key("0xaa")), Some(0x0201));
+        assert_eq!(back.find(&key("0xbb")), Some(0x0302));
+        assert_eq!(back.find(&key("0xcc")), None);
+        // The settled flag came back too: a throwaway cannot take its row.
+        assert!(back.entries.iter().flatten().any(|r| r.1 == 0x0201 && r.3));
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(EvictIds::open(Some(file)).load(|_| true).unwrap(), 0);
     }
 }

@@ -877,6 +877,10 @@ pub struct ShardStats {
     /// players than `MAX_SAVED_PLAYERS` holds, and somebody is losing a base
     /// every time it ticks up.
     pub saves_evicted: AtomicU64,
+    /// Records a full table would not file: a newcomer worth less than
+    /// everyone it could push out, or past the table's eviction budget
+    /// (`store.rs` `SaveStore::put`). A climb is a flood of new wallets.
+    pub saves_refused: AtomicU64,
     /// Records dropped because a ring between the sim, the index and the
     /// file was full. Bounded-everything's stated cost: freshness, never
     /// latency — the next sweep re-takes the same player.
@@ -1283,6 +1287,7 @@ impl ShardStats {
             "voice_out_drops" => &self.voice_out_drops,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
+            "saves_refused" => &self.saves_refused,
             "save_write_errors" => &self.save_write_errors,
             "world_save_errors" => &self.world_save_errors,
             "world_load_errors" => &self.world_load_errors,

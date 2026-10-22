@@ -132,7 +132,7 @@ fn a_shard_restart_remembers_a_player() {
         // The connection drops. This is the exact save.
         let (id, save) = core.disconnect(0).expect("a leaving player has a record");
         assert_eq!(id, id_of(0));
-        let put = store.put(&me, 1_700_000_000, save);
+        let put = store.put(&me, 1_700_000_000, save).expect("filed");
         assert!(!put.evicted);
         file.write(put.index, &me, 1_700_000_000, &save)
             .expect("the record writes");
@@ -288,7 +288,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     core.world.players[slot].inv[0] = carried;
     let (_, frozen) = core.disconnect(0).expect("a leaving player has a record");
     assert_eq!(frozen.inv[0], carried);
-    store.put(&me, 1, frozen);
+    store.put(&me, 1, frozen).expect("filed");
     core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
 
@@ -320,7 +320,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
         "the eviction save is the frozen record, not the raided body"
     );
     // File it exactly as `drain_saves` would: by key, over the frozen one.
-    store.put(&me, 2, current);
+    store.put(&me, 2, current).expect("filed");
     core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(
         core.world.evictions, 1,
@@ -635,6 +635,197 @@ fn a_takeover_under_slot_pressure_evicts_nobody() {
     assert_eq!(core.world.sleepers(), 0, "the body is awake, not gone");
 }
 
+/// Ten minutes played this wipe: what `ShardCore::evict_victim` and its id
+/// table call a settled wallet.
+fn settle(core: &mut ShardCore, wallet: &str) {
+    for _ in 0..10 {
+        core.standings.minute(wallet, "", false);
+    }
+}
+
+/// Past the half hour a settled player's sleeper is protected for.
+const PROTECTED_TICKS: u64 = 31 * 60 * sim_core::limits::TICK_HZ as u64;
+
+/// **Guest churn cannot evict a settled player's young sleeper** (the
+/// session#0 finding: log off mid-fight, script a few hundred joins, and
+/// the body left the world gear and all, to come back later where it lay).
+/// Throwaway bodies go first, guest churn only churns guests, a shard with
+/// nothing else to give refuses the join, and half an hour on an honest
+/// join on a shard full of long sleepers still gets a slot.
+#[test]
+fn guest_churn_cannot_evict_a_settled_players_young_sleeper() {
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let me = key("settled-main");
+    settle(&mut core, "settled-main");
+    assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(core.disconnect(0).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    // A throwaway wallet's sleeper, newer than ours.
+    let throwaway = key("throwaway");
+    assert!(core
+        .connect_as(1, id_of(1), Some(throwaway), None)
+        .is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(core.disconnect(1).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    for s in 2..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick_bare(&stats, |_, _, _| true);
+    assert_eq!(core.world.sleepers(), 2);
+
+    // The throwaway goes first, though ours slept longer.
+    let (_, evicted) = core.connect_as(1, id2_of(1), None, None).expect("room");
+    assert_eq!(evicted.map(|(k, _)| k), Some(throwaway));
+    core.tick_bare(&stats, |_, _, _| true);
+
+    // Guest churn: a guest logs off, a guest joins, and the guest's own
+    // body is what makes the room, round after round.
+    for round in 0..12u32 {
+        let s = 2 + round as usize;
+        assert!(core.disconnect(s).is_some());
+        core.tick_bare(&stats, |_, _, _| true);
+        let id = ((3 + round) << 8) | s as u32;
+        let (_, evicted) = core.connect_as(s, id, None, None).expect("room");
+        assert!(evicted.is_none(), "a guest's body files nothing");
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(
+            core.world.is_sleeper(id_of(0)),
+            "round {round}: the churn evicted the settled player's body"
+        );
+    }
+
+    // Every other body awake: the join is refused, not seated over ours,
+    // and nothing is queued for it.
+    let evictions = core.world.evictions;
+    assert!(
+        core.connect_as(0, id2_of(0), Some(key("newcomer")), None)
+            .is_none(),
+        "a full shard must refuse rather than evict a protected body"
+    );
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(core.world.is_sleeper(id_of(0)));
+    assert_eq!(core.world.evictions, evictions);
+    assert!(core.world.players.iter().all(|p| p.id != id2_of(0)));
+
+    // Half an hour on, a long sleeper makes room for an honest join.
+    core.world.tick += PROTECTED_TICKS;
+    let (how, evicted) = core
+        .connect_as(0, id2_of(0), Some(key("newcomer")), None)
+        .expect("a long sleeper gives up its slot");
+    assert_eq!(how, Admitted::Fresh);
+    assert_eq!(evicted.map(|(k, _)| k), Some(me));
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(!core.world.is_sleeper(id_of(0)));
+}
+
+/// **Throwaway churn cannot cost a victim their base** (the session#1
+/// finding). A settled victim evicted, then more throwaway-wallet
+/// evictions than the 100-row record memo holds: the id their things are
+/// filed under is still kept. A return refused for want of a slot spends
+/// nothing, and the return that is seated moves their bag to the new body
+/// (`Command::Rekey`).
+#[test]
+fn an_evicted_players_id_survives_throwaway_churn_and_a_refused_return() {
+    use sim_core::backpack::BackpackContent;
+    const MAX: usize = sim_core::limits::MAX_PLAYERS;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let me = key("victim-wallet");
+    settle(&mut core, "victim-wallet");
+    assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(core.disconnect(0).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    for s in 1..MAX {
+        assert!(core.connect(s, id_of(s)), "filler {s}");
+    }
+    core.tick_bare(&stats, |_, _, _| true);
+    core.world.tick += PROTECTED_TICKS;
+    let (_, evicted) = core
+        .connect_as(0, id2_of(0), Some(key("sybil-start")), None)
+        .expect("admitted");
+    let (k, record) = evicted.expect("the long sleeper is the pick");
+    assert_eq!(k, me);
+    assert_eq!(core.evict_ids.find(&me), Some(id_of(0)));
+    core.tick_bare(&stats, |_, _, _| true);
+
+    // 120 fresh wallets, each seated by evicting the one before.
+    let mut id = id2_of(0);
+    for n in 0..120u32 {
+        assert!(core.disconnect(0).is_some());
+        core.tick_bare(&stats, |_, _, _| true);
+        id = (3 + n) << 8;
+        let (_, evicted) = core
+            .connect_as(0, id, Some(key(&format!("sybil-{n}"))), None)
+            .expect("admitted");
+        assert!(evicted.is_some(), "the throwaway before is the pick");
+        core.tick_bare(&stats, |_, _, _| true);
+    }
+    assert_eq!(
+        core.evict_ids.find(&me),
+        Some(id_of(0)),
+        "throwaway churn pushed the victim's id out"
+    );
+
+    // The connection slot's last tenant is a settled wallet, freshly
+    // asleep: protected, so the victim's return is refused — and spends
+    // nothing.
+    assert!(core.disconnect(0).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    settle(&mut core, "late-settler");
+    let settler = id + (1 << 8);
+    assert!(core
+        .connect_as(0, settler, Some(key("late-settler")), None)
+        .is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(core.disconnect(0).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    let back = settler + (1 << 8);
+    assert!(core.connect_as(0, back, Some(me), Some(record)).is_none());
+    assert_eq!(
+        core.evict_ids.find(&me),
+        Some(id_of(0)),
+        "a refusal spent the id"
+    );
+
+    // Later, with room: restored, and the bag the old id owned is theirs.
+    core.world.tick += PROTECTED_TICKS;
+    let mut inv = [ItemStack::default(); sim_core::limits::INV_SLOTS];
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+        skin: 0,
+    };
+    let tick = core.world.tick;
+    let bag = core
+        .world
+        .backpacks
+        .stand_up(
+            &BackpackContent::probe_fixture(),
+            0,
+            0,
+            0,
+            id_of(0),
+            &inv,
+            tick,
+            &mut core.world.events,
+        )
+        .expect("a bag");
+    let (how, _) = core
+        .connect_as(0, back, Some(me), Some(record))
+        .expect("admitted");
+    assert_eq!(how, Admitted::Restored);
+    assert_eq!(core.evict_ids.find(&me), None, "the id is spent");
+    core.tick_bare(&stats, |_, _, _| true);
+    let owner = core.world.backpacks.find(bag).map(|b| b.owner);
+    assert_eq!(owner, Some(back), "the bag stayed with the evicted id");
+}
+
 /// A disconnected slot has nothing to hand over, and asking twice does not
 /// invent a second record. `net.rs` calls this exactly once per leaving
 /// connection, and a duplicate would file a stale record over a fresh one.
@@ -756,7 +947,7 @@ fn one_corrupt_record_costs_one_player_and_boots() {
             let mut save = PlayerSave::EMPTY;
             save.hp = i as u16 + 1;
             save.hp_max = 100;
-            let put = store.put(k, 1_700_000_000 + i as u64, save);
+            let put = store.put(k, 1_700_000_000 + i as u64, save).expect("filed");
             file.write(put.index, k, 1_700_000_000 + i as u64, &save)
                 .expect("writes");
         }
@@ -805,7 +996,7 @@ fn two_keys_never_share_a_save() {
                 cond: 0,
                 skin: 0,
             };
-            let put = store.put(k, 1_700_000_000, save);
+            let put = store.put(k, 1_700_000_000, save).expect("filed");
             assert!(!put.evicted);
             file.write(put.index, k, 1_700_000_000, &save)
                 .expect("writes");
@@ -856,7 +1047,7 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
             let mut save = PlayerSave::EMPTY;
             save.hp_max = 100;
             save.body.qx = i as i32;
-            let put = store.put(&me, 1_700_000_000 + i, save);
+            let put = store.put(&me, 1_700_000_000 + i, save).expect("filed");
             file.write(put.index, &me, 1_700_000_000 + i, &save)
                 .expect("writes");
         }
@@ -909,7 +1100,7 @@ fn boots_rotate_the_backups_oldest_first() {
         save.hp_max = 100;
         save.hp = gen;
         let stamp = 1_700_000_000 + gen as u64;
-        let put = store.put(&me, stamp, save);
+        let put = store.put(&me, stamp, save).expect("filed");
         file.write(put.index, &me, stamp, &save).expect("writes");
         drop(file); // flushed already; this closes the handle
         history.push(std::fs::read(&path).expect("read live"));
@@ -1105,7 +1296,10 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
         .into_iter()
         .enumerate()
         {
-            let put = saves.store.put(&key(who), i as u64 + 1, save);
+            let put = saves
+                .store
+                .put(&key(who), i as u64 + 1, save)
+                .expect("filed");
             assert!(saves
                 .file
                 .write(put.index, &key(who), i as u64 + 1, &save)
@@ -1189,7 +1383,7 @@ fn a_wipe_archives_the_world_and_keeps_only_what_players_know() {
         let mut poor = rich;
         poor.known = 0;
         for (k, s) in [(nobody, poor), (scholar, rich)] {
-            let put = saves.store.put(&k, 1, s);
+            let put = saves.store.put(&k, 1, s).expect("filed");
             saves.file.write(put.index, &k, 1, &s).unwrap();
         }
     }
