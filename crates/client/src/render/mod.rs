@@ -221,6 +221,9 @@ pub mod panels;
 pub mod pause;
 // How many render pipelines are still compiling, for the loading gate.
 pub mod pipelines;
+// The POTATO rung picked for a machine that needs it: at boot, and in a
+// browser from the frame rate.
+pub mod potato;
 pub mod prewarm;
 pub mod quality;
 pub mod rain;
@@ -768,6 +771,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<impact::Contacts>()
             .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
+            .init_resource::<potato::Watch>()
             .init_resource::<hud::Readout>()
             .init_resource::<hud::CraftTimer>()
             .init_resource::<hud::Pickups>()
@@ -1252,6 +1256,7 @@ impl Plugin for GatesRenderPlugin {
                     settings::follow_focus,
                     settings::save_on_change,
                     settings::mirror_streamer,
+                    potato::watch.before(quality::apply),
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player
                     // can move it from the intro screen, so it must run
@@ -2407,6 +2412,15 @@ impl Plugin for GatesRenderPlugin {
         #[cfg(target_arch = "wasm32")]
         if let Some(mut s) = app.world_mut().get_resource_mut::<Settings>() {
             s.gfx = quality::effective(s.gfx);
+        }
+        // A capture or a film draws the frame it was asked for, whatever
+        // box it runs on (CI's is often a software rasterizer).
+        #[cfg(not(target_arch = "wasm32"))]
+        let filming = app.world().contains_resource::<film::Film>();
+        #[cfg(target_arch = "wasm32")]
+        let filming = false;
+        if self.capture.is_none() && !filming {
+            potato::at_boot(app);
         }
     }
 }
