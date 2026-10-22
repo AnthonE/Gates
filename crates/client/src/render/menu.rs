@@ -273,7 +273,8 @@ fn fetch_now(menu: &mut Menu) {
 /// One GET, capped. Separated so the thread body stays readable and so the
 /// cap is visible next to the read rather than buried in a builder chain.
 fn fetch_blocking(url: &str) -> Result<Vec<Shard>, String> {
-    let mut res = ureq::get(url)
+    let mut res = crate::tls::agent()
+        .get(url)
         .call()
         .map_err(|e| format!("shard list: {e}"))?;
     let bytes = res
@@ -404,6 +405,7 @@ pub fn begin_status_poll(
 /// document fetched from another host.
 fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(STATUS_TIMEOUT_S)))
         .build()
         .into();

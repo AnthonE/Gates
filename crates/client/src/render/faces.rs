@@ -200,7 +200,7 @@ fn fetch(url: String, address: Address, pic: u32, tx: PicTx) {
 /// (refused, never truncated: a cut PNG is a broken one).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn get_bytes(url: &str, cap: usize) -> Option<Vec<u8>> {
-    let mut res = ureq::get(url).call().ok()?;
+    let mut res = crate::tls::agent().get(url).call().ok()?;
     let bytes = res
         .body_mut()
         .with_config()

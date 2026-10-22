@@ -391,6 +391,7 @@ fn verdicts_from_page(body: &str, wallets: &[String]) -> Vec<Verdict> {
 
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(timeout))
         .build()
         .into()

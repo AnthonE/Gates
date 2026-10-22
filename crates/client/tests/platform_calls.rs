@@ -143,12 +143,12 @@ const KNOWN: &[(&str, u32, &str)] = &[
     // chip's own platform read, like the shard list beside it.
     (
         "src/render/menu.rs",
-        528,
+        530,
         "your name and picture for the identity chip",
     ),
     (
         "src/render/menu.rs",
-        388,
+        389,
         // ⚠ This read "the connect future's runtime thread" until 2026-09-11
         // and named the wrong function: the connect future does not spawn a
         // thread at all, it goes on the tokio runtime `Rt` holds. This is

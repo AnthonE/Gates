@@ -41,6 +41,7 @@ impl Jev {
         }
         Ok(Self {
             agent: ureq::Agent::config_builder()
+                .tls_config(crate::tls::ureq())
                 .timeout_global(Some(timeout))
                 .max_redirects(0)
                 .build()
