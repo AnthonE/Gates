@@ -84,6 +84,9 @@ pub struct Chat {
     /// This client's language has gone to the shard (`/lang … auto`, v138),
     /// or it has none to send.
     pub lang_sent: bool,
+    /// A `/w` or `/r` typed this frame, for `render/dms.rs` to carry. Never
+    /// sent to the shard.
+    pub whisper: Option<crate::ui::chat::Whispered>,
 }
 
 impl Chat {
@@ -272,9 +275,10 @@ pub fn keys(
             (Some(mutes), Some(hud)) => super::voice::command(&line, mutes, &net, hud),
             _ => None,
         };
-        match reply {
-            Some(reply) => toast.say(reply),
-            None => send(&mut chat, &net, &mut toast),
+        match (reply, crate::ui::chat::whisper(&line)) {
+            (Some(reply), _) => toast.say(reply),
+            (None, Some(w)) => whisper(&mut chat, w, &mut toast),
+            (None, None) => send(&mut chat, &net, &mut toast),
         }
         close(&mut chat, &mut cursor);
         keyboard.clear_just_pressed(KeyCode::Enter);
@@ -327,6 +331,23 @@ fn close(chat: &mut Chat, cursor: &mut Query<&mut CursorOptions, With<PrimaryWin
         c.grab_mode = CursorGrabMode::Locked;
         c.visible = super::web::in_post();
     }
+}
+
+/// A whisper goes to a friend over the hive, never to the shard: desktop
+/// only, since a page holds no chat key.
+fn whisper(chat: &mut Chat, w: crate::ui::chat::Whispered, toast: &mut Toast) {
+    let text = match &w {
+        crate::ui::chat::Whispered::To(_, t) | crate::ui::chat::Whispered::Reply(t) => t,
+    };
+    if protocol::secret::holds_secret(text) {
+        toast.warn("not sent: that looks like a private key or recovery phrase. Never share one");
+        return;
+    }
+    if cfg!(target_arch = "wasm32") {
+        toast.say("Whispers are in the desktop game. On the web, use chat on elopros.com.");
+        return;
+    }
+    chat.whisper = Some(w);
 }
 
 fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
@@ -420,6 +441,7 @@ pub fn drain(
                 voice: c.voice,
                 lang: c.lang,
                 key: c.line,
+                ..Line::default()
             },
             c.more,
         );

@@ -228,7 +228,7 @@ fn read(url: String, me: Address, tx: Tx) {
 /// (the platform's `{"error": ...}` is the sentence to show). Status 0 is
 /// "never reached".
 #[cfg(not(target_arch = "wasm32"))]
-fn http(url: &str, post: Option<&str>, cap: usize) -> (u16, Vec<u8>) {
+pub(crate) fn http(url: &str, post: Option<&str>, cap: usize) -> (u16, Vec<u8>) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(HTTP_TIMEOUT_S)))

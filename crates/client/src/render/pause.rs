@@ -270,6 +270,9 @@ fn friend_lines(friends: &super::friends::Friends) -> String {
     match &friends.view {
         Some(v) => {
             let mut lines = crate::friends::online_lines(v, crate::shot::now_secs(), FRIEND_ROWS);
+            if cfg!(not(target_arch = "wasm32")) && !v.friends.is_empty() {
+                lines.push("whisper a friend anywhere: /w <name> <message>, /r to reply".into());
+            }
             if !friends.status.is_empty() {
                 lines.push(friends.status.clone());
             }

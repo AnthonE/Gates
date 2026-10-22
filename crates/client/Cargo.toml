@@ -65,6 +65,9 @@ render = [
     "dep:rtrb",
     # Proximity voice's codec (`render/voice.rs`).
     "dep:voice",
+    # Friend chat's relay socket (`render/dms.rs`), native only.
+    "dep:tungstenite",
+    "dep:rustls",
 ]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
@@ -753,6 +756,13 @@ webpki-root-certs = "1.0.10"
 # it (`render/chat.rs`). Already in the lock through Bevy's text stack; the
 # browser asks `navigator.language` instead.
 sys-locale = "0.3"
+# Friend chat on the Elo Pros hive (`src/hive.rs`): the wallet's schnorr chat
+# key, its npub, and the relay's socket (`render/dms.rs`). Desktop only — a
+# page holds no key. The launcher pins the same versions (`elo-hive`).
+k256 = { version = "0.13", default-features = false, features = ["schnorr", "ecdsa"] }
+bech32 = "0.12"
+tungstenite = { version = "0.29", optional = true, default-features = false, features = ["handshake"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 # **The GPU-compressed texture path, native only.** Cargo unions features
 # across target tables, so a desktop build sees exactly the bevy feature set it
 # saw before this split; a browser build sees the same list minus the one C++

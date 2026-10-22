@@ -80,6 +80,8 @@ pub mod elo;
 // signed text that changes it. Pure and on every target; `render/friends.rs`
 // owns the reads and the signing.
 pub mod friends;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hive;
 // A player's profile card: their Elo Pros face, playtime and place on your
 // friends list. Pure; `render/profile.rs` owns the reads.
 pub mod profile;
