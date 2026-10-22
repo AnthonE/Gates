@@ -1117,7 +1117,6 @@ pub const DEATH_BY_CACTUS: u8 = 11;
 /// A barbed barricade or floor spikes cut them to death (wire v123,
 /// [`World::prick_deploys`]).
 pub const DEATH_BY_SPIKES: u8 = 12;
-
 /// An open wound took the last hp (`Player::bleed`, survival.rs).
 pub const DEATH_BY_BLEED: u8 = 13;
 /// The water took them (water pass, [`World::breathe`]): they stayed under
@@ -1537,6 +1536,10 @@ pub struct Player {
     /// cold's; a body restored from the player store comes back clean.
     pub fel: u16,
     pub fel_acc: u32,
+    /// The teas in the body (Rust's, `exposure::Brew`), one per kind:
+    /// warming, cooling, warding. Counted down a second at a time by the
+    /// exposure step. Hashed and world-saved; not kept by the player store.
+    pub brew: [crate::exposure::Brew; crate::exposure::BREW_KINDS],
     /// Ticks the mouth has been under water, less what surfacing gave back:
     /// 0 is a full breath (`World::breathe`). Hashed, not saved — a load is
     /// a breath, as `bloom` settles over one.
@@ -1716,6 +1719,7 @@ impl Default for Player {
             air_dc: 0,
             fel: 0,
             fel_acc: 0,
+            brew: [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS],
             under: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
@@ -5499,6 +5503,7 @@ impl World {
                     air_dc: 0,
                     fel: 0,
                     fel_acc: 0,
+                    brew: [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS],
                     under: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
@@ -7427,6 +7432,8 @@ impl World {
             self.survival.max_water,
             &mut self.players[i],
         );
+        // The teas steep down a second (clothing v1).
+        crate::exposure::steep(&mut self.players[i]);
         false
     }
 
@@ -7629,8 +7636,10 @@ impl World {
         };
         let furnish = self.furnish_comfort(x, z, feet);
         let comfort = crate::exposure::comfort_target(ec, by_fire, awake, asleep, furnish);
+        // Rust's rain is halved over arid ground (clothing v1).
+        let arid_pm = (crate::terrain::aridity(self.seed, x, z) * 1000.0).clamp(0.0, 1000.0) as u16;
         crate::exposure::Inputs {
-            rain: wx.rain,
+            rain: crate::weather::local_rain(wx.rain, arid_pm),
             wind: wx.wind,
             night,
             roofed,
@@ -9320,6 +9329,12 @@ impl World {
                 fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
                 fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
                 h.update(&fb);
+            }
+            // The teas (clothing v1), the same way: a body nobody brewed
+            // for hashes as it did before.
+            for (k, b) in p.brew.iter().enumerate().filter(|(_, b)| b.left_s > 0) {
+                h.update(&[k as u8]);
+                h.update(&b.to_le_bytes());
             }
             // The held breath, the same way: a world nobody swam in hashes
             // as it did before there was water to hold it under.

@@ -207,6 +207,7 @@ fn read(url: String, me: Address, tx: Tx) {
 #[cfg(not(target_arch = "wasm32"))]
 fn http(url: &str, post: Option<&str>, cap: usize) -> (u16, Vec<u8>) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(HTTP_TIMEOUT_S)))
         .http_status_as_error(false)
         .build()

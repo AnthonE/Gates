@@ -37,6 +37,17 @@
 //! because a body can be cold and corroded in the same second
 //! ([`corrode`]).
 //!
+//! **Clothing v1 is Rust's rule** (`PlayerMetabolism`): a worn set does not
+//! take a fixed amount of cold off, it takes a share of whatever cold there
+//! is — the set's summed warmth over `warm_full_pm` (their 400 %), wet
+//! clothes keeping half — so a full winter kit takes the bite out of a
+//! mountain night without making any night harmless. Teas ([`Brew`]) warm
+//! the air the body feels and floor how cold it gets, cool the heat, or
+//! ward off the Verdigris, for minutes. A waterproof piece (the hazmat
+//! suit) never gets wet, and clothes do not dry below freezing but by a
+//! fire. Nothing mends while a wound is still bleeding (Rust's;
+//! `survival::step` bleeds it).
+//!
 //! `EMPTY` disarms it: content with no `[exposure]` plays the game it did.
 
 use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
@@ -159,6 +170,20 @@ pub struct ExposureContent {
     /// ([`comfort_target`]); it needs no fire.
     pub furnish: [u16; MAX_ITEM_DEFS],
     pub furnish_radius_cm: [u16; MAX_ITEM_DEFS],
+    /// The summed worn warmth, per mille, that takes all of the cold away
+    /// (Rust's `ColdExposure` sum of 400 %, clothing v1). A set at half of
+    /// it takes half the chill off. Zero keeps the old flat rule: the worn
+    /// warmth is subtracted whole.
+    pub warm_full_pm: u16,
+    /// Per item index: a worn piece that keeps every drop out (Rust's
+    /// Drowned protection: the hazmat suit). A body wearing one never gets
+    /// wet, in the rain or the sea.
+    pub waterproof: [bool; MAX_ITEM_DEFS],
+    /// The air at which clothes dry at `dry_per_s`, deci-degrees (Rust's
+    /// drying runs with the air from 0 °C): slower in the cold, twice as
+    /// fast at twice the air, and not at all at or under freezing but by a
+    /// fire. Zero keeps the old flat rate.
+    pub dry_ref_dc: i16,
     /// Drowning (water pass): the breath a body holds with its mouth under,
     /// in ticks, and what it costs a second once that runs out — ramping in
     /// from half the breath gone, the reference's shape (`World::breathe`).
@@ -223,6 +248,9 @@ impl ExposureContent {
         ward: [0; MAX_ITEM_DEFS],
         furnish: [0; MAX_ITEM_DEFS],
         furnish_radius_cm: [0; MAX_ITEM_DEFS],
+        warm_full_pm: 0,
+        waterproof: [false; MAX_ITEM_DEFS],
+        dry_ref_dc: 0,
         air_ticks: 0,
         drown_hp_per_s: 0,
     };
@@ -263,6 +291,86 @@ impl Default for ExposureContent {
     fn default() -> Self {
         Self::EMPTY
     }
+}
+
+/// How many kinds of tea a body can have in it at once, one of each.
+pub const BREW_KINDS: usize = 3;
+/// A warming tea: `amount` deci-degrees warmer for the chill, and the body
+/// never chills past what `floor_dc` of still, dry air would give it.
+pub const BREW_WARM: u8 = 0;
+/// A cooling tea: `amount` deci-degrees cooler for the heat.
+pub const BREW_COOL: u8 = 1;
+/// A warding tea: `amount` per mille of the Verdigris kept out, on top of
+/// what is worn ([`BREW_WARD_CEIL_PM`]).
+pub const BREW_WARD: u8 = 2;
+/// `Brew::floor_dc` for a tea with no floor.
+pub const NO_FLOOR: i16 = i16::MIN;
+/// The most worn pieces and a tea together keep out of the Verdigris: the
+/// heart is never free.
+pub const BREW_WARD_CEIL_PM: u32 = 950;
+
+/// One tea in the body (Rust's tea modifiers): what it gives and the
+/// seconds it has left. Drinking another of the same kind replaces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Brew {
+    pub amount: u16,
+    pub floor_dc: i16,
+    pub left_s: u16,
+}
+
+impl Brew {
+    pub const NONE: Self = Self {
+        amount: 0,
+        floor_dc: NO_FLOOR,
+        left_s: 0,
+    };
+
+    pub fn to_le_bytes(&self) -> [u8; 6] {
+        let mut b = [0u8; 6];
+        b[0..2].copy_from_slice(&self.amount.to_le_bytes());
+        b[2..4].copy_from_slice(&self.floor_dc.to_le_bytes());
+        b[4..6].copy_from_slice(&self.left_s.to_le_bytes());
+        b
+    }
+
+    pub fn from_le_bytes(b: [u8; 6]) -> Self {
+        Self {
+            amount: u16::from_le_bytes([b[0], b[1]]),
+            floor_dc: i16::from_le_bytes([b[2], b[3]]),
+            left_s: u16::from_le_bytes([b[4], b[5]]),
+        }
+    }
+}
+
+impl Default for Brew {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// The tea of `kind` in this body, if one is working.
+#[inline]
+pub fn brewing(p: &Player, kind: u8) -> Option<Brew> {
+    p.brew.get(kind as usize).copied().filter(|b| b.left_s > 0)
+}
+
+/// One second off every tea in the body; a spent one is gone.
+pub fn steep(p: &mut Player) {
+    for b in p.brew.iter_mut() {
+        if b.left_s > 0 {
+            b.left_s -= 1;
+            if b.left_s == 0 {
+                *b = Brew::NONE;
+            }
+        }
+    }
+}
+
+/// Is a waterproof piece worn (the hazmat suit)?
+fn worn_waterproof(ec: &ExposureContent, p: &Player) -> bool {
+    p.worn
+        .iter()
+        .any(|s| s.count > 0 && (s.item as usize) < MAX_ITEM_DEFS && ec.waterproof[s.item as usize])
 }
 
 /// What the world around one body is doing this second.
@@ -343,6 +451,15 @@ pub fn snow_pm(inp: &Inputs) -> u16 {
 /// The chill a body is heading for, per mille — the whole rule in one
 /// place so the tests and the step read the same sentence.
 pub fn target_chill(ec: &ExposureContent, inp: &Inputs, p: &Player) -> u16 {
+    // A warming tea warms the air the body feels (Rust's Warming +5/+10).
+    let warm = brewing(p, BREW_WARM);
+    let mut felt = *inp;
+    if let Some(b) = warm {
+        felt.air_dc = inp
+            .air_dc
+            .saturating_add(b.amount.min(i16::MAX as u16) as i16);
+    }
+    let inp = &felt;
     let mut t: i32 = 0;
     if ec.cold_per_c > 0 {
         // The air (climate v0): every degree under `cold_below_dc`.
@@ -358,17 +475,33 @@ pub fn target_chill(ec: &ExposureContent, inp: &Inputs, p: &Player) -> u16 {
     }
     t += extra * feel_pm(ec, inp) / 1000;
     let (keep, draw) = worn_split(ec, p);
-    // A draw makes the cold the body is already in worse by its share; it
-    // cannot make a warm hour cold. Added flat, the jacket alone put a
-    // clear, dry night past `hurt_at` and chilled a sunny afternoon.
-    t += t * draw / 1000;
     // Wet clothes keep half the warmth dry ones would.
-    t -= keep * (2000 - p.wet as i32) / 2000;
+    let keep = keep * (2000 - p.wet as i32) / 2000;
+    if ec.warm_full_pm > 0 {
+        // Rust's rule (clothing v1): the set takes its share of the cold
+        // there is, all of it at `warm_full_pm`; a draw (a sheet of metal)
+        // makes it worse by its share. Never a fixed amount, so no kit
+        // makes the deep cold harmless.
+        let e = ((keep - draw) * 1000 / ec.warm_full_pm as i32).clamp(-1000, 1000);
+        t -= t * e / 1000;
+    } else {
+        // A draw makes the cold the body is already in worse by its share; it
+        // cannot make a warm hour cold. Added flat, the jacket alone put a
+        // clear, dry night past `hurt_at` and chilled a sunny afternoon.
+        t += t * draw / 1000;
+        t -= keep;
+    }
     if inp.fire {
         t -= ec.fire_warmth as i32;
     }
     if inp.torch {
         t -= ec.torch_warmth as i32;
+    }
+    // A warming tea's floor (Rust's Min Temperature): never colder than
+    // still, dry air at `floor_dc` would make a bare body.
+    if let Some(b) = warm.filter(|b| b.floor_dc != NO_FLOOR && ec.cold_per_c > 0) {
+        let cap = (ec.cold_below_dc as i32 - b.floor_dc as i32).max(0) * ec.cold_per_c as i32 / 10;
+        t = t.min(cap);
     }
     t.clamp(0, 1000) as u16
 }
@@ -385,13 +518,23 @@ pub fn target_heat(ec: &ExposureContent, inp: &Inputs, p: &Player) -> u16 {
     if inp.roofed {
         air -= ec.shade_dc as i32;
     }
+    // A cooling tea (Rust's Cooling +10/+15/+20).
+    if let Some(b) = brewing(p, BREW_COOL) {
+        air -= b.amount as i32;
+    }
     let over = (air - ec.hot_above_dc as i32).max(0);
     if over == 0 {
         return 0;
     }
     let mut t = over * ec.heat_per_c as i32 / 10;
     let (keep, _) = worn_split(ec, p);
-    t += keep * ec.clothes_heat_pm as i32 / 1000;
+    if ec.warm_full_pm > 0 {
+        // Rust's: a warm set holds up to its full share of extra heat in.
+        let e = (keep * 1000 / ec.warm_full_pm as i32).clamp(0, 1000);
+        t += e * ec.clothes_heat_pm as i32 / 1000;
+    } else {
+        t += keep * ec.clothes_heat_pm as i32 / 1000;
+    }
     t -= p.wet as i32 * ec.wet_cool as i32 / 1000;
     t.clamp(0, 1000) as u16
 }
@@ -443,7 +586,8 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     // the rate, sleet at a share of each; otherwise it dries, faster by a
     // fire. Standing in the sea holds it at least as wet as the water is
     // deep.
-    if inp.rain > 0 && !inp.roofed {
+    let proof = worn_waterproof(ec, p);
+    if inp.rain > 0 && !inp.roofed && !proof {
         let snow = snow_pm(inp) as u64;
         let keep = 1000 - snow * (1000 - ec.snow_wet_pm.min(1000) as u64) / 1000;
         let add = inp.rain as u64 * ec.wet_rain_per_s as u64 * keep / 1_000_000;
@@ -451,12 +595,19 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     } else {
         let dry = if inp.fire {
             ec.dry_fire_per_s
+        } else if ec.dry_ref_dc > 0 {
+            // Rust's drying runs with the air: none at or under freezing,
+            // the full rate at `dry_ref_dc`, rounded up so a cool day
+            // still dries.
+            let air = (inp.air_dc as i32).clamp(0, 2 * ec.dry_ref_dc as i32);
+            let r = ec.dry_ref_dc as i32;
+            ((ec.dry_per_s as i32 * air + r - 1) / r) as u16
         } else {
             ec.dry_per_s
         };
         p.wet = p.wet.saturating_sub(dry);
     }
-    if ec.soak_depth_cm > 0 && inp.depth_cm > 0 {
+    if ec.soak_depth_cm > 0 && inp.depth_cm > 0 && !proof {
         let soak = (inp.depth_cm as u32 * 1000 / ec.soak_depth_cm as u32).min(1000) as u16;
         p.wet = p.wet.max(soak);
     }
@@ -553,7 +704,11 @@ pub(crate) fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
         }
         ward += ec.ward[s.item as usize] as u32;
     }
-    ward.min(ec.fel_ward_max as u32).min(1000)
+    let worn = ward.min(ec.fel_ward_max as u32).min(1000);
+    // A warding tea on top of the clothes (Rust's anti-rad tea), never to
+    // a whole ward.
+    let tea = brewing(p, BREW_WARD).map_or(0, |b| b.amount as u32);
+    (worn + tea).min(BREW_WARD_CEIL_PM.max(worn))
 }
 
 /// A turned animal's bite (`mob::Bite::fel`): `fel_pm` of the meter at
@@ -639,6 +794,7 @@ pub fn regens(ec: &ExposureContent, p: &Player) -> bool {
         && p.fel <= ec.fel_regen_max
         && p.calm >= ec.regen_calm_s
         && !p.wounded
+        && p.bleed == 0
         && p.hp > 0
         && p.hp < regen_cap(ec, p)
 }
@@ -701,6 +857,7 @@ pub fn reset(p: &mut Player) {
     p.comfort = 0;
     p.fel = 0;
     p.fel_acc = 0;
+    p.brew = [Brew::NONE; BREW_KINDS];
 }
 
 /// What the owner's HUD reads: wet, cold and heat in per cent, whether
@@ -718,6 +875,8 @@ pub struct Readout {
     /// The Verdigris' meter, per cent, and whether it is costing hp.
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// Minutes left on each tea, rounded up, by `BREW_*`; 0 for none.
+    pub brew_min: [u8; BREW_KINDS],
     /// The open wound, in hp it still owes (`Player::bleed`, at most
     /// `survival::BLEED_MAX`): the BLEEDING chip.
     pub bleed: u8,
@@ -738,6 +897,9 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         air_c: crate::climate::whole_c(p.air_dc),
         fel_pct: (p.fel / 10).min(100) as u8,
         fel_hurting: p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000,
+        brew_min: p
+            .brew
+            .map(|b| b.left_s.div_ceil(60).min(u8::MAX as u16) as u8),
         bleed: p.bleed.min(crate::survival::BLEED_MAX) as u8,
         breath_pct: breath_pct(ec, p),
         drowning: ec.air_ticks > 0 && p.under > ec.air_ticks / 2,

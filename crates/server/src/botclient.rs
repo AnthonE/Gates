@@ -1845,7 +1845,7 @@ pub fn agent_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint<
         let cfg = match (pin.clone(), loopback) {
             (Some(digest), _) => roots.with_server_certificate_hashes([digest]).build(),
             (None, true) => roots.with_no_cert_validation().build(),
-            (None, false) => roots.with_native_certs().build(),
+            (None, false) => roots.with_custom_tls(client::tls::webtransport()).build(),
         };
         Endpoint::client(cfg)
     };

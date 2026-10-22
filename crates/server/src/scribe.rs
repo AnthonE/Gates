@@ -217,6 +217,7 @@ pub fn pair() -> (Scribe, rtrb::Consumer<ToScribe>, rtrb::Producer<Said>) {
 pub fn spawn(cfg: ScribeConfig, stats: Arc<ShardStats>) -> Result<Scribe, String> {
     let (scribe, from_sim, to_sim) = pair();
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(agent_voice::SERVICE_TIMEOUT))
         .http_status_as_error(false)
         .build()

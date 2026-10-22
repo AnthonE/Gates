@@ -1,7 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 133 kB — fixed-capacity by design (wall 4), and
-# (131 kB until a bleed and a held use put six fields on every player;
+# `World` is 139 kB — fixed-capacity by design (wall 4), and
+# (133 kB until clothing v1 put the teas on every player and the
+# waterproof and warmth rows on the exposure table;
+# 131 kB until a bleed and a held use put six fields on every player;
 # 130 kB until seeds from eating put what a meal leaves on every
 # consumable row;
 # 125 kB until farming v2's catalog headroom took every per-item table

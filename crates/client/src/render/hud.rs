@@ -1122,6 +1122,9 @@ pub enum ExposureChip {
     /// The held breath (water pass, `World::breathe`): shown while any is
     /// spent, red once the water is costing hp.
     Breath,
+    /// The teas working in the body and the minutes they have left
+    /// (clothing v1).
+    Tea,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1183,6 +1186,36 @@ const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
 pub fn bleed_line() -> String {
     "BLEEDING · BANDAGE IT".to_string()
 }
+
+const TEA_CHIP: Color = Color::srgba(0.42, 0.30, 0.18, 0.85);
+
+/// What the tea chip says: the teas working, by `sim_core::exposure::BREW_*`,
+/// and the minutes left — on the right for one tea, beside each name for
+/// more. `None` when nothing is brewing.
+pub fn tea_line(brew_min: &[u8; sim_core::exposure::BREW_KINDS]) -> Option<(String, String)> {
+    const NAMES: [&str; sim_core::exposure::BREW_KINDS] = ["WARMING", "COOLING", "WARDING"];
+    let on: Vec<(u8, &str)> = brew_min
+        .iter()
+        .zip(NAMES)
+        .filter(|(m, _)| **m > 0)
+        .map(|(m, n)| (*m, n))
+        .collect();
+    match on.as_slice() {
+        [] => None,
+        [(m, n)] => Some((format!("{n} TEA"), format!("{m}M"))),
+        many => Some((
+            many.iter()
+                .map(|(m, n)| format!("{n} {m}M"))
+                .collect::<Vec<_>>()
+                .join(" · "),
+            "TEA".to_string(),
+        )),
+    }
+}
+
+/// The worn warmth under which the COLD chip says to dress warmer: about a
+/// burlap tunic and hood.
+pub const DRESS_WARMER_PCT: i32 = 40;
 
 /// What the Verdigris chip says left of its meter: and while it hurts, the
 /// way out. The player-facing name only — never the code's `fel`.
@@ -1293,6 +1326,16 @@ pub fn hot_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     format!("{what} · {help}")
 }
 
+/// The COLD chip's hint when what is worn keeps little out (clothing v1):
+/// the answer a fire and a roof are not.
+fn dress_warmer(core: &client_core::core::ClientCore) -> &'static str {
+    if crate::ui::slots::worn_warmth(&core.catalog, &core.worn) < DRESS_WARMER_PCT {
+        " · DRESS WARMER"
+    } else {
+        ""
+    }
+}
+
 /// The words on the left of a chip.
 #[derive(Component)]
 pub struct ChipLabel(pub ExposureChip);
@@ -1304,7 +1347,7 @@ pub struct ChipValue(pub ExposureChip);
 impl ExposureChip {
     /// Top to bottom over the vitals. The base's upkeep heads the stack
     /// (NOW §0up 3): it is about the base, not the body.
-    const ALL: [ExposureChip; 9] = [
+    const ALL: [ExposureChip; 10] = [
         ExposureChip::Breath,
         ExposureChip::Upkeep,
         ExposureChip::Safe,
@@ -1312,6 +1355,7 @@ impl ExposureChip {
         ExposureChip::Cold,
         ExposureChip::Hot,
         ExposureChip::Verdigris,
+        ExposureChip::Tea,
         ExposureChip::Comfort,
         ExposureChip::Bleeding,
     ];
@@ -1373,13 +1417,21 @@ pub fn exposure(
             // The one chip that costs hp says what stops it.
             ExposureChip::Cold if core.cold_hurting && !hot => (
                 true,
-                cold_line(true, core.wet_pct, w),
+                format!("{}{}", cold_line(true, core.wet_pct, w), dress_warmer(core)),
                 format!("{air}°C"),
                 FREEZE_CHIP,
             ),
             ExposureChip::Cold if core.cold_pct >= 25 => (
                 true,
-                cold_line(false, core.wet_pct, w),
+                format!(
+                    "{}{}",
+                    cold_line(false, core.wet_pct, w),
+                    if core.cold_pct >= 50 {
+                        dress_warmer(core)
+                    } else {
+                        ""
+                    }
+                ),
                 format!("{air}°C"),
                 COLD_CHIP,
             ),
@@ -1439,6 +1491,10 @@ pub fn exposure(
                 format!("{}%", core.breath_pct),
                 WET_CHIP,
             ),
+            ExposureChip::Tea => match tea_line(&core.brew_min) {
+                Some((line, left)) => (true, line, left, TEA_CHIP),
+                None => hidden(),
+            },
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1456,7 +1512,7 @@ pub fn exposure(
             _ => hidden(),
         }
     };
-    let said: [ChipSaid; 9] = ExposureChip::ALL.map(say);
+    let said: [ChipSaid; 10] = ExposureChip::ALL.map(say);
     for (chip, mut node, mut bg) in &mut chips {
         let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still

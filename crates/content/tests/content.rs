@@ -853,8 +853,8 @@ fn orphan_refs_refused() {
     );
     refuses(
         "loot.toml",
-        "{ item = \"item.rope\", weight = 284",
-        "{ item = \"item.ghost\", weight = 284",
+        "{ item = \"item.rope\", weight = 200",
+        "{ item = \"item.ghost\", weight = 200",
         "not an item",
     );
     refuses(
@@ -2442,6 +2442,12 @@ fn a_clock_with_no_answer_is_refused() {
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 20",
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 0",
             );
+            // And the teas, every one of which waters (clothing v1): their
+            // rows close the file, so the dry island has none.
+            let teas = text
+                .find("\n# Teas (Rust's tea modifiers")
+                .expect("fixture rot: the teas moved");
+            text.truncate(teas);
             // And the pumpkin, which grows wild by the lakes.
             *text = text.replace(
                 "id = \"item.pumpkin\"\nhealth = 0\nfood = 80\nwater = 30",
@@ -2528,8 +2534,8 @@ fn the_shipped_loot_tables_bake() {
         .expect("the barrel table is armed");
     // 19 → 12 when the barrel became Rust's: its twelve parts and nothing
     // else, one a barrel (2026-10-17); 16 with their tree's tank top and
-    // three deployables (2026-10-18).
-    assert_eq!(t.len, 16, "the barrel table lost or gained a row");
+    // three deployables (2026-10-18); 23 with clothing v1's seven pieces.
+    assert_eq!(t.len, 23, "the barrel table lost or gained a row");
     assert_eq!((t.rolls_min, t.rolls_max), (1, 1));
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
 
@@ -3978,12 +3984,16 @@ fn every_consumable_the_content_ships_is_reachable() {
     );
     g.1 = g.1.replace(patch, "\n");
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
-    // The Charcoal Tonic is steeped from mushrooms, so it goes with them.
+    // The Charcoal Tonic is steeped from mushrooms, so it goes with them,
+    // and so do the teas that take a mushroom (clothing v1).
     assert_eq!(
         unreachable_consumables(&mutant),
         vec![
             "item.charcoal_tonic".to_string(),
-            "item.mushrooms".to_string()
+            "item.mushrooms".to_string(),
+            "item.tea_warming_strong".to_string(),
+            "item.tea_warding".to_string(),
+            "item.tea_healing".to_string(),
         ],
         "deleting the mushroom patch must strand exactly the mushrooms and what \
          is made of them"
@@ -4605,6 +4615,10 @@ fn bake_combat_arms_the_armor_the_data_prices() {
                 ArmorSlot::Head => WEAR_HEAD,
                 ArmorSlot::Body => WEAR_BODY,
                 ArmorSlot::Feet => sim_core::combat::WEAR_FEET,
+                ArmorSlot::Legs => sim_core::combat::WEAR_LEGS,
+                ArmorSlot::Hands => sim_core::combat::WEAR_HANDS,
+                ArmorSlot::Shirt => sim_core::combat::WEAR_SHIRT,
+                ArmorSlot::Face => sim_core::combat::WEAR_FACE,
             },
             "`{}` was baked into the wrong wear slot",
             a.id
@@ -4693,16 +4707,29 @@ fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
         );
         v
     };
-    let mut sets: Vec<u32> = Vec::new();
-    for h in in_slot(ArmorSlot::Head) {
-        for b in in_slot(ArmorSlot::Body) {
-            for f in in_slot(ArmorSlot::Feet) {
-                sets.push(h + b + f);
+    // Slot by slot, deduplicated as it goes: seven slots of clothing
+    // (clothing v1) is a product too wide to list, and only the sums
+    // matter. Clamped where the sim clamps a set.
+    let mut sets: Vec<u32> = vec![0];
+    for s in [
+        ArmorSlot::Head,
+        ArmorSlot::Body,
+        ArmorSlot::Feet,
+        ArmorSlot::Legs,
+        ArmorSlot::Hands,
+        ArmorSlot::Shirt,
+        ArmorSlot::Face,
+    ] {
+        let mut next = Vec::new();
+        for have in &sets {
+            for p in in_slot(s) {
+                next.push((have + p).min(sim_core::combat::ARMOR_MAX_PCT));
             }
         }
+        next.sort_unstable();
+        next.dedup();
+        sets = next;
     }
-    sets.sort_unstable();
-    sets.dedup();
     assert!(
         sets.len() >= 6,
         "only {} protection values to check — the shipped armor set shrank \
