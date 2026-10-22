@@ -418,8 +418,17 @@ pub const REFUSE_S_MAX: u32 = REFUSE_S_CARD;
 /// four doors, a 200 card two (Rust's green/blue 4, red 2).
 pub const SWIPE_WEAR: u16 = 100;
 
+/// How high above the floor it stands on the exit lever is, metres — what
+/// a hand pulling it must see.
+pub const LEVER_MID_M: f32 = 1.0;
+
 /// Swipe at door `d`'s reader with its card, or pull its lever from inside.
 /// Opens the door for `DOOR_OPEN_TICKS`; refusals are events.
+///
+/// `sees` answers whether a point is in plain sight of the swiper's eye
+/// (`reach::sight`, card doors as they stand). The lever needs it: it
+/// stands within `SWIPE_REACH_M` of the door's outside, so reach alone
+/// pulled it from outside the shut door, through the leaf, with no card.
 #[allow(clippy::too_many_arguments)]
 pub fn swipe(
     z: &Ziggurat,
@@ -429,6 +438,7 @@ pub fn swipe(
     p: &mut crate::world::Player,
     d: usize,
     events: &mut crate::world::EventQueue,
+    sees: impl Fn((f32, f32, f32)) -> bool,
 ) {
     use crate::world::{EV_SWIPE, EV_SWIPE_REFUSED};
     let refuse = |events: &mut crate::world::EventQueue, code: u32| {
@@ -448,7 +458,8 @@ pub fn swipe(
                 && crate::fmath::fabs(feet - y) <= 2.0
         })
     };
-    let lever = at(true);
+    let lever = at(true)
+        && reader_world(z, d, true).is_some_and(|(x, y, wz)| sees((x, y + LEVER_MID_M, wz)));
     if !lever {
         if !at(false) {
             refuse(events, REFUSE_S_REACH);

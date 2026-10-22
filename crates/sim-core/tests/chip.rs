@@ -735,6 +735,25 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         cond: 0,
         skin: 0,
     };
+    // Stand on the foundation the bench is bolted to — before placing it,
+    // since a deployable goes where its placer can see (`place_deploy`),
+    // and the stance `walled_world` left is outside the wall. `col_base_y`
+    // is not public, so the fixture asks the same question `build` answers
+    // for it: the column's floor under whatever plate the foundation
+    // latched.
+    let top = sim_core::build::column_floor_y(
+        SEED,
+        hv(SEED),
+        cx,
+        cz,
+        w.pieces.cols().plate(cx, cz).unwrap_or(0),
+    );
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].body.qy = quant_y(top);
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
         id: SHOOTER,
@@ -756,22 +775,6 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
             .find(|e| e.code == sim_core::world::EV_DEPLOY_REFUSED)
             .map(|e| e.b)
     );
-    // Stand on the foundation the bench is bolted to. `col_base_y` is not
-    // public, so the fixture asks the same question `build` answers for it:
-    // the column's floor under whatever plate the foundation latched.
-    let top = sim_core::build::column_floor_y(
-        SEED,
-        hv(SEED),
-        cx,
-        cz,
-        w.pieces.cols().plate(cx, cz).unwrap_or(0),
-    );
-    let (x, z) = (
-        (cx as f32 + 0.5) * BUILD_CELL_M,
-        (cz as f32 + 0.5) * BUILD_CELL_M,
-    );
-    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
-    w.players[0].body.qy = quant_y(top);
     (cx, cz, top)
 }
 
@@ -1067,6 +1070,10 @@ fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
     let (cx, cz, top) = benched_world(&mut w, 20);
     // A floor over the cell, and a second bench standing on it.
     place(&mut w, PIECE_FLOOR, cx, cz, 1, LOC_PLANE);
+    // Stand on the upper floor — a deployable goes where its placer can
+    // see (`place_deploy`), never through the ceiling — and fire down its
+    // own storey from there.
+    w.players[0].body.qy = quant_y(top + LEVEL_H_M);
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
         id: SHOOTER,
@@ -1089,8 +1096,6 @@ fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
             .map(|e| e.b)
     );
 
-    // Stand on the upper floor and fire down its own storey.
-    w.players[0].body.qy = quant_y(top + LEVEL_H_M);
     let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
     let hit = only(&ev, EV_STRUCT_HIT);
     assert_ne!(

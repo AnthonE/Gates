@@ -220,6 +220,23 @@ fn a_deployable_never_crosses_a_wall() {
         plate: 0,
     }]);
     assert_eq!(w.pieces.len(), 3, "the wall must stand");
+    // Off the seam the wall now stands on, onto the side the box goes: a
+    // deployable goes where its placer can see (`place_deploy`), and an
+    // eye in the wall's own plane sees neither side of it.
+    let (x, z) = centre(a + 2, cz);
+    let floor = body_base_y(
+        SEED,
+        hv(SEED),
+        w.pieces.cols(),
+        &sim_core::deploy::DeployRec {
+            cx: a + 2,
+            cz,
+            ..Default::default()
+        },
+        ARCH_BOX,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z - 1.0);
+    w.players[0].body.qy = sim_core::movement::quant_y(floor);
     // Centred 0.1 m past the seam: across the wall.
     assert_eq!(
         place(&mut w, BOX_ROW, a + 2, cz, pose(-119, 0, 0)),
