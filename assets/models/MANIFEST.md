@@ -1689,3 +1689,25 @@ Prompts, in full, for the IP rail:
 > **potato_plant**, first roll (not shipped) — "A single bushy potato plant on a plain white background, three-quarter view. A rounded upright clump of leafy green stems growing from one root crown, the soft mid-green compound leaves each made of several oval leaflets, the clump 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a few small white and pale violet star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
 >
 > **potato_plant**, second roll (not shipped) — "A single young potato plant on a plain white background, three-quarter view. A dense rounded bush of thick green stems rising from one root crown, every stem carrying broad soft mid-green oval leaves 8 to 12 centimetres long that overlap one another, the leaves attached to their stems with no gaps and no loose pieces, the bush 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a small cluster of white star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
+
+## `site/works_wells.glb` — the Lapis Wells' well head, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls**, run serially.
+One ships, uniform into 4.0 × 4.5 × 4.0 (the old keep's court: the nearest fallen block is
+2.8 m from its centre).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_wells.glb` | THE LAPIS WELLS' terminal (`works::LOOKS`, the ruin) | `01a164b7-0dc3` | `01a164b7-63c0` | 24 | 10,061 | 4.00 × 3.99 × 4.00 | third roll; uniform (delivered 8 m across) |
+
+**Rolled and not shipped:** the first (`01a164b4-6e7e` / `01a164b5-1cc6`) stood
+its pump frame out over the parapet's edge; the second (`01a164b5-dcb6` /
+`01a164b6-5e9f`) baked the shaft's blue tiles onto a sheet between the pump's legs.
+
+**Anchors measured off the model:** the parapet's rim 1.15 m up and 2.05 m round, the tiled
+shaft 1.5 m round about the centre; the two lantern cages at (−1.84, −0.23) and (1.52, 0.74),
+their glass 1.3–2.4 m up.
+
+Prompts, in full, for the IP rail:
+
+> **works_wells** — "A single ancient machine well ruin on a plain white background, three-quarter front view. A round parapet of weathered warm sandstone blocks 400 centimetres across and 100 centimetres tall around a dark open circular shaft 300 centimetres across, the inside of the shaft lined with deep blue glazed tiles. Straddling the shaft, a tall black iron and bronze A-frame pump engine 440 centimetres tall: a big toothed flywheel on one side, a walking beam across the top, two bronze pistons hanging down into the shaft, bronze pipes running down the shaft wall, and two empty tall glass filter columns in bronze cages standing on the parapet. Bronze and brass weathered to green verdigris patina, rust on the iron, soot. Ancient, ornate, weathered. Exactly one well. No water, no rope, no bucket, no glow, no light, no crystals inside the glass, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone blocks, deep blue glazed tiles inside the shaft, dark iron frame with rust, bronze and brass flywheel, pistons and pipes with green verdigris patina, clear empty glass columns, no glow, no text, no letters, no symbols"

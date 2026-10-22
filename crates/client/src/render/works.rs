@@ -92,6 +92,9 @@ pub enum PoolKind {
     /// Metal in a crucible: a dull crust while it fills, bright while the
     /// tank burns.
     Molten,
+    /// Water in a well shaft: dark and still while it fills, lit lapis from
+    /// below while the tank burns.
+    Water,
 }
 
 /// A pool: a disc `r` across its middle at `at` (x, z) that rises from
@@ -137,8 +140,10 @@ pub struct Look {
     pub glow: [f32; 3],
     pub pool: Option<Pool>,
     pub veil: Option<Veil>,
-    /// A glass core's centre and radius.
-    pub core: Option<([f32; 3], f32)>,
+    /// Glass cores (a dome, a lantern): each one's centre and radius, and
+    /// the colour they burn with while the tank does.
+    pub cores: &'static [([f32; 3], f32)],
+    pub core_rgb: [f32; 3],
     /// How many fallen stones lie around it, and the ring they hover in once
     /// risen: its height and radius.
     pub stones: u8,
@@ -161,7 +166,8 @@ pub static PLINTH: Look = Look {
     glow: [0.0, 2.35, -0.6],
     pool: None,
     veil: None,
-    core: None,
+    cores: &[],
+    core_rgb: [0.0; 3],
     stones: 0,
     hover_y: 0.0,
     hover_r: 0.0,
@@ -190,10 +196,40 @@ const CRUCIBLE: Look = Look {
         kind: PoolKind::Molten,
     }),
     veil: None,
-    core: Some(([1.15, 0.80, -0.30], 0.43)),
+    cores: &[([1.15, 0.80, -0.30], 0.43)],
+    core_rgb: [3.0, 1.8, 0.8],
     stones: 5,
     hover_y: 3.3,
     hover_r: 2.0,
+};
+
+/// THE LAPIS WELLS (`content/arc.toml`), in the old keep's court: a round
+/// sandstone well head over a shaft tiled deep blue, an iron and bronze beam
+/// pump across it with its flywheel, and a glass lantern cage on the
+/// parapet either side, generated, 4.0 × 4.0 × 4.0 m. The parapet's rim is
+/// 1.15 m up and 2.05 m round, the shaft 1.5 m round about the centre; the
+/// lanterns' glass stands at (−1.84, −0.23) and (1.52, 0.74), 1.3–2.4 m up,
+/// measured off the model. The water climbs the shaft with the quota and
+/// the lanterns burn lapis with the tank.
+const WELLS: Look = Look {
+    glb: "models/site/works_wells.glb",
+    half: [2.05, 2.05],
+    turn: 0.0,
+    ring: None,
+    fire: None,
+    glow: [0.0, 1.5, 0.0],
+    pool: Some(Pool {
+        at: [0.0, 0.0],
+        r: 1.45,
+        y: [0.45, 1.0],
+        kind: PoolKind::Water,
+    }),
+    veil: None,
+    cores: &[([-1.84, 1.8, -0.23], 0.14), ([1.52, 1.8, 0.74], 0.14)],
+    core_rgb: [0.6, 1.4, 3.5],
+    stones: 5,
+    hover_y: 4.7,
+    hover_r: 2.4,
 };
 
 /// THE EXCHANGE (`content/arc.toml`), on THE GATE's main street under the
@@ -213,7 +249,8 @@ const EXCHANGE: Look = Look {
     glow: [-0.14, 1.3, 0.67],
     pool: None,
     veil: None,
-    core: None,
+    cores: &[],
+    core_rgb: [0.0; 3],
     stones: 0,
     hover_y: 0.0,
     hover_r: 0.0,
@@ -221,8 +258,9 @@ const EXCHANGE: Look = Look {
 
 /// Each site's own look, by `sim_core::spot` site code (keyed on the site,
 /// not the row, so a reordered or renamed row keeps its ruin).
-pub static LOOKS: [(u8, Look); 2] = [
+pub static LOOKS: [(u8, Look); 3] = [
     (SITE_LANDMARK0 + LandmarkKind::Anvil as u8, CRUCIBLE),
+    (SITE_LANDMARK0 + LandmarkKind::Ruin as u8, WELLS),
     (SITE_TOWN, EXCHANGE),
 ];
 
@@ -376,10 +414,18 @@ pub fn spawn(
                             shown: u32::MAX,
                         },
                         Mesh3d(meshes.add(Cylinder::new(p.r, 0.04))),
-                        MeshMaterial3d(materials.add(StandardMaterial {
-                            base_color: Color::srgb(0.08, 0.05, 0.04),
-                            perceptual_roughness: 0.55,
-                            ..default()
+                        MeshMaterial3d(materials.add(match p.kind {
+                            PoolKind::Molten => StandardMaterial {
+                                base_color: Color::srgb(0.08, 0.05, 0.04),
+                                perceptual_roughness: 0.55,
+                                ..default()
+                            },
+                            PoolKind::Water => StandardMaterial {
+                                base_color: Color::srgb(0.02, 0.05, 0.09),
+                                perceptual_roughness: 0.06,
+                                reflectance: 0.6,
+                                ..default()
+                            },
                         })),
                         Transform::from_xyz(p.at[0], p.y[0], p.at[1]),
                         Visibility::Hidden,
@@ -410,7 +456,7 @@ pub fn spawn(
                         ));
                     }
                 }
-                if let Some((at, r)) = look.core {
+                for &(at, r) in look.cores {
                     c.spawn((
                         WorkCore {
                             k: k as u8,
@@ -603,6 +649,11 @@ pub fn animate(
                 }
                 (PoolKind::Molten, WORK_LIT) => LinearRgba::rgb(0.8, 0.1, 0.0),
                 (PoolKind::Molten, _) => LinearRgba::rgb(0.6, 0.08, 0.0) * (0.3 + 1.2 * fill),
+                (PoolKind::Water, WORK_LIT) if heat > 0.0 => {
+                    LinearRgba::rgb(0.1, 0.35, 1.2) * (1.0 + 2.0 * heat)
+                }
+                (PoolKind::Water, WORK_LIT) => LinearRgba::rgb(0.05, 0.03, 0.08),
+                (PoolKind::Water, _) => LinearRgba::rgb(0.02, 0.06, 0.18) * (0.3 + fill),
             };
         }
     }
@@ -616,11 +667,13 @@ pub fn animate(
             continue;
         }
         c.shown = key;
+        let [r, g, b] = look(w.def.spot.site).core_rgb;
+        let burn = LinearRgba::rgb(r, g, b);
         if let Some(m) = materials.get_mut(&mat.0) {
             m.emissive = match w.state {
-                WORK_LIT if heat > 0.0 => LinearRgba::rgb(3.0, 1.8, 0.8) * (1.0 + 3.0 * heat),
+                WORK_LIT if heat > 0.0 => burn * (1.0 + 3.0 * heat),
                 WORK_LIT => LinearRgba::rgb(0.6, 0.12, 0.02),
-                WORK_OPEN => LinearRgba::rgb(1.2, 0.5, 0.1) * fill,
+                WORK_OPEN => burn * 0.4 * fill,
                 _ => LinearRgba::BLACK,
             };
         }
