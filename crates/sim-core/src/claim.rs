@@ -294,13 +294,17 @@ pub struct CrewCover {
 }
 
 impl CrewCover {
-    /// Whether `id` shares one of these crews with the hand they were found
-    /// for.
+    /// Whether `id` is on **every** one of these crews — every crew here that
+    /// the hand they were found for is on — and there is at least one. Not
+    /// *any*: a base with a compound hearth beside it is two claims, and a
+    /// guest crewed only on the compound's is not the main base's crew
+    /// (`foreign_claim`'s rule, kept for a grant).
     pub fn holds(&self, deploys: &Deploys, id: u32) -> bool {
         let hearths = deploys.hearths();
-        self.idx[..self.n]
-            .iter()
-            .any(|&i| hearths.get(i as usize).is_some_and(|h| h.crew.contains(id)))
+        self.n > 0
+            && self.idx[..self.n]
+                .iter()
+                .all(|&i| hearths.get(i as usize).is_some_and(|h| h.crew.contains(id)))
     }
 }
 
@@ -311,9 +315,10 @@ impl CrewCover {
 /// so "on every crew here" answered *yes* to a raider whose own hearth stood
 /// on a foundation beside a hearthless base, and *no* to a defender once a
 /// stranger's hearth stood 16–18 m off the base's edge. A grant tied to a
-/// hand — a key lock's owner, a turret's — asks instead whether you share a
-/// crew with that hand here, and nobody can put another hand on their crew:
-/// `crew_op` only ever adds the caller.
+/// hand — a key lock's owner, a turret's — asks instead whether you are on
+/// every crew here that hand is on ([`CrewCover::holds`]), and nobody can
+/// put another hand on their crew: `crew_op` only ever adds the caller, so
+/// only the hand itself chooses which hearths are in its cover.
 pub fn crew_cover(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32, who: u32) -> CrewCover {
     let mut c = CrewCover {
         idx: [0; MAX_HEARTHS],
@@ -333,8 +338,9 @@ pub fn crew_cover(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32, who: u32) 
     c
 }
 
-/// Whether some hearth whose claim covers `(x, z)` has both `a` and `b` on
-/// its crew ([`crew_cover`]'s rule, asked once).
+/// Whether `b` is on every crew here that `a` is on, of the hearths whose
+/// claim covers `(x, z)`, and `a` is on at least one ([`crew_cover`]'s
+/// rule, asked once).
 pub fn shares_crew(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32, a: u32, b: u32) -> bool {
     crew_cover(pieces, deploys, x, z, a).holds(deploys, b)
 }
@@ -897,6 +903,48 @@ mod tests {
             &bare, &theirs, OWNER, x, z, STRANGER
         ));
         assert!(!shares_crew(&bare, &theirs, x, z, OWNER, STRANGER));
+    }
+
+    /// **Two claims are two claims for a grant too** (review 5, claims#1).
+    /// The owner is crewed on the main base's hearth and on a compound
+    /// hearth whose claim also reaches the turret, with a guest on the
+    /// compound's crew only: the guest is not spared, and neither is a
+    /// main-base crewmate the compound does not list. On every crew the
+    /// owner is on there, either one is.
+    #[test]
+    fn a_grant_asks_every_crew_its_owner_is_on_not_any() {
+        const MATE: u32 = 8;
+        const GUEST: u32 = 10;
+        let cells: Vec<(u16, u16)> = (100..105).map(|cx| (cx, 100)).collect();
+        let (mut pieces, mut deploys) = base(&cells);
+        let _ = deploys.hearths_mut()[0].crew.add(MATE);
+        // The compound: its own foundation in the cushion of the turret's
+        // cell, its hearth the guest's, the owner on its crew too.
+        let bc = BuildContent::probe_fixture();
+        pieces.insert_for_test(109, 100, 0, LOC_PLANE, 0, &bc);
+        deploys.push_hearth_for_test(109, 100, 0, GUEST);
+        let _ = deploys.hearths_mut()[1].crew.add(OWNER);
+        let (x, z) = centre(104, 100);
+        assert!(
+            foreign_claim(&pieces, &deploys, x, z, MATE)
+                && foreign_claim(&pieces, &deploys, x, z, GUEST),
+            "the fixture no longer puts both claims over the turret"
+        );
+        let spares = |d: &Deploys, id| crate::turret::spares(&pieces, d, OWNER, x, z, id);
+        assert!(spares(&deploys, OWNER));
+        assert!(!spares(&deploys, GUEST), "the compound's guest is spared");
+        assert!(!shares_crew(&pieces, &deploys, x, z, OWNER, GUEST));
+        assert!(
+            !spares(&deploys, MATE),
+            "a crewmate the compound does not list is spared"
+        );
+        assert!(!spares(&deploys, STRANGER));
+
+        // On both crews, both are.
+        let _ = deploys.hearths_mut()[0].crew.add(GUEST);
+        let _ = deploys.hearths_mut()[1].crew.add(MATE);
+        assert!(spares(&deploys, GUEST) && spares(&deploys, MATE));
+        assert!(!spares(&deploys, STRANGER));
     }
 
     /// A `World` is constructible with the module in it — the smoke that

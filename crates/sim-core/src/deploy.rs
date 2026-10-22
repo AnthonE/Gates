@@ -167,8 +167,8 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or on a crew
-/// with its owner where it stands (`turret::spares`).
+/// rounds a gun on top spends on anybody who is not its owner or on every
+/// crew its owner is on where it stands (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
@@ -3653,12 +3653,12 @@ pub fn use_door(
     Some(deploys.entries[i].owner)
 }
 
-/// A key lock also opens for its owner's hearth crew: anyone on a crew
-/// with the lock's owner, on a hearth whose claim covers the door
-/// (`claim::shares_crew`). Rust shares a key lock by crafting keys; the
-/// crew is ours. Not "on every crew here": a raider's own hearth on a
-/// foundation beside a hearthless base claims its doors too, and that rule
-/// let the raider through every key lock in it.
+/// A key lock also opens for its owner's hearth crew: anyone on every crew
+/// the lock's owner is on, of the hearths whose claim covers the door
+/// (`claim::shares_crew`; `crew_op` on leave and clear). Rust shares a key
+/// lock by crafting keys; the crew is ours. Not "on every crew here": a
+/// raider's own hearth on a foundation beside a hearthless base claims its
+/// doors too, and that rule let the raider through every key lock in it.
 fn key_crew_passes(
     pieces: &Pieces,
     deploys: &Deploys,
@@ -4014,6 +4014,14 @@ pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
 /// base — which is the shape of betrayal this record exists to be able to
 /// count, and the shape whose whole meaning is whether the owner was
 /// there.
+///
+/// **A hand's turrets, vending machine and key locks answer to the crews
+/// that hand is on** (`turret::spares`, `key_crew_passes`): every crew
+/// here its owner is on. So a leave or a clear withdraws them from that
+/// crew — the leaver's from the crew they left, every other member's from
+/// the clearer — and a rejoin gives them back. That is Rust's model, where
+/// each turret and lock carries its own authorisation, and it is what keeps
+/// a clear from handing the clearer every other member's guns.
 #[allow(clippy::too_many_arguments)]
 pub fn crew_op(
     deploys: &mut Deploys,
@@ -9545,6 +9553,92 @@ mod tests {
         );
         assert!(!press(&mut deploys, &mut pieces, RAIDER));
         assert!(!press(&mut deploys, &mut pieces, 13), "a stranger");
+    }
+
+    /// **A hand's turret and key lock answer to the crews that hand is on**
+    /// (review 5, claims#0; Rust's per-turret, per-lock authorisation). The
+    /// owner and a member on the base's hearth, the owner's turret spot and
+    /// key lock in its claim: the member is spared and let through. The
+    /// owner leaves, and the member is neither while the owner still is.
+    /// The member clears the hearth and gains nothing of the owner's — the
+    /// old rule's takeover. The owner rejoins through the hearth's code
+    /// lock, and the member has both back.
+    #[test]
+    fn a_hands_turret_and_key_lock_follow_the_crews_it_is_on() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert!(deploys.locks.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().is_key());
+
+        const MATE: u32 = 11;
+        const STRANGER: u32 = 13;
+        let mut mate = player_at_cell(CX, CZ, &[]);
+        mate.id = MATE;
+        deploys.push_hearth_for_test(CX, CZ, 0, owner.id);
+        let _ = deploys.hearths_mut()[0].crew.add(MATE);
+        // The hearth's code lock, bolted on by the owner: it remembers them.
+        assert!(deploys
+            .locks
+            .insert(crate::lock::LockRec::fresh(CX, CZ, 0, LOC_PLANE, owner.id)));
+        let oid = owner.id;
+        let (x, z) = deploys
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .place_xz(pieces.cols());
+        let spared = |d: &Deploys, id| crate::turret::spares(&pieces, d, oid, x, z, id);
+        let passes = |d: &Deploys, id| {
+            d.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, id)
+                || key_crew_passes(&pieces, d, CX, CZ, 0, LOC_EDGE_XLO, id)
+        };
+        let op = |d: &mut Deploys, p: &Player, op: u8| {
+            let mut ev = EventQueue::default();
+            crew_op(d, p, CX, CZ, 0, op, &mut ev);
+        };
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
+
+        // The owner leaves: their gun and lock leave the crew with them.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_LEAVE);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(!spared(&deploys, MATE), "the gun stayed with the crew");
+        assert!(!passes(&deploys, MATE), "the key lock stayed with the crew");
+        assert!(spared(&deploys, oid) && passes(&deploys, oid));
+
+        // The member clears the hearth to themselves: nothing of the
+        // owner's comes with it.
+        op(&mut deploys, &mate, ACCESS_OP_CREW_CLEAR);
+        assert_eq!(deploys.hearths()[0].crew.members(), &[MATE]);
+        assert!(
+            !spared(&deploys, MATE) && !passes(&deploys, MATE),
+            "a clear handed the clearer the owner's gun and lock"
+        );
+
+        // The owner walks back in on the hearth's lock: both are back.
+        op(&mut deploys, &owner, ACCESS_OP_CREW_JOIN);
+        assert!(deploys.hearths()[0].crew.contains(oid));
+        assert!(spared(&deploys, MATE) && passes(&deploys, MATE));
+        assert!(!spared(&deploys, STRANGER) && !passes(&deploys, STRANGER));
     }
 
     /// **A spent bag stays down** (exploit sweep 2, base-life#1): lifted and
