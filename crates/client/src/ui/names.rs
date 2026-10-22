@@ -192,10 +192,11 @@ mod tests {
 
     #[test]
     fn streamer_mode_draws_a_made_up_name_and_keeps_the_agent_mark() {
-        let t = tag("Ash", 0);
-        assert_eq!(shown_if(false, Some(&t), false, 259), "Ash");
+        // A name no alias is made of (`streamer::FIRST`/`SECOND` hold "Ash").
+        let t = tag("Quillon", 0);
+        assert_eq!(shown_if(false, Some(&t), false, 259), "Quillon");
         let a = shown_if(true, Some(&t), false, 259);
-        assert!(!a.contains("Ash") && !a.contains("0x"), "{a}");
+        assert!(!a.contains("Quillon") && !a.contains("0x"), "{a}");
         assert_eq!(
             a,
             shown_if(true, Some(&tag("", 0)), false, 259),

@@ -1259,8 +1259,8 @@ is not the box's middle); `ci/cut_glb.py` is new.
 | `site/sentry_head.glb` | sentry_head | sentry and turret head (`sentry::HEAD_GLB`) | `01a140f8-ddf6` | `01a140f9-30cc` | 2,202 | 0.80 × 0.40 × 0.89 | uniform to 0.8 wide, `--turn=y90 --center --shift=0,0,0.17` (pivot mid-housing) |
 | `deploy/turret_base.glb` | turret_base | DEPLOY row 18 and the sentries' pedestal | `01a140f8-df9e` | `01a140f9-5ab8` | 2,050 | 0.70 × 0.56 × 0.70 | uniform to the `DEPLOY` row |
 | `site/works_plinth.glb` | works_plinth | a work's plinth and bowl (`works::PLINTH_GLB`) | `01a140f8-e4f5` | `01a140f9-daf6` | 3,144 | 1.60 × 1.58 × 1.60 | uniform to 1.6 wide; the gold ring stays a torus |
-| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a140f9-bae1` | `01a140fa-87b8` | 2,177 | 1.59 × 2.00 × 0.55 | uniform to 2.0 tall; the ring on top stays a torus |
-| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a140f9-e137` | `01a140fa-85a8` | 2,209 | 1.11 × 1.00 × 1.11 | uniform to 1.0 tall; the gold notch stays code |
+| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a16500-f8f7` | `01a16501-78d5` | 2,564 | 1.30 × 2.00 × 0.39 | re-rolled in sandstone 2026-10-22 (below); uniform to 2.0 tall; the ring on top stays a torus |
+| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a16505-0f2e` | `01a16505-64e3` | 2,551 | 0.83 × 1.00 × 0.82 | re-rolled in sandstone 2026-10-22 (below); uniform to 1.0 tall; the gold notch stays code |
 | `site/searchlight.glb` | searchlight | a watchtower's lamp head (`town_fx::SEARCHLIGHT_GLB`) | `01a140fa-81b3` | `01a140fb-2473` | 2,069 | 0.51 × 0.46 × 0.60 | uniform, `--turn=x-90 --center` (lens up +Y); an emissive disc lies on the lens |
 
 **Rolled and not shipped:** the red oil drum (`01a140f7-1533` / `01a140f7-b9c4`) shaded its lid
@@ -1689,3 +1689,86 @@ Prompts, in full, for the IP rail:
 > **potato_plant**, first roll (not shipped) — "A single bushy potato plant on a plain white background, three-quarter view. A rounded upright clump of leafy green stems growing from one root crown, the soft mid-green compound leaves each made of several oval leaflets, the clump 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a few small white and pale violet star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
 >
 > **potato_plant**, second roll (not shipped) — "A single young potato plant on a plain white background, three-quarter view. A dense rounded bush of thick green stems rising from one root crown, every stem carrying broad soft mid-green oval leaves 8 to 12 centimetres long that overlap one another, the leaves attached to their stems with no gaps and no loose pieces, the bush 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a small cluster of white star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
+
+## `site/works_wells.glb` — the Lapis Wells' well head, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls**, run serially.
+One ships, uniform into 4.0 × 4.5 × 4.0 (the old keep's court: the nearest fallen block is
+2.8 m from its centre).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_wells.glb` | THE LAPIS WELLS' terminal (`works::LOOKS`, the ruin) | `01a164b7-0dc3` | `01a164b7-63c0` | 24 | 10,061 | 4.00 × 3.99 × 4.00 | third roll; uniform (delivered 8 m across) |
+
+**Rolled and not shipped:** the first (`01a164b4-6e7e` / `01a164b5-1cc6`) stood
+its pump frame out over the parapet's edge; the second (`01a164b5-dcb6` /
+`01a164b6-5e9f`) baked the shaft's blue tiles onto a sheet between the pump's legs.
+
+**Anchors measured off the model:** the parapet's rim 1.15 m up and 2.05 m round, the tiled
+shaft 1.5 m round about the centre; the two lantern cages at (−1.84, −0.23) and (1.52, 0.74),
+their glass 1.3–2.4 m up.
+
+Prompts, in full, for the IP rail:
+
+> **works_wells** — "A single ancient machine well ruin on a plain white background, three-quarter front view. A round parapet of weathered warm sandstone blocks 400 centimetres across and 100 centimetres tall around a dark open circular shaft 300 centimetres across, the inside of the shaft lined with deep blue glazed tiles. Straddling the shaft, a tall black iron and bronze A-frame pump engine 440 centimetres tall: a big toothed flywheel on one side, a walking beam across the top, two bronze pistons hanging down into the shaft, bronze pipes running down the shaft wall, and two empty tall glass filter columns in bronze cages standing on the parapet. Bronze and brass weathered to green verdigris patina, rust on the iron, soot. Ancient, ornate, weathered. Exactly one well. No water, no rope, no bucket, no glow, no light, no crystals inside the glass, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone blocks, deep blue glazed tiles inside the shaft, dark iron frame with rust, bronze and brass flywheel, pistons and pipes with green verdigris patina, clear empty glass columns, no glow, no text, no letters, no symbols"
+
+## `site/works_observatory.glb` — the Observatory's dais and telescope, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls.** One ships,
+uniform into 4.6 × 4.4 × 4.6 (the far spires' nearest rock stands 3.2 m from its centre).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_observatory.glb` | THE OBSERVATORY's terminal (`works::LOOKS`, the spires) | `01a164eb-1ce8` | `01a164eb-9a9f` | 24 | 9,812 | 4.60 × 3.51 × 4.60 | first roll; uniform (delivered 3.3 m across) |
+
+**Rolled and not shipped:** the second (`01a164ec-4efd` / `01a164ec-cbc9`) broke the
+dais's steps into loose rings floating round it; the third (`01a164ed-7573` /
+`01a164ee-177d`) was sound, but its basin sat beside the pedestal and not under the
+telescope's reach.
+
+**Anchors measured off the model:** the dais top 0.5 m up, the half-moon basin's floor
+0.2 m, its clear left half round (−0.85, 0.25); the lens mouth 0.7 m across round
+(0, 3.15, 1.12).
+
+Prompts, in full, for the IP rail:
+
+> **works_observatory** — "A single ancient observatory instrument ruin on a plain white background, three-quarter front view. A round stepped dais of weathered warm sandstone blocks 460 centimetres across and 50 centimetres tall, with a shallow round empty basin 200 centimetres across sunk into the front half of its top, lined with deep blue glazed tiles. At the back of the dais a carved sandstone pedestal 120 centimetres tall carrying a large bronze telescope: a long brass tube 300 centimetres long on a geared bronze mount, tilted up toward the sky, a big empty round lens frame 90 centimetres across at its upper end, toothed gear wheels and engraved bronze dials on the mount. Bronze and brass weathered to green verdigris patina, soot. Ancient, ornate, weathered. Exactly one instrument. No water, no glass, no glow, no light, no crystals, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone blocks, deep blue glazed tiles in the basin, bronze and brass telescope tube, gears and dials with green verdigris patina, soot, no glow, no text, no letters, no symbols"
+
+## `site/works_spine.glb` — the Golden Spine's conduit, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls.** One ships,
+uniform into 7.0 × 3.0 × 2.0 (the container yard's open lane between the stacks).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_spine.glb` | THE GOLDEN SPINE's terminal (`works::LOOKS`, the yard) | `01a164ec-7acd` | `01a164ec-f6be` | 24 | 10,189 | 7.00 × 2.94 × 1.70 | first roll; uniform (delivered 2.9 m long) |
+
+**Rolled and not shipped:** the second (`01a164ed-a509` / `01a164ee-1f7c`) and the third
+(`01a164ee-f1f5` / `01a164ef-71bf`), both sound; the first's collars and cradles read best.
+
+**Anchors measured off the model:** the five insulators' glass 2.3–2.85 m up at x −2.44,
+−1.25, −0.06, 1.11 and 2.37, on the conduit's centre line.
+
+Prompts, in full, for the IP rail:
+
+> **works_spine** — "A single ancient machine conduit ruin on a plain white background, three-quarter front view. A long straight segment of a giant golden conduit 700 centimetres long and 70 centimetres thick, made like a spine: a gilded bronze pipe ringed every 50 centimetres by heavy bronze vertebra collars with short fins, lying level in four carved sandstone cradles 90 centimetres tall that stand on a low sandstone causeway 700 centimetres long, 200 centimetres wide and 30 centimetres tall. Along its top five empty glass insulator bells in bronze cages, each 40 centimetres tall, stand in a row. Gilt worn through to bronze, green verdigris patina, soot, cracked stone. Ancient, ornate, weathered. Exactly one conduit. No glow, no light, no crystals inside the glass, no wires, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone causeway and cradles, worn gilded bronze conduit and vertebra collars with green verdigris patina, clear empty glass insulator bells in bronze cages, soot, no glow, no text, no letters, no symbols"
+
+## `site/lore_slab.glb`, `site/lore_dial.glb` — the lore in sandstone, Meshy, 2026-10-22
+
+The black basalt stele and drum re-rolled as the ruins' own stone (the rows above carry the
+shipped tasks; the basalt prompts above are history). **96 credits for four rolls**, two of
+each. Same pipeline; `ktx_pack.py --size 1024`.
+
+**Rolled and not shipped:** the second slab (`01a16503-e04d` / `01a16504-6167`), sound but
+rougher in its field; the first dial (`01a16502-2e6c` / `01a16502-ad45`), whose top read
+patchier.
+
+**Anchors measured off the slab:** the broad faces flat at z +0.106 / −0.111 (±2 mm) over the
+carved field, the bronze frame at |x| 0.58, the footing to 0.2 m, the lapis band from 1.7 m
+(`lore::FACE_FRONT_Z`, `CARVE_MID_M`).
+
+Prompts, in full, for the IP rail:
+
+> **lore_slab** (sandstone) — "A single tall upright stone stele on a plain white background, three-quarter view. A standing slab of weathered warm sandstone 130 centimetres wide, 200 centimetres tall and 30 centimetres thick, both of its broad faces smooth, flat and completely blank, each face framed by a narrow inset bronze strip along its edges, a thin band of deep blue glazed tiles across the slab just under its top, its top edge squared under a low bronze cap, standing in a low rough sandstone footing. Ancient, weathered, chipped corners, green verdigris on the bronze. Exactly one slab. No carving on the faces, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone with smooth blank flat faces, chipped corners, narrow bronze edge strips and cap with green verdigris patina, a thin band of deep blue glazed tiles, no text, no letters, no symbols"
+>
+> **lore_dial** (sandstone) — "A single short round stone drum on a plain white background, three-quarter view. A solid cylinder of weathered warm sandstone 84 centimetres across and 100 centimetres tall, its flat top smooth with a low bronze rim, two bronze bands around its body with a ring of deep blue glazed tiles between them, a slightly wider rough sandstone base. Ancient, weathered, chipped, green verdigris on the bronze. Exactly one drum. No ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone, smooth top, chipped edges, bronze rim and bands with green verdigris patina, a ring of deep blue glazed tiles, no text, no letters, no symbols"

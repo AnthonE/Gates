@@ -314,6 +314,13 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
         "shore_exposure",
         "carve-blind: shore foam, the same sea-level claim as `stream`.",
     ),
+    (
+        "water.rs",
+        "open_map_row",
+        "locator: the open-sea share the swell shader fades by, at 32 m a \
+         texel. Where the open sea is never moves with the carve, the same \
+         sea-level claim as `stream`.",
+    ),
 ];
 
 /// Files this gate reads. `terrain.rs` and the client's render/ui paths are the

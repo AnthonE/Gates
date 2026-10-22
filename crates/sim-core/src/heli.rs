@@ -99,6 +99,16 @@ const MIN_CLEAR_MM: i32 = 6_000;
 /// How far ahead it reads the ground for its height, in ticks of its
 /// current velocity: a hill is climbed before it arrives.
 const LOOKAHEAD_TICKS: i32 = 45;
+/// How far along its current velocity it reads THE GATE (`town::top`,
+/// 92 m), in ticks, and in how many looks: 20 s, more than its climb cap
+/// and its easing take from cruise height to over the caps (~13 s). Only a
+/// path that crosses the gate climbs, so a heli hunting beside the town
+/// keeps its own height.
+const CLIMB_OVER_TICKS: i32 = 600;
+const CLIMB_OVER_LOOKS: i32 = 10;
+/// How near a town part's top becomes its height, metres, so it never
+/// clips a pylon or the ring it is still climbing toward.
+const KEEP_OFF_M: f32 = 8.0;
 /// It enters and leaves this far inside the island square's border (the
 /// wire's x/z window is the square, `protocol::POS_XZ_BITS`).
 const EDGE_IN_MM: i32 = 30_000;
@@ -669,7 +679,18 @@ fn fly(
         def.cruise_mm
     };
     let ceil = Y_CEIL_Q * (POS_Y_Q * MM_PER_M) as i32;
-    let want_y = ((here.max(ahead) * MM_PER_M) as i32 + alt as i32).min(ceil);
+    let mut over = i32::MIN;
+    for k in 0..=CLIMB_OVER_LOOKS {
+        let t = CLIMB_OVER_TICKS * k / CLIMB_OVER_LOOKS;
+        let (x, z) = (heli.x + heli.vx * t, heli.z + heli.vz * t);
+        over = over.max(over_mm(haven, x, z, KEEP_OFF_M));
+    }
+    // It aims twice its clearance over the caps, so easing onto that height
+    // never dips onto the hard floor below.
+    let over = over.saturating_add(2 * MIN_CLEAR_MM);
+    let want_y = ((here.max(ahead) * MM_PER_M) as i32 + alt as i32)
+        .max(over)
+        .min(ceil);
     let wvy = ((want_y - heli.y) as f32 / 30.0).clamp(-CLIMB, CLIMB);
     let ay = (wvy - heli.vy as f32).clamp(-VACCEL, VACCEL);
     heli.vy = (heli.vy as f32 + ay) as i32;
@@ -677,7 +698,8 @@ fn fly(
     let size = (terrain::ISLAND_SIZE * MM_PER_M) as i32;
     heli.x = (heli.x + heli.vx).clamp(1_000, size - 1_000);
     heli.z = (heli.z + heli.vz).clamp(1_000, size - 1_000);
-    let floor = (floor_m(seed, haven, heli.x, heli.z) * MM_PER_M) as i32 + MIN_CLEAR_MM;
+    let floor = ((floor_m(seed, haven, heli.x, heli.z) * MM_PER_M) as i32 + MIN_CLEAR_MM)
+        .max(over_mm(haven, heli.x, heli.z, KEEP_OFF_M).saturating_add(MIN_CLEAR_MM));
     heli.y = (heli.y + heli.vy).max(floor).min(ceil);
 }
 
@@ -823,6 +845,21 @@ fn floor_m(seed: u64, haven: &Haven, x_mm: i32, z_mm: i32) -> f32 {
     terrain::ground(seed, haven, x, z).max(terrain::SEA_LEVEL)
 }
 
+/// The top of the town's parts within `pad` of it, mm, or `i32::MIN` away
+/// from the town.
+fn over_mm(haven: &Haven, x_mm: i32, z_mm: i32, pad: f32) -> i32 {
+    let top = crate::town::top(
+        &haven.town,
+        x_mm as f32 / MM_PER_M,
+        z_mm as f32 / MM_PER_M,
+        pad,
+    );
+    if top <= crate::collide::NO_SURFACE {
+        return i32::MIN;
+    }
+    (top * MM_PER_M) as i32
+}
+
 /// Sixteen bits of `h` from `shift`, as `0.0..=1.0`.
 #[inline]
 fn unit(h: u64, shift: u32) -> f32 {
@@ -867,6 +904,52 @@ mod tests {
         }
         assert_eq!(pitch_toward(-1.0, 0.0), 0);
         assert_eq!(pitch_toward(1.0, 0.0), 255);
+    }
+
+    /// Flown at cruise height straight through THE GATE's pylons, it climbs
+    /// before it gets there (no jump onto the hard floor) and never enters
+    /// a part below its top.
+    #[test]
+    fn it_climbs_over_the_gate_and_never_through_it() {
+        let w = crate::world::World::new(11);
+        let t = &w.haven.town;
+        let p = t.placed();
+        let def = HeliDef {
+            speed_mmpt: 22_000 / 30,
+            cruise_mm: 45_000,
+            ..HeliDef::INERT
+        };
+        let mm = |lx: f32| {
+            let (x, z) = crate::kit::to_world(&p, lx, 0.0);
+            ((x * MM_PER_M) as i32, (z * MM_PER_M) as i32)
+        };
+        let ((x, z), (wx, wz)) = (mm(-600.0), mm(600.0));
+        let y = (floor_m(w.seed, &w.haven, x, z) * MM_PER_M) as i32 + def.cruise_mm as i32;
+        let mut heli = Heli {
+            x,
+            y,
+            z,
+            wx,
+            wz,
+            leaving: true,
+            ..Heli::default()
+        };
+        let cc = CombatContent::probe_fixture();
+        let mut crossed = false;
+        for _ in 0..3_000 {
+            let was = heli.y;
+            fly(w.seed, &w.haven, &def, &cc, &mut heli, &w.players);
+            let top = crate::town::top(t, heli.x as f32 / MM_PER_M, heli.z as f32 / MM_PER_M, 0.0);
+            let y = heli.y as f32 / MM_PER_M;
+            assert!(y >= top, "{y:.1} m inside a part topped at {top:.1} m");
+            assert!(
+                heli.y - was <= 2 * CLIMB as i32,
+                "jumped {} mm",
+                heli.y - was
+            );
+            crossed |= top > t.floor_y + 80.0;
+        }
+        assert!(crossed, "never crossed a pylon");
     }
 
     #[test]

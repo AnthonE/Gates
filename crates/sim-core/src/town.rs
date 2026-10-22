@@ -747,6 +747,26 @@ pub fn ground(t: &Town, x: f32, z: f32, feet: f32, r: f32) -> f32 {
         ))
 }
 
+/// The top of the highest town part within `pad` metres of (`x`, `z`)
+/// across the ground — the ring included, drawn as it is — world y, or
+/// `collide::NO_SURFACE` away from the town. What flies keeps over this.
+pub fn top(t: &Town, x: f32, z: f32, pad: f32) -> f32 {
+    if !near(t, x, z, 43.0 + pad) {
+        return crate::collide::NO_SURFACE;
+    }
+    let (lx, lz) = kit::to_local(&t.placed(), x, z);
+    let mut top = crate::collide::NO_SURFACE;
+    let mut k = 0;
+    while k < PARTS.len() {
+        let b = PARTS[k].b;
+        if lx > b[0] - pad && lx < b[3] + pad && lz > b[2] - pad && lz < b[5] + pad {
+            top = top.max(t.floor_y + b[4]);
+        }
+        k += 1;
+    }
+    top
+}
+
 /// Whether a roof keeps the rain off a body here.
 pub fn roofed(t: &Town, x: f32, z: f32, feet: f32) -> bool {
     if !near(t, x, z, 43.0) {
