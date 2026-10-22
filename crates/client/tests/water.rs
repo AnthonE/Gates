@@ -418,6 +418,44 @@ fn a_storm_trough_never_bares_the_seabed() {
     }
 }
 
+/// **The skirt never caps a calm sea more than the core.** Whitecaps are
+/// judged against the whole clear sea's crest ([`crest_reach`]), not against
+/// the waves a vertex's spacing still carries: against those, the skirt's
+/// lone 52 m wave reached its own peak at every crest and the calm sea wore a
+/// ring of whitecaps 80–130 m out, jumping 8 m on every snap.
+#[test]
+fn the_skirt_never_caps_a_calm_sea_more_than_the_core() {
+    let mut spacings = axis_spacing(&axis_coords());
+    spacings.sort_by(f32::total_cmp);
+    spacings.dedup();
+    let reach = crest_reach(1.0);
+    let capped = |sp: f32| {
+        let mut n = 0usize;
+        for iz in 0..64 {
+            for ix in 0..64 {
+                let (h, _, _) = wave_field(
+                    ix as f32 * 3.1,
+                    iz as f32 * 2.7,
+                    &PHASE,
+                    &SeaState::CALM.swell,
+                    sp,
+                    1.0,
+                );
+                n += usize::from(crest_foam(h, reach) > 0.0);
+            }
+        }
+        n
+    };
+    let core = capped(STEP_M);
+    for sp in spacings {
+        let n = capped(sp);
+        assert!(
+            n <= core,
+            "a calm sea caps {n} crests at {sp} m spacing against {core} in the core"
+        );
+    }
+}
+
 /// **A storm whitens the swell, and a breeze keeps its scatter.**
 /// `crest_foam` measures every sea against the clear sea's crest reach, so
 /// the clear sea's caps are exactly the old ones and a storm's crests, which

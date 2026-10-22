@@ -307,3 +307,186 @@ fn walking_inland_carries_and_changes_nothing() {
     let fresh = app(start + Vec3::new(SNAP_M * 5.0, 0.0, 0.0));
     same(&walked, &fresh, "inland east");
 }
+
+// ---------------------------------------------------------------------------
+// The surface the vertex stage draws (`water.wgsl`).
+// ---------------------------------------------------------------------------
+
+/// An eye on a real beach: walk in from the open sea east of the island,
+/// along its middle, to the first dry ground — the coast, never a lake — and
+/// stand a few metres out in the water, so the core holds swell, breakers and
+/// the shore wash at once.
+fn beach_eye() -> Vec3 {
+    let haven = sim_core::terrain::haven(SEED);
+    let z = sim_core::terrain::ISLAND_SIZE * 0.5;
+    let mut x = sim_core::terrain::ISLAND_SIZE;
+    while x > z {
+        if sim_core::terrain::ground(SEED, &haven, x, z) >= sim_core::terrain::SEA_LEVEL {
+            return Vec3::new(x + 8.0, 2.0, z);
+        }
+        x -= 4.0;
+    }
+    panic!("no coast east of the middle of seed {SEED}");
+}
+
+/// **The GPU's surface is the CPU's.** `water::surface_local` is the vertex
+/// stage line for line — local offsets, phases folded around the centre in
+/// `f64`, every angle reduced in cycles — and `water::surface_at` is the sea
+/// as the CPU drew it before the port, at world coordinates. Over every vertex
+/// of a real coast, mid-phase in a rough sea, they agree; and the vertices
+/// that carry the swell, the breakers and the wash are all among them, so the
+/// agreement is not three empty sets.
+///
+/// One discontinuity is exempt: a bore's trail restarts at 1 the instant its
+/// crest passes (`surf_at`), so a vertex within a hair of that instant may sit
+/// on either side of it in the two arithmetics.
+#[test]
+fn the_vertex_stage_draws_the_cpu_surface() {
+    let app = app(beach_eye());
+    let sea = app.world().resource::<Sea>();
+    let centre = sea.centre().expect("the sweep ran");
+    let coords = sea.coords();
+    let n = coords.len();
+    let state = water::SeaState::at(0.6);
+    let phase = [0.3, 2.9, 4.4, 5.9];
+    let surf_phase = 1.7f32;
+    let folded = water::fold_phases(&phase, centre);
+    let surf_cycles = surf_phase / std::f32::consts::TAU;
+    let (mut swell, mut bores, mut wash) = (0usize, 0usize, 0usize);
+    for iz in 0..n {
+        for ix in 0..n {
+            let i = iz * n + ix;
+            let v = sea.statics(ix, iz);
+            let want = water::surface_at(
+                centre.x + coords[ix],
+                centre.y + coords[iz],
+                &phase,
+                surf_phase,
+                &state,
+                sea.spacing_at(ix, iz),
+                sea.shoal()[i],
+                &v,
+            );
+            let got =
+                water::surface_local(coords[ix], coords[iz], &folded, surf_cycles, &state, &v);
+            let at_crest = v.surf_dir != [0.0, 0.0] && {
+                let c = v.surf_dist / water::SURF_LEN_M + surf_cycles - 0.25;
+                let f = c - c.floor();
+                !(1e-4..=1.0 - 1e-4).contains(&f)
+            };
+            for (what, a, b) in [
+                ("height", got.h, want.h),
+                ("gradient x", got.gx, want.gx),
+                ("gradient z", got.gz, want.gz),
+                ("foam", got.foam, want.foam),
+            ] {
+                if what == "foam" && at_crest {
+                    continue;
+                }
+                assert!(
+                    (a - b).abs() < 1e-3,
+                    "vertex ({ix}, {iz}) {what}: the vertex stage draws {a}, the CPU drew {b}"
+                );
+            }
+            swell += usize::from(v.swell.iter().any(|w| *w > 0.0));
+            bores += usize::from(v.surf_amp > 0.0);
+            wash += usize::from(v.wash > 0.0);
+        }
+    }
+    assert!(
+        swell > 1000 && bores > 10 && wash > 10,
+        "the coast did not exercise every term: {swell} swell, {bores} bores, {wash} wash"
+    );
+}
+
+/// **The mesh holds what the vertex stage reads**, at every vertex: the local
+/// offset as the position (X from `ix`, Z from `iz` — transposed, the swell
+/// would run across its own gradient), and the per-snap inputs where its
+/// `@location`s expect them. The entity stands at the centre.
+#[test]
+fn the_mesh_carries_the_vertex_statics() {
+    use bevy::mesh::VertexAttributeValues as V;
+    let mut app = app(beach_eye());
+    let sea = app.world().resource::<Sea>();
+    let centre = sea.centre().expect("the sweep ran");
+    let n = sea.n();
+    let coords = sea.coords().to_vec();
+    let statics: Vec<_> = (0..n * n).map(|i| sea.statics(i % n, i / n)).collect();
+    let mesh = app
+        .world()
+        .resource::<Assets<Mesh>>()
+        .get(sea.mesh().expect("built"))
+        .expect("the sea's mesh")
+        .clone();
+    let Some(V::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        panic!("no positions")
+    };
+    let Some(V::Float32x2(uv_b)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) else {
+        panic!("no UV_1")
+    };
+    let Some(V::Float32x4(swell)) = mesh.attribute(water::ATTRIBUTE_SWELL) else {
+        panic!("no swell shares")
+    };
+    let Some(V::Float32x4(surf)) = mesh.attribute(water::ATTRIBUTE_SURF) else {
+        panic!("no breakers")
+    };
+    let Some(V::Float32(reach)) = mesh.attribute(water::ATTRIBUTE_REACH) else {
+        panic!("no reach")
+    };
+    for (i, v) in statics.iter().enumerate() {
+        let (ix, iz) = (i % n, i / n);
+        assert_eq!(
+            pos[i],
+            [coords[ix], sim_core::terrain::SEA_LEVEL, coords[iz]],
+            "position {i}"
+        );
+        assert_eq!(uv_b[i], [v.wash, v.depth], "UV_1 {i}");
+        assert_eq!(swell[i], v.swell, "swell shares {i}");
+        assert_eq!(
+            surf[i],
+            [v.surf_dist, v.surf_dir[0], v.surf_dir[1], v.surf_amp],
+            "breakers {i}"
+        );
+        assert_eq!(reach[i], v.reach, "reach {i}");
+    }
+    let tf = app
+        .world_mut()
+        .query_filtered::<&Transform, With<water::SeaSurface>>()
+        .single(app.world())
+        .expect("one sea");
+    assert_eq!(tf.translation, Vec3::new(centre.x, 0.0, centre.y));
+}
+
+/// **The uniform folds the phases around the centre the mesh is drawn at**,
+/// in the frame that moved it: `animate` runs after `stream`, and on a snap
+/// the material's centre, the entity's translation and the folded phases all
+/// name the new cell. One frame behind and the whole swell would jump by up
+/// to a wavelength on every snap.
+#[test]
+fn the_uniform_folds_around_the_drawn_centre() {
+    let mut app = app(beach_eye());
+    app.add_systems(Update, water::animate.after(water::stream));
+    app.update();
+    app.world_mut().resource_mut::<Eye>().pos += Vec3::new(SNAP_M, 0.0, 0.0);
+    app.update();
+    let sea = app.world().resource::<Sea>();
+    let centre = sea.centre().expect("the sweep ran");
+    let folded = water::fold_phases(&sea.phases().0, centre);
+    let params = app
+        .world()
+        .resource::<Assets<water::WaterMaterial>>()
+        .iter()
+        .next()
+        .expect("the sea's material")
+        .1
+        .extension
+        .params;
+    let tf = *app
+        .world_mut()
+        .query_filtered::<&Transform, With<water::SeaSurface>>()
+        .single(app.world())
+        .expect("one sea");
+    assert_eq!(Vec2::new(params.field.x, params.field.y), centre);
+    assert_eq!(Vec2::new(tf.translation.x, tf.translation.z), centre);
+    assert_eq!(params.phase.to_array(), folded);
+}

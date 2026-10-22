@@ -166,10 +166,11 @@ fn defs(names: &[&str]) -> Vec<ShaderDefVal> {
     names.iter().map(|&n| n.into()).collect()
 }
 
-/// The files the terrain mesh draws with. That mesh always carries a second
-/// UV, tangents and colours (`terrain_mesh.rs`), and both read them without
-/// an `#ifdef`, so they are composed with that layout only.
-const TERRAIN: [&str; 2] = ["ground_splat.wgsl", "ground_vertex.wgsl"];
+/// The files drawn only on meshes that always carry a second UV, tangents and
+/// colours, and read them without an `#ifdef`, so they are composed with that
+/// layout only: the terrain's (`terrain_mesh.rs`) and the sea's vertex stage
+/// (`water::setup`).
+const TERRAIN: [&str; 3] = ["ground_splat.wgsl", "ground_vertex.wgsl", "water.wgsl"];
 
 /// What every pipeline gets: the material group, the device's storage-buffer
 /// count (`PipelineCache::new`'s global def, at wgpu's default limit), and

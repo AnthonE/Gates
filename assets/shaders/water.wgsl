@@ -21,10 +21,16 @@
 //  6. **The blend is premultiplied** and Fresnel attenuates the background as
 //     well as adding the sky: `α' = α + (1 − α)·F`.
 //
-// ⚠ Nothing in CI compiles this file. Boot the game.
+// The vertex stage draws the swell, the breakers and the foam: the CPU only
+// writes what each vertex is (`water::stream`, on a snap) and the phases
+// (`water::animate`). `water::surface_local` is the same function in Rust and
+// `tests/water.rs` holds it to the CPU's own `water::surface_at`; this one is
+// its transcription, line for line. `tests/shaders.rs` composes and validates
+// the file; what it draws, only a frame shows.
 
 #import bevy_pbr::{
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
+    mesh_functions,
     mesh_view_bindings::{view, lights},
     mesh_view_types,
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
@@ -32,7 +38,7 @@
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     lighting,
     shadows,
-    view_transformations::{position_ndc_to_world, frag_coord_to_ndc},
+    view_transformations::{position_ndc_to_world, frag_coord_to_ndc, position_world_to_clip},
 }
 #ifdef DEPTH_PREPASS
 #import bevy_pbr::prepass_utils::prepass_depth
@@ -70,6 +76,23 @@ struct Water {
     lake: vec4<f32>,
     // xyz `water::LAKE_SCATTER`, w spare.
     lake_scatter: vec4<f32>,
+    // A wave of `water::WAVES` a slot: xy its direction, z one over its length
+    // (cycles a metre), w its amplitude.
+    waves: array<vec4<f32>, 4>,
+    // The swell's phases with the grid centre folded in, cycles.
+    phase: vec4<f32>,
+    // The weather's gain on each wave.
+    swell: vec4<f32>,
+    // x the weather's gain on the breakers, y one over `SURF_LEN_M`, z
+    // `SURF_TRAIL_RAD`, w `SURF_FOAM_MAX / SURF_AMP_M`.
+    surf: vec4<f32>,
+    // x `CREST_FOAM_FROM`, y `CREST_FOAM_SPAN`, z `CREST_FOAM_MAX`, w spare.
+    crest: vec4<f32>,
+    // x `BREAKER_FROM_M`, y `BREAKER_SPAN_M`, z `WASH_FLOOR`, w `FOAM_SURGE_FLOOR`.
+    breaker: vec4<f32>,
+    // xy the grid centre the phases are folded around; z `PX_FOOTPRINT_K`,
+    // w `DECK_FOOTPRINT_K`.
+    field: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -78,6 +101,131 @@ struct Water {
 
 // Deep by fiat: `water::DEEP_SENTINEL_M`. Saturates every curve here.
 const DEEP_M: f32 = 64.0;
+const TAU: f32 = 6.28318530718;
+
+// ---------------------------------------------------------------------------
+// The vertex stage: `water::surface_local`, transcribed.
+// ---------------------------------------------------------------------------
+
+// An angle given in cycles, reduced to [-π, π) before any trig: WGSL promises
+// `sin` only near zero, and WebGL2 promises nothing.
+fn reduced(cycles: f32) -> f32 {
+    return TAU * (fract(cycles + 0.5) - 0.5);
+}
+
+// `water::shape`: the crest-sharpened sine, `2u² − ¾`, and its derivative.
+fn wave_shape(theta: f32) -> vec2<f32> {
+    let u = 0.5 + 0.5 * sin(theta);
+    return vec2<f32>(2.0 * u * u - 0.75, 2.0 * u * cos(theta));
+}
+
+// One wave of the swell at `local`: its height and gradient, `(h, gx, gz)`.
+// `w` is its `waves` slot, `share` the vertex's band weight times shoaling.
+fn swell_term(w: vec4<f32>, phase: f32, gain: f32, share: f32, local: vec2<f32>) -> vec3<f32> {
+    let s = wave_shape(reduced(dot(w.xy, local) * w.z + phase));
+    let a = w.w * gain * share;
+    return vec3<f32>(a * s.x, (a * s.y * TAU * w.z) * w.xy);
+}
+
+// `water::crest_foam`: whitecaps, judged against the clear sea's reach.
+fn crest_foam(h: f32, reach: f32) -> f32 {
+    if reach <= 0.0 {
+        return 0.0;
+    }
+    let t = clamp((h / reach - water.crest.x) / water.crest.y, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t) * water.crest.z;
+}
+
+// `water::breaker_foam`: a bore's trail, by how big and how shallow.
+fn breaker_foam(amp: f32, depth: f32, trail: f32) -> f32 {
+    if trail <= 0.0 || amp <= 0.0 {
+        return 0.0;
+    }
+    let breaking = 1.0 - clamp((depth - water.breaker.x) / water.breaker.y, 0.0, 1.0);
+    return water.surf.w * amp * trail * breaking;
+}
+
+// Locations 8–10 are `water::ATTRIBUTE_SWELL`, `ATTRIBUTE_SURF` and
+// `ATTRIBUTE_REACH`, written on a snap. The position is the vertex's offset
+// from the grid centre at sea level; the centre is the entity's translation.
+// `uv_b` arrives as `[wash, water column]` and leaves as `[foam, column]`.
+@vertex
+fn vertex(
+    in: Vertex,
+    @location(8) swell_w: vec4<f32>,
+    @location(9) surf: vec4<f32>,
+    @location(10) reach: f32,
+) -> VertexOutput {
+    let local = in.position.xz;
+
+    // 1 · The swell, unrolled: constant indices only, which WebGL2's GLSL
+    // and every GPU take without a second thought.
+    let sw = swell_term(water.waves[0], water.phase.x, water.swell.x, swell_w.x, local)
+        + swell_term(water.waves[1], water.phase.y, water.swell.y, swell_w.y, local)
+        + swell_term(water.waves[2], water.phase.z, water.swell.z, swell_w.z, local)
+        + swell_term(water.waves[3], water.phase.w, water.swell.w, swell_w.w, local);
+    var h = sw.x;
+    var g = sw.yz;
+    // Whitecaps on the swell alone, before the breaker is added.
+    let caps = crest_foam(h, reach);
+
+    // 2 · The breakers, phased on the distance to dry ground.
+    let amp = surf.w * water.surf.x;
+    var trail = -1.0;
+    if any(surf.yz != vec2<f32>(0.0)) {
+        let c = surf.x * water.surf.y + water.shore.w / TAU;
+        // `rem_euclid(θ − π/2, τ)` in cycles and floored: WGSL's `%` truncates.
+        trail = exp(-TAU * fract(c - 0.25) / water.surf.z);
+        if amp > 0.0 {
+            let s = wave_shape(reduced(c));
+            h = h + amp * s.x;
+            g = g + (amp * s.y * TAU * water.surf.y) * surf.yz;
+        }
+    }
+
+    // 3 · The shore wash, surging with the bores or breathing with the swell.
+    var wash = 0.0;
+    if in.uv_b.x > 0.0 {
+        var surge: f32;
+        if trail >= 0.0 {
+            surge = water.breaker.z + (1.0 - water.breaker.z) * trail;
+        } else {
+            let w = water.waves[0];
+            let s = sin(reduced(dot(w.xy, local) * w.z + water.phase.x));
+            surge = water.breaker.w + (1.0 - water.breaker.w) * (0.5 + 0.5 * s);
+        }
+        wash = in.uv_b.x * surge;
+    }
+    let foam = clamp(wash + caps + breaker_foam(amp, in.uv_b.y, trail), 0.0, 1.0);
+
+    var out: VertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
+    let p = vec3<f32>(in.position.x, in.position.y + h, in.position.z);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(p, 1.0));
+    out.position = position_world_to_clip(out.world_position.xyz);
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(
+        normalize(vec3<f32>(-g.x, 1.0, -g.y)),
+        in.instance_index,
+    );
+    out.uv = in.uv;
+    out.uv_b = vec2<f32>(foam, in.uv_b.y);
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(
+        world_from_local,
+        in.tangent,
+        in.instance_index,
+    );
+    out.color = in.color;
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = in.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
+        in.instance_index,
+        world_from_local[3],
+    );
+#endif
+    return out;
+}
 
 fn hash2(p: vec2<i32>) -> f32 {
     let q = bitcast<vec2<u32>>(p);

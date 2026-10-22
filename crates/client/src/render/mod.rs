@@ -1702,8 +1702,13 @@ impl Plugin for GatesRenderPlugin {
         )
         // The swell runs wherever the world runs — it is a surface, not a
         // streamer, and a sea that froze while the Esc menu was up would
-        // resume with a visible jump in every wave.
-        .add_systems(Update, water::animate.run_if(world_running))
+        // resume with a visible jump in every wave. After `stream`: a snap
+        // moves the grid centre, and the phases are folded around the centre
+        // drawn this frame (`water::fold_phases`).
+        .add_systems(
+            Update,
+            water::animate.after(water::stream).run_if(world_running),
+        )
         // The tree count cap (`reference/FORESTS.md` §8 gate 7): after the
         // streamer has spawned this frame's chunk, before `reband_trees`
         // applies the bands it may move and before a browser reads them.

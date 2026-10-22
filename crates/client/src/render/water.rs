@@ -68,21 +68,28 @@
 //!   `terrain::height` taps — less than the ground streamer already pays every
 //!   frame for one 65² chunk and its normals, so it is not a new class of
 //!   cost.
-//! - **Every frame**: four sines per vertex and a write of position, normal
-//!   and foam. No `terrain` taps, no allocation — the attribute buffers are
-//!   built once and mutated in place, which is `CLAUDE.md`'s no-per-frame-
-//!   allocation rule on the one system that runs every single frame.
+//! - **Every frame**: the phases and the material's uniform, on the CPU, and
+//!   nothing else there. The surface itself — four sines a vertex, the
+//!   breakers, the foam — is the vertex stage's (`water.wgsl`), and no mesh is
+//!   written or re-uploaded between snaps. No `terrain` taps, no allocation.
 
 use bevy::asset::{Asset, RenderAssetUsages};
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::NoAutoAabb;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
-use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::mesh::{
+    Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology,
+    VertexAttributeValues,
+};
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat, TextureViewDescriptor,
-    TextureViewDimension,
+    AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension, VertexFormat,
 };
 use bevy::shader::ShaderRef;
 use sim_core::terrain::{self, SEA_LEVEL};
@@ -204,6 +211,14 @@ pub const SHAPE_PEAK: f32 = 1.25;
 /// where `(1 + sin θ)·cos θ = 1.5·cos 30°`.
 pub const SHAPE_MAX_SLOPE: f32 = 1.299_038;
 
+/// How many pixel footprints a wave must span per half wavelength to be drawn
+/// per pixel — [`band_weight`]'s rule with the pixel for the mesh spacing.
+pub const PX_FOOTPRINT_K: f32 = 1.0;
+/// The same for the normal the cloud deck is reflected off: twice the
+/// footprint, because the deck has no mips and a swell finer than that turns
+/// its noise into glitter (`water.wgsl`'s `sky_radiance`).
+pub const DECK_FOOTPRINT_K: f32 = 2.0;
+
 /// A crest-sharpened sine and its derivative, both in θ.
 ///
 /// `u = ½ + ½·sin θ`, `s = 2u² − ¾`. Squaring is the whole trick and it is
@@ -306,11 +321,13 @@ pub fn wave_field(
     (h, gx, gz)
 }
 
-/// [`wave_field`] for a whole grid, once, into `out` as `[h, gx, gz]`.
+/// [`wave_field`] for a whole grid, once, into `out` as `[h, gx, gz]`: the
+/// CPU's statement of the grid's swell, which the vertex stage draws and
+/// nothing at runtime calls any more.
 ///
-/// **The one function that decides which axis a coordinate belongs to**, and
-/// that is why it exists instead of three copies of the loop inside
-/// [`animate`]. `coords[ix]` is an X offset and `coords[iz]` is a Z one; the
+/// **The one statement of which axis a coordinate belongs to.** `coords[ix]`
+/// is an X offset and `coords[iz]` is a Z one (the mesh's positions and
+/// [`Sea::statics`] follow it); the
 /// grid is square and the wave set is not, so a transposed pair produces a
 /// sea whose swell runs across its own gradient — a picture nothing here
 /// measures and a person would have to notice. `tests/water.rs` pins the
@@ -576,6 +593,10 @@ pub const FOAM_NOISE_M: f32 = 9.0;
 pub const FOAM_SURGE_FLOOR: f32 = 0.45;
 /// The most foam a whitecap on the open swell contributes.
 pub const CREST_FOAM_MAX: f32 = 0.30;
+/// Where a crest starts to cap, as a share of its clear-sea reach, and how
+/// much more of the reach it takes to cap fully ([`crest_foam`]).
+pub const CREST_FOAM_FROM: f32 = 0.62;
+pub const CREST_FOAM_SPAN: f32 = 0.33;
 /// Foam colour, LINEAR. Aerated water is bright but it is not paper.
 pub const FOAM_BODY: [f32; 3] = [0.55, 0.60, 0.60];
 /// Alpha of a fully foamed vertex.
@@ -652,6 +673,23 @@ pub fn foam_surge(x: f32, z: f32, phase0: f32) -> f32 {
     FOAM_SURGE_FLOOR + (1.0 - FOAM_SURGE_FLOOR) * s
 }
 
+/// How high the CLEAR sea's crest can reach at a vertex this shoaled, metres:
+/// all four waves of [`WAVES`] at their peak.
+///
+/// **All four, whatever the mesh spacing keeps.** It once summed only the
+/// waves the vertex's spacing still carries ([`band_weight`]), and on the
+/// skirt that is the 52 m wave alone, whose every crest reaches its own peak:
+/// `crest_foam` capped each one fully, a ring of whitecaps 80–130 m out on a
+/// calm day that jumped 8 m on every snap. Against the whole sea's peak a
+/// calm crest there tops out under [`CREST_FOAM_FROM`]; a storm's still caps.
+pub fn crest_reach(shoal: f32) -> f32 {
+    let mut a = 0.0;
+    for w in WAVES.iter() {
+        a += w.amp_m;
+    }
+    SHAPE_PEAK * shoal * a
+}
+
 /// Whitecaps: foam on the top of the swell itself.
 ///
 /// `reach_m` is the **clear** sea's crest reach at this vertex (`Sea::reach`),
@@ -664,7 +702,7 @@ pub fn crest_foam(h: f32, reach_m: f32) -> f32 {
     if reach_m <= 0.0 {
         return 0.0;
     }
-    let t = ((h / reach_m) - 0.62) / 0.33;
+    let t = ((h / reach_m) - CREST_FOAM_FROM) / CREST_FOAM_SPAN;
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t) * CREST_FOAM_MAX
 }
@@ -701,6 +739,10 @@ pub const SURF_TRAIL_RAD: f32 = 1.6;
 /// shallows between bores are clear water over sand, and the white is the
 /// bores themselves.
 pub const WASH_FLOOR: f32 = 0.12;
+/// The depth a bore breaks in fully, and how much deeper it is only a swell
+/// again, metres ([`breaker_foam`]).
+pub const BREAKER_FROM_M: f32 = 0.8;
+pub const BREAKER_SPAN_M: f32 = 2.7;
 
 /// Rust's 2023 water rewrite led with waves that "realistically move towards
 /// land": the swell here has four fixed bearings, so it runs along a beach as
@@ -819,7 +861,7 @@ pub fn breaker_foam(amp: f32, depth_m: f32, trail: f32) -> f32 {
     if trail <= 0.0 || amp <= 0.0 {
         return 0.0;
     }
-    let breaking = 1.0 - ((depth_m - 0.8) / 2.7).clamp(0.0, 1.0);
+    let breaking = 1.0 - ((depth_m - BREAKER_FROM_M) / BREAKER_SPAN_M).clamp(0.0, 1.0);
     SURF_FOAM_MAX * (amp / SURF_AMP_M) * trail * breaking
 }
 
@@ -834,6 +876,212 @@ pub fn with_foam(mut rgba: [f32; 4], foam: f32) -> [f32; 4] {
     }
     rgba[3] += (FOAM_ALPHA - rgba[3]) * f;
     rgba
+}
+
+// ---------------------------------------------------------------------------
+// One vertex of the surface: what `water.wgsl`'s vertex stage computes.
+// ---------------------------------------------------------------------------
+
+/// Per vertex, each wave's share: [`VertexStatics::swell`], `@location(8)`.
+pub const ATTRIBUTE_SWELL: MeshVertexAttribute =
+    MeshVertexAttribute::new("SeaSwell", 0x7377656c, VertexFormat::Float32x4);
+/// Per vertex, the breakers' field: distance, direction (x, z) and envelope,
+/// `@location(9)`.
+pub const ATTRIBUTE_SURF: MeshVertexAttribute =
+    MeshVertexAttribute::new("SeaSurf", 0x73757266, VertexFormat::Float32x4);
+/// Per vertex, the clear sea's crest reach, `@location(10)`.
+pub const ATTRIBUTE_REACH: MeshVertexAttribute =
+    MeshVertexAttribute::new("SeaReach", 0x72656163, VertexFormat::Float32);
+
+/// The sea's one entity. Its translation is the grid centre; the mesh holds
+/// the grid's local offsets and never moves itself.
+#[derive(Component)]
+pub struct SeaSurface;
+
+/// How far the surface can stand above and fall below [`SEA_LEVEL`],
+/// metres: every wave and the breakers at the storm's gain, at
+/// [`SHAPE_PEAK`] up and ¾ of an amplitude down (`2u² − ¾`).
+///
+/// **The culling box, now that the CPU never moves a vertex.** The mesh is
+/// flat at sea level on the CPU, so the box `calculate_bounds` would derive
+/// has no height, and a storm crest seen from below its own trough would be
+/// culled with the sea under it.
+pub fn surface_bounds() -> (f32, f32) {
+    let mut a = SURF_AMP_M * STORM_SURF_GAIN;
+    for (w, g) in WAVES.iter().zip(STORM_GAIN) {
+        a += w.amp_m * g;
+    }
+    (SHAPE_PEAK * a, 0.75 * a)
+}
+
+/// What one vertex of the sea is this frame: its height over [`SEA_LEVEL`],
+/// the world-XZ gradient its normal is built from ([`wave_normal`]), and its
+/// foam (`0..=1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Surface {
+    pub h: f32,
+    pub gx: f32,
+    pub gz: f32,
+    pub foam: f32,
+}
+
+/// What a vertex carries from one snap to the next: everything [`stream`]
+/// writes into the mesh for the vertex stage to read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VertexStatics {
+    /// Per wave of [`WAVES`]: its band weight at this spacing times the
+    /// shoaling ([`band_weight`] · `Sea::shoal`). [`ATTRIBUTE_SWELL`].
+    pub swell: [f32; WAVE_COUNT],
+    /// The breakers' distance to dry ground, their unit direction away from
+    /// it, and their envelope ([`surf_envelope`]). [`ATTRIBUTE_SURF`].
+    pub surf_dist: f32,
+    pub surf_dir: [f32; 2],
+    pub surf_amp: f32,
+    /// The clear sea's crest reach ([`crest_foam`]). [`ATTRIBUTE_REACH`].
+    pub reach: f32,
+    /// The shore wash before this frame's surge, and the water column, metres
+    /// (`UV_1`).
+    pub wash: f32,
+    pub depth: f32,
+}
+
+/// The surface at world `(x, z)`, as the CPU always computed it: the swell
+/// ([`wave_field`]), its whitecaps, the breakers and the shore wash. **The
+/// reference [`surface_local`] and `water.wgsl` are held to.**
+///
+/// `phase` is the swell's per-wave phase as [`animate`] advances it, and
+/// `surf_phase` the breakers'. Whitecaps are judged on the swell before the
+/// breaker is added, or every breaker in the shallows would read as a
+/// whitecap on a swell that has shoaled to nothing.
+// The spacing and the shoaling stay their own arguments rather than the
+// product `VertexStatics::swell` packs, so the reference derives the band
+// weights itself and the packing is checked against it, not with it.
+#[allow(clippy::too_many_arguments)]
+pub fn surface_at(
+    x: f32,
+    z: f32,
+    phase: &[f32; WAVE_COUNT],
+    surf_phase: f32,
+    state: &SeaState,
+    spacing_m: f32,
+    shoal_share: f32,
+    v: &VertexStatics,
+) -> Surface {
+    let (h, gx, gz) = wave_field(x, z, phase, &state.swell, spacing_m, shoal_share);
+    let caps = crest_foam(h, v.reach);
+    // A storm's bores are taller and whiter: the gain rides on the cached
+    // envelope, so `breaker_foam` sees the breaker as drawn.
+    let amp = v.surf_amp * state.surf;
+    let (bh, bgx, bgz, trail) = surf_at(amp, v.surf_dist, v.surf_dir, surf_phase);
+    // Where breakers run, the wash surges with them — white as a bore
+    // arrives, clear between — and elsewhere (a lake, a far shore past the
+    // breakers' field) it breathes with the swell.
+    let wash = if v.wash > 0.0 {
+        let surge = if trail >= 0.0 {
+            WASH_FLOOR + (1.0 - WASH_FLOOR) * trail
+        } else {
+            foam_surge(x, z, phase[0])
+        };
+        v.wash * surge
+    } else {
+        0.0
+    };
+    Surface {
+        h: h + bh,
+        gx: gx + bgx,
+        gz: gz + bgz,
+        foam: (wash + caps + breaker_foam(amp, v.depth, trail)).clamp(0.0, 1.0),
+    }
+}
+
+/// `x − floor(x)`: WGSL's `fract`, which `f32::fract` is not below zero.
+fn fract_floor(x: f32) -> f32 {
+    x - x.floor()
+}
+
+/// An angle given in cycles, reduced to `[−π, π)` before any trig: WGSL
+/// promises `sin` only near zero, and WebGL2 promises nothing.
+fn reduced(cycles: f32) -> f32 {
+    std::f32::consts::TAU * (fract_floor(cycles + 0.5) - 0.5)
+}
+
+/// The swell's phases with the grid centre folded in, in cycles `[0, 1)`:
+/// what the vertex stage adds to `dir · local / len`.
+///
+/// **In `f64`, on the CPU, once a frame.** A wave's argument at a world
+/// coordinate reaches thousands of radians across the island, where an `f32`
+/// keeps two decimals and a GPU's `sin` keeps none. Folded here, the shader
+/// only ever sees a local offset of tens of metres and a phase under one.
+pub fn fold_phases(phase: &[f32; WAVE_COUNT], centre: Vec2) -> [f32; WAVE_COUNT] {
+    core::array::from_fn(|i| {
+        let w = WAVES[i];
+        let along =
+            f64::from(w.dir[0]) * f64::from(centre.x) + f64::from(w.dir[1]) * f64::from(centre.y);
+        let c = f64::from(phase[i]) / std::f64::consts::TAU + along / f64::from(w.len_m);
+        (c - c.floor()) as f32
+    })
+}
+
+/// The surface at local offset `(lx, lz)` from the grid centre, computed the
+/// way `water.wgsl`'s vertex stage computes it, line for line: phases folded
+/// ([`fold_phases`]) and every angle reduced in cycles. `surf_cycles` is the
+/// breakers' phase over τ. `tests/water.rs` holds this to [`surface_at`]
+/// over the whole grid, and the shader is a transcription of this function.
+pub fn surface_local(
+    lx: f32,
+    lz: f32,
+    folded: &[f32; WAVE_COUNT],
+    surf_cycles: f32,
+    state: &SeaState,
+    v: &VertexStatics,
+) -> Surface {
+    let tau = std::f32::consts::TAU;
+    let (mut h, mut gx, mut gz) = (0.0f32, 0.0f32, 0.0f32);
+    for (i, w) in WAVES.iter().enumerate() {
+        let inv_len = 1.0 / w.len_m;
+        let (s, ds) = shape(reduced(
+            (w.dir[0] * lx + w.dir[1] * lz) * inv_len + folded[i],
+        ));
+        let a = w.amp_m * state.swell[i] * v.swell[i];
+        let g = a * ds * tau * inv_len;
+        h += a * s;
+        gx += g * w.dir[0];
+        gz += g * w.dir[1];
+    }
+    let caps = crest_foam(h, v.reach);
+    let amp = v.surf_amp * state.surf;
+    let (mut bh, mut bgx, mut bgz, mut trail) = (0.0f32, 0.0f32, 0.0f32, -1.0f32);
+    if v.surf_dir != [0.0, 0.0] {
+        let c = v.surf_dist / SURF_LEN_M + surf_cycles;
+        // `rem_euclid(θ − π/2, τ)`, in cycles and floored: a truncating `%`
+        // goes negative here and lights the whole trail.
+        trail = (-tau * fract_floor(c - 0.25) / SURF_TRAIL_RAD).exp();
+        if amp > 0.0 {
+            let (s, ds) = shape(reduced(c));
+            let g = amp * ds * tau / SURF_LEN_M;
+            bh = amp * s;
+            bgx = g * v.surf_dir[0];
+            bgz = g * v.surf_dir[1];
+        }
+    }
+    let wash = if v.wash > 0.0 {
+        let surge = if trail >= 0.0 {
+            WASH_FLOOR + (1.0 - WASH_FLOOR) * trail
+        } else {
+            let w = WAVES[0];
+            let c = (w.dir[0] * lx + w.dir[1] * lz) / w.len_m + folded[0];
+            FOAM_SURGE_FLOOR + (1.0 - FOAM_SURGE_FLOOR) * (0.5 + 0.5 * reduced(c).sin())
+        };
+        v.wash * surge
+    } else {
+        0.0
+    };
+    Surface {
+        h: h + bh,
+        gx: gx + bgx,
+        gz: gz + bgz,
+        foam: (wash + caps + breaker_foam(amp, v.depth, trail)).clamp(0.0, 1.0),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -880,7 +1128,7 @@ fn ripple_at(u: f32, v: f32) -> (f32, f32) {
 ///
 /// **The mips are the load-bearing half and Bevy will not build them.** An
 /// `Image` constructed in code has `mip_level_count = 1`, and a one-level
-/// normal map on a surface that reaches 2.6 km is a shimmering carpet of
+/// normal map on a surface that reaches kilometres is a shimmering carpet of
 /// aliased highlights — the failure is not subtle and it is worst exactly
 /// where the sea is calmest. Each level is a box filter of the last with the
 /// normals renormalized, which also gives the right *behaviour*: averaging
@@ -1022,7 +1270,8 @@ pub fn water_f0() -> f32 {
 // The surface shader: per-pixel optics, the sky in the reflection, the glint.
 // ---------------------------------------------------------------------------
 
-/// The sea's fragment shader, resolved against the asset root.
+/// The sea's shader, both stages (the surface in the vertex stage, the optics
+/// in the fragment), resolved against the asset root.
 pub const SHADER: &str = "shaders/water.wgsl";
 
 /// The sea as the world draws it: `StandardMaterial` for the lighting, the
@@ -1187,6 +1436,29 @@ pub struct WaterParams {
     pub lake: Vec4,
     /// xyz [`LAKE_SCATTER`], w spare.
     pub lake_scatter: Vec4,
+    /// The swell, a wave of [`WAVES`] a slot: xy its direction, z one over
+    /// its length (cycles a metre), w its amplitude, metres. The vertex stage
+    /// reads these; [`surface_local`] is what it computes from them.
+    pub waves: [Vec4; WAVE_COUNT],
+    /// The swell's phases with the grid centre folded in, cycles
+    /// ([`fold_phases`]), a wave a lane.
+    pub phase: Vec4,
+    /// The weather's gain on each wave ([`SeaState::swell`]).
+    pub swell: Vec4,
+    /// x the weather's gain on the breakers ([`SeaState::surf`]), y one over
+    /// [`SURF_LEN_M`], z [`SURF_TRAIL_RAD`], w [`SURF_FOAM_MAX`] over
+    /// [`SURF_AMP_M`].
+    pub surf: Vec4,
+    /// x [`CREST_FOAM_FROM`], y [`CREST_FOAM_SPAN`], z [`CREST_FOAM_MAX`], w
+    /// spare.
+    pub crest: Vec4,
+    /// x [`BREAKER_FROM_M`], y [`BREAKER_SPAN_M`], z [`WASH_FLOOR`], w
+    /// [`FOAM_SURGE_FLOOR`].
+    pub breaker: Vec4,
+    /// xy the grid centre the phases were folded around this frame (the
+    /// fragment's local offset is `wp.xz − field.xy`); z [`PX_FOOTPRINT_K`],
+    /// w [`DECK_FOOTPRINT_K`].
+    pub field: Vec4,
 }
 
 impl WaterParams {
@@ -1222,7 +1494,30 @@ impl WaterParams {
             glint: Vec4::new(water_f0(), GLINT_A2_NEAR, GLINT_A2_FAR, GLINT_FAR_M),
             lake: Vec4::new(LAKE_EXTINCT[0], LAKE_EXTINCT[1], LAKE_EXTINCT[2], 0.0),
             lake_scatter: Vec4::new(LAKE_SCATTER[0], LAKE_SCATTER[1], LAKE_SCATTER[2], 0.0),
+            waves: WAVES.map(|w| Vec4::new(w.dir[0], w.dir[1], 1.0 / w.len_m, w.amp_m)),
+            phase: Vec4::ZERO,
+            swell: Vec4::ONE,
+            surf: Vec4::new(
+                1.0,
+                1.0 / SURF_LEN_M,
+                SURF_TRAIL_RAD,
+                SURF_FOAM_MAX / SURF_AMP_M,
+            ),
+            crest: Vec4::new(CREST_FOAM_FROM, CREST_FOAM_SPAN, CREST_FOAM_MAX, 0.0),
+            breaker: Vec4::new(BREAKER_FROM_M, BREAKER_SPAN_M, WASH_FLOOR, FOAM_SURGE_FLOOR),
+            field: Vec4::new(0.0, 0.0, PX_FOOTPRINT_K, DECK_FOOTPRINT_K),
         }
+    }
+
+    /// This frame's sea on top: the phases folded around `centre`, the
+    /// centre itself and the weather's gains.
+    pub fn with_sea(mut self, folded: [f32; WAVE_COUNT], state: &SeaState, centre: Vec2) -> Self {
+        self.phase = Vec4::from_array(folded);
+        self.swell = Vec4::from_array(state.swell);
+        self.surf.x = state.surf;
+        self.field.x = centre.x;
+        self.field.y = centre.y;
+        self
     }
 
     /// Noon in clear weather: what a frame with no weather yet draws.
@@ -1248,8 +1543,45 @@ pub struct WaterExt {
 }
 
 impl MaterialExtension for WaterExt {
+    /// The swell, the breakers and the foam, per vertex on the GPU
+    /// ([`surface_local`] is the same function on the CPU).
+    fn vertex_shader() -> ShaderRef {
+        SHADER.into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         SHADER.into()
+    }
+
+    /// Translucent, so the prepass skips it anyway; off, so no pipeline is
+    /// ever specialized against a vertex stage that does not displace.
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    /// The seabed must not wear the sea's silhouette (`NotShadowCaster` on the
+    /// entity says the same), and a shadow pass would draw the flat mesh.
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    /// The three static inputs the vertex stage adds after Bevy's eight
+    /// locations, from the full interleaved stride, as the ground does.
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let sea = layout.0.get_layout(&[
+            ATTRIBUTE_SWELL.at_shader_location(8),
+            ATTRIBUTE_SURF.at_shader_location(9),
+            ATTRIBUTE_REACH.at_shader_location(10),
+        ])?;
+        descriptor.vertex.buffers[0]
+            .attributes
+            .extend(sea.attributes);
+        Ok(())
     }
     /// Forward only, like the ground: this client never runs deferred.
     fn deferred_fragment_shader() -> ShaderRef {
@@ -1336,11 +1668,12 @@ pub struct Sea {
     /// How much swell each vertex may carry: the shoaling fade times the
     /// open-sea share (`terrain::height_open` — a lake carries none), cached.
     shoal: Vec<f32>,
-    /// Peak displacement the CLEAR sea has at each vertex — what `crest_foam`
-    /// measures a crest against, so a whitecap is relative to the local swell
-    /// and not to a constant. Calm on purpose, whatever the weather: a storm
-    /// whitens because its crests pass it (see [`crest_foam`]), and the cache
-    /// stays a function of *where* only, so it still slides on a snap.
+    /// Peak displacement the CLEAR sea has at each vertex ([`crest_reach`]) —
+    /// what `crest_foam` measures a crest against, so a whitecap is relative
+    /// to the shoaled swell and not to a constant. Calm on purpose, whatever
+    /// the weather: a storm whitens because its crests pass it (see
+    /// [`crest_foam`]), and the cache stays a function of *where* only, so it
+    /// still slides on a snap.
     reach: Vec<f32>,
     /// How much of each vertex's water is open sea (`terrain::height_open`):
     /// the breakers' share, cached like the swell's.
@@ -1351,31 +1684,13 @@ pub struct Sea {
     surf_dist: Vec<f32>,
     surf_dir: Vec<[f32; 2]>,
     surf_amp: Vec<f32>,
-    /// This frame's crest foam per vertex — the swell's whitecaps measured on
-    /// the swell alone, plus the breakers' — for the colour pass.
-    surf_foam: Vec<f32>,
-    /// This frame's breaker trail per vertex ([`surf_at`]), or `-1` where no
-    /// breaker runs: what the shore wash surges with instead of the swell.
-    surf_trail: Vec<f32>,
     /// The breakers' phase, advanced and wrapped like the swell's.
     surf_phase: f32,
-    /// This frame's [`wave_field`] answer per vertex: `[h, gx, gz]`.
-    ///
-    /// **The only cache here that is a function of *when*, and it is a
-    /// performance fix rather than a design one.** The position, the normal
-    /// and the colour are three separate `attribute_mut` borrows and each one
-    /// used to recompute the field it needs, so every vertex paid `wave_field`
-    /// three times a frame — up to twelve `sin_cos` where four would do.
-    /// Measured on the gate box at the shipped 89² grid: 1.01 ms a frame for
-    /// the three passes against 0.38 ms for one pass and three reads, which is
-    /// the single largest steady-state CPU cost the client had.
-    ///
-    /// It is sized once in [`setup`] and mutated in place forever after, like
-    /// every other buffer in this struct — the comment the old code carried
-    /// ("a scratch `Vec` would be the per-frame allocation this whole design
-    /// exists to avoid") was true of a `Vec` built inside the system and is
-    /// not true of one that lives as long as the sea.
-    field: Vec<[f32; 3]>,
+    // Nothing here is a function of *when* except the two phases: the
+    // surface itself is the vertex stage's, every frame, on the GPU
+    // ([`surface_local`]). This held the CPU's per-frame field and foam until
+    // the mesh stopped being rewritten — and re-uploaded, ~806 KiB — every
+    // frame.
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<WaterMaterial>>,
     /// The snapped grid centre, in [`SNAP_M`] cells. `None` until the first
@@ -1442,6 +1757,38 @@ impl Sea {
     }
     pub fn reach(&self) -> &[f32] {
         &self.reach
+    }
+    /// The axis coordinate table ([`axis_coords`]): vertex `(ix, iz)` stands
+    /// at `(coords[ix], coords[iz])` from the grid centre.
+    pub fn coords(&self) -> &[f32] {
+        &self.coords
+    }
+    /// The spacing a vertex is judged by: the coarser of its two axes'.
+    pub fn spacing_at(&self, ix: usize, iz: usize) -> f32 {
+        self.spacing[ix].max(self.spacing[iz])
+    }
+    /// What the vertex stage reads at vertex `(ix, iz)`, off the caches: what
+    /// [`stream`] writes into the mesh on a snap.
+    pub fn statics(&self, ix: usize, iz: usize) -> VertexStatics {
+        let i = iz * self.coords.len() + ix;
+        let sp = self.spacing_at(ix, iz);
+        VertexStatics {
+            swell: core::array::from_fn(|w| band_weight(sp, WAVES[w].len_m) * self.shoal[i]),
+            surf_dist: self.surf_dist[i],
+            surf_dir: self.surf_dir[i],
+            surf_amp: self.surf_amp[i],
+            reach: self.reach[i],
+            wash: self.shore[i],
+            depth: self.depth[i],
+        }
+    }
+    /// The open-sea share at each vertex (`terrain::height_open`).
+    pub fn open(&self) -> &[f32] {
+        &self.open
+    }
+    /// The swell's phases and the breakers' as [`animate`] last advanced them.
+    pub fn phases(&self) -> ([f32; WAVE_COUNT], f32) {
+        (self.phase, self.surf_phase)
     }
     /// The snapped grid centre in cells — `None` until the first sweep.
     pub fn cell(&self) -> Option<(i32, i32)> {
@@ -1513,7 +1860,15 @@ pub fn setup(
     let count = n * n;
 
     // Everything is sized once, here, and mutated in place forever after.
-    let positions = vec![[0.0f32, SEA_LEVEL, 0.0]; count];
+    // The positions are the grid's LOCAL offsets at sea level, and are never
+    // written again: the entity's translation is the centre (`stream`), and
+    // the height is the vertex stage's.
+    let mut positions = Vec::with_capacity(count);
+    for &z in &coords {
+        for &x in &coords {
+            positions.push([x, SEA_LEVEL, z]);
+        }
+    }
     let normals = vec![[0.0f32, 1.0, 0.0]; count];
     // `[foam, water column]` per vertex — the shader's inputs (`water.wgsl`).
     // UV1 rather than COLOR: two floats, not four, and nothing in Bevy's
@@ -1552,7 +1907,11 @@ pub fn setup(
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, shore);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, lakes);
     mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+    mesh.insert_attribute(ATTRIBUTE_SWELL, vec![[0.0f32; 4]; count]);
+    mesh.insert_attribute(ATTRIBUTE_SURF, vec![[SURF_REACH_M, 0.0, 0.0, 0.0]; count]);
+    mesh.insert_attribute(ATTRIBUTE_REACH, vec![0.0f32; count]);
     mesh.insert_indices(Indices::U32(indices));
+    let reach_m = coords.last().copied().unwrap_or(0.0);
 
     let mesh = meshes.add(mesh);
     let material = materials.add(water_material(
@@ -1571,10 +1930,7 @@ pub fn setup(
     sea.surf_dist = vec![SURF_REACH_M; count];
     sea.surf_dir = vec![[0.0; 2]; count];
     sea.surf_amp = vec![0.0; count];
-    sea.surf_foam = vec![0.0; count];
-    sea.surf_trail = vec![-1.0; count];
     sea.surf_phase = 0.0;
-    sea.field = vec![[0.0; 3]; count];
     sea.mesh = Some(mesh.clone());
     sea.material = Some(material.clone());
     sea.cell = None;
@@ -1589,6 +1945,14 @@ pub fn setup(
         Mesh3d(mesh),
         MeshMaterial3d(material),
         Transform::IDENTITY,
+        SeaSurface,
+        // The box the vertex stage can reach ([`surface_bounds`]), and
+        // `calculate_bounds` kept off it: the CPU mesh is flat.
+        Aabb::from_min_max(
+            Vec3::new(-reach_m, SEA_LEVEL - surface_bounds().1, -reach_m),
+            Vec3::new(reach_m, SEA_LEVEL + surface_bounds().0, reach_m),
+        ),
+        NoAutoAabb,
     ));
 }
 
@@ -1711,6 +2075,7 @@ impl Carry {
 pub fn stream(
     mut sea: ResMut<Sea>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut surface: Query<&mut Transform, With<SeaSurface>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
@@ -1765,8 +2130,8 @@ pub fn stream(
         c.slide(base, n);
         c.slide(shore, n);
         c.slide(shoal_cache, n);
-        // `reach` too: it is `f(spacing) * shoal(depth)`, and `carry_of`
-        // refuses any index whose spacing moved, so both factors slid.
+        // `reach` too: it is a function of the shoaling alone
+        // ([`crest_reach`]), which slid.
         c.slide(reach, n);
         c.slide(open_cache, n);
     }
@@ -1795,19 +2160,13 @@ pub fn stream(
             depth[i] = d;
             open_cache[i] = open;
 
-            let sp = spacing[ix].max(spacing[iz]);
             // A lake is calm: the swell and its surf are the open sea's, so
             // both scale by how much of this water is sea (`terrain::height_open`).
             let sh = shoal(d) * open;
             shoal_cache[i] = sh;
             // What a crest could reach here, for `crest_foam` to measure
-            // against: every wave that survives this spacing, at this shoaling,
-            // in the clear sea (the weather's gain is `animate`'s, per frame).
-            let mut r = 0.0;
-            for w in WAVES.iter() {
-                r += w.amp_m * band_weight(sp, w.len_m);
-            }
-            reach[i] = r * sh * SHAPE_PEAK;
+            // against ([`crest_reach`]).
+            reach[i] = crest_reach(sh);
 
             base[i] = depth_tint(d);
             // The slope tap is four more `height` calls, so it is paid only
@@ -1860,6 +2219,20 @@ pub fn stream(
 
     sea.carried = carried;
 
+    // Everything the vertex stage reads that is a function of *where*, at
+    // every vertex, written here and only here: between snaps the mesh is not
+    // touched, so it is not re-uploaded.
+    write_statics(&sea, mesh, ox, oz);
+    // The centre, in the frame `animate` folds the phases around it (it runs
+    // after this), or the whole swell would jump on every snap.
+    for mut tf in &mut surface {
+        tf.translation = Vec3::new(ox, 0.0, oz);
+    }
+}
+
+/// Write [`Sea::statics`] and the ripple UV into the mesh, every vertex.
+fn write_statics(sea: &Sea, mesh: &mut Mesh, ox: f32, oz: f32) {
+    let n = sea.coords.len();
     if let Some(VertexAttributeValues::Float32x2(uv)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
         for iz in 0..n {
             for ix in 0..n {
@@ -1870,32 +2243,62 @@ pub fn stream(
             }
         }
     }
+    // `[wash, water column]`: the shader adds the wash's surge and the foam
+    // and hands the same pair on to the fragment.
+    if let Some(VertexAttributeValues::Float32x2(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_1) {
+        for (i, slot) in col.iter_mut().enumerate().take(n * n) {
+            *slot = [sea.shore[i], sea.depth[i]];
+        }
+    }
+    if let Some(VertexAttributeValues::Float32x4(lakes)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    {
+        for (slot, open) in lakes.iter_mut().zip(sea.open.iter()) {
+            slot[0] = *open;
+        }
+    }
+    if let Some(VertexAttributeValues::Float32x4(swell)) = mesh.attribute_mut(ATTRIBUTE_SWELL) {
+        for iz in 0..n {
+            for ix in 0..n {
+                swell[iz * n + ix] = sea.statics(ix, iz).swell;
+            }
+        }
+    }
+    if let Some(VertexAttributeValues::Float32x4(surf)) = mesh.attribute_mut(ATTRIBUTE_SURF) {
+        for (i, slot) in surf.iter_mut().enumerate().take(n * n) {
+            *slot = [
+                sea.surf_dist[i],
+                sea.surf_dir[i][0],
+                sea.surf_dir[i][1],
+                sea.surf_amp[i],
+            ];
+        }
+    }
+    if let Some(VertexAttributeValues::Float32(reach)) = mesh.attribute_mut(ATTRIBUTE_REACH) {
+        reach.copy_from_slice(&sea.reach);
+    }
 }
 
-/// Advance the swell and write this frame's surface.
+/// Advance the swell and hand this frame's sea to the GPU.
 ///
-/// The only per-frame work: four sines a vertex, three attribute writes, and
-/// the material's uniform (the ripple scroll and the sky). No `terrain` taps
-/// and no allocation.
+/// **The surface is the vertex stage's now** (`water.wgsl`, [`surface_local`]
+/// on the CPU). This advances the phases, folds the grid centre into them in
+/// `f64` ([`fold_phases`]) and writes the material's uniform: the ripple
+/// scroll, the sky, the phases and the weather's gains. No mesh is touched,
+/// so none is re-uploaded; it was ~806 KiB a frame, plus four sines a vertex
+/// on the main thread, when the CPU drew the swell.
 ///
-/// **"Four sines a vertex" is what this sentence always claimed and what the
-/// code only now does.** The three attribute writes cannot hold their borrows
-/// at once, so the first cut recomputed [`wave_field`] inside each of them —
-/// three times a vertex, twelve `sin_cos` in the core band — and threw two of
-/// the three answers away. The field is resolved once into [`Sea::field`] and
-/// the three passes read it. Same arithmetic, same output: `tests/water.rs`
-/// gates the equality against a direct call rather than trusting the reading.
+/// Runs after [`stream`], which moves the centre on a snap: the phases are
+/// folded around the centre the mesh is drawn at this frame.
 pub fn animate(
     mut sea: ResMut<Sea>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     time: Res<Time>,
     weather: Option<Res<WeatherNow>>,
     composer: Option<Res<super::sky::SkyComposer>>,
 ) {
-    if sea.cell.is_none() {
+    let Some(centre) = sea.centre() else {
         return;
-    }
+    };
     let dt = time.delta_secs();
     for (i, w) in WAVES.iter().enumerate() {
         sea.phase[i] = (sea.phase[i] - omega(w.len_m) * dt).rem_euclid(std::f32::consts::TAU);
@@ -1905,168 +2308,44 @@ pub fn animate(
     sea.drift.x = (sea.drift.x + RIPPLE_DRIFT[0] * dt).fract();
     sea.drift.y = (sea.drift.y + RIPPLE_DRIFT[1] * dt).fract();
 
-    if let Some(h) = sea.material.clone() {
-        if let Some(m) = materials.get_mut(&h) {
-            m.base.uv_transform = Affine2::from_translation(sea.drift);
-            // The sky the surface reflects: read off the weather, which reads
-            // the rig's clock — the sun and the hour have one owner and this
-            // is a client of it. Headless (no weather) it is the noon sky.
-            m.extension.params = match weather.as_deref() {
-                Some(w) => WaterParams::new(
-                    sky_light(w.sun, w.dark, w.night),
-                    w.sun,
-                    w.sun_lux,
-                    sea.surf_phase,
-                ),
-                None => WaterParams {
-                    shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, sea.surf_phase),
-                    ..WaterParams::noon()
-                },
-            };
-            // The composer's cube, once there is one. It replaces the image
-            // behind the same handle, and the material is re-prepared every
-            // frame by this very `get_mut`, so the clouds in the reflection
-            // follow the clouds in the sky. Not the `Skybox`'s: where the
-            // atmosphere draws there is none (`deck.rs`).
-            if let Some(c) = composer.as_deref() {
-                if m.extension.sky != *c.cube() {
-                    m.extension.sky = c.cube().clone();
-                }
-            }
-        }
-    }
-
-    let Some(handle) = sea.mesh.clone() else {
-        return;
-    };
-    let Some(mesh) = meshes.get_mut(&handle) else {
-        return;
-    };
-    let Some((cx, cz)) = sea
-        .cell
-        .map(|(a, b)| (a as f32 * SNAP_M, b as f32 * SNAP_M))
-    else {
-        return;
-    };
-    let n = sea.coords.len();
-    let phase = sea.phase;
     // How high the weather has the sea this frame. Headless (no weather) it is
-    // the clear sea, like the sky above.
+    // the clear sea, like the sky below.
     let state = weather
         .as_deref()
         .map_or(SeaState::CALM, |w| SeaState::of_wind(w.wind));
+    let folded = fold_phases(&sea.phase, centre);
 
-    // The trig, once. Split the borrows the way `stream` does: the field is
-    // written while the coordinate and shoaling caches are read, and all four
-    // live behind the same `&mut`.
-    {
-        let Sea {
-            coords,
-            spacing,
-            shoal: shoal_cache,
-            field,
-            ..
-        } = &mut *sea;
-        resolve_field(
-            Vec2::new(cx, cz),
-            coords,
-            spacing,
-            shoal_cache,
-            &phase,
-            &state.swell,
-            field,
-        );
+    let Some(h) = sea.material.clone() else {
+        return;
+    };
+    let Some(m) = materials.get_mut(&h) else {
+        return;
+    };
+    m.base.uv_transform = Affine2::from_translation(sea.drift);
+    // The sky the surface reflects: read off the weather, which reads the
+    // rig's clock — the sun and the hour have one owner and this is a client
+    // of it. Headless (no weather) it is the noon sky.
+    m.extension.params = match weather.as_deref() {
+        Some(w) => WaterParams::new(
+            sky_light(w.sun, w.dark, w.night),
+            w.sun,
+            w.sun_lux,
+            sea.surf_phase,
+        ),
+        None => WaterParams {
+            shore: Vec4::new(EDGE_M, CONTACT_M, CONTACT_FOAM, sea.surf_phase),
+            ..WaterParams::noon()
+        },
     }
-    // The breakers ride on top of the swell: one more crest-sharpened sine
-    // where the envelope is non-zero, which is a thin band along the beach.
-    {
-        let Sea {
-            depth,
-            surf_dist,
-            surf_dir,
-            surf_amp,
-            surf_foam,
-            surf_trail,
-            surf_phase,
-            field,
-            reach,
-            ..
-        } = &mut *sea;
-        for i in 0..n * n {
-            // Whitecaps are judged on the swell before the breaker is added,
-            // or every breaker in the shallows would read as a whitecap on a
-            // swell that has shoaled to nothing.
-            let caps = crest_foam(field[i][0], reach[i]);
-            // A storm's bores are taller and whiter: the gain rides on the
-            // cached envelope, so `breaker_foam` sees the breaker as drawn.
-            let amp = surf_amp[i] * state.surf;
-            let (h, gx, gz, trail) = surf_at(amp, surf_dist[i], surf_dir[i], *surf_phase);
-            field[i][0] += h;
-            field[i][1] += gx;
-            field[i][2] += gz;
-            surf_foam[i] = caps + breaker_foam(amp, depth[i], trail);
-            surf_trail[i] = trail;
-        }
-    }
-
-    // Three buffers, fetched one at a time because `attribute_mut` borrows the
-    // mesh. Each is now a read out of `field` and an arithmetic write — no
-    // `sin_cos` past this point.
-    if let Some(VertexAttributeValues::Float32x3(pos)) =
-        mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
-    {
-        for iz in 0..n {
-            for ix in 0..n {
-                let i = iz * n + ix;
-                pos[i] = [
-                    cx + sea.coords[ix],
-                    SEA_LEVEL + sea.field[i][0],
-                    cz + sea.coords[iz],
-                ];
-            }
-        }
-    }
-    if let Some(VertexAttributeValues::Float32x3(nor)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
-    {
-        for (i, slot) in nor.iter_mut().enumerate().take(n * n) {
-            let v = wave_normal(sea.field[i][1], sea.field[i][2]);
-            *slot = [v.x, v.y, v.z];
-        }
-    }
-    if let Some(VertexAttributeValues::Float32x2(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_1) {
-        for iz in 0..n {
-            for ix in 0..n {
-                let i = iz * n + ix;
-                // The wash breathes; the whitecaps ride the swell. Summed
-                // rather than maxed: a crest breaking inside the surf band is
-                // the whitest thing on the sea, and clamping happens in
-                // `with_foam`.
-                // Where breakers run, the wash surges with them — white as a
-                // bore arrives, clear between — and elsewhere (a lake, a far
-                // shore past the breakers' field) it breathes with the swell.
-                let wash = if sea.shore[i] > 0.0 {
-                    let trail = sea.surf_trail[i];
-                    let surge = if trail >= 0.0 {
-                        WASH_FLOOR + (1.0 - WASH_FLOOR) * trail
-                    } else {
-                        let x = cx + sea.coords[ix];
-                        let z = cz + sea.coords[iz];
-                        foam_surge(x, z, phase[0])
-                    };
-                    sea.shore[i] * surge
-                } else {
-                    0.0
-                };
-                // The shader grades the body off the depth and mixes this
-                // in with `with_foam`'s own arithmetic.
-                col[i] = [(wash + sea.surf_foam[i]).clamp(0.0, 1.0), sea.depth[i]];
-            }
-        }
-    }
-    if let Some(VertexAttributeValues::Float32x4(lakes)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR)
-    {
-        for (slot, open) in lakes.iter_mut().zip(sea.open.iter()) {
-            slot[0] = *open;
+    .with_sea(folded, &state, centre);
+    // The composer's cube, once there is one. It replaces the image behind
+    // the same handle, and the material is re-prepared every frame by this
+    // very `get_mut`, so the clouds in the reflection follow the clouds in the
+    // sky. Not the `Skybox`'s: where the atmosphere draws there is none
+    // (`deck.rs`).
+    if let Some(c) = composer.as_deref() {
+        if m.extension.sky != *c.cube() {
+            m.extension.sky = c.cube().clone();
         }
     }
 }
