@@ -87,8 +87,9 @@ pub const BOIL_MS: f32 = 0.8;
 /// The sunlit term's weight in the slab's light (`cloud.wgsl`'s `march`),
 /// over the sky term's. This is what sets a lit top against its grey belly.
 /// At 0.8 the tops reached luma ~190, where the Rust frames' reach ~226
-/// (2026-10-21), and the cumulus read as evenly lit cotton.
-pub const SLAB_SUN: f32 = 1.6;
+/// (2026-10-21), and the cumulus read as evenly lit cotton; at 2.4 they
+/// reach ~221 over the same grey bellies.
+pub const SLAB_SUN: f32 = 2.4;
 
 /// The raymarched slab as the stars and the moon read it for their cover
 /// (`deck.wgsl`'s `slab_shape`): x its floor, y its ceiling, metres; z
@@ -279,7 +280,7 @@ impl CloudParams {
         Self {
             top: v3(l.top).extend(l.thresh),
             base: v3(l.base).extend(sky::EDGE),
-            light: toward.extend(super::rig::tune("GATES_TUNE_CLOUD_SUN", SLAB_SUN)), // TUNE
+            light: toward.extend(SLAB_SUN),
             sun: Vec4::new(l.sun_h.x, l.sun_h.y, l.toward.x, l.toward.y),
             moon: p.moon.extend(sky::HALO_COS),
             halo: (v3(sky::HALO_RGB) * p.night * p.moonlight).extend(sky::MOON_SCATTER_COS),
@@ -334,7 +335,7 @@ impl CloudParams {
             // toward the horizon (where `DeckLight` starts warming the deck),
             // so a dusk sky is the atmosphere's orange, not greyed by blue.
             lift: (Vec3::from_array(sky::air_chroma())
-                * super::rig::tune("GATES_TUNE_SKY_LIFT", super::rig::SKY_LIFT) // TUNE
+                * super::rig::SKY_LIFT
                 * p.light
                 * (p.sun.y / 0.25).clamp(0.0, 1.0)
                 * (1.0 - p.dark)

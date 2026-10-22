@@ -150,19 +150,17 @@ pub const AIR_DENSITY: f32 = 1.2;
 ///
 /// **This is the haze knob, and [`AIR_DENSITY`] is not.** Density thickens
 /// the whole column, so it extinguishes the sun on its way down and darkens
-/// the ground (its doc above measured exactly that). This lengthens only the
-/// sightline: the sun's path, the sky's, and the camera's altitude in the
-/// atmosphere move by a few metres at most. Earthlike air over a 4 km island
+/// the ground (its doc above measured exactly that). This lengthens the
+/// sightline and leaves the sun's path alone. Bevy scales the eye's position
+/// by the same factor, so a 40 m hill stands in the atmosphere at 400 m and
+/// its sky is drawn through slightly thinner air; at these heights against an
+/// 8 km Rayleigh scale that is a few percent. Earthlike air over a 4 km island
 /// is a few percent of blue per kilometre, and measured against the Rust
 /// frames (2026-10-21) our 200 m treelines stayed as green as the near
-/// ground where theirs had gone blue-grey.
-pub const HAZE_SCALE: f32 = 4.0;
-pub fn tune(k: &str, d: f32) -> f32 {
-    std::env::var(k)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(d)
-} // TUNE
+/// ground where theirs had gone blue-grey. At 4 the treeline barely moved;
+/// at 10 blue loses ~4% at 100 m, ~12% at 300 m and ~36% at a kilometre,
+/// and the frame's near band and midtones stayed where they were.
+pub const HAZE_SCALE: f32 = 10.0;
 
 /// Clear sky added behind the cloud deck, in deck units at full sun: the
 /// air's own colour (`sky::air_chroma`) at this luminance, composited by the
@@ -174,8 +172,9 @@ pub fn tune(k: &str, d: f32) -> f32 {
 /// ground or tinting the sun. Measured against the Rust frames
 /// (2026-10-21), their open sky reads about rgb(153, 189, 231) and ours
 /// rgb(105, 127, 159), some 2.3× in linear light, with the ground level
-/// between the two.
-pub const SKY_LIFT: f32 = 0.15;
+/// between the two. At 0.5 the sky band reads 161 against their 157 and
+/// open sky rgb(133, 159, 200), with the near band unmoved at 80.
+pub const SKY_LIFT: f32 = 0.5;
 
 /// Mie, the aerosol term, as Hillaire's model publishes it and as Bevy 0.16
 /// shipped it (`Atmosphere::EARTH`): it mostly scatters. Bevy 0.18's
@@ -194,10 +193,7 @@ pub const MIE_ABSORPTION: f32 = 0.444e-6;
 pub fn island_medium() -> ScatteringMedium {
     let mut medium = ScatteringMedium::default();
     for term in medium.terms.iter_mut() {
-        if tune("GATES_TUNE_MIE", 1.0) > 0.5
-            && matches!(term.phase, bevy::pbr::PhaseFunction::Mie { .. })
-        {
-            // TUNE
+        if matches!(term.phase, bevy::pbr::PhaseFunction::Mie { .. }) {
             term.scattering = Vec3::splat(MIE_SCATTERING);
             term.absorption = Vec3::splat(MIE_ABSORPTION);
         }
@@ -299,11 +295,10 @@ pub fn setup(
                 // gentle roll-off; what it is NOT is the browser's Khronos PBR
                 // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
                 // delivered a face arriving at linear 0.02 as 8/255.
-                match std::env::var("GATES_TUNE_TONEMAP").as_deref() {
-                    Ok("aces") => Tonemapping::AcesFitted,
-                    Ok("agx") => Tonemapping::AgX,
-                    _ => Tonemapping::TonyMcMapface,
-                }, // TUNE
+                // ACES Fitted was tried against the Rust frames (2026-10-21)
+                // for their bright whites and crushed the frame instead: p10
+                // 61 → 28, near band 80 → 49, near saturation 38% → 55%.
+                Tonemapping::TonyMcMapface,
                 // **The tonal instrument, and it is deliberately at identity.**
                 //
                 // Until now there was no grading stage of any kind in this client:
@@ -452,8 +447,8 @@ pub fn setup(
             // the geometry is instead of spending all 32 of them on the first
             // 6% of the frustum. In atmosphere metres, so it scales with
             // the sightline.
-            aerial_view_lut_max_distance: FAR_M * tune("GATES_TUNE_HAZE", HAZE_SCALE), // TUNE
-            scene_units_to_m: tune("GATES_TUNE_HAZE", HAZE_SCALE),                     // TUNE
+            aerial_view_lut_max_distance: FAR_M * HAZE_SCALE,
+            scene_units_to_m: HAZE_SCALE,
             ..default()
         },
     ));
