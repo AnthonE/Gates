@@ -115,6 +115,7 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Juniper) => 0.9,
         (Occupant::Shrub, Scenery::DeadScrub) => 0.45,
         (Occupant::Shrub, Scenery::Flowers) => 0.3,
+        (Occupant::Shrub, Scenery::Cycad) => 1.0,
         (Occupant::Shrub, Scenery::Shrub) if super::props::tall_bush(key) => 0.85,
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
         (Occupant::BerryBush, _) => 0.55,
@@ -144,28 +145,32 @@ pub enum Scenery {
     DeadScrub,
     /// A clump of wildflowers over a leafy base.
     Flowers,
+    /// A sago palm: a rosette of stiff fronds on a stump, the desert's.
+    Cycad,
 }
 
 /// Per biome (`terrain::Biome`'s order) and slot species, per mille of shrub
-/// cells growing `[fern, juniper, dead scrub, wildflowers]`; the rest grow
-/// the leafy shrub. **(knob)** The desert's saguaros are not here: they are
+/// cells growing `[fern, juniper, dead scrub, wildflowers, cycad]`; the rest
+/// grow the leafy shrub. **(knob)** The desert's saguaros are not here: they are
 /// the sim's (`terrain::Occupant::Cactus`), solid and swung at, so the client
 /// draws the cells the sim says and no others.
-pub const SCENERY_SHARES: [[[u16; 4]; 2]; terrain::BIOMES] = [
+pub const SCENERY_SHARES: [[[u16; 5]; 2]; terrain::BIOMES] = [
     // Beach: dead scrub and flowers in the dunes, the odd low pine.
-    [[0, 100, 300, 250], [0, 50, 400, 100]],
+    [[0, 100, 300, 250, 0], [0, 50, 400, 100, 0]],
     // Meadow: wildflowers in drifts between the shrubs.
-    [[50, 50, 50, 550], [100, 100, 50, 200]],
+    [[50, 50, 50, 550, 0], [100, 100, 50, 200, 0]],
     // Forest: fern beds under the canopy.
-    [[650, 0, 50, 0], [250, 50, 50, 0]],
+    [[650, 0, 50, 0, 0], [250, 50, 50, 0, 0]],
     // Highland: low pines and dead scrub on the granite.
-    [[0, 550, 250, 0], [50, 300, 350, 0]],
-    // Desert: dry scrub between the cacti, nothing leafy — every share
-    // spoken for.
-    [[0, 50, 900, 50], [0, 30, 970, 0]],
+    [[0, 550, 250, 0, 0], [50, 300, 350, 0, 0]],
+    // Desert: sago palms and dry scrub between the cacti, nothing leafy —
+    // every share spoken for. The reference's arid floor is thick with
+    // cycads, in patches (the species), so one patch is a grove of them and
+    // the next mostly dead brush.
+    [[0, 0, 250, 50, 700], [0, 30, 450, 0, 520]],
     // The Verdigris: dead scrub and nothing else — every share spoken for,
     // so not one leafy shrub grows in the ash.
-    [[0, 0, 1000, 0], [0, 0, 1000, 0]],
+    [[0, 0, 1000, 0, 0], [0, 0, 1000, 0, 0]],
 ];
 
 const _: () = {
@@ -174,7 +179,7 @@ const _: () = {
         let mut k = 0;
         while k < 2 {
             let r = SCENERY_SHARES[b][k];
-            assert!(r[0] + r[1] + r[2] + r[3] <= 1000);
+            assert!(r[0] + r[1] + r[2] + r[3] + r[4] <= 1000);
             k += 1;
         }
         b += 1;
@@ -191,6 +196,7 @@ pub fn scenery_of(b: Biome, species: u8, key: u32) -> Scenery {
         Scenery::Juniper,
         Scenery::DeadScrub,
         Scenery::Flowers,
+        Scenery::Cycad,
     ];
     let mut edge = 0;
     for (share, kind) in shares.into_iter().zip(kinds) {
@@ -1164,6 +1170,288 @@ pub fn juniper(variant: u32) -> (Mesh, Mesh) {
     let mut wood = Soup::default();
     twigs(&mut wood, seed ^ 0x0d0d, 4, 0.5, 0.65, 0.022);
     (wood.mesh(), leaves.mesh())
+}
+
+/// A cycad's frond length at scale 1, metres: the sago palms that crowd the
+/// reference game's desert floor, a rosette near four metres across.
+pub const CYCAD_FROND_M: f32 = 2.0;
+
+/// A frond card's width, metres: leaflet tip to leaflet tip.
+const CYCAD_FROND_W: f32 = 0.5;
+
+/// The cycad's stump, linear: a dark scaly brown.
+const CYCAD_STUMP: [f32; 3] = [0.10, 0.068, 0.04];
+
+/// A cycad (sago palm): a short scaly stump and a rosette of stiff pinnate
+/// fronds, `(wood, leaves)`. Each frond is one [`frond_image`] card bent
+/// along an arching spine and folded into a shallow V about its rachis, the
+/// way the leaflets of a real frond stand up off the midrib. The outer
+/// fronds are old and lie low, the inner ones young and upright.
+pub fn cycad(variant: u32) -> (Mesh, Mesh) {
+    let seed = seed_of(0xc1ca_d000, variant);
+    let stump_h = 0.04 + 0.24 * hash01(seed, 1);
+    let stump_r = 0.11 + 0.05 * hash01(seed, 2);
+    let mut wood = Soup::default();
+    const SIDES: usize = 8;
+    const RINGS: usize = 4;
+    for j in 0..RINGS {
+        let (t0, t1) = (j as f32 / RINGS as f32, (j + 1) as f32 / RINGS as f32);
+        // Swollen a little at the middle, the way a sago's trunk bulges.
+        let r = |t: f32| stump_r * (1.0 + 0.18 * (t * PI).sin() - 0.2 * t);
+        let y = |t: f32| -0.08 + t * (stump_h + 0.08);
+        for i in 0..SIDES {
+            let (a0, a1) = (
+                i as f32 * TAU / SIDES as f32,
+                (i + 1) as f32 * TAU / SIDES as f32,
+            );
+            let p = |a: f32, t: f32| Vec3::new(a.sin() * r(t), y(t), a.cos() * r(t));
+            // The scale rings: alternate bands a shade apart.
+            let k = if j % 2 == 0 { 1.0 } else { 0.82 };
+            let c = [
+                CYCAD_STUMP[0] * k,
+                CYCAD_STUMP[1] * k,
+                CYCAD_STUMP[2] * k,
+                1.0,
+            ];
+            let mid = Vec3::Y * y((t0 + t1) * 0.5);
+            wood.tri(p(a0, t0), p(a1, t0), p(a0, t1), |_| c, Some(mid), 0.8);
+            wood.tri(p(a1, t0), p(a1, t1), p(a0, t1), |_| c, Some(mid), 0.8);
+            if j == RINGS - 1 {
+                // The crown's cap, under the fronds.
+                let top = Vec3::Y * y(1.0);
+                let c = [c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, 1.0];
+                wood.tri(p(a0, 1.0), p(a1, 1.0), top, |_| c, None, 0.0);
+            }
+        }
+    }
+
+    let mut leaves = Soup::default();
+    // Below the stump, so a frond's normal leans out and up: a frond is a
+    // plate seen from both sides, lit as the rosette's dome (`hemp`'s reason).
+    let dome = Vec3::new(0.0, -CYCAD_FROND_M * 1.2, 0.0);
+    let crown = Vec3::Y * stump_h;
+    let fronds = 28 + (hash01(seed, 3) * 10.0) as u32;
+    let yaw0 = hash01(seed, 4) * TAU;
+    const SEGS: usize = 6;
+    for k in 0..fronds {
+        // 0 the oldest, outermost frond; 1 the youngest at the heart. A
+        // golden-angle spiral, as the fronds of one flush grow.
+        let age = 1.0 - k as f32 / (fronds - 1) as f32;
+        let a = yaw0 + k as f32 * 2.399_963 + (hash01(seed, 10 + k) - 0.5) * 0.25;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let side = Vec3::new(out.z, 0.0, -out.x);
+        let len = CYCAD_FROND_M * (0.62 + 0.38 * age) * (0.88 + 0.24 * hash01(seed, 20 + k));
+        // Rise off the crown, then arch over: the old fronds' tips come down
+        // near the sand, the young ones' barely bend.
+        let rise = 0.2 + 1.0 * (1.0 - age) + (hash01(seed, 30 + k) - 0.5) * 0.3;
+        let droop = 0.6 + 0.6 * age + (hash01(seed, 40 + k) - 0.5) * 0.3;
+        let fold = 0.35 + 0.2 * hash01(seed, 50 + k);
+        let value = 0.86 + 0.18 * hash01(seed, 60 + k) + 0.1 * (1.0 - age);
+        let mut spine = [crown + out * (stump_r * 0.6); SEGS + 1];
+        for s in 1..=SEGS {
+            let t = (s as f32 - 0.5) / SEGS as f32;
+            let e = rise - droop * t * t;
+            spine[s] = spine[s - 1] + (out * e.cos() + Vec3::Y * e.sin()) * (len / SEGS as f32);
+            // An old frond's tip lies on the sand rather than in it.
+            spine[s].y = spine[s].y.max(0.04);
+        }
+        let shade = |p: Vec3| {
+            let r = Vec2::new(p.x, p.z).length() / CYCAD_FROND_M;
+            let k = value * (0.62 + 0.38 * smooth01(r * 1.6));
+            [k, k, k, 1.0]
+        };
+        frond(
+            &mut leaves,
+            &spine,
+            side,
+            CYCAD_FROND_W,
+            fold,
+            None,
+            shade,
+            dome,
+            0.65,
+        );
+    }
+    (wood.mesh(), leaves.mesh())
+}
+
+/// One [`frond_image`] card bent along `spine` (base first), `width` across
+/// and folded `fold` radians up off its rachis either side, `side` the
+/// horizontal across it — the cycad's fronds and the palm's. `tip` bends the
+/// outer half of each side by that much more (negative hangs the leaflets'
+/// tips, a palm frond's arch); `None` keeps each side one plane, a cycad's
+/// stiff V. Normals are pulled `blend` of the way toward `dome`, as every
+/// card here is.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn frond(
+    s: &mut Soup,
+    spine: &[Vec3],
+    side: Vec3,
+    width: f32,
+    fold: f32,
+    tip: Option<f32>,
+    col: impl Fn(Vec3) -> [f32; 4] + Copy,
+    dome: Vec3,
+    blend: f32,
+) {
+    let segs = spine.len() - 1;
+    let up = |i: usize| {
+        let along = (spine[(i + 1).min(segs)] - spine[i.saturating_sub(1)]).normalize_or(Vec3::Y);
+        along.cross(side).normalize_or(Vec3::Y)
+    };
+    // Across one side of the card: the rachis, then a strip or two out to
+    // the leaflets' tips, each `(u, point)`.
+    let strips: &[(f32, f32)] = match tip {
+        None => &[(fold, 0.5)],
+        Some(t) => &[(fold, 0.25), (fold + t, 0.25)],
+    };
+    let across = |i: usize, sign: f32| {
+        let mut p = spine[i];
+        let mut u = 0.5;
+        let mut out = [(0.5, p); 3];
+        for (k, &(f, share)) in strips.iter().enumerate() {
+            let w = width * share;
+            p += side * (sign * w * f.cos()) + up(i) * (w * f.sin());
+            u += sign * share;
+            out[k + 1] = (u, p);
+        }
+        out
+    };
+    let blend = move |_: Vec3| blend;
+    for i in 0..segs {
+        let (v0, v1) = (
+            1.0 - i as f32 / segs as f32,
+            1.0 - (i + 1) as f32 / segs as f32,
+        );
+        for sign in [-1.0, 1.0] {
+            let (a, b) = (across(i, sign), across(i + 1, sign));
+            for k in 0..strips.len() {
+                let ((ua0, a0), (ua1, a1)) = (a[k], a[k + 1]);
+                let ((ub0, b0), (ub1, b1)) = (b[k], b[k + 1]);
+                s.tri_uv(
+                    [(a0, [ua0, v0]), (a1, [ua1, v0]), (b0, [ub0, v1])],
+                    col,
+                    Some(dome),
+                    blend,
+                );
+                s.tri_uv(
+                    [(a1, [ua1, v0]), (b1, [ub1, v1]), (b0, [ub0, v1])],
+                    col,
+                    Some(dome),
+                    blend,
+                );
+            }
+        }
+    }
+}
+
+/// The frond card's edge, texels.
+pub const FROND_PX: u32 = 256;
+
+/// A cycad's frond, drawn rather than photographed: a rachis up the middle
+/// of the card (base at the bottom edge) and some forty pairs of stiff,
+/// narrow leaflets angled toward the tip, shortest at the base and the tip.
+/// Supersampled coverage, as [`hemp_leaf_image`]'s is.
+pub fn frond_image() -> Image {
+    super::tree::alpha_card(frond_rgba(FROND_PX), FROND_PX)
+}
+
+/// [`frond_image`]'s level 0, RGBA8 sRGB.
+pub fn frond_rgba(n: u32) -> Vec<u8> {
+    // sRGB: the leaflet, its sunlit tip, and the rachis.
+    let blade = Vec3::new(52.0, 70.0, 28.0);
+    let tip = Vec3::new(88.0, 100.0, 44.0);
+    let rib = Vec3::new(104.0, 100.0, 56.0);
+    // Leaflet pairs, the angle a leaflet leaves the rachis at (card space,
+    // measured off the rachis toward the tip), and its half-width.
+    const PAIRS: f32 = 40.0;
+    let ang: f32 = 1.2;
+    let (dir_u, dir_v) = (ang.sin(), ang.cos());
+    let leaf_w = 0.011;
+    // A leaflet's reach off the rachis at `t` along the frond (0 the base).
+    let reach = |t: f32| 0.47 * smooth01(t / 0.28) * (1.0 - 0.75 * smooth01((t - 0.6) / 0.4));
+    // `Some((f, id))`: how far out along leaflet `id` the point lies, or
+    // `f` negative on the rachis.
+    let sample = |u: f32, v: f32| -> Option<(f32, u32)> {
+        let t = 1.0 - v;
+        let x = u - 0.5;
+        // The rachis, tapering toward the tip.
+        if x.abs() < 0.012 * (1.0 - 0.6 * t) && (0.0..0.985).contains(&t) {
+            return Some((-1.0, 0));
+        }
+        // Which leaflet's line passes nearest: walk back along its slant to
+        // where it left the rachis.
+        let ax = x.abs();
+        let t0 = t - ax / dir_u * dir_v;
+        let i = (t0 * PAIRS).round();
+        let mut best: Option<(f32, u32)> = None;
+        for di in [-1.0, 0.0, 1.0] {
+            let left = x < 0.0;
+            let tl = (i + di) / PAIRS + if left { 0.5 / PAIRS } else { 0.0 };
+            if !(0.04..0.99).contains(&tl) {
+                continue;
+            }
+            let r = reach(tl);
+            // Along and across this leaflet, card units.
+            let (du, dv) = (ax, t - tl);
+            let along = du * dir_u + dv * dir_v;
+            let across = (du * dir_v - dv * dir_u).abs();
+            let f = along / (r / dir_u).max(1e-4);
+            if !(0.0..=1.0).contains(&f) {
+                continue;
+            }
+            // Narrow, and pointed at the tip.
+            let w = leaf_w * (1.0 - f * f).max(0.0).sqrt().max(0.25 * (1.0 - f));
+            if across <= w && best.is_none_or(|b| f < b.0) {
+                best = Some((f, (i + di + 2.0) as u32 * 2 + u32::from(left)));
+            }
+        }
+        best
+    };
+    const SS: u32 = 4;
+    let nf = n as f32;
+    let mut out = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let mut cover = 0u32;
+            let mut hit: Option<(f32, u32)> = None;
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let u = (x as f32 + (sx as f32 + 0.5) / SS as f32) / nf;
+                    let v = (y as f32 + (sy as f32 + 0.5) / SS as f32) / nf;
+                    if let Some(h) = sample(u, v) {
+                        cover += 1;
+                        hit = hit.or(Some(h));
+                    }
+                }
+            }
+            let i = ((y * n + x) * 4) as usize;
+            let c = match hit {
+                None => {
+                    out[i..i + 4].copy_from_slice(&[
+                        blade.x as u8,
+                        blade.y as u8,
+                        blade.z as u8,
+                        0,
+                    ]);
+                    continue;
+                }
+                Some((f, _)) if f < 0.0 => rib,
+                Some((f, id)) => {
+                    let jitter = 0.88 + 0.24 * hash01(0xf20d, id);
+                    blade.lerp(tip, smooth01((f - 0.4) / 0.6)) * jitter
+                }
+            };
+            let a = (cover * 255 / (SS * SS)) as u8;
+            out[i..i + 4].copy_from_slice(&[
+                c.x.min(255.0) as u8,
+                c.y.min(255.0) as u8,
+                c.z.min(255.0) as u8,
+                a,
+            ]);
+        }
+    }
+    out
 }
 
 /// A saguaro's height at scale 1, metres: over a standing player's head.

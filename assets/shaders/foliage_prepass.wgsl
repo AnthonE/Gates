@@ -31,7 +31,7 @@ fn vertex(in: Vertex) -> VertexOutput {
     let origin = world_from_local[3].xyz;
 #ifdef VERTEX_UVS_B
     let h = in.uv_b.x;
-    let rand = in.uv_b.y;
+    let rand = fract(in.uv_b.y);
     let anchor = wp0;
 #else
     let h = local_height(in.position.y, length(world_from_local[1].xyz));

@@ -160,6 +160,15 @@ impl RingCards {
     }
 }
 
+/// A rock or ore model's material, its desert twin, the tint between them,
+/// and whether the twin is filled yet (`PropAssets::fill_twins`).
+type DesertTwin = (
+    Handle<StandardMaterial>,
+    Handle<StandardMaterial>,
+    [f32; 3],
+    bool,
+);
+
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
@@ -269,8 +278,13 @@ pub struct PropAssets {
     juniper_leaves: Vec<Handle<Mesh>>,
     juniper_wood: Vec<Handle<Mesh>>,
     dead_wood: Vec<Handle<Mesh>>,
+    cycad_leaves: Vec<Handle<Mesh>>,
+    cycad_wood: Vec<Handle<Mesh>>,
     /// The desert's saguaros (`plants::cactus`), a pool like the scrub's.
     cactus: Vec<Handle<Mesh>>,
+    /// Each rock and ore model's desert twin ([`DesertTwin`]), filled once
+    /// the model has loaded.
+    desert_rock: Vec<DesertTwin>,
     flower_heads: Vec<Handle<Mesh>>,
     flower_base: Vec<Handle<Mesh>>,
     /// The shrub's and the berry bush's leaf material: alpha-MASKED, wearing
@@ -304,6 +318,13 @@ pub struct PropAssets {
     /// A low pine's sprays: the conifers' needle card, on its own handle so
     /// it sways as a ground-rooted plant and not as a tree's crown.
     juniper_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A sago palm's fronds: the drawn frond card (`plants::frond_image`).
+    cycad_leaf: [Handle<StandardMaterial>; TINT_POOL],
+    /// A palm's crown: the same card, on its own handle so it sways as a
+    /// tree's crown and not as a ground-rooted plant.
+    palm_frond: [Handle<StandardMaterial>; TINT_POOL],
+    /// A palm's trunk: the drawn diamond bark (`tree::palm_bark_images`).
+    palm_bark: [Handle<StandardMaterial>; TINT_POOL],
     /// Wildflower stems and petals, their colour in their vertices.
     flower: Handle<StandardMaterial>,
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
@@ -2188,6 +2209,17 @@ pub fn assets(
             (meshes.add(wood), meshes.add(leaves))
         })
         .collect();
+    let frond_map = images.add(plants::frond_image());
+    let (palm_bark_map, palm_bark_normal) = {
+        let (a, n) = tree::palm_bark_images();
+        (images.add(a), images.add(n))
+    };
+    let cycads: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..PLANT_POOL as u32)
+        .map(|v| {
+            let (wood, leaves) = plants::cycad(v);
+            (meshes.add(wood), meshes.add(leaves))
+        })
+        .collect();
     // Hoisted out of the literal below because the two site rows fall back to
     // them: a `photo(...)` written twice would be two materials wearing one
     // photograph, and the second would be invisible to `tests/fresnel.rs`'s
@@ -2327,6 +2359,27 @@ pub fn assets(
         dead_wood: (0..PLANT_POOL as u32)
             .map(|v| meshes.add(plants::dead_scrub(v)))
             .collect(),
+        desert_rock: models
+            .pool(Occupant::Rock)
+            .iter()
+            .chain(models.pool(Occupant::StoneNode))
+            .chain(models.pool(Occupant::SulfurNode))
+            .map(|(_, m)| (m.clone(), DESERT_ROCK_TINT))
+            .chain(
+                models
+                    .pool(Occupant::MetalNode)
+                    .iter()
+                    .map(|(_, m)| (m.clone(), DESERT_METAL_TINT)),
+            )
+            .chain(
+                models
+                    .pickup(Occupant::StonePile)
+                    .map(|(_, m)| (m, DESERT_STONE_TINT)),
+            )
+            .map(|(m, tint)| (m, materials.add(StandardMaterial::default()), tint, false))
+            .collect(),
+        cycad_leaves: cycads.iter().map(|(_, l)| l.clone()).collect(),
+        cycad_wood: cycads.iter().map(|(w, _)| w.clone()).collect(),
         cactus: (0..PLANT_POOL as u32)
             .map(|v| meshes.add(plants::cactus(v)))
             .collect(),
@@ -2356,6 +2409,50 @@ pub fn assets(
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(needle_map.clone()),
                 perceptual_roughness: 0.9,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        palm_bark: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(palm_bark_map.clone()),
+                normal_map_texture: Some(palm_bark_normal.clone()),
+                perceptual_roughness: 0.92,
+                reflectance: fresnel::DIELECTRIC,
+                ..default()
+            })
+        }),
+        palm_frond: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(frond_map.clone()),
+                perceptual_roughness: 0.8,
+                reflectance: fresnel::DIELECTRIC,
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
+                alpha_mode: AlphaMode::Mask(0.5),
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
+        cycad_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(frond_map.clone()),
+                perceptual_roughness: 0.8,
                 reflectance: fresnel::DIELECTRIC,
                 specular_tint: Color::linear_rgb(
                     tree::CANOPY_SPECULAR_TINT,
@@ -2601,6 +2698,28 @@ pub fn assets(
 /// tree — the same trunk it blocks and the same wood it pays. **(knob)**
 pub const FEL_SNAG_AT: f32 = 0.45;
 
+/// What a rock or ore model's colour is multiplied by in the desert: its
+/// granite warmed to the reference's sandstone at the same luminance
+/// (`ground_splat::DESERT_ROCK_ALBEDO`'s reason). The models' photographs
+/// are pale already, and lifted (1.75, 1.4, 1.0) a stone node burnt out to a
+/// white dome. **(knob)**
+pub const DESERT_ROCK_TINT: [f32; 3] = [1.2, 1.0, 0.76];
+
+/// …and a metal node's: its model is pale already, and lifted with the rest
+/// it stood on the sand as a white dome. Darker, the reference's dark
+/// metal-ore rock. **(knob)**
+pub const DESERT_METAL_TINT: [f32; 3] = [0.6, 0.55, 0.5];
+
+/// …and a loose stone pickup's (`PICKUP_GLB`): its pale grey photo, at
+/// 2.4× in full desert sun, read as a white egg on the sand. Darker and
+/// warm, a lump of the sandstone round it. **(knob)**
+pub const DESERT_STONE_TINT: [f32; 3] = [0.78, 0.64, 0.47];
+
+/// The aridity a rock goes to sandstone at, and the spread of the line: a
+/// rock's own roll moves it within this band, so the desert's edge is a
+/// scatter of both rather than a line drawn through the boulders. **(knob)**
+pub const DESERT_ROCK_ARID: (f32, f32) = (0.3, 0.4);
+
 /// Whether the tree (or shrub) at `t` stands dead in the spread `now`: the
 /// one question the spawn, the ring's wither and the far cards all ask, so
 /// the same moment always gives the same answer and nothing churns.
@@ -2650,6 +2769,7 @@ pub fn stream(
             models,
         )
     });
+    a.fill_twins(&mut materials);
     if a.cards.is_none() {
         if let Some(c) = cards.as_ref() {
             a.cards = Some(RingCards {
@@ -2680,6 +2800,9 @@ pub fn stream(
                 // woody mound, on the shrub's.
                 (&a.fern_leaf, Kind::HempLeaf),
                 (&a.juniper_leaf, Kind::BushLeaf),
+                (&a.cycad_leaf, Kind::BushLeaf),
+                (&a.palm_frond, Kind::Needle),
+                (&a.palm_bark, Kind::Bark),
             ] {
                 for h in pool {
                     f.register(h, kind);
@@ -3243,6 +3366,24 @@ pub fn spawn_slot(
             }
         }
         Occupant::None => return,
+    };
+    // The desert's rock is sandstone: a rock or ore model there wears its
+    // desert twin.
+    let material = match slot.occupant {
+        Occupant::Rock
+        | Occupant::StoneNode
+        | Occupant::MetalNode
+        | Occupant::SulfurNode
+        | Occupant::StonePile => {
+            let (lo, hi) = DESERT_ROCK_ARID;
+            let line = lo + (hi - lo) * hash01(key, 0xde5e_7000);
+            if terrain::aridity(seed, slot.x, slot.z) > line {
+                a.desert_twin(&material).cloned().unwrap_or(material)
+            } else {
+                material
+            }
+        }
+        _ => material,
     };
     let sink = SINK_M;
     let transform = Transform {
@@ -4005,6 +4146,11 @@ impl PropAssets {
             (Occupant::Shrub, Scenery::DeadScrub) => {
                 plant(&self.dead_wood[v], &self.plant_wood, None)
             }
+            (Occupant::Shrub, Scenery::Cycad) => plant(
+                &self.cycad_wood[v],
+                &self.plant_wood,
+                Some((&self.cycad_leaves[v], &self.cycad_leaf[tint])),
+            ),
             (Occupant::Shrub, Scenery::Flowers) => {
                 let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
                     % plants::FLOWER_PALETTES;
@@ -4081,6 +4227,9 @@ impl PropAssets {
             ("pumpkin_leaf", &self.pumpkin_leaf),
             ("fern_leaf", &self.fern_leaf),
             ("juniper_leaf", &self.juniper_leaf),
+            ("cycad_leaf", &self.cycad_leaf),
+            ("palm_frond", &self.palm_frond),
+            ("palm_bark", &self.palm_bark),
             ("needle", &self.needle),
             ("leaf", &self.leaf),
             ("rock", &self.rock),
@@ -4147,9 +4296,39 @@ impl PropAssets {
     /// bark for a conifer, birch for a broadleaf. The one place the choice is
     /// made, like [`Self::canopy_material`].
     pub fn trunk_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        if tree::species_of(variant) == tree::PALM {
+            return &self.palm_bark[tint_of(key)];
+        }
         match tree::SPECIES[tree::species_of(variant)].tree_type {
             bevy_procedural_tree::enums::TreeType::Evergreen => &self.bark[tint_of(key)],
             bevy_procedural_tree::enums::TreeType::Deciduous => &self.birch[tint_of(key)],
+        }
+    }
+    /// The desert twin of a rock or ore model's material
+    /// ([`Self::fill_twins`]).
+    pub fn desert_twin(&self, m: &Handle<StandardMaterial>) -> Option<&Handle<StandardMaterial>> {
+        self.desert_rock
+            .iter()
+            .find(|(src, ..)| src == m)
+            .map(|(_, d, ..)| d)
+    }
+    /// Fill each desert twin from its model's own material the first frame
+    /// that has loaded: the same maps, tinted. Until then a twin is the blank
+    /// default material — a white dome on the sand.
+    fn fill_twins(&mut self, materials: &mut Assets<StandardMaterial>) {
+        for (src, dst, tint, done) in self.desert_rock.iter_mut().filter(|t| !t.3) {
+            let Some(m) = materials.get(&*src) else {
+                continue;
+            };
+            let mut m = m.clone();
+            let c = m.base_color.to_linear();
+            m.base_color = Color::linear_rgba(
+                c.red * tint[0],
+                c.green * tint[1],
+                c.blue * tint[2],
+                c.alpha,
+            );
+            *done = materials.insert(dst.id(), m).is_ok();
         }
     }
     /// The foliage material a slot with this key draws — the bush, the far
@@ -4164,6 +4343,10 @@ impl PropAssets {
     /// ECS back cannot disagree.
     pub fn canopy_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
         let tint = tint_of(key);
+        // The palm's crown is fronds of the cycad's card (`tree::palm_crown`).
+        if tree::species_of(variant) == tree::PALM {
+            return &self.palm_frond[tint];
+        }
         match tree::SPECIES[tree::species_of(variant)].tree_type {
             bevy_procedural_tree::enums::TreeType::Evergreen => &self.needle[tint],
             bevy_procedural_tree::enums::TreeType::Deciduous => &self.leaf[tint],

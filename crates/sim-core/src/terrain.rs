@@ -7327,11 +7327,19 @@ pub const BALL_CACTUS_SPECIES: u8 = 1;
 pub const BALL_CACTUS_R_M: f32 = 0.5044;
 pub const BALL_CACTUS_TOP_M: f32 = 0.96;
 
-/// [`occupant_volume`] for this slot: a ball cactus is its own.
+/// How high a palm blocks, metres: its drawn height (the client's
+/// `tree::PALM_H`), the reference game's palms rather than the pine's 42 m.
+pub const PALM_TOP_M: f32 = 12.0;
+
+/// [`occupant_volume`] for this slot: a ball cactus is its own, and a palm
+/// is shorter than the other trees.
 pub const fn slot_volume(slot: &Slot) -> (f32, f32) {
     match slot.occupant {
         Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => {
             (BALL_CACTUS_R_M, BALL_CACTUS_TOP_M)
+        }
+        Occupant::Tree if slot.species == PALM_SPECIES => {
+            (OCCUPANT_R_M[Occupant::Tree as usize], PALM_TOP_M)
         }
         o => occupant_volume(o),
     }
@@ -10053,13 +10061,14 @@ pub const OCCUPANT_R_M: [f32; 31] = [
 /// meter so it reads as embedded rather than dropped — so their tops are 1.5
 /// and not 2.0.
 ///
-/// The tree is solid to 24 m, the palm's drawn apex (the broadleaf is drawn
-/// 33 m and the pine 42 m; the sim cannot tell the species apart, so the
-/// shortest one wins and nothing invisible blocks above a palm). It was the 5.7 m pine trunk,
-/// and arrows and roof-standers went straight through the upper half.
+/// The tree is solid to 33 m, the broadleaf's drawn apex (the pine is drawn
+/// 42 m; the shortest wins, so nothing invisible blocks above a broadleaf).
+/// The palm is its own, shorter ([`PALM_TOP_M`], through [`slot_volume`]).
+/// It was the 5.7 m pine trunk, and arrows and roof-standers went straight
+/// through the upper half.
 pub const OCCUPANT_TOP_M: [f32; 31] = [
     0.0,  // None
-    24.0, // Tree — the palm's drawn height (2026-10-19)
+    33.0, // Tree — the broadleaf's drawn height; the palm is `PALM_TOP_M`
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
     // radius` — the same correction the radii above take, and for the same
     // reason: the blob never reaches its nominal radius in any axis.
@@ -10177,7 +10186,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.2398, 24.0),
+        Occupant::Tree => (0.2398, 33.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),

@@ -30,9 +30,10 @@ fn vertex(in: Vertex) -> VertexOutput {
     let origin = world_from_local[3].xyz;
 #ifdef VERTEX_UVS_B
     // Baked (a grass tile): UV1 carries the height above the card's root and
-    // the card's own random number.
+    // the card's own random number — over whole steps of how dry the card is
+    // (`clutter::card_dry`), which the fragment reads.
     let h = in.uv_b.x;
-    let rand = in.uv_b.y;
+    let rand = fract(in.uv_b.y);
     let anchor = wp0;
 #else
     // A plant in its own frame: height off the local y, one phase per plant.
@@ -106,7 +107,16 @@ fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
 #ifdef VERTEX_COLORS
         c *= in.color;
 #endif
-        pbr_input.material.base_color = c * cut_read(uv, duv);
+        var tex = cut_read(uv, duv);
+#ifdef VERTEX_UVS_B
+        // A dried card: the photograph goes to its own grey by the whole
+        // steps on UV1.y (`clutter::DRY_STEPS`), and the vertex colour tints
+        // that grey straw — a green photograph tinted straw keeps its purple
+        // seed heads, pink.
+        let dry = floor(in.uv_b.y) / 15.0;
+        tex = vec4<f32>(mix(tex.rgb, vec3<f32>(dot(tex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722))), dry), tex.a);
+#endif
+        pbr_input.material.base_color = c * tex;
     }
 #endif
 
