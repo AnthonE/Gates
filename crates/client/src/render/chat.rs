@@ -330,6 +330,10 @@ fn close(chat: &mut Chat, cursor: &mut Query<&mut CursorOptions, With<PrimaryWin
 }
 
 fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
+    if protocol::secret::holds_secret(chat.composer.body()) {
+        toast.warn("not sent: that looks like a private key or recovery phrase. Never share one");
+        return;
+    }
     let Some((channel, text)) = chat.composer.outgoing() else {
         return; // nothing to say, or only a channel switch
     };

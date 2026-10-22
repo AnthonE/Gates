@@ -596,12 +596,25 @@ pub struct Report {
     pub truncated: bool,
 }
 
+/// What a title or body that held a private key or recovery phrase becomes.
+pub const SECRET_REMOVED: &str =
+    "[removed: it looked like a private key or recovery phrase, which is never shared]";
+
 impl Report {
     /// The only way to build one. `title` and `body` are whatever a stranger
     /// typed; everything else is ours.
     pub fn new(kind: Kind, title: &str, body: &str, at: u64, build: Build) -> Self {
-        let (title, t_cut) = one_line(title, TITLE_MAX);
-        let (body, b_cut) = many_lines(body, BODY_MAX, BODY_LINES_MAX);
+        // Reports get posted where anyone reads them: a pasted key or
+        // recovery phrase is dropped, never published (`protocol::secret`).
+        fn unshared(s: &str) -> &str {
+            if protocol::secret::holds_secret(s) {
+                SECRET_REMOVED
+            } else {
+                s
+            }
+        }
+        let (title, t_cut) = one_line(unshared(title), TITLE_MAX);
+        let (body, b_cut) = many_lines(unshared(body), BODY_MAX, BODY_LINES_MAX);
         Self {
             format: FORMAT,
             kind,
@@ -1260,6 +1273,7 @@ fn forbidden(c: char) -> bool {
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{FEFF}')
+        || protocol::chat::hides_or_reorders(c)
 }
 
 /// Strip what may never appear, and normalise line endings to `\n`.
@@ -1383,5 +1397,19 @@ mod tests {
             "No such file: ~/.gates/agent.key at ~/x"
         );
         assert_eq!(redact_home(msg, None), msg);
+    }
+
+    #[test]
+    fn a_pasted_key_never_reaches_a_report() {
+        let key = "0123456789abcdef".repeat(4);
+        let r = Report::new(
+            Kind::Other,
+            "stuck",
+            &format!("my key is {key}"),
+            0,
+            Build::here(),
+        );
+        assert_eq!(r.body, SECRET_REMOVED);
+        assert_eq!(r.title, "stuck");
     }
 }

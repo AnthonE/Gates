@@ -927,7 +927,12 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        line.truncate(protocol::ChatText::CAP);
+        // On a character boundary: `truncate` mid-character panics.
+        let mut cut = line.len().min(protocol::ChatText::CAP);
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        line.truncate(cut);
         if let Some(text) = protocol::ChatText::sanitize(line.as_bytes()) {
             let line = crate::admin::server_line(&text);
             self.say_server(Some(to), &line, stats, send);

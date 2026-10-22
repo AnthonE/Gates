@@ -91,9 +91,10 @@ impl ChatText {
     }
 
     /// Trim and validate a raw line. `None` ⇒ refuse, never repair past
-    /// the trim: empty, over-long, not UTF-8, or carrying a control
+    /// the trim: empty, over-long, not UTF-8, carrying a control
     /// character (which is how a chat line would otherwise smuggle a
-    /// newline into a log or a terminal). Profanity is untouched —
+    /// newline into a log or a terminal), or holding something shaped like
+    /// a wallet's private key or recovery phrase. Profanity is untouched —
     /// survival chat is survival chat (ALPHA.md §1).
     pub fn sanitize(raw: &[u8]) -> Option<Self> {
         // ASCII whitespace only: every byte of a multi-byte UTF-8
@@ -115,6 +116,11 @@ impl ChatText {
         if text.chars().any(refused_char) {
             return None;
         }
+        // A private key or a recovery phrase never goes out to a shard full
+        // of strangers (`secret`).
+        if crate::secret::holds_secret(text) {
+            return None;
+        }
         let mut out = Self::EMPTY;
         out.bytes[..s.len()].copy_from_slice(s);
         out.len = s.len() as u8;
@@ -122,12 +128,6 @@ impl ChatText {
     }
 }
 
-/// A character that is invisible or turns the text around it: the bidi
-/// embeddings, overrides, isolates and marks, and the zero-width space, word
-/// joiner and byte-order mark. A line carrying one can draw as something it
-/// does not say — a name reversed into another, a gap that is not there.
-/// The zero-width joiners stay: emoji and several scripts are spelled with
-/// them.
 /// A character no line may carry ([`ChatText::sanitize`]): a control, or
 /// one that hides or reorders text. The composer refuses the key with this,
 /// so what can be typed and what will send stay one set.
@@ -135,17 +135,38 @@ pub fn refused_char(c: char) -> bool {
     c.is_control() || hides_or_reorders(c)
 }
 
-fn hides_or_reorders(c: char) -> bool {
+/// A character that is invisible or turns the text around it: the bidi
+/// embeddings, overrides, isolates and marks, and the zero-width space, word
+/// joiner and byte-order mark, the blank fillers and line separators, and
+/// the tag characters and non-emoji variation selectors (which smuggle
+/// text a person cannot see to an agent that reads the bytes). A line
+/// carrying one can draw as something it does not say — a name reversed
+/// into another, a gap that is not there. The zero-width joiners and the
+/// emoji selectors (U+FE0E, U+FE0F) stay: emoji and several scripts are
+/// spelled with them.
+pub fn hides_or_reorders(c: char) -> bool {
     matches!(
         c,
-        '\u{061C}'
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{180E}'
             | '\u{200B}'
             | '\u{200E}'
             | '\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
             | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'
-            | '\u{2066}'..='\u{2069}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0D}'
             | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0000}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
     )
 }
 
@@ -272,6 +293,8 @@ mod tests {
         assert_eq!(t.as_bytes(), b"hearth is up");
         let t = line("wall's at 4 — bring stone");
         assert_eq!(t.len(), "wall's at 4 — bring stone".len());
+        // Emoji keep their selector and joiner.
+        line("gg \u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F373}");
     }
 
     #[test]
@@ -282,11 +305,25 @@ mod tests {
         assert!(ChatText::sanitize(b"two\nlines").is_none());
         assert!(ChatText::sanitize(b"bell\x07").is_none());
         assert!(ChatText::sanitize(&[0xff, 0xfe]).is_none());
+        // A private key or a recovery phrase (`secret`).
+        let key = b"my key 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert!(ChatText::sanitize(key).is_none());
+        let phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        assert!(ChatText::sanitize(phrase.as_bytes()).is_none());
         // Exactly at the cap is fine.
         assert!(ChatText::sanitize(&[b'a'; CHAT_MAX_BYTES]).is_some());
         // Text that draws as something it does not say: a right-to-left
         // override, an isolate, a zero-width space, a byte-order mark.
-        for hidden in ["\u{202E}nimda", "a\u{2067}b", "pay\u{200B}me", "\u{FEFF}hi"] {
+        for hidden in [
+            "\u{202E}nimda",
+            "a\u{2067}b",
+            "pay\u{200B}me",
+            "\u{FEFF}hi",
+            "gg\u{E0069}\u{E0067}",
+            "\u{3164}",
+            "a\u{2028}b",
+            "x\u{E0100}",
+        ] {
             assert!(
                 ChatText::sanitize(hidden.as_bytes()).is_none(),
                 "{hidden:?}"
