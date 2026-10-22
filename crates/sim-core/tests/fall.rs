@@ -6,7 +6,7 @@ use sim_core::input::{InputFrame, BTN_JUMP};
 use sim_core::movement::{self, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::Scratch;
 use sim_core::terrain;
-use sim_core::world::{Command, World};
+use sim_core::world::{Command, World, DEATH_BY_HAND};
 
 const SEED: u64 = 11;
 
@@ -113,10 +113,21 @@ fn a_downed_body_lands_as_hard() {
     p.wounded = true;
     p.wound_until = u64::MAX / 2;
     p.hp = sim_core::wound::WOUNDED_HP;
+    // Downed by player 2's swing at 1.5 m: the drop finishes that.
+    p.death_by = 2;
+    p.death_cause = DEATH_BY_HAND;
+    p.death_item = 41;
+    p.death_range_cm = 150;
     for _ in 0..(3 * 30) {
         w.tick(&[]);
     }
-    assert!(w.players[0].dead, "a downed body survived an 8 m drop");
+    let p = &w.players[0];
+    assert!(p.dead, "a downed body survived an 8 m drop");
+    assert_eq!(
+        (p.death_by, p.death_cause, p.death_item, p.death_range_cm),
+        (2, DEATH_BY_HAND, 41, 150),
+        "the drop took the kill from the player who downed the body"
+    );
 }
 
 /// A face stops a fall dead and slides the body rather than standing it

@@ -5152,6 +5152,11 @@ fn sim_thread(
                 let missed = (behind.as_nanos() / tick_dur.as_nanos()) as u64;
                 stats.ticks_dropped.fetch_add(missed, Ordering::Relaxed);
                 next = now;
+            } else {
+                // The ticks about to run back to back: the world tick
+                // outruns every client's acks by that many, and the favour
+                // bounds must know (`ShardCore::note_pace_backlog`).
+                core.note_pace_backlog((behind.as_nanos() / tick_dur.as_nanos()) as u16);
             }
         }
     }

@@ -605,6 +605,44 @@ fn a_playout_claim_past_the_measured_bound_buys_only_the_bound() {
     assert_eq!(high(&stats), 1, "a cap that cost nothing accuses nobody");
 }
 
+/// **A catch-up sprint is not a late ack.** After a stall the sim loop runs
+/// its backlog back to back (`net.rs`'s pacing), and the world tick outruns
+/// every client's acks with no round trip changing. For the second after,
+/// the round-trip bound and the favour cap allow the sprint
+/// (`ShardCore::note_pace_backlog`); then they lapse. Nobody is accused
+/// either way: one late datagram is not a persistent disagreement.
+#[test]
+fn a_catch_up_sprint_widens_the_round_trip_bound_for_a_second() {
+    let (mut core, stats) = shard();
+    // 20 ms: one tick of trip, plus the slack.
+    stats.slot_rtt_us.store(0, 20_000);
+    let bound = 1 + stats::RTT_AGE_SLACK_TICKS as u64;
+    let late = bound + 4;
+    assert_eq!(
+        measure_one(&mut core, &stats, 1, late),
+        bound,
+        "held to the trip"
+    );
+    core.note_pace_backlog(4);
+    let sum = favour_reading(&stats).1;
+    assert_eq!(
+        measure_one(&mut core, &stats, 2, late),
+        late,
+        "the sprint is owed"
+    );
+    assert_eq!(favour_reading(&stats).1 - sum, late + 5, "and paid in full");
+    for _ in 0..sim_core::limits::TICK_HZ {
+        tick(&mut core, &stats);
+    }
+    assert_eq!(
+        measure_one(&mut core, &stats, 3, late),
+        bound,
+        "then it lapses"
+    );
+    assert_eq!(ShardStats::get(&stats.favour_disagree), 0);
+    assert_eq!(ShardStats::get(&stats.favour_playout_high), 0);
+}
+
 /// **6b · A client that has never acked executes its frames and buys
 /// nothing.** The frame still runs — this is not a refusal — and the
 /// counters must show the granted set is empty rather than showing nothing

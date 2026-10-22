@@ -30,15 +30,32 @@ fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
 }
 
-/// A one-way pipe with a fixed delay, delivering in order.
+/// A one-way pipe delivering in order: a fixed delay, plus up to
+/// `jitter_ms` more per datagram (one due before the datagram queued ahead
+/// of it waits for that one, as a queue does).
 #[derive(Default)]
 struct Pipe {
     q: VecDeque<(f64, Lane, Vec<u8>)>,
+    jitter_ms: f64,
+    rng: u64,
 }
 
 impl Pipe {
+    fn jittery(jitter_ms: f64, seed: u64) -> Self {
+        Self {
+            jitter_ms,
+            rng: seed,
+            ..Self::default()
+        }
+    }
     fn send(&mut self, at: f64, lane: Lane, bytes: &[u8]) {
-        self.q.push_back((at, lane, bytes.to_vec()));
+        // xorshift64: the same jitter every run.
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        let u = (self.rng >> 11) as f64 / (1u64 << 53) as f64;
+        self.q
+            .push_back((at + u * self.jitter_ms, lane, bytes.to_vec()));
     }
     fn due(&mut self, now: f64) -> Vec<(Lane, Vec<u8>)> {
         let mut out = Vec::new();
@@ -58,6 +75,23 @@ struct Run {
     favours: Vec<u8>,
 }
 
+/// What the shooter's client does to its acks on the way out.
+#[derive(Clone, Copy)]
+enum Lie {
+    Honest,
+    /// Every datagram acks this many ticks further back than it applied.
+    Late(u16),
+    /// For the first second of every three, the ack held `lag` ticks and
+    /// then jumped to the newest: ages that saw-tooth under the round-trip
+    /// bound and read as jitter. For the other two, acking `lag` late, the
+    /// age held at the bound while the playout bound that jitter earned
+    /// decays. Every datagram reports `playout` ticks of playout.
+    FakeJitter {
+        lag: u16,
+        playout: u8,
+    },
+}
+
 /// Run the shooter (slot 0, a real `ClientCore`) and the runner (slot 1,
 /// raw frames with no acks, so it mints no favour of its own) for `secs`
 /// with `one_way_ms` of delay on both of the shooter's directions, the
@@ -70,12 +104,24 @@ fn run(one_way_ms: f64, secs: f64) -> Run {
 /// [`run`], with every datagram the shooter sends acking `lie` ticks
 /// further back than it had applied, and the round trip `measured` or not.
 fn run_with(one_way_ms: f64, secs: f64, lie: u16, measured: bool) -> Run {
+    let lie = if lie == 0 {
+        Lie::Honest
+    } else {
+        Lie::Late(lie)
+    };
+    run_link(one_way_ms, 0.0, secs, lie, measured)
+}
+
+/// The whole harness: `jitter_ms` more delay, at most, on each datagram
+/// each way, and the client's acks told `lie`.
+fn run_link(one_way_ms: f64, jitter_ms: f64, secs: f64, lie: Lie, measured: bool) -> Run {
     let stats = ShardStats::default();
     if measured {
-        // The pipe's round trip, and loopback's own fraction of a millisecond.
+        // The pipe's round trip, its mean jitter both ways (quinn's
+        // smoothed reading), and loopback's own fraction of a millisecond.
         stats
             .slot_rtt_us
-            .store(0, (2.0 * one_way_ms * 1000.0) as u64 + 100);
+            .store(0, ((2.0 * one_way_ms + jitter_ms) * 1000.0) as u64 + 100);
     }
     let mut core = Box::new(ShardCore::new(SEED));
     let p = core.world.spawn_pos(id_of(0));
@@ -85,8 +131,10 @@ fn run_with(one_way_ms: f64, secs: f64, lie: u16, measured: bool) -> Run {
     let mut shooter = ClientCore::new(SEED, id_of(0), 0);
     let runner = id_of(1);
 
-    let mut up = Pipe::default();
-    let mut down = Pipe::default();
+    let mut up = Pipe::jittery(jitter_ms, 0x9E37_79B9_7F4A_7C15);
+    let mut down = Pipe::jittery(jitter_ms, 0xD1B5_4A32_D192_ED03);
+    // A faked jitter's held ack and the tick it was taken at.
+    let mut held: Option<(u16, u64)> = None;
     let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
     // Where the runner stood at the end of each tick: `hist[T]` is the row
     // `World::tick` writes into the rewind ring for tick `T`.
@@ -122,9 +170,31 @@ fn run_with(one_way_ms: f64, secs: f64, lie: u16, measured: bool) -> Run {
         while next_tick <= now {
             for (_, b) in up.due(now) {
                 let mut dg = decode_input(&b).expect("valid");
-                // Acking late: the newest ack and its bits slid back.
-                dg.snapshot_ack = dg.snapshot_ack.wrapping_sub(lie);
-                dg.ack_bits >>= lie;
+                match lie {
+                    Lie::Honest => {}
+                    Lie::Late(lie) => {
+                        // Acking late: the newest ack and its bits slid back.
+                        dg.snapshot_ack = dg.snapshot_ack.wrapping_sub(lie);
+                        dg.ack_bits >>= lie;
+                    }
+                    Lie::FakeJitter { lag, playout } => {
+                        let t = core.world.tick;
+                        if t % 90 < 30 {
+                            match held {
+                                Some((ack, at)) if t < at + u64::from(lag) => {
+                                    dg.snapshot_ack = ack;
+                                    dg.ack_bits = 0;
+                                }
+                                _ => held = Some((dg.snapshot_ack, t)),
+                            }
+                        } else {
+                            dg.snapshot_ack = dg.snapshot_ack.wrapping_sub(lag);
+                            dg.ack_bits >>= lag;
+                            held = None;
+                        }
+                        dg.playout_ticks = playout;
+                    }
+                }
                 core.push_input(0, &dg);
             }
             runner_seq = runner_seq.wrapping_add(1);
@@ -289,4 +359,74 @@ fn acking_late_buys_no_more_rewind_than_the_round_trip_explains() {
         bounded <= honest + (server::stats::RTT_AGE_SLACK_TICKS + 1) as f64,
         "acking 10 ticks late on loopback still bought {bounded:.2} against {honest:.2}"
     );
+}
+
+/// A client that saw-tooths its acks under the round-trip bound reads as
+/// jitter, which raised its playout bound toward the rails' 8; holding its
+/// age at the bound and claiming that playout then stacked the two, most of
+/// `REWIND_MAX_TICKS` on loopback. Capped in total (`stats::favour_cap`),
+/// it buys no more than a client acking late at a constant offset and
+/// reporting the shipped delay.
+#[test]
+fn faking_jitter_buys_no_more_than_acking_late() {
+    use server::stats::{favour_cap, rtt_age_bound};
+    // Loopback: a frame acks the snapshot its own tick sent, so an ack
+    // `bound` ticks late sits exactly on the bound.
+    let bound = rtt_age_bound(100).expect("measured");
+    let liar = Lie::FakeJitter {
+        lag: bound,
+        playout: sim_core::limits::PLAYOUT_MAX_TICKS,
+    };
+    let honest = mean_favour(&run_link(0.0, 0.0, 6.0, Lie::Honest, true));
+    // The round trip unmeasured: no bound and no cap, which is everything
+    // this liar met before the cap (its ages never pass the bound).
+    let unbounded = run_link(0.0, 0.0, 6.0, liar, false);
+    let bounded = run_link(0.0, 0.0, 6.0, liar, true);
+    let cap = favour_cap(bound);
+    eprintln!(
+        "honest {honest:.2}, faked jitter unbounded {:.2}, bounded {:.2} (max {}), cap {cap}",
+        mean_favour(&unbounded),
+        mean_favour(&bounded),
+        bounded.favours.iter().max().expect("measured"),
+    );
+    assert!(
+        mean_favour(&unbounded) >= cap as f64 + 1.5,
+        "the sawtooth bought only {:.2} uncapped: the harness lies wrong",
+        mean_favour(&unbounded)
+    );
+    assert!(
+        bounded.favours.iter().all(|&f| f <= cap),
+        "faking jitter on loopback still bought past the cap of {cap}"
+    );
+}
+
+/// An honest client on a jittery link: its playout rises with the jitter
+/// and its acks swing about the smoothed round trip, and none of it may
+/// cost it rewind: the same link run with the round trip unmeasured (no
+/// bound, no cap) mints the same favour, frame for frame.
+#[test]
+fn an_honest_jittery_client_is_paid_in_full() {
+    for (one_way, jitter) in [(0.0, 60.0), (20.0, 150.0), (100.0, 100.0)] {
+        let bounded = run_link(one_way, jitter, 6.0, Lie::Honest, true);
+        let free = run_link(one_way, jitter, 6.0, Lie::Honest, false);
+        let m = mean(&bounded.errors);
+        let cut = bounded
+            .favours
+            .iter()
+            .zip(&free.favours)
+            .filter(|(b, f)| b < f)
+            .count();
+        eprintln!(
+            "one-way {one_way} ms, jitter {jitter} ms: n={} mean err {m:+.2}, mean favour \
+             {:.2} (unbounded {:.2}), cut {cut}",
+            bounded.errors.len(),
+            mean_favour(&bounded),
+            mean_favour(&free),
+        );
+        assert_eq!(bounded.favours.len(), free.favours.len());
+        assert_eq!(
+            cut, 0,
+            "{one_way} ms + {jitter} ms jitter: the bounds cut an honest client"
+        );
+    }
 }
