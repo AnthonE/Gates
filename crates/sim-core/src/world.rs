@@ -8026,6 +8026,7 @@ impl World {
     fn safe_zone(&mut self) {
         let town = self.haven.town;
         let sweep = self.tick.is_multiple_of(crate::limits::TICK_HZ as u64);
+        let armed = self.sentry_def.armed();
         let mut overslept = [false; MAX_PLAYERS];
         for (i, p) in self.players.iter_mut().enumerate() {
             if !p.active {
@@ -8045,11 +8046,15 @@ impl World {
             if p.safe && !p.dead && !p.sleeping {
                 p.gate_spawn = true;
             }
+            // And a hostile one at once while the guns are armed: the
+            // guns ignore a sleeper and restart their lock at each wake, so
+            // short reconnects burned the frozen hostility down unshot.
             overslept[i] = sweep
                 && p.safe
                 && p.sleeping
                 && !p.dead
-                && self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS;
+                && ((armed && p.hostile > 0)
+                    || self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS);
         }
         for (i, kill) in overslept.iter().enumerate() {
             if *kill {

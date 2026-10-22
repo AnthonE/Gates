@@ -539,11 +539,20 @@ const WORN_DRIP_PER_TICK: usize = 8;
 /// idle line: a row under it is the one a full standings table gives away.
 const EVICT_SETTLED_MINUTES: u32 = 10;
 
-/// How long a settled wallet's sleeper stays in the world under slot
+/// How long a guarded sleeper (a settled wallet's, or one holding gear or
+/// wounded, [`ShardCore::evict_victim`]) stays in the world under slot
 /// pressure: half an hour, long enough to cover the fight or the online raid
 /// a log-off would otherwise dodge. A join that finds only such bodies is
 /// refused (`REFUSE_FULL`), which is the full-shard answer.
 const EVICT_MIN_SLEEP_TICKS: u64 = 30 * 60 * sim_core::limits::TICK_HZ as u64;
+
+/// The most sleepers [`ShardCore::evict_victim`] holds back at once, newest
+/// first: a quarter of the world. Every Leave restamps a sleep, so without a
+/// cap alts reconnecting for a second every half hour (or an honest peak of
+/// fresh log-offs) held every body and a full shard refused every join,
+/// including players whose bodies were evicted earlier. With it a refusal
+/// needs three quarters of the bodies awake.
+const EVICT_MAX_HELD: usize = MAX_PLAYERS / 4;
 
 /// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
 /// `ShardStats::phase_hist` files them. The index is the histogram row.
@@ -720,6 +729,11 @@ type EvictRow = (PlayerKey, PlayerSave, u64);
 /// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
 /// allocates.
 ///
+/// Sized like the store (`MAX_SAVED_PLAYERS`), not like the world: when the
+/// store refuses an eviction record (a full table past its budget,
+/// `SaveStore::put_evicted`) this row is the victim's only copy until a
+/// restart, and a hundred throwaway evictions must not push it out.
+///
 /// The id the evicted body wore is not kept here: [`EvictIds`] has it.
 struct EvictMemo {
     entries: Box<[Option<EvictRow>]>,
@@ -731,7 +745,7 @@ struct EvictMemo {
 impl EvictMemo {
     fn new() -> Self {
         Self {
-            entries: vec![None; MAX_PLAYERS].into_boxed_slice(),
+            entries: vec![None; crate::store::MAX_SAVED_PLAYERS].into_boxed_slice(),
             next: 0,
         }
     }
@@ -905,14 +919,17 @@ impl EvictIds {
         kept
     }
 
-    /// Hand the file over again at the next save: the last write failed.
+    /// Hand the file over again at the next save: the last one was not
+    /// written (`WorldDone::side_lost`).
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
     /// The file for the store thread if a row moved since the last one
-    /// (`net.rs` take_world_save, on the world save's cadence). `None` with
-    /// no file or nothing new. The caller checks the ring for room first.
+    /// (`net.rs` take_world_save): it rides that world save and is written
+    /// only once the world has landed (`WorldMsg::side`); a save that did
+    /// not land hands it back with [`Self::mark_dirty`]. `None` with no
+    /// file or nothing new.
     pub fn take_write(&mut self) -> Option<crate::slot::FileMsg> {
         let path = self.file.clone()?;
         if !std::mem::take(&mut self.dirty) {
@@ -2553,33 +2570,72 @@ impl ShardCore {
     /// command stream (wall 5). Bodies this window already spoke for are
     /// skipped.
     ///
-    /// **Throwaways first, and a settled body is safe while its sleep is
+    /// **Throwaways first, and a guarded body is held while its sleep is
     /// young.** Longest-asleep alone let anyone evict any sleeper by churning
     /// guest joins: log off mid-fight or mid-raid, script a few hundred
     /// joins, and the body (gear and all) left the world within seconds, to
-    /// come back later where it lay. So a guest's body, or a wallet that has
-    /// not settled in ([`Self::settled`]), goes before anyone else's, and a
-    /// settled wallet's body only once it has slept
-    /// [`EVICT_MIN_SLEEP_TICKS`]. Longest-asleep within each, ties on slot.
-    /// `None` when every sleeper is protected: the join is refused
-    /// (`connect_as`), never seated over a body that must stay.
+    /// come back later where it lay (`JoinAs`, kit and all, hostility
+    /// pardoned). So a body is *guarded* when a wallet will come back for it
+    /// with something to keep: a settled wallet's ([`Self::settled`]), or any
+    /// wallet's that holds gear (`store::holds`), is wounded or is hostile.
+    /// Guests, spawn-kit wallets and corpses (whose gear is in their bag
+    /// already) go first. A guarded body is *held* (not evicted at all)
+    /// while hostile, else until it has slept [`EVICT_MIN_SLEEP_TICKS`], but
+    /// only the newest [`EVICT_MAX_HELD`] at once; the rest rank as guarded.
+    /// Longest-asleep within each, ties on slot. `None` when every sleeper
+    /// is held: the join is refused (`connect_as`), never seated over a body
+    /// that must stay.
+    ///
+    /// Bounded by `MAX_PLAYERS` squared on fixed arrays, run only by a join
+    /// that needs a slot, and allocation-free (`PlayerSave` is `Copy`).
     fn evict_victim(&self) -> Option<u32> {
         let now = self.world.tick;
-        let mut pick: Option<(bool, u64, usize)> = None;
-        for (i, p) in self.world.players.iter().enumerate() {
+        let players = &self.world.players;
+        // Per slot, a candidate's (guarded, held).
+        let mut tier = [None::<(bool, bool)>; MAX_PLAYERS];
+        for (i, p) in players.iter().enumerate() {
             if !p.active || !p.sleeping || self.spoken_for(p.id) {
                 continue;
             }
-            let settled = self.settled(self.sleepers.key_of(p.id).as_ref());
-            if settled && now.saturating_sub(p.slept_at) < EVICT_MIN_SLEEP_TICKS {
+            let key = self.sleepers.key_of(p.id);
+            // A corpse keeps its frozen hostility forever and has nothing
+            // a log-off could save: nobody's to guard.
+            let keyed = key.is_some() && !p.dead;
+            // Hostility is bounded: it runs down outside the zone, and the
+            // zone's sentries kill a hostile sleeper (`World::safe_zone`).
+            let hostile = keyed && p.hostile > 0;
+            let guarded = hostile
+                || keyed
+                    && (p.wounded
+                        || self.settled(key.as_ref())
+                        || self
+                            .world
+                            .save_of(p.id)
+                            .is_some_and(|s| crate::store::holds(&s)));
+            let held = hostile || guarded && now.saturating_sub(p.slept_at) < EVICT_MIN_SLEEP_TICKS;
+            tier[i] = Some((guarded, held));
+        }
+        let held = |j: usize| tier[j].is_some_and(|(_, h)| h);
+        let mut pick: Option<(bool, u64, usize)> = None;
+        for (i, t) in tier.iter().enumerate() {
+            let Some((guarded, _)) = *t else {
+                continue;
+            };
+            let at = (players[i].slept_at, i);
+            if held(i)
+                && (0..MAX_PLAYERS)
+                    .filter(|&j| held(j) && (players[j].slept_at, j) > at)
+                    .count()
+                    < EVICT_MAX_HELD
+            {
                 continue;
             }
-            let rank = (settled, p.slept_at, i);
+            let rank = (guarded, players[i].slept_at, i);
             if pick.is_none_or(|b| rank < b) {
                 pick = Some(rank);
             }
         }
-        pick.map(|(_, _, i)| self.world.players[i].id)
+        pick.map(|(_, _, i)| players[i].id)
     }
 
     /// Players with a live connection right now — the number the status
@@ -2756,8 +2812,8 @@ impl ShardCore {
         // applies them back to back and the join lands on the freed slot.
         let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
             // No victim: every slot holds an awake body, a sleeper this
-            // window already spoke for, or a settled player's body still
-            // inside its protected sleep (`evict_victim`). Refused, before
+            // window already spoke for, or one of the newest few guarded
+            // bodies still held (`evict_victim`). Refused, before
             // anything is spent: a join queued anyway would be refused
             // silently by the world, after this had used up the joiner's
             // eviction record and id row on a seat that never came. The
@@ -12088,16 +12144,20 @@ mod tests {
             hp: n as u16,
             ..PlayerSave::EMPTY
         };
+        // As many rows as the store: a hundred throwaway evictions (the
+        // world's worth) push nobody out.
+        let cap = crate::store::MAX_SAVED_PLAYERS;
         let mut memo = EvictMemo::new();
-        for n in 0..MAX_PLAYERS {
+        for n in 0..cap {
             memo.put(&key(n), save(n));
         }
-        memo.put(&key(3), save(1000));
-        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
-        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        memo.put(&key(3), save(10_000));
+        assert_eq!(memo.find(&key(3)), Some(save(10_000)), "re-filed in place");
+        assert_eq!(memo.find(&key(0)), Some(save(0)));
+        memo.put(&key(cap), save(cap));
         assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
         assert_eq!(memo.find(&key(1)), Some(save(1)));
-        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        assert_eq!(memo.find(&key(cap)), Some(save(cap)));
         memo.forget(&key(1));
         assert_eq!(memo.find(&key(1)), None);
     }

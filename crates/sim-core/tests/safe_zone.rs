@@ -232,12 +232,38 @@ fn the_sentries_shoot_a_hostile_player_in_the_zone() {
 /// **Logging off inside does not sleep hostility away.** A hostile player
 /// who ran into the zone and dropped before the sentries fired used to wake
 /// five minutes later protected: the guns ignore a sleeper and the timer
-/// ran on. A sleeper's timer in the zone waits for its owner, who wakes
-/// still hostile and meets the sentries.
+/// ran on. Freezing the timer was not enough, since each wake restarted
+/// the guns' lock and short reconnects burned it down unshot. So with the
+/// guns armed a hostile sleeper in the zone dies at the next once-a-second
+/// sweep, to the sentries.
 #[test]
-fn a_hostile_sleeper_in_the_zone_wakes_still_hostile() {
+fn a_hostile_sleeper_in_the_zone_is_killed_by_the_sentries() {
     let (mut w, slot) = in_town(0.0, -24.0);
     w.sentry_def = sentry_def();
+    w.players[slot].hostile = HOSTILE_TICKS;
+    w.tick(&[Command::Leave { id: ME }]);
+    assert!(w.players[slot].sleeping && w.players[slot].safe);
+    for _ in 0..TICK_HZ {
+        if w.players[slot].dead {
+            break;
+        }
+        w.tick(&[]);
+    }
+    let p = &w.players[slot];
+    assert!(p.dead, "a hostile sleeper outlived a sweep in the zone");
+    assert_eq!(p.death_cause, DEATH_BY_MOB);
+    assert!(
+        mob::slot_of_id(p.death_by).is_some_and(sim_core::sentry::is_sentry_slot),
+        "killed by {:#x}, not a sentry",
+        p.death_by
+    );
+}
+
+/// With the guns unarmed the zone kills no hostile sleeper early, and its
+/// timer still waits for the owner, who wakes hostile.
+#[test]
+fn unarmed_a_hostile_sleeper_in_the_zone_wakes_still_hostile() {
+    let (mut w, slot) = in_town(0.0, -24.0);
     w.players[slot].hostile = HOSTILE_TICKS;
     w.tick(&[Command::Leave { id: ME }]);
     assert!(w.players[slot].sleeping && w.players[slot].safe);
@@ -246,7 +272,7 @@ fn a_hostile_sleeper_in_the_zone_wakes_still_hostile() {
         w.tick(&[]);
     }
     assert_eq!(w.players[slot].hostile, held, "the timer ran down asleep");
-    assert!(!w.players[slot].dead, "the sentries shot a sleeper");
+    assert!(!w.players[slot].dead, "killed early with the guns unarmed");
     const BACK: u32 = ME + 1;
     w.tick(&[Command::Wake {
         id: BACK,
@@ -254,19 +280,6 @@ fn a_hostile_sleeper_in_the_zone_wakes_still_hostile() {
     }]);
     assert_eq!(w.players[slot].id, BACK);
     assert!(w.players[slot].hostile > 0, "woke forgiven");
-    for _ in 0..(10 * TICK_HZ) {
-        w.tick(&[]);
-        if w.players[slot].dead {
-            break;
-        }
-    }
-    let p = &w.players[slot];
-    assert!(p.dead, "a hostile player woke in the zone and lived");
-    assert!(
-        mob::slot_of_id(p.death_by).is_some_and(sim_core::sentry::is_sentry_slot),
-        "killed by {:#x}, not a sentry",
-        p.death_by
-    );
 }
 
 #[test]
