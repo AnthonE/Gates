@@ -304,13 +304,22 @@ pub struct ClientNetState {
     /// broadcast passes unfiltered for that window, which is one tick.
     pub piece_anchor_valid: bool,
     /// The 48 m tiles this connection **may hold** a piece or deployable in:
-    /// a bit is set wherever a record is sent to it (the piece and deploy
-    /// walks, the placement events) and cleared only by a fresh connection,
-    /// never by `ev_resync` — a superset costs a no-op removal, a subset a
+    /// a bit is set wherever its anchor sends it a record (the piece and
+    /// deploy walks, the placement events; an owner's own deployables far
+    /// off mark nothing and their removals reach it by id). Cleared only
+    /// where both walks restart with a reset batch, which empties the
+    /// client's piece and deployable mirrors (a fresh connection,
+    /// `ev_resync`): until then a superset costs a no-op removal, a subset a
     /// wall that stands forever. A removal goes only to the tiles that may
     /// hold what it removes (`ShardCore::route_events`), so a raid or a
     /// decay sweep 500 m off is not a radar.
     pub held_tiles: [u64; HELD_TILE_WORDS],
+    /// Bumped wherever `held_tiles` is cleared. A spectator seat hears
+    /// removals only through its target's map, so a seat whose target's
+    /// map was forgotten re-walks from a reset too (`ShardCore::arm_walks`).
+    pub held_epoch: u32,
+    /// A seat's: the target `held_epoch` its walks last restarted at.
+    pub seen_held_epoch: u32,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
     /// Placed-deployable walk: entries **still owed**, the piece walk's
@@ -582,6 +591,8 @@ impl ClientNetState {
             piece_anchor_cm: (0, 0),
             piece_anchor_valid: false,
             held_tiles: [0; HELD_TILE_WORDS],
+            held_epoch: 0,
+            seen_held_epoch: 0,
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
@@ -670,6 +681,10 @@ impl ClientNetState {
         self.piece_defs_cursor = 0;
         self.piece_sync_cursor = 0;
         self.piece_sync_reset = true;
+        // Both walks below restart with a reset batch, and the client
+        // empties its piece and deployable mirrors on it: what it may hold
+        // is what the walks and placements tell it from here.
+        self.forget_held();
         // The anchor is dropped with the walk it aimed: a resync re-arms
         // from where the player is *now*, which is the only position the
         // batch it is about to send can honestly claim to cover.
@@ -763,9 +778,19 @@ impl ClientNetState {
     /// Arm the slot for a fresh connection. Everything netcode resets; the
     /// world-side join is the caller's command.
     pub fn reset(&mut self, id: u32) {
+        // The map is forgotten here too: the epoch carries across, so a
+        // seat still watching this id hears it (`held_epoch`).
+        let epoch = self.held_epoch.wrapping_add(1);
         *self = Self::new();
+        self.held_epoch = epoch;
         self.connected = true;
         self.id = id;
+    }
+
+    /// Empty `held_tiles`, telling the seats (`held_epoch`).
+    fn forget_held(&mut self) {
+        self.held_tiles = [0; HELD_TILE_WORDS];
+        self.held_epoch = self.held_epoch.wrapping_add(1);
     }
 
     /// `held_tiles`' bit for build cell `(cx, cz)`, clamped onto the map.
