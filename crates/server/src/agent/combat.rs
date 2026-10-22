@@ -82,6 +82,12 @@ pub const LOST_TICKS: u32 = 3 * TICK_HZ;
 pub const CALM_TICKS: u32 = 6 * TICK_HZ;
 /// A blow, swing or shot this recent is an attack under way.
 pub const ALARM_TICKS: u32 = 3 * TICK_HZ;
+/// An animal I swung or fired at within this long that leaves the snapshot
+/// this near, having stood in sight, fell (`Foe::seen`): an arrow's flight
+/// and the snapshot's delay both fit, and one that walks out of the
+/// snapshot's reach is far further off.
+const VANISHED_KILL_TICKS: u32 = 2 * TICK_HZ;
+const VANISHED_KILL_M: f32 = 60.0;
 /// A blow's author is looked for within this far past their reach: the
 /// ground a body covers while the eyes come round and find it.
 pub const ATTACKER_SLACK_M: f32 = 6.0;
@@ -349,7 +355,7 @@ pub struct Retreat {
 }
 
 /// The one body a fight is with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Foe {
     pub id: u32,
     pub since: u32,
@@ -363,6 +369,11 @@ pub struct Foe {
     /// My hit markers on an animal when this fight began: it heals
     /// between fights, so only what landed since counts against it.
     pub dealt_from: Option<u32>,
+    /// Where it last stood in sight, and when I last swung or fired at it:
+    /// an animal that drops out of the snapshot right after, near and in
+    /// plain sight, fell (`VANISHED_KILL_TICKS`).
+    pub seen: Option<[f32; 3]>,
+    pub fired_at: Option<u32>,
 }
 
 /// Shot at by a body not yet seen: when it was heard, which way the
@@ -868,6 +879,8 @@ impl Combat {
                     .map(|(at, _)| at),
                 commanded,
                 dealt_from: None,
+                seen: None,
+                fired_at: None,
             });
             self.stuck = None;
         }
@@ -1450,8 +1463,25 @@ impl Combat {
         };
         let me = pos(body);
         let Some(mut t) = tracks.get(foe.id).copied() else {
+            // Gone from the snapshot the moment after my round landed, in
+            // sight and near: it fell, and its carcass took it out of the
+            // snapshot. The markers cannot say so when the hurt began in an
+            // earlier fight it had no time to heal from (`Foe::dealt_from`).
+            let fell = foe.seen.filter(|at| {
+                Species::of(foe.id) != Species::Player
+                    && flat(me, *at) <= VANISHED_KILL_M
+                    && foe
+                        .fired_at
+                        .is_some_and(|f| tick.wrapping_sub(f) <= VANISHED_KILL_TICKS)
+            });
+            if let Some(at) = fell {
+                return self.fell(core, body, tracks, route, kit, at, false, tick);
+            }
             return self.over(None, End::Parted);
         };
+        if t.visible {
+            foe.seen = Some(t.pos);
+        }
         if t.species != Species::Player {
             // An animal hurt in an earlier fight has healed since: only
             // my markers from this one say how much it has left.
@@ -1466,20 +1496,8 @@ impl Combat {
             Species::Wolf => u32::from(kit.book.wolf().hp),
         };
         if t.dead || t.dealt >= beast_hp.max(1) {
-            self.spoils = Some(Spoils {
-                at: [t.pos[0], t.pos[2]],
-                since: tick,
-                bag: true,
-                sent: None,
-                skip: None,
-                picks: 0,
-                pack: t.species == Species::Player,
-            });
-            self.mode = Mode::Loot;
-            self.foe = None;
-            self.stuck = None;
-            self.draw = None;
-            return self.loot(core, body, tracks, route, kit, tick);
+            let pack = t.species == Species::Player;
+            return self.fell(core, body, tracks, route, kit, t.pos, pack, tick);
         }
         let away = yaw_toward(me[0] - t.pos[0], me[2] - t.pos[2]);
         let lost = !t.visible && tick.wrapping_sub(t.last_seen) >= LOST_TICKS;
@@ -1547,6 +1565,11 @@ impl Combat {
             }
             Arm::Ranged => self.shoot(core, body, here, route, &t, &odds, kit, tick),
         };
+        if intent.buttons & BTN_PRIMARY != 0 {
+            if let Some(f) = self.foe.as_mut() {
+                f.fired_at = Some(tick);
+            }
+        }
         if self
             .stuck
             .is_some_and(|(since, _)| tick.wrapping_sub(since) >= UNREACHABLE_TICKS)
@@ -1557,6 +1580,35 @@ impl Combat {
             return self.over(Some(away), End::Parted);
         }
         Assess::Fight(intent)
+    }
+
+    /// The foe fell at `at`: on to its bag (a player's pack when `pack`).
+    #[allow(clippy::too_many_arguments)]
+    fn fell(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        tracks: &Tracks,
+        route: &mut Route,
+        kit: &Kit,
+        at: [f32; 3],
+        pack: bool,
+        tick: u32,
+    ) -> Assess {
+        self.spoils = Some(Spoils {
+            at: [at[0], at[2]],
+            since: tick,
+            bag: true,
+            sent: None,
+            skip: None,
+            picks: 0,
+            pack,
+        });
+        self.mode = Mode::Loot;
+        self.foe = None;
+        self.stuck = None;
+        self.draw = None;
+        self.loot(core, body, tracks, route, kit, tick)
     }
 
     /// Trying to close on the foe from `d`: the clock on an unreachable foe
@@ -1783,6 +1835,13 @@ impl Combat {
         let travel = (vx != 0.0 || vz != 0.0).then(|| yaw_toward(vx, vz));
         if radial < 0.0 && r.draw_ticks == 0 {
             buttons |= BTN_SPRINT;
+        }
+        // A gun is fired down its sights unless the legs are running (an
+        // aim walks): the hip adds its whole cone to the aim's
+        // (`combat::GunDef::cone`), the revolver's 2° on a 0.75°, and from
+        // the hip half a cylinder missed a pig at twelve metres.
+        if r.hitscan && buttons & BTN_SPRINT == 0 {
+            buttons |= BTN_AIM;
         }
         Intent {
             travel,
