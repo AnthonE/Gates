@@ -55,6 +55,7 @@ pub fn surface(mat: KitMat, index: usize) -> (Surface, [f32; 3]) {
         KitMat::Gilt => (Surface::Gilt, [1.0; 3]),
         KitMat::Canvas => (Surface::Canvas, [0.78, 0.66, 0.48]),
         KitMat::Lapis => (Surface::Lapis, [1.0; 3]),
+        KitMat::Sandstone => (Surface::Ashlar, [0.86, 0.70, 0.52]),
     }
 }
 

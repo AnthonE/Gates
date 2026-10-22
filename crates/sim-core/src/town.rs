@@ -1,6 +1,7 @@
-//! The town — "THE GATE" on the map: the island's safe hub, a walled scrap
-//! town of stacked containers and sheet metal built around a ruined ancient
-//! gate (WORLD.md §0/§3), in the central plain.
+//! The town — "THE GATE" on the map: the island's safe hub, a scrap town of
+//! sheet metal and tarps camped inside an ancient city's walls of giant
+//! sandstone blocks, round its ruined gate (WORLD.md §0/§3), in the central
+//! plain.
 //!
 //! Rust's Outpost is the reference for what it holds (Workbench 1, a research
 //! table, recyclers, vendors; `reference` research 2026-09-30): the public
@@ -85,15 +86,15 @@ const F: f32 = -2.0; // footing below the floor
 pub const PARTS: &[KitPart] = &[
     // The yard.
     part([-42.0, -0.3, -42.0, 42.0, 0.0, 42.0], M::Yard),
-    // Container walls, two high, broken by four gates.
-    part_f([-42.0, F, 39.6, -5.0, W, 42.0], M::Cargo, STACK),
-    part_f([5.0, F, 39.6, 42.0, W, 42.0], M::Cargo, STACK),
-    part_f([-42.0, F, -42.0, -5.0, W, -39.6], M::Cargo, STACK),
-    part_f([5.0, F, -42.0, 42.0, W, -39.6], M::Cargo, STACK),
-    part_f([-42.0, F, 4.0, -39.6, W, 39.6], M::Cargo, STACK),
-    part_f([-42.0, F, -39.6, -39.6, W, -4.0], M::Cargo, STACK),
-    part_f([39.6, F, 4.0, 42.0, W, 39.6], M::Cargo, STACK),
-    part_f([39.6, F, -39.6, 42.0, W, -4.0], M::Cargo, STACK),
+    // The ancient walls, two courses of giant blocks, broken by four gates.
+    part_f([-42.0, F, 39.6, -5.0, W, 42.0], M::Sandstone, STACK),
+    part_f([5.0, F, 39.6, 42.0, W, 42.0], M::Sandstone, STACK),
+    part_f([-42.0, F, -42.0, -5.0, W, -39.6], M::Sandstone, STACK),
+    part_f([5.0, F, -42.0, 42.0, W, -39.6], M::Sandstone, STACK),
+    part_f([-42.0, F, 4.0, -39.6, W, 39.6], M::Sandstone, STACK),
+    part_f([-42.0, F, -39.6, -39.6, W, -4.0], M::Sandstone, STACK),
+    part_f([39.6, F, 4.0, 42.0, W, 39.6], M::Sandstone, STACK),
+    part_f([39.6, F, -39.6, 42.0, W, -4.0], M::Sandstone, STACK),
     // Gate posts and the sign beams.
     part([-6.0, F, 39.2, -5.0, 7.4, 42.4], M::Steel),
     part([5.0, F, 39.2, 6.0, 7.4, 42.4], M::Steel),
@@ -108,10 +109,10 @@ pub const PARTS: &[KitPart] = &[
     part([-42.4, F, 4.0, -39.2, 7.4, 5.0], M::Steel),
     part([-41.4, 6.2, -5.0, -40.2, 7.4, 5.0], M::Steel),
     // The gate: a dais either side of the street, two pylons, gilt caps.
-    part([-14.0, 0.0, -6.0, -5.5, 0.5, 6.0], M::Obsidian),
-    part([5.5, 0.0, -6.0, 14.0, 0.5, 6.0], M::Obsidian),
-    part([-11.0, F, -2.0, -8.0, 30.0, 2.0], M::Obsidian),
-    part([8.0, F, -2.0, 11.0, 30.0, 2.0], M::Obsidian),
+    part([-14.0, 0.0, -6.0, -5.5, 0.5, 6.0], M::Sandstone),
+    part([5.5, 0.0, -6.0, 14.0, 0.5, 6.0], M::Sandstone),
+    part([-11.0, F, -2.0, -8.0, 30.0, 2.0], M::Sandstone),
+    part([8.0, F, -2.0, 11.0, 30.0, 2.0], M::Sandstone),
     part([-11.4, 30.0, -2.4, -7.6, 31.0, 2.4], M::Gilt),
     part([7.6, 30.0, -2.4, 11.4, 31.0, 2.4], M::Gilt),
     // The broken ring between the pylons — drawn, never collided: segments
@@ -127,29 +128,29 @@ pub const PARTS: &[KitPart] = &[
     part_f([5.38, 13.0, -0.6, 7.78, 15.4, 0.6], M::Gilt, DECOR),
     // Fallen ring fragments and pylon blocks in the plaza.
     part([16.0, -1.0, -12.0, 22.0, 1.8, -7.0], M::Gilt),
-    part([-22.0, -1.0, -10.0, -16.0, 2.2, -6.0], M::Obsidian),
-    part([12.0, -1.0, 8.0, 16.0, 1.2, 10.5], M::Obsidian),
-    // Market: six container kiosks opening on the street, a vending machine
+    part([-22.0, -1.0, -10.0, -16.0, 2.2, -6.0], M::Sandstone),
+    part([12.0, -1.0, 8.0, 16.0, 1.2, 10.5], M::Sandstone),
+    // Market: six stone stalls opening on the street, a vending machine
     // against each ([`MACHINES`]).
-    part([-8.44, 0.0, 11.0, -6.0, 2.6, 17.1], M::Cargo),
-    part([-8.44, 0.0, 19.0, -6.0, 2.6, 25.1], M::Cargo),
-    part([-8.44, 0.0, 27.0, -6.0, 2.6, 33.1], M::Cargo),
-    part([6.0, 0.0, 11.0, 8.44, 2.6, 17.1], M::Cargo),
-    part([6.0, 0.0, 19.0, 8.44, 2.6, 25.1], M::Cargo),
-    part([6.0, 0.0, 27.0, 8.44, 2.6, 33.1], M::Cargo),
+    part([-8.44, 0.0, 11.0, -6.0, 2.6, 17.1], M::Sandstone),
+    part([-8.44, 0.0, 19.0, -6.0, 2.6, 25.1], M::Sandstone),
+    part([-8.44, 0.0, 27.0, -6.0, 2.6, 33.1], M::Sandstone),
+    part([6.0, 0.0, 11.0, 8.44, 2.6, 17.1], M::Sandstone),
+    part([6.0, 0.0, 19.0, 8.44, 2.6, 25.1], M::Sandstone),
+    part([6.0, 0.0, 27.0, 8.44, 2.6, 33.1], M::Sandstone),
     part_f([-8.6, 2.7, 11.0, -4.2, 2.9, 17.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 19.0, -4.2, 2.9, 25.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 27.0, -4.2, 2.9, 33.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 11.0, 8.6, 2.9, 17.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 19.0, 8.6, 2.9, 25.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 27.0, 8.6, 2.9, 33.1], M::Canvas, DECOR | ROOF),
-    // Container stacks behind the market.
-    part([-24.0, 0.0, 20.0, -17.9, 2.6, 22.44], M::Cargo),
-    part([-24.0, 2.6, 20.0, -17.9, 5.2, 22.44], M::Cargo),
-    part([-30.0, 0.0, 30.0, -27.56, 2.6, 36.1], M::Cargo),
-    part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Cargo),
-    part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Cargo),
-    part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Cargo),
+    // Fallen wall blocks behind the market.
+    part([-24.0, 0.0, 20.0, -17.9, 2.6, 22.44], M::Sandstone),
+    part([-24.0, 2.6, 20.0, -17.9, 5.2, 22.44], M::Sandstone),
+    part([-30.0, 0.0, 30.0, -27.56, 2.6, 36.1], M::Sandstone),
+    part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Sandstone),
+    part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Sandstone),
+    part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Sandstone),
     // Workshop (SW): a roof on posts over the public stations. No plinths:
     // a station stands on the bare floor, and a plinth half buried it.
     part_f([-34.0, 3.5, -34.0, -16.0, 3.8, -18.0], M::Sheet, ROOF),
@@ -159,10 +160,10 @@ pub const PARTS: &[KitPart] = &[
     part([-16.3, 0.0, -18.3, -16.0, 3.5, -18.0], M::Steel),
     part([-25.15, 0.0, -34.0, -24.85, 3.5, -33.7], M::Steel),
     part([-25.15, 0.0, -18.3, -24.85, 3.5, -18.0], M::Steel),
-    // Canteen (SE): a container bar, tables, and a tarp over the tables on
+    // Canteen (SE): a stone bar, tables, and a tarp over the tables on
     // poles through them (`POLES`).
-    part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Cargo),
-    part([28.0, 0.0, -34.0, 34.1, 2.6, -31.56], M::Cargo),
+    part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Sandstone),
+    part([28.0, 0.0, -34.0, 34.1, 2.6, -31.56], M::Sandstone),
     part([20.0, 0.0, -25.0, 22.0, 0.8, -23.0], M::Timber),
     part([26.0, 0.0, -25.0, 28.0, 0.8, -23.0], M::Timber),
     part([20.0, 0.0, -20.0, 22.0, 0.8, -18.0], M::Timber),

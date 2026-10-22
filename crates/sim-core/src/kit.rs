@@ -22,7 +22,7 @@ pub enum KitMat {
     Cargo = 3,
     Timber = 4,
     Steel = 5,
-    /// Dark ancient stone (the gate's pylons, the ziggurat).
+    /// Dark ancient stone (the ziggurat).
     Obsidian = 6,
     /// Tarnished gold trim; metallic.
     Gilt = 7,
@@ -30,6 +30,9 @@ pub enum KitMat {
     Canvas = 8,
     /// Glowing conduits (the ziggurat's lapis lines).
     Lapis = 9,
+    /// The ancient city's warm stone: THE GATE's walls, stalls, gate and
+    /// fallen blocks, dressed as giant coursed blocks.
+    Sandstone = 10,
 }
 
 impl KitMat {
@@ -46,6 +49,7 @@ impl KitMat {
             KitMat::Gilt => "gilt",
             KitMat::Canvas => "canvas",
             KitMat::Lapis => "lapis",
+            KitMat::Sandstone => "sandstone",
         }
     }
 }

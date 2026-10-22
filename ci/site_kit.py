@@ -41,7 +41,7 @@ ROLES = ("yard", "concrete", "sheet", "cargo", "timber", "steel", "obsidian",
          "gilt", "canvas", "lapis", "bulb", "ashlar", "leaf", "paint", "ivy")
 # A landmark kit's boxes also name the old masonry and natural rock; neither
 # is a mesh role (`stone` dresses to `ashlar`, `rock` is the client's).
-KIT_MATS = ROLES + ("stone", "rock")
+KIT_MATS = ROLES + ("stone", "rock", "sandstone")
 # Roles whose pieces each take their own patch of the photograph, so a wall
 # reads as many stones and a deck as many boards rather than one sheet.
 PATCHED = ("ashlar", "timber")
