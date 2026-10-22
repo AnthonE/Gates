@@ -226,6 +226,9 @@ pub struct ClientNetState {
     /// plus the band, every datagram since; `None` while they sit inside.
     /// Only a run of `FAVOUR_DISAGREE_PERSIST_TICKS` is counted.
     over_band_since: Option<u64>,
+    /// The view the last datagram was held to that bound at. The same view
+    /// again means no newer snapshot reached the client since.
+    bounded_view: Option<u16>,
     /// The bound in force: the most playout favour is priced at. Never
     /// below `INTERP_DELAY_TICKS`, the delay every client starts at and
     /// every agent reports, so neither is ever capped. Not sim state:
@@ -562,6 +565,7 @@ impl ClientNetState {
             playout_peak: (0, 0),
             transport_rtt_us: 0,
             over_band_since: None,
+            bounded_view: None,
             playout_cap: INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
@@ -886,9 +890,14 @@ impl ClientNetState {
     /// The excess is clamped from the first datagram, but counted as a
     /// disagreement only once every datagram has sat past the band for
     /// `FAVOUR_DISAGREE_PERSIST_TICKS`: one late frame or a jitter spike
-    /// is not an accusation. An age past `AIM_STALE_CEILING_TICKS` (or a
-    /// view from the future) is left for `favour_for` to refuse outright:
-    /// clamping it would turn a refused ack into a paid one.
+    /// is not an accusation. Nor is an ack that has stopped moving: no newer
+    /// snapshot reached the client, a stalled downlink or a roam whose lost
+    /// packets quinn's round trip never samples, so such a datagram neither
+    /// starts nor counts a run. It holds one already going, so a freeze
+    /// that jumps to a still-late ack is counted on the jump. An age past
+    /// `AIM_STALE_CEILING_TICKS` (or a view from the future) is left for
+    /// `favour_for` to refuse outright: clamping it would turn a refused
+    /// ack into a paid one.
     pub fn rtt_bounded_view(&mut self, now: u16, view: u16, tick: u64, extra: u16) -> u16 {
         let Some(bound) = self.age_bound(extra) else {
             return view;
@@ -897,9 +906,10 @@ impl ClientNetState {
         if age > AIM_STALE_CEILING_TICKS {
             return view;
         }
+        let moved = self.bounded_view.replace(view) != Some(view);
         if age <= bound + FAVOUR_DISAGREE_BAND_TICKS {
             self.over_band_since = None;
-        } else {
+        } else if moved {
             let since = *self.over_band_since.get_or_insert(tick);
             if tick.saturating_sub(since) >= FAVOUR_DISAGREE_PERSIST_TICKS {
                 self.note_ack_regression();
@@ -1643,11 +1653,13 @@ mod tests {
         // One honest datagram, and the run starts again.
         assert_eq!(c.rtt_bounded_view(2000, 2000 - 2, p, 0), 2000 - 2);
         for t in p + 1..2 * p + 1 {
-            c.rtt_bounded_view(2000, 2000 - late, t, 0);
+            let now = 2000 + t as u16;
+            c.rtt_bounded_view(now, now - late, t, 0);
         }
         assert_eq!(c.ack_regressions, 0, "the honest datagram reset the run");
-        c.rtt_bounded_view(2000, 2000 - late, 2 * p + 1, 0);
-        c.rtt_bounded_view(2000, 2000 - late, 2 * p + 1, 0);
+        let now = 2000 + (2 * p + 1) as u16;
+        c.rtt_bounded_view(now, now - late - 2, 2 * p + 1, 0);
+        c.rtt_bounded_view(now, now - late, 2 * p + 1, 0);
         assert_eq!(c.ack_regressions, 2, "every datagram once it persists");
         // Within the band of the bound: clamped, never accused.
         c.over_band_since = None;
@@ -1656,6 +1668,43 @@ mod tests {
             assert_eq!(v, 2000 - bound);
         }
         assert_eq!(c.ack_regressions, 2);
+    }
+
+    /// An ack that stops moving is a downlink that stopped delivering, which
+    /// quinn's round trip cannot see: clamped like any late ack, never
+    /// counted, however long it lasts. A run already going keeps its start,
+    /// so a freeze that jumps to a still-late ack is counted on the jump.
+    #[test]
+    fn a_frozen_ack_is_clamped_but_not_counted() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        let late = bound + FAVOUR_DISAGREE_BAND_TICKS + 1;
+        let p = FAVOUR_DISAGREE_PERSIST_TICKS;
+        // A fresh ack, then two seconds frozen on it, ageing past the band.
+        let frozen = 1000u16;
+        assert_eq!(c.rtt_bounded_view(frozen + 2, frozen, 0, 0), frozen);
+        for t in 1..2 * p {
+            let now = frozen + late + t as u16;
+            assert_eq!(c.rtt_bounded_view(now, frozen, t, 0), now - bound);
+        }
+        assert_eq!(c.ack_regressions, 0, "a stalled downlink was accused");
+        // Late acks that move, for a third of a second, then a freeze long
+        // enough to persist, then a jump that is still late: the jump counts.
+        let start = 2 * p;
+        for t in start..start + 10 {
+            let now = 2000 + t as u16;
+            c.rtt_bounded_view(now, now - late, t, 0);
+        }
+        let held = 2000 + (start + 9) as u16 - late;
+        for t in start + 10..start + p {
+            c.rtt_bounded_view(2000 + t as u16, held, t, 0);
+        }
+        assert_eq!(c.ack_regressions, 0);
+        let now = 2000 + (start + p) as u16;
+        c.rtt_bounded_view(now, now - late, start + p, 0);
+        assert_eq!(c.ack_regressions, 1, "the freeze hid a persistent late ack");
     }
 
     /// A starved tick earns its catch-up only when the body stood still on

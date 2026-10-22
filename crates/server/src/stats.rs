@@ -133,13 +133,22 @@ pub fn rtt_age_bound(rtt_us: u32) -> Option<u16> {
 /// this cap on loopback (`tests/lagcomp_e2e.rs`). An honest jittery client
 /// does not stack them: a snapshot that lands late makes its ack older and
 /// the distance it draws behind that ack shorter by as much, and its age
-/// sits under the slack. Measured on links of up to 150 ms of jitter, the
-/// cap never cut one.
+/// sits under the slack. Measured there on links short enough that this
+/// cap sits under `REWIND_MAX_TICKS`: up to 100 ms of jitter it cut no
+/// honest frame; at 140–160 ms the round trip's tail outruns the slack and
+/// it takes one tick off a few frames ([`FAVOUR_CAP_BAND_TICKS`]).
 pub fn favour_cap(age_bound: u16) -> u8 {
     let cap = age_bound + u16::from(INTERP_DELAY_TICKS) + SNAPSHOT_POSE_LAG_TICKS
         - u16::from(REWIND_ACK_BIAS_TICKS);
     cap.min(u16::from(REWIND_MAX_TICKS)) as u8
 }
+
+/// Ticks a favour may run past [`favour_cap`] and be cut without being
+/// counted (`favour_playout_high`). A jittery honest link's tail runs one
+/// past it: the round trip's spread outruns [`RTT_AGE_SLACK_TICKS`], so a
+/// few of its frames lose that tick. A client stacking a faked playout on
+/// its age runs two to four past. Only the count moves; the cut does not.
+pub const FAVOUR_CAP_BAND_TICKS: u8 = 1;
 
 /// Each player slot's transport round trip, µs: quinn's smoothed RTT,
 /// stored by the connection's writer task on every wake (`net.rs`) and read
@@ -1079,9 +1088,9 @@ pub struct ShardStats {
     /// Frames whose minted favour was lowered by the playout bound: the
     /// reported playout (wire v61) sat above what this connection's own ack
     /// history supports (`ClientNetState::playout_cap`), or the whole
-    /// favour above what its round trip explains ([`favour_cap`]), and the
-    /// cap cost it rewind. A client asking to be rewound further than its
-    /// link explains.
+    /// favour more than [`FAVOUR_CAP_BAND_TICKS`] above what its round trip
+    /// explains ([`favour_cap`]), and the cap cost it rewind. A client
+    /// asking to be rewound further than its link explains.
     pub favour_playout_high: AtomicU64,
 }
 

@@ -67,11 +67,16 @@ const ALERTS_SHOWN: usize = 20;
 const CHALLENGE_SECS: u64 = 300;
 /// Nonces signed in with and not yet expired, kept so none is used twice.
 const USED_KEPT: usize = 65536;
-/// Of those, one wallet's. Only a wallet with a body on the island spends a
-/// nonce, so this bounds the table by the island: one wallet signing every
-/// challenge it can fetch is told to wait (429) rather than filling it and
-/// locking everyone else out. Never evicted early instead: a nonce pushed
-/// out of `used` is a signed login anyone who saw it could replay.
+/// Of those, one wallet's: one wallet signing every challenge it can fetch
+/// is told to wait (429) rather than filling the table and locking everyone
+/// else out. Only a wallet with a body on the island spends a nonce, but a
+/// nonce outlives the body, so wallets cycled through the island could
+/// still fill it. Full, it drops the nonces of wallets no longer on the
+/// island (`Web::login`): they cannot sign in, and one could be replayed
+/// only by its signer's own body back within its minutes. What stays is the
+/// island's, which the assert keeps under the table. Never evicted
+/// otherwise: a nonce pushed out of `used` is a signed login anyone who saw
+/// it could replay.
 const USED_PER_WALLET: usize = 32;
 const _: () = assert!(sim_core::limits::MAX_PLAYERS * USED_PER_WALLET < USED_KEPT);
 /// Signed-in sessions, all wallets and one wallet's, and how long one lasts.
@@ -490,6 +495,18 @@ impl Web {
         self.used.retain(|_, (until, _)| *until > now);
         if self.used.contains_key(&nonce) {
             return Response::error(401, "challenge already used");
+        }
+        if self.used.len() >= USED_KEPT {
+            // Wallets cycled through the island's bodies: their nonces go
+            // (`USED_PER_WALLET`), and the island's own always fit.
+            let here: std::collections::BTreeSet<&str> = self
+                .snap
+                .people
+                .iter()
+                .map(|p| p.wallet.as_str())
+                .filter(|w| !w.is_empty())
+                .collect();
+            self.used.retain(|_, (_, w)| here.contains(w.as_str()));
         }
         if self.used.len() >= USED_KEPT {
             return Response::error(503, "busy");
@@ -1062,6 +1079,44 @@ mod tests {
             w.handle(&post("/api/login", None, refused), later).status,
             200
         );
+    }
+
+    /// A nonce outlives its body, so wallets cycled through the island's
+    /// bodies can fill the replay table under `USED_PER_WALLET` each. Full,
+    /// it drops the nonces of wallets gone from the island and the island
+    /// still signs in; the island's own are kept, and a table they alone
+    /// filled (more than the assert lets them hold) is still busy.
+    #[test]
+    fn wallets_gone_from_the_island_give_their_room_back() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
+        let until = 1000 + CHALLENGE_SECS + 5;
+        let nonce = |i: usize| {
+            let mut n = [0u8; NONCE_BYTES];
+            n[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            n
+        };
+        let kept = [0xffu8; NONCE_BYTES];
+        w.used.insert(kept, (until, addr(&key(8))));
+        for i in 0..USED_KEPT - 1 {
+            let gone = format!("0x{:040x}", i / USED_PER_WALLET + 1);
+            w.used.insert(nonce(i), (until, gone));
+        }
+        assert_eq!(w.used.len(), USED_KEPT);
+        sign_in(&mut w, &key(7), 1000);
+        assert_eq!(w.used.len(), 2, "only the island's nonces stay");
+        assert!(
+            w.used.contains_key(&kept),
+            "an island wallet's nonce was dropped"
+        );
+
+        w.used.clear();
+        for i in 0..USED_KEPT {
+            w.used.insert(nonce(i), (until, addr(&key(8))));
+        }
+        let login = login_body(&mut w, &key(7), 1000);
+        assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 503);
+        assert_eq!(w.used.len(), USED_KEPT);
     }
 
     /// The page's own host is signed when the shard accepts it; anything else

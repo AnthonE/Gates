@@ -643,6 +643,49 @@ fn a_catch_up_sprint_widens_the_round_trip_bound_for_a_second() {
     assert_eq!(ShardStats::get(&stats.favour_playout_high), 0);
 }
 
+/// **The slack lapses a second after the largest sprint.** Smaller notes
+/// inside that second neither lower it nor hold it open: the old ratchet
+/// re-armed the largest on every note, so a loop reporting any backlog
+/// at all kept every round-trip bound wide for good.
+#[test]
+fn small_sprints_do_not_hold_a_large_slack_open() {
+    let (mut core, stats) = shard();
+    stats.slot_rtt_us.store(0, 20_000);
+    let bound = 1 + stats::RTT_AGE_SLACK_TICKS as u64;
+    let late = bound + 8;
+    let second = sim_core::limits::TICK_HZ as u64;
+    let t0 = core.world.tick;
+    core.note_pace_backlog(8);
+    core.note_pace_backlog(1);
+    for _ in 0..5 {
+        tick(&mut core, &stats);
+    }
+    let t_small = core.world.tick;
+    core.note_pace_backlog(2);
+    assert_eq!(
+        measure_one(&mut core, &stats, 1, late),
+        late,
+        "the small notes lowered the sprint's slack"
+    );
+    // The next frame lands past the large note's second and inside the
+    // one a re-arm at the small note would have opened.
+    let at = core.world.tick + SNAPSHOT_INTERVAL_TICKS + late;
+    assert!(
+        at > t0 + second && at <= t_small + second,
+        "the fixture no longer lands between the two seconds"
+    );
+    assert_eq!(
+        measure_one(&mut core, &stats, 2, late),
+        bound,
+        "the small notes held the large slack open"
+    );
+    // A larger note does raise and re-arm it.
+    core.note_pace_backlog(2);
+    core.note_pace_backlog(8);
+    assert_eq!(measure_one(&mut core, &stats, 3, late), late);
+    assert_eq!(ShardStats::get(&stats.favour_disagree), 0);
+}
+
 /// **6b · A client that has never acked executes its frames and buys
 /// nothing.** The frame still runs — this is not a refusal — and the
 /// counters must show the granted set is empty rather than showing nothing
