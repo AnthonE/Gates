@@ -63,6 +63,18 @@ fn id_of(slot: usize) -> u32 {
 }
 
 fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientCore)]) -> [u32; 4] {
+    pump_seen(core, stats, clients, &mut Vec::new())
+}
+
+/// The same pump, keeping every event the server put on a lane, decoded
+/// from those bytes (`deploy_wire.rs`'s shape): routing is asserted on what
+/// was sent, not on a mirror that may agree for another reason.
+fn pump_seen(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    seen: &mut Vec<(usize, protocol::EventMsg)>,
+) -> [u32; 4] {
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
@@ -84,6 +96,10 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     });
     let mut flags = [0u32; 4];
     for (slot, bytes) in events {
+        seen.push((
+            slot,
+            protocol::decode_event(&bytes).expect("server events decode"),
+        ));
         if let Some(c) = clients.iter_mut().find(|(s, _)| *s == slot).map(|(_, c)| c) {
             flags[slot] |= c.on_stream(&bytes).expect("server events decode");
         }
@@ -465,6 +481,83 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
         base.len() + 1,
         "the re-armed walk delivered something the base does not have"
     );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// **A removal reaches who was walked the piece, and not a client 500 m
+/// off.** A raid's killing blow, a decay sweep and a demolish all arrive as
+/// `EV_PIECE_REMOVED`, which used to reach every client on the island with
+/// its cell — a raid radar the struct-hit filter left open. It now goes
+/// only where a record was sent (`held_tiles`): the client the walk gave the
+/// base hears the foundation come down, and the far one is never told.
+#[test]
+fn a_removal_reaches_who_was_walked_the_piece_and_not_a_far_client() {
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let base = lay_base(&mut core, CX, CZ, 24);
+    assert!(
+        base.contains(&(CX, CZ)),
+        "the fixture did not lay the piece it takes down"
+    );
+    // Slot 0 spawns 500 m off, slot 1 on the base (the `walking_to_a_base`
+    // dance: a `Join` reads `dev_spawn` when it runs).
+    core.world.dev_spawn = Some((SPAWN.0 + 500.0, SPAWN.1));
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    pump(&mut core, &stats, &mut clients);
+    core.world.dev_spawn = Some(SPAWN);
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+    for _ in 0..20 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(
+        clients[0].1.pieces.len(),
+        0,
+        "the far client was walked the base"
+    );
+    assert_eq!(
+        clients[1].1.pieces.len(),
+        base.len(),
+        "the near client was not walked the base"
+    );
+
+    // The near client takes the foundation at its feet back down.
+    assert!(core.wants_action(1), "hand should be open");
+    core.push_action(
+        1,
+        protocol::ActionMsg::Demolish {
+            deploy: false,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        core.world.pieces.find(CX, CZ, 0, LOC_PLANE).is_none(),
+        "the demolish was refused, so nothing below proves anything"
+    );
+    let removed = |slot: usize| {
+        seen.iter().any(|(s, m)| {
+            *s == slot
+                && matches!(m, protocol::EventMsg::PieceRemoved { cx, cz, .. }
+                    if (*cx, *cz) == (CX, CZ))
+        })
+    };
+    assert!(
+        removed(1),
+        "the client the walk gave the piece never heard it go"
+    );
+    assert!(
+        !removed(0),
+        "a removal 500 m off reached a client that never held the piece"
+    );
+    assert_eq!(clients[1].1.pieces.len(), base.len() - 1);
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 

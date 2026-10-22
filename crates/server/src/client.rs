@@ -89,6 +89,14 @@ pub fn ring_index(tick: u32) -> usize {
 pub const TAGS_ALL: u128 = u128::MAX >> (128 - sim_core::limits::MAX_PLAYERS);
 const _: () = assert!(sim_core::limits::MAX_PLAYERS <= 128);
 
+/// `ClientNetState::held_tiles`: a tile is `1 << HELD_TILE_SHIFT` build cells
+/// on a side (48 m), and the map is `HELD_TILES_SIDE` tiles square — every
+/// build coordinate there is, in 2 KiB a connection.
+const HELD_TILE_SHIFT: u32 = 4;
+const HELD_TILES_SIDE: usize = 128;
+const HELD_TILE_WORDS: usize = HELD_TILES_SIDE * HELD_TILES_SIDE / 64;
+const _: () = assert!(sim_core::limits::MAX_BUILD_COORD >> HELD_TILE_SHIFT <= HELD_TILES_SIDE);
+
 pub struct ClientNetState {
     pub connected: bool,
     pub id: u32,
@@ -242,8 +250,10 @@ pub struct ClientNetState {
     /// slots. Only updated when the ring accepted the message, so a
     /// refused push re-diffs by itself.
     pub last_inv: [ItemStack; INV_SLOTS],
-    /// Harvested-set walk: next `slot_lives` entry index to scan. At or
-    /// past the store's len ⇒ the walk is done.
+    /// Harvested-set walk: `slot_lives` entries **still owed**, read from
+    /// the tail down like `piece_sync_cursor` (zero ⇒ the walk is done).
+    /// While `sync_reset` is set the walk has not started and owes the
+    /// whole store, whatever this says.
     pub sync_cursor: usize,
     /// The next sync batch carries the reset bit (fresh join or
     /// event-lane resync): the client clears its set before applying.
@@ -289,6 +299,14 @@ pub struct ClientNetState {
     /// holds (it is owed a reset batch either way) and the placement
     /// broadcast passes unfiltered for that window, which is one tick.
     pub piece_anchor_valid: bool,
+    /// The 48 m tiles this connection **may hold** a piece or deployable in:
+    /// a bit is set wherever a record is sent to it (the piece and deploy
+    /// walks, the placement events) and cleared only by a fresh connection,
+    /// never by `ev_resync` — a superset costs a no-op removal, a subset a
+    /// wall that stands forever. A removal goes only to the tiles that may
+    /// hold what it removes (`ShardCore::route_events`), so a raid or a
+    /// decay sweep 500 m off is not a radar.
+    pub held_tiles: [u64; HELD_TILE_WORDS],
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
     /// Placed-deployable walk: entries **still owed**, the piece walk's
@@ -558,6 +576,7 @@ impl ClientNetState {
             piece_sync_reset: true,
             piece_anchor_cm: (0, 0),
             piece_anchor_valid: false,
+            held_tiles: [0; HELD_TILE_WORDS],
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
@@ -742,6 +761,27 @@ impl ClientNetState {
         *self = Self::new();
         self.connected = true;
         self.id = id;
+    }
+
+    /// `held_tiles`' bit for build cell `(cx, cz)`, clamped onto the map.
+    #[inline]
+    fn held_tile_bit(cx: u16, cz: u16) -> usize {
+        let t = |c: u16| ((c >> HELD_TILE_SHIFT) as usize).min(HELD_TILES_SIDE - 1);
+        t(cz) * HELD_TILES_SIDE + t(cx)
+    }
+
+    /// A piece or deployable at build cell `(cx, cz)` went to this client.
+    #[inline]
+    pub fn mark_tile(&mut self, cx: u16, cz: u16) {
+        let b = Self::held_tile_bit(cx, cz);
+        self.held_tiles[b / 64] |= 1 << (b % 64);
+    }
+
+    /// May this client hold a record at build cell `(cx, cz)`?
+    #[inline]
+    pub fn holds_tile(&self, cx: u16, cz: u16) -> bool {
+        let b = Self::held_tile_bit(cx, cz);
+        self.held_tiles[b / 64] & (1 << (b % 64)) != 0
     }
 
     // --- acks ---------------------------------------------------------

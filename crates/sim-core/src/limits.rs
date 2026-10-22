@@ -811,12 +811,14 @@ pub const BODY_BROADCAST_ARMS: usize = 3;
 /// per tick, at most this many entries examined to fill it). Proposed
 /// default, DECISIONS.md §open (gather wire row).
 ///
-/// 1,024 since the walk is aimed and restarts on every class-S re-arm
-/// (`server::interest`): a full store, `MAX_SLOT_LIVES`, is then 128 ticks,
-/// inside which a sprinter covers 23 m of the 32 m that re-arms it — the
-/// piece walk's scan window and its inequality, held by the server's
-/// `a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it`.
-pub const SYNC_SCAN_PER_TICK: usize = 1_024;
+/// 2,048 since the walk is aimed and restarts on every class-S re-arm
+/// (`server::interest`): a full store, `MAX_SLOT_LIVES`, is then 64 scan
+/// windows plus at most ~88 windows a full batch of in-range cells ends
+/// early, 153 ticks, inside which a sprinter covers 28 m of the 32 m that
+/// re-arms it — the piece walk's inequality, held by the server's
+/// `a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it`. A
+/// server-side work cap: no wire, save or hash sees it.
+pub const SYNC_SCAN_PER_TICK: usize = 2_048;
 
 /// Death backpacks standing at once (backpack.rs). Sized past the worst
 /// honest case: `MAX_PLAYERS` bodies each holding a bag, plus headroom

@@ -493,20 +493,30 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
-/// The grid, in whole metres, a far report (v113) is snapped to for a
-/// listener past the class-S radius (`ShardCore::reports`): 16 m is under
-/// 3° of bearing at 208 m, where the snap starts.
-const REPORT_FAR_Q_M: i64 = 16;
+/// The grids, in whole metres, a far report (v113) is snapped to for a
+/// listener past the class-S radius (`ShardCore::send_report`): the finest
+/// whose `q × 8` m covers the listener's distance, so a cell is about an
+/// eighth of it (±3.5° of bearing) at every range and never a fixed-size
+/// position fix. Powers of two, so the cells nest: a listener moving
+/// between bands cannot narrow the place by overlapping two grids.
+const REPORT_FAR_Q_M: [i64; 4] = [32, 64, 128, 256];
 
 /// One encoded far report: where it was (planar centimetres), the bytes.
 type FarReport = ((i64, i64), [u8; 16], usize);
-/// A report to the metre and its snapped twin (`ShardCore::reports`).
-type FarReports = (FarReport, FarReport);
+/// A shot's or blast's report to the metre, and what it is re-encoded from
+/// for a far listener: its kind and body quanta (`ShardCore::reports`).
+type FarReports = (FarReport, (u8, i32, i32, i32));
 
 /// What `EV_OVEN` says in place of the presser's id to everyone but the
 /// presser: somebody's hand. The client asks only whether a hand lit it
 /// (`by != 0`, to ring the flip), so this keeps that and names nobody.
 const OVEN_BY_SOMEONE: u32 = u32::MAX;
+
+/// Wear records (`SUB_WORN`) one connection's drip may send a tick. A body
+/// is owed when it comes into class-D interest (`worn_visible`), so a crowd
+/// arrives owed at once: 8 dresses 30 bodies in 4 ticks, at most 8 small
+/// records a tick into a ring of `EVENT_RING_CAP`.
+const WORN_DRIP_PER_TICK: usize = 8;
 
 /// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
 /// `ShardStats::phase_hist` files them. The index is the histogram row.
@@ -5031,6 +5041,8 @@ impl ShardCore {
                                     ShardStats::bump(&stats.piece_events_skipped);
                                     continue;
                                 }
+                                // Its removal is owed here now (`held_tiles`).
+                                self.clients[slot].mark_tile(rec.cx, rec.cz);
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -5106,6 +5118,8 @@ impl ShardCore {
                                     ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
+                                // Its removal is owed here now (`held_tiles`).
+                                self.clients[slot].mark_tile(acx, acz);
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -5548,11 +5562,14 @@ impl ShardCore {
                         ShardStats::bump(&stats.encode_range_errors);
                         continue;
                     }
-                    // Same posture as a piece/deploy removal: broadcast to
-                    // everyone, unfiltered (an absence is the one thing no
-                    // walk re-derives), and **no walk restart** — the bag
-                    // walk reads tail-down, so the entry the swap-remove
-                    // moved is one it already sent (`drip_client`).
+                    // Broadcast to everyone, unfiltered (an absence is the
+                    // one thing no walk re-derives), and **no walk restart**
+                    // — the bag walk reads tail-down, so the entry the
+                    // swap-remove moved is one it already sent
+                    // (`drip_client`). Unlike a piece's removal this one
+                    // names no place to aim at (`held_tiles`): the bag is
+                    // gone from the store and the event is its id, which
+                    // says where only to a client that was told the bag.
                     match encode_event_bag_removed(ev.a, ev.b as u8, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -6287,10 +6304,28 @@ impl ShardCore {
                     }
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    // The cell the walks and placements marked it at: its
+                    // own, or for an address that spells an id, the cell of
+                    // the piece it names while that still stands (a door
+                    // taken out of a freeform doorway). A spelled id whose
+                    // piece is gone names no place, so it still goes to
+                    // everyone — an id says nothing about where.
+                    let tile = match sim_core::build::spelled_id(cx, cz, level, loc) {
+                        None => Some((cx, cz)),
+                        Some(_) => self
+                            .world
+                            .pieces
+                            .find(cx, cz, level, loc)
+                            .map(|r| (r.cx, r.cz)),
+                    };
                     match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if tile.is_some_and(|(x, z)| !self.clients[slot].holds_tile(x, z)) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 // **No walk restarts here any more**, piece
@@ -6312,22 +6347,22 @@ impl ShardCore {
                                 // clamps its own cursor where it reads it
                                 // (`drip_client` carries the argument).
                                 //
-                                // **A removal is broadcast to everyone, and
-                                // class-S interest deliberately does not
-                                // filter it** (`interest.rs`). A placement
-                                // a client is not told about costs it
-                                // nothing — it has no record to be wrong
-                                // about — but a removal it is not told
-                                // about is a wall that stands in its world
-                                // forever, because nothing re-derives an
-                                // absence: the walk sends what IS there and
-                                // has no way to say what stopped being.
-                                // Until a client can be un-subscribed from
-                                // a region and drop what it holds there,
-                                // the asymmetry is the correct one, and it
-                                // is cheap — a removal is nine bytes and a
-                                // raid produces far fewer of them than the
-                                // walk it used to restart.
+                                // **A removal is not aimed at the anchor, it
+                                // is aimed at what the client may hold**
+                                // (`held_tiles`). A placement a client is
+                                // not told about costs it nothing — it has
+                                // no record to be wrong about — but a
+                                // removal it is not told about is a wall
+                                // that stands in its world forever, because
+                                // nothing re-derives an absence: the walk
+                                // sends what IS there and has no way to say
+                                // what stopped being. So the test is not
+                                // "is it near" but "was it ever told about
+                                // this tile": a superset (a no-op removal)
+                                // is safe, and a client 500 m from a raid it
+                                // never saw is not handed every wall that
+                                // falls in it — the killing blow is the one
+                                // `EV_STRUCT_HIT` never says.
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -6868,23 +6903,57 @@ impl ShardCore {
         true
     }
 
+    /// A piece or deployable at build cell `(cx, cz)` went to connection
+    /// `slot` (`ClientNetState::held_tiles`). A seat's walk marks its
+    /// target's map too: removals are routed on the players' maps and reach
+    /// a seat only through the mirror, so the target's has to cover whatever
+    /// the seat was walked — or the seat keeps a wall that fell.
+    fn mark_held(&mut self, slot: usize, cx: u16, cz: u16) {
+        self.clients[slot].mark_tile(cx, cz);
+        let seat = slot
+            .checked_sub(MAX_PLAYERS)
+            .and_then(|i| self.watching.get(i).copied().flatten());
+        if let Some(seat) = seat {
+            self.clients[seat.target].mark_tile(cx, cz);
+        }
+    }
+
     /// Arm connection `slot`'s class-S anchor where its body stands, or
     /// re-arm it there once the body is `PIECE_REARM_CM` from it
     /// (`interest.rs`). No body, no anchor: the walks hold.
+    ///
+    /// A spectator seat **follows its target's anchor** instead, re-arming
+    /// whenever it moves. The seat hears the mirror, which the target's
+    /// anchor filtered, so its restating walks have to measure from the same
+    /// point or a state change dropped for the target is never restated for
+    /// the seat (`EV_DOOR`'s re-arm argument). The targets' drips run first
+    /// in `tick`, so a seat re-arms in the tick its target does.
     fn arm_walks(&mut self, slot: usize, stats: &ShardStats) {
         let Some(w) = self.live_wslot(slot) else {
             return;
         };
         let body = self.world.players[w].body;
-        let here = interest::body_cm(body.qx, body.qz);
+        let followed = slot
+            .checked_sub(MAX_PLAYERS)
+            .and_then(|i| self.watching.get(i).copied().flatten())
+            .map(|seat| &self.clients[seat.target])
+            .filter(|t| t.piece_anchor_valid)
+            .map(|t| t.piece_anchor_cm);
+        let here = followed.unwrap_or(interest::body_cm(body.qx, body.qz));
         let len = self.world.pieces.len();
+        let lives = self.world.slot_lives.len();
         let c = &mut self.clients[slot];
+        let moved = match followed {
+            Some(at) => c.piece_anchor_cm != at,
+            None => {
+                interest::d2_cm(c.piece_anchor_cm, here)
+                    > interest::PIECE_REARM_CM * interest::PIECE_REARM_CM
+            }
+        };
         if !c.piece_anchor_valid {
             c.piece_anchor_cm = here;
             c.piece_anchor_valid = true;
-        } else if interest::d2_cm(c.piece_anchor_cm, here)
-            > interest::PIECE_REARM_CM * interest::PIECE_REARM_CM
-        {
+        } else if moved {
             // Re-arm from the tail, and **without** the reset bit: the
             // client keeps every piece it has been told about and the
             // address-keyed apply dedups whatever arrives twice. A
@@ -6902,12 +6971,12 @@ impl ShardCore {
             c.bag_sync_cursor = self.world.backpacks.len();
             c.plant_sync_cursor = self.world.farm.len();
             // So do the stores whose events are aimed at a point: the
-            // harvested set from the start, without its reset (the client
+            // harvested set from the tail, without its reset (the client
             // takes a repeat as a no-op), and the fires in the new range.
             // The loose stacks restart **with** theirs, so the client's
             // mirror is the ground in range and not every stack it ever
             // walked past.
-            c.sync_cursor = 0;
+            c.sync_cursor = lives;
             c.fires_owed = true;
             c.gitem_sync_cursor = 0;
             c.gitem_sync_reset = true;
@@ -7578,12 +7647,19 @@ impl ShardCore {
             }
         }
 
-        // What every body wears (v98): one owed per tick, `tags_owed`'s
-        // shape. An empty world slot, or a body that has never worn
-        // anything, has nothing to say. Only bodies this client draws are
-        // told (`worn_visible`); the rest stay owed until they are.
-        let owed = self.clients[slot].worn_owed & self.worn_visible(slot);
-        if owed != 0 {
+        // What every body wears (v98): `tags_owed`'s shape, up to
+        // `WORN_DRIP_PER_TICK` a tick. An empty world slot, or a body that
+        // has never worn anything, has nothing to say. Only bodies this
+        // client draws are told (`worn_visible`); the rest stay owed until
+        // they are, so a crowd that comes into view at once (a respawn, a
+        // teleport) is owed together and dressed in a few ticks, not one
+        // body a tick.
+        let visible = self.worn_visible(slot);
+        for _ in 0..WORN_DRIP_PER_TICK {
+            let owed = self.clients[slot].worn_owed & visible;
+            if owed == 0 {
+                break;
+            }
             let i = owed.trailing_zeros() as usize;
             let bit = 1u128 << i;
             let (id, items, skins) = self.worn_seen[i];
@@ -7658,10 +7734,17 @@ impl ShardCore {
             }
         }
 
-        // Harvested-set walk (join sync / resync), drip-fed. The cursor
-        // walks the live store; entries that move behind it mid-walk stay
-        // unsynced until their own respawn event — bounded staleness the
-        // respawn window already caps, documented over machinery.
+        // Harvested-set walk (join sync / resync, and every re-arm),
+        // drip-fed, and read from the **tail down** like the piece walk
+        // below, for its reason: the store swap-removes on every respawn and
+        // every sapling that finishes, and the entry that moves is always the
+        // tail, which this walk has already said (it may land in the owed
+        // region and be said twice, a no-op) or, before the walk has said
+        // anything, is still owed. Read upward, the moved tail could land
+        // behind the cursor — a harvest missed while far off, skipped on the
+        // walk back and drawn standing until its respawn, 20–45 min.
+        // `sync_cursor` is the count still owed, `[0, sync_cursor)`; a reset
+        // walk that has not started owes the whole store.
         //
         // The same window carries the regrowing trees (tree growth v0) in a
         // second message: a late joiner has to know a sapling is a sapling,
@@ -7674,13 +7757,18 @@ impl ShardCore {
         //
         // **Aimed**, like the piece walk below and from its anchor: what a
         // node's life says is where somebody gathered, so only the nodes in
-        // range are said, and a re-arm walks the store again from the start
+        // range are said, and a re-arm owes the whole store again
         // (`arm_walks`) for the ones the new range holds. Held until there
         // is an anchor.
         let c = &self.clients[slot];
         let lives = &self.world.slot_lives;
         let anchor = c.piece_anchor_cm;
-        if c.piece_anchor_valid && (c.sync_reset || c.sync_cursor < lives.len()) {
+        let owed = if c.sync_reset {
+            lives.len()
+        } else {
+            c.sync_cursor.min(lives.len())
+        };
+        if c.piece_anchor_valid && (c.sync_reset || owed > 0) {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
             let mut grubbed = 0u64;
             let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
@@ -7691,13 +7779,13 @@ impl ShardCore {
             let mut scanned = 0usize;
             let entries = lives.entries();
             let w = &self.world;
-            while c.sync_cursor + scanned < entries.len()
+            while scanned < owed
                 && scanned < SYNC_SCAN_PER_TICK
                 && n_cells < SLOT_SYNC_BATCH
                 && n_grows < protocol::GROW_SYNC_BATCH
                 && n_stages < protocol::NODE_STAGE_BATCH
             {
-                let e = entries[c.sync_cursor + scanned];
+                let e = entries[owed - 1 - scanned];
                 scanned += 1;
                 if !interest::point_in_interest(anchor, interest::scatter_cell_cm(e.cx, e.cz)) {
                     continue;
@@ -7729,7 +7817,11 @@ impl ShardCore {
                             return;
                         }
                         ShardStats::bump(&stats.ev_sent);
-                        self.clients[slot].sync_reset = false;
+                        // The reset is away, so the count starts here: a
+                        // refusal below leaves this window owed, not done.
+                        let c = &mut self.clients[slot];
+                        c.sync_reset = false;
+                        c.sync_cursor = owed;
                     }
                     Err(_) => {
                         ShardStats::bump(&stats.encode_range_errors);
@@ -7772,7 +7864,7 @@ impl ShardCore {
             // Past this window: its harvested, growing and worn entries are
             // said, and the rest of the standing damage had nothing to say.
             if said {
-                self.clients[slot].sync_cursor += scanned;
+                self.clients[slot].sync_cursor = owed - scanned;
             }
         }
 
@@ -7878,6 +7970,11 @@ impl ShardCore {
             // Turned back to store order, so a batch with nothing filtered
             // out of it is the same bytes this walk has always sent.
             wire[..n].reverse();
+            let reset = c.piece_sync_reset;
+            // Its removals are owed wherever this batch puts a record.
+            for (r, _) in &wire[..n] {
+                self.mark_held(slot, r.cx, r.cz);
+            }
             let rest = owed - scanned;
             let done = |c: &mut ClientNetState| {
                 c.piece_sync_reset = false;
@@ -7897,8 +7994,8 @@ impl ShardCore {
                     ShardStats::bump(&stats.piece_walk_completes);
                 }
             };
-            if n > 0 || c.piece_sync_reset {
-                match encode_event_piece_sync(c.piece_sync_reset, &wire[..n], &mut self.ev_buf) {
+            if n > 0 || reset {
+                match encode_event_piece_sync(reset, &wire[..n], &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             ShardStats::bump(&stats.ev_sent);
@@ -7995,6 +8092,12 @@ impl ShardCore {
             }
             wire[..n].reverse();
             lit[..n].reverse();
+            let reset = c.deploy_sync_reset;
+            // Marked at the cell the predicate above measured.
+            for d in &wire[..n] {
+                let (x, z) = interest::deploy_cell(d, &self.world.pieces);
+                self.mark_held(slot, x, z);
+            }
             let rest = owed - scanned;
             let done = |c: &mut ClientNetState| {
                 c.deploy_sync_reset = false;
@@ -8004,7 +8107,6 @@ impl ShardCore {
                     ShardStats::bump(&stats.deploy_walk_completes);
                 }
             };
-            let reset = c.deploy_sync_reset;
             if n > 0 || reset {
                 match encode_event_deploy_sync(reset, &wire[..n], &mut self.ev_buf) {
                     Ok(len) => {
@@ -8820,32 +8922,37 @@ impl ShardCore {
     }
 
     /// A far report (v113) of `kind` at body quanta `(qx, qy, qz)`, its
-    /// planar place snapped to `q_m` whole metres (1 for the metre itself):
-    /// where it was in planar centimetres, and the encoded event. `None` for
-    /// a place the report's whole-metre fields cannot carry.
+    /// planar place snapped to `q_m` whole metres (1 for the metre itself)
+    /// and its height to a quarter of that: where it was in planar
+    /// centimetres, and the encoded event. `None` for a place the report's
+    /// whole-metre fields cannot carry.
+    ///
+    /// The height is coarsened with the plane because the client holds the
+    /// terrain: an exact metre of height narrows a planar cell to a contour
+    /// line, or to a base's floor.
     fn report(kind: u8, qx: i32, qy: i32, qz: i32, q_m: i64) -> Option<FarReport> {
         let at = interest::body_cm(qx, qz);
-        let m = |cm: i64| u16::try_from(cm / 100 / q_m * q_m + q_m / 2).ok();
-        let y = i16::try_from(qy as i64 / 100).ok()?;
+        let snap = |m: i64, q: i64| m.div_euclid(q) * q + q / 2;
+        let m = |cm: i64| u16::try_from(snap(cm / 100, q_m)).ok();
+        let y = i16::try_from(snap(qy as i64 / 100, (q_m / 4).max(1))).ok()?;
         let mut buf = [0u8; 16];
         let n = encode_event_report(kind, m(at.0)?, y, m(at.1)?, &mut buf).ok()?;
         Some((at, buf, n))
     }
 
-    /// The far reports of one shot or blast: to the metre, and snapped to
-    /// `REPORT_FAR_Q_M` for a listener past the class-S radius, which wants a
-    /// bearing to play a far crack from (`render/audio.rs` `far_reports`)
-    /// and is owed no more — the metre would be a position fix on a shooter
-    /// it cannot see. `None` when either cannot be carried.
+    /// One shot's or blast's report to the metre, for a listener inside the
+    /// class-S radius, and what `send_report` snaps for the rest: a far
+    /// listener wants a bearing to play a far crack from (`render/audio.rs`
+    /// `far_reports`) and is owed no more — the metre would be a position
+    /// fix on a shooter it cannot see. `None` when it cannot be carried.
     fn reports(kind: u8, qx: i32, qy: i32, qz: i32) -> Option<FarReports> {
-        Some((
-            Self::report(kind, qx, qy, qz, 1)?,
-            Self::report(kind, qx, qy, qz, REPORT_FAR_Q_M)?,
-        ))
+        Some((Self::report(kind, qx, qy, qz, 1)?, (kind, qx, qy, qz)))
     }
 
     /// Send `slot` the report in `r` that its distance earns, if its body is
-    /// within `reach_cm` of it at all. True when one was sent.
+    /// within `reach_cm` of it at all: to the metre inside the class-S
+    /// radius, past it snapped to the finest of `REPORT_FAR_Q_M` that is
+    /// about an eighth of the distance. True when one was sent.
     fn send_report(
         &self,
         slot: usize,
@@ -8853,27 +8960,34 @@ impl ShardCore {
         reach_cm: i64,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) -> bool {
-        let ((at, fine, n), (_, far, m)) = r;
-        if !self.within_cm(slot, *at, reach_cm) {
+        let ((at, fine, n), (kind, qx, qy, qz)) = *r;
+        let Some(d2) = self.d2_body_cm(slot, at) else {
+            return false;
+        };
+        if d2 > reach_cm * reach_cm {
             return false;
         }
-        if self.within_cm(slot, *at, interest::PIECE_INTEREST_CM) {
-            send(Lane::Event, slot, &fine[..*n])
-        } else {
-            send(Lane::Event, slot, &far[..*m])
+        let near = interest::PIECE_INTEREST_CM;
+        if d2 <= near * near {
+            return send(Lane::Event, slot, &fine[..n]);
+        }
+        // The cell that is an eighth of the distance: `q` m out to `8q` m.
+        let q_m = REPORT_FAR_Q_M
+            .into_iter()
+            .find(|&q| d2 <= (q * 800) * (q * 800))
+            .unwrap_or(REPORT_FAR_Q_M[REPORT_FAR_Q_M.len() - 1]);
+        match Self::report(kind, qx, qy, qz, q_m) {
+            Some((_, far, m)) => send(Lane::Event, slot, &far[..m]),
+            None => false,
         }
     }
 
-    /// Is `slot`'s body within `reach_cm` of `at` (planar centimetres)?
-    /// A client with no body in the world hears nothing from afar.
-    fn within_cm(&self, slot: usize, at: (i64, i64), reach_cm: i64) -> bool {
-        let Some(w) = self.live_wslot(slot) else {
-            return false;
-        };
-        let b = self.world.players[w].body;
-        let (x, z) = interest::body_cm(b.qx, b.qz);
-        let (dx, dz) = (x - at.0, z - at.1);
-        dx * dx + dz * dz <= reach_cm * reach_cm
+    /// The squared planar distance, in centimetres, from `slot`'s body to
+    /// `at`. `None` for a client with no body in the world, which hears
+    /// nothing from afar.
+    fn d2_body_cm(&self, slot: usize, at: (i64, i64)) -> Option<i64> {
+        let b = self.world.players[self.live_wslot(slot)?].body;
+        Some(interest::d2_cm(interest::body_cm(b.qx, b.qz), at))
     }
 
     /// Where connection `slot`'s class-S filters measure from: its walks'
@@ -9690,15 +9804,18 @@ mod tests {
             }
             true
         });
-        // Both listeners are past the class-S radius, so both are told the
-        // place snapped to `REPORT_FAR_Q_M`, never to the metre.
-        let snap = |cm: i64| cm / 100 / REPORT_FAR_Q_M * REPORT_FAR_Q_M + REPORT_FAR_Q_M / 2;
-        let reports = |slot: usize| -> Vec<u8> {
+        // Both listeners are past the class-S radius, so neither is told the
+        // metre: the place is snapped to a cell about an eighth of the
+        // distance — 64 m at 300 m, 128 m at 600 m — and the height to a
+        // quarter of that.
+        let snap = |m: i64, q: i64| m.div_euclid(q) * q + q / 2;
+        let reports = |slot: usize, q: i64| -> Vec<u8> {
             sent.iter()
                 .filter_map(|(s, m)| match m {
-                    EventMsg::Report { kind, x, z, .. } if *s == slot => {
-                        assert_eq!(*x as i64, snap(me.qx as i64 * 3));
-                        assert_eq!(*z as i64, snap(me.qz as i64 * 3));
+                    EventMsg::Report { kind, x, y, z } if *s == slot => {
+                        assert_eq!(*x as i64, snap(me.qx as i64 * 3 / 100, q));
+                        assert_eq!(*z as i64, snap(me.qz as i64 * 3 / 100, q));
+                        assert_eq!(*y as i64, snap(me.qy as i64 / 100, (q / 4).max(1)));
                         Some(*kind)
                     }
                     _ => None,
@@ -9713,12 +9830,16 @@ mod tests {
                 .count()
         };
         assert_eq!(near(0), 2, "the shooter hears it at hand");
-        assert!(reports(0).is_empty());
-        let mut at300 = reports(1);
+        assert!(reports(0, 1).is_empty());
+        let mut at300 = reports(1, 64);
         at300.sort();
         assert_eq!(at300, [protocol::REPORT_GUN, protocol::REPORT_BLAST]);
         assert_eq!(near(1), 0);
-        assert_eq!(reports(2), [protocol::REPORT_BLAST], "a gun stops at 400 m");
+        assert_eq!(
+            reports(2, 128),
+            [protocol::REPORT_BLAST],
+            "a gun stops at 400 m"
+        );
     }
 
     /// A core with one connected client, its join landed, and the event
@@ -11100,6 +11221,104 @@ mod tests {
         });
         assert_eq!(heard[0], ["fire", "harvested", "stage", "respawned"]);
         assert_eq!(heard[1], ["respawned"], "a client 500 m off was told");
+    }
+
+    /// **A seat walks from its target's anchor.** The mirror it hears was
+    /// filtered on the target's anchor, so its restating walks must measure
+    /// from the same point: seated after the target has wandered 20 m from
+    /// where it armed (inside the re-arm distance), the seat takes that
+    /// anchor, not the body's, and re-arms with it when the target does.
+    #[test]
+    fn a_seat_walks_from_its_targets_anchor() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let w = core.live_wslot(0).expect("joined");
+        let armed = core.clients[0].piece_anchor_cm;
+        assert!(core.clients[0].piece_anchor_valid);
+        core.world.players[w].body.qx += 20 * 100 / 3;
+        core.tick_bare(&stats, |_, _, _| true);
+        let seat = MAX_PLAYERS + 1;
+        assert!(core.connect_spectator(seat, PLAYER, 0), "seated");
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(core.clients[0].piece_anchor_cm, armed, "20 m re-armed");
+        assert_eq!(core.clients[seat].piece_anchor_cm, armed);
+
+        core.world.players[w].body.qx += 30 * 100 / 3;
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_ne!(
+            core.clients[0].piece_anchor_cm, armed,
+            "50 m never re-armed"
+        );
+        assert_eq!(
+            core.clients[seat].piece_anchor_cm,
+            core.clients[0].piece_anchor_cm
+        );
+    }
+
+    /// **A harvest missed while far off is said on the walk back, whatever
+    /// a respawn swaps under the walk.** The harvested walk restates what an
+    /// aimed `EV_SLOT_HARVESTED` dropped, and the store swap-removes on every
+    /// respawn: read upward, a rock respawning behind the cursor moved the
+    /// newest harvest (the tail) behind it too, and the node stood on the
+    /// client's screen until its own respawn. Three windows' worth of stumps
+    /// keep the walk going long enough for the swap to land mid-walk.
+    #[test]
+    fn a_harvest_missed_far_off_survives_a_respawn_swap_on_the_walk_back() {
+        use sim_core::terrain::Occupant;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let w = core.live_wslot(0).expect("joined");
+        let home = core.world.players[w].body;
+        let (hx, hz) = ((home.qx * 3 / 800) as u16, (home.qz * 3 / 800) as u16);
+        core.world.players[w].body.qz = home.qz + 500 * 100 / 3;
+        for _ in 0..3 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        // Behind the far client's back, at home: a rock first (index 0),
+        // the stumps, then the harvest it must be told (the tail).
+        let later = core.world.tick + 100_000;
+        let lives = &mut core.world.slot_lives;
+        let events = &mut core.world.events;
+        assert!(lives.harvest(hx, hz, Occupant::Rock, later, events));
+        for i in 0..3 * SLOT_SYNC_BATCH as u16 {
+            let cell = (hx + 1 + i % 16, hz + i / 16);
+            assert!(lives.harvest(cell.0, cell.1, Occupant::Rock, later, events));
+        }
+        let missed = (hx - 3, hz - 3);
+        assert!(lives.harvest(missed.0, missed.1, Occupant::Rock, later, events));
+
+        // Walk back: the first tick re-arms and says one window; then the
+        // rock respawns, swap-removing index 0.
+        core.world.players[w].body.qx = home.qx;
+        core.world.players[w].body.qz = home.qz;
+        let mut said = Vec::new();
+        for t in 0..8 {
+            if t == 1 {
+                let now = core.world.tick;
+                let events = &mut core.world.events;
+                assert!(core
+                    .world
+                    .slot_lives
+                    .harvest(hx, hz, Occupant::Rock, now, events));
+            }
+            core.tick_bare(&stats, |lane, slot, bytes| {
+                if lane == Lane::Event && slot == 0 {
+                    if let Ok(EventMsg::SlotSync { cells, count, .. }) = decode_event(bytes) {
+                        said.extend_from_slice(&cells[..count as usize]);
+                    }
+                }
+                true
+            });
+        }
+        assert!(
+            core.world.slot_lives.find(hx, hz).is_none(),
+            "the rock never respawned, so no swap landed under the walk"
+        );
+        assert!(
+            said.contains(&missed),
+            "a harvest made while the client was far was never said on its walk back"
+        );
+        assert_eq!(core.clients[0].sync_cursor, 0, "the walk never finished");
     }
 
     /// A full eviction memo gives up its oldest put, never a newer one, and
