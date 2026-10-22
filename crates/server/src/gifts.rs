@@ -19,6 +19,12 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Minutes a wallet must have played this wipe (`standings::Row::played`:
+/// alive, awake and moving) before a gift topic gives it anything. A gift
+/// asks only for a wallet, and a wallet is a free keypair: without this the
+/// Founder's Gift is an airdrop for any script that signs in at THE GATE.
+pub const GIFT_MIN_MINUTES: u32 = 30;
+
 pub fn gifts_path(base: &Path) -> PathBuf {
     PathBuf::from(format!("{}.gifts", base.display()))
 }

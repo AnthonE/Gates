@@ -447,6 +447,10 @@ pub struct ShardCore {
     /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
     /// extraction, and to everyone when the exchange changes.
     bank_owed: [bool; MAX_PLAYERS],
+    /// Per slot, the id of the tenant that moved or acted since the last
+    /// standings minute, 0 for none: only such a minute is played
+    /// ([`Self::standings_minute`]).
+    played_minute: [u32; MAX_PLAYERS],
 }
 
 /// Every standings board, one bit each (`protocol::STANDING_BOARDS`).
@@ -796,6 +800,7 @@ impl ShardCore {
             standings_gen_seen: 0,
             standings_agent: [false; MAX_PLAYERS],
             bank_owed: [false; MAX_PLAYERS],
+            played_minute: [0; MAX_PLAYERS],
         }
     }
 
@@ -1054,8 +1059,10 @@ impl ShardCore {
     /// wipe: the shard's cap, raised while the exchange burns, less what it
     /// already took. Zero for a guest, and for a declared agent unless the
     /// shard pays agents (`prize_agents`): a crew of programs that never
-    /// sleeps would otherwise be a wallet-sized tap per body.
-    fn extract_allowance(&self, slot: usize) -> u32 {
+    /// sleeps would otherwise be a wallet-sized tap per body. The wallet's
+    /// standings row is made here, or the allowance is zero
+    /// (`Standings::allowance`).
+    fn extract_allowance(&mut self, slot: usize) -> u32 {
         let Some(key) = self.key_str(slot) else {
             return 0;
         };
@@ -1102,11 +1109,21 @@ impl ShardCore {
         }
     }
 
-    /// A minute of play for every connected wallet: what a purse's
-    /// `prize_min_minutes` is measured in. From the boundary loop's minute.
+    /// A minute of play for every connected wallet that played it: alive,
+    /// awake, and moved or acted since the last one (`played_minute`). What
+    /// a purse's `prize_min_minutes`, `extract_min_minutes` and the gifts
+    /// are measured in, so a wallet parked on the island, dead or asleep
+    /// earns none of them. From the boundary loop's minute.
     pub fn standings_minute(&mut self) {
         for slot in 0..MAX_PLAYERS {
-            if !self.clients[slot].connected {
+            let id = self.clients[slot].id;
+            let played = std::mem::take(&mut self.played_minute[slot]);
+            if !self.clients[slot].connected || played == 0 || played != id {
+                continue;
+            }
+            let awake = Self::world_slot_of(&self.world, id)
+                .is_some_and(|w| !self.world.players[w].dead && !self.world.players[w].sleeping);
+            if !awake {
                 continue;
             }
             let Some(key) = self.key_str(slot) else {
@@ -1426,6 +1443,7 @@ impl ShardCore {
                     self.standings.kill(
                         killer.as_ref().map(|(k, l)| (k.as_str(), l.as_str())),
                         victim.as_ref().map(|(k, l)| (k.as_str(), l.as_str())),
+                        self.world.tick,
                     );
                 }
                 _ => {}
@@ -1702,7 +1720,8 @@ impl ShardCore {
     }
 
     /// A work lit or rekindled by a player (`EV_WORK`): the deed, on their
-    /// row. Lighting is worth more the later the work's act.
+    /// row. Lighting is worth more the later the work's act; a rekindle is
+    /// a deed once an hour per wallet and work (`Standings::rekindled`).
     fn note_work_deed(&mut self, ev: sim_core::world::SimEvent) {
         let Some((k, l)) = self.standing_who(ev.c) else {
             return;
@@ -1721,8 +1740,7 @@ impl ShardCore {
             let points = self.standings.rules.lit_points * act;
             self.standings.deed(&k, &l, points, Some(&what));
         } else {
-            let points = self.standings.rules.rekindled_points;
-            self.standings.deed(&k, &l, points, None);
+            self.standings.rekindled(&k, &l, ev.a, self.world.tick);
         }
     }
 
@@ -1976,7 +1994,9 @@ impl ShardCore {
     }
 
     /// A gift topic was asked (`content/arc.toml`): give `set` to `slot`'s
-    /// wallet, and owe the sim the owned set with it.
+    /// wallet, and owe the sim the owned set with it. A wallet that has not
+    /// played [`crate::gifts::GIFT_MIN_MINUTES`] this wipe is answered as a
+    /// guest ("come back"): a gift needs only a wallet, and wallets are free.
     fn give_skins(&mut self, slot: usize, set: sim_core::skin::SkinSet) -> content::bake::Gift {
         use content::bake::Gift;
         let Some(key) = self
@@ -1985,6 +2005,13 @@ impl ShardCore {
         else {
             return Gift::Guest;
         };
+        if self.gifts.of(&key, &self.world.skins).has_all(&set) {
+            return Gift::Owned;
+        }
+        let played = self.standings.row_of(&key).map_or(0, |r| r.played);
+        if played < crate::gifts::GIFT_MIN_MINUTES {
+            return Gift::Guest;
+        }
         if !self.gifts.give(&key, set, &self.world.skins) {
             return Gift::Owned;
         }
@@ -2017,6 +2044,14 @@ impl ShardCore {
         if self.mints.waiting(&key, set, &self.world.skins) {
             return Gift::Waiting;
         }
+        // One sale of each per wallet a wipe, written down before the sale:
+        // a token sent on and bought again would be coin into tokens without
+        // end. Bought already (or no room to write it down), the price goes
+        // back.
+        let catalogs = self.catalogs_of(set);
+        if self.bought_this_wipe(&key, &catalogs) || !self.standings.buy(&key, &catalogs) {
+            return Gift::Owned;
+        }
         let unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -2024,8 +2059,23 @@ impl ShardCore {
         Gift::Given
     }
 
-    /// A priced gift topic was asked: a guest, an owner or a buyer whose
-    /// token is still on the way is answered at once; anyone else's payment
+    /// The catalog ids of `set`'s rows.
+    fn catalogs_of(&self, set: sim_core::skin::SkinSet) -> Vec<u16> {
+        let rows = self.world.skins.rows();
+        (0..rows.len())
+            .filter(|&i| set.has(i))
+            .map(|i| rows[i].catalog)
+            .collect()
+    }
+
+    /// Whether `key` bought any of `catalogs` this wipe (`Standings::buy`).
+    fn bought_this_wipe(&self, key: &str, catalogs: &[u16]) -> bool {
+        catalogs.iter().any(|&c| self.standings.bought(key, c))
+    }
+
+    /// A priced gift topic was asked: a guest, an owner, a buyer whose
+    /// token is still on the way and a wallet that bought it this wipe
+    /// already (and sent it on) are answered at once; anyone else's payment
     /// is queued (one at a time), and `EV_PAID` sells and answers. `tag`
     /// comes back on it to name the topic.
     fn ask_priced(
@@ -2049,6 +2099,9 @@ impl ShardCore {
         }
         if self.mints.waiting(&key, set, &self.world.skins) {
             return Some(Gift::Waiting);
+        }
+        if self.bought_this_wipe(&key, &self.catalogs_of(set)) {
+            return Some(Gift::Owned);
         }
         if !c.paying {
             let id = c.id;
@@ -2808,6 +2861,14 @@ impl ShardCore {
             }
             if let Some(consumed) = c.consume_input() {
                 let (frame, view) = (consumed.frame, consumed.view);
+                // Walking or swinging plays the minute (`standings_minute`).
+                use sim_core::input::{BTN_JUMP, BTN_PRIMARY};
+                if frame.move_x != 0
+                    || frame.move_z != 0
+                    || frame.buttons & (BTN_JUMP | BTN_PRIMARY) != 0
+                {
+                    self.played_minute[slot] = c.id;
+                }
                 // Measured on the frame whose buttons ACT (the newer of
                 // two, when the throttle consumed two), and measured before
                 // the command-buffer check on purpose: dropping the sample
@@ -2937,6 +2998,8 @@ impl ShardCore {
                     c.pending_action = Some(act);
                     continue;
                 }
+                // So does any action (`standings_minute`).
+                self.played_minute[slot] = c.id;
                 self.cmd_buf[n] = match act {
                     // The action that is **usually** not a command, and the
                     // split is the whole of what world containers v0 added
@@ -9305,8 +9368,9 @@ mod tests {
     /// keyed player's deposit lights the fixture work, and the WORKS board
     /// credits what they gave and the deed, under their platform name; the
     /// drip then carries the board to them with their rank on it.
-    /// THE OUTFITTER's gift: a wallet that asks is given the season's skins
-    /// once and told so, asking again says it has them, a guest is told to
+    /// THE OUTFITTER's gift: a wallet that asks having played its minutes
+    /// is given the season's skins once and told so (before them, to come
+    /// back), asking again says it has them, a guest is told to
     /// sign in, and the platform's later answer adds to the gift rather
     /// than replacing it.
     #[test]
@@ -9388,6 +9452,13 @@ mod tests {
             let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
             core.world.players[w].skins
         };
+        // A wallet that has not played its minutes is told to come back.
+        assert_eq!(ask(&mut core, 256, 0), "sign in");
+        assert!(owned(&core, 256).is_empty() && core.gifts.is_empty());
+        let wallet = format!("0x{:040x}", 0xa1);
+        for _ in 0..crate::gifts::GIFT_MIN_MINUTES {
+            core.standings.minute(&wallet, "", false);
+        }
         assert_eq!(ask(&mut core, 256, 0), "these are yours");
         assert_eq!(owned(&core, 256), founder);
         assert_eq!(ask(&mut core, 256, 0), "you have them");
@@ -9405,8 +9476,8 @@ mod tests {
     /// THE OUTFITTER's priced gift (the Abyss Rug): a wallet short of the
     /// price is told so and keeps its junk; one that has it pays once and is
     /// owed a token (`mints.rs`), owning nothing until the platform shows
-    /// it; asking meanwhile costs nothing; the token settles the sale; a
-    /// guest pays nothing.
+    /// it; asking meanwhile costs nothing; the token settles the sale; sent
+    /// on, it is not sold again this wipe; a guest pays nothing.
     #[test]
     fn the_outfitter_sells_an_unlock_for_junk() {
         use content::bake::{ArcText, Gift, SpeakerText, TopicText, When};
@@ -9546,6 +9617,12 @@ mod tests {
         core.skins_owned(0, 256, SkinSet::EMPTY);
         core.tick_bare(&stats, |_, _, _| true);
         assert!(owned(&core, 256).is_empty());
+        // Sent on, it is not sold to this wallet again this wipe: a token
+        // a hundred junk, over and over, would be a way out with no cap.
+        carry(&mut core, 256, 150);
+        assert_eq!(ask(&mut core, 256, 0), "you have it");
+        assert_eq!(junk(&core, 256), 150, "nothing taken");
+        assert!(core.mints.is_empty());
         carry(&mut core, 257, 150);
         assert_eq!(
             ask(&mut core, 257, 1),
@@ -9735,6 +9812,49 @@ mod tests {
             (b.work, b.open, b.fee_pct, b.cap, b.taken, b.credited),
             (0, true, 10, 300, 300, 270)
         );
+    }
+
+    /// A standings minute is played only by a wallet that moved or acted in
+    /// it, alive and awake: parked alts earn no `extract_min_minutes`.
+    #[test]
+    fn a_minute_counts_only_when_it_was_played() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let key = PlayerKey::new(format!("0x{:040x}", 0xc3).as_bytes()).unwrap();
+        let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        core.tick_bare(&stats, |_, _, _| true);
+        let played = |core: &ShardCore| core.standings.row_of(&wallet).map_or(0, |r| r.played);
+        let mut seq = 0u16;
+        let mut walk = |core: &mut ShardCore| {
+            let mut dg = InputDatagram::new(0, 0, 4);
+            for _ in 0..4 {
+                seq += 1;
+                dg.push(sim_core::input::InputFrame {
+                    seq,
+                    move_z: 127,
+                    ..Default::default()
+                })
+                .unwrap();
+            }
+            core.push_input(0, &dg);
+            for _ in 0..6 {
+                core.tick_bare(&stats, |_, _, _| true);
+            }
+        };
+        core.standings_minute();
+        assert_eq!(played(&core), 0, "connected and parked");
+        walk(&mut core);
+        core.standings_minute();
+        assert_eq!(played(&core), 1, "walked");
+        core.standings_minute();
+        assert_eq!(played(&core), 1, "the walk is spent with its minute");
+        walk(&mut core);
+        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        core.world.players[w].dead = true;
+        core.standings_minute();
+        assert_eq!(played(&core), 1, "dead");
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name

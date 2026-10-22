@@ -27,7 +27,9 @@ use sim_core::limits::{MAX_WORK_INPUTS, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::Haven;
 use sim_core::vend::{VEND_REACH_M, VEND_TIMES_MAX};
-use sim_core::works::{ARG_ALL, OP_DEPOSIT, OP_FUEL, WORK_LIT, WORK_OPEN, WORK_REACH_M};
+use sim_core::works::{
+    rekindle_min, ARG_ALL, OP_DEPOSIT, OP_FUEL, WORK_LIT, WORK_OPEN, WORK_REACH_M,
+};
 
 /// A sale keeps this many lots of what it sells.
 pub const SELL_KEEP_LOTS: u32 = 2;
@@ -299,7 +301,8 @@ pub fn pick_work(core: &ClientCore, haven: &Haven, x: f32, z: f32) -> Option<(u8
         } else if w.state == WORK_LIT
             && def.fuel_max > 0
             && w.fuel < def.fuel_max
-            && carried(core, def.fuel) > 0
+            // A dry tank refuses less than a tenth of a full one.
+            && carried(core, def.fuel) >= if w.fuel == 0 { rekindle_min(def) } else { 1 }
         {
             OP_FUEL
         } else {
