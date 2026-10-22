@@ -380,7 +380,11 @@ fn a_barrel_rolls_on_the_worlds_salt() {
     let (at_salted, salty) = smashed(SALT);
     assert_eq!(at, at_salted, "both worlds smash on one tick");
     assert_eq!(plain, roll(SEED, at), "an unsalted world rolls the seed");
-    assert_eq!(salty, roll(salted(SEED, SALT), at), "a salted one its secret");
+    assert_eq!(
+        salty,
+        roll(salted(SEED, SALT), at),
+        "a salted one its secret"
+    );
     assert_ne!(salty, plain, "the salt never reached the barrel");
 }
 

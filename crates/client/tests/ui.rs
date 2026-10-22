@@ -573,7 +573,14 @@ fn affordability_is_the_tightest_input() {
         skin: 0,
     };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        2
+    );
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
     inv[1] = ItemStack {
@@ -588,10 +595,24 @@ fn affordability_is_the_tightest_input() {
         cond: 0,
         skin: 0,
     };
-    assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[1],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        1
+    );
 
     // Nothing in the bag pays for nothing.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &empty()), 0);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &empty(),
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        0
+    );
 }
 
 #[test]
@@ -604,7 +625,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
         cond: 0,
         skin: 0,
     };
-    let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
+    let (lines, n) = craft::ingredients(
+        &recipes.recipes[0],
+        3,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
     assert_eq!(lines[0].amount, 3);
@@ -613,7 +639,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
     // Five of nine is short, which is what the reference paints red.
     assert!(lines[0].short());
 
-    let (lines, _) = craft::ingredients(&recipes.recipes[0], 1, &inv);
+    let (lines, _) = craft::ingredients(
+        &recipes.recipes[0],
+        1,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(lines[0].total, 3);
     assert!(!lines[0].short());
 }
@@ -6332,6 +6363,64 @@ mod quick {
             (args.from_kind, args.to_kind, args.count, args.bag),
             (CONT_WORLD, CONT_SELF, 60, BAG),
             "taking out of a crate stopped working, or lost its handle"
+        );
+    }
+
+    /// **A carcass or a body is take-only too** (`World::move_item`'s
+    /// mob-tagged bag): the panel knows one by its look (`WireBag::kind`),
+    /// refuses a deposit, or a take that would swap the occupant in, by the
+    /// sim's own `deposits_into`, and says a carcass's sentence rather than
+    /// the crate's.
+    #[test]
+    fn a_carcass_takes_nothing_and_says_so_in_its_own_words() {
+        use client::ui::slots::{refusal_text, refusal_text_in, take_only_bag, take_only_refused};
+        use protocol::event::{WireBag, BAG_KIND_BODY, BAG_KIND_PACK};
+        let bag = |kind| WireBag {
+            id: BAG,
+            kind,
+            ..WireBag::default()
+        };
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(1)]),
+            "an animal's carcass"
+        );
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_BODY)]),
+            "a body"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_PACK)]),
+            "a pack takes"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG + 1, &[bag(1)]),
+            "another bag's look"
+        );
+        assert!(!take_only_bag(CONT_BOX, BAG, &[bag(1)]), "only an open bag");
+
+        let (wood, axe, none) = (stack(WOOD, 5), stack(HATCHET, 1), ItemStack::default());
+        assert!(
+            take_only_refused(true, CONT_SELF, CONT_BAG, wood, none),
+            "a drop in"
+        );
+        assert!(
+            take_only_refused(true, CONT_BAG, CONT_SELF, wood, axe),
+            "a take onto the axe swaps the axe in"
+        );
+        assert!(
+            !take_only_refused(true, CONT_BAG, CONT_SELF, wood, none),
+            "a take"
+        );
+        assert!(
+            !take_only_refused(false, CONT_SELF, CONT_BAG, wood, none),
+            "a pack"
+        );
+
+        let no_input = sim_core::inventory::REFUSE_M_NO_INPUT as u8;
+        assert!(refusal_text_in(no_input, CONT_BAG).contains("carcass"));
+        assert_eq!(
+            refusal_text_in(no_input, CONT_WORLD),
+            refusal_text(no_input)
         );
     }
 

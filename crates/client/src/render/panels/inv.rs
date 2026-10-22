@@ -62,7 +62,10 @@ use bevy::window::PrimaryWindow;
 use client_core::core::ClientCore;
 use sim_core::combat::ARMOR_MAX_PCT;
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_BUSY, REFUSE_M_MAX};
+use sim_core::inventory::{
+    is_own, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_BUSY, REFUSE_M_MAX,
+    REFUSE_M_NO_INPUT,
+};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 
@@ -78,8 +81,9 @@ use crate::ui::oven::{self as oven_ui, Section};
 use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
-    looting, move_args, pip_fraction, quick_move_stack, refusal_text, slots_in, takes_deposits,
-    wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick, Sweep,
+    looting, move_args, pip_fraction, quick_move_stack, refusal_text, refusal_text_in, slots_in,
+    take_only_bag, take_only_refused, takes_deposits, wear_slot_label, wearable_here, worn_pct,
+    Drag, Grab, Quick, Sweep,
 };
 use sim_core::oven::OvenLayout;
 
@@ -2016,6 +2020,7 @@ pub fn drag_pointer(
     // rests on it comes back to `CELL_BG` and not to whatever it was.
     let mut over: Option<SlotCell> = None;
     let fire = open_fire(core);
+    let take_only = take_only_bag(core.cont_kind, core.cont_handle, core.bags.entries());
     for (cell, interaction, mut border, mut bg) in cells.iter_mut() {
         let hot = !matches!(interaction, Interaction::None);
         if hot {
@@ -2047,6 +2052,10 @@ pub fn drag_pointer(
                 // no catalog and is always `false`. Drawn the same way —
                 // red only under the pointer — so dragging *across* a
                 // crate on the way to the pack is not a screen of errors.
+                Some(false)
+            } else if take_only && cell.kind == CONT_BAG && d.kind != CONT_BAG {
+                // A carcass or a body is take-only too (`World::move_item`),
+                // and the same red under the pointer says so.
                 Some(false)
             } else if let (Some((arch, _)), CONT_BOX) = (fire, cell.kind) {
                 // The third: a camp fire's band takes its own
@@ -2206,7 +2215,19 @@ pub fn drag_pointer(
         cell_stack(core, drag.kind, drag.slot),
         cell_stack(core, target.kind, target.slot),
     ) {
-        ui.say(refusal_text(sim_core::inventory::REFUSE_M_NO_INPUT as u8));
+        ui.say(refusal_text(REFUSE_M_NO_INPUT as u8));
+        return;
+    }
+    // And a carcass's, the same refusal on a mob-tagged bag: a drop into
+    // it, or a take onto an occupied slot that would swap the occupant in.
+    if take_only_refused(
+        take_only,
+        drag.kind,
+        target.kind,
+        cell_stack(core, drag.kind, drag.slot),
+        cell_stack(core, target.kind, target.slot),
+    ) {
+        ui.say(refusal_text_in(REFUSE_M_NO_INPUT as u8, CONT_BAG));
         return;
     }
 
@@ -2339,6 +2360,18 @@ fn quick(
             &core.cont,
             &core.worn,
         )
+    } else if is_own(kind)
+        && take_only_refused(
+            take_only_bag(core.cont_kind, core.cont_handle, core.bags.entries()),
+            kind,
+            CONT_BAG,
+            stack,
+            ItemStack::default(),
+        )
+    {
+        // A right-click from the pack (or the body) aims at the open bag,
+        // and a carcass or a body takes nothing.
+        Quick::Refused(refusal_text_in(REFUSE_M_NO_INPUT as u8, CONT_BAG))
     } else {
         let (mut inv, mut cont, mut worn) = (core.inv, core.cont, core.worn);
         quick_move_stack(
@@ -2741,14 +2774,16 @@ pub fn ghost_follow(
 /// Turn the sim's last move refusal into the status line. Read once per
 /// change: `last_move_refused` is a latch, not a queue. `open` is the open
 /// converter's archetype: every converter refuses with `REFUSE_M_OVEN`, and
-/// the fire's sentence on a recycler names the wrong machine.
-pub fn note_refusal(ui: &mut Ui, reason: u8, open: Option<u8>) {
+/// the fire's sentence on a recycler names the wrong machine. `cont_kind`
+/// is what is open, for the same reason: a carcass and a crate both refuse
+/// a deposit with `REFUSE_M_NO_INPUT` (`refusal_text_in`).
+pub fn note_refusal(ui: &mut Ui, reason: u8, open: Option<u8>, cont_kind: u8) {
     if reason > 0 && reason as u32 <= REFUSE_M_MAX {
         match open {
             Some(arch) if reason as u32 == sim_core::inventory::REFUSE_M_OVEN => {
                 ui.say(oven_ui::oven_refusal(arch))
             }
-            _ => ui.say(refusal_text(reason)),
+            _ => ui.say(refusal_text_in(reason, cont_kind)),
         }
     }
 }

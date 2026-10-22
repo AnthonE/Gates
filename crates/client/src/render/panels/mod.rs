@@ -1613,7 +1613,7 @@ pub fn sync_refusals(
             &core.deploy_defs,
             core.deploy_defs_have,
         );
-        inv::note_refusal(&mut ui, core.last_move_refused, open);
+        inv::note_refusal(&mut ui, core.last_move_refused, open, core.cont_kind);
     }
 }
 

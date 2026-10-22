@@ -1231,8 +1231,9 @@ pub fn plant_bed(
     }
     let (x, z) = spot_xz(b.cx, b.cz, b.pose, spot);
     let y = feet_y + DEPLOY_VOL[ARCH_PLANTER as usize][1] - BED_SOIL_DROP_M;
-    let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| roll_genes(fc, genes_seed(seed, salt), b.cx, b.cz, tick, farm.next_id()));
+    let genes = clone_genes(stack.cond).unwrap_or_else(|| {
+        roll_genes(fc, genes_seed(seed, salt), b.cx, b.cz, tick, farm.next_id())
+    });
     let rec = PlantRec {
         owner: p.id,
         host,
@@ -1537,11 +1538,10 @@ pub fn plant_ground(
     let cell = |v: f32| {
         crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
     };
-    let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| {
-            let s = genes_seed(seed, salt);
-            roll_genes(fc, s, cell(x), cell(z), tick, farm.next_id())
-        });
+    let genes = clone_genes(stack.cond).unwrap_or_else(|| {
+        let s = genes_seed(seed, salt);
+        roll_genes(fc, s, cell(x), cell(z), tick, farm.next_id())
+    });
     let rec = PlantRec {
         owner: p.id,
         host: HOST_GROUND,

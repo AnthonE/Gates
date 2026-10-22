@@ -313,6 +313,28 @@ pub fn inv_count_whole(inv: &[ItemStack; INV_SLOTS], item: u16, ceil: u16) -> u3
     total
 }
 
+/// The condition a recipe input must be at to be spent: the `ceil` that
+/// [`inv_count_whole`] counts at, for an item of this `stack_max` and
+/// `cond_max`. **The one statement of the rule**, asked by `enqueue` and by
+/// the client's craft panel, so the panel never offers a craft the shard
+/// refuses.
+///
+/// A tool or a weapon spent as an input must be whole, because a cancel
+/// refunds at the ceiling: that is an item carrying condition in a stack of
+/// one, and the shipped revolver is the only such input (a fired one cannot
+/// go into an autoturret). A stackable one exists only in the probe
+/// fixtures, which mint, merge and spend it by the count. An unknown row
+/// (both 0) counts every stack.
+#[inline]
+#[must_use]
+pub const fn input_ceil(stack_max: u16, cond_max: u16) -> u16 {
+    if stack_max == 1 {
+        cond_max
+    } else {
+        0
+    }
+}
+
 /// Remove `amount` of `item` in slot order, zeroing emptied slots (the
 /// canonical empty representation). Returns what was actually removed —
 /// callers check availability first, so anything less is defensive.
@@ -436,18 +458,7 @@ pub fn enqueue(
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_QUEUE_FULL, 0);
         return;
     };
-    // A tool or a weapon spent as an input must be whole, because a cancel
-    // refunds at the ceiling (`inv_count_whole`). That is an item carrying
-    // condition in a stack of one: the shipped revolver is the only such
-    // input. A stackable one exists only in the probe fixtures, which mint,
-    // merge and spend it by the count.
-    let ceil = |item: u16| {
-        if gc.stack_max_of(item) == 1 {
-            gc.cond_max_of(item)
-        } else {
-            0
-        }
-    };
+    let ceil = |item: u16| input_ceil(gc.stack_max_of(item), gc.cond_max_of(item));
     for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
         if inv_count_whole(&p.inv, item, ceil(item)) < per as u32 * count as u32 {
             events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_INPUTS, 0);
