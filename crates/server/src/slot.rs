@@ -426,6 +426,12 @@ pub struct WorldMsg {
     /// restart. The sim may not hold a key, so the pairing is done by
     /// `ShardCore` (which is server-side) and rides along here.
     pub idents: Vec<(PlayerKey, u32)>,
+    /// The ids evicted bodies wore (`<world>.evicted`, `core::EvictIds`),
+    /// when they moved: written only after this world lands, so a crash
+    /// never pairs an older world with a newer id map (a returning victim's
+    /// row spent, their base still under the old id). Not written at all
+    /// when the world is not, and handed back (`WorldDone::side_lost`).
+    pub side: Option<FileMsg>,
 }
 
 /// Sim→storage thread: a small text file the shard keeps beside the world —
@@ -452,6 +458,9 @@ pub struct WorldDone {
     /// The save landed (or there is no world file to land in): what the
     /// standings taken beside it wait on (`standings::Standings::release`).
     pub ok: bool,
+    /// `WorldMsg::side` was not written: the sim takes it again at the
+    /// next save (`EvictIds::mark_dirty`).
+    pub side_lost: bool,
 }
 
 /// Accept→storage thread: one record and where in the file it goes. The

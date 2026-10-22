@@ -2438,9 +2438,25 @@ fn drain_saves(
         ShardStats::bump(&stats.saves_taken);
         // A full table refused a newcomer it could not fit without pushing
         // out somebody worth more (`SaveStore::put`): remembered by nobody,
-        // as a guest is. Its body is still in the world.
-        let Some(put) = store.put(&key, stamp, msg.save) else {
+        // as a guest is. Its body is still in the world. An eviction record
+        // worth anything is refused only past the table's budget
+        // (`put_evicted`), and then its one copy is the sim's memo
+        // (`core::EvictMemo`) until a restart: said out loud, as well as
+        // counted.
+        let evicted = msg.key.is_some();
+        let put = if evicted {
+            store.put_evicted(&key, stamp, msg.save)
+        } else {
+            store.put(&key, stamp, msg.save)
+        };
+        let Some(put) = put else {
             ShardStats::bump(&stats.saves_refused);
+            if evicted && crate::store::worth(&msg.save) > 0 {
+                eprintln!(
+                    "store: an eviction record was refused (table full, eviction budget \
+                     spent); it is kept in memory only"
+                );
+            }
             continue;
         };
         if put.evicted {
@@ -2472,7 +2488,6 @@ fn retry_side_files(core: &mut ShardCore, stats: &ShardStats, seen: &mut u64) {
     if failed != *seen {
         *seen = failed;
         core.teams.forget_written();
-        core.evict_ids.mark_dirty();
         core.gifts.mark_dirty();
         core.mints.mark_dirty();
     }
@@ -2532,20 +2547,21 @@ fn take_world_save(
         }
     }
     // And the ids evicted bodies wore, so their owners' bases are still
-    // theirs after a restart (`core::EvictIds`).
-    if !file_tx.is_full() {
-        if let Some(msg) = core.evict_ids.take_write() {
-            let _ = file_tx.push(msg);
-        }
-    }
+    // theirs after a restart (`core::EvictIds`). They ride this world and
+    // land after it (`WorldMsg::side`), never ahead of or without it.
+    let side = core.evict_ids.take_write();
     let tick = core.world.tick;
     if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
         tick,
         len,
         buf,
         idents: ids,
+        side,
     }) {
         ShardStats::bump(&stats.world_saves_skipped);
+        if msg.side.is_some() {
+            core.evict_ids.mark_dirty();
+        }
         pool.push(msg.buf);
         let mut back = msg.idents;
         back.clear();
@@ -2583,18 +2599,34 @@ fn store_thread(
         // the world before the thread notices its producers are gone.
         while let Ok(msg) = world_rx.pop() {
             idle = false;
-            let ok = match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
+            let (ok, landed) = match world_file.write(msg.tick, &msg.buf[..msg.len], &msg.idents) {
                 Ok(true) => {
                     ShardStats::bump(&stats.world_saves_written);
-                    true
+                    (true, true)
                 }
                 // No file: nothing written, nothing counted — the same rule
                 // `SaveFile::write` states, and for the same reason.
-                Ok(false) => true,
+                Ok(false) => (true, false),
                 Err(_) => {
                     ShardStats::bump(&stats.world_save_errors);
-                    false
+                    (false, false)
                 }
+            };
+            // The evicted ids, only beside a world that landed: a crash
+            // between the two leaves the newer world with the older ids,
+            // which only ever names ids the boot filters or a wake spends.
+            // No world file, no world for them to name: dropped, not owed.
+            let side_lost = match msg.side.as_ref() {
+                None => false,
+                Some(_) if !landed => !ok,
+                Some(side) => match crate::gifts::write_atomic(&side.path, &side.text) {
+                    Ok(()) => false,
+                    Err(e) => {
+                        eprintln!("store: writing {}: {e}", side.path.display());
+                        ShardStats::bump(&stats.side_file_errors);
+                        true
+                    }
+                },
             };
             // The buffer goes home whatever happened. A write that failed
             // must not also cost the pool a buffer, or a shard with a full
@@ -2603,7 +2635,12 @@ fn store_thread(
                 buf, mut idents, ..
             } = msg;
             idents.clear();
-            let _ = world_done_tx.push(WorldDone { buf, idents, ok });
+            let _ = world_done_tx.push(WorldDone {
+                buf,
+                idents,
+                ok,
+                side_lost,
+            });
         }
         // The side files (`slot::FileMsg`): each a whole file, temp + fsync
         // + rename. The teams are handed over just before the world they
@@ -4860,11 +4897,10 @@ fn sim_thread(
                 }
             } else {
                 // Refused: no world slot for the join (every body awake, or
-                // the sleepers are settled players still inside their
-                // protected sleep, `ShardCore::evict_victim`), or the
-                // command queue full (unreachable by arithmetic: ctrl cap +
-                // leave cap < queue reserve). Park the link and route it
-                // through the normal LEAVING sweep — the sim thread never
+                // the few sleepers left are held, `ShardCore::evict_victim`),
+                // or the command queue full (unreachable by arithmetic: ctrl
+                // cap + leave cap < queue reserve). Park the link and route
+                // it through the normal LEAVING sweep — the sim thread never
                 // drops a ring handle itself — with the reason, so the
                 // client reads "full" and not a network fault.
                 let generation = c.link.generation;
@@ -5015,6 +5051,9 @@ fn sim_thread(
             ident_pool.push(done.idents);
             if done.ok {
                 core.standings.release();
+            }
+            if done.side_lost {
+                core.evict_ids.mark_dirty();
             }
         }
         // The world, on its cadence. Before the tick for the reason the
@@ -5244,6 +5283,9 @@ fn sim_thread(
     while let Ok(done) = world_done_rx.pop() {
         world_pool.push(done.buf);
         ident_pool.push(done.idents);
+        if done.side_lost {
+            core.evict_ids.mark_dirty();
+        }
     }
     // The standings' last count, while everyone is still connected (the
     // world save's reason, below): a wipe reads this file for its hall.
@@ -5256,12 +5298,13 @@ fn sim_thread(
     let standings = &core.standings;
     core.achievements
         .close(|k| standings.label_of(k).map(str::to_string));
-    // Room for the shutdown's side files — the teams and evicted ids the
-    // save below takes, and a gift ledger a full ring left dirty — on the
-    // ring the store thread is draining right now. Bounded like the accept loop's drain; past the
+    // Room for the shutdown's side files — the teams the save below takes,
+    // and a gift ledger a full ring left dirty — on the ring the store thread
+    // is draining right now. Bounded like the accept loop's drain; past the
     // bound the teams keep their last file and a gift is asked for again.
+    // (The evicted ids ride the world itself, `WorldMsg::side`.)
     for _ in 0..SHUTDOWN_DRAIN_TRIES {
-        if file_tx.slots() >= 3 {
+        if file_tx.slots() >= 2 {
             break;
         }
         std::thread::sleep(SHUTDOWN_DRAIN_POLL);
@@ -6276,6 +6319,71 @@ mod tests {
         drop((write_tx, world_tx, file_tx));
         store.join().unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "the ledger\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The evicted ids land only beside a world that landed** (the r5
+    /// session#3 finding): written ahead of the world, a crash paired an
+    /// older world with a newer id map. A world write that fails writes no
+    /// `.evicted` and hands it back; with no world file it is dropped, not
+    /// owed; a world that lands takes it with it.
+    #[test]
+    fn the_evicted_ids_land_only_with_their_world() {
+        let dir = std::env::temp_dir().join(format!("gates-evictside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let side = dir.join("island.world.evicted");
+        let run = |world: crate::worldfile::WorldFile, text: &str| -> WorldDone {
+            let (write_tx, write_rx) = RingBuffer::<WriteMsg>::new(1);
+            let (mut world_tx, world_rx) = RingBuffer::<WorldMsg>::new(1);
+            let (world_done_tx, mut world_done_rx) = RingBuffer::<WorldDone>::new(1);
+            let (file_tx, file_rx) = RingBuffer::<FileMsg>::new(FILE_RING_CAP);
+            let msg = WorldMsg {
+                tick: 1,
+                len: 0,
+                buf: vec![0u8; 8].into_boxed_slice(),
+                idents: Vec::new(),
+                side: Some(FileMsg {
+                    path: side.clone(),
+                    text: text.into(),
+                }),
+            };
+            assert!(world_tx.push(msg).is_ok());
+            let store = std::thread::spawn(move || {
+                store_thread(
+                    SaveFile::closed(),
+                    write_rx,
+                    world,
+                    world_rx,
+                    world_done_tx,
+                    file_rx,
+                    Arc::new(ShardStats::default()),
+                )
+            });
+            drop((write_tx, world_tx, file_tx));
+            store.join().unwrap();
+            world_done_rx.pop().unwrap()
+        };
+        let world_at = |path: &std::path::Path| {
+            let mut w = sim_core::world::World::new(1);
+            crate::worldfile::open(path, &mut w, 1, 0, 0, 0, 1)
+                .expect("a fresh path opens")
+                .0
+                .file
+        };
+
+        let done = run(crate::worldfile::WorldFile::closed(), "none\n");
+        assert!(done.ok && !done.side_lost, "no world: dropped, not owed");
+        assert!(!side.exists());
+
+        let done = run(world_at(&dir.join("gone").join("island.world")), "lost\n");
+        assert!(!done.ok && done.side_lost, "a failed world hands it back");
+        assert!(!side.exists(), "written without its world");
+
+        let done = run(world_at(&dir.join("island.world")), "landed\n");
+        assert!(done.ok && !done.side_lost);
+        assert!(dir.join("island.world").exists());
+        assert_eq!(std::fs::read_to_string(&side).unwrap(), "landed\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

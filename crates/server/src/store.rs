@@ -327,17 +327,27 @@ pub const EVICTS_PER_HOUR: u64 = 128;
 /// and crafting nothing, holds nothing a fresh character would not.
 const KIT_ITEMS: u32 = 2;
 
-/// What a record is worth keeping when a full table has to forget somebody
-/// ([`SaveStore::put`]): two for every blueprint and glyph known (the
-/// progression that survives a wipe, `wipe.rs`), plus one for carrying
-/// anything past a spawn kit. A throwaway wallet's record is worth 0.
-pub fn worth(s: &PlayerSave) -> u32 {
-    let learned = s.known.count_ones() + s.glyphs.count_ones();
+/// Whether a record holds anything a fresh spawn does not: more than a
+/// spawn kit carried, anything worn, or a craft job running. What a looter
+/// could take, so also what `ShardCore::evict_victim` guards a sleeper for.
+pub fn holds(s: &PlayerSave) -> bool {
     let carried: u32 = s.inv.iter().map(|i| u32::from(i.count)).sum();
-    let holds = carried > KIT_ITEMS
+    carried > KIT_ITEMS
         || s.worn.iter().any(|w| w.count != 0)
-        || s.jobs.iter().any(|j| j.remaining != 0);
-    2 * learned + u32::from(holds)
+        || s.jobs.iter().any(|j| j.remaining != 0)
+}
+
+/// What a record is worth keeping when a full table has to forget somebody
+/// ([`SaveStore::put`]), in tiers: 2 for knowing any blueprint or glyph
+/// (the progression that survives a wipe, `wipe.rs`), plus 1 for
+/// [`holds`]. A throwaway wallet's record is worth 0.
+///
+/// Tiers, not a count: a count made a table of wipe survivors refuse every
+/// newcomer who had not learned as much as the least-learned of them, so a
+/// mature shard stopped remembering new players. One blueprint or stone
+/// now ties any survivor (displacing one at the budget's pace).
+pub fn worth(s: &PlayerSave) -> u32 {
+    2 * u32::from(s.known != 0 || s.glyphs != 0) + u32::from(holds(s))
 }
 
 /// Where a `put` landed, and whether somebody was pushed out to make room.
@@ -422,6 +432,29 @@ impl SaveStore {
     /// another throwaway's, and anything worth more goes at the budget's
     /// pace.
     pub fn put(&mut self, key: &PlayerKey, stamp: u64, save: PlayerSave) -> Option<Put> {
+        self.file(key, stamp, save, false)
+    }
+
+    /// [`Self::put`] for an eviction record (`SaveMsg::key`): the body has
+    /// left the world, so this is the player's only copy outside the
+    /// shard's in-memory memo. A record worth anything is not refused for
+    /// being worth less than the row it would push out, only by the budget:
+    /// a newcomer on a table of wipe survivors keeps their gear. A record
+    /// worth 0 has nothing to keep and goes through `put`'s gate, so a
+    /// flood of throwaways evicting each other spends none of the budget an
+    /// honest eviction needs.
+    pub fn put_evicted(&mut self, key: &PlayerKey, stamp: u64, save: PlayerSave) -> Option<Put> {
+        self.file(key, stamp, save, worth(&save) > 0)
+    }
+
+    /// `put` and `put_evicted`: `ungated` skips only the worth gate.
+    fn file(
+        &mut self,
+        key: &PlayerKey,
+        stamp: u64,
+        save: PlayerSave,
+        ungated: bool,
+    ) -> Option<Put> {
         let mine = self.slots.iter().position(|e| e.key.as_ref() == Some(key));
         let (index, evicted) = match mine {
             Some(i) => (i, false),
@@ -438,7 +471,7 @@ impl SaveStore {
                         .min_by_key(|(_, e)| (e.worth, e.stamp))
                         .map(|(i, e)| (i, e.worth))
                         .expect("the table is never empty");
-                    if worth(&save) < gone {
+                    if !ungated && worth(&save) < gone {
                         return None;
                     }
                     if gone > 0 {
@@ -1179,10 +1212,62 @@ mod tests {
             skin: 0,
         };
         assert_eq!(worth(&dressed), 1);
-        assert_eq!(worth(&holding(0, 3)), 6);
+        // Tiers, not counts: one blueprint is worth as much as thirty.
+        assert_eq!(worth(&holding(0, 1)), 2);
+        assert_eq!(worth(&holding(0, 30)), 2);
+        assert_eq!(worth(&holding(40, 30)), 3);
         let mut read = save_with(100);
         read.glyphs = 0b101;
-        assert_eq!(worth(&read), 4);
+        assert_eq!(worth(&read), 2);
+    }
+
+    /// **A mature table still remembers newcomers** (the r5 session#2
+    /// finding). A table of wipe survivors who learned five blueprints each
+    /// takes a newcomer who learned one (a tier tie, at the budget's cost),
+    /// still refuses a gear-only one by `put`, but files the gear-only one's
+    /// eviction record: that body has left the world, and the record is its
+    /// only copy. The budget still binds an eviction record, and one worth
+    /// nothing gets no pass at all.
+    #[test]
+    fn a_mature_table_files_newcomers_and_their_eviction_records() {
+        let real = |i: usize| PlayerKey::new(format!("real-{i}").as_bytes()).expect("fits");
+        let mut store = SaveStore::new();
+        for i in 0..MAX_SAVED_PLAYERS {
+            store.put(&real(i), 1, holding(0, 5)).expect("room");
+        }
+        let t0 = 1_700_000_000u64;
+        let put = store
+            .put(&key("learned-one"), t0, holding(1, 1))
+            .expect("a tier tie");
+        assert!(put.evicted);
+        assert_eq!(store.find(&real(0)), None, "the oldest survivor went");
+        assert_eq!(store.evict_tokens, EVICTS_PER_HOUR - 1, "one token spent");
+        assert_eq!(store.put(&key("gear-only"), t0, holding(40, 0)), None);
+        let put = store
+            .put_evicted(&key("gear-only"), t0, holding(40, 0))
+            .expect("an eviction record worth something is filed");
+        assert!(put.evicted);
+        assert_eq!(store.find(&key("gear-only")).map(|s| worth(&s)), Some(1));
+        assert_eq!(
+            store.put_evicted(&key("kit-only"), t0, save_with(9)),
+            None,
+            "worth nothing: put's gate"
+        );
+        // Spend the bucket: an eviction record is refused past it.
+        while store.evict_tokens > 0 {
+            let n = store.evict_tokens;
+            let k = PlayerKey::new(format!("flood-{n}").as_bytes()).expect("fits");
+            store
+                .put_evicted(&k, t0, holding(40, 0))
+                .expect("budget left");
+        }
+        assert_eq!(
+            store.put_evicted(&key("one-more"), t0, holding(40, 0)),
+            None,
+            "the budget binds an eviction record too"
+        );
+        // A returning player's own row is never refused.
+        assert!(store.put_evicted(&real(5), t0, save_with(9)).is_some());
     }
 
     /// **A flood of throwaway wallets erases nobody** (the session#2
