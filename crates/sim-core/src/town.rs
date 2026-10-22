@@ -1,6 +1,7 @@
-//! The town — "THE GATE" on the map: the island's safe hub, a walled scrap
-//! town of stacked containers and sheet metal built around a ruined ancient
-//! gate (WORLD.md §0/§3), in the central plain.
+//! The town — "THE GATE" on the map: the island's safe hub, a scrap town of
+//! sheet metal and tarps camped inside an ancient city's walls of giant
+//! sandstone blocks, round its ruined gate (WORLD.md §0/§3), in the central
+//! plain.
 //!
 //! Rust's Outpost is the reference for what it holds (Workbench 1, a research
 //! table, recyclers, vendors; `reference` research 2026-09-30): the public
@@ -78,22 +79,67 @@ impl Town {
     }
 }
 
-const W: f32 = 5.2; // two containers
+const W: f32 = 5.2; // two courses of the ancient blocks
 const F: f32 = -2.0; // footing below the floor
+
+/// THE GATE itself, east half (`west` mirrors it): the dais a body steps up
+/// onto (0.5 m, under `movement::STEP_UP`), the pylon's plinth, its 92 m
+/// shaft and its capital. Local metres, as [`PARTS`].
+pub const GATE_DAIS: [f32; 6] = [16.0, 0.0, -6.0, 35.0, 0.5, 6.0];
+pub const GATE_FOOT: [f32; 6] = [21.0, F, -5.5, 31.0, 8.0, 5.5];
+pub const GATE_SHAFT: [f32; 6] = [22.0, F, -4.5, 30.0, 90.0, 4.5];
+pub const GATE_CAP: [f32; 6] = [21.4, 90.0, -5.1, 30.6, 92.0, 5.1];
+/// The broken ring hung between the pylons: its centre's height, radius and
+/// half its square section. Its ends sink into the shafts' inner faces.
+pub const RING_CY: f32 = 56.0;
+pub const RING_R: f32 = 20.7;
+pub const RING_HALF: f32 = 1.5;
+/// Half a ring segment box's face, metres.
+const RING_SEG: f32 = 2.0;
+/// What fell off the gate into the plaza: a length of the ring and two
+/// blocks of the pylons.
+pub const FALLEN: [[f32; 6]; 3] = [
+    [9.0, -1.0, -13.0, 19.0, 2.6, -8.0],
+    [-19.0, -1.0, -13.0, -11.0, 4.0, -7.0],
+    [12.0, -1.0, 8.0, 16.0, 2.4, 10.5],
+];
+
+/// An east-half box mirrored across the street.
+pub const fn west(b: [f32; 6]) -> [f32; 6] {
+    [-b[3], b[1], b[2], -b[0], b[4], b[5]]
+}
+
+/// One segment of the ring at (`c`, `s`) round its circle — a cosine and
+/// sine, since a const cannot call trig.
+const fn ring_box(c: f32, s: f32) -> KitPart {
+    let (x, y) = (c * RING_R, RING_CY + s * RING_R);
+    part_f(
+        [
+            x - RING_SEG,
+            y - RING_SEG,
+            -RING_HALF,
+            x + RING_SEG,
+            y + RING_SEG,
+            RING_HALF,
+        ],
+        M::Gilt,
+        DECOR,
+    )
+}
 
 /// The kit. Local metres, +Z the market street's north gate.
 pub const PARTS: &[KitPart] = &[
     // The yard.
     part([-42.0, -0.3, -42.0, 42.0, 0.0, 42.0], M::Yard),
-    // Container walls, two high, broken by four gates.
-    part_f([-42.0, F, 39.6, -5.0, W, 42.0], M::Cargo, STACK),
-    part_f([5.0, F, 39.6, 42.0, W, 42.0], M::Cargo, STACK),
-    part_f([-42.0, F, -42.0, -5.0, W, -39.6], M::Cargo, STACK),
-    part_f([5.0, F, -42.0, 42.0, W, -39.6], M::Cargo, STACK),
-    part_f([-42.0, F, 4.0, -39.6, W, 39.6], M::Cargo, STACK),
-    part_f([-42.0, F, -39.6, -39.6, W, -4.0], M::Cargo, STACK),
-    part_f([39.6, F, 4.0, 42.0, W, 39.6], M::Cargo, STACK),
-    part_f([39.6, F, -39.6, 42.0, W, -4.0], M::Cargo, STACK),
+    // The ancient walls, two courses of giant blocks, broken by four gates.
+    part_f([-42.0, F, 39.6, -5.0, W, 42.0], M::Sandstone, STACK),
+    part_f([5.0, F, 39.6, 42.0, W, 42.0], M::Sandstone, STACK),
+    part_f([-42.0, F, -42.0, -5.0, W, -39.6], M::Sandstone, STACK),
+    part_f([5.0, F, -42.0, 42.0, W, -39.6], M::Sandstone, STACK),
+    part_f([-42.0, F, 4.0, -39.6, W, 39.6], M::Sandstone, STACK),
+    part_f([-42.0, F, -39.6, -39.6, W, -4.0], M::Sandstone, STACK),
+    part_f([39.6, F, 4.0, 42.0, W, 39.6], M::Sandstone, STACK),
+    part_f([39.6, F, -39.6, 42.0, W, -4.0], M::Sandstone, STACK),
     // Gate posts and the sign beams.
     part([-6.0, F, 39.2, -5.0, 7.4, 42.4], M::Steel),
     part([5.0, F, 39.2, 6.0, 7.4, 42.4], M::Steel),
@@ -107,49 +153,52 @@ pub const PARTS: &[KitPart] = &[
     part([-42.4, F, -5.0, -39.2, 7.4, -4.0], M::Steel),
     part([-42.4, F, 4.0, -39.2, 7.4, 5.0], M::Steel),
     part([-41.4, 6.2, -5.0, -40.2, 7.4, 5.0], M::Steel),
-    // The gate: a dais either side of the street, two pylons, gilt caps.
-    part([-14.0, 0.0, -6.0, -5.5, 0.5, 6.0], M::Obsidian),
-    part([5.5, 0.0, -6.0, 14.0, 0.5, 6.0], M::Obsidian),
-    part([-11.0, F, -2.0, -8.0, 30.0, 2.0], M::Obsidian),
-    part([8.0, F, -2.0, 11.0, 30.0, 2.0], M::Obsidian),
-    part([-11.4, 30.0, -2.4, -7.6, 31.0, 2.4], M::Gilt),
-    part([7.6, 30.0, -2.4, 11.4, 31.0, 2.4], M::Gilt),
+    // The gate: a dais either side of the street, a plinth, a pylon and its
+    // capital on each (east as declared, west its mirror).
+    part(west(GATE_DAIS), M::Sandstone),
+    part(GATE_DAIS, M::Sandstone),
+    part(west(GATE_FOOT), M::Sandstone),
+    part(GATE_FOOT, M::Sandstone),
+    part(west(GATE_SHAFT), M::Sandstone),
+    part(GATE_SHAFT, M::Sandstone),
+    part(west(GATE_CAP), M::Gilt),
+    part(GATE_CAP, M::Gilt),
     // The broken ring between the pylons — drawn, never collided: segments
-    // of a 7.6 m circle about (0, 18) in the XY plane, its lower arc fallen.
-    part_f([6.4, 16.8, -0.6, 8.8, 19.2, 0.6], M::Gilt, DECOR),
-    part_f([5.38, 20.6, -0.6, 7.78, 23.0, 0.6], M::Gilt, DECOR),
-    part_f([2.6, 23.38, -0.6, 5.0, 25.78, 0.6], M::Gilt, DECOR),
-    part_f([-1.2, 24.4, -0.6, 1.2, 26.8, 0.6], M::Gilt, DECOR),
-    part_f([-5.0, 23.38, -0.6, -2.6, 25.78, 0.6], M::Gilt, DECOR),
-    part_f([-7.78, 20.6, -0.6, -5.38, 23.0, 0.6], M::Gilt, DECOR),
-    part_f([-8.8, 16.8, -0.6, -6.4, 19.2, 0.6], M::Gilt, DECOR),
-    part_f([-7.78, 13.0, -0.6, -5.38, 15.4, 0.6], M::Gilt, DECOR),
-    part_f([5.38, 13.0, -0.6, 7.78, 15.4, 0.6], M::Gilt, DECOR),
-    // Fallen ring fragments and pylon blocks in the plaza.
-    part([16.0, -1.0, -12.0, 22.0, 1.8, -7.0], M::Gilt),
-    part([-22.0, -1.0, -10.0, -16.0, 2.2, -6.0], M::Obsidian),
-    part([12.0, -1.0, 8.0, 16.0, 1.2, 10.5], M::Obsidian),
-    // Market: six container kiosks opening on the street, a vending machine
+    // of its circle in the XY plane, its lower arc fallen.
+    ring_box(1.0, 0.0),
+    ring_box(0.866_025_4, 0.5),
+    ring_box(0.5, 0.866_025_4),
+    ring_box(0.0, 1.0),
+    ring_box(-0.5, 0.866_025_4),
+    ring_box(-0.866_025_4, 0.5),
+    ring_box(-1.0, 0.0),
+    ring_box(-0.866_025_4, -0.5),
+    ring_box(0.866_025_4, -0.5),
+    // What fell: a length of the ring and two blocks off the pylons.
+    part(FALLEN[0], M::Gilt),
+    part(FALLEN[1], M::Sandstone),
+    part(FALLEN[2], M::Sandstone),
+    // Market: six stone stalls opening on the street, a vending machine
     // against each ([`MACHINES`]).
-    part([-8.44, 0.0, 11.0, -6.0, 2.6, 17.1], M::Cargo),
-    part([-8.44, 0.0, 19.0, -6.0, 2.6, 25.1], M::Cargo),
-    part([-8.44, 0.0, 27.0, -6.0, 2.6, 33.1], M::Cargo),
-    part([6.0, 0.0, 11.0, 8.44, 2.6, 17.1], M::Cargo),
-    part([6.0, 0.0, 19.0, 8.44, 2.6, 25.1], M::Cargo),
-    part([6.0, 0.0, 27.0, 8.44, 2.6, 33.1], M::Cargo),
+    part([-8.44, 0.0, 11.0, -6.0, 2.6, 17.1], M::Sandstone),
+    part([-8.44, 0.0, 19.0, -6.0, 2.6, 25.1], M::Sandstone),
+    part([-8.44, 0.0, 27.0, -6.0, 2.6, 33.1], M::Sandstone),
+    part([6.0, 0.0, 11.0, 8.44, 2.6, 17.1], M::Sandstone),
+    part([6.0, 0.0, 19.0, 8.44, 2.6, 25.1], M::Sandstone),
+    part([6.0, 0.0, 27.0, 8.44, 2.6, 33.1], M::Sandstone),
     part_f([-8.6, 2.7, 11.0, -4.2, 2.9, 17.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 19.0, -4.2, 2.9, 25.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 27.0, -4.2, 2.9, 33.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 11.0, 8.6, 2.9, 17.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 19.0, 8.6, 2.9, 25.1], M::Canvas, DECOR | ROOF),
     part_f([4.2, 2.7, 27.0, 8.6, 2.9, 33.1], M::Canvas, DECOR | ROOF),
-    // Container stacks behind the market.
-    part([-24.0, 0.0, 20.0, -17.9, 2.6, 22.44], M::Cargo),
-    part([-24.0, 2.6, 20.0, -17.9, 5.2, 22.44], M::Cargo),
-    part([-30.0, 0.0, 30.0, -27.56, 2.6, 36.1], M::Cargo),
-    part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Cargo),
-    part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Cargo),
-    part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Cargo),
+    // Fallen wall blocks behind the market.
+    part([-24.0, 0.0, 20.0, -17.9, 2.6, 22.44], M::Sandstone),
+    part([-24.0, 2.6, 20.0, -17.9, 5.2, 22.44], M::Sandstone),
+    part([-30.0, 0.0, 30.0, -27.56, 2.6, 36.1], M::Sandstone),
+    part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Sandstone),
+    part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Sandstone),
+    part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Sandstone),
     // Workshop (SW): a roof on posts over the public stations. No plinths:
     // a station stands on the bare floor, and a plinth half buried it.
     part_f([-34.0, 3.5, -34.0, -16.0, 3.8, -18.0], M::Sheet, ROOF),
@@ -159,10 +208,10 @@ pub const PARTS: &[KitPart] = &[
     part([-16.3, 0.0, -18.3, -16.0, 3.5, -18.0], M::Steel),
     part([-25.15, 0.0, -34.0, -24.85, 3.5, -33.7], M::Steel),
     part([-25.15, 0.0, -18.3, -24.85, 3.5, -18.0], M::Steel),
-    // Canteen (SE): a container bar, tables, and a tarp over the tables on
+    // Canteen (SE): a stone bar, tables, and a tarp over the tables on
     // poles through them (`POLES`).
-    part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Cargo),
-    part([28.0, 0.0, -34.0, 34.1, 2.6, -31.56], M::Cargo),
+    part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Sandstone),
+    part([28.0, 0.0, -34.0, 34.1, 2.6, -31.56], M::Sandstone),
     part([20.0, 0.0, -25.0, 22.0, 0.8, -23.0], M::Timber),
     part([26.0, 0.0, -25.0, 28.0, 0.8, -23.0], M::Timber),
     part([20.0, 0.0, -20.0, 22.0, 0.8, -18.0], M::Timber),
@@ -521,7 +570,7 @@ pub const LAMPS: [(f32, f32, f32); 12] = [
     (35.0, 9.2, -35.0),
     (-35.0, 9.2, 35.0),
     (35.0, 9.2, 35.0),
-    (9.5, 31.8, 0.0),
+    (26.0, 92.8, 0.0),
     (-25.0, 3.3, -26.0),
     (25.0, 3.0, -22.0),
 ];

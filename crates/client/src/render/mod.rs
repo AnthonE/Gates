@@ -1933,7 +1933,7 @@ impl Plugin for GatesRenderPlugin {
                         ziggurat::doors,
                         // The works' terminals (`ARC.md` F1): stood up as
                         // their rows arrive, lit by their state.
-                        (works::spawn, works::light).chain(),
+                        (works::spawn, works::light, works::animate).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
                         (lore::spawn, lore::dials, lore::carve, lore::offer_marks).chain(),
                     ),

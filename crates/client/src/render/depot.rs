@@ -64,7 +64,7 @@ pub enum Surface {
     Timber,
     /// Masonry — the landmarks' ruins and stones (`landmarks.rs`).
     Stone,
-    /// The ancient dark stone of THE GATE's pylons and the ziggurat: the
+    /// The ancient dark stone of the ziggurat: the
     /// stone maps, darkened and polished.
     Obsidian,
     /// Tarnished gold trim: the metal maps, gold and metallic.

@@ -2,23 +2,21 @@
   "kit": "ci/kits/town.json",
   "seed": 1,
   "label": "THE GATE",
-  "blender": "4.5.14 LTS",
+  "blender": "4.5.15 LTS",
   "python": "3.11.17",
-  "script_sha256": "6374fd9002d35013c0124609684acf3a3e667b286d4be835dd00b65e8e1a2901",
-  "kit_sha256": "08f78ab7b7705e431b067de9ef4a5da0173d869ef0bf6be10a6f45513e6cc859",
-  "triangles": 60324,
+  "script_sha256": "a982ccebd996bae64cf6f0dd3c6004c3ab6d707fc6e9fe5756d96f8d1ed76cec",
+  "kit_sha256": "0819995eed1438a0ca46f61d3582f3cf47ebc6793147f376e747980e5c6cbcda",
+  "triangles": 73296,
   "meshes": [
+    "ashlar",
     "bulb",
     "canvas",
-    "cargo",
-    "concrete",
     "gilt",
     "lapis",
-    "obsidian",
     "sheet",
     "steel",
     "timber",
     "yard"
   ],
-  "bytes": 6976868
+  "bytes": 8960204
 }

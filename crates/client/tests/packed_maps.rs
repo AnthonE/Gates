@@ -141,7 +141,6 @@ fn packed_models() -> Vec<&'static str> {
     for p in [
         client::render::heli::HULL_GLB,
         client::render::sentry::HEAD_GLB,
-        client::render::works::PLINTH_GLB,
         client::render::lore::SLAB_GLB,
         client::render::lore::DIAL_GLB,
         client::render::town_fx::SEARCHLIGHT_GLB,
@@ -150,6 +149,9 @@ fn packed_models() -> Vec<&'static str> {
         client::render::casino::STOOL_GLB,
         client::render::casino::ARMCHAIR_GLB,
     ] {
+        set.insert(p);
+    }
+    for p in client::render::works::models() {
         set.insert(p);
     }
     for m in HELD_MODELS.iter() {

@@ -41,7 +41,7 @@ ROLES = ("yard", "concrete", "sheet", "cargo", "timber", "steel", "obsidian",
          "gilt", "canvas", "lapis", "bulb", "ashlar", "leaf", "paint", "ivy")
 # A landmark kit's boxes also name the old masonry and natural rock; neither
 # is a mesh role (`stone` dresses to `ashlar`, `rock` is the client's).
-KIT_MATS = ROLES + ("stone", "rock")
+KIT_MATS = ROLES + ("stone", "rock", "sandstone")
 # Roles whose pieces each take their own patch of the photograph, so a wall
 # reads as many stones and a deck as many boards rather than one sheet.
 PATCHED = ("ashlar", "timber")
@@ -199,6 +199,15 @@ def self_test():
     stub = {"b": [0, 0, 0, 0.2, 1.5, 0.2], "mat": "steel", "flags": 0, "door": 0}
     assert reach(stub, [stub, roof])[4] == 1.5
     assert above([deck, roof], 0.5, 0.5, 9.25) == 9.6 and below([deck, roof], 0.5, 0.5, 9.0) == 7.3
+    # Giant blocks tile their box: inside it, no overlap, joints the only gaps.
+    wall = (-42.0, -2.0, 39.6, -5.0, 5.2, 42.0)
+    blocks = megalith_blocks(wall, random.Random(3))
+    vol = sum((b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]) for b, _, _ in blocks)
+    box_vol = (wall[3] - wall[0]) * (wall[4] - wall[1]) * (wall[5] - wall[2])
+    assert 0.95 * box_vol < vol <= box_vol + 1e-6, (vol, box_vol)
+    for b, _, _ in blocks:
+        assert all(wall[a] - 1e-9 <= b[a] < b[a + 3] <= wall[a + 3] + 1e-9 for a in range(3)), b
+    assert {top for _, _, top in blocks} == {True, False}
     print("site_kit self-test: OK")
 
 
@@ -443,6 +452,107 @@ def ashlar(s, b, rng, band_every=6.0):
                 s.box("lapis", (min(xx, xx + 0.02), y0 + 1.0, cz - 0.1, max(xx, xx + 0.02), y1 - 1.0, cz + 0.1))
 
 
+SANDSTONE = (0.86, 0.70, 0.52)
+BRONZE = (0.62, 0.46, 0.26)
+
+
+def megalith_blocks(b, rng, course=2.6, short=2.4, long=4.2, gap=0.04):
+    """The giant blocks that build box `b`: courses near `course` tall, each
+    cut along the longer axis into blocks `short`..`long` long in a running
+    bond, a `gap` joint between them. Returns (block, course index, whether
+    it is the top course)."""
+    x0, y0, z0, x1, y1, z1 = b
+    along = 0 if (x1 - x0) >= (z1 - z0) else 2
+    lo, hi = b[along], b[along + 3]
+    n = max(1, round((y1 - y0) / course))
+    h = (y1 - y0) / n
+    out = []
+    for k in range(n):
+        c0, c1 = y0 + k * h, y0 + (k + 1) * h
+        top = k == n - 1
+        if hi - lo <= short * 1.2:
+            spans = [(lo, hi)]
+        else:
+            spans = joints(lo, hi, rng, short=short, long=long)
+        for a0, a1 in spans:
+            bb = [x0, c0, z0, x1, c1 if top else c1 - gap, z1]
+            bb[along] = a0 if a0 <= lo + 1e-6 else a0 + gap / 2
+            bb[along + 3] = a1 if a1 >= hi - 1e-6 else a1 - gap / 2
+            out.append((tuple(bb), k, top))
+    return out
+
+
+def megalith(s, b, rng, course=2.6, short=2.4, long=4.2, crown=0.05):
+    """Giant ancient blocks of warm sandstone filling box `b`, each a rough
+    block with worn arrises. Below head height nothing stands proud of the
+    box (the box is the law); above it a block may sit a few centimetres
+    out."""
+    for bb, k, top in megalith_blocks(b, rng, course, short, long):
+        high = bb[1] >= HEAD_M
+        rough(s, "ashlar", bb, stone_tint(rng, SANDSTONE), rng,
+              amp=0.1 if high else 0.06, cell=1.2, out=0.05 if high else 0.0,
+              crown=crown if top else 0.0)
+
+
+def paving(s, b, rng, slab=(2.0, 3.4)):
+    """A dais of big flat slabs, flush with its box."""
+    x0, y0, z0, x1, y1, z1 = b
+    for a0, a1 in joints(x0, x1, rng, short=slab[0], long=slab[1]):
+        for c0, c1 in joints(z0, z1, rng, short=slab[0], long=slab[1]):
+            bb = (a0 + 0.02, y0, c0 + 0.02, a1 - 0.02, y1, c1 - 0.02)
+            rough(s, "ashlar", bb, stone_tint(rng, SANDSTONE), rng, amp=0.03, cell=1.0, out=0.0)
+
+
+def pylon(s, b, rng):
+    """THE GATE's pylon: giant sandstone courses with bronze bands every
+    12 m, a lapis channel up the face toward the street with hexagonal
+    crystals along it, and two bronze gear wheels on that face."""
+    x0, y0, z0, x1, y1, z1 = b
+    megalith(s, b, rng, course=3.0, short=2.6, long=4.4, crown=0.0)
+    y = 12.0
+    while y < y1 - 2.0:
+        s.box("gilt", (x0 - 0.15, y - 0.3, z0 - 0.15, x1 + 0.15, y + 0.3, z1 + 0.15), BRONZE,
+              bevel=0.05)
+        y += 12.0
+    # The face toward the street: the inner one.
+    inner, sign = (x0, -1.0) if abs(x0) < abs(x1) else (x1, 1.0)
+    face = inner + sign * 0.06
+    cz = (z0 + z1) / 2
+    s.box("lapis", (min(face, face + sign * 0.04), 8.0, cz - 0.35,
+                    max(face, face + sign * 0.04), y1 - 2.0, cz + 0.35))
+    y = 10.0
+    while y < y1 - 4.0:
+        for dz in (-0.9, 0.9):
+            a = (face, y, cz + dz)
+            tip = (face + sign * 0.9, y + 1.4, cz + dz * 1.3)
+            s.prism("lapis", a, tip, 0.22, sides=6)
+        y += 9.0
+    for gy in (20.0, 40.0):
+        a = (face, gy, cz)
+        bb = (face + sign * 0.5, gy, cz)
+        s.prism("gilt", a, bb, 2.6, sides=24, tint=BRONZE)
+        for t in range(16):
+            ang = 2 * math.pi * t / 16
+            dy, dz = 2.8 * math.cos(ang), 2.8 * math.sin(ang)
+            s.box("gilt", (min(face, face + sign * 0.5), gy + dy - 0.2, cz + dz - 0.2,
+                           max(face, face + sign * 0.5), gy + dy + 0.2, cz + dz + 0.2), BRONZE)
+        s.prism("gilt", (face, gy, cz), (face + sign * 0.8, gy, cz), 0.6, sides=12, tint=BRONZE)
+
+
+def capital(s, b):
+    """A pylon's stepped bronze capital, and the crystal its beacon rises
+    from."""
+    x0, y0, z0, x1, y1, z1 = b
+    s.box("gilt", b, BRONZE, bevel=0.08)
+    cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
+    w, d = (x1 - x0) / 2, (z1 - z0) / 2
+    s.box("gilt", (cx - w * 0.75, y1, cz - d * 0.75, cx + w * 0.75, y1 + 0.8, cz + d * 0.75),
+          BRONZE, bevel=0.06)
+    s.box("gilt", (cx - w * 0.45, y1 + 0.8, cz - d * 0.45, cx + w * 0.45, y1 + 1.4, cz + d * 0.45),
+          BRONZE, bevel=0.05)
+    s.prism("lapis", (cx, y1 + 1.4, cz), (cx, y1 + 4.2, cz), 0.7, sides=6)
+
+
 def planks(s, b, rng):
     x0, y0, z0, x1, y1, z1 = b
     dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
@@ -514,7 +624,9 @@ def ring(s, parts):
         runs[0] = [a - 360 for a in runs[-1]] + runs[0]
         runs.pop()
     gold = (0.95, 0.78, 0.45)
-    half = 0.6
+    # The section is the decor boxes' depth; the trim scales with it.
+    half = (parts[0]["b"][5] - parts[0]["b"][2]) / 2
+    k = half / 0.6
     for run in runs:
         a0, a1 = run[0] - 12, run[-1] + 12
         n = max(2, int((a1 - a0) / 5))
@@ -534,19 +646,23 @@ def ring(s, parts):
                 s.face("gilt", q, gold)
             # A lapis line round the inner face.
             li = ri - 0.02
-            s.face("lapis", [at(t0, li, 0.12), at(t1, li, 0.12), at(t1, li, -0.12), at(t0, li, -0.12)])
+            s.face("lapis", [at(t0, li, 0.12 * k), at(t1, li, 0.12 * k), at(t1, li, -0.12 * k),
+                             at(t0, li, -0.12 * k)])
             # Glyph plates on the outer face every other segment.
             if i % 2 == 0:
                 lo = ro + 0.03
-                s.face("gilt", [at(t0 + 0.01, lo, -0.35), at(t1 - 0.01, lo, -0.35),
-                                at(t1 - 0.01, lo, 0.35), at(t0 + 0.01, lo, 0.35)], (0.7, 0.55, 0.3))
+                s.face("gilt", [at(t0 + 0.01, lo, -0.35 * k), at(t1 - 0.01, lo, -0.35 * k),
+                                at(t1 - 0.01, lo, 0.35 * k), at(t0 + 0.01, lo, 0.35 * k)],
+                       (0.7, 0.55, 0.3))
         # Jagged broken ends.
         for a in (a0, a1):
             t = math.radians(a)
-            for k in range(3):
-                j = (k - 1) * 0.3
+            for i in range(3):
+                j = (i - 1) * 0.3 * k
                 p = (cx + (r + j) * math.cos(t), cy + (r + j) * math.sin(t), 0.0)
-                s.box("gilt", (p[0] - 0.25, p[1] - 0.25, -0.5 + 0.2 * k, p[0] + 0.25, p[1] + 0.25, 0.0 + 0.2 * k), gold)
+                e = 0.25 * k
+                s.box("gilt", (p[0] - e, p[1] - e, (-0.5 + 0.2 * i) * k, p[0] + e, p[1] + e,
+                               0.2 * i * k), gold)
 
 
 def catenary(a, b, sag, n=12):
@@ -684,6 +800,20 @@ def dress(s, kit, rng, label):
                 container(s, b, rng)
         elif mat == "obsidian":
             ashlar(s, b, rng, band_every=6.0 if b[4] - b[1] > 8 else 0.0)
+        elif mat == "sandstone":
+            dx, dy, dz = b[3] - b[0], b[4] - b[1], b[5] - b[2]
+            if dy > 3 * max(dx, dz):
+                pylon(s, b, rng)
+            elif dy <= 0.6:
+                paving(s, b, rng)
+            elif b[1] < 0 and b[4] < 5.0 and not flags & STACK:
+                # A block fallen off the gate, half sunk where it landed.
+                rough(s, "ashlar", b, stone_tint(rng, SANDSTONE), rng, amp=0.25, cell=0.9,
+                      out=0.0, crown=0.3)
+            elif flags & STACK:
+                megalith(s, b, rng)
+            else:
+                megalith(s, b, rng, course=2.0 if dy > 4 else dy)
         elif mat == "timber":
             planks(s, b, rng)
         elif mat == "canvas":
@@ -699,6 +829,8 @@ def dress(s, kit, rng, label):
                 corrugated_wall(s, "sheet", b, axis, (0.62, 0.78, 0.80), rng)
         elif mat == "steel":
             s.box("steel", b, (0.37, 0.42, 0.43), bevel=0.02)
+        elif mat == "gilt" and kit["name"] == "town" and b[1] > 20.0:
+            capital(s, b)
         elif mat == "gilt":
             s.box("gilt", b, (0.95, 0.78, 0.45), bevel=0.05)
         elif mat == "yard":

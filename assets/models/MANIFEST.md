@@ -1096,16 +1096,20 @@ trimmed copy is an edited asset that no longer matches its source.
 ## `site/town.glb` — THE GATE, dressed in Blender
 
 **Our own work (CC0).** `ci/site_kit.py gen --kit ci/kits/town.json --out
-assets/models/site/town.glb --seed 1 --label "THE GATE"` on bpy 4.5.14 LTS,
+assets/models/site/town.glb --seed 1 --label "THE GATE"` on bpy 4.5.15 LTS,
 from the sim's own boxes (`cargo run -p sim-core --example kit_dump`), so the
 drawn town and the collided town are one layout. No textures: one mesh per
 surface role, metre UVs, Cycles AO baked into vertex colour; the client puts
 its photographed surfaces on it (`render/town.rs`). The sidecar
-`town.glb.json` records the script and kit hashes.
+`town.glb.json` records the script and kit hashes. Since 2026-10-22 the
+town is the ancient city's: its walls, stalls and stacks are giant sandstone
+blocks (`megalith`), the gate's 92 m pylons carry bronze bands, a lapis
+channel with crystals and two gear wheels (`pylon`), and the ring is 41 m
+across.
 
 | file | kit | tris | size |
 |---|---|---|---|
-| `site/town.glb` | `ci/kits/town.json` | 60,324 | 7.0 MB |
+| `site/town.glb` | `ci/kits/town.json` | 73,296 | 9.0 MB |
 
 ## `site/ziggurat.glb` — the Black Ziggurat, dressed in Blender
 
@@ -1529,6 +1533,67 @@ ball; the rest are saguaros (`props::CACTUS_GLB`).
 | `prop/cactus_saguaro.glb` | 2,559 | 1.41 × 3.60 × 0.49 (trunk ≈ `CACTUS_R_M`) | `01a1522a-31db-73e8-97e8-d30f66f0a68e` | `01a1522a-fbfe-72e0-b34d-dd672d3c2b67` |
 | `prop/cactus_ball.glb` | 1,212 | 0.62 × 0.60 × 0.62 (`BALL_CACTUS_TOP_M`) | `01a1522a-320a-7087-97ba-b7168bad2779` | `01a1522a-ae4a-7228-b011-275372bead61` |
 
+## `site/works_crucible.glb`, `site/works_shard.glb` — the Crucible's furnace and the works' floating stones, Meshy, 2026-10-22
+
+The works leave the black plinth for ancient machine ruins: weathered sandstone, verdigris
+bronze and brass, empty glass housings the client lights (`render/works.rs` `LOOKS`). Same
+terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt) and the
+same pipeline: `meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view) →
+`import_meshy.py` → `ktx_pack.py --size 1024`. **120 credits for five rolls** (balance 2,175 →
+2,055, measured, run serially). Two ship. `measure_glb.py` rejects the furnace's first roll for
+green and chart contrast, which is the verdigris and the stone-against-bronze it was asked for.
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_crucible.glb` | THE CRUCIBLE's terminal (`works::LOOKS`, the anvil) | `01a1617a-9c22` | `01a1617b-1aed` | 24 | 10,011 | 3.19 × 2.28 × 3.20 | third roll; uniform into 4.0 × 3.5 × 3.2 (the room before the anvil rock); spout and mould on +Z |
+| `site/works_shard.glb` | a work's floating stones (`works::SHARD_GLB`) | `01a1617d-4e71` | `01a1617d-cd11` | 24 | 1,664 | 0.40 × 0.41 × 0.45 | second roll; uniform into 0.6 × 0.45 × 0.45 |
+
+**Rolled and not shipped:** the furnace's first roll (`01a16177-9821` / `01a16178-1702`)
+is plainer, one buttress and a looser crucible; the second (`01a16179-1d2b` /
+`01a16179-9c8c`) carved its frieze in pseudo-glyphs a player would try to read against
+the real alphabet. The stone's first (`01a1617c-1b8e` / `01a1617c-9c95`) came back
+grey and mossy against the furnace's warm stone.
+
+**Anchors measured off the model** (the code's numbers, so a re-roll means re-measuring): the
+crucible's rim 2.28 m up, centred at (−0.13, −0.31), 0.44 m inside radius, floored at 1.53; the
+glass dome 0.42 m round at (1.15, 0.80, −0.30).
+
+Prompts, in full, for the IP rail:
+
+> **works_crucible** — "A single ancient machine-furnace ruin on a plain white background, three-quarter front view. A squat block of weathered warm sandstone masonry 400 centimetres wide, 320 centimetres deep and 240 centimetres tall, with a stepped base, chipped carved ornamental bands around its top edge and two heavy buttresses at the back. Set into the top, a large round brass crucible 150 centimetres across held in a geared bronze cradle with big toothed gear wheels on both sides. A thick bronze pipe runs from the crucible down the front face to a stepped stone spout over a shallow rectangular ingot mould at the foot. On the right side, bronze heat pipes with valve wheels run into an empty round glass-domed housing 70 centimetres across ringed with riveted bronze bands. Bronze and brass weathered to green verdigris patina, soot stains, cold and long abandoned. Ancient, ornate, weathered. Exactly one furnace. No fire, no flames, no glow, no light, no molten metal, no crystals inside the dome, no smoke, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone masonry with chipped carved bands and soot stains, brass crucible, bronze gears, pipes and riveted bands with green verdigris patina, clear empty glass dome, no glow, no text, no letters, no symbols"
+>
+> **works_shard** — "A single fallen carved stone block fragment on a plain white background, three-quarter view. A broken chunk of weathered warm sandstone 60 centimetres long, 40 centimetres wide and 35 centimetres tall. One face is carved with a plain ornamental band and a thin inlaid bronze strip with green verdigris; the other faces are rough fractured stone with chipped edges. Ancient and weathered. Exactly one fragment. No glow, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone, rough fractured faces, chipped edges, carved ornamental band, thin bronze inlay with green verdigris, no glow, no text, no letters, no symbols"
+
+## `site/works_exchange_counter.glb` — the Exchange's counter, Meshy, 2026-10-22
+
+**Cut, the same day, to its counter:** THE GATE grew to 92 m and the
+Exchange became the gate's own work (its ring is the readout,
+`render/gate_fx.rs`), so the 3 m gateway below went and only the brass
+counter in front of it ships: `ci/cut_glb.py <imported> --box -2 -1 -2 2 4
+0.2` dropped 9,090 of 10,398 triangles (everything behind z 0.2), then
+`ktx_pack.py --size 1024`. 1,308 triangles left, standing at x −0.77..0.5,
+y 0.05..0.9, z 0.28..1.06; the gateway's vertices stay in the buffer,
+unreferenced. `site/works_exchange.glb` no longer ships. The rows below are
+the gateway as rolled.
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls**, run serially. One
+ships, uniform into 3.0 × 3.1 × 2.6 (the street's room short of the guards' beat; the string
+lights cross 3.5 m over it).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_exchange.glb` | THE EXCHANGE's terminal (`works::LOOKS`, the town) | `01a1620c-6873` | `01a1620d-17ea` | 24 | 10,398 | 3.00 × 2.99 × 2.12 | first roll; counter on +Z, turned about in the code to face the gate |
+
+**Rolled and not shipped:** the second (`01a1620e-0391` / `01a1620e-8386`) filled
+its porthole with sandstone where the veil glows; the third (`01a1620f-639a` /
+`01a16210-0fb0`) drew dimension lines and centimetre labels into its reference image.
+
+**Anchors measured off the model:** the porthole 0.7 m round about (0.02, 1.39), the panel's
+faces at z −0.45 and −1.0; the counter z 0.35–1.06, 0.9 m tall.
+
+Prompts, in full, for the IP rail:
+
+> **works_exchange** — "A single ancient free-standing stone gateway ruin on a plain white background, three-quarter front view. Two square weathered warm sandstone pillars 50 centimetres wide joined by a heavy carved lintel across their tops, the whole gateway 300 centimetres wide, 300 centimetres tall and 80 centimetres deep. The opening between the pillars is closed by a recessed flat panel of deep blue glazed stone with one plain round recess 180 centimetres across in its middle, framed by a riveted bronze ring mount. Bronze and brass machinery on the pillars: toothed gear wheels, a small piston, pipes running up into the lintel, valve wheels. In front of the right pillar stands a waist-high sandstone counter 100 centimetres tall with a brass top, a narrow slot and a shallow brass tray, and a small gear-driven sorting mechanism with brass chutes on its side. Bronze and brass weathered to green verdigris patina. Ancient, ornate, weathered. Both faces of the gateway finished alike. Exactly one gateway. No door, no ring inside the recess, no glow, no light, no crystals, no coins, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone pillars and carved lintel, deep blue glazed stone panel, bronze ring mount, gears and pipes with green verdigris patina, brass counter top and tray, no glow, no text, no letters, no symbols"
 ## Locks and the metal door — Meshy, 2026-10-21
 
 The code lock and key lock drew the prop kit's boxes, and the metal door was
