@@ -45,15 +45,16 @@ pub fn lock_secret(
 }
 
 /// Where a guest agent's install keeps its lock secret: `GATES_AGENT_SECRET`
-/// if set, else `~/.gates/agent-guest.secret`, else beside the binary's
-/// temp files.
+/// if set, else `~/.gates/agent-guest.secret`, else `.gates/` in the working
+/// directory — never the shared temp directory, where another user could
+/// create the file first and know the secret.
 pub fn guest_secret_path() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("GATES_AGENT_SECRET") {
         return p.into();
     }
     match std::env::var_os("HOME") {
         Some(home) => std::path::Path::new(&home).join(".gates/agent-guest.secret"),
-        None => std::env::temp_dir().join("gates-agent-guest.secret"),
+        None => std::path::Path::new(".gates").join("agent-guest.secret"),
     }
 }
 
