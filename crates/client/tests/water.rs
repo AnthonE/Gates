@@ -418,6 +418,183 @@ fn a_storm_trough_never_bares_the_seabed() {
     }
 }
 
+/// **The skirt never caps a calm sea more than the core.** Whitecaps are
+/// judged against the whole clear sea's crest ([`crest_reach`]), not against
+/// the waves a vertex's spacing still carries: against those, the skirt's
+/// lone 52 m wave reached its own peak at every crest and the calm sea wore a
+/// ring of whitecaps 80–130 m out, jumping 8 m on every snap.
+#[test]
+fn the_skirt_never_caps_a_calm_sea_more_than_the_core() {
+    let mut spacings = axis_spacing(&axis_coords());
+    spacings.sort_by(f32::total_cmp);
+    spacings.dedup();
+    let reach = crest_reach(1.0);
+    let capped = |sp: f32| {
+        let mut n = 0usize;
+        for iz in 0..64 {
+            for ix in 0..64 {
+                let (h, _, _) = wave_field(
+                    ix as f32 * 3.1,
+                    iz as f32 * 2.7,
+                    &PHASE,
+                    &SeaState::CALM.swell,
+                    sp,
+                    1.0,
+                );
+                n += usize::from(crest_foam(h, reach) > 0.0);
+            }
+        }
+        n
+    };
+    let core = capped(STEP_M);
+    for sp in spacings {
+        let n = capped(sp);
+        assert!(
+            n <= core,
+            "a calm sea caps {n} crests at {sp} m spacing against {core} in the core"
+        );
+    }
+}
+
+/// **The swell per pixel is the swell.** With a footprint too small to
+/// retire anything, `swell_px` — the fragment's swell, in Rust — is the
+/// gradient `wave_field` gives the core, and its footprint law is
+/// `band_weight`'s with the pixel for the mesh spacing.
+#[test]
+fn the_swell_per_pixel_is_the_swell() {
+    let tau = std::f32::consts::TAU;
+    let state = SeaState::at(0.4);
+    let folded: [f32; WAVE_COUNT] = core::array::from_fn(|i| PHASE[i] / tau);
+    for iz in 0..64 {
+        for ix in 0..64 {
+            let (x, z) = (ix as f32 * 2.0 - 64.0, iz as f32 * 2.0 - 64.0);
+            let (_, gx, gz) = wave_field(x, z, &PHASE, &state.swell, STEP_M, 1.0);
+            let px = swell_px(x, z, &folded, &state, 1.0, Vec2::ZERO, Vec2::ZERO);
+            assert!(
+                (px.g.x - gx).abs() < 1e-4 && (px.g.y - gz).abs() < 1e-4,
+                "at ({x}, {z}) the pixel's swell slope {:?} is not the field's ({gx}, {gz})",
+                px.g
+            );
+            assert_eq!(px.g, px.gd, "a footprint of nothing retires nothing");
+            assert_eq!(px.hidden, 0.0);
+        }
+    }
+    // A footprint drawn out down a crest still averages the crest away.
+    for (i, w) in WAVES.iter().enumerate() {
+        let down = Vec2::new(-w.dir[1], w.dir[0]) * 10.0 * w.len_m;
+        let mut one = state;
+        one.swell = core::array::from_fn(|j| if j == i { state.swell[j] } else { 0.0 });
+        let px = swell_px(1.0, 2.0, &folded, &one, 1.0, Vec2::ZERO, down);
+        assert!(px.g.length() < 1e-6, "a {} m crest survives", w.len_m);
+        assert!(px.hidden > 0.0);
+    }
+    for w in WAVES {
+        for k in 0..400 {
+            let f = k as f32 * w.len_m / 300.0;
+            let (a, b) = (footprint_keep(f / w.len_m), band_weight(f, w.len_m));
+            assert!(
+                (a - b).abs() < 1e-6,
+                "{} m wave at {f} m: {a} against {b}",
+                w.len_m
+            );
+        }
+    }
+}
+
+/// **What a pixel cannot resolve comes back as roughness, and the calm far
+/// glint did not move.** The swell's slope variance is `⅝·Σ(a·k)²` (`⅝` the
+/// crest shape's own `E[ds²]`); a pixel past every wave carries all of it,
+/// and the far glint's ripple share plus the calm sea's is the old `0.02`.
+#[test]
+fn the_hidden_swell_is_roughness() {
+    let n = 100_000;
+    let mut e = 0.0f64;
+    for k in 0..n {
+        let (_, ds) = shape(k as f32 / n as f32 * std::f32::consts::TAU);
+        e += f64::from(ds * ds);
+    }
+    assert!((e / n as f64 - f64::from(SHAPE_SLOPE_VAR)).abs() < 1e-4);
+    assert!((hidden_slope(&SeaState::CALM) - 0.005886).abs() < 1e-5);
+    assert!((hidden_slope(&SeaState::at(1.0)) - 0.03064).abs() < 1e-4);
+    let shoal = 0.7;
+    let state = SeaState::at(0.5);
+    let far = swell_px(
+        3.0,
+        -11.0,
+        &[0.1, 0.2, 0.3, 0.4],
+        &state,
+        shoal,
+        Vec2::new(1e4, 0.0),
+        Vec2::new(0.0, 1e4),
+    );
+    let want = hidden_slope(&state) * shoal * shoal;
+    assert!(
+        (far.hidden - want).abs() < 1e-5 * want.max(1.0),
+        "{} against {want}",
+        far.hidden
+    );
+    assert_eq!(
+        far.g,
+        Vec2::ZERO,
+        "a pixel past every wave shows none of them"
+    );
+    assert!((GLINT_A2_FAR + hidden_slope(&SeaState::CALM) - 0.02).abs() < 2e-4);
+}
+
+/// **The ripples run downwind.** The offset is added to the UV, so it moves
+/// against the wind for the pattern to move with it; the authored speed is
+/// the drift's own, and a clear day's breeze runs it at ¾ of that.
+#[test]
+fn the_ripples_run_downwind() {
+    let speed = (RIPPLE_DRIFT[0].powi(2) + RIPPLE_DRIFT[1].powi(2)).sqrt();
+    assert!((RIPPLE_SPEED - speed).abs() < 1e-5);
+    for k in 0..16 {
+        let a = k as f32 * std::f32::consts::TAU / 16.0;
+        let dir = Vec2::new(a.cos(), a.sin());
+        assert!(ripple_velocity(dir, 0.5).dot(dir) < 0.0);
+    }
+    let breeze = ripple_velocity(Vec2::X, CALM_WIND).length();
+    assert!((breeze - 0.76 * RIPPLE_SPEED).abs() < 1e-6);
+}
+
+/// **A raindrop never jumps.** Each cell's moment (`rain_cycle_of`, the
+/// shader's `rain_layer` timing) runs on through the layer's own wrap and
+/// through its counter's: its phase moves on by the step, and its cycle
+/// advances by exactly one when, and only when, its own phase wraps.
+#[test]
+fn a_raindrop_never_jumps() {
+    let step = 0.013f32;
+    for h in [0.0f32, 0.17, 0.5, 0.83, 0.999] {
+        for start_cycle in [0u32, 17, RAIN_CYCLE_MASK - 1, RAIN_CYCLE_MASK] {
+            let (mut phase, mut cycle) = (0.95f32, start_cycle);
+            let (mut ph, mut cyc) = rain_cycle_of(phase, cycle, h);
+            for _ in 0..200 {
+                let t = phase + step;
+                let wraps = t.floor();
+                phase = t - wraps;
+                cycle = (cycle + wraps as u32) & RAIN_CYCLE_MASK;
+                let (ph2, cyc2) = rain_cycle_of(phase, cycle, h);
+                let dph = ph2 - ph;
+                if dph < 0.0 {
+                    assert!(
+                        (dph + 1.0 - step).abs() < 1e-4,
+                        "h {h}: phase {ph} -> {ph2}"
+                    );
+                    assert_eq!(
+                        cyc2,
+                        (cyc + 1) & RAIN_CYCLE_MASK,
+                        "h {h}: a wrap is one cycle on"
+                    );
+                } else {
+                    assert!((dph - step).abs() < 1e-4, "h {h}: phase {ph} -> {ph2}");
+                    assert_eq!(cyc2, cyc, "h {h}: the cycle moved without a wrap");
+                }
+                (ph, cyc) = (ph2, cyc2);
+            }
+        }
+    }
+}
+
 /// **A storm whitens the swell, and a breeze keeps its scatter.**
 /// `crest_foam` measures every sea against the clear sea's crest reach, so
 /// the clear sea's caps are exactly the old ones and a storm's crests, which
@@ -1200,6 +1377,209 @@ fn the_water_uniform_declares_the_same_fields_on_both_sides() {
     let host = fields(&rust, "pub struct WaterParams {", "pub ");
     assert_eq!(shader, host, "water.wgsl and WaterParams disagree");
     assert!(shader.len() >= 9, "the parse matched nothing: {shader:?}");
+    // Names agree; so must the arrays' lengths, which the names do not show.
+    // A shorter host refuses the pipeline at boot, a longer one shifts
+    // nothing it binds.
+    let body = wgsl.split_once("struct Water {").expect("struct Water").1;
+    let body = body.split_once("\n}").expect("unterminated struct").0;
+    let vec4s: u64 = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .map(|l| match l.split_once("array<vec4<f32>,") {
+            Some((_, n)) => n
+                .trim()
+                .trim_end_matches(">,")
+                .trim()
+                .parse::<u64>()
+                .expect(l),
+            None => {
+                assert!(l.ends_with("vec4<f32>,"), "not a vec4 field: {l}");
+                1
+            }
+        })
+        .sum();
+    use bevy::render::render_resource::ShaderType;
+    assert_eq!(
+        WaterParams::min_size().get(),
+        16 * vec4s,
+        "water.wgsl's struct Water and WaterParams differ in size"
+    );
+}
+
+/// **The wakes' rings are one set of numbers.** `water.wgsl` spreads the
+/// rings `water::Wakes` lays; the shared constants must be the same on both
+/// sides, or the boxes the CPU packs would clip the rings the GPU draws.
+#[test]
+fn the_wake_rings_are_spread_by_the_same_numbers() {
+    let wgsl = std::fs::read_to_string(WATER_WGSL).expect("water.wgsl");
+    let shader = |name: &str| -> f32 {
+        let line = wgsl
+            .lines()
+            .find(|l| l.starts_with(&format!("const {name}: f32 = ")))
+            .unwrap_or_else(|| panic!("no `const {name}` in water.wgsl"));
+        let v = line.split_once('=').expect(line).1;
+        v.trim().trim_end_matches(';').parse().expect(line)
+    };
+    for (name, host) in [
+        ("WAKE_FRONT_M", WAKE_FRONT_M),
+        ("WAKE_SPEED", WAKE_SPEED),
+        ("WAKE_LIFE_S", WAKE_LIFE_S),
+        ("WAKE_LEN_M", WAKE_LEN_M),
+        ("WAKE_BAND_M", WAKE_BAND_M),
+    ] {
+        assert_eq!(shader(name), host, "{name}");
+    }
+}
+
+/// **A swimmer leaves a wake, a diver none, and a body that goes in hard a
+/// splash.** One body swimming at `SWIM_SPEED` on the float line for three
+/// seconds keeps most of a wake's drops alive, each laid a stride apart; the
+/// same swim a metre deeper than the float line lays nothing; a fall through
+/// the surface lays a drop stronger than any stroke's; a teleport lays no
+/// burst along the jump; and the packed uniform puts every drop back where it
+/// was laid.
+#[test]
+fn a_swimmer_leaves_a_wake_and_a_diver_none() {
+    use bevy::math::Vec3;
+    use sim_core::movement::{FLOAT_DEPTH_M, SWIM_SPEED};
+    let dt = 1.0 / 60.0;
+    let swim = |depth: f32| {
+        let mut w = Wakes::default();
+        for k in 0..180 {
+            let feet = Vec3::new(
+                3900.0 + SWIM_SPEED * dt * k as f32,
+                SEA_LEVEL - depth,
+                2048.0,
+            );
+            w.step(
+                dt,
+                &[WakeSource {
+                    key: 7,
+                    feet,
+                    still: false,
+                }],
+            );
+        }
+        w
+    };
+    let w = swim(FLOAT_DEPTH_M);
+    let centre = Vec2::new(3896.0, 2040.0);
+    let (boxes, drops) = w.pack(centre);
+    let n = boxes[0].w as usize;
+    assert!(
+        (9..=WAKE_DROPS).contains(&n),
+        "{n} live drops behind a swimmer"
+    );
+    assert_eq!(boxes[1].w, 0.0, "one body, one box");
+    let mut xs: Vec<f32> = drops[..n]
+        .iter()
+        .map(|d| centre.x + boxes[0].x + d.x)
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    for p in xs.windows(2) {
+        let gap = p[1] - p[0];
+        assert!(
+            (WAKE_STEP_M - 0.05..WAKE_STEP_M + 0.05).contains(&gap),
+            "drops {gap} m apart"
+        );
+    }
+    for d in &drops[..n] {
+        assert!(d.w > 0.9 && d.w <= 1.0, "a stroke's strength {}", d.w);
+        let r = Vec2::new(d.x, d.y).length();
+        let reach = boxes[0].z.sqrt();
+        assert!(r + WAKE_FRONT_M + WAKE_SPEED * d.z + WAKE_BAND_M <= reach + 1e-3);
+    }
+    assert_eq!(
+        swim(FLOAT_DEPTH_M + 1.0).pack(centre).0[0].w,
+        0.0,
+        "a diver's wake"
+    );
+
+    // Two swimmers side by side both have wakes; of five, the four nearest
+    // (the order the sources come in) do.
+    let crowd = |bodies: u32| {
+        let mut w = Wakes::default();
+        for k in 0..180 {
+            let x = 3900.0 + SWIM_SPEED * dt * k as f32;
+            let sources: Vec<WakeSource> = (0..bodies)
+                .map(|b| WakeSource {
+                    key: 10 + b,
+                    feet: Vec3::new(x, SEA_LEVEL - FLOAT_DEPTH_M, 2040.0 + 4.0 * b as f32),
+                    still: false,
+                })
+                .collect();
+            w.step(dt, &sources);
+        }
+        let (boxes, _) = w.pack(centre);
+        let mut zs: Vec<f32> = boxes
+            .iter()
+            .filter(|b| b.w >= 9.0)
+            .map(|b| (centre.y + b.y).round())
+            .collect();
+        zs.sort_by(f32::total_cmp);
+        zs
+    };
+    assert_eq!(crowd(2), [2040.0, 2044.0], "two swimmers, two wakes");
+    assert_eq!(
+        crowd(5),
+        [2040.0, 2044.0, 2048.0, 2052.0],
+        "the nearest four"
+    );
+
+    let mut w = Wakes::default();
+    let fall = |y: f32| WakeSource {
+        key: 3,
+        feet: Vec3::new(3900.0, y, 2048.0),
+        still: false,
+    };
+    w.step(dt, &[fall(1.0)]);
+    w.step(dt, &[fall(SEA_LEVEL - 0.1)]);
+    w.step(dt, &[fall(SEA_LEVEL - 0.2)]);
+    let (boxes, drops) = w.pack(centre);
+    assert_eq!(boxes[0].w, 1.0, "one splash");
+    assert!(drops[0].w > 1.0, "the splash is a stroke's {}", drops[0].w);
+
+    let mut w = Wakes::default();
+    let at = |x: f32| WakeSource {
+        key: 5,
+        feet: Vec3::new(x, SEA_LEVEL - FLOAT_DEPTH_M, 2048.0),
+        still: false,
+    };
+    w.step(dt, &[at(3900.0)]);
+    w.step(dt, &[at(3950.0)]);
+    w.step(dt, &[at(3950.01)]);
+    assert_eq!(w.pack(centre).0[0].w, 0.0, "a teleport lays a burst");
+}
+
+/// **The camera is under the drawn sea exactly when the eye is under
+/// `SEA_LEVEL`**, which the fog, the shell, the sound and the sea's face test
+/// all go by: for every eye height and every height the sea can be drawn at,
+/// riding or only lifted clear, mid-ease or not.
+#[test]
+fn the_riding_camera_is_under_the_sea_only_with_the_eye() {
+    let (up, down) = surface_bounds();
+    for i in 0..=400 {
+        let e = -3.0 + 6.0 * i as f32 / 400.0;
+        for j in 0..=200 {
+            let h = SEA_LEVEL - down + (up + down) * j as f32 / 200.0;
+            for swim in [0.0, 0.3, 1.0] {
+                let eye = SEA_LEVEL + e;
+                let cam = eye + ride_offset(eye, h, swim);
+                assert_eq!(
+                    cam < h,
+                    eye < SEA_LEVEL,
+                    "eye {eye}, sea {h}, swim {swim}: camera {cam}"
+                );
+            }
+        }
+    }
+    // A floater rides the swell at its own height over the line.
+    let float = SEA_LEVEL + 0.2;
+    assert!((float + ride_offset(float, 0.7, 1.0) - 0.9).abs() < 1e-5);
+    assert!((float + ride_offset(float, -0.5, 1.0) + 0.3).abs() < 1e-5);
+    // Someone standing on the beach does not move.
+    assert_eq!(ride_offset(2.0, 0.0, 0.0), 0.0);
 }
 
 /// Every derivative in the fragment is taken before its first branch, and no

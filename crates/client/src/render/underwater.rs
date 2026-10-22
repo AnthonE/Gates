@@ -1,6 +1,7 @@
 //! What the eye sees once it is under the sea: the water's own fog
 //! (`sky::underwater_fog`) over everything near, and past it the water
-//! itself — never the sky, the clouds or the far shore.
+//! itself — never the clouds or the far shore, and the sky only through the
+//! surface overhead, near the eye and fogged (Snell's window, `water.wgsl`).
 //!
 //! `DistanceFog` only reaches meshes. The sky is a `Skybox` and the
 //! atmosphere, neither of which it touches, so with the fog alone the eye
