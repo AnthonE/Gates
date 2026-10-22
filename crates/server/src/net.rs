@@ -2435,8 +2435,14 @@ fn drain_saves(
             }
         };
         let stamp = now_secs();
-        let put = store.put(&key, stamp, msg.save);
         ShardStats::bump(&stats.saves_taken);
+        // A full table refused a newcomer it could not fit without pushing
+        // out somebody worth more (`SaveStore::put`): remembered by nobody,
+        // as a guest is. Its body is still in the world.
+        let Some(put) = store.put(&key, stamp, msg.save) else {
+            ShardStats::bump(&stats.saves_refused);
+            continue;
+        };
         if put.evicted {
             ShardStats::bump(&stats.saves_evicted);
         }
@@ -2466,6 +2472,7 @@ fn retry_side_files(core: &mut ShardCore, stats: &ShardStats, seen: &mut u64) {
     if failed != *seen {
         *seen = failed;
         core.teams.forget_written();
+        core.evict_ids.mark_dirty();
         core.gifts.mark_dirty();
         core.mints.mark_dirty();
     }
@@ -2521,6 +2528,13 @@ fn take_world_save(
     // is the ring's only producer, so room now is room at the push.
     if !file_tx.is_full() {
         if let Some(msg) = core.teams.take_write(&ids) {
+            let _ = file_tx.push(msg);
+        }
+    }
+    // And the ids evicted bodies wore, so their owners' bases are still
+    // theirs after a restart (`core::EvictIds`).
+    if !file_tx.is_full() {
+        if let Some(msg) = core.evict_ids.take_write() {
             let _ = file_tx.push(msg);
         }
     }
@@ -4651,6 +4665,9 @@ fn sim_thread(
         team_max,
         standings_base.as_deref().map(crate::team::teams_path),
     );
+    // And the ids evicted bodies wore, beside them (`core::EvictIds`).
+    core.evict_ids =
+        crate::core::EvictIds::open(standings_base.as_deref().map(crate::core::evict_ids_path));
     core.trust = trust;
     // The standings, beside the files the wipe archives with them.
     core.standings = crate::standings::Standings::open(
@@ -4709,6 +4726,11 @@ fn sim_thread(
                 // The teams its sleepers were on, by their keys.
                 if let Err(e) = core.load_teams() {
                     eprintln!("shard: teams not restored: {e}");
+                }
+                // Who its evicted bodies were, so their bases come back
+                // to them (`ShardCore::load_evict_ids`).
+                if let Err(e) = core.load_evict_ids() {
+                    eprintln!("shard: evicted ids not restored: {e}");
                 }
                 ShardStats::set(&stats.current_tick, core.world.tick);
             }
@@ -4837,14 +4859,18 @@ fn sim_thread(
                     Admitted::Fresh => {}
                 }
             } else {
-                // Command queue refused. Unreachable by arithmetic (ctrl
-                // cap + leave cap < queue reserve), but handled: park the
-                // link and route it through the normal LEAVING sweep —
-                // the sim thread never drops a ring handle itself.
+                // Refused: no world slot for the join (every body awake, or
+                // the sleepers are settled players still inside their
+                // protected sleep, `ShardCore::evict_victim`), or the
+                // command queue full (unreachable by arithmetic: ctrl cap +
+                // leave cap < queue reserve). Park the link and route it
+                // through the normal LEAVING sweep — the sim thread never
+                // drops a ring handle itself — with the reason, so the
+                // client reads "full" and not a network fault.
                 let generation = c.link.generation;
                 links[c.slot] = Some(c.link);
-                slots.mark_leaving(c.slot, generation);
-                ShardStats::bump(&stats.handshake_errors);
+                slots.mark_leaving_why(c.slot, generation, REFUSE_FULL);
+                ShardStats::bump(&stats.refused_full);
             }
         }
         // What the platform said players own (`skins.rs`), after the joins
@@ -5230,12 +5256,12 @@ fn sim_thread(
     let standings = &core.standings;
     core.achievements
         .close(|k| standings.label_of(k).map(str::to_string));
-    // Room for the shutdown's side files — the teams the save below takes,
-    // and a gift ledger a full ring left dirty — on the ring the store thread
-    // is draining right now. Bounded like the accept loop's drain; past the
+    // Room for the shutdown's side files — the teams and evicted ids the
+    // save below takes, and a gift ledger a full ring left dirty — on the
+    // ring the store thread is draining right now. Bounded like the accept loop's drain; past the
     // bound the teams keep their last file and a gift is asked for again.
     for _ in 0..SHUTDOWN_DRAIN_TRIES {
-        if file_tx.slots() >= 2 {
+        if file_tx.slots() >= 3 {
             break;
         }
         std::thread::sleep(SHUTDOWN_DRAIN_POLL);

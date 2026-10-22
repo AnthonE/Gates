@@ -293,7 +293,9 @@ pub fn apply(
 
     if let Some(world) = world_file {
         // The world, its backups, a half-written temp, the trust log
-        // that was stamped with its ticks, and the teams on it.
+        // that was stamped with its ticks, the teams on it, and the ids
+        // its evicted bodies wore (`core::EvictIds`), which name nothing
+        // in the next world.
         for suffix in [
             "",
             ".1",
@@ -303,6 +305,8 @@ pub fn apply(
             ".trust",
             ".teams",
             ".teams.tmp",
+            ".evicted",
+            ".evicted.tmp",
         ] {
             let p = PathBuf::from(format!("{}{suffix}", world.display()));
             if p.exists() {

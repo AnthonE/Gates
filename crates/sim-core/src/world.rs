@@ -7924,10 +7924,17 @@ impl World {
             if !p.active {
                 continue;
             }
-            p.hostile = p.hostile.saturating_sub(1);
             let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
             let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
             p.safe = crate::town::safe(&town, x, z);
+            // Hostility runs down on the clock, asleep or not — except a
+            // sleeper's inside the zone, which waits for its owner. Else a
+            // fight at the gate ended by running in and logging off before
+            // the sentries fired: the guns ignore a sleeper, and the owner
+            // woke five minutes later protected.
+            if !(p.sleeping && p.safe) {
+                p.hostile = p.hostile.saturating_sub(1);
+            }
             if p.safe && !p.dead && !p.sleeping {
                 p.gate_spawn = true;
             }

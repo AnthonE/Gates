@@ -2061,6 +2061,63 @@ fn a_sleeper_is_looted_from_its_own_pack() {
     );
 }
 
+/// THE GATE's "No Looting" holds for the view as it does for the move
+/// verb: a sleeper parked in the safe zone shows its pack to nobody (it
+/// used to stream every slot of it to anyone at the gate), and the panel is
+/// shut with the move verb's reason, the client's toast.
+#[test]
+fn a_sleeper_in_the_safe_zone_shows_nobody_its_pack() {
+    use sim_core::movement::POS_XZ_Q;
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    let t = core.world.haven.town;
+    assert!(t.live, "setup: the seed has a town");
+    let (x, z) = sim_core::kit::to_world(&t.placed(), 0.0, 20.0);
+    core.world.players[w1].body = Body::at(SEED, hv(SEED), x, z);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x + 1.0, z);
+    core.world.players[w1].inv[SLOT_A] = ItemStack {
+        item: FILLER,
+        count: COUNT_A,
+        cond: 0,
+        skin: 0,
+    };
+    let _ = core.disconnect(1);
+    clients.truncate(1);
+    let mut seen = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut seen);
+    assert!(core.world.is_sleeper(id_of(1)), "setup: slot 1 sleeps");
+    let b = core.world.players[w1].body;
+    assert!(
+        sim_core::town::safe(&t, b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q),
+        "setup: the sleeper lies in the zone"
+    );
+
+    seen.clear();
+    ask(&mut core, 0, CONT_BODY, id_of(1));
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let got = syncs(&seen);
+    assert!(
+        got.iter()
+            .all(|(_, k, _, _, rows)| *k != CONT_BODY && rows.is_empty()),
+        "a sleeper's pack in the safe zone was streamed: {got:?}"
+    );
+    assert!(
+        got.iter()
+            .any(|(s, k, _, reset, _)| *s == 0 && *k == CONT_SELF && *reset),
+        "the panel must be shut: {got:?}"
+    );
+    assert!(
+        seen.iter().any(|(s, m)| *s == 0
+            && matches!(m, EventMsg::MoveRefused { reason, .. }
+                if u32::from(*reason) == sim_core::inventory::REFUSE_M_SAFE)),
+        "the close must say why"
+    );
+}
+
 /// A body's wear panel carries the *body's* contents, not its backpack's.
 ///
 /// The sixth thing a container view can get wrong, and it is the fifth one
