@@ -77,6 +77,10 @@ pub const CH_REFILL: u32 = 100;
 /// clearing the pad is worth doing, jittered so a shard does not learn one
 /// clock. Nothing here is a new number; if the window is wrong it is wrong
 /// for all three, which is the right place for that argument.
+///
+/// `seed` is the salted one (`gather::respawn_seed`), as the barrel's is:
+/// the world seed and the emptying tick alone let a looter time the first
+/// take for the shortest wait.
 pub fn refill_ticks(seed: u64, cx: u16, cz: u16, tick: u64) -> u64 {
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_REFILL) ^ tick);
     RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS

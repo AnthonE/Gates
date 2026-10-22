@@ -6525,6 +6525,19 @@ fn lore_and_locks_name_the_player_the_op_and_the_solver() {
     }
     assert!(solved, "the answer opened the lock");
     assert!(w.arc.mechs[0].rest_until > w.tick, "the lock rests");
+    // Every client is sent the dials, so the resting lock's scramble must
+    // name no dial's answer and must not be a fixed function of it (it was
+    // `want + 1 + j`, which read the wipe's answer to the whole shard).
+    let n = def.dials as usize;
+    let rest = w.arc.mechs[0].dials;
+    assert!(
+        (0..n).all(|j| rest[j] != want[j]),
+        "the lock rests on its answer"
+    );
+    assert!(
+        (0..n).any(|j| rest[j] != (want[j] + 1 + j as u8) % def.values),
+        "the resting dials are the answer, shifted"
+    );
     assert_eq!(
         sim_core::craft::inv_count(&w.players[0].inv, def.reward),
         def.reward_n as u32,

@@ -1157,6 +1157,11 @@ fn catcher_visit(
 /// worth shared, box order then store order, among the planters and growing
 /// ground plants within `r` of it, as a catcher's sprinkle shares its
 /// barrel. Salt water empties every such tank instead. How many it reached.
+///
+/// Only what the pourer's hand reaches: box `j` when `sees_box(j)`, a
+/// ground plant when `sees_ground` its quantized spot (`World::pour`
+/// answers both with `reach`), so no pour salts a planter through a wall.
+#[allow(clippy::too_many_arguments)]
 pub fn pour(
     fc: &FarmContent,
     farm: &mut Farm,
@@ -1165,6 +1170,8 @@ pub fn pour(
     (x, z): (f32, f32),
     r: f32,
     salt: bool,
+    sees_box: impl Fn(usize) -> bool,
+    sees_ground: impl Fn((i32, i32, i32)) -> bool,
 ) -> u16 {
     let near = |px: f32, pz: f32| {
         let (dx, dz) = (px - x, pz - z);
@@ -1182,15 +1189,19 @@ pub fn pour(
         }
         reached += 1;
     };
-    for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+    for (j, (b, st)) in boxes.iter().zip(ovens.iter_mut()).enumerate() {
         let (px, pz) = b.xz();
-        if st.arch == ARCH_PLANTER && near(px, pz) {
+        if st.arch == ARCH_PLANTER && near(px, pz) && sees_box(j) {
             give(&mut st.water, fc.planter_cap_wu);
         }
     }
     for p in farm.entries[..farm.len].iter_mut() {
         let (px, _, pz) = p.pos();
-        if p.host == HOST_GROUND && is_growing(p.stage) && near(px, pz) {
+        if p.host == HOST_GROUND
+            && is_growing(p.stage)
+            && near(px, pz)
+            && sees_ground((p.qx, p.qy, p.qz))
+        {
             give(&mut p.water, fc.ground_cap_wu);
         }
     }

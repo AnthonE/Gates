@@ -113,6 +113,9 @@ pub const KILL_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
 pub const KILL_VICTIM_MIN_MINUTES: u32 = 30;
 /// One rekindle deed per wallet per work within this many ticks (an hour).
 pub const REKINDLE_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
+/// One lock's solve points per wallet within this many ticks (a day). A
+/// lock re-arms every `rest_minutes` and its answer holds for the wipe.
+pub const SOLVE_REPEAT_TICKS: u64 = 24 * 3600 * sim_core::limits::TICK_HZ as u64;
 /// Pairs [`Recent`] remembers. A pair older than its window, or pushed out
 /// by this many newer ones, counts again.
 const RECENT: usize = 1024;
@@ -956,6 +959,8 @@ pub struct Standings {
     recent_kills: Recent,
     /// `(wallet, work)` rekindles this last hour ([`Self::rekindled`]).
     recent_rekindles: Recent,
+    /// `(wallet, lock)` solves this last day ([`Self::solved`]).
+    recent_solves: Recent,
 }
 
 impl Default for Standings {
@@ -987,6 +992,7 @@ impl Standings {
             refused: 0,
             recent_kills: Recent::new(),
             recent_rekindles: Recent::new(),
+            recent_solves: Recent::new(),
         }
     }
 
@@ -1199,6 +1205,22 @@ impl Standings {
         }
         let points = self.rules.rekindled_points;
         self.deed(key, label, points, None);
+    }
+
+    /// `key` solved lock `mech` at world tick `now`: its points once a day
+    /// per wallet and lock ([`SOLVE_REPEAT_TICKS`]), and `what` named only
+    /// for the lock's first opener this wipe. A lock re-arms every rest and
+    /// its answer holds for the wipe, so paying and naming every solve let
+    /// one camper farm the prize boards and fill [`MAX_DEEDS`] with one
+    /// lock, crowding every later work's lighting out of the hall.
+    pub fn solved(&mut self, key: &str, label: &str, mech: u32, now: u64, what: &str) {
+        let pair = pair_of(&[key.as_bytes(), b"mech", &mech.to_le_bytes()]);
+        if !self.recent_solves.fresh(pair, now, SOLVE_REPEAT_TICKS) {
+            return;
+        }
+        let first = !self.deeds.iter().any(|(_, w)| w == what);
+        let points = self.rules.solved_points;
+        self.deed(key, label, points, first.then_some(what));
     }
 
     /// The hoards, recounted: `(key, label, hundredths)` for every crew
@@ -2124,6 +2146,32 @@ mod tests {
         s.rekindled(ALICE, "", 4, REKINDLE_REPEAT_TICKS);
         assert_eq!(s.row_of(ALICE).unwrap().deeds, 150 * 100);
         assert_eq!(s.row_of(CAROL).unwrap().deeds, 50 * 100);
+    }
+
+    /// A lock's solve pays once a day per wallet and lock, and only its
+    /// first opener is named: a camper re-solving every rest neither farms
+    /// the boards nor fills the wipe's named deeds.
+    #[test]
+    fn a_solve_pays_once_a_day_a_lock_and_names_its_first_opener() {
+        let mut s = Standings {
+            rules: rules(),
+            ..Standings::off()
+        };
+        let ring = "opened THE RING LOCK";
+        for t in 0..40 {
+            s.solved(ALICE, "", 0, t * 1000, ring);
+        }
+        assert_eq!(s.row_of(ALICE).unwrap().deeds, 200 * 100, "one a day");
+        s.solved(ALICE, "", 1, 10, "opened THE OTHER LOCK");
+        s.solved(CAROL, "", 0, 10, ring);
+        assert_eq!(s.row_of(ALICE).unwrap().deeds, 400 * 100, "another lock");
+        assert_eq!(s.row_of(CAROL).unwrap().deeds, 200 * 100, "another wallet");
+        s.solved(ALICE, "", 0, SOLVE_REPEAT_TICKS, ring);
+        assert_eq!(s.row_of(ALICE).unwrap().deeds, 600 * 100, "a day on");
+        let named: Vec<_> = s.deeds().iter().filter(|(_, w)| w == ring).collect();
+        assert_eq!(named.len(), 1, "a lock is named once a wipe");
+        assert_eq!(named[0].0, ALICE, "for its first opener");
+        assert_eq!(s.deeds().len(), 2);
     }
 
     /// What THE OUTFITTER sold this wipe is kept with the standings: read

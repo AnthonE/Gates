@@ -369,3 +369,80 @@ fn the_exit_lever_is_not_pulled_through_its_shut_door() {
     );
     assert_eq!(w.card_door_bits & 2, 2, "and the door opens");
 }
+
+/// Only a live, awake body holds a card door open. A sleeper or a corpse
+/// in the doorway held it for the rest of the wipe; now the door shuts and
+/// puts the body out at its reader, so nobody is left inside a shut leaf
+/// (where `movement::step`'s stuck-inside lift would let it walk through).
+/// A sleeper woken after a restart — `card_doors` is not saved, so every
+/// door is shut — is put out the same way.
+#[test]
+fn a_sleeper_or_a_corpse_does_not_hold_a_card_door() {
+    use sim_core::movement::{quant_xz, quant_y, Body};
+    use sim_core::world::{Command, World};
+    let seed = 20_260_731;
+    let mut w = World::new(seed);
+    w.tick(&[Command::Join { id: 1 }]);
+    let z = w.haven.ziggurat;
+    assert!(z.live);
+    let b = monument::door_box(0).unwrap();
+    let (x, wz) = kit::to_world(&z.placed(), (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+    let in_door = Body {
+        qx: quant_xz(x),
+        qy: quant_y(z.floor_y),
+        qz: quant_xz(wz),
+        qvy: 0,
+        grounded: true,
+    };
+    let (rx, _, rz) = monument::reader_world(&z, 0, false).unwrap();
+    let at_reader = |w: &World| {
+        let p = &w.players[0].body;
+        (p.qx, p.qz) == (quant_xz(rx), quant_xz(rz))
+    };
+    let open_for = |w: &mut World, ticks: u64| {
+        w.card_doors[0] = w.tick + ticks;
+        w.players[0].body = in_door;
+    };
+
+    // Awake: the door waits on it.
+    open_for(&mut w, 5);
+    for _ in 0..40 {
+        w.tick(&[]);
+    }
+    assert_eq!(
+        w.card_door_bits & 1,
+        1,
+        "the door shut on a body awake in it"
+    );
+
+    // Asleep: it shuts, and the body is put out at the reader.
+    w.tick(&[Command::Leave { id: 1 }]);
+    w.players[0].body = in_door;
+    for _ in 0..40 {
+        w.tick(&[]);
+    }
+    assert_eq!(w.card_door_bits & 1, 0, "a sleeper held the door");
+    assert!(at_reader(&w), "the sleeper was left in the shut leaf");
+
+    // Dead (and asleep, a killed sleeper): the same.
+    open_for(&mut w, 5);
+    w.players[0].dead = true;
+    for _ in 0..40 {
+        w.tick(&[]);
+    }
+    assert_eq!(w.card_door_bits & 1, 0, "a corpse held the door");
+    assert!(at_reader(&w), "the corpse was left in the shut leaf");
+
+    // A restart: the sleeper is back in the doorway and every door is shut,
+    // as a loaded world has them. Waking puts it out.
+    w.players[0].dead = false;
+    w.players[0].body = in_door;
+    w.card_doors = [0; monument::CARD_DOORS];
+    w.card_door_bits = 0;
+    w.tick(&[Command::Wake {
+        id: 0x0101,
+        sleeper: 1,
+    }]);
+    assert!(!w.players[0].sleeping, "setup: the takeover woke the body");
+    assert!(at_reader(&w), "a woken sleeper was left in the shut leaf");
+}

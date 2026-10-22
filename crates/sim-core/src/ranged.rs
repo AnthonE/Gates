@@ -2548,6 +2548,7 @@ fn hitscan_in(
         // and its stored frame keeps the trigger bit (`crawl_frame` strips
         // only the copy the crawl steps), so without it a downed player
         // emptied the magazine from the ground.
+        // Nor hands wrapping a bandage (`survival::hands_busy`).
         if !p.active
             || p.dead
             || p.sleeping
@@ -2555,6 +2556,7 @@ fn hitscan_in(
             || p.hp == 0
             || p.safe
             || crate::movement::swimming(&p.body)
+            || crate::survival::hands_busy(p)
         {
             continue;
         }

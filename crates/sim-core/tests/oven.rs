@@ -1088,3 +1088,113 @@ fn each_fire_slot_takes_only_its_own() {
     );
     assert_eq!(w.players[0].inv[13].item, COOKED);
 }
+
+/// A pour douses only what a hand at the pourer reaches (`reach::clear_box`,
+/// the press's own rule): a lit fire behind a wall stays lit, and the same
+/// pour from inside the wall puts it out. Planar alone, a pour from outside
+/// a base put out every fire and furnace within 4 m of its wall.
+#[test]
+fn a_pour_does_not_douse_a_fire_through_a_wall() {
+    use sim_core::build::LOC_EDGE_XLO;
+    use sim_core::input::{InputFrame, BTN_AIM};
+    use sim_core::survival::{SurvivalContent, Vessel};
+    let (empty, fresh, salt) = (20u16, 21u16, 22u16);
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.cook = CookContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.survival.vessels[0] = Vessel { empty, fresh, salt };
+    w.survival.vessel_count = 1;
+    // A foundation, and the fire on the ground east of it, behind a wall
+    // on the foundation's east edge (the fire cell's west edge).
+    let (fx, cz) = buildable_cell(SEED);
+    let cx = fx + 1;
+    let (x, z) = cell_center(cx, cz);
+    w.dev_spawn = Some((x, z));
+    w.tick(&[Command::Join { id: PLAYER }]);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: FIRE_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    // `BuildContent::probe_fixture`: row 0 the foundation, row 1 a wall,
+    // both paid in item 0.
+    w.players[0].inv[1] = ItemStack {
+        item: FUEL,
+        count: 40,
+        cond: 0,
+        skin: 0,
+    };
+    for (row, at, loc) in [(0u16, fx, LOC_PLANE), (1, cx, LOC_EDGE_XLO)] {
+        let before = w.pieces.len();
+        w.tick(&[Command::Place {
+            id: PLAYER,
+            row,
+            cx: at,
+            cz,
+            level: 0,
+            loc,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(w.pieces.len(), before + 1, "setup: piece row {row} placed");
+    }
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: FIRE_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    assert_eq!(
+        w.deploys.boxes().len(),
+        1,
+        "setup: the fire placed ({:?})",
+        refusal(&w, EV_DEPLOY_REFUSED)
+    );
+    let key = box_key(cx, cz, 0, 0);
+    load(&mut w, key, 0, FUEL, 4);
+    press(&mut w, cx, cz);
+    assert!(lit(&w, key), "setup: the fire lights");
+
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let mut seq = 0u16;
+    // Stand at `x` facing +X (the fire), let the body settle, and pour.
+    let mut pour_from = |w: &mut World, x: f32| {
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        w.players[0].inv[5] = ItemStack {
+            item: fresh,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        seq += 1;
+        w.tick(&[Command::Input {
+            id: PLAYER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_AIM,
+                yaw: 64 << 8,
+                sel: 5,
+                ..InputFrame::default()
+            },
+            favour: 0,
+        }]);
+        assert_eq!(w.players[0].inv[5].item, empty, "setup: the vessel poured");
+    };
+
+    // On the foundation, the fire 2.5 m off: in the splash, out of sight.
+    pour_from(&mut w, x0 - 1.0);
+    assert!(lit(&w, key), "a pour put out a fire through a wall");
+    pour_from(&mut w, x0 + 0.5);
+    assert!(!lit(&w, key), "a pour in sight of the fire puts it out");
+}
