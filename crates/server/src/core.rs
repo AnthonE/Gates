@@ -2722,23 +2722,25 @@ impl ShardCore {
         Some((id, save))
     }
 
-    /// The sim loop is `behind` whole ticks late and about to sprint them
-    /// back to back (`net.rs`'s pacing, after a stall). The world tick then
-    /// races ahead of every client's acks with no change in any round trip,
-    /// so for the second after, while acks made before the sprint are still
-    /// arriving, each connection's age bound and favour cap allow
-    /// `behind + 1` more ticks. Without it every honest client was clamped
-    /// through each catch-up and counted as a disagreement.
-    pub fn note_pace_backlog(&mut self, behind: u16) {
-        if behind == 0 {
+    /// The sim loop has run `lead` ticks of a catch-up sprint back to back
+    /// (`net.rs`'s pacing, after a stall; an overloaded loop runs none). The
+    /// world tick has raced ahead of every client's acks with no change in
+    /// any round trip, so for the second after, while acks made before the
+    /// sprint are still arriving, each connection's age bound and favour cap
+    /// allow `lead + 1` more ticks. Without it every honest client was
+    /// clamped through each catch-up and counted as a disagreement.
+    ///
+    /// Only a value at least the one held raises or re-arms it, so the
+    /// slack lapses a second after the largest sprint: a run of small ones
+    /// cannot hold a large one open.
+    pub fn note_pace_backlog(&mut self, lead: u16) {
+        if lead == 0 {
             return;
         }
-        let tick = self.world.tick;
-        let held = self.pace_slack_now();
-        self.pace_slack = (
-            held.max(behind.saturating_add(1)),
-            tick + u64::from(sim_core::limits::TICK_HZ),
-        );
+        let want = lead.saturating_add(1);
+        if want >= self.pace_slack_now() {
+            self.pace_slack = (want, self.world.tick + u64::from(sim_core::limits::TICK_HZ));
+        }
     }
 
     /// The catch-up slack in force at this tick (`note_pace_backlog`).
@@ -3045,12 +3047,15 @@ impl ShardCore {
                     // And no more in all than the round trip explains
                     // (`stats::favour_cap`): the age and the playout are
                     // each bounded above, but a client faking jitter under
-                    // the age bound stacked the two.
+                    // the age bound stacked the two. Counted only past the
+                    // cap's band: a jittery honest link's tail runs a tick
+                    // over, which is cut but accuses nobody
+                    // (`stats::FAVOUR_CAP_BAND_TICKS`).
                     let (playout, capped) = c.priced_playout();
                     let mut favour = stats::favour_for(now, view, playout);
                     let cap = c.age_bound(pace).map_or(favour, stats::favour_cap);
-                    let cut =
-                        (capped && favour < sim_core::limits::REWIND_MAX_TICKS) || favour > cap;
+                    let cut = (capped && favour < sim_core::limits::REWIND_MAX_TICKS)
+                        || favour > cap.saturating_add(stats::FAVOUR_CAP_BAND_TICKS);
                     if cut && favour > 0 {
                         ShardStats::bump(&stats.favour_playout_high);
                     }

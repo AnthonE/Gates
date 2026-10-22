@@ -90,6 +90,38 @@ const RING_RETRY: Duration = Duration::from_millis(2);
 /// a VM freeze) instead of sprinting to catch up.
 const MAX_TICK_BACKLOG: u32 = 8;
 
+/// The ticks a catch-up sprint has run off: what the world tick gained on
+/// wall time, and so on every client's acks, with no round trip changing
+/// (`ShardCore::note_pace_backlog`). Clock-free, so it is tested.
+///
+/// The backlog alone is not that. An overloaded shard (every tick longer
+/// than a tick) only grows its backlog until it is dropped, and the world
+/// falls behind wall time, so acks get younger, not older. What is gained
+/// is the backlog's fall since its peak: the ticks run back to back.
+#[derive(Default)]
+struct PaceLead {
+    /// The most whole ticks behind since the loop was last on time.
+    peak: u16,
+}
+
+impl PaceLead {
+    /// One iteration ended `behind` whole ticks late (0: on time). Returns
+    /// the ticks run off since the peak.
+    fn step(&mut self, behind: u16) -> u16 {
+        self.peak = self.peak.max(behind);
+        let run_off = self.peak - behind;
+        if behind == 0 {
+            self.peak = 0;
+        }
+        run_off
+    }
+
+    /// The backlog was abandoned, not run: nothing was gained.
+    fn drop_backlog(&mut self) {
+        self.peak = 0;
+    }
+}
+
 /// How long the accept loop will keep draining the save ring after a
 /// shutdown is signalled, waiting for the sim thread's final flush: 200
 /// tries × 5 ms = 1 s.
@@ -4739,6 +4771,7 @@ fn sim_thread(
     }
     let tick_dur = Duration::from_nanos(1_000_000_000 / TICK_HZ as u64);
     let mut next = Instant::now();
+    let mut lead = PaceLead::default();
     // The boundary loop: clock read and sleep live here and only here;
     // the tick body makes no syscalls (L1 — the sleep IS the boundary).
     // The phase marks below read the clock from inside `tick_marked`, which
@@ -5145,6 +5178,8 @@ fn sim_thread(
         next += tick_dur;
         let now = Instant::now();
         if now < next {
+            // On time, so any sprint is run off whole.
+            core.note_pace_backlog(lead.step(0));
             std::thread::sleep(next - now);
         } else {
             let behind = now - next;
@@ -5152,11 +5187,13 @@ fn sim_thread(
                 let missed = (behind.as_nanos() / tick_dur.as_nanos()) as u64;
                 stats.ticks_dropped.fetch_add(missed, Ordering::Relaxed);
                 next = now;
+                lead.drop_backlog();
             } else {
-                // The ticks about to run back to back: the world tick
-                // outruns every client's acks by that many, and the favour
+                // The ticks run back to back so far: the world tick has
+                // outrun every client's acks by that many, and the favour
                 // bounds must know (`ShardCore::note_pace_backlog`).
-                core.note_pace_backlog((behind.as_nanos() / tick_dur.as_nanos()) as u16);
+                let behind = (behind.as_nanos() / tick_dur.as_nanos()) as u16;
+                core.note_pace_backlog(lead.step(behind));
             }
         }
     }
@@ -5251,6 +5288,36 @@ fn fresh_salt() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Only a backlog run off is a lead.** An overloaded loop's backlog
+    /// grows until it is dropped and gains on nobody, so it grants no pace
+    /// slack; a stall of `k` followed by fast ticks grants 1..=k as the
+    /// sprint runs them off, then starts over.
+    #[test]
+    fn only_a_sprint_run_off_grants_pace_slack() {
+        let mut lead = PaceLead::default();
+        for behind in 0..=MAX_TICK_BACKLOG as u16 {
+            for _ in 0..3 {
+                assert_eq!(lead.step(behind), 0, "overload at {behind} behind");
+            }
+        }
+        lead.drop_backlog();
+        assert_eq!(lead.step(0), 0, "a dropped backlog was never run");
+        for k in 1..=MAX_TICK_BACKLOG as u16 {
+            assert_eq!(lead.step(k), 0, "the stall itself gains nothing");
+            for run in 1..=k {
+                assert_eq!(lead.step(k - run), run, "stall {k}, {run} run off");
+            }
+            assert_eq!(lead.step(0), 0, "on time: the next sprint starts over");
+        }
+        // A sprint that turns back into overload grants what it ran off.
+        assert_eq!(lead.step(5), 0);
+        assert_eq!(lead.step(3), 2);
+        assert_eq!(lead.step(4), 1);
+        assert_eq!(lead.step(6), 0);
+        lead.drop_backlog();
+        assert_eq!(lead.step(2), 0, "a dropped backlog leaves no peak");
+    }
 
     /// **One source holds at most `ADMIT_PER_SOURCE` handshakes, and gets
     /// each back when it ends.** An IPv6 /64 is one source; loopback is
