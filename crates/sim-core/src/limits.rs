@@ -706,7 +706,7 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 /// Turrets one player may have placed (`deploy::place_deploy`): more than
 /// [`TURRET_INTERFERENCE`] in one place never all fire anyway, and the
 /// [`MAX_TURRETS`] table is shard-wide, so one hand may not hold all of it.
-/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 
@@ -896,7 +896,8 @@ pub const MAX_BOXES: usize = 1_024;
 /// furnaces, planters, turrets, every container (`deploy::holds_items`).
 /// The store is shard-wide and a small box is cheap, so without a share one
 /// player kept every fire, furnace and box on the island from being placed.
-/// Overflow policy: **refuse** with `REFUSE_D_FULL`, as for the store.
+/// Overflow policy: **refuse** with `REFUSE_D_OWN_CAP` (the store's own is
+/// `REFUSE_D_FULL`).
 pub const MAX_BOXES_PER_OWNER: usize = 64;
 const _: () = assert!(MAX_BOXES >= 16 * MAX_BOXES_PER_OWNER);
 

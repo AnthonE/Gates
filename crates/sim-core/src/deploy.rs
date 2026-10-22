@@ -520,7 +520,9 @@ pub const REFUSE_D_DOOR: u32 = 11;
 /// full-rights lock op from a guest or a stranger (lock v1). One reason
 /// for every half, because all of them are the same sentence — *this lock
 /// does not know you* — and a client that could tell them apart would
-/// learn something about the lock it was refused by.
+/// learn something about the lock it was refused by. Also a stranger's
+/// lift of a bag still cooling down, for the same reason
+/// ([`REFUSE_D_BAG_SPENT`] is its owner's).
 pub const REFUSE_D_OWNER: u32 = 12;
 /// A use press on an oven with nothing in it that burns (oven v0,
 /// `oven.rs`). Lighting is a match, not a delivery: the fuel has to be
@@ -567,8 +569,19 @@ pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// Not from the water (water pass): a swimmer puts nothing down
 /// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
 pub const REFUSE_D_SWIMMING: u32 = 26;
+/// One hand's share of a shard-wide store is placed already: its
+/// containers (`limits::MAX_BOXES_PER_OWNER`) or its turrets
+/// (`limits::MAX_TURRETS_PER_OWNER`). Its own reason rather than
+/// `REFUSE_D_FULL`: the world is not full, this hand's share is, and the
+/// fix is to take one of yours up.
+pub const REFUSE_D_OWN_CAP: u32 = 27;
+/// A pickup named a sleeping bag still cooling down from a respawn
+/// (`Deploys::bag_ready`): lifted and set back down it would be born ready.
+/// Told to the bag's owner only; any other hand hears `REFUSE_D_OWNER`, so
+/// the refusal does not tell a stranger somebody just woke there.
+pub const REFUSE_D_BAG_SPENT: u32 = 28;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_SWIMMING;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_BAG_SPENT;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -3273,18 +3286,22 @@ pub fn place_deploy(
     }
     // Checked before the insert for the same reason the hearth cap is: the
     // record below cannot be written into a full store, so the append that
-    // follows the insert needs no second guard. Each hand's share of that
-    // store is capped too (`MAX_BOXES_PER_OWNER`), or one player's cheap
-    // boxes kept every fire and furnace on the shard from being placed.
-    if holds_items(def.arch)
-        && (deploys.boxes.len == MAX_BOXES
-            || deploys.boxes.entries[..deploys.boxes.len]
-                .iter()
-                .filter(|b| b.owner == p.id)
-                .count()
-                >= MAX_BOXES_PER_OWNER)
-    {
+    // follows the insert needs no second guard.
+    if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
+    // Each hand's share of that store is capped too
+    // (`MAX_BOXES_PER_OWNER`), or one player's cheap boxes kept every fire
+    // and furnace on the shard from being placed.
+    if holds_items(def.arch)
+        && deploys.boxes.entries[..deploys.boxes.len]
+            .iter()
+            .filter(|b| b.owner == p.id)
+            .count()
+            >= MAX_BOXES_PER_OWNER
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
         return;
     }
     // The turret table is shard-wide (`MAX_TURRETS`), so one hand may hold
@@ -3296,7 +3313,7 @@ pub fn place_deploy(
             .count()
             >= MAX_TURRETS_PER_OWNER
     {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
         return;
     }
     // The catchers' own cap: each one's watering scan is bounded by it.
@@ -3917,12 +3934,18 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
-    // A spent bag stays down until it is ready again: lifted and set back
-    // down it would be born ready (`Deploys::insert`), and the cooldown
-    // would last one pickup. The bag's own refusal, the nearest sentence
-    // the wire has for "not this bag, not yet".
+    // A spent bag stays down until it is ready again, for every hand:
+    // lifted and set back down it would be born ready (`Deploys::insert`),
+    // and the cooldown would last one pickup — a friend's included, handed
+    // back. Why is the owner's to hear; anyone else hears the lock's
+    // sentence rather than that somebody just woke here.
     if def.arch == ARCH_BAG && deploys.bag_ready[i] > tick {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_BAG_CAP, 0);
+        let why = if rec.owner == p.id {
+            REFUSE_D_BAG_SPENT
+        } else {
+            REFUSE_D_OWNER
+        };
+        events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
         return;
     }
     // A container comes up empty or not at all.
@@ -9696,7 +9719,15 @@ mod tests {
         let r = lift(&mut deploys, &mut pieces, &mut p, 101);
         assert_eq!(
             (r.0, r.2),
-            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_CAP)
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_SPENT)
+        );
+        // Anyone else is refused too, and not told why.
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        let r = lift(&mut deploys, &mut pieces, &mut friend, 101);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWNER)
         );
         assert_eq!(deploys.len(), 1, "the spent bag came up");
         lift(&mut deploys, &mut pieces, &mut p, 100 + BAG_COOLDOWN_TICKS);
@@ -9749,7 +9780,10 @@ mod tests {
             last(&ev)
         };
         let r = place(&mut deploys, &mut pieces, &mut p);
-        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
         // A box of somebody else's in that row, and the same placement goes.
         deploys.boxes.entries[0].owner = 9;
         let r = place(&mut deploys, &mut pieces, &mut p);
@@ -9834,7 +9868,10 @@ mod tests {
             last(&ev)
         };
         let r = place(&mut deploys, &mut pieces, &mut p);
-        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
         let i = deploys.find_index(100, 100, 0, LOC_PLANE).unwrap();
         deploys.remove_at(i, &dc);
         let r = place(&mut deploys, &mut pieces, &mut p);

@@ -119,7 +119,7 @@ pub const BUILD: [&str; 17] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 27] = [
+pub const DEPLOY: [&str; 29] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -154,6 +154,12 @@ pub const DEPLOY: [&str; 27] = [
     "not ready",
     "already watered",
     "not while swimming",
+    // One hand's share of the shard's containers or turrets (v139): the
+    // world has room, you do not.
+    "you have too many of those placed",
+    // A bag that respawned you, cooling down (v139). The owner's alone:
+    // anyone else is told "you haven't been let in".
+    "that bag isn't ready yet",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
@@ -572,6 +578,15 @@ mod tests {
         assert_eq!(
             deploy(sim_core::deploy::REFUSE_D_PLANT_WATER as u8),
             "already watered"
+        );
+        assert_eq!(deploy(REFUSE_D_SWIMMING as u8), "not while swimming");
+        assert_eq!(
+            deploy(REFUSE_D_OWN_CAP as u8),
+            "you have too many of those placed"
+        );
+        assert_eq!(
+            deploy(REFUSE_D_BAG_SPENT as u8),
+            "that bag isn't ready yet"
         );
 
         assert_eq!(

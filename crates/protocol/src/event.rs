@@ -11177,11 +11177,12 @@ mod wire_domains {
             prefix: "pub const REFUSE_D_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 27,
+            min_members: 29,
             bits: REFUSE_D_BITS,
             // 19 -> 25 at v135: farming v2's six. 26 at v137:
-            // `REFUSE_D_SWIMMING`.
-            live_max: 26,
+            // `REFUSE_D_SWIMMING`. 28 at v139: `REFUSE_D_OWN_CAP` and
+            // `REFUSE_D_BAG_SPENT`.
+            live_max: 28,
         },
         Domain {
             what: "container kind",
