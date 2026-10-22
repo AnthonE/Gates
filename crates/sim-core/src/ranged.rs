@@ -125,8 +125,9 @@ use crate::craft::{inv_count, inv_take};
 use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
 use crate::input::{BTN_AIM, BTN_PRIMARY, BTN_SPRINT};
 use crate::limits::{
-    ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS,
-    MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PELLETS, MAX_PLAYERS,
+    ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROWS_PER_OWNER, MAX_ARROW_LIFE_TICKS,
+    MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PELLETS,
+    MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -861,10 +862,21 @@ impl Arrows {
         self.lit.nb = 0;
     }
 
-    /// The first free slot, or `None` when the store is full — the refusal
-    /// `MAX_ARROWS` documents. Checked before the ammo is spent.
-    fn free(&mut self) -> Option<usize> {
-        self.a.iter().position(|a| !a.active())
+    /// The first free slot for `owner`'s next arrow, or `None` when the
+    /// store is full or `owner` already has `MAX_ARROWS_PER_OWNER` in the
+    /// air — the two refusals `limits.rs` documents. Checked before the
+    /// ammo is spent. One pass over the store, on a loose only.
+    fn free_for(&self, owner: u32) -> Option<usize> {
+        let mut free = None;
+        let mut theirs = 0usize;
+        for (ix, a) in self.a.iter().enumerate() {
+            if !a.active() {
+                free = free.or(Some(ix));
+            } else if a.owner == owner {
+                theirs += 1;
+            }
+        }
+        free.filter(|_| theirs < MAX_ARROWS_PER_OWNER)
     }
 }
 
@@ -1006,10 +1018,23 @@ pub fn draw(
     // shot a whole draw away, so the draw's clock starts when the aim does;
     // after a shot the cadence below runs, and a draw held through it is
     // ready when the cadence is.
-    if def.draw_ticks > 0 && p.frame.buttons & BTN_AIM == 0 {
-        // From the next tick: an aim that begins then is full a draw later.
-        p.next_swing = p.next_swing.max(tick + 1 + u64::from(def.draw_ticks));
-        return true;
+    if def.draw_ticks > 0 {
+        // **And only from a draw this bow made.** A bow that was not in hand
+        // last tick starts its draw now even with the aim already held: the
+        // hand changed without the frame saying so (a move into the
+        // selected slot), or the arm was not this function's (the safe
+        // zone, a crawl, a sleep). `World::take_frame` sees the aim's edge
+        // and a change of slot; this is everything it cannot see.
+        let held_on = p.draw_on == tick;
+        p.draw_on = tick + 1;
+        if p.frame.buttons & BTN_AIM == 0 {
+            // From the next tick: an aim that begins then is full a draw later.
+            p.next_swing = p.next_swing.max(tick + 1 + u64::from(def.draw_ticks));
+            return true;
+        }
+        if !held_on {
+            p.next_swing = p.next_swing.max(tick + u64::from(def.draw_ticks));
+        }
     }
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
         return true;
@@ -1049,8 +1074,9 @@ pub fn draw(
     };
     // Space before ammo, always. A full store must cost the shooter
     // nothing — spending the arrow first and finding no slot for it is how
-    // a cap turns into a bug report about vanishing ammunition.
-    let Some(ix) = arrows.free() else {
+    // a cap turns into a bug report about vanishing ammunition. The
+    // archer's own share is the same refusal (`MAX_ARROWS_PER_OWNER`).
+    let Some(ix) = arrows.free_for(p.id) else {
         return true;
     };
     inv_take(&mut p.inv, round, 1);
@@ -2423,6 +2449,10 @@ const _: () = assert!(
 /// at their present position when the arc appears. `range_cm` does rewind,
 /// because it is a fact about the blow and is measured on the geometry the
 /// hit was decided on.
+///
+/// **Unsalted**: the cone is drawn off the seed alone, which every client
+/// is sent. The shard's pass is [`hitscan_hunting`], which takes the
+/// world's secret; this spelling is the fixtures' and the examples'.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,
@@ -2439,7 +2469,7 @@ pub fn hitscan(
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
     hitscan_in(
-        seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
+        seed, 0, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
     )
 }
 
@@ -2448,9 +2478,15 @@ pub fn hitscan(
 /// written to `quarry` for `World` to land (`mob::hurt_slot`). Animals are
 /// not rewound — they are not in `Rewind` — so a hit on one is solved
 /// against where it stands this tick.
+///
+/// `salt` is the world's secret (`mech::ArcState::salt`), mixed into the
+/// cone's key so a client that knows the seed, the tick and its slot
+/// cannot work out where its next round will stray — and so time its
+/// shots for the draws that land dead on the line. 0 is the seed's cone.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan_hunting(
     seed: u64,
+    salt: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2466,6 +2502,7 @@ pub fn hitscan_hunting(
 ) -> (usize, usize) {
     hitscan_in(
         seed,
+        salt,
         haven,
         cols,
         occ,
@@ -2484,6 +2521,7 @@ pub fn hitscan_hunting(
 #[allow(clippy::too_many_arguments)]
 fn hitscan_in(
     seed: u64,
+    salt: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2501,14 +2539,19 @@ fn hitscan_in(
     let mut n_chips = 0usize;
     for i in 0..MAX_PLAYERS {
         let p = &players[i];
-        // A corpse and a sleeper do not shoot. `World::tick`'s player loop
-        // has already refused them the arm; this pass runs outside that
-        // loop, so it restates the rule rather than inheriting it — and the
-        // safe zone's with it: a gun cannot be drawn there. Nor fired by a
-        // swimmer (`combat::waterlogged`).
+        // A corpse, a sleeper and a downed body do not shoot. `World::tick`'s
+        // player loop has already refused them the arm; this pass runs
+        // outside that loop, so it restates the rule rather than inheriting
+        // it — and the safe zone's with it: a gun cannot be drawn there. Nor
+        // fired by a swimmer (`combat::waterlogged`). Down is the one that
+        // was missing: a crawl keeps `hp` above zero (`wound::WOUNDED_HP`)
+        // and its stored frame keeps the trigger bit (`crawl_frame` strips
+        // only the copy the crawl steps), so without it a downed player
+        // emptied the magazine from the ground.
         if !p.active
             || p.dead
             || p.sleeping
+            || p.wounded
             || p.hp == 0
             || p.safe
             || crate::movement::swimming(&p.body)
@@ -2641,8 +2684,14 @@ fn hitscan_in(
             } else {
                 0
             };
+        // The secret rotated as the casino rotates it (`casino::draw`), so
+        // a salt of 0 is exactly the seed's key and every fixture keeps
+        // its cone.
         let key = crate::rng::splitmix64(
-            seed ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
+            seed ^ salt.rotate_left(23)
+                ^ CH_CONE
+                ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ ((i as u64) << 40),
         );
         let ctx = Shot {
             seed,

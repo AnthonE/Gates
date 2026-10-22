@@ -1241,10 +1241,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // file is not a client.
             mag: save.mag,
             mag_round: save.mag_round,
-            // The gun's cone and trigger settle over a restart.
+            // The gun's cone and trigger settle over a restart, and a bow's
+            // draw with them.
             bloom: 0,
             shot_at: 0,
             trigger_spent: false,
+            draw_on: 0,
             ws_cell,
             ws_mark,
             death_by,

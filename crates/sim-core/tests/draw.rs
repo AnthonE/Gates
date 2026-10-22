@@ -299,6 +299,81 @@ fn a_bow_brought_up_drawn_still_takes_a_draw() {
     );
 }
 
+/// The same, with the hand changed under a frame that did not: the aim held
+/// on an empty selected slot while a bow is **moved into** it. No edge for
+/// `World::take_frame` to see, so the draw is the bow's own to start
+/// (`Player::draw_on`). Mutant: without it the bow looses on the tick it
+/// arrives.
+#[test]
+fn a_bow_moved_into_a_held_aim_still_takes_a_draw() {
+    use sim_core::inventory::CONT_SELF;
+    use sim_core::world::{Command, World, EV_SHOT};
+    let mut w = Box::new(World::new(20260731));
+    w.combat = bow(DRAW);
+    let mut g = sim_core::gather::GatherContent::EMPTY;
+    g.stack_max[BOW as usize] = 1;
+    g.stack_max[ARROW as usize] = 64;
+    g.item_count = ARROW + 1;
+    w.gather = g;
+    w.tick(&[Command::Join { id: 1 }]);
+    let a = archer();
+    w.players[0].inv[4] = a.inv[0];
+    w.players[0].inv[7] = a.inv[7];
+    let input = |buttons| Command::Input {
+        id: 1,
+        frame: InputFrame {
+            buttons,
+            sel: 0,
+            ..InputFrame::default()
+        },
+        favour: 0,
+    };
+    // The aim alone on the empty hand — no click, so no punch puts the
+    // fist's cadence on `next_swing` and the bow's draw is all that holds
+    // the shot. Then the bow arrives and the click goes down with it.
+    for _ in 0..40 {
+        w.tick(&[input(BTN_AIM)]);
+    }
+    let input = input(BTN_AIM | BTN_PRIMARY);
+    let up = w.tick;
+    w.tick(&[
+        input,
+        Command::Move {
+            id: 1,
+            cont: 0,
+            from_kind: CONT_SELF,
+            from_slot: 4,
+            to_kind: CONT_SELF,
+            to_slot: 0,
+            count: 1,
+        },
+    ]);
+    assert_eq!(w.players[0].inv[0].item, BOW, "fixture: the bow is in hand");
+    let mut shot = w
+        .events
+        .entries()
+        .iter()
+        .any(|e| e.code == EV_SHOT)
+        .then_some(up);
+    for _ in 0..(2 * DRAW) {
+        if shot.is_some() {
+            break;
+        }
+        let t = w.tick;
+        w.tick(&[input]);
+        if w.events.entries().iter().any(|e| e.code == EV_SHOT) {
+            shot = Some(t);
+        }
+    }
+    let shot = shot.expect("a drawn bow looses");
+    assert_eq!(
+        shot,
+        up + u64::from(DRAW),
+        "moved in under a held aim, it loosed {} ticks after arriving, not after the {DRAW}-tick draw",
+        shot - up
+    );
+}
+
 /// A crouch walks slower still, and beats sprint and the draw (v83): the
 /// distance is `CROUCH_SPEED`'s over flat ground, whatever else is held.
 #[test]
