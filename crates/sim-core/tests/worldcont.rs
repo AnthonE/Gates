@@ -584,6 +584,53 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
     assert_eq!(w.world_conts.len(), 1, "still one record for the cell");
 }
 
+/// **A crate rolls on the world's secret, first fill and refill both**
+/// (`loot::salted`): the seed, the cell and the open's tick are all a
+/// client's, so on them alone a looter could time the open to the tick
+/// that pays. The crate is given the barrel's varied table, since this
+/// file's own is a constant and cannot show which seed it drew on.
+/// Mutants: the plain seed at either `roll` in `WorldConts::open`.
+#[test]
+fn a_crate_rolls_on_the_worlds_salt_first_fill_and_refill() {
+    use sim_core::loot::{salted, LOOT_BARREL};
+    const SALT: u64 = 0xFEED;
+    let mut w = world();
+    w.loot.tables[LOOT_CRATE] = LootContent::probe_fixture().tables[LOOT_BARREL];
+    w.arc.salt = SALT;
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    let key = cell_key(cx, cz);
+    let roll = |w: &World, seed: u64, tick: u64| {
+        let mut out = [ItemStack::default(); INV_SLOTS];
+        w.loot
+            .roll_into(LOOT_CRATE, &w.gather, seed, key, tick, &mut out);
+        out
+    };
+
+    let at = w.tick;
+    open(&mut w, cx, cz);
+    let got = w.world_conts.entries()[0].items;
+    assert_eq!(got, roll(&w, salted(SEED, SALT), at), "the first fill");
+    assert_ne!(got, roll(&w, SEED, at), "the first fill ignored the salt");
+
+    // Empty it into the pack's free slots, then wait out the refill.
+    for s in 0..INV_SLOTS {
+        let held = w.world_conts.entries()[0].items[s];
+        if held.count > 0 {
+            let to = w.players[0].inv.iter().position(|t| t.count == 0);
+            take(&mut w, cx, cz, s as u8, to.unwrap() as u8, held.count);
+        }
+    }
+    let due = w.world_conts.entries()[0].refill_at;
+    assert!(due > 0, "emptying the crate armed its refill");
+    advance_to(&mut w, due);
+    let at = w.tick;
+    open(&mut w, cx, cz);
+    let got = w.world_conts.entries()[0].items;
+    assert_eq!(got, roll(&w, salted(SEED, SALT), at), "the refill");
+    assert_ne!(got, roll(&w, SEED, at), "the refill ignored the salt");
+}
+
 /// Nothing a player does can postpone the refill, because nothing a player
 /// does can put anything **in** (`REFUSE_M_NO_INPUT`, wire v64).
 ///

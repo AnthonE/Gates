@@ -193,6 +193,24 @@ impl Rewind {
         self.stamps[r] = tick;
     }
 
+    /// A new body under the same id (`World::wake`): blank the slot's
+    /// column, so nothing the last life stood on answers for this one.
+    /// `write_row` empties only the ticks spent dead, and the rows just
+    /// before the death still hold live poses under the id, so a respawn
+    /// inside the ring's depth (no delay is required) was hit where the
+    /// player fell by a shot favoured back across the death. Stamps stay:
+    /// an empty row falls back to the live body as an empty slot's does.
+    pub fn forget(&mut self, slot: usize) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
+        let mut r = 0;
+        while r < REWIND_TICKS {
+            self.rows[r][slot] = RewindPose::EMPTY;
+            r += 1;
+        }
+    }
+
     /// Where slot `slot` stood `back` ticks before `tick`, or `live` when the
     /// ring cannot honestly answer.
     ///

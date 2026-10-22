@@ -289,3 +289,78 @@ fn the_sights_tighten_the_cone_at_range() {
     );
     assert_eq!(ads, 30, "a 0.2° cone at 60 m does not miss a chest");
 }
+
+/// The bearing `EV_SHOT` reports for one hip shot on `tick`, fired through
+/// the shard's pass under the world's secret `salt`.
+fn bearing_salted(tick: u64, salt: u64, cc: &CombatContent) -> u32 {
+    use sim_core::mech::{DrumShot, Drums};
+    use sim_core::mob::{MobContent, Mobs};
+    let mut ps = range(20.0);
+    let mut events = EventQueue::default();
+    let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    let mut sc = Scratch::barren();
+    let mobs = Mobs::new(SEED, hv());
+    let mut hits = [ranged::MobShot::default(); MAX_ARROWS];
+    let mut struck = [DrumShot::default(); MAX_ARROWS];
+    let mut quarry = ranged::Quarry {
+        mobs: &mobs,
+        mc: &MobContent::EMPTY,
+        hits: &mut hits,
+        n: 0,
+        drums: &Drums::NONE,
+        struck: &mut struck,
+        nd: 0,
+    };
+    ranged::hitscan_hunting(
+        SEED,
+        salt,
+        hv(),
+        &ColIndex::new(),
+        &mut sc.occupants(),
+        tick,
+        &Rewind::new(),
+        &[0; MAX_PLAYERS],
+        cc,
+        &mut ps,
+        &mut events,
+        &mut kills,
+        &mut chips,
+        &mut quarry,
+    );
+    let shot = events.entries().iter().find(|e| e.code == EV_SHOT);
+    shot.expect("the shot fired").b
+}
+
+/// The world's secret keys the cone, so the seed, the tick and the slot a
+/// shooter knows do not name where its round strays — and a salt of 0 is
+/// the seed's cone exactly, the unsalted `hitscan` every fixture fires.
+/// Mutants: passing 0 for the salt reds the first `assert_ne`, a key that
+/// ignores which salt it was handed the second.
+#[test]
+fn the_cone_is_keyed_on_the_worlds_secret() {
+    let cc = fixture(
+        Gun {
+            hip: 600,
+            ..Gun::NONE
+        },
+        1,
+    );
+    for tick in 0..8 {
+        let zero = bearing_salted(tick, 0, &cc);
+        let mut ps = range(20.0);
+        let plain = fire(tick, &cc, &mut ps);
+        let plain = plain.entries().iter().find(|e| e.code == EV_SHOT);
+        assert_eq!(
+            zero,
+            plain.expect("the shot fired").b,
+            "salt 0 is the seed's cone"
+        );
+        let (a, b) = (
+            bearing_salted(tick, 0xA11CE, &cc),
+            bearing_salted(tick, 0xB0B, &cc),
+        );
+        assert_ne!(a, zero, "tick {tick}: the salt never reached the cone");
+        assert_ne!(a, b, "tick {tick}: two salts drew one cone");
+    }
+}
