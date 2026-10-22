@@ -110,6 +110,15 @@ const _: () = {
     assert!(s == WEIGHT_SUM, "preset weights must sum to WEIGHT_SUM");
 };
 
+/// The rain at a place (clothing v1): Rust's weather is one sky for the
+/// map, but its rain is halved over arid ground. `arid_pm` is
+/// `terrain::aridity` per mille. One rule for the sim's exposure and the
+/// client's sky, so the body and the drops agree.
+#[inline]
+pub fn local_rain(rain: u16, arid_pm: u16) -> u16 {
+    (rain as u32 * (2000 - arid_pm.min(1000) as u32) / 2000) as u16
+}
+
 /// A preset's weather, blowing toward `wind_dir`.
 pub fn preset(code: u8, wind_dir: u8) -> Wx {
     let i = (code.clamp(CLEAR, PRESET_MAX) - 1) as usize;

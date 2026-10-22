@@ -2110,6 +2110,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                     bleed: 27,
                     breath_pct: 30,
                     drowning: true,
+                    brew_min: [18, 0, 0],
                 }
             );
             protocol::encode_event_exposure(&protocol::goldens::exposure(), &mut buf).unwrap()

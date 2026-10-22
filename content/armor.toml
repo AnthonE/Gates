@@ -85,9 +85,11 @@ move_penalty_pct = 0
 cold_pct = 6
 fel_pct = 25
 
+# The shirt under the body piece since clothing v1 (Rust's Chest layer 1),
+# so it goes on under a poncho or a road sign jacket.
 [[armor]]
 id = "item.armor_burlap_body"
-slot = "body"
+slot = "shirt"
 reduction_pct = 15
 move_penalty_pct = 0
 cold_pct = 27
@@ -103,7 +105,8 @@ cold_pct = -34
 fel_pct = 0
 
 # Prim pieces (ours, priced under burlap's body and over its hood): the
-# poncho is the warm one, the helmet the hard one.
+# poncho is the warm one, the helmet the hard one. The poncho is the body's
+# outer layer, so a hide vest or a tunic goes under it.
 [[armor]]
 id = "item.armor_hide_body"
 slot = "body"
@@ -127,7 +130,7 @@ fel_pct = 5
 # `the_band_and_the_sim_kill_in_the_same_number_of_hits`).
 [[armor]]
 id = "item.armor_ash_mask"
-slot = "head"
+slot = "face"
 reduction_pct = 4
 move_penalty_pct = 0
 cold_pct = 3
@@ -153,6 +156,8 @@ fel_pct = 40
 [[armor]]
 id = "item.armor_coffeecan_head"
 slot = "head"
+# Rust's Head layers 1 and 2: nothing goes on the face under the can.
+fills = ["face"]
 reduction_pct = 20
 move_penalty_pct = 0
 cold_pct = 0
@@ -160,7 +165,7 @@ fel_pct = 5
 
 [[armor]]
 id = "item.armor_tanktop_body"
-slot = "body"
+slot = "shirt"
 reduction_pct = 10
 move_penalty_pct = 0
 cold_pct = 7
@@ -174,6 +179,8 @@ fel_pct = 5
 id = "item.armor_hazmat_suit"
 slot = "body"
 full_body = true
+# Sealed: a body in it never gets wet (Rust's Drowned protection).
+waterproof = true
 reduction_pct = 25
 move_penalty_pct = 0
 cold_pct = 50
@@ -187,3 +194,128 @@ reduction_pct = 10
 move_penalty_pct = 0
 cold_pct = 8
 fel_pct = 3
+
+# --- clothing v1: Rust's seven clothing slots ----------------------------
+# `cold_pct` is their Cold column, whole (wiki.facepunch.com, early 2026),
+# read by Rust's own rule now (`[exposure] warm_full_pct`): a set takes the
+# share of the cold its summed warmth is of 400. `reduction_pct` is ours,
+# and small on purpose: theirs protects only the area it covers and ours is
+# one slot-blind number for the whole set (`combat::worn_pct`), so a piece
+# on the legs or hands pays roughly the share of blows those take.
+[[armor]]
+id = "item.armor_burlap_legs"
+slot = "legs"
+reduction_pct = 4
+move_penalty_pct = 0
+cold_pct = 7
+fel_pct = 2
+
+[[armor]]
+id = "item.armor_burlap_feet"
+slot = "feet"
+reduction_pct = 3
+move_penalty_pct = 0
+cold_pct = 3
+fel_pct = 2
+
+[[armor]]
+id = "item.armor_burlap_hands"
+slot = "hands"
+reduction_pct = 2
+move_penalty_pct = 0
+cold_pct = 17
+fel_pct = 3
+
+# Theirs is 4 cold, under burlap's 7: hide is tough and draughty.
+[[armor]]
+id = "item.armor_hide_legs"
+slot = "legs"
+reduction_pct = 4
+move_penalty_pct = 0
+cold_pct = 4
+fel_pct = 2
+
+[[armor]]
+id = "item.armor_hide_feet"
+slot = "feet"
+reduction_pct = 3
+move_penalty_pct = 0
+cold_pct = 5
+fel_pct = 2
+
+[[armor]]
+id = "item.armor_hide_shirt"
+slot = "shirt"
+reduction_pct = 12
+move_penalty_pct = 0
+cold_pct = 20
+fel_pct = 3
+
+[[armor]]
+id = "item.armor_leather_hands"
+slot = "hands"
+reduction_pct = 2
+move_penalty_pct = 0
+cold_pct = 20
+fel_pct = 4
+
+[[armor]]
+id = "item.armor_hoodie_shirt"
+slot = "shirt"
+reduction_pct = 12
+move_penalty_pct = 0
+cold_pct = 34
+fel_pct = 5
+
+[[armor]]
+id = "item.armor_pants_legs"
+slot = "legs"
+reduction_pct = 5
+move_penalty_pct = 0
+cold_pct = 8
+fel_pct = 5
+
+[[armor]]
+id = "item.armor_jacket_body"
+slot = "body"
+reduction_pct = 12
+move_penalty_pct = 0
+cold_pct = 40
+fel_pct = 5
+
+# Their Chest layers 1 and 2, so it is the shirt as well. Theirs reads 67
+# on the wiki and took "a sizable buff to Bite and Cold" in August 2026; 90
+# is ours for that buff, and makes it the warmest single piece, as it must
+# be to beat a hoodie under a jacket (74) while filling both.
+[[armor]]
+id = "item.armor_snowjacket_body"
+slot = "body"
+fills = ["shirt"]
+reduction_pct = 15
+move_penalty_pct = 0
+cold_pct = 90
+fel_pct = 20
+
+[[armor]]
+id = "item.armor_bandana_face"
+slot = "face"
+reduction_pct = 2
+move_penalty_pct = 0
+cold_pct = 10
+fel_pct = 3
+
+[[armor]]
+id = "item.armor_balaclava_face"
+slot = "face"
+reduction_pct = 4
+move_penalty_pct = 0
+cold_pct = 13
+fel_pct = 3
+
+[[armor]]
+id = "item.armor_beenie_head"
+slot = "head"
+reduction_pct = 5
+move_penalty_pct = 0
+cold_pct = 6
+fel_pct = 1

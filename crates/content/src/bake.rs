@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, DeployMatter, Material, NodeArchetype,
-    Placement, Shape, Station, Weapon, WeaponKind,
+    Ammo, Armor, CookStation, DeployArchetype, DeployMatter, Material, NodeArchetype, Placement,
+    Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -19,8 +19,7 @@ use sim_core::build::{
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_FEET,
-    WEAR_HEAD, WEAR_NONE,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_NONE,
 };
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -41,7 +40,7 @@ use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
     MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ, WEAR_SLOTS,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -1209,12 +1208,15 @@ impl Content {
         })?;
         cc.armor[idx] = ArmorDef {
             reduction_pct,
-            slot: match a.slot {
-                ArmorSlot::Head => WEAR_HEAD,
-                ArmorSlot::Body => WEAR_BODY,
-                ArmorSlot::Feet => WEAR_FEET,
+            slot: a.slot.wear(),
+            // Every slot but its own for Rust's Full Body; else the slots
+            // it names (`fills`), zero-based like `Player::worn`.
+            fills: if a.full_body {
+                (((1u16 << WEAR_SLOTS) - 1) as u8) & !(1 << (a.slot.wear() - 1))
+            } else {
+                a.fills.iter().fold(0u8, |m, f| m | 1 << (f.wear() - 1))
+                    & !(1 << (a.slot.wear() - 1))
             },
-            full: a.full_body,
         };
         Ok(())
     }
@@ -1425,6 +1427,8 @@ impl Content {
         ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
         ex.air_ticks = u16f(e.air_s.saturating_mul(TICK_HZ), "air_s")?;
         ex.drown_hp_per_s = u16f(e.drown_hp_per_s, "drown_hp_per_s")?;
+        ex.warm_full_pm = u16f(e.warm_full_pct.saturating_mul(10), "warm_full_pct")?;
+        ex.dry_ref_dc = dc(e.dry_ref_c);
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),
@@ -1448,6 +1452,7 @@ impl Content {
             // Per cent to per mille of chill kept out, and of the Verdigris.
             ex.warmth[idx] = (a.cold_pct * 10) as i16;
             ex.ward[idx] = (a.fel_pct * 10) as u16;
+            ex.waterproof[idx] = a.waterproof;
         }
         // Furnishings (a rug): comfort per item, read where the sim finds a
         // placed deployable's item (`World::furnish_comfort`).
@@ -1527,6 +1532,17 @@ impl Content {
                     con.id, con.leaves_pm
                 ));
             }
+            let (brew, brew_amount) = match con.brew {
+                None => (0, 0),
+                // Degrees to tenths; a ward's per cent to per mille.
+                Some(k) => (
+                    k.code() + 1,
+                    u16f(con.brew_amount.saturating_mul(10), "brew_amount")?,
+                ),
+            };
+            if brew > 0 && con.brew_minutes == 0 {
+                return Err(format!("bake: tea `{}` lasts no time", con.id));
+            }
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
@@ -1537,6 +1553,12 @@ impl Content {
                 use_ticks,
                 leaves,
                 leaves_pm: con.leaves_pm as u16,
+                brew,
+                brew_amount,
+                brew_floor_dc: con.brew_floor_c.map_or(sim_core::exposure::NO_FLOOR, |c| {
+                    (c.clamp(-100, 100) * 10) as i16
+                }),
+                brew_s: u16f(con.brew_minutes.saturating_mul(60), "brew_minutes")?,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;

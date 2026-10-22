@@ -42,25 +42,55 @@ pub const MESH_FROM_BODY: Mat4 = Mat4::from_cols(
     Vec4::new(0.0, 0.0, 0.0, 1.0),
 );
 
-/// The bones a piece hangs from.
+/// The bones a piece hangs from. The limbs since clothing v1: trousers,
+/// boots, gloves and sleeves ride the bone of the segment they cover.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bone {
     Head = 0,
     Spine = 1,
     Hips = 2,
+    LeftUpLeg = 3,
+    LeftLeg = 4,
+    LeftFoot = 5,
+    RightUpLeg = 6,
+    RightLeg = 7,
+    RightFoot = 8,
+    LeftArm = 9,
+    LeftForeArm = 10,
+    LeftHand = 11,
+    RightArm = 12,
+    RightForeArm = 13,
+    RightHand = 14,
 }
 
 /// Rig bone names, index-aligned with [`Bone`].
-pub const BONE_NAMES: [&str; 3] = ["Head", "Spine01", "Hips"];
+pub const BONE_NAMES: [&str; 15] = [
+    "Head",
+    "Spine01",
+    "Hips",
+    "LeftUpLeg",
+    "LeftLeg",
+    "LeftFoot",
+    "RightUpLeg",
+    "RightLeg",
+    "RightFoot",
+    "LeftArm",
+    "LeftForeArm",
+    "LeftHand",
+    "RightArm",
+    "RightForeArm",
+    "RightHand",
+];
 
-/// Parts one body can wear at once: two slots, two parts each.
-const MAX_PARTS: usize = 4;
+/// Parts one body can wear at once: seven slots, a shirt or a coat with its
+/// sleeves the most (six), trousers five.
+const MAX_PARTS: usize = 32;
 
 /// What a body's clothing hangs from, found once its scene has spawned, and
 /// what it is showing.
 #[derive(Component)]
 pub struct WornRig {
-    bones: [Option<Entity>; 3],
+    bones: [Option<Entity>; BONE_NAMES.len()],
     /// The body's skinned mesh, whose inverse bind poses place a piece.
     pub skin: Option<Entity>,
     /// What is drawn: a skin this client could not draw is shown as zero,
@@ -112,6 +142,14 @@ const ASH: [f32; 3] = [0.045, 0.045, 0.040];
 const HAZMAT: [f32; 3] = [0.52, 0.38, 0.03];
 /// Washed-out cotton, the tank top's.
 const COTTON: [f32; 3] = [0.36, 0.36, 0.33];
+/// Clothing v1: a grey hoodie, blue work trousers, an olive jacket, a
+/// white snow jacket, a red bandana and beenie, dark stitched leather.
+const FLEECE: [f32; 3] = [0.20, 0.22, 0.25];
+const DENIM: [f32; 3] = [0.08, 0.12, 0.22];
+const OLIVE: [f32; 3] = [0.12, 0.14, 0.06];
+const SNOW: [f32; 3] = [0.70, 0.74, 0.80];
+const RED: [f32; 3] = [0.40, 0.05, 0.03];
+const LEATHER: [f32; 3] = [0.12, 0.06, 0.03];
 
 /// Build the meshes and materials once (`Startup`).
 pub fn load(
@@ -134,6 +172,12 @@ pub fn load(
     let ash = materials.add(cloth(ASH, 0.95));
     let hazmat = materials.add(cloth(HAZMAT, 0.55));
     let cotton = materials.add(cloth(COTTON, 0.9));
+    let fleece = materials.add(cloth(FLEECE, 0.95));
+    let denim = materials.add(cloth(DENIM, 0.9));
+    let olive = materials.add(cloth(OLIVE, 0.85));
+    let snow = materials.add(cloth(SNOW, 0.8));
+    let red = materials.add(cloth(RED, 0.9));
+    let leather = materials.add(cloth(LEATHER, 0.7));
     let metal = super::textures::MapSet::load(&assets, "metal");
     let sign = materials.add(StandardMaterial {
         base_color: Color::linear_rgb(0.62, 0.64, 0.66),
@@ -207,8 +251,165 @@ pub fn load(
         .mesh()
         .build()
         .translated_by(Vec3::new(0.0, 1.12, -0.245)));
+    // Clothing v1's limbs, measured off the rig's bind pose (body space):
+    // hip, knee, ankle and toe; shoulder, elbow and wrist. Each segment's
+    // tube stands a finger off the skin, a coat's a finger off a shirt's.
+    let m = |v: Vec3| Vec3::new(-v.x, v.y, v.z);
+    let (hip, knee, ankle) = (
+        Vec3::new(0.083, 0.74, -0.038),
+        Vec3::new(0.114, 0.489, -0.015),
+        Vec3::new(0.133, 0.16, -0.039),
+    );
+    let (shoulder, elbow, wrist) = (
+        Vec3::new(0.150, 1.215, -0.055),
+        Vec3::new(0.329, 1.054, -0.084),
+        Vec3::new(0.490, 0.910, -0.030),
+    );
+    let tip = wrist + (wrist - elbow).normalize() * 0.15;
+    let mut limb = |a: Vec3, b: Vec3, ra: f32, rb: f32| {
+        [add(tube(a, b, ra, rb)), add(tube(m(a), m(b), ra, rb))]
+    };
+    let thigh = limb(hip, knee, 0.072, 0.064);
+    let shin = limb(knee + Vec3::Y * 0.01, ankle, 0.07, 0.06);
+    let shaft = limb(ankle - Vec3::Y * 0.05, ankle + Vec3::Y * 0.17, 0.072, 0.068);
+    let glove = limb(
+        wrist - (wrist - elbow).normalize() * 0.04,
+        tip,
+        0.068,
+        0.078,
+    );
+    let sleeve = limb(shoulder, elbow, 0.068, 0.048);
+    let cuff = limb(elbow, wrist, 0.05, 0.045);
+    let coat_sleeve = limb(shoulder, elbow, 0.078, 0.058);
+    let coat_cuff = limb(elbow, wrist, 0.06, 0.054);
+    let mut foot = |x: f32| {
+        add(Cuboid::new(0.22, 0.11, 0.38)
+            .mesh()
+            .build()
+            .translated_by(Vec3::new(x, 0.052, 0.07)))
+    };
+    let feet = [foot(0.163), foot(-0.168)];
+    // Up under a shirt's hem, so no bark shows between the two.
+    let band = add(lathe(
+        Vec2::new(0.0, -0.076),
+        &[(0.64, 0.178, 0.164), (0.95, 0.176, 0.162)],
+        None,
+    ));
+    // A bandana over this rig's mouth and chin, under the Ash Mask's band.
+    let kerchief = add(lathe(
+        Vec2::ZERO,
+        &[
+            (1.32, 0.19, 0.245),
+            (1.40, 0.197, 0.252),
+            (1.48, 0.19, 0.246),
+        ],
+        None,
+    ));
+    let coat = add(lathe(
+        Vec2::new(0.0, -0.076),
+        &[
+            (0.86, 0.205, 0.185),
+            (1.26, 0.198, 0.178),
+            (1.36, 0.135, 0.125),
+        ],
+        None,
+    ));
+    let parka = add(lathe(
+        Vec2::new(0.0, -0.076),
+        &[
+            (0.66, 0.225, 0.205),
+            (0.98, 0.215, 0.195),
+            (1.27, 0.212, 0.192),
+            (1.38, 0.15, 0.14),
+        ],
+        None,
+    ));
+    let cap = add(lathe(
+        Vec2::ZERO,
+        &[
+            (1.69, 0.232, 0.283),
+            (1.75, 0.235, 0.286),
+            (1.84, 0.21, 0.26),
+            (1.91, 0.15, 0.18),
+            (1.96, 0.0, 0.0),
+        ],
+        None,
+    ));
+    // Every part of a trouser, a boot, a glove or a coat's arms, on its bone.
+    let pair = |pieces: [Handle<Mesh>; 2], mat: &Handle<StandardMaterial>, l: Bone, r: Bone| {
+        vec![
+            part(pieces[0].clone(), mat, l),
+            part(pieces[1].clone(), mat, r),
+        ]
+    };
+    let trousers = |mat: &Handle<StandardMaterial>| {
+        let mut v = vec![part(band.clone(), mat, Bone::Hips)];
+        v.extend(pair(thigh.clone(), mat, Bone::LeftUpLeg, Bone::RightUpLeg));
+        v.extend(pair(shin.clone(), mat, Bone::LeftLeg, Bone::RightLeg));
+        v
+    };
+    let boots = |mat: &Handle<StandardMaterial>| {
+        let mut v = pair(shaft.clone(), mat, Bone::LeftLeg, Bone::RightLeg);
+        v.extend(pair(feet.clone(), mat, Bone::LeftFoot, Bone::RightFoot));
+        v
+    };
+    let gloves =
+        |mat: &Handle<StandardMaterial>| pair(glove.clone(), mat, Bone::LeftHand, Bone::RightHand);
+    let sleeves = |mat: &Handle<StandardMaterial>, coat: bool| {
+        let (a, b) = if coat {
+            (coat_sleeve.clone(), coat_cuff.clone())
+        } else {
+            (sleeve.clone(), cuff.clone())
+        };
+        let mut v = pair(a, mat, Bone::LeftArm, Bone::RightArm);
+        v.extend(pair(b, mat, Bone::LeftForeArm, Bone::RightForeArm));
+        v
+    };
+    let with = |mut v: Vec<Part>, more: Vec<Part>| {
+        v.extend(more);
+        v
+    };
     commands.insert_resource(WornKit {
         pieces: vec![
+            ("Burlap Trousers", trousers(&burlap)),
+            ("Hide Pants", trousers(&hide)),
+            ("Pants", trousers(&denim)),
+            ("Burlap Shoes", boots(&burlap)),
+            ("Hide Boots", boots(&hide)),
+            ("Boots", boots(&leather)),
+            ("Burlap Gloves", gloves(&burlap)),
+            ("Leather Gloves", gloves(&leather)),
+            (
+                "Hoodie",
+                with(
+                    vec![part(tunic_top.clone(), &fleece, Bone::Spine)],
+                    sleeves(&fleece, false),
+                ),
+            ),
+            (
+                "Hide Vest",
+                vec![part(tunic_top.clone(), &hide, Bone::Spine)],
+            ),
+            (
+                "Jacket",
+                with(
+                    vec![part(coat.clone(), &olive, Bone::Spine)],
+                    sleeves(&olive, true),
+                ),
+            ),
+            (
+                "Snow Jacket",
+                with(
+                    vec![part(parka.clone(), &snow, Bone::Spine)],
+                    sleeves(&snow, true),
+                ),
+            ),
+            ("Bandana", vec![part(kerchief, &red, Bone::Head)]),
+            (
+                "Improvised Balaclava",
+                vec![part(hood.clone(), &burlap, Bone::Head)],
+            ),
+            ("Beenie Hat", vec![part(cap.clone(), &red, Bone::Head)]),
             ("Burlap Hood", vec![part(hood.clone(), &burlap, Bone::Head)]),
             ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
             // The suit is the tunic's cut in the mask's blacked cloth: two
@@ -305,7 +506,7 @@ impl WornRig {
         skinned: &Query<(), With<SkinnedMesh>>,
     ) -> Self {
         let mut rig = WornRig {
-            bones: [None; 3],
+            bones: [None; BONE_NAMES.len()],
             skin: None,
             shown: WornLook::NONE,
             parts: [None; MAX_PARTS],
@@ -607,6 +808,40 @@ fn lathe(c: Vec2, profile: &[Ring], window: Option<(f32, f32, f32)>) -> Mesh {
     build(pos, nor, uv, idx)
 }
 
+/// A tapering tube in body space from `a` to `b` (clothing v1: a trouser
+/// leg, a sleeve, a boot's shaft), radius `ra` at `a` and `rb` at `b`,
+/// capped at neither end. The rig's limbs are not vertical (its arms hang
+/// in an A), so this is the lathe's ring laid along any axis: the ring's
+/// frame is the axis and the two directions square to it.
+pub fn tube(a: Vec3, b: Vec3, ra: f32, rb: f32) -> Mesh {
+    const SEG: usize = 14;
+    let axis = (b - a).normalize_or(Vec3::Y);
+    let side = if axis.y.abs() < 0.9 { Vec3::Y } else { Vec3::Z };
+    let u = axis.cross(side).normalize_or(Vec3::X);
+    let v = axis.cross(u);
+    let mut pos = Vec::with_capacity((SEG + 1) * 2);
+    let mut nor = Vec::with_capacity(pos.capacity());
+    let mut uv = Vec::with_capacity(pos.capacity());
+    // The slope of the taper leans every normal toward the narrow end.
+    let lean = (ra - rb) / (b - a).length().max(1e-4);
+    for (t, (c, r)) in [(0.0, (a, ra)), (1.0, (b, rb))] {
+        for k in 0..=SEG {
+            let th = k as f32 / SEG as f32 * std::f32::consts::TAU;
+            let (st, ct) = th.sin_cos();
+            let out = u * ct + v * st;
+            pos.push((c + out * r).to_array());
+            nor.push((out + axis * lean).normalize_or(out).to_array());
+            uv.push([k as f32 / SEG as f32, t]);
+        }
+    }
+    let mut idx = Vec::with_capacity(SEG * 6);
+    for k in 0..SEG as u32 {
+        let (p, q) = (k, k + SEG as u32 + 1);
+        idx.extend_from_slice(&[p, q, p + 1, p + 1, q, q + 1]);
+    }
+    build(pos, nor, uv, idx)
+}
+
 /// Counter-clockwise seen from outside (θ runs toward +X, rings upward),
 /// so a double-sided material flips the normal on the INSIDE only.
 fn build(pos: Vec<[f32; 3]>, nor: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u32>) -> Mesh {
@@ -626,14 +861,14 @@ mod tests {
     /// is a change [`dress`] acts on, not a look it thinks it already drew.
     #[test]
     fn an_unknown_worn_skin_is_drawn_plain_until_the_catalog_knows_it() {
-        let look = WornLook {
-            items: [41, 40, sim_core::gather::NO_ITEM],
-            skins: [0, 0x0B72, 0],
-        };
+        let mut look = WornLook::NONE;
+        look.items[0] = 41;
+        look.items[1] = 40;
+        look.skins[1] = 0x0B72;
         let mut cat = protocol::SkinCatalog::EMPTY;
         let (shown, tints) = drawable(look, &cat);
         assert_eq!(shown.items, look.items);
-        assert_eq!((shown.skins, tints), ([0, 0, 0], [None, None, None]));
+        assert_eq!((shown.skins, tints), ([0; WEAR_SLOTS], [None; WEAR_SLOTS]));
 
         cat.count = 1;
         cat.set(
@@ -652,7 +887,9 @@ mod tests {
         .unwrap();
         let (now, tints) = drawable(look, &cat);
         assert_eq!(now, look, "drawn in its skin");
-        assert_eq!(tints, [None, Some([1.0, 0.0, 0.0]), None]);
+        let mut want = [None; WEAR_SLOTS];
+        want[1] = Some([1.0, 0.0, 0.0]);
+        assert_eq!(tints, want);
         assert_ne!(now, shown, "and that reads as a change");
     }
 }

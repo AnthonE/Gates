@@ -1327,6 +1327,11 @@ pub use voice::{
 /// (`lang.rs`).
 /// v139 — a shop buy names the offer it was shown (`ACT_SHOP` buy carries
 /// item, lot and price after `times`); a row rewritten since is refused.
+/// v139 — clothing v1: seven wear slots (`WEAR_SLOTS` 3 → 7: legs, hands,
+/// shirt, face), so `EventMsg::Worn` carries seven and a catalog row's
+/// `wear_slot` is three bits; the row carries its `warmth_pct` and
+/// `ward_pct` for the wear panel; and `SUB_EXPOSURE` carries the minutes
+/// left on each tea after the breath.
 pub const PROTO_VER: u16 = 139;
 
 /// This game's slug in the elo catalog.

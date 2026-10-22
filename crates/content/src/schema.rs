@@ -29,6 +29,12 @@ pub enum EquipSlot {
     Body,
     Feet,
     None,
+    // Clothing v1 (Rust's seven clothing slots). Appended, so the hashed
+    // discriminants of the older five do not move.
+    Legs,
+    Hands,
+    Shirt,
+    Face,
 }
 
 /// What an item is, for the craft rail (`sim_core::craft::CLASS_*`): the
@@ -613,8 +619,44 @@ pub struct Weapon {
 #[serde(rename_all = "snake_case")]
 pub enum ArmorSlot {
     Head,
+    /// The outer torso layer: vests, plates, jackets, ponchos.
     Body,
     Feet,
+    Legs,
+    Hands,
+    /// The inner torso layer, under `Body`: shirts, hoodies, tank tops.
+    Shirt,
+    /// Under the hat: masks and bandanas.
+    Face,
+}
+
+impl ArmorSlot {
+    /// The sim's one-based wear slot (`sim_core::combat::WEAR_*`).
+    pub fn wear(self) -> u8 {
+        use sim_core::combat::*;
+        match self {
+            ArmorSlot::Head => WEAR_HEAD,
+            ArmorSlot::Body => WEAR_BODY,
+            ArmorSlot::Feet => WEAR_FEET,
+            ArmorSlot::Legs => WEAR_LEGS,
+            ArmorSlot::Hands => WEAR_HANDS,
+            ArmorSlot::Shirt => WEAR_SHIRT,
+            ArmorSlot::Face => WEAR_FACE,
+        }
+    }
+
+    /// The item row's `slot` this armor row must agree with.
+    pub fn equip(self) -> EquipSlot {
+        match self {
+            ArmorSlot::Head => EquipSlot::Head,
+            ArmorSlot::Body => EquipSlot::Body,
+            ArmorSlot::Feet => EquipSlot::Feet,
+            ArmorSlot::Legs => EquipSlot::Legs,
+            ArmorSlot::Hands => EquipSlot::Hands,
+            ArmorSlot::Shirt => EquipSlot::Shirt,
+            ArmorSlot::Face => EquipSlot::Face,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -638,6 +680,15 @@ pub struct Armor {
     /// the head and feet too, so it is worn alone (`combat::wear_clashes`).
     #[serde(default)]
     pub full_body: bool,
+    /// Rust's two-layer pieces (clothing v1): the other slots this piece
+    /// fills as well as its own — a snow jacket is the shirt too, a coffee
+    /// can the face. Nothing else goes on in them while it is worn.
+    #[serde(default)]
+    pub fills: Vec<ArmorSlot>,
+    /// Keeps every drop out (Rust's Drowned protection, the hazmat suit):
+    /// a body wearing it never gets wet.
+    #[serde(default)]
+    pub waterproof: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -673,6 +724,38 @@ pub struct Consumable {
     pub leaves: Option<String>,
     #[serde(default)]
     pub leaves_pm: u32,
+    /// A tea (Rust's tea modifiers, `sim_core::exposure::Brew`): which kind,
+    /// how strong, its floor, and for how many minutes.
+    #[serde(default)]
+    pub brew: Option<BrewKind>,
+    /// Warming and cooling: whole degrees. Warding: per cent of the
+    /// Verdigris kept out.
+    #[serde(default)]
+    pub brew_amount: u32,
+    /// A warming tea's floor (Rust's Min Temperature), whole °C.
+    #[serde(default)]
+    pub brew_floor_c: Option<i32>,
+    #[serde(default)]
+    pub brew_minutes: u32,
+}
+
+/// What a tea does (`sim_core::exposure::BREW_*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrewKind {
+    Warming,
+    Cooling,
+    Warding,
+}
+
+impl BrewKind {
+    pub fn code(self) -> u8 {
+        match self {
+            BrewKind::Warming => sim_core::exposure::BREW_WARM,
+            BrewKind::Cooling => sim_core::exposure::BREW_COOL,
+            BrewKind::Warding => sim_core::exposure::BREW_WARD,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1629,6 +1712,14 @@ pub struct Exposure {
     pub air_s: u32,
     #[serde(default)]
     pub drown_hp_per_s: u32,
+    /// Clothing v1 (Rust's rule): the summed worn `cold_pct` that takes all
+    /// of the cold away (theirs: 400). Absent is the old flat rule.
+    #[serde(default)]
+    pub warm_full_pct: u32,
+    /// The air at which clothes dry at `dry_per_s`, whole °C; slower under
+    /// it, none at freezing but by a fire. Absent is the flat rate.
+    #[serde(default)]
+    pub dry_ref_c: i32,
 }
 
 /// `Exposure::snow_wet_pm`'s default: all of the rain's.

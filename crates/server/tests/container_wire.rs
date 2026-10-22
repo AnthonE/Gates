@@ -2102,23 +2102,21 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     let mut clients = two_clients(&mut core, &stats);
 
     let w0 = world_slot(&core, id_of(0));
-    // The two stores, deliberately disagreeing at the same indices.
-    let worn = [
-        ItemStack {
-            item: OTHER,
-            count: 1,
-            cond: 9_100,
-            skin: 0,
-        },
-        ItemStack {
-            item: THIRD,
-            count: 1,
-            cond: 10_000,
-            skin: 0,
-        },
-        // Bare feet.
-        ItemStack::default(),
-    ];
+    // The two stores, deliberately disagreeing at the same indices. Bare
+    // from the feet on.
+    let mut worn = [ItemStack::default(); sim_core::limits::WEAR_SLOTS];
+    worn[0] = ItemStack {
+        item: OTHER,
+        count: 1,
+        cond: 9_100,
+        skin: 0,
+    };
+    worn[1] = ItemStack {
+        item: THIRD,
+        count: 1,
+        cond: 10_000,
+        skin: 0,
+    };
     core.world.players[w0].worn = worn;
     core.world.players[w0].inv[0] = ItemStack {
         item: SPEAR,
@@ -2187,7 +2185,7 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     assert!(
         seen.iter().any(|(s, m)| *s == 1
             && matches!(m, EventMsg::Worn { id, items, .. }
-                if *id == id_of(0) && *items == [OTHER, THIRD, sim_core::gather::NO_ITEM])),
+                if *id == id_of(0) && items[..3] == [OTHER, THIRD, sim_core::gather::NO_ITEM])),
         "the other player is told what the body wears: {seen:?}"
     );
 

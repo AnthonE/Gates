@@ -524,6 +524,18 @@ pub fn bake_catalog(
                 cond_max,
                 armor_pct: armor.reduction_pct,
                 wear_slot: armor.slot,
+                // Per mille in the sim, whole percent on the wire; only a
+                // worn piece carries them (`ItemRow::coherent`).
+                warmth_pct: if armor.slot == sim_core::combat::WEAR_NONE {
+                    0
+                } else {
+                    (survival.exposure.warmth[idx] / 10).clamp(-100, 100) as i8
+                },
+                ward_pct: if armor.slot == sim_core::combat::WEAR_NONE {
+                    0
+                } else {
+                    (survival.exposure.ward[idx] / 10).min(100) as u8
+                },
                 stack_max: gather.stack_max_of(idx as u16),
                 food: eat.food,
                 water: eat.water,
