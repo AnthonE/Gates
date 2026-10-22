@@ -3397,9 +3397,11 @@ impl World {
             &rec,
             deploy::ARCH_PLANTER,
         );
+        let secret = self.secret_seed();
         crate::farm::plant_bed(
             &self.cook.farm,
             self.seed,
+            secret,
             self.tick,
             &mut self.farm,
             &rec,
@@ -3459,9 +3461,11 @@ impl World {
             x,
             z,
         )?;
+        let secret = self.secret_seed();
         crate::farm::plant_ground(
             &self.cook.farm,
             self.seed,
+            secret,
             self.tick,
             &mut self.farm,
             &mut self.players[slot],
@@ -3488,7 +3492,8 @@ impl World {
         }
         let pid = self.players[slot].id;
         let roll = crate::rng::splitmix64(
-            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
+            crate::rng::cell_hash(self.secret_seed(), pid as i32, 0, crate::farm::CH_LEAVES)
+                ^ self.tick,
         ) % 1000;
         if roll >= u64::from(def.leaves_pm) {
             return;
@@ -4459,6 +4464,18 @@ impl World {
                 i += 1;
             }
         }
+    }
+
+    /// The seed with the arc's secret folded in (`mech::ArcState::salt`,
+    /// drawn by the server and never sent): the key for every draw a player
+    /// could otherwise time from the public seed and the tick it chose — a
+    /// gun's cone, a crate's or barrel's roll, a sown seed's genes, a charge's
+    /// dud, a meal's seed. Terrain, scatter and anything a client draws
+    /// itself keep `self.seed`. A world nobody salted reads back `self.seed`
+    /// exactly, so no pinned hash moves.
+    #[inline]
+    pub fn secret_seed(&self) -> u64 {
+        self.seed ^ self.arc.salt.rotate_left(41)
     }
 
     /// Seat this wipe's blight salt and redraw its outbreaks from it.
@@ -7235,8 +7252,10 @@ impl World {
                 let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
                 let gone = self.slot_lives.is_harvested(cx, cz);
                 if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
+                    let loot_seed = self.secret_seed();
                     self.world_conts.open(
                         self.seed,
+                        loot_seed,
                         &self.scatter,
                         &self.haven,
                         self.pieces.cols(),
@@ -7915,6 +7934,7 @@ impl World {
             }
         }
         let seed = self.seed;
+        let secret = self.secret_seed();
         let tick = self.tick;
         // A sapling's size is measured at this tick (tree growth v0).
         self.slot_lives.set_now(tick);
@@ -8433,7 +8453,7 @@ impl World {
                 let mut items = [ItemStack::default(); INV_SLOTS];
                 let key = cell_key(cx, cz);
                 self.loot
-                    .roll_into(table as usize, &self.gather, seed, key, tick, &mut items);
+                    .roll_into(table as usize, &self.gather, secret, key, tick, &mut items);
                 let _ = qy;
                 self.ground_items.scatter(
                     &self.backpack,
@@ -8483,6 +8503,7 @@ impl World {
         let mut duds = crate::charge::Duds::new();
         crate::charge::tick_fuses(
             seed,
+            secret,
             &self.haven,
             &self.build,
             &self.deploy,
@@ -8897,6 +8918,7 @@ impl World {
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
+            secret,
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {

@@ -2439,7 +2439,7 @@ pub fn hitscan(
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
     hitscan_in(
-        seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
+        seed, seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
     )
 }
 
@@ -2451,6 +2451,7 @@ pub fn hitscan(
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan_hunting(
     seed: u64,
+    secret: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2466,6 +2467,7 @@ pub fn hitscan_hunting(
 ) -> (usize, usize) {
     hitscan_in(
         seed,
+        secret,
         haven,
         cols,
         occ,
@@ -2484,6 +2486,7 @@ pub fn hitscan_hunting(
 #[allow(clippy::too_many_arguments)]
 fn hitscan_in(
     seed: u64,
+    secret: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2641,8 +2644,11 @@ fn hitscan_in(
             } else {
                 0
             };
+        // Keyed on the world's secret (`World::secret_seed`), not the public
+        // seed: a client that knows the seed and the tick its shot runs on
+        // could otherwise pre-invert the cone and fire with no spread.
         let key = crate::rng::splitmix64(
-            seed ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
+            secret ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
         );
         let ctx = Shot {
             seed,

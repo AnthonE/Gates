@@ -321,6 +321,7 @@ impl WorldConts {
     pub fn open(
         &mut self,
         seed: u64,
+        loot_seed: u64,
         scatter: &terrain::ScatterTable,
         haven: &terrain::Haven,
         cols: &crate::collide::ColIndex,
@@ -376,7 +377,7 @@ impl WorldConts {
                     items: [ItemStack::default(); INV_SLOTS],
                 };
                 self.len += 1;
-                self.roll(i, lc, gc, seed, handle, tick);
+                self.roll(i, lc, gc, loot_seed, handle, tick);
                 return Some(i);
             }
         };
@@ -386,7 +387,7 @@ impl WorldConts {
         // is why an untouched container never re-rolls.
         if self.entries[i].refill_at != 0 && tick >= self.entries[i].refill_at {
             self.entries[i].refill_at = 0;
-            self.roll(i, lc, gc, seed, handle, tick);
+            self.roll(i, lc, gc, loot_seed, handle, tick);
         }
         Some(i)
     }

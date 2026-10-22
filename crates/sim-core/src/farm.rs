@@ -1198,6 +1198,7 @@ pub fn pour(
 pub fn plant_bed(
     fc: &FarmContent,
     seed: u64,
+    secret: u64,
     tick: u64,
     farm: &mut Farm,
     b: &BoxRec,
@@ -1221,7 +1222,7 @@ pub fn plant_bed(
     let (x, z) = spot_xz(b.cx, b.cz, b.pose, spot);
     let y = feet_y + DEPLOY_VOL[ARCH_PLANTER as usize][1] - BED_SOIL_DROP_M;
     let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| roll_genes(fc, seed, b.cx, b.cz, tick, farm.next_id()));
+        .unwrap_or_else(|| roll_genes(fc, secret, b.cx, b.cz, tick, farm.next_id()));
     let rec = PlantRec {
         owner: p.id,
         host,
@@ -1508,6 +1509,7 @@ pub fn ground_ok(
 pub fn plant_ground(
     fc: &FarmContent,
     seed: u64,
+    secret: u64,
     tick: u64,
     farm: &mut Farm,
     p: &mut Player,
@@ -1526,7 +1528,7 @@ pub fn plant_ground(
         crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
     };
     let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| roll_genes(fc, seed, cell(x), cell(z), tick, farm.next_id()));
+        .unwrap_or_else(|| roll_genes(fc, secret, cell(x), cell(z), tick, farm.next_id()));
     let rec = PlantRec {
         owner: p.id,
         host: HOST_GROUND,
