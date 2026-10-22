@@ -99,6 +99,10 @@ struct Water {
     // x 1 with the eye under the sea, y `underwater::SHELL_UP`, z
     // `underwater::SHELL_DOWN`, w spare.
     under: vec4<f32>,
+    // x how hard it rains on the sea, yzw the three drop layers' phases.
+    rain: vec4<f32>,
+    // xyz the drop layers' cycle counts, w `GLINT_RAIN_A2`.
+    rain_cycle: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -430,6 +434,33 @@ fn shell_shade(y: f32) -> f32 {
     return 1.0 + (1.0 - water.under.z) * y;
 }
 
+// One layer of raindrops on the sea at world `p` (never the grid's local
+// offset, or every drop would jump on a snap): the slope its ring puts on the
+// surface and the speck of its splash, `(gx, gz, speck)`. A cell holds one
+// drop a cycle at a hashed spot and moment; `water::rain_cycle_of` is its
+// timing in Rust, continuous across the layer's wrap and the counter's. Light
+// rain is sparse, and a layer finer than the pixel retires on its footprint
+// `fp` (`band_weight`'s law again).
+fn rain_layer(p: vec2<f32>, density: f32, phase: f32, cycle: f32, salt: i32, fp: f32) -> vec3<f32> {
+    let q = p * density + vec2<f32>(0.37, 0.71) * f32(salt);
+    let cell = vec2<i32>(floor(q));
+    let t = phase + hash2(cell + vec2<i32>(salt * 977, 0));
+    let ph = fract(t);
+    let cyc = (i32(cycle) + i32(floor(t))) & 4095;
+    let key = cell + vec2<i32>(cyc * 7919, cyc * 6271 + salt * 131);
+    let live = step(hash2(key + vec2<i32>(3, 0)), water.rain.x);
+    let dv = fract(q) - (0.35 + 0.3 * vec2<f32>(hash2(key), hash2(key + vec2<i32>(0, 1))));
+    let r = length(dv);
+    let front = 0.3 * ph;
+    let x = (r - front) / 0.12;
+    let env = max(1.0 - x * x, 0.0);
+    let keep = 1.0 - smoothstep(0.05, 0.1, fp * density);
+    let a = 0.25 * live * keep * (1.0 - ph) * (1.0 - ph) * env * env;
+    let slope = a * cos(reduced((r - front) / 0.2)) * dv / max(r, 1e-3);
+    let speck = live * keep * (1.0 - smoothstep(0.0, 0.12, ph)) * (1.0 - smoothstep(0.0, 0.06, r));
+    return vec3<f32>(slope, speck);
+}
+
 // A pixel's foam (`water::foam_px`, line for line): the whitecaps, the shore
 // wash surging with the bores (or with the swell's `s0` where none runs) and
 // the bore itself, phased per pixel off `cs`, the distance to dry ground in
@@ -458,8 +489,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // not an error.
     let fx = dpdx(wp.xz);
     let fy = dpdy(wp.xz);
-    // How many breaker cycles this pixel spans (`foam_px`).
+    // How many breaker cycles this pixel spans (`foam_px`), and how many
+    // metres it spans (the rain's footprint).
     let cw = fwidth(in.color.b);
+    let fp = max(length(fx), length(fy));
     let local = wp.xz - water.field.xy;
     let V0 = normalize(view.world_position.xyz - wp);
     // The swell's own surge, which the wash breathes with where no bore runs.
@@ -488,7 +521,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let hid = sw.hidden;
 #endif
     var pbr_input = pbr_input_from_standard_material(vin, is_front);
-    let N = pbr_input.N;
+    var N = pbr_input.N;
     let V = pbr_input.V;
 
     let dndx = dpdx(N);
@@ -545,6 +578,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let fine = mix(vnoise(wp.xz * 0.9 + vec2<f32>(5.0, 11.0)), 0.5, settle);
     let clump = vnoise(wp.xz * 0.3) * 0.6 + fine * 0.4;
     foam = clamp(foam * (0.25 + 1.3 * clump), 0.0, 1.0);
+    // Rain on the water near the eye: three layers of spreading rings and
+    // their splashes, none where a drop is finer than the pixel.
+    if water.rain.x > 0.0 && fp < 0.1 / 2.6 {
+        let r0 = rain_layer(wp.xz, 2.6, water.rain.y, water.rain_cycle.x, 1, fp);
+        let r1 = rain_layer(wp.xz, 4.5, water.rain.z, water.rain_cycle.y, 2, fp);
+        let r2 = rain_layer(wp.xz, 6.4, water.rain.w, water.rain_cycle.z, 3, fp);
+        let g = r0.xy + r1.xy + r2.xy;
+        N = normalize(N - vec3<f32>(g.x, 0.0, g.y));
+        pbr_input.N = N;
+        foam = max(foam, 0.3 * (r0.z + r1.z + r2.z));
+    }
     // The lip: a noisy band a few decimetres up whatever stands in the water,
     // lapping with the breakers' phase.
     if contact {
@@ -595,7 +639,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var Rd = reflect(-V, n_deck_up);
         Rd = normalize(vec3<f32>(Rd.x, max(Rd.y, 0.0) + 1e-3, Rd.z));
         let sky = sky_radiance(R, Rd, daylight_tint()) * view.exposure;
-        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var, hid) * smooth_share;
+        // The rain dulls the glitter it lands on.
+        let wet = water.rain_cycle.w * water.rain.x;
+        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var, hid + wet) * smooth_share;
         // 6 · Premultiplied: the sky replaces what Fresnel takes from below.
         color = vec4<f32>(
             color.rgb * (1.0 - F) + sky * F + glint,

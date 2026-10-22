@@ -548,6 +548,44 @@ fn the_ripples_run_downwind() {
     assert!((breeze - 0.76 * RIPPLE_SPEED).abs() < 1e-6);
 }
 
+/// **A raindrop never jumps.** Each cell's moment (`rain_cycle_of`, the
+/// shader's `rain_layer` timing) runs on through the layer's own wrap and
+/// through its counter's: its phase moves on by the step, and its cycle
+/// advances by exactly one when, and only when, its own phase wraps.
+#[test]
+fn a_raindrop_never_jumps() {
+    let step = 0.013f32;
+    for h in [0.0f32, 0.17, 0.5, 0.83, 0.999] {
+        for start_cycle in [0u32, 17, RAIN_CYCLE_MASK - 1, RAIN_CYCLE_MASK] {
+            let (mut phase, mut cycle) = (0.95f32, start_cycle);
+            let (mut ph, mut cyc) = rain_cycle_of(phase, cycle, h);
+            for _ in 0..200 {
+                let t = phase + step;
+                let wraps = t.floor();
+                phase = t - wraps;
+                cycle = (cycle + wraps as u32) & RAIN_CYCLE_MASK;
+                let (ph2, cyc2) = rain_cycle_of(phase, cycle, h);
+                let dph = ph2 - ph;
+                if dph < 0.0 {
+                    assert!(
+                        (dph + 1.0 - step).abs() < 1e-4,
+                        "h {h}: phase {ph} -> {ph2}"
+                    );
+                    assert_eq!(
+                        cyc2,
+                        (cyc + 1) & RAIN_CYCLE_MASK,
+                        "h {h}: a wrap is one cycle on"
+                    );
+                } else {
+                    assert!((dph - step).abs() < 1e-4, "h {h}: phase {ph} -> {ph2}");
+                    assert_eq!(cyc2, cyc, "h {h}: the cycle moved without a wrap");
+                }
+                (ph, cyc) = (ph2, cyc2);
+            }
+        }
+    }
+}
+
 /// **A storm whitens the swell, and a breeze keeps its scatter.**
 /// `crest_foam` measures every sea against the clear sea's crest reach, so
 /// the clear sea's caps are exactly the old ones and a storm's crests, which

@@ -1230,6 +1230,26 @@ pub fn ripple_velocity(wind_dir: Vec2, wind: f32) -> Vec2 {
     -RIPPLE_SPEED * (0.6 + 0.8 * wind) * wind_dir
 }
 
+/// How often each of the three layers of raindrops on the sea lands, per
+/// cell, a second. Three rates no two of which line up, so the rings never
+/// pulse together.
+pub const RAIN_RATE_HZ: [f32; 3] = [1.3, 1.7, 2.1];
+/// What rain adds to the glint's `α²` at full strength: the rings dull the
+/// glitter on the water near the eye.
+pub const GLINT_RAIN_A2: f32 = 0.01;
+/// The layers' cycle counters wrap at this mask (`water.wgsl`'s `& 4095`).
+pub const RAIN_CYCLE_MASK: u32 = 4095;
+
+/// One raindrop cell's moment: its phase in its own cycle and which cycle it
+/// is on, from the layer's phase and cycle count and the cell's own offset
+/// `h` (`0..1`) — `water.wgsl`'s `rain_layer`, in Rust. Continuous across the
+/// layer's wrap and across the counter's: a drop never jumps mid-ring, and
+/// each cycle re-places it.
+pub fn rain_cycle_of(phase: f32, cycle: u32, h: f32) -> (f32, u32) {
+    let t = phase + h;
+    (fract_floor(t), (cycle + t.floor() as u32) & RAIN_CYCLE_MASK)
+}
+
 /// The ripple field, as integer harmonics of the tile so it tiles EXACTLY.
 ///
 /// `(nx, nz, amplitude in metres)`. Non-integer harmonics are the classic way
@@ -1603,6 +1623,11 @@ pub struct WaterParams {
     /// x 1 with the eye under the sea (Snell's window from below), y
     /// `underwater::SHELL_UP`, z `underwater::SHELL_DOWN`, w spare.
     pub under: Vec4,
+    /// x how hard it is raining on the sea (`rain · (1 − snow)`, none from
+    /// below), yzw the three drop layers' phases.
+    pub rain: Vec4,
+    /// xyz the drop layers' cycle counts, w [`GLINT_RAIN_A2`].
+    pub rain_cycle: Vec4,
 }
 
 impl WaterParams {
@@ -1662,6 +1687,8 @@ impl WaterParams {
                 super::underwater::SHELL_DOWN,
                 0.0,
             ),
+            rain: Vec4::ZERO,
+            rain_cycle: Vec4::new(0.0, 0.0, 0.0, GLINT_RAIN_A2),
         }
     }
 
@@ -1874,6 +1901,10 @@ pub struct Sea {
     surf_amp: Vec<f32>,
     /// The breakers' phase, advanced and wrapped like the swell's.
     surf_phase: f32,
+    /// The raindrop layers' phases (`0..1`) and cycle counts
+    /// ([`rain_cycle_of`]), advanced like the swell's.
+    rain_phase: [f32; 3],
+    rain_cycle: [u32; 3],
     // Nothing here is a function of *when* except the two phases: the
     // surface itself is the vertex stage's, every frame, on the GPU
     // ([`surface_local`]). This held the CPU's per-frame field and foam until
@@ -2502,6 +2533,21 @@ pub fn animate(
         _ => Vec2::from_array(RIPPLE_DRIFT),
     };
     sea.drift = (sea.drift + v * dt).rem_euclid(Vec2::ONE);
+    let Sea {
+        rain_phase,
+        rain_cycle,
+        ..
+    } = &mut *sea;
+    for ((phase, cycle), rate) in rain_phase
+        .iter_mut()
+        .zip(rain_cycle.iter_mut())
+        .zip(RAIN_RATE_HZ)
+    {
+        let t = *phase + rate * dt;
+        let wraps = t.floor();
+        *phase = t - wraps;
+        *cycle = (*cycle + wraps as u32) & RAIN_CYCLE_MASK;
+    }
 
     // How high the weather has the sea this frame. Headless (no weather) it is
     // the clear sea, like the sky below.
@@ -2533,12 +2579,17 @@ pub fn animate(
         },
     }
     .with_sea(folded, &state, centre);
-    // From below, the surface draws Snell's window.
-    m.extension.params.under.x = if weather.as_deref().is_some_and(|w| w.underwater) {
-        1.0
-    } else {
-        0.0
-    };
+    // From below, the surface draws Snell's window, and no rain lands on it.
+    let under = weather.as_deref().is_some_and(|w| w.underwater);
+    m.extension.params.under.x = if under { 1.0 } else { 0.0 };
+    let rain = weather
+        .as_deref()
+        .filter(|_| !under)
+        .map_or(0.0, |w| w.rain * (1.0 - w.snow));
+    let [p0, p1, p2] = sea.rain_phase;
+    m.extension.params.rain = Vec4::new(rain, p0, p1, p2);
+    let [c0, c1, c2] = sea.rain_cycle.map(|c| c as f32);
+    m.extension.params.rain_cycle = Vec4::new(c0, c1, c2, GLINT_RAIN_A2);
     // POTATO draws the swell's normal per vertex; a change re-specializes the
     // pipeline (`WaterKey`), so it is written only when it moves.
     let potato = settings
