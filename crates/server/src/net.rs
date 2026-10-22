@@ -171,8 +171,9 @@ const ADMIT_PER_SOURCE: u16 = 8;
 /// on top of `ADMIT_PER_SOURCE`. One subscriber's /56, a free tunnel /48 or
 /// a rented /24 is hundreds of "sources", and fifty of them parking unsigned
 /// sessions filled `ADMIT_REFUSE_AT` and refused everyone else at the door.
-/// This makes that fifty networks, not fifty addresses.
-const ADMIT_PER_PREFIX: u16 = 2 * ADMIT_PER_SOURCE;
+/// This makes that a dozen networks, not a dozen addresses; a carrier's
+/// CGNAT /24 still fits a rush of joiners.
+const ADMIT_PER_PREFIX: u16 = 4 * ADMIT_PER_SOURCE;
 /// Buckets in the per-source table. Sources hash in with a key drawn at boot,
 /// so nobody can aim at somebody else's bucket; a collision only makes two
 /// sources share one allowance. The per-network table is the same size.
@@ -182,14 +183,13 @@ const _: () = assert!(ADMIT_PER_PREFIX > ADMIT_PER_SOURCE);
 const _: () = assert!((ADMIT_PER_PREFIX as usize) < ADMIT_RETRY_AT);
 const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
 
-/// How long a sign-in may wait on its signature while the door is busy
-/// (`ADMIT_RETRY_AT` handshakes in flight) — instead of `SIGN_WAIT`. A
-/// session that never answers holds its place for the whole wait, so under
-/// pressure the wait is what sets how many addresses it takes to keep the
-/// door full. Long enough for a wallet prompt someone is already looking at.
-const SIGN_WAIT_BUSY: Duration = Duration::from_secs(15);
-const _: () = assert!(SIGN_WAIT_BUSY.as_secs() < protocol::SIGN_WAIT_SECS);
-const _: () = assert!(SIGN_WAIT_BUSY.as_secs() > HANDSHAKE_TIMEOUT.as_secs());
+/// Seats one source may hold at once, guests and wallets alike — the
+/// handshake allowance's household, held. With guests admitted, nothing
+/// else stopped one address joining eight at a time until every seat was
+/// its own and everyone else was told the shard is full. Loopback and the
+/// shard's own address are exempt, as at the door (bots, population).
+const SEATS_PER_SOURCE: usize = ADMIT_PER_SOURCE as usize;
+const _: () = assert!(SEATS_PER_SOURCE < MAX_PLAYERS);
 
 /// In-flight handshakes per source (`ADMIT_PER_SOURCE`) and per network
 /// (`ADMIT_PER_PREFIX`).
@@ -255,14 +255,18 @@ impl SourceGate {
         h as usize & (SOURCE_BUCKETS - 1)
     }
 
+    /// `ip` as this gate counts it: canonical, or `None` for the shard's own
+    /// host, which is never counted.
+    fn counted(&self, ip: std::net::IpAddr) -> Option<std::net::IpAddr> {
+        let ip = ip.to_canonical();
+        (!ip.is_loopback() && self.own != Some(ip)).then_some(ip)
+    }
+
     /// A place for one more handshake from `ip`, or `None` if its source
     /// already holds `ADMIT_PER_SOURCE` or its network `ADMIT_PER_PREFIX`.
     /// The shard's own host always gets one, uncounted.
     fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
-        let ip = ip.to_canonical();
-        let bucket = if ip.is_loopback() || gate.own == Some(ip) {
-            None
-        } else {
+        let bucket = if let Some(ip) = gate.counted(ip) {
             let b = gate.bucket(ip);
             if gate.held[b].fetch_add(1, Ordering::Relaxed) >= ADMIT_PER_SOURCE {
                 gate.held[b].fetch_sub(1, Ordering::Relaxed);
@@ -275,12 +279,37 @@ impl SourceGate {
                 return None;
             }
             Some((b, n))
+        } else {
+            None
         };
         Some(SourcePermit {
             gate: gate.clone(),
             bucket,
         })
     }
+}
+
+/// One source as `SourceGate` counts it: the same IPv4 address, or the same
+/// IPv6 /64.
+fn same_source(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+    match (a, b) {
+        (std::net::IpAddr::V4(a), std::net::IpAddr::V4(b)) => a == b,
+        (std::net::IpAddr::V6(a), std::net::IpAddr::V6(b)) => a.octets()[..8] == b.octets()[..8],
+        _ => false,
+    }
+}
+
+/// Live seats held by connections from `ip`'s source (`SEATS_PER_SOURCE`).
+fn seats_held(keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable, ip: std::net::IpAddr) -> usize {
+    keys.iter()
+        .enumerate()
+        .filter(|(s, k)| {
+            let w = slots.load(*s);
+            state_of(w) == SLOT_LIVE
+                && generation_of(w) == k.generation
+                && k.source.is_some_and(|x| same_source(x, ip))
+        })
+        .count()
 }
 
 /// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
@@ -1305,6 +1334,9 @@ struct KeySlot {
     watchable: bool,
     /// The self-declared display name its watchers see.
     name: protocol::Name,
+    /// The address it joined from, as `SourceGate` counts it, or `None` for
+    /// the shard's own host (`SEATS_PER_SOURCE`).
+    source: Option<std::net::IpAddr>,
 }
 
 /// The accept loop's half of a spectator seat (`NETCODE.md` §2.3): the
@@ -1677,8 +1709,10 @@ async fn accept_loop(
                         .filter(|_| faces_armed)
                         .and_then(|k| face_reads.known(&k, now)),
                 };
+                let source = sources.counted(done.connection.remote_address().ip());
                 if let Some((slot, gen)) = install(
                     done,
+                    source,
                     said,
                     &facts,
                     &mut ctrl_tx,
@@ -2512,7 +2546,7 @@ async fn handshake_task(
             self.0.fetch_sub(1, Ordering::Relaxed);
         }
     }
-    let flight = InFlight(in_flight);
+    let _guard = InFlight(in_flight);
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -2632,12 +2666,7 @@ async fn handshake_task(
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
-    let wait = if flight.0.load(Ordering::Relaxed) >= ADMIT_RETRY_AT {
-        SIGN_WAIT_BUSY
-    } else {
-        SIGN_WAIT
-    };
-    let exchange = tokio::time::timeout(wait, async {
+    let exchange = tokio::time::timeout(SIGN_WAIT, async {
         let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
         protocol::decode_auth(&buf[..len]).map_err(|_| ())
     })
@@ -2766,6 +2795,7 @@ async fn handshake_task(
 #[allow(clippy::too_many_arguments)]
 async fn install(
     done: Handshaken,
+    source: Option<std::net::IpAddr>,
     said: crate::slot::Said,
     facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
@@ -2789,6 +2819,11 @@ async fn install(
         hello.is_agent(),
     ) {
         ShardStats::bump(&stats.refused_agents);
+        spawn_refusal(connection, send, REFUSE_FULL);
+        return None;
+    }
+    if source.is_some_and(|ip| seats_held(keys, slots, ip) >= SEATS_PER_SOURCE) {
+        ShardStats::bump(&stats.refused_per_source);
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     }
@@ -2825,6 +2860,7 @@ async fn install(
         agent: hello.is_agent(),
         watchable: hello.consents_to_watch(),
         name: hello.name,
+        source,
     };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
@@ -5158,6 +5194,46 @@ mod tests {
         let a: std::net::IpAddr = "2001:db8:aa:1::1".parse().unwrap();
         let b: std::net::IpAddr = "2001:db8:aa:ff00::1".parse().unwrap();
         assert_eq!(gate.net_bucket(a), gate.net_bucket(b), "but one /48");
+    }
+
+    /// **A source's seats are its live tenants from that address (or /64)**:
+    /// a leaving tenant, a stale generation and the shard's own host do not
+    /// count (`SEATS_PER_SOURCE`).
+    #[test]
+    fn seats_held_counts_one_sources_live_tenants() {
+        let slots = SlotTable::new(MAX_CONNS);
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let a: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8:5:6::1".parse().unwrap();
+        let v6_sibling: std::net::IpAddr = "2001:db8:5:6:abcd::2".parse().unwrap();
+        for (s, ip) in [(0, Some(a)), (1, Some(a)), (2, Some(v6)), (3, None)] {
+            let generation = slots.claim(s).unwrap();
+            keys[s] = KeySlot {
+                generation,
+                source: ip,
+                ..KeySlot::default()
+            };
+        }
+        assert_eq!(seats_held(&keys, &slots, a), 2);
+        assert_eq!(
+            seats_held(&keys, &slots, v6_sibling),
+            1,
+            "a /64 is one source"
+        );
+        assert_eq!(
+            seats_held(&keys, &slots, "203.0.113.10".parse().unwrap()),
+            0
+        );
+        slots.mark_leaving(1, keys[1].generation);
+        assert_eq!(
+            seats_held(&keys, &slots, a),
+            1,
+            "a leaving tenant holds no seat"
+        );
+        let gate = SourceGate::new(Some("192.0.2.1".parse().unwrap()));
+        assert_eq!(gate.counted("127.0.0.1".parse().unwrap()), None);
+        assert_eq!(gate.counted("192.0.2.1".parse().unwrap()), None);
+        assert_eq!(gate.counted("::ffff:203.0.113.9".parse().unwrap()), Some(a));
     }
 
     /// **The human feed's delay line holds every message for exactly its
