@@ -2694,7 +2694,7 @@ async fn install(
 ) -> Option<(usize, u32)> {
     let Handshaken {
         connection,
-        mut send,
+        send,
         recv,
         key,
         address,
@@ -2808,7 +2808,6 @@ async fn install(
         dev: facts.dev,
         blight_salt: facts.blight_salt,
     };
-    let _ = write_welcome(&mut send, &welcome).await;
 
     tokio::spawn(reader_task(
         connection.clone(),
@@ -2834,15 +2833,17 @@ async fn install(
         generation,
     ));
     // The bidi send half stays open for the connection's life: after the
-    // welcome it becomes the reliable event lane (protocol::event).
-    tokio::spawn(event_writer_task(
-        send,
-        ev_rx,
-        slots.clone(),
-        stats.clone(),
-        slot,
-        generation,
-    ));
+    // welcome it becomes the reliable event lane (protocol::event). The
+    // welcome itself is written there too, never here (`write_opening`).
+    let (s, st) = (slots.clone(), stats.clone());
+    tokio::spawn(async move {
+        let mut send = send;
+        if write_opening(&mut send, &welcome, None).await.is_err() {
+            s.mark_leaving(slot, generation);
+            return;
+        }
+        event_writer_task(send, ev_rx, s, st, slot, generation).await;
+    });
     tokio::spawn(writer_task(
         connection,
         snap_rx,
@@ -2935,7 +2936,7 @@ async fn install_spectator(
 ) {
     let Handshaken {
         connection,
-        mut send,
+        send,
         recv,
         hello,
         ..
@@ -3037,13 +3038,11 @@ async fn install_spectator(
         dev: facts.dev,
         blight_salt: facts.blight_salt,
     };
-    let _ = write_welcome(&mut send, &welcome).await;
     let watch = protocol::Watch {
         address: k.address,
         agent: k.agent,
         name: k.name,
     };
-    let _ = write_watch(&mut send, &watch).await;
 
     tokio::spawn(spectator_reader_task(
         connection.clone(),
@@ -3060,16 +3059,20 @@ async fn install_spectator(
         slot,
         generation,
     ));
+    let (s, st) = (slots.clone(), stats.clone());
     match delay {
         None => {
-            tokio::spawn(event_writer_task(
-                send,
-                ev_rx,
-                slots.clone(),
-                stats.clone(),
-                slot,
-                generation,
-            ));
+            tokio::spawn(async move {
+                let mut send = send;
+                if write_opening(&mut send, &welcome, Some(&watch))
+                    .await
+                    .is_err()
+                {
+                    s.mark_leaving(slot, generation);
+                    return;
+                }
+                event_writer_task(send, ev_rx, s, st, slot, generation).await;
+            });
             tokio::spawn(writer_task(
                 connection,
                 snap_rx,
@@ -3084,19 +3087,45 @@ async fn install_spectator(
         Some(delay) => {
             // A delayed feed hears nothing live (`ShardCore::voice_reach`).
             drop(voice_out_rx);
-            tokio::spawn(delayed_writer_task(
-                connection,
-                send,
-                snap_rx,
-                ev_rx,
-                slots.clone(),
-                stats.clone(),
-                slot,
-                generation,
-                delay,
-            ));
+            tokio::spawn(async move {
+                let mut send = send;
+                if write_opening(&mut send, &welcome, Some(&watch))
+                    .await
+                    .is_err()
+                {
+                    s.mark_leaving(slot, generation);
+                    return;
+                }
+                delayed_writer_task(
+                    connection, send, snap_rx, ev_rx, s, st, slot, generation, delay,
+                )
+                .await;
+            });
         }
     }
+}
+
+/// The welcome, and a watcher's `Watch` after it, written on the
+/// connection's own task and **never on the accept loop**. `write_all` waits
+/// for stream credit that only the client grants, so a client that shrinks
+/// its receive window and never reads held this write — and with it the
+/// whole door: no joins, kicks, bans, save drains or shutdown — for good,
+/// keep-alives keeping the connection itself alive. Bounded like the
+/// challenge; a client that will not take its welcome in that time is gone.
+async fn write_opening(
+    send: &mut SendStream,
+    welcome: &Welcome,
+    watch: Option<&protocol::Watch>,
+) -> Result<(), ()> {
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        write_welcome(send, welcome).await?;
+        if let Some(watch) = watch {
+            write_watch(send, watch).await?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap_or(Err(()))
 }
 
 async fn write_watch(send: &mut SendStream, msg: &protocol::Watch) -> Result<(), ()> {
