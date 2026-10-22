@@ -6192,6 +6192,15 @@ pub struct ShopRow {
 }
 
 impl ShopRow {
+    /// The offer this row shows, as a buy names it (`ShopAct::Buy::terms`).
+    pub fn terms(&self) -> sim_core::shop::ShopOffer {
+        sim_core::shop::ShopOffer {
+            item: self.item,
+            lot: self.lot,
+            price: self.price,
+        }
+    }
+
     pub fn live(&self) -> bool {
         self.lot > 0
     }

@@ -3794,7 +3794,8 @@ pub fn pick_up_hand(
 /// asymmetry is right: a box is furniture and a wall is a base. The
 /// consequence worth stating is the one `DOORS.md` §5 already states —
 /// on unclaimed ground **anyone in reach may take it**, which is what
-/// makes a hearth worth placing.
+/// makes a hearth worth placing. Except a vending machine, a turret and a
+/// sleeping bag, which come up only for the hands they answer to.
 ///
 /// A deployable with a lock on it is the one extra check: the lock is the
 /// thing saying whose door — or whose box — this is, so a hand it does
@@ -3836,9 +3837,13 @@ pub fn pick_up(
     let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
-    // A vending machine comes up only for the hands it answers to: on open
-    // ground anyone may lift a box, but a shop's stock is not anyone's.
-    if def.arch == ARCH_VENDING && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
+    // A vending machine, a turret and a bag somebody wakes in come up only
+    // for the hands they answer to (`turret::spares`: the owner, or the crew
+    // of the claim it stands in): on open ground anyone may lift a box, but
+    // a shop's stock is not anyone's, a gun is not disarmed by walking off
+    // with it, and a stranger's respawn is not pocketed.
+    if matches!(def.arch, ARCH_VENDING | ARCH_TURRET | ARCH_BAG)
+        && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
@@ -6982,6 +6987,58 @@ mod tests {
 
     /// Pickup v1: a deployable comes back up any time you may build
     /// there, and comes up **empty or not at all**.
+    #[test]
+    fn a_strangers_bag_does_not_come_up_on_open_ground() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (5, 1)]);
+        // A sleeping bag (row 3, item 5) on unclaimed ground.
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1, "{:?}", last(&ev));
+        let mut stranger = player_at_cell(CX, CZ, &[]);
+        stranger.id = 9;
+        let mut lift = |who: &mut Player, ev: &mut EventQueue| {
+            pick_up(
+                &dc,
+                &gc,
+                &mut pieces,
+                &mut deploys,
+                who,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                ev,
+                &mut [ItemStack::default(); INV_SLOTS],
+            )
+        };
+        lift(&mut stranger, &mut ev);
+        assert_eq!(last(&ev), (EV_DEPLOY_REFUSED, 9, REFUSE_D_OWNER, 0));
+        assert_eq!(crate::craft::inv_count(&stranger.inv, 5), 0);
+        lift(&mut p, &mut ev);
+        assert_eq!(crate::craft::inv_count(&p.inv, 5), 1, "its owner lifts it");
+    }
+
     #[test]
     fn a_deployable_comes_back_up_and_a_full_one_does_not() {
         let dc = DeployContent::probe_fixture();

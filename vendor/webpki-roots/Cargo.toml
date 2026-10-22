@@ -1,0 +1,20 @@
+# Upstream webpki-roots 1.0.10, unchanged except for the three eMudhra (emSign)
+# roots removed from src/lib.rs — see README.md. Applied to the whole graph by
+# `[patch.crates-io]` in the workspace manifest, so every ureq agent in client and server
+# both link this list. Upstream's tests and their dev-dependencies are left out.
+[package]
+name = "webpki-roots"
+version = "1.0.10"
+edition = "2021"
+rust-version = "1.71"
+description = "Mozilla's CA root certificates for use with webpki, minus the eMudhra (emSign) roots"
+license = "CDLA-Permissive-2.0"
+repository = "https://github.com/rustls/webpki-roots"
+publish = false
+
+[lib]
+name = "webpki_roots"
+path = "src/lib.rs"
+
+[dependencies]
+pki-types = { version = "1.8", default-features = false, package = "rustls-pki-types" }

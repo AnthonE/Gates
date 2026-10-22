@@ -36,11 +36,19 @@ pub fn ureq() -> ureq::tls::TlsConfig {
         .build()
 }
 
-/// A `ureq` agent with [`ureq`]'s roots, for the plain `ureq::get` calls.
+/// The whole of one plain fetch — the shard list, a title manifest, a
+/// picture — connect to last byte. ureq has no timeout of its own, and a
+/// fetch that never finishes holds its thread and its in-flight slot for
+/// the rest of the session.
+pub const FETCH_TIMEOUT_S: u64 = 15;
+
+/// A `ureq` agent with [`ureq`]'s roots and [`FETCH_TIMEOUT_S`], for the
+/// plain `ureq::get` calls.
 #[cfg(feature = "render")]
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .tls_config(self::ureq())
+        .timeout_global(Some(std::time::Duration::from_secs(FETCH_TIMEOUT_S)))
         .build()
         .into()
 }

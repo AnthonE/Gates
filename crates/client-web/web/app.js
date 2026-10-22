@@ -307,12 +307,17 @@ function freshReload(r) {
 
 /* Ours: the host is under elopros.com. Keyed on the address, never on
    anything a list says about a row, so a community shard cannot wear it
-   (`client::ui::servers::is_official_addr` is the same rule). */
+   (`client::ui::servers::is_official_addr` is the same rule for every
+   address with a port). `addrOk` lets the port go — a bare host dials 443,
+   and `client::net::handshake::server_host` reads it so too — so a bare host
+   is read whole: `?server=game.elopros.com` is ours, and its pin is refused
+   (the Rust side refuses it again: `net::handshake::pin_refused`). */
 function official(r) {
   if (!addrOk(r.addr)) return false;
-  const at = String(r.addr || "").lastIndexOf(":");
-  if (at < 1 || r.addr.startsWith("[")) return false;
-  const host = r.addr.slice(0, at).toLowerCase().replace(/\.+$/, "");
+  const addr = String(r.addr || "");
+  if (addr.startsWith("[")) return false;
+  const at = addr.lastIndexOf(":");
+  const host = (at < 0 ? addr : addr.slice(0, at)).toLowerCase().replace(/\.+$/, "");
   return host === "elopros.com" || (host.endsWith(".elopros.com") && host.length > ".elopros.com".length);
 }
 

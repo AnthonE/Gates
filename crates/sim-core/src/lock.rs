@@ -534,7 +534,12 @@ fn enter(locks: &mut Locks, i: usize, id: u32, code: u16, tick: u64) -> Outcome 
     if !l.remember(id, want) {
         return Outcome::ListFull;
     }
-    l.misses = 0;
+    // Only the full code clears the streak. A guest code that did would be
+    // a reset button for anyone who knows it: seven guesses at the main
+    // code, the guest code, seven more — the whole keyspace in minutes.
+    if want == GRANT_FULL {
+        l.misses = 0;
+    }
     Outcome::Authorized { grant: want }
 }
 
@@ -766,6 +771,26 @@ mod tests {
         assert_eq!(
             locks.entries[0].misses, 0,
             "and a correct code clears the streak"
+        );
+    }
+
+    #[test]
+    fn the_guest_code_does_not_reset_the_lockout() {
+        let mut locks = armed();
+        apply(&mut locks, 0, OWNER, ACCESS_OP_SET_GUEST, 4321, 0);
+        for k in 0..LOCKOUT_TRIES as u64 - 1 {
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, k);
+        }
+        assert_eq!(
+            apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 4321, 10),
+            Outcome::Authorized { grant: GRANT_GUEST }
+        );
+        assert!(
+            matches!(
+                apply(&mut locks, 0, RAIDER, ACCESS_OP_ENTER, 9, 11),
+                Outcome::Wrong { shut: true, .. }
+            ),
+            "a guest's way in is not a fresh ladder at the main code"
         );
     }
 

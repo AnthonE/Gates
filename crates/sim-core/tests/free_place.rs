@@ -220,12 +220,23 @@ fn a_deployable_never_crosses_a_wall() {
         plate: 0,
     }]);
     assert_eq!(w.pieces.len(), 3, "the wall must stand");
+    // The fixture's stance is on the seam, in the wall's own plane; the box
+    // that lands clear of it is put down from its own side, since a hand puts
+    // nothing down through a wall (`World::deploy_seen`).
+    let seam = (a + 2) as f32 * BUILD_CELL_M;
+    let z = w.players[0].body.qz as f32 * sim_core::movement::POS_XZ_Q;
+    let side = |w: &mut World, dx: f32| {
+        let qy = w.players[0].body.qy;
+        w.players[0].body = Body::at(SEED, hv(SEED), seam + dx, z);
+        w.players[0].body.qy = qy;
+    };
     // Centred 0.1 m past the seam: across the wall.
     assert_eq!(
         place(&mut w, BOX_ROW, a + 2, cz, pose(-119, 0, 0)),
         Err(REFUSE_D_SPOT)
     );
     // Pushed up against it from one side, a centimetre clear: fine.
+    side(&mut w, 1.0);
     assert_eq!(place(&mut w, BOX_ROW, a + 2, cz, pose(-66, 0, 0)), Ok(()));
 }
 
@@ -341,4 +352,40 @@ fn a_turned_furnace_blocks_where_it_stands_and_survives_a_save() {
     assert_eq!(w2.pieces.entries(), w.pieces.entries());
     assert_eq!(w2.state_hash(), w.state_hash());
     check(&w2);
+}
+
+/// **Nothing is put down through a wall.** On a base with no hearth yet —
+/// nobody's claim — a hand outside its wall dropped a cupboard or a bag
+/// through it (`World::deploy_seen`). A box behind the seam's wall is refused
+/// from the far side and lands from its own.
+#[test]
+fn a_deployable_is_not_put_down_through_a_wall() {
+    let (mut w, a, cz) = world();
+    w.tick(&[Command::Place {
+        id: PLAYER,
+        row: WALL_ROW,
+        cx: a + 2,
+        cz,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert_eq!(w.pieces.len(), 3, "the wall must stand");
+    let seam = (a + 2) as f32 * BUILD_CELL_M;
+    let z = w.players[0].body.qz as f32 * sim_core::movement::POS_XZ_Q;
+    let side = |w: &mut World, dx: f32| {
+        let qy = w.players[0].body.qy;
+        w.players[0].body = Body::at(SEED, hv(SEED), seam + dx, z);
+        w.players[0].body.qy = qy;
+    };
+    side(&mut w, -1.0);
+    assert_eq!(
+        place(&mut w, BOX_ROW, a + 2, cz, Pose::CENTRE),
+        Err(sim_core::deploy::REFUSE_D_REACH),
+        "a box put down behind the wall"
+    );
+    assert!(w.deploys.is_empty());
+    side(&mut w, 1.0);
+    assert_eq!(place(&mut w, BOX_ROW, a + 2, cz, Pose::CENTRE), Ok(()));
 }

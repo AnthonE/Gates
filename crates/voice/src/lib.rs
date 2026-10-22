@@ -11,6 +11,7 @@
 //!
 //! Nothing here is the wire (`protocol::voice`) or the mix (`sound`).
 
+#![forbid(unsafe_code)]
 use rusty_opus::{Application, OpusDecoder, OpusEncoder};
 
 /// The codec's rate: wideband speech, Opus's SILK mode.
@@ -171,9 +172,24 @@ impl Decoder {
 
     fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) {
         let n = self.frame();
-        let got = match self.dec.decode(packet, n, &mut self.scratch[..n]) {
-            Ok(got) => got.min(n),
+        // A peer's bytes reach a third-party codec here, on every listener
+        // and on the shard's caption thread. A panic inside it is concealed
+        // as a lost frame and the codec is rebuilt, rather than taking the
+        // thread with it. (A no-op under `panic = "abort"`, the web build.)
+        let (dec, scratch) = (&mut self.dec, &mut self.scratch[..n]);
+        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dec.decode(packet, n, scratch)
+        }));
+        let got = match decoded {
+            Ok(Ok(got)) => got.min(n),
+            Ok(Err(_)) => {
+                self.scratch[..n].fill(0.0);
+                n
+            }
             Err(_) => {
+                if let Ok(fresh) = OpusDecoder::new(self.rate as i32, 1) {
+                    self.dec = fresh;
+                }
                 self.scratch[..n].fill(0.0);
                 n
             }

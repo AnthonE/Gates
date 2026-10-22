@@ -74,6 +74,20 @@ pub fn sight(
     from: (f32, f32, f32),
     to: (f32, f32, f32),
 ) -> bool {
+    walk(seed, haven, cols, doors, from, to, |_| false)
+}
+
+/// [`sight`]'s walk, asking `mine` of the first built thing it meets: that
+/// thing is the one reached for (true) or in the way (false).
+fn walk(
+    seed: u64,
+    haven: &Haven,
+    cols: &ColIndex,
+    doors: u32,
+    from: (f32, f32, f32),
+    to: (f32, f32, f32),
+    mine: impl Fn(collide::PieceHit) -> bool,
+) -> bool {
     let (dx, dy, dz) = (to.0 - from.0, to.1 - from.1, to.2 - from.2);
     let len_mm = (dx * dx + dy * dy + dz * dz).sqrt() * MM_PER_M;
     let n = ((len_mm / ARROW_STEP_MM as f32) as usize + 1).min(HAND_SAMPLES);
@@ -85,8 +99,9 @@ pub fn sight(
     for k in 1..=n {
         let t = k as f32 / n as f32;
         let (x, y, z) = (from.0 + dx * t, from.1 + dy * t, from.2 + dz * t);
-        if collide::shot_blocked(seed, haven, cols, prev.0, prev.1, x, z, y, ARROW_R_M) {
-            return false;
+        if let Some(hit) = collide::shot_stop(seed, haven, cols, prev.0, prev.1, x, z, y, ARROW_R_M)
+        {
+            return mine(hit);
         }
         // The island's own stone, which the shot walk does not see: it
         // walks built pieces, and nothing may be built at the ziggurat or a
@@ -104,6 +119,64 @@ pub fn sight(
         prev = (x, z);
     }
     true
+}
+
+/// The longest walk a hand takes at full resolution: [`HAND_SAMPLES`] taps
+/// of `ARROW_STEP_MM`. Past it the taps would spread and could step over a
+/// slab, so [`clear_piece`] refuses a piece further than this from the eye.
+pub const HAND_WALK_M: f32 = HAND_SAMPLES as f32 * ARROW_STEP_MM as f32 / MM_PER_M;
+
+/// How far under a plane's floor line a hand aims at a floor, a foundation
+/// or a roof: the middle of its slab.
+pub const SLAB_MID_M: f32 = collide::PLANE_THICKNESS_M * 0.5;
+
+/// Whether the first thing built on the line from `eye` to piece `i`'s
+/// middle is that piece, or nothing built is on it: a wall from either face,
+/// a floor from above or below, a foundation from its top or its side —
+/// never through another piece. The line alone, no storey: a wall a storey
+/// up is a raider's to reach from the ground. False for no record, or for a
+/// piece further from the eye than [`HAND_WALK_M`].
+#[allow(clippy::too_many_arguments)]
+pub fn clear_piece(
+    seed: u64,
+    haven: &Haven,
+    cols: &ColIndex,
+    doors: u32,
+    bc: &crate::build::BuildContent,
+    pieces: &crate::build::Pieces,
+    i: usize,
+    eye: (f32, f32, f32),
+) -> bool {
+    let Some(rec) = pieces.entries().get(i) else {
+        return false;
+    };
+    let Some(def) = bc.pieces.get(rec.row as usize) else {
+        return false;
+    };
+    let (x, z) = pieces.anchor_of(rec);
+    // The floor the piece stands on, as a charge's blast finds it.
+    let floor = match pieces.frame(rec.bld).filter(|_| !rec.on_grid()) {
+        Some(f) => crate::build::band_y(f.band) + crate::build::level_y(rec.level),
+        None => {
+            collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
+                + crate::build::level_y(rec.level)
+        }
+    };
+    let y = if crate::build::shape_has_facing(def.shape) {
+        floor + crate::build::wall_height(def.shape) * 0.5
+    } else {
+        floor - SLAB_MID_M
+    };
+    let (dx, dy, dz) = (x - eye.0, y - eye.1, z - eye.2);
+    if dx * dx + dy * dy + dz * dz > HAND_WALK_M * HAND_WALK_M {
+        return false;
+    }
+    let id = rec.id;
+    walk(seed, haven, cols, doors, eye, (x, y, z), |h| {
+        pieces
+            .find(h.cx, h.cz, h.level, h.loc)
+            .is_some_and(|r| r.id == id)
+    })
 }
 
 /// How far above its feet a body lying or standing is aimed at, metres.

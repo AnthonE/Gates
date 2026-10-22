@@ -3263,6 +3263,140 @@ impl World {
         )
     }
 
+    /// Whether the player in `slot` sees the hearth on `(cx, cz, level)` on
+    /// their own storey (`reach::clear_door`, a body deployable aimed at its
+    /// middle): the feed, the take and the crew ops are worked where the
+    /// cupboard is, never through its room's wall or floor — a stranger at a
+    /// sealed base's wall joined a bare hearth inside it that way. True when
+    /// no hearth stands there: the verb's own refusal names that.
+    fn hearth_seen(&self, slot: usize, cx: u16, cz: u16, level: u8) -> bool {
+        match self
+            .deploys
+            .hearths()
+            .iter()
+            .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+        {
+            Some(h) => self.door_seen(slot, (cx, cz, level, h.loc)),
+            None => true,
+        }
+    }
+
+    /// Whether the player in `slot` may put deployable `row` down where a
+    /// `PlaceDeploy` names it: in plain sight (the thing as it would stand,
+    /// or the door or box a lock bolts onto),
+    /// unless the spot is inside a claim they are crew of. A base with no
+    /// hearth yet is nobody's claim, and a hand outside its walls dropped a
+    /// cupboard (the claim over the whole building) or a bag (a respawn
+    /// inside) through them. Crew building through their own walls changes
+    /// nothing anyone else holds. True for a request `place_deploy` refuses
+    /// on its own terms.
+    fn deploy_seen(
+        &self,
+        slot: usize,
+        row: u16,
+        at: (u16, u16, u8, u8),
+        pose: crate::footprint::Pose,
+    ) -> bool {
+        let (cx, cz, level, loc) = at;
+        let Some(def) = self.deploy.defs[..self.deploy.def_count as usize].get(row as usize) else {
+            return true;
+        };
+        let cols = self.pieces.cols();
+        // A spot `place_deploy` refuses anyway keeps its own reason: a body
+        // pushed into a wall is "no room", not "out of sight".
+        let body = matches!(
+            def.placement,
+            deploy::PLACE_GROUND | deploy::PLACE_FOUNDATION | deploy::PLACE_ANY
+        );
+        if body
+            && deploy::body_site(
+                self.seed,
+                &self.haven,
+                cols,
+                self.deploys.entries(),
+                &self.deploy,
+                def.placement,
+                def.arch,
+                cx,
+                cz,
+                level,
+                pose,
+            )
+            .is_err()
+        {
+            return true;
+        }
+        let (rec, arch) = if def.placement == deploy::PLACE_DOOR {
+            let Some(host) = self.deploys.find(cx, cz, level, loc) else {
+                return true;
+            };
+            let Some(hd) = self.deploy.defs.get(host.row as usize) else {
+                return true;
+            };
+            (*host, hd.arch)
+        } else {
+            let rec = deploy::DeployRec {
+                cx,
+                cz,
+                level,
+                loc,
+                pose,
+                row: row as u8,
+                ..deploy::DeployRec::default()
+            };
+            (rec, def.arch)
+        };
+        let (eye, feet) = self.hand(slot);
+        // The line alone, no storey rule: a door hung on the doorway a storey
+        // up from the ground is honest building; a wall or a floor in the way
+        // is what a placement must not pass.
+        let t = crate::reach::Target {
+            storey: false,
+            ..crate::reach::Target::deploy(self.seed, &self.haven, cols, &rec, arch, (eye.0, eye.2))
+        };
+        if crate::reach::clear_from(
+            self.seed,
+            &self.haven,
+            cols,
+            self.card_door_bits,
+            eye,
+            feet,
+            t,
+        ) {
+            return true;
+        }
+        let (x, z) = rec.place_xz(cols);
+        let id = self.players[slot].id;
+        crate::claim::any_claim(&self.pieces, &self.deploys, x, z)
+            && !crate::claim::foreign_claim(&self.pieces, &self.deploys, x, z, id)
+    }
+
+    /// Whether the player in `slot` sees what a charge would be planted on
+    /// (`reach.rs`): a deployable the way the use verb sees it, a piece when
+    /// the first thing built on the line to it is that piece. Planar reach
+    /// alone let a raider at the outer wall plant on the cupboard, the box
+    /// or the inner wall behind it. True when nothing stands at the address:
+    /// `charge::place` names that refusal.
+    fn charge_seen(&self, slot: usize, deploy: bool, addr: (u16, u16, u8, u8)) -> bool {
+        if deploy {
+            return self.door_seen(slot, addr);
+        }
+        let Some(i) = self.pieces.find_index(addr.0, addr.1, addr.2, addr.3) else {
+            return true;
+        };
+        let (eye, _) = self.hand(slot);
+        crate::reach::clear_piece(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            &self.build,
+            &self.pieces,
+            i,
+            eye,
+        )
+    }
+
     /// Whether the player in `slot` reaches entry `i` of the box store — a
     /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
     /// same storey and nothing built in the way (`reach.rs`). The move verb
@@ -3401,9 +3535,11 @@ impl World {
             &rec,
             deploy::ARCH_PLANTER,
         );
+        let secret = self.secret_seed();
         crate::farm::plant_bed(
             &self.cook.farm,
             self.seed,
+            secret,
             self.tick,
             &mut self.farm,
             &rec,
@@ -3463,9 +3599,11 @@ impl World {
             x,
             z,
         )?;
+        let secret = self.secret_seed();
         crate::farm::plant_ground(
             &self.cook.farm,
             self.seed,
+            secret,
             self.tick,
             &mut self.farm,
             &mut self.players[slot],
@@ -3492,7 +3630,8 @@ impl World {
         }
         let pid = self.players[slot].id;
         let roll = crate::rng::splitmix64(
-            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
+            crate::rng::cell_hash(self.secret_seed(), pid as i32, 0, crate::farm::CH_LEAVES)
+                ^ self.tick,
         ) % 1000;
         if roll >= u64::from(def.leaves_pm) {
             return;
@@ -3690,9 +3829,12 @@ impl World {
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
                     return;
                 }
-                // A vending machine's stock and takings move only for the
-                // hands it answers to (`shop.rs`); anyone may look and buy.
-                if self.deploys.oven_states()[i].arch == deploy::ARCH_VENDING
+                // A vending machine's stock and takings, and a turret's
+                // rounds, move only for the hands the machine answers to
+                // (`turret::spares`): anyone may look at a shop and buy, but
+                // nobody the gun would shoot may unload it by hand.
+                let arch = self.deploys.oven_states()[i].arch;
+                if (arch == deploy::ARCH_VENDING || arch == deploy::ARCH_TURRET)
                     && !crate::shop::may_edit(&self.pieces, &self.deploys, i, pid)
                 {
                     self.events
@@ -4460,6 +4602,18 @@ impl World {
                 i += 1;
             }
         }
+    }
+
+    /// The seed with the arc's secret folded in (`mech::ArcState::salt`,
+    /// drawn by the server and never sent): the key for every draw a player
+    /// could otherwise time from the public seed and the tick it chose — a
+    /// gun's cone, a crate's or barrel's roll, a sown seed's genes, a charge's
+    /// dud, a meal's seed. Terrain, scatter and anything a client draws
+    /// itself keep `self.seed`. A world nobody salted reads back `self.seed`
+    /// exactly, so no pinned hash moves.
+    #[inline]
+    pub fn secret_seed(&self) -> u64 {
+        self.seed ^ self.arc.salt.rotate_left(41)
     }
 
     /// Seat this wipe's blight salt and redraw its outbreaks from it.
@@ -6512,27 +6666,37 @@ impl World {
                 pose,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::place_deploy(
-                        self.seed,
-                        &self.haven,
-                        &self.deploy,
-                        &self.build,
-                        &mut self.pieces,
-                        &mut self.deploys,
-                        &mut self.players[slot],
-                        self.tick,
-                        row,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        pose,
-                        &mut self.events,
-                    );
+                    if !self.deploy_seen(slot, row, (cx, cz, level, loc), pose) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else {
+                        deploy::place_deploy(
+                            self.seed,
+                            &self.haven,
+                            &self.deploy,
+                            &self.build,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            self.tick,
+                            row,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            pose,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Feed { id, cx, cz, level } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    if !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        return;
+                    }
                     deploy::feed(
                         &self.deploy,
                         &mut self.deploys,
@@ -6552,6 +6716,11 @@ impl World {
                 row,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    if !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        return;
+                    }
                     deploy::take_stock(
                         &self.deploy,
                         &self.gather,
@@ -6778,7 +6947,10 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) {
+                    if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else if deploy::op_is_crew(op) {
                         let owner = deploy::crew_op(
                             &mut self.deploys,
                             &self.players[slot],
@@ -6878,22 +7050,27 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    crate::charge::place(
-                        &self.build,
-                        &self.deploy,
-                        &self.combat,
-                        &mut self.charges,
-                        &self.deploys,
-                        &self.pieces,
-                        &mut self.players[slot],
-                        self.tick,
-                        deploy,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        &mut self.events,
-                    );
+                    if !self.charge_seen(slot, deploy, (cx, cz, level, loc)) {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, crate::build::REFUSE_B_REACH, 0);
+                    } else {
+                        crate::charge::place(
+                            &self.build,
+                            &self.deploy,
+                            &self.combat,
+                            &mut self.charges,
+                            &self.deploys,
+                            &self.pieces,
+                            &mut self.players[slot],
+                            self.tick,
+                            deploy,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Vend { id, offer, times } => {
@@ -7237,8 +7414,10 @@ impl World {
                 let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
                 let gone = self.slot_lives.is_harvested(cx, cz);
                 if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
+                    let loot_seed = self.secret_seed();
                     self.world_conts.open(
                         self.seed,
+                        loot_seed,
                         &self.scatter,
                         &self.haven,
                         self.pieces.cols(),
@@ -7921,6 +8100,7 @@ impl World {
             }
         }
         let seed = self.seed;
+        let secret = self.secret_seed();
         let tick = self.tick;
         // A sapling's size is measured at this tick (tree growth v0).
         self.slot_lives.set_now(tick);
@@ -8439,7 +8619,7 @@ impl World {
                 let mut items = [ItemStack::default(); INV_SLOTS];
                 let key = cell_key(cx, cz);
                 self.loot
-                    .roll_into(table as usize, &self.gather, seed, key, tick, &mut items);
+                    .roll_into(table as usize, &self.gather, secret, key, tick, &mut items);
                 let _ = qy;
                 self.ground_items.scatter(
                     &self.backpack,
@@ -8489,6 +8669,7 @@ impl World {
         let mut duds = crate::charge::Duds::new();
         crate::charge::tick_fuses(
             seed,
+            secret,
             &self.haven,
             &self.build,
             &self.deploy,
@@ -8903,6 +9084,7 @@ impl World {
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
+            secret,
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {

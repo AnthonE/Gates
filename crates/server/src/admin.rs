@@ -346,6 +346,11 @@ impl Bans {
         true
     }
 
+    /// Every banned wallet, for the sim's copy (`ShardCore::banned`).
+    pub fn keys(&self) -> &[PlayerKey] {
+        &self.keys
+    }
+
     pub fn contains(&self, key: &PlayerKey) -> bool {
         self.keys.iter().any(|k| k == key)
     }
