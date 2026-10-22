@@ -29,6 +29,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::boulder::{self, BLOCK_SPIRE, BOULDER_CELL_M, ON_GROUND};
 use sim_core::terrain;
 
@@ -42,6 +43,9 @@ pub const ROCK_RING: i32 = 14;
 /// Formations built per frame. An empty cell is a few taps and costs nothing
 /// against this; a present one is a few more and a mesh.
 pub const BUILDS_PER_FRAME: usize = 2;
+/// Finished formations landed per frame: a spawn and a mesh handed to the
+/// render world each, so a frame that finds a backlog does not upload it all.
+const LANDS_PER_FRAME: usize = 4;
 /// The ground material's value multiplier (`UV_1.x`) on a boulder, at its
 /// top. Granite at full value is the ground's brightest identity, and a
 /// lone rock of it in the sun read as a white lump — ore, not a boulder.
@@ -102,8 +106,15 @@ pub const SPIRE_SINK_M: f32 = 0.3;
 pub struct RockRing {
     seed: Option<u64>,
     built: HashMap<(i32, i32), Option<Entity>>,
+    /// Formations being meshed on `AsyncComputeTaskPool`, keyed as `built`.
+    /// A mesh is a millisecond on average and several on a big formation,
+    /// two a frame, so it is not built on the frame ([`stream`]).
+    meshing: HashMap<(i32, i32), Task<Meshed>>,
     spires: Option<SpireModels>,
 }
+
+/// A formation and its mesh, as a task hands them back.
+type Meshed = (boulder::Formation, Option<Mesh>);
 
 /// The spire models' one primitive and one material each, loaded on first
 /// use and kept across worlds.
@@ -148,6 +159,12 @@ impl RockRing {
 
 /// Keep the formations within [`ROCK_RING`] cells of the eye built, nearest
 /// first, and drop the ones that fall out of it.
+///
+/// **Meshed on `AsyncComputeTaskPool`, landed here.** Which cells hold a
+/// formation is a few taps and stays on the frame; the mesh is one task per
+/// formation, [`BUILDS_PER_FRAME`] started a frame, and landed whole with its
+/// spires on the first frame that finds it done. In a browser that pool is
+/// the main thread, so there the cost is what it was, between frames.
 #[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
@@ -173,12 +190,15 @@ pub fn stream(
                 commands.entity(e).despawn();
             }
         }
+        // Dropping a task cancels it.
+        rocks.meshing.clear();
         rocks.seed = Some(world.seed);
     }
     let cx = (eye.pos.x / BOULDER_CELL_M).floor() as i32;
     let cz = (eye.pos.z / BOULDER_CELL_M).floor() as i32;
+    let near = |x: i32, z: i32| (x - cx).abs() <= ROCK_RING + 1 && (z - cz).abs() <= ROCK_RING + 1;
     rocks.built.retain(|&(x, z), e| {
-        let keep = (x - cx).abs() <= ROCK_RING + 1 && (z - cz).abs() <= ROCK_RING + 1;
+        let keep = near(x, z);
         if !keep {
             if let Some(e) = e {
                 commands.entity(*e).despawn();
@@ -186,7 +206,46 @@ pub fn stream(
         }
         keep
     });
+    rocks.meshing.retain(|&(x, z), _| near(x, z));
+
+    // Land what finished: the cell, its mesh and its spires in one frame.
+    for _ in 0..LANDS_PER_FRAME * super::stream_boost() {
+        let Some(key) = rocks
+            .meshing
+            .iter()
+            .find(|(_, t)| t.is_finished())
+            .map(|(k, _)| *k)
+        else {
+            break;
+        };
+        let Some(mut task) = rocks.meshing.remove(&key) else {
+            break;
+        };
+        let Some((f, mesh)) = block_on(future::poll_once(&mut task)) else {
+            // Finished but not ready: put it back, since dropping it would
+            // cancel the work and the cell would be asked for again.
+            rocks.meshing.insert(key, task);
+            break;
+        };
+        // Visible itself, mesh or not: a formation of nothing but spires is
+        // a parent the spires inherit their visibility from.
+        let mut cell = commands.spawn((WorldEntity, Transform::IDENTITY, Visibility::default()));
+        if let Some(mesh) = mesh {
+            cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
+        }
+        for b in f.iter().filter(|b| b.kind == BLOCK_SPIRE) {
+            let k = spire_model(b.shape);
+            cell.with_child((
+                Mesh3d(spires.mesh[k].clone()),
+                MeshMaterial3d(spires.mat[k].clone()),
+                spire_transform(world.seed, &world.haven, b),
+            ));
+        }
+        rocks.built.insert(key, Some(cell.id()));
+    }
+
     let mut budget = BUILDS_PER_FRAME * super::stream_boost();
+    let pool = AsyncComputeTaskPool::get();
     // Rings outward, so the nearest rocks land first.
     for r in 0..=ROCK_RING {
         for dz in -r..=r {
@@ -195,7 +254,7 @@ pub fn stream(
                     continue;
                 }
                 let key = (cx + dx, cz + dz);
-                if rocks.built.contains_key(&key) {
+                if rocks.built.contains_key(&key) || rocks.meshing.contains_key(&key) {
                     continue;
                 }
                 let f = boulder::formation(world.seed, &world.haven, key.0, key.1);
@@ -203,22 +262,12 @@ pub fn stream(
                     rocks.built.insert(key, None);
                     continue;
                 }
-                // Visible itself, mesh or not: a formation of nothing but
-                // spires is a parent the spires inherit their visibility from.
-                let mut cell =
-                    commands.spawn((WorldEntity, Transform::IDENTITY, Visibility::default()));
-                if let Some(mesh) = formation_mesh(world.seed, &world.haven, &f, live.as_ref()) {
-                    cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
-                }
-                for b in f.iter().filter(|b| b.kind == BLOCK_SPIRE) {
-                    let k = spire_model(b.shape);
-                    cell.with_child((
-                        Mesh3d(spires.mesh[k].clone()),
-                        MeshMaterial3d(spires.mat[k].clone()),
-                        spire_transform(world.seed, &world.haven, b),
-                    ));
-                }
-                rocks.built.insert(key, Some(cell.id()));
+                let (seed, haven) = (world.seed, world.haven);
+                let task = pool.spawn(async move {
+                    let mesh = formation_mesh(seed, &haven, &f, live.as_ref());
+                    (f, mesh)
+                });
+                rocks.meshing.insert(key, task);
                 budget -= 1;
                 if budget == 0 {
                     return;
@@ -233,6 +282,7 @@ pub fn stream(
 pub fn teardown(mut rocks: ResMut<RockRing>) {
     rocks.seed = None;
     rocks.built.clear();
+    rocks.meshing.clear();
 }
 
 /// Which of [`SPIRE_GLB`] a spire wears. Its `shape` byte set its height
@@ -381,20 +431,31 @@ impl RockSoup {
         // and ridge read the ground's height, never the rock's, or a beach
         // boulder would go green over clean sand (the shader clamps the
         // share at 0, so the desert never sees it).
+        //
+        // **One set of taps per column, not per vertex.** All three are
+        // functions of x and z alone, and a flat-shaded rock repeats each
+        // corner once per face it bounds: 5.3 vertices a column over a
+        // ring's formations, measured. The ground tap per vertex was ~80% of
+        // a formation's build (3-4 ms mean, 28 ms worst, on the frame); keyed
+        // by the coordinates' bits, the answers are the same ones.
         let mut lat = terrain::Lattice::new();
+        let mut column: HashMap<(u32, u32), [f32; 3]> = HashMap::default();
         let mut val = self.val;
+        let mut zone: Vec<[f32; 2]> = Vec::with_capacity(n);
         for (v, p) in val.iter_mut().zip(&self.pos) {
-            v[1] = -terrain::aridity_memo(&mut lat, seed, p[0], p[2]).clamp(0.0, 1.0);
+            let [arid, ground, wander] = *column
+                .entry((p[0].to_bits(), p[2].to_bits()))
+                .or_insert_with(|| {
+                    [
+                        terrain::aridity_memo(&mut lat, seed, p[0], p[2]),
+                        terrain::ground_memo(&mut lat, seed, haven, p[0], p[2]),
+                        terrain::fel_wander_memo(&mut lat, seed, p[0], p[2]),
+                    ]
+                });
+            v[1] = -arid.clamp(0.0, 1.0);
+            let rise = (p[1] - ground).max(0.0);
+            zone.push([-rise, wander]);
         }
-        let zone: Vec<[f32; 2]> = self
-            .pos
-            .iter()
-            .map(|p| {
-                let ground = terrain::ground_memo(&mut lat, seed, haven, p[0], p[2]);
-                let rise = (p[1] - ground).max(0.0);
-                [-rise, terrain::fel_wander_memo(&mut lat, seed, p[0], p[2])]
-            })
-            .collect();
         let uv: Vec<[f32; 2]> = self
             .pos
             .iter()
