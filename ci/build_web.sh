@@ -280,7 +280,7 @@ for m in client_web client_web_gpu; do
 done
 raw=$(stat -c%s "$out/client_web_bg.wasm" 2>/dev/null || echo 0)
 # Written beside the module rather than measured and thrown away: the
-# origin's `gzip_static` (`scry-forge/deploy/nginx/elopros.com.conf`, the
+# origin's `gzip_static` (the platform's `deploy/nginx/elopros.com.conf`, the
 # `/games/gates/` block) serves this file to a browser that accepts gzip —
 # with the Content-Length a streaming compressor cannot send, and no CPU
 # spent per request on a 34 MB file. `-n` leaves the timestamp and name out

@@ -125,7 +125,7 @@ season = "community"
 # owning one is what lets a player craft the item it names. Owning is holding
 # the row's token on the platform's item contract, like any skin, so it trades
 # freely: sell it and the buyer crafts. `ops/airdrop.py` lists who a drop goes
-# to; scry-forge's `contracts/item_airdrop.py` prints the mints.
+# to; the platform's `contracts/item_airdrop.py` prints the mints.
 
 # The Abyss Rug: THE OUTFITTER at THE GATE sells it for 100 Junk (`arc.toml`).
 [[skin]]

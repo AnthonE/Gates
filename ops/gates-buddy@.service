@@ -42,7 +42,7 @@
 # `ci/deploy_shard.sh` copies jev-bot and claude_agent.py to ~/gates-jev and
 # restarts every gates-buddy@ unit, so a wire bump never strands it. The key
 # holds nothing and signs only the shard's login and its own face; log its
-# address in scry-forge's `docs/money/HELD-KEYS.md`.
+# address in the platform's `docs/money/HELD-KEYS.md`.
 #
 # Spend: one request per decision while your friend is on, never more than
 # --max-requests-hour/-day (a ceiling, not a target). --think-ms spaces them.

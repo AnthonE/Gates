@@ -306,7 +306,7 @@ impl AgentKey {
     }
 
     /// Sign a change to this wallet's Elo Pros face — its display name and
-    /// profile picture, what every Gates nametag shows (scry-forge
+    /// profile picture, what every Gates nametag shows (the platform's
     /// `meter/faces.py`). The text is composed HERE from typed fields, the
     /// platform's `elo play` shape for the `profile` action, so no caller
     /// hands this key a sentence. `None` for a field the caller has no business sending: a
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(k.sign_proof_hex("game.example", "zz", 1), None);
     }
 
-    /// **A face change signs the platform's exact text** (scry-forge
+    /// **A face change signs the platform's exact text** (its
     /// `playauth.play_message` over `faces._detail`: sorted keys, compact,
     /// lowercase wallet) and recovers to this key. Anything the platform
     /// would refuse is refused here before a signature exists.

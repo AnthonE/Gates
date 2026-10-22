@@ -1,7 +1,7 @@
 //! **What does this player call themselves, and what do they look like?**
 //! Rust asks Steam for a persona name and an avatar. A Gates shard asks the
-//! platform instead: `GET {origin}/api/face/{wallet}` (`meter/faces.py` in
-//! `AnthonE/scry-forge`), the name and picture that wallet set on its Elo
+//! platform instead: `GET {origin}/api/face/{wallet}` (the platform's
+//! `meter/faces.py`), the name and picture that wallet set on its Elo
 //! Pros account page, keyed by the wallet and nothing else — no vow.
 //!
 //! The address is the identity and the shard already proved it; this is only

@@ -289,7 +289,7 @@ fn main() -> AppExit {
 
 /// The Gates sigil on the window and the taskbar: the same plate as the
 /// store's `gates-square.jpg`, cut from `art/gates/gates-sigil.png` in
-/// scry-forge (`crates/client/icon/`). Bevy 0.18 has no icon field, so it goes
+/// the platform repo (`crates/client/icon/`). Bevy 0.18 has no icon field, so it goes
 /// on the winit window the first frame that window exists. X11 and Windows
 /// draw it; Wayland and macOS read an icon from the desktop entry or bundle.
 fn window_icon(

@@ -37,7 +37,7 @@ impl Gates {
     /// `identity` is the `0x…` address the player is claiming, and `sign` is
     /// the wallet that proves it: `(text: string) => Promise<"0x…">`, which is
     /// the shape of the platform's own `Deck.wallet.sign(message, address)`
-    /// (`watchtower/js/deck-shim.js` in `AnthonE/scry-forge`) with the address
+    /// (`watchtower/js/deck-shim.js` in the platform repo) with the address
     /// already bound. A page on elopros.com passes the wallet it already has.
     ///
     /// **Both or neither.** An address with no wallet is refused here rather

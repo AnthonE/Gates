@@ -2,7 +2,7 @@
 //! found, and the one the elo launcher's Servers window renders.
 //!
 //! **The shard list is the game's to serve.** That is elo's rule, not ours
-//! (`docs/LAUNCHER.md` §6 in `AnthonE/scry`): the launcher reads
+//! (`docs/LAUNCHER.md` §6 in `AnthonE/elo-pros-launcher`): the launcher reads
 //! `manifest.servers.url`, fetches it, and renders the rows — it "does not
 //! invent, cache or rank them", and its broker refuses to proxy the fetch
 //! (`fetch it yourself; the launcher does not proxy it`). So this shape is a

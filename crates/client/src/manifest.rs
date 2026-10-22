@@ -11,8 +11,8 @@
 //! WORKSHOP beside PLAY GAME, and every one of the three is a live service
 //! rather than a screen the game draws from nothing. Ours are the elo
 //! launcher's (operator, 2026-08-09: *"we have NEWS thats part of the
-//! community on the scry-works launcher … we do have an item store and
-//! workshop. that again is part of the scry-works setup"*). This document is
+//! community on the [Elo Pros] launcher … we do have an item store and
+//! workshop. that again is part of the [Elo Pros] setup"*). This document is
 //! how the game learns where they are.
 //!
 //! ## Three rules it inherits, and one it adds

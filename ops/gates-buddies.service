@@ -1,5 +1,5 @@
 # Buddies on the public shard: Claude-minded agents players get on
-# elopros.com/buddy.html (scry-forge `meter/buddy.py`): a buddy that plays
+# elopros.com/buddy.html (the platform's `meter/buddy.py`): a buddy that plays
 # with its owner, solo agents its owner backs, and our community agents.
 # This runs `ops/buddy/runner.py`, which starts one jev-bot per agent with
 # credit (its own key, its owner's `--friend` for a buddy, a name and a
