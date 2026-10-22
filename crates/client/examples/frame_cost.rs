@@ -300,12 +300,12 @@ fn main() {
 
     // ── water::animate — what a frame that moves NOTHING still pays ────────
     //
-    // `NOW.md` §0pf item 2 says the sea clones ~677 KiB into the render world
-    // every frame: `Assets::get_mut` marks the mesh modified, and a mesh with
-    // `MAIN_WORLD` usage is deep-cloned on every modification. That number was
-    // quoted rather than derived, and the whole point of this file is that a
-    // finding can be re-run — so it is measured here, off the mesh the sweep
-    // above actually built.
+    // The swell is the vertex stage's (`water.wgsl`): `animate` writes the
+    // material's uniform and touches no mesh, so a still frame re-uploads
+    // nothing. It used to clone the whole mesh into the render world every
+    // frame (`Assets::get_mut` marks it modified, and a `MAIN_WORLD` mesh is
+    // deep-cloned on every modification) — measured here, off the mesh the
+    // sweep above built, that is now what one SNAP costs instead.
     println!();
     println!("water::animate — the per-frame cost of a sea that is not moving");
     app.add_systems(Update, water::animate);
@@ -334,7 +334,7 @@ fn main() {
     println!("  {:<46} {:9}", "the sea's vertices", verts);
     println!(
         "  {:<46} {:8.1} KiB",
-        "…and the bytes one modification re-clones",
+        "…and the bytes a snap re-clones (no still frame does)",
         bytes as f32 / 1024.0
     );
     row("stream + animate on a still frame", anim);

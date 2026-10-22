@@ -1475,7 +1475,11 @@ pub fn remote_hands(
     let mut rs = client_core::interp::RemoteState::default();
     for (body, t, anim, mut hands) in bodies.iter_mut() {
         let at = t.translation;
+        // The feet, for the splash: the drawn root is lifted and rides the
+        // swell while it floats (`bodies::stream`).
+        let mut feet_y = at.y;
         if core.interp.sample(body.0, tick, &mut rs) {
+            feet_y = rs.y;
             let now = (!rs.dead && !rs.wounded).then_some(rs.held).flatten();
             if let Some(was) = hands.held {
                 if now.is_some() && now != was && !rs.sleeping {
@@ -1488,11 +1492,17 @@ pub fn remote_hands(
             hands.held = Some(now);
         }
         if anim.airborne {
-            hands.air_s += dt;
+            // Floating is not falling: a swim banks no air time, or hauling
+            // out (or touching the bottom) would land like a jump.
+            if anim.swimming {
+                hands.air_s = 0.0;
+            } else {
+                hands.air_s += dt;
+            }
             continue;
         }
         if hands.air_s >= REMOTE_LAND_AIR_S {
-            let wet = at.y < sim_core::terrain::SEA_LEVEL;
+            let wet = feet_y < sim_core::terrain::SEA_LEVEL;
             let cue = if wet {
                 Cue::RemoteSplash
             } else {

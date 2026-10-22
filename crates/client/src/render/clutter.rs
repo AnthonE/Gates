@@ -21,6 +21,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{
     self, Clutter, ClutterElem, CLUTTER_PER_TILE, CLUTTER_TILE_M, SKIRT_PER_TILE,
 };
@@ -169,9 +170,8 @@ pub struct ClutterRing {
     cards: HashMap<(i32, i32), Entity>,
     /// The tile the shadow casters were last chosen around.
     shadow_at: Option<(i32, i32)>,
-    /// The ring's lattice memo, kept across tiles: a neighbour's quads and the
-    /// ranges' layout stay warm from one fill to the next.
-    lat: terrain::Lattice,
+    /// Tiles being built on `AsyncComputeTaskPool`, keyed as `built` ([`stream`]).
+    building: HashMap<(i32, i32), Task<TileMeshes>>,
 }
 
 /// Tiles in a full clutter ring.
@@ -752,7 +752,6 @@ pub fn stream(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut foliage_mats: ResMut<Assets<super::foliage::FoliageMaterial>>,
     foliages: Option<Res<super::foliage::Foliages>>,
-    mut buf: Local<Vec<ClutterElem>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
     assets: Res<AssetServer>,
@@ -763,12 +762,6 @@ pub fn stream(
     // where the green has reached, and one built earlier lags until it
     // streams again.
     let live = blight.as_deref().and_then(|b| b.now);
-    // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
-    // is the browser's name for exactly this sum and the two fills are
-    // documented as sharing a population, so a single allocation holds both.
-    if buf.is_empty() {
-        buf.resize(CLUTTER_PER_TILE + SKIRT_PER_TILE, terrain::CLUTTER_NONE);
-    }
     let material = ring
         .material
         .get_or_insert_with(|| {
@@ -854,6 +847,9 @@ pub fn stream(
     });
     let ClutterRing { built, cards, .. } = &mut *ring;
     cards.retain(|k, _| built.contains_key(k));
+    // A tile still building that the eye has left: dropping it cancels it.
+    ring.building
+        .retain(|(bx, bz), _| (*bx - tx).abs() <= CLUTTER_RING && (*bz - tz).abs() <= CLUTTER_RING);
 
     // The near tiles' grass casts shadows; re-chosen once the player is
     // `SHADOW_SLACK_M` into another tile, so standing on an edge does not
@@ -896,251 +892,297 @@ pub fn stream(
         }
     }
 
-    let mut filled = 0usize;
-    {
-        for &(dx, dz) in &order[..n_order] {
-            if filled >= CLUTTER_FILLS_PER_FRAME * super::stream_boost() {
-                return;
-            }
-            let key = (tx + dx, tz + dz);
-            if ring.built.contains_key(&key) {
-                continue;
-            }
-            // Two strata, one buffer, one mesh, one draw.
-            //
-            // **The grid alone cannot pay rule 2, by construction.** It is
-            // 0.64 m cells that do not know a boulder is standing in them, so
-            // it answers rule 4 (no bare patch) and leaves every prop meeting
-            // the ground on a razor-clean line — which is what the visual
-            // judge named twice in one report, once as the ask and once as the
-            // symptom. `skirt_fill` is the other half: a stratified ring of
-            // the SAME four kinds hugging each prop's footprint, clipped to
-            // the tile that emits it so a prop straddling an edge is skirted
-            // once. It reaches off `occupant_volume`, the same published
-            // footprint table everything else measures against, so a prop that
-            // changes size drags its skirt with it.
-            //
-            // It has been in `sim-core` and gated the whole time. The native
-            // client simply never called it. Both fill through one call so
-            // they share the tile's corner slopes (`clutter_tile_fill_memo`).
-            let n = terrain::clutter_tile_fill_memo(
-                &mut ring.lat,
-                world.seed,
-                &world.table,
-                &world.haven,
-                key.0,
-                key.1,
-                &mut buf,
-            );
-            // Two soups, because the grass wears a cutout and nothing else in
-            // this file does — see `ClutterRing::card_material`. Split by
-            // `masked` rather than by a list here, so a kind that changes
-            // material cannot be drawn by the wrong shader.
-            let mut solid = Soup::default();
-            let mut cards = Soup::default();
-            let mut ferns = Soup::default();
-            let mut n_solid = 0usize;
-            let mut n_cards = 0usize;
-            let mut n_ferns = 0usize;
-            // Off the faces the cliff relief moves: a shard there would float
-            // in front of a cut or sink into a buttress.
-            let mut lat = terrain::Lattice::new();
-            for e in buf.iter().take(n) {
-                // The Verdigris: dead ground is bare, and its stones are
-                // glass. Outside its reach this is one compare.
-                let fel = super::blight::live_fel_memo(
-                    live.as_ref(),
-                    &mut lat,
-                    world.seed,
-                    e.x,
-                    e.z,
-                    e.y,
-                );
-                if fel > 0.0 {
-                    let roll = hash01(
-                        (e.x * 64.0) as i32 as u32,
-                        (e.z * 64.0) as i32 as u32 ^ 0x0fe1,
-                    );
-                    if (masked(e.kind) || e.kind == Clutter::Twig) && roll < fel * FEL_CARD_THIN {
-                        continue;
-                    }
-                    if let Some((size, hex)) = stone_of(e) {
-                        n_solid += 1;
-                        fel_stone(&mut solid, e, size, hex, fel);
-                        continue;
-                    }
-                }
-                // The desert's grass: the grass channel dries to straw with
-                // the ground, and on the sand's golden patches the sand's own
-                // elements stand up as dry tufts — the ground shader paints
-                // the same field under them.
-                let arid = if masked(e.kind) || e.kind == Clutter::Pebble {
-                    terrain::aridity_memo(&mut lat, world.seed, e.x, e.z)
-                } else {
-                    0.0
-                };
-                let (lo, hi) = super::ground_splat::DESERT_GRASS_ARID;
-                let parch = ((arid - lo) / (hi - lo)).clamp(0.0, 1.0);
-                if e.kind == Clutter::Pebble && parch > 0.0 {
-                    let shore = ((e.y - terrain::SEA_LEVEL - 1.0) / 3.0).clamp(0.0, 1.0);
-                    let g = super::ground_splat::desert_grass(e.x, e.z) * parch * shore;
-                    let roll = hash01(
-                        (e.x * 64.0) as i32 as u32,
-                        (e.z * 64.0) as i32 as u32 ^ 0x9a55,
-                    );
-                    if roll < g * DESERT_TUFT_SHARE {
-                        let at = Vec3::new(e.x, e.y, e.z);
-                        let yaw = e.yaw as f32 / 256.0 * std::f32::consts::TAU;
-                        // Taller than the meadow's: the reference's dry grass
-                        // stands to the knee.
-                        let h = TUFT_H * (1.0 + 0.5 * hash01(seed_of(e), 0x7a11));
-                        n_cards += 1;
-                        card_dry(&mut cards, at, yaw, seed_of(e), h, 1.0);
-                        continue;
-                    }
-                }
-                // The desert's pebbles: fewer, and sandstone.
-                if e.kind == Clutter::Pebble && arid > 0.0 {
-                    let roll = hash01(
-                        (e.x * 64.0) as i32 as u32,
-                        (e.z * 64.0) as i32 as u32 ^ 0xa41d,
-                    );
-                    if roll < arid * DESERT_PEBBLE_THIN {
-                        continue;
-                    }
-                    n_solid += 1;
-                    desert_pebble(&mut solid, e, arid);
-                    continue;
-                }
-                if e.kind == Clutter::Shard
-                    && hash01(
-                        (e.x * 64.0) as i32 as u32,
-                        (e.z * 64.0) as i32 as u32 ^ 0x5eed,
-                    ) > SHARD_KEEP
-                {
-                    continue;
-                }
-                if e.kind == Clutter::Shard
-                    && super::terrain_mesh::relief_moves(
-                        &mut lat,
-                        world.seed,
-                        &world.haven,
-                        e.x,
-                        e.z,
-                    )
-                {
-                    continue;
-                }
-                if masked(e.kind) && arid > 0.0 {
-                    let h = match e.kind {
-                        Clutter::Brush => BRUSH_H,
-                        Clutter::Sprig => SPRIG_H,
-                        _ => TUFT_H,
-                    };
-                    n_cards += 1;
-                    card_dry(
-                        &mut cards,
-                        Vec3::new(e.x, e.y, e.z),
-                        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
-                        seed_of(e),
-                        h * e.scale,
-                        arid.min(1.0),
-                    );
-                } else if masked(e.kind) {
-                    n_cards += 1;
-                    element(&mut cards, e);
-                } else {
-                    n_solid += 1;
-                    element(&mut solid, e);
-                }
-                // No fern grows in the Verdigris' ash.
-                if fern_at(e) && fel < 0.3 {
-                    n_ferns += 1;
-                    fern(&mut ferns, e);
-                }
-                // Wildflowers over the turf, in the opaque soup: their heads
-                // are vertex colour and want no atlas. An overlay on the
-                // tuft, so `element_mesh`'s per-kind gates still measure the
-                // tuft alone. None in the ash either.
-                if flower_at(e) && fel < 0.3 {
-                    n_solid += 1;
-                    super::plants::turf_flowers(
-                        &mut solid,
-                        Vec3::new(e.x, e.y, e.z),
-                        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
-                        e.scale,
-                        flower_palette(e),
-                        seed_of(e),
-                    );
-                }
-            }
-            // The tile entity carries `Tile` and nothing drawable; each mesh
-            // hangs off it as a child. `despawn` follows `Children`
-            // (`linked_spawn`), so retiring the tile still takes both with it
-            // and the retire path above is unchanged.
-            let e = commands
+    // Land what finished, in the map's order: tiles are spawned nearest
+    // first, so on a worker the near ones finish first. Bounded: each landing
+    // hands up to three meshes to the render world.
+    for _ in 0..CLUTTER_FILLS_PER_FRAME * super::stream_boost() {
+        let Some(key) = ring
+            .building
+            .iter()
+            .find(|(_, t)| t.is_finished())
+            .map(|(k, _)| *k)
+        else {
+            break;
+        };
+        let Some(mut task) = ring.building.remove(&key) else {
+            break;
+        };
+        let Some(TileMeshes {
+            solid,
+            cards,
+            ferns,
+        }) = block_on(future::poll_once(&mut task))
+        else {
+            // Finished but not ready: put it back, since dropping it would
+            // cancel the work and the tile would be asked for again.
+            ring.building.insert(key, task);
+            break;
+        };
+        // The tile entity carries `Tile` and nothing drawable; each mesh
+        // hangs off it as a child. `despawn` follows `Children`
+        // (`linked_spawn`), so retiring the tile still takes both with it
+        // and the retire path above is unchanged.
+        let e = commands
+            .spawn((
+                super::WorldEntity,
+                Tile(key.0, key.1),
+                Transform::IDENTITY,
+                Visibility::default(),
+            ))
+            .id();
+        if let Some(solid) = solid {
+            commands.entity(e).with_child((
+                Mesh3d(meshes.add(solid)),
+                MeshMaterial3d(material.clone()),
+                // A blade is two triangles a few centimetres wide. Against
+                // a cascade sized for a 200 m world that is not a shadow,
+                // it is acne — the black wedges under every tuft in the
+                // first native capture. The ground's contact darkening
+                // comes from the blades' own dark bases instead.
+                //
+                // ⚠ That last sentence is the one to distrust: a blade's
+                // dark base darkens the BLADE, never the ground under it,
+                // so nothing here pays `ART.md` rule 2 for the tile. The
+                // ambient half of that debt is SSAO's (`rig.rs`, and it
+                // is enabled — `NOW.md` §0gi item 4's "no SSAO anywhere"
+                // was stale). What is genuinely missing is any occluder
+                // at blade scale, and `NotShadowCaster` is why.
+                NotShadowCaster,
+                Transform::IDENTITY,
+            ));
+        }
+        if let Some(cards) = cards {
+            let c = commands
                 .spawn((
-                    super::WorldEntity,
-                    Tile(key.0, key.1),
+                    Mesh3d(meshes.add(cards)),
+                    MeshMaterial3d(card_material.clone()),
                     Transform::IDENTITY,
-                    Visibility::default(),
+                    ChildOf(e),
                 ))
                 .id();
-            if n_solid > 0 {
-                commands.entity(e).with_child((
-                    Mesh3d(meshes.add(solid.mesh())),
-                    MeshMaterial3d(material.clone()),
-                    // A blade is two triangles a few centimetres wide. Against
-                    // a cascade sized for a 200 m world that is not a shadow,
-                    // it is acne — the black wedges under every tuft in the
-                    // first native capture. The ground's contact darkening
-                    // comes from the blades' own dark bases instead.
-                    //
-                    // ⚠ That last sentence is the one to distrust: a blade's
-                    // dark base darkens the BLADE, never the ground under it,
-                    // so nothing here pays `ART.md` rule 2 for the tile. The
-                    // ambient half of that debt is SSAO's (`rig.rs`, and it
-                    // is enabled — `NOW.md` §0gi item 4's "no SSAO anywhere"
-                    // was stale). What is genuinely missing is any occluder
-                    // at blade scale, and `NotShadowCaster` is why.
-                    NotShadowCaster,
-                    Transform::IDENTITY,
-                ));
+            // `NotShadowCaster` past the near tiles, for the same reason
+            // as the solids above, and one more that is specific to a
+            // cutout: a masked card in the shadow pass is an alpha test
+            // per shadow texel, which for hundreds of overlapping quads is
+            // the most expensive thing on the tile. The near ones cast:
+            // see [`GRASS_SHADOW_TILES`].
+            if !near(key) {
+                commands.entity(c).insert(NotShadowCaster);
             }
-            if n_cards > 0 {
-                let c = commands
-                    .spawn((
-                        Mesh3d(meshes.add(cards.mesh())),
-                        MeshMaterial3d(card_material.clone()),
-                        Transform::IDENTITY,
-                        ChildOf(e),
-                    ))
-                    .id();
-                // `NotShadowCaster` past the near tiles, for the same reason
-                // as the solids above, and one more that is specific to a
-                // cutout: a masked card in the shadow pass is an alpha test
-                // per shadow texel, which for hundreds of overlapping quads is
-                // the most expensive thing on the tile. The near ones cast:
-                // see [`GRASS_SHADOW_TILES`].
-                if !near(key) {
-                    commands.entity(c).insert(NotShadowCaster);
-                }
-                ring.cards.insert(key, c);
-            }
-            // The ferns: the same card shape in their own material. Never
-            // shadow casters — a cutout per shadow texel for an understory
-            // that already sits in the canopy's shade.
-            if n_ferns > 0 {
-                commands.spawn((
-                    Mesh3d(meshes.add(ferns.mesh())),
-                    MeshMaterial3d(fern_material.clone()),
-                    Transform::IDENTITY,
-                    NotShadowCaster,
-                    ChildOf(e),
-                ));
-            }
-            ring.built.insert(key, e);
-            filled += 1;
+            ring.cards.insert(key, c);
         }
+        // The ferns: the same card shape in their own material. Never
+        // shadow casters — a cutout per shadow texel for an understory
+        // that already sits in the canopy's shade.
+        if let Some(ferns) = ferns {
+            commands.spawn((
+                Mesh3d(meshes.add(ferns)),
+                MeshMaterial3d(fern_material.clone()),
+                Transform::IDENTITY,
+                NotShadowCaster,
+                ChildOf(e),
+            ));
+        }
+        ring.built.insert(key, e);
+    }
+
+    // Start the nearest missing tiles. The fill and the bake were ~2 ms a
+    // tile on the frame, a tile a frame for as long as the player walks; on
+    // a worker the frame pays only the landing above. In a browser that pool
+    // is the main thread: the task runs as a microtask once this update
+    // returns, before the frame paints, so the cost is what it was.
+    let pool = AsyncComputeTaskPool::get();
+    let mut started = 0usize;
+    for &(dx, dz) in &order[..n_order] {
+        if started >= CLUTTER_FILLS_PER_FRAME * super::stream_boost() {
+            return;
+        }
+        let key = (tx + dx, tz + dz);
+        if ring.built.contains_key(&key) || ring.building.contains_key(&key) {
+            continue;
+        }
+        let (seed, table, haven) = (world.seed, world.table, world.haven);
+        ring.building.insert(
+            key,
+            pool.spawn(async move { build_tile(seed, table, haven, live.as_ref(), key) }),
+        );
+        started += 1;
+    }
+}
+
+/// One tile's meshes, built off the frame: the opaque bits, the grass cards
+/// and the ferns, each `None` when the tile has none.
+struct TileMeshes {
+    solid: Option<Mesh>,
+    cards: Option<Mesh>,
+    ferns: Option<Mesh>,
+}
+
+/// Fill tile `key` and bake its three soups. Pure: it reads the world's
+/// numbers and the spread's moment and nothing else, which is what lets it
+/// run on `AsyncComputeTaskPool` ([`stream`]).
+fn build_tile(
+    seed: u64,
+    table: terrain::ScatterTable,
+    haven: terrain::Haven,
+    live: Option<&sim_core::blight::Now>,
+    key: (i32, i32),
+) -> TileMeshes {
+    // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
+    // is the browser's name for exactly this sum and the two fills are
+    // documented as sharing a population, so a single allocation holds both.
+    let mut buf = vec![terrain::CLUTTER_NONE; CLUTTER_PER_TILE + SKIRT_PER_TILE];
+    // Two strata, one buffer, one mesh, one draw.
+    //
+    // **The grid alone cannot pay rule 2, by construction.** It is
+    // 0.64 m cells that do not know a boulder is standing in them, so
+    // it answers rule 4 (no bare patch) and leaves every prop meeting
+    // the ground on a razor-clean line — which is what the visual
+    // judge named twice in one report, once as the ask and once as the
+    // symptom. `skirt_fill` is the other half: a stratified ring of
+    // the SAME four kinds hugging each prop's footprint, clipped to
+    // the tile that emits it so a prop straddling an edge is skirted
+    // once. It reaches off `occupant_volume`, the same published
+    // footprint table everything else measures against, so a prop that
+    // changes size drags its skirt with it.
+    //
+    // It has been in `sim-core` and gated the whole time. The native
+    // client simply never called it. Both fill through one call so
+    // they share the tile's corner slopes (`clutter_tile_fill_memo`).
+    let mut lat = terrain::Lattice::new();
+    let n = terrain::clutter_tile_fill_memo(&mut lat, seed, &table, &haven, key.0, key.1, &mut buf);
+    // Two soups, because the grass wears a cutout and nothing else in
+    // this file does — see `ClutterRing::card_material`. Split by
+    // `masked` rather than by a list here, so a kind that changes
+    // material cannot be drawn by the wrong shader.
+    let mut solid = Soup::default();
+    let mut cards = Soup::default();
+    let mut ferns = Soup::default();
+    let mut n_solid = 0usize;
+    let mut n_cards = 0usize;
+    let mut n_ferns = 0usize;
+    for e in buf.iter().take(n) {
+        // The Verdigris: dead ground is bare, and its stones are
+        // glass. Outside its reach this is one compare.
+        let fel = super::blight::live_fel_memo(live, &mut lat, seed, e.x, e.z, e.y);
+        if fel > 0.0 {
+            let roll = hash01(
+                (e.x * 64.0) as i32 as u32,
+                (e.z * 64.0) as i32 as u32 ^ 0x0fe1,
+            );
+            if (masked(e.kind) || e.kind == Clutter::Twig) && roll < fel * FEL_CARD_THIN {
+                continue;
+            }
+            if let Some((size, hex)) = stone_of(e) {
+                n_solid += 1;
+                fel_stone(&mut solid, e, size, hex, fel);
+                continue;
+            }
+        }
+        // The desert's grass: the grass channel dries to straw with
+        // the ground, and on the sand's golden patches the sand's own
+        // elements stand up as dry tufts — the ground shader paints
+        // the same field under them.
+        let arid = if masked(e.kind) || e.kind == Clutter::Pebble {
+            terrain::aridity_memo(&mut lat, seed, e.x, e.z)
+        } else {
+            0.0
+        };
+        let (lo, hi) = super::ground_splat::DESERT_GRASS_ARID;
+        let parch = ((arid - lo) / (hi - lo)).clamp(0.0, 1.0);
+        if e.kind == Clutter::Pebble && parch > 0.0 {
+            let shore = ((e.y - terrain::SEA_LEVEL - 1.0) / 3.0).clamp(0.0, 1.0);
+            let g = super::ground_splat::desert_grass(e.x, e.z) * parch * shore;
+            let roll = hash01(
+                (e.x * 64.0) as i32 as u32,
+                (e.z * 64.0) as i32 as u32 ^ 0x9a55,
+            );
+            if roll < g * DESERT_TUFT_SHARE {
+                let at = Vec3::new(e.x, e.y, e.z);
+                let yaw = e.yaw as f32 / 256.0 * std::f32::consts::TAU;
+                // Taller than the meadow's: the reference's dry grass
+                // stands to the knee.
+                let h = TUFT_H * (1.0 + 0.5 * hash01(seed_of(e), 0x7a11));
+                n_cards += 1;
+                card_dry(&mut cards, at, yaw, seed_of(e), h, 1.0);
+                continue;
+            }
+        }
+        // The desert's pebbles: fewer, and sandstone.
+        if e.kind == Clutter::Pebble && arid > 0.0 {
+            let roll = hash01(
+                (e.x * 64.0) as i32 as u32,
+                (e.z * 64.0) as i32 as u32 ^ 0xa41d,
+            );
+            if roll < arid * DESERT_PEBBLE_THIN {
+                continue;
+            }
+            n_solid += 1;
+            desert_pebble(&mut solid, e, arid);
+            continue;
+        }
+        if e.kind == Clutter::Shard
+            && hash01(
+                (e.x * 64.0) as i32 as u32,
+                (e.z * 64.0) as i32 as u32 ^ 0x5eed,
+            ) > SHARD_KEEP
+        {
+            continue;
+        }
+        // Off the faces the cliff relief moves: a shard there would float
+        // in front of a cut or sink into a buttress.
+        if e.kind == Clutter::Shard
+            && super::terrain_mesh::relief_moves(&mut lat, seed, &haven, e.x, e.z)
+        {
+            continue;
+        }
+        if masked(e.kind) && arid > 0.0 {
+            let h = match e.kind {
+                Clutter::Brush => BRUSH_H,
+                Clutter::Sprig => SPRIG_H,
+                _ => TUFT_H,
+            };
+            n_cards += 1;
+            card_dry(
+                &mut cards,
+                Vec3::new(e.x, e.y, e.z),
+                e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+                seed_of(e),
+                h * e.scale,
+                arid.min(1.0),
+            );
+        } else if masked(e.kind) {
+            n_cards += 1;
+            element(&mut cards, e);
+        } else {
+            n_solid += 1;
+            element(&mut solid, e);
+        }
+        // No fern grows in the Verdigris' ash.
+        if fern_at(e) && fel < 0.3 {
+            n_ferns += 1;
+            fern(&mut ferns, e);
+        }
+        // Wildflowers over the turf, in the opaque soup: their heads
+        // are vertex colour and want no atlas. An overlay on the
+        // tuft, so `element_mesh`'s per-kind gates still measure the
+        // tuft alone. None in the ash either.
+        if flower_at(e) && fel < 0.3 {
+            n_solid += 1;
+            super::plants::turf_flowers(
+                &mut solid,
+                Vec3::new(e.x, e.y, e.z),
+                e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+                e.scale,
+                flower_palette(e),
+                seed_of(e),
+            );
+        }
+    }
+    let bake = |n: usize, s: Soup| (n > 0).then(|| s.mesh_unmapped());
+    TileMeshes {
+        solid: bake(n_solid, solid),
+        cards: bake(n_cards, cards),
+        ferns: bake(n_ferns, ferns),
     }
 }

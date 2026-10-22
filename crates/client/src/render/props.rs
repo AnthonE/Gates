@@ -1057,7 +1057,40 @@ impl Soup {
         }
     }
 
-    pub(super) fn mesh(mut self) -> Mesh {
+    pub(super) fn mesh(self) -> Mesh {
+        let mut m = self.untangented();
+        // Tangents, for the same reason `terrain_mesh` generates them: Bevy's
+        // PBR shader builds its tangent frame from `ATTRIBUTE_TANGENT`, and
+        // without it a `normal_map_texture` is silently ignored and the
+        // surface stays flat. That is the failure that looks like "the
+        // texture did not load" and reports nothing at all.
+        //
+        // A soup can contain a degenerate triangle (two coincident corners on
+        // a box massing of zero extent), which mikktspace refuses. That is a
+        // malformed mesh rather than a missing capability, so it panics at
+        // boot rather than shipping a prop whose relief silently vanished.
+        m.generate_tangents()
+            .expect("prop soup has positions, normals and UVs");
+        m
+    }
+
+    /// [`Self::mesh`] for a material with **no normal map**: the tangent is
+    /// written as a constant rather than solved.
+    ///
+    /// **Kept, not dropped.** Without a normal map nothing reads the
+    /// tangent's value, but its presence is the vertex layout every soup is
+    /// prewarmed with (`tests/prewarm.rs`), and Bevy's `prepare_world_normal`
+    /// flips a double-sided back face only when `VERTEX_TANGENTS` is absent,
+    /// which would relight the far side of every card. Solving it was ~80% of
+    /// a clutter tile's build, on the frame (`clutter::stream`, profiled).
+    pub(super) fn mesh_unmapped(self) -> Mesh {
+        let mut m = self.untangented();
+        let n = m.count_vertices();
+        m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, 1.0]; n]);
+        m
+    }
+
+    fn untangented(mut self) -> Mesh {
         let n = self.pos.len() as u32;
         let mut m = Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -1072,18 +1105,6 @@ impl Soup {
             m.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uv1);
         }
         m.insert_indices(Indices::U32((0..n).collect()));
-        // Tangents, for the same reason `terrain_mesh` generates them: Bevy's
-        // PBR shader builds its tangent frame from `ATTRIBUTE_TANGENT`, and
-        // without it a `normal_map_texture` is silently ignored and the
-        // surface stays flat. That is the failure that looks like "the
-        // texture did not load" and reports nothing at all.
-        //
-        // A soup can contain a degenerate triangle (two coincident corners on
-        // a box massing of zero extent), which mikktspace refuses. That is a
-        // malformed mesh rather than a missing capability, so it panics at
-        // boot rather than shipping a prop whose relief silently vanished.
-        m.generate_tangents()
-            .expect("prop soup has positions, normals and UVs");
         m
     }
 }
@@ -4351,5 +4372,26 @@ impl PropAssets {
             bevy_procedural_tree::enums::TreeType::Evergreen => &self.needle[tint],
             bevy_procedural_tree::enums::TreeType::Deciduous => &self.leaf[tint],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A soup baked for a material with no normal map wears the layout of one
+    /// baked with: the layout is the pipeline every soup is prewarmed with
+    /// (`tests/prewarm.rs`), and the tangent's presence is what keeps Bevy
+    /// from flipping a double-sided back face ([`Soup::mesh_unmapped`]).
+    #[test]
+    fn an_unmapped_soup_keeps_the_mapped_layout() {
+        let soup = || {
+            let mut s = Soup::default();
+            s.tri(Vec3::ZERO, Vec3::Z, Vec3::X, |_| [1.0; 4], None, 0.0);
+            s
+        };
+        let layout =
+            |m: &Mesh| -> Vec<_> { m.attributes().map(|(a, _)| (a.id, a.format)).collect() };
+        assert_eq!(layout(&soup().mesh()), layout(&soup().mesh_unmapped()));
     }
 }

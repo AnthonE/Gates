@@ -782,6 +782,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<audio::Engine>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
+            .init_resource::<water::Wakes>()
             .insert_non_send_resource(screen::Connecting::default());
 
         // Settings come off disk ONCE, here — before the first frame, so the
@@ -1702,8 +1703,31 @@ impl Plugin for GatesRenderPlugin {
         )
         // The swell runs wherever the world runs — it is a surface, not a
         // streamer, and a sea that froze while the Esc menu was up would
-        // resume with a visible jump in every wave.
-        .add_systems(Update, water::animate.run_if(world_running))
+        // resume with a visible jump in every wave. After `stream`: a snap
+        // moves the grid centre, and the phases are folded around the centre
+        // drawn this frame (`water::fold_phases`). After the weather and the
+        // deck it reads, so a dive turns Snell's window on the frame the
+        // underwater fog comes in.
+        .add_systems(
+            Update,
+            (
+                water::animate
+                    .after(water::stream)
+                    .after(weather::update)
+                    .after(sky::compose)
+                    .run_if(world_running),
+                water::build_open_map.run_if(world_running),
+                // The wakes, off the bodies this frame's stream placed, into
+                // the uniform `animate` writes. Ordered against what it reads,
+                // not the whole `Stream` set.
+                water::lay_wakes
+                    .after(bodies::stream)
+                    .after(water::stream)
+                    .before(water::animate)
+                    .run_if(world_placed)
+                    .run_if(world_running),
+            ),
+        )
         // The tree count cap (`reference/FORESTS.md` §8 gate 7): after the
         // streamer has spawned this frame's chunk, before `reband_trees`
         // applies the bands it may move and before a browser reads them.
@@ -2253,11 +2277,24 @@ impl Plugin for GatesRenderPlugin {
         // and the frame's contacts are resolved, before the audio chain takes
         // this frame's thunder off the queue. Not on a capture, a plate or a
         // film: their frames are gates.
+        // The camera rides the drawn swell (`water::ride`): after it is
+        // rewritten from `Eye`, and after the swell is advanced. A film's too,
+        // which only lifts it clear of a crest: the sea's face test needs the
+        // camera above the drawn sea whenever the eye is above the line.
+        app.add_systems(
+            Update,
+            water::ride
+                .after(rig::follow_eye)
+                .after(water::animate)
+                .run_if(world_placed)
+                .run_if(world_running),
+        );
         if self.capture.is_none() && !filming && !plate {
             app.init_resource::<shake::Shake>().add_systems(
                 Update,
                 shake::apply
                     .after(rig::follow_eye)
+                    .after(water::ride)
                     .after(impact::snap)
                     .before(audio::water)
                     .run_if(world_placed)
