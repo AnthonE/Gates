@@ -72,7 +72,8 @@ pub const Y_CEIL_Q: i32 = 14_000;
 /// Ticks between two looks (the target's line of sight, or a scan for a new
 /// one). Half a second: a look is a world walk, the expensive part.
 const LOOK_TICKS: u64 = 15;
-/// Candidates one scan tests for line of sight, nearest first.
+/// Candidates one scan tests for line of sight: the nearest, then one
+/// taken in turn from the rest (`sentry::rotating_pick`).
 const LOOK_TRIES: usize = 2;
 /// A sight line is walked at most this many samples, whatever its length.
 /// Coarser than a bullet's spacing on a long look; the round it fires
@@ -535,24 +536,37 @@ fn look(
             return;
         }
     }
-    // Nearest first, `LOOK_TRIES` of them: a selection by repeated scan
+    // Nearest first, then the last try in turn from the rest
+    // (`sentry::rotating_pick`, so hidden bodies nearer than a threat in
+    // plain view cannot shield it for good): a selection by repeated scan
     // rather than a sort, so nothing here allocates or needs a buffer.
     let reach2 = def.detect_mm as f32 * def.detect_mm as f32;
+    let (hx, hz) = (heli.x, heli.z);
+    let d2_of = |p: &Player| {
+        let (px, pz) = feet_xz_mm(p);
+        let (dx, dz) = ((px - hx) as f32, (pz - hz) as f32);
+        dx * dx + dz * dz
+    };
     let mut tried = [usize::MAX; LOOK_TRIES];
     for t in 0..LOOK_TRIES {
-        let mut best: Option<(f32, usize)> = None;
-        for (i, p) in players.iter().enumerate() {
-            if !huntable(cc, p) || tried[..t].contains(&i) {
-                continue;
+        let pick = if t + 1 < LOOK_TRIES {
+            let mut best: Option<(f32, usize)> = None;
+            for (i, p) in players.iter().enumerate() {
+                if !huntable(cc, p) || tried[..t].contains(&i) {
+                    continue;
+                }
+                let d2 = d2_of(p);
+                if d2 <= reach2 && best.is_none_or(|(b, _)| d2 < b) {
+                    best = Some((d2, i));
+                }
             }
-            let (px, pz) = feet_xz_mm(p);
-            let (dx, dz) = ((px - heli.x) as f32, (pz - heli.z) as f32);
-            let d2 = dx * dx + dz * dz;
-            if d2 <= reach2 && best.is_none_or(|(b, _)| d2 < b) {
-                best = Some((d2, i));
-            }
-        }
-        let Some((_, i)) = best else {
+            best.map(|(_, i)| i)
+        } else {
+            crate::sentry::rotating_pick(players, tick / LOOK_TICKS, |i, p| {
+                !tried[..t].contains(&i) && huntable(cc, p) && d2_of(p) <= reach2
+            })
+        };
+        let Some(i) = pick else {
             return;
         };
         tried[t] = i;

@@ -6012,6 +6012,7 @@ impl World {
             owner,
             spill,
             tick,
+            &self.haven.town,
             &mut self.events,
         );
     }
@@ -6785,6 +6786,7 @@ impl World {
                             &mut self.pieces,
                             &mut self.deploys,
                             &mut self.players[slot],
+                            self.tick,
                             cx,
                             cz,
                             level,

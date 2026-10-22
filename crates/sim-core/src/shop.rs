@@ -2,8 +2,8 @@
 //! Rust's vending machine priced in the island's junk.
 //!
 //! The machine is a 12-slot container like a box (`deploy::holds_items`):
-//! its slots hold the stock and the junk it takes. Only its owner and the
-//! crew of the claim it stands in move items in or out, or set its offers
+//! its slots hold the stock and the junk it takes. Only its owner and its
+//! owner's crew where it stands move items in or out, or set its offers
 //! (`turret::spares`, the turret's rule); anyone in reach may open it to look
 //! and may buy.
 //!
