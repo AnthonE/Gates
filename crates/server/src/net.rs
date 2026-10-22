@@ -167,16 +167,35 @@ const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
 /// population dials (`population::dial_addr`). Eight covers a household or a
 /// café joining at once.
 const ADMIT_PER_SOURCE: u16 = 8;
+/// Handshakes one **network** may hold at once: an IPv4 /24 or an IPv6 /48,
+/// on top of `ADMIT_PER_SOURCE`. One subscriber's /56, a free tunnel /48 or
+/// a rented /24 is hundreds of "sources", and fifty of them parking unsigned
+/// sessions filled `ADMIT_REFUSE_AT` and refused everyone else at the door.
+/// This makes that fifty networks, not fifty addresses.
+const ADMIT_PER_PREFIX: u16 = 2 * ADMIT_PER_SOURCE;
 /// Buckets in the per-source table. Sources hash in with a key drawn at boot,
 /// so nobody can aim at somebody else's bucket; a collision only makes two
-/// sources share one allowance.
+/// sources share one allowance. The per-network table is the same size.
 const SOURCE_BUCKETS: usize = 4096;
 const _: () = assert!((ADMIT_PER_SOURCE as usize) < ADMIT_RETRY_AT);
+const _: () = assert!(ADMIT_PER_PREFIX > ADMIT_PER_SOURCE);
+const _: () = assert!((ADMIT_PER_PREFIX as usize) < ADMIT_RETRY_AT);
 const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
 
-/// In-flight handshakes per source (`ADMIT_PER_SOURCE`).
+/// How long a sign-in may wait on its signature while the door is busy
+/// (`ADMIT_RETRY_AT` handshakes in flight) — instead of `SIGN_WAIT`. A
+/// session that never answers holds its place for the whole wait, so under
+/// pressure the wait is what sets how many addresses it takes to keep the
+/// door full. Long enough for a wallet prompt someone is already looking at.
+const SIGN_WAIT_BUSY: Duration = Duration::from_secs(15);
+const _: () = assert!(SIGN_WAIT_BUSY.as_secs() < protocol::SIGN_WAIT_SECS);
+const _: () = assert!(SIGN_WAIT_BUSY.as_secs() > HANDSHAKE_TIMEOUT.as_secs());
+
+/// In-flight handshakes per source (`ADMIT_PER_SOURCE`) and per network
+/// (`ADMIT_PER_PREFIX`).
 struct SourceGate {
     held: Box<[std::sync::atomic::AtomicU16]>,
+    nets: Box<[std::sync::atomic::AtomicU16]>,
     key: std::collections::hash_map::RandomState,
     /// The shard's own bound address, when it is a specific one.
     own: Option<std::net::IpAddr>,
@@ -186,23 +205,28 @@ struct SourceGate {
 /// handshake that holds it ends. A loopback permit holds no bucket.
 struct SourcePermit {
     gate: Arc<SourceGate>,
-    bucket: Option<usize>,
+    bucket: Option<(usize, usize)>,
 }
 
 impl Drop for SourcePermit {
     fn drop(&mut self) {
-        if let Some(b) = self.bucket {
+        if let Some((b, n)) = self.bucket {
             self.gate.held[b].fetch_sub(1, Ordering::Relaxed);
+            self.gate.nets[n].fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
 
 impl SourceGate {
     fn new(bound: Option<std::net::IpAddr>) -> Self {
-        Self {
-            held: (0..SOURCE_BUCKETS)
+        let table = || {
+            (0..SOURCE_BUCKETS)
                 .map(|_| std::sync::atomic::AtomicU16::new(0))
-                .collect(),
+                .collect()
+        };
+        Self {
+            held: table(),
+            nets: table(),
             key: std::collections::hash_map::RandomState::new(),
             own: bound
                 .map(|ip| ip.to_canonical())
@@ -221,9 +245,19 @@ impl SourceGate {
         h as usize & (SOURCE_BUCKETS - 1)
     }
 
-    /// A place for one more handshake from `ip`, or `None` if it already
-    /// holds `ADMIT_PER_SOURCE`. The shard's own host always gets one,
-    /// uncounted.
+    /// The network bucket `ip` counts against: its IPv4 /24 or IPv6 /48.
+    fn net_bucket(&self, ip: std::net::IpAddr) -> usize {
+        use std::hash::BuildHasher;
+        let h = match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => self.key.hash_one(&v4.octets()[..3]),
+            std::net::IpAddr::V6(v6) => self.key.hash_one(&v6.octets()[..6]),
+        };
+        h as usize & (SOURCE_BUCKETS - 1)
+    }
+
+    /// A place for one more handshake from `ip`, or `None` if its source
+    /// already holds `ADMIT_PER_SOURCE` or its network `ADMIT_PER_PREFIX`.
+    /// The shard's own host always gets one, uncounted.
     fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
         let ip = ip.to_canonical();
         let bucket = if ip.is_loopback() || gate.own == Some(ip) {
@@ -234,7 +268,13 @@ impl SourceGate {
                 gate.held[b].fetch_sub(1, Ordering::Relaxed);
                 return None;
             }
-            Some(b)
+            let n = gate.net_bucket(ip);
+            if gate.nets[n].fetch_add(1, Ordering::Relaxed) >= ADMIT_PER_PREFIX {
+                gate.nets[n].fetch_sub(1, Ordering::Relaxed);
+                gate.held[b].fetch_sub(1, Ordering::Relaxed);
+                return None;
+            }
+            Some((b, n))
         };
         Some(SourcePermit {
             gate: gate.clone(),
@@ -1733,8 +1773,9 @@ async fn accept_loop(
             Some(done) = done_rx.recv() => {
                 // A banned wallet stops here, before it claims anything,
                 // refused with the code its ban closed it on — so the
-                // screen says what it said then. A watcher too: a ban is
-                // the wallet's, not the body's.
+                // screen says what it said then. (A watcher is anonymous:
+                // its auth is never verified, so it carries no key a ban
+                // could match.)
                 if done.key.as_ref().is_some_and(|k| bans.contains(k)) {
                     ShardStats::bump(&stats.refused_banned);
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
@@ -2080,7 +2121,26 @@ async fn accept_loop(
                             ShardStats::bump(&stats.save_write_errors);
                         }
                     }
-                    let kicked = admin_kick(id, &mut keys, &slots);
+                    let mut kicked = admin_kick(id, &mut keys, &slots);
+                    // A ban is the wallet's, wherever it sits now: a session
+                    // that reconnected after the sim named `id` holds a new
+                    // id on the same key, and one parked waiting for its old
+                    // body would be seated by the next poll.
+                    if let Some(key) = ban_key {
+                        if let Some(s) = seated(&key, &keys, &slots) {
+                            kicked |= kick_tenant(s, &mut keys, &slots, protocol::REFUSE_ADMIN);
+                        }
+                        let mut i = 0;
+                        while i < parked.len() {
+                            if parked[i].done.key == Some(key) {
+                                let p = parked.swap_remove(i);
+                                ShardStats::bump(&stats.refused_banned);
+                                spawn_refusal(p.done.connection, p.done.send, protocol::REFUSE_ADMIN);
+                            } else {
+                                i += 1;
+                            }
+                        }
+                    }
                     let counter = if kicked { &stats.admin_kicked } else { &stats.admin_refused };
                     ShardStats::bump(counter);
                     // A ban whose target already left still took: the door
@@ -2434,7 +2494,7 @@ async fn handshake_task(
             self.0.fetch_sub(1, Ordering::Relaxed);
         }
     }
-    let _guard = InFlight(in_flight);
+    let flight = InFlight(in_flight);
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -2554,7 +2614,12 @@ async fn handshake_task(
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
-    let exchange = tokio::time::timeout(SIGN_WAIT, async {
+    let wait = if flight.0.load(Ordering::Relaxed) >= ADMIT_RETRY_AT {
+        SIGN_WAIT_BUSY
+    } else {
+        SIGN_WAIT
+    };
+    let exchange = tokio::time::timeout(wait, async {
         let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
         protocol::decode_auth(&buf[..len]).map_err(|_| ())
     })
@@ -5015,6 +5080,52 @@ mod tests {
             })
             .collect();
         assert!(mine.iter().all(|p| p.bucket.is_none()));
+    }
+
+    /// **One network holds at most `ADMIT_PER_PREFIX` handshakes**, however
+    /// many of its addresses ask: a /24 or a /48 is not a crowd of sources.
+    /// A refused network leaves the source table as it found it.
+    #[test]
+    fn a_network_holds_at_most_its_allowance_across_its_addresses() {
+        let gate = Arc::new(SourceGate::new(None));
+        let mut held = Vec::new();
+        for host in 1..=u8::MAX {
+            let ip: std::net::IpAddr = format!("198.51.100.{host}").parse().unwrap();
+            match SourceGate::take(&gate, ip) {
+                Some(p) => held.push(p),
+                None => break,
+            }
+        }
+        assert_eq!(
+            held.len(),
+            ADMIT_PER_PREFIX as usize,
+            "one /24, one allowance"
+        );
+        let next: std::net::IpAddr = "198.51.100.250".parse().unwrap();
+        assert!(SourceGate::take(&gate, next).is_none());
+        assert_eq!(
+            gate.held[gate.bucket(next)].load(Ordering::Relaxed),
+            0,
+            "a network refusal gives the source's place back"
+        );
+        // Another /24 (one whose keyed bucket differs: the key is random).
+        let elsewhere = (101..=u8::MAX)
+            .map(|c| format!("198.51.{c}.1").parse::<std::net::IpAddr>().unwrap())
+            .find(|ip| gate.net_bucket(*ip) != gate.net_bucket(next))
+            .unwrap();
+        assert!(
+            SourceGate::take(&gate, elsewhere).is_some(),
+            "another /24 is its own"
+        );
+        held.pop();
+        assert!(
+            SourceGate::take(&gate, next).is_some(),
+            "and a finished one is given back"
+        );
+
+        let a: std::net::IpAddr = "2001:db8:aa:1::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:aa:ff00::1".parse().unwrap();
+        assert_eq!(gate.net_bucket(a), gate.net_bucket(b), "but one /48");
     }
 
     /// **The human feed's delay line holds every message for exactly its
