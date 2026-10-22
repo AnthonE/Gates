@@ -12,7 +12,7 @@ use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_VENDING, PLACE_AN
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::CONT_BOX;
 use sim_core::movement::Body;
-use sim_core::shop::{REFUSE_SH_ALLOWED, REFUSE_SH_CHANGED, SHOP_OP_BUY, SHOP_OP_SET};
+use sim_core::shop::{REFUSE_SH_ALLOWED, REFUSE_SH_OFFER, SHOP_OP_BUY, SHOP_OP_SET};
 use sim_core::world::Command;
 
 const SEED: u64 = 20_260_804;
@@ -242,9 +242,7 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
     let seen_buy = ShopAct::Buy {
         row: 0,
         times: 2,
-        item: CORN,
-        lot: 2,
-        price: 3,
+        terms: want.terms(),
     };
     shop(&mut core, 1, key, seen_buy);
     pump_n(&mut core, &stats, &mut clients, 6);
@@ -270,7 +268,7 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
     shop(&mut core, 1, key, seen_buy);
     pump_n(&mut core, &stats, &mut clients, 6);
     let (_, r) = clients[1].1.shop_last_result();
-    assert_eq!(r.unwrap().code as u32, REFUSE_SH_CHANGED);
+    assert_eq!(r.unwrap().code as u32, REFUSE_SH_OFFER);
     assert_eq!(
         sim_core::craft::inv_count(&core.world.players[w1].inv, JUNK),
         4,

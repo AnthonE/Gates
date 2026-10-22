@@ -24,9 +24,13 @@
 //!
 //! `domain` is the page's own host, so a wallet's domain check passes; it is
 //! used only if the shard accepts it (`siwe_domains`), else the shard's
-//! `domain`. An agent with an `agentkey` signs the default challenge with
-//! `AgentKey::sign_proof_hex(domain, nonce, issued_at)`: the message is the
-//! game's own sign-in text over a nonce only this listener issued, used once.
+//! `domain`. The message is the companion's own sign-in text
+//! (`protocol::companion_message`), never the game's: a signature collected
+//! here is no game login, so a page that is not this one gains nothing by
+//! asking for it. An agent with an `agentkey` signs with
+//! `AgentKey::sign_companion_hex(host, nonce, issued_at)`, where `host` is
+//! the host it dialled — never a `domain` the response named — over a nonce
+//! only this listener issued, used once.
 //! Only a wallet with a character on the island signs in (403 otherwise).
 //! Positions are whole metres in world axes; `grid` is the map's square.
 //!
@@ -67,21 +71,17 @@ const ALERTS_SHOWN: usize = 20;
 const CHALLENGE_SECS: u64 = 300;
 /// Nonces signed in with and not yet expired, kept so none is used twice.
 const USED_KEPT: usize = 65536;
-/// Of those, one wallet's: one wallet signing every challenge it can fetch
-/// is told to wait (429) rather than filling the table and locking everyone
-/// else out. Only a wallet with a body on the island spends a nonce, but a
-/// nonce outlives the body, so wallets cycled through the island could
-/// still fill it. Full, it drops the nonces of wallets no longer on the
-/// island (`Web::login`): they cannot sign in, and one could be replayed
-/// only by its signer's own body back within its minutes. What stays is the
-/// island's, which the assert keeps under the table. Never evicted
-/// otherwise: a nonce pushed out of `used` is a signed login anyone who saw
-/// it could replay.
-const USED_PER_WALLET: usize = 32;
-const _: () = assert!(sim_core::limits::MAX_PLAYERS * USED_PER_WALLET < USED_KEPT);
 /// Signed-in sessions, all wallets and one wallet's, and how long one lasts.
 const SESSIONS_KEPT: usize = 4096;
 const SESSIONS_PER_WALLET: usize = 8;
+/// Sign-ins one wallet may make per challenge window: past its own sessions,
+/// so a wallet that signs in again still evicts its oldest, and small enough
+/// that the island's wallets cannot fill `USED_KEPT` between them.
+const LOGINS_PER_WALLET: usize = 2 * SESSIONS_PER_WALLET;
+// Full, the table keeps only the island's nonces (`Web::login`), and those
+// always fit: a nonce pushed out of `used` is a signed login anyone who saw
+// it could replay, so nothing else ever evicts one.
+const _: () = assert!(sim_core::limits::MAX_PLAYERS * LOGINS_PER_WALLET < USED_KEPT);
 pub const SESSION_SECS: u64 = 30 * 24 * 3600;
 /// The most of a request this reads: request line, headers and body.
 const REQUEST_CAP: usize = 8192;
@@ -338,7 +338,7 @@ pub struct Web {
     /// of `keccak(secret, random, issued_at)`, so nothing is kept per
     /// challenge and nobody can flood one out of a table.
     secret: [u8; 32],
-    /// nonce → (when it stops mattering, the wallet that spent it)
+    /// nonce → (when it stops mattering, the wallet that signed it)
     used: BTreeMap<[u8; NONCE_BYTES], (u64, String)>,
     /// token → (wallet, expires)
     sessions: BTreeMap<String, (String, u64)>,
@@ -450,16 +450,8 @@ impl Web {
         let sum = address.to_checksum_hex();
         let addr = core::str::from_utf8(&sum).unwrap_or("0x");
         let mut text = [0u8; SIWE_MESSAGE_MAX];
-        let n = protocol::siwe_message_for(
-            &domain,
-            &self.domain,
-            addr,
-            protocol::SLUG,
-            &nonce,
-            now,
-            &mut text,
-        )
-        .min(SIWE_MESSAGE_MAX);
+        let n = protocol::companion_message(&domain, &self.domain, addr, &nonce, now, &mut text)
+            .min(SIWE_MESSAGE_MAX);
         Response::json(
             200,
             serde_json::json!({
@@ -496,9 +488,34 @@ impl Web {
         if self.used.contains_key(&nonce) {
             return Response::error(401, "challenge already used");
         }
+        let auth = protocol::Auth {
+            address,
+            signature: Signature(sig),
+        };
+        let key = match crate::auth::verify_companion(&self.accepts, &nonce, issued_at, &auth) {
+            Ok(k) => k,
+            Err(e) => return Response::error(401, e.reason()),
+        };
+        let wallet = String::from_utf8_lossy(key.as_bytes()).to_ascii_lowercase();
+        // Only a wallet with a body on the island signs in here, which keeps
+        // the wallets that can hold sessions to the island's own population.
+        // Asked **before** the nonce is spent: a stranger's fresh keys must
+        // not be able to fill the used-nonce table and lock the island out.
+        if !self.snap.people.iter().any(|p| p.wallet == wallet) {
+            return Response::error(403, "not on the island");
+        }
+        // And one island wallet spends at most `LOGINS_PER_WALLET` nonces a
+        // challenge window, so it cannot fill the table either.
+        if self.used.values().filter(|(_, w)| *w == wallet).count() >= LOGINS_PER_WALLET {
+            return Response::error(429, "slow down");
+        }
         if self.used.len() >= USED_KEPT {
-            // Wallets cycled through the island's bodies: their nonces go
-            // (`USED_PER_WALLET`), and the island's own always fit.
+            // A nonce outlives its body, so wallets cycled through the
+            // island's bodies could still fill the table under their own cap
+            // each: full, it drops the nonces of wallets no longer on the
+            // island. They cannot sign in, and one could be replayed only by
+            // its signer's own body back within its minutes. The island's
+            // own always fit (the assert on `LOGINS_PER_WALLET`).
             let here: std::collections::BTreeSet<&str> = self
                 .snap
                 .people
@@ -511,28 +528,6 @@ impl Web {
         if self.used.len() >= USED_KEPT {
             return Response::error(503, "busy");
         }
-        let auth = protocol::Auth {
-            address,
-            signature: Signature(sig),
-        };
-        let key = match crate::auth::verify_any(&self.accepts, &nonce, issued_at, &auth) {
-            Ok(k) => k,
-            Err(e) => return Response::error(401, e.reason()),
-        };
-        let wallet = String::from_utf8_lossy(key.as_bytes()).to_ascii_lowercase();
-        // Only a wallet with a body on the island signs in here, which keeps
-        // the wallets that can hold sessions to the island's own population.
-        if !self.snap.people.iter().any(|p| p.wallet == wallet) {
-            return Response::error(403, "not on the island");
-        }
-        // Spent only now, by a sign-in that lands: spent before the island
-        // check, throwaway wallets (free to make) filled `used` and every
-        // real sign-in met "busy" until their challenges expired. And at most
-        // `USED_PER_WALLET` at once, or one island wallet could do the same.
-        let spent = self.used.values().filter(|(_, w)| *w == wallet).count();
-        if spent >= USED_PER_WALLET {
-            return Response::error(429, "too many sign-ins, wait a few minutes");
-        }
         self.used
             .insert(nonce, (issued_at + CHALLENGE_SECS + 5, wallet.clone()));
         let mut raw = [0u8; 32];
@@ -543,11 +538,26 @@ impl Web {
         self.sessions.retain(|_, (_, until)| *until > now);
         let mine = self.sessions.values().filter(|(w, _)| *w == wallet).count();
         if mine >= SESSIONS_PER_WALLET || self.sessions.len() >= SESSIONS_KEPT {
-            let only_mine = mine >= SESSIONS_PER_WALLET;
+            // At its own cap a wallet loses its own oldest. A full table loses
+            // the oldest of whichever wallet holds the most, so a crowd of
+            // wallets signing in over and over evicts itself before it evicts
+            // anybody's one session.
+            let whose = if mine >= SESSIONS_PER_WALLET {
+                wallet.clone()
+            } else {
+                let mut held: BTreeMap<&str, usize> = BTreeMap::new();
+                for (w, _) in self.sessions.values() {
+                    *held.entry(w.as_str()).or_default() += 1;
+                }
+                held.into_iter()
+                    .max_by_key(|&(_, n)| n)
+                    .map(|(w, _)| w.to_string())
+                    .unwrap_or_default()
+            };
             let oldest = self
                 .sessions
                 .iter()
-                .filter(|(_, (w, _))| !only_mine || *w == wallet)
+                .filter(|(_, (w, _))| *w == whose)
                 .min_by_key(|(_, (_, until))| *until)
                 .map(|(t, _)| t.clone());
             if let Some(t) = oldest {
@@ -816,8 +826,8 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
         return Ok(());
     };
     let body_at = head_end + 4;
-    // Checked: a `Content-Length` near `usize::MAX` overflowed the sum, a
-    // panic that took the companion's thread down.
+    // Checked: a Content-Length near `usize::MAX` wrapped this sum past the
+    // bound and panicked the slice, which took the listener's one thread.
     let Some(end) = body_at.checked_add(req.1).filter(|&e| e <= buf.len()) else {
         return Ok(());
     };
@@ -845,7 +855,10 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Headers: Authorization, Content-Type\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n",
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\n\
+         Content-Security-Policy: frame-ancestors 'none'; base-uri 'none'; object-src 'none'\r\n\
+         Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
         r.status,
         r.ctype,
         r.body.len()
@@ -945,7 +958,7 @@ mod tests {
         let nonce = c["nonce"].as_str().unwrap();
         let issued = c["issued_at"].as_u64().unwrap();
         let sig = key
-            .sign_proof_hex(c["domain"].as_str().unwrap(), nonce, issued)
+            .sign_companion_hex(c["domain"].as_str().unwrap(), nonce, issued)
             .unwrap();
         serde_json::json!({"address": a, "nonce": nonce, "issued_at": issued, "signature": hex(&sig.0)})
     }
@@ -1025,13 +1038,43 @@ mod tests {
         // Someone else's signature over my challenge recovers them, not me.
         let mut theirs = login_body(&mut w, &key(7), 1000);
         let sig = key(8)
-            .sign_proof_hex("game.test", theirs["nonce"].as_str().unwrap(), 1000)
+            .sign_companion_hex("game.test", theirs["nonce"].as_str().unwrap(), 1000)
             .unwrap();
         theirs["signature"] = hex(&sig.0).into();
         assert_eq!(
             w.handle(&post("/api/login", None, theirs), 1000).status,
             401
         );
+    }
+
+    /// **The companion's sign-in and the game's are two texts.** A game
+    /// login signature over a real companion challenge does not sign in, and
+    /// a companion signature is no game login — so a page that asks an agent
+    /// to "sign in to the companion" collects nothing the game takes.
+    #[test]
+    fn a_game_login_is_no_companion_sign_in_and_back() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0)]);
+        let a = addr(&key(7));
+        let c = body(&w.handle(&get(&format!("/api/challenge?address={a}"), None), 1000));
+        let (nonce, issued) = (
+            c["nonce"].as_str().unwrap(),
+            c["issued_at"].as_u64().unwrap(),
+        );
+        let game = key(7).sign_proof_hex("game.test", nonce, issued).unwrap();
+        let login = serde_json::json!({"address": a, "nonce": nonce, "issued_at": issued, "signature": hex(&game.0)});
+        assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 401);
+
+        let page = key(7)
+            .sign_companion_hex("game.test", nonce, issued)
+            .unwrap();
+        let auth = protocol::Auth {
+            address: key(7).address(),
+            signature: page,
+        };
+        let n = unhex::<NONCE_BYTES>(nonce).unwrap();
+        assert!(crate::auth::verify_any(&["game.test"], &n, issued, &auth).is_err());
+        assert!(crate::auth::verify_companion(&["game.test"], &n, issued, &auth).is_ok());
     }
 
     /// Signing in needs a body on the island, and one wallet holds a bounded
@@ -1054,35 +1097,8 @@ mod tests {
         assert_eq!(w.handle(&get("/api/team", Some(&last)), 1100).status, 200);
     }
 
-    /// One island wallet holds at most `USED_PER_WALLET` unexpired nonces, so
-    /// signing every challenge it can fetch cannot fill the replay table: it
-    /// is told to wait, everyone else still signs in, and its room comes back
-    /// as its nonces expire.
-    #[test]
-    fn one_wallet_cannot_fill_the_replay_table() {
-        let (mut w, _rx) = web();
-        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
-        for i in 0..USED_PER_WALLET as u64 {
-            sign_in(&mut w, &key(7), 1000 + i);
-        }
-        let refused = login_body(&mut w, &key(7), 1100);
-        assert_eq!(
-            w.handle(&post("/api/login", None, refused.clone()), 1100)
-                .status,
-            429
-        );
-        assert_eq!(w.used.len(), USED_PER_WALLET, "the refusal spent nothing");
-        sign_in(&mut w, &key(8), 1100);
-        // The first two expire; the refused body's nonce was never spent.
-        let later = 1001 + CHALLENGE_SECS + 5;
-        assert_eq!(
-            w.handle(&post("/api/login", None, refused), later).status,
-            200
-        );
-    }
-
     /// A nonce outlives its body, so wallets cycled through the island's
-    /// bodies can fill the replay table under `USED_PER_WALLET` each. Full,
+    /// bodies can fill the replay table under `LOGINS_PER_WALLET` each. Full,
     /// it drops the nonces of wallets gone from the island and the island
     /// still signs in; the island's own are kept, and a table they alone
     /// filled (more than the assert lets them hold) is still busy.
@@ -1099,7 +1115,7 @@ mod tests {
         let kept = [0xffu8; NONCE_BYTES];
         w.used.insert(kept, (until, addr(&key(8))));
         for i in 0..USED_KEPT - 1 {
-            let gone = format!("0x{:040x}", i / USED_PER_WALLET + 1);
+            let gone = format!("0x{:040x}", i / LOGINS_PER_WALLET + 1);
             w.used.insert(nonce(i), (until, gone));
         }
         assert_eq!(w.used.len(), USED_KEPT);
@@ -1117,6 +1133,63 @@ mod tests {
         let login = login_body(&mut w, &key(7), 1000);
         assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 503);
         assert_eq!(w.used.len(), USED_KEPT);
+    }
+
+    /// A full session table evicts from the wallet holding the most, not the
+    /// oldest anybody holds: one honest session outlives a crowd's churn.
+    #[test]
+    fn a_full_table_evicts_the_crowd_before_the_one() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
+        let honest = sign_in(&mut w, &key(7), 1000);
+        for i in 0..SESSIONS_KEPT - 1 {
+            let crowd = format!("0x{:040x}", 0xc000 + i / SESSIONS_PER_WALLET);
+            w.sessions
+                .insert(format!("t{i}"), (crowd, 1001 + SESSION_SECS));
+        }
+        sign_in(&mut w, &key(8), 1002);
+        assert_eq!(w.sessions.len(), SESSIONS_KEPT);
+        assert_eq!(w.handle(&get("/api/team", Some(&honest)), 1003).status, 200);
+    }
+
+    /// A stranger's fresh keys spend no nonce (the island check comes
+    /// first), and an island wallet spends a bounded number per window — so
+    /// nobody can fill the used-nonce table and lock the island out.
+    #[test]
+    fn strangers_and_one_wallet_cannot_fill_the_nonce_table() {
+        let (mut w, _rx) = web();
+        for k in 20..30 {
+            let login = login_body(&mut w, &key(k), 1000);
+            assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 403);
+        }
+        assert!(w.used.is_empty(), "a refused stranger spends nothing");
+        island(&mut w, &[(&addr(&key(7)), 0)]);
+        for i in 0..LOGINS_PER_WALLET as u64 {
+            sign_in(&mut w, &key(7), 1000 + i);
+        }
+        let login = login_body(&mut w, &key(7), 1100);
+        assert_eq!(w.handle(&post("/api/login", None, login), 1100).status, 429);
+        // The window passes and the wallet may sign in again.
+        let late = 1000 + CHALLENGE_SECS + 10;
+        sign_in(&mut w, &key(7), late);
+    }
+
+    /// A Content-Length that would wrap the body's end is refused, not
+    /// sliced: the listener has one thread and a panic took it.
+    #[test]
+    fn a_wrapping_content_length_closes_without_a_panic() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = l.local_addr().unwrap();
+        let mut c = std::net::TcpStream::connect(at).unwrap();
+        c.write_all(b"POST /api/login HTTP/1.1\r\nContent-Length: 18446744073709551615\r\n\r\n")
+            .unwrap();
+        let (s, _) = l.accept().unwrap();
+        let (mut w, _rx) = web();
+        assert!(answer(s, &mut w, 1000).is_ok());
+        let mut out = Vec::new();
+        let _ = c.read_to_end(&mut out);
+        assert!(out.is_empty(), "closed unanswered");
     }
 
     /// The page's own host is signed when the shard accepts it; anything else

@@ -383,7 +383,10 @@ pub fn update(
     };
     now.cloud = pm(wx.cloud);
     now.dark = pm(wx.dark);
-    now.rain = pm(wx.rain);
+    // Halved over arid ground, the sim's rule (`weather::local_rain`).
+    let arid_pm = (sim_core::terrain::aridity(world.seed, eye.pos.x, eye.pos.z) * 1000.0)
+        .clamp(0.0, 1000.0) as u16;
+    now.rain = pm(weather::local_rain(wx.rain, arid_pm));
     now.fog = pm(wx.fog);
     now.wind = pm(wx.wind);
     now.thunder = pm(wx.thunder);

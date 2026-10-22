@@ -159,3 +159,71 @@ fn team_chat_crosses_between_the_game_and_the_companion() {
     pump(&mut core, &stats, &mut seen);
     assert!(team_chats(&seen).is_empty());
 }
+
+/// A banned wallet is nobody to the companion: its body stays (a sleeper,
+/// or still standing until the kick lands) but the snapshot carries no
+/// wallet for it, so it cannot sign in, and a line its old session types on
+/// the page never reaches its team in the game.
+#[test]
+fn a_banned_wallet_is_off_the_companion() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.dev_spawn = Some((2048.0, 2048.0));
+    core.catalog = ItemCatalog::EMPTY;
+    let (companion, mut from_sim, mut to_sim) = server::companion::pair();
+    core.companion = companion;
+    for slot in 0..2 {
+        let key = PlayerKey::new(wallet(slot).as_bytes()).unwrap();
+        assert!(core
+            .connect_as(slot, id_of(slot), Some(key), None)
+            .is_some());
+    }
+    let mut seen = Vec::new();
+    pump(&mut core, &stats, &mut seen);
+    core.push_action(
+        0,
+        ActionMsg::Team {
+            op: TEAM_OP_INVITE,
+            target: id_of(1),
+        },
+    );
+    pump(&mut core, &stats, &mut seen);
+    core.push_action(
+        1,
+        ActionMsg::Team {
+            op: TEAM_OP_ACCEPT,
+            target: id_of(0),
+        },
+    );
+    pump(&mut core, &stats, &mut seen);
+
+    let banned = PlayerKey::new(wallet(1).as_bytes()).unwrap();
+    core.install_bans(&[banned]);
+    core.publish_companion();
+    let mut snap = None;
+    while let Ok(m) = from_sim.pop() {
+        if let ToWeb::Snap(s) = m {
+            snap = Some(s);
+        }
+    }
+    let snap = snap.expect("a snapshot");
+    assert!(
+        snap.people.iter().all(|p| p.wallet != wallet(1)),
+        "the banned wallet is in the snapshot"
+    );
+    assert!(snap.people.iter().any(|p| p.wallet == wallet(0)));
+
+    seen.clear();
+    to_sim
+        .push(WebLine {
+            wallet: banned,
+            text: ChatText::sanitize(b"still here").unwrap(),
+        })
+        .unwrap();
+    pump(&mut core, &stats, &mut seen);
+    assert!(
+        team_chats(&seen).is_empty(),
+        "a banned wallet's page line was said"
+    );
+}

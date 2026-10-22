@@ -2469,7 +2469,7 @@ pub fn hitscan(
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
     hitscan_in(
-        seed, 0, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
+        seed, seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
     )
 }
 
@@ -2479,14 +2479,15 @@ pub fn hitscan(
 /// not rewound — they are not in `Rewind` — so a hit on one is solved
 /// against where it stands this tick.
 ///
-/// `salt` is the world's secret (`mech::ArcState::salt`), mixed into the
-/// cone's key so a client that knows the seed, the tick and its slot
+/// `secret` is the world's secret seed (`World::secret_seed`), the key of
+/// the cone's draw so a client that knows the seed, the tick and its slot
 /// cannot work out where its next round will stray — and so time its
-/// shots for the draws that land dead on the line. 0 is the seed's cone.
+/// shots for the draws that land dead on the line. `seed` itself is the
+/// seed's cone.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan_hunting(
     seed: u64,
-    salt: u64,
+    secret: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2502,7 +2503,7 @@ pub fn hitscan_hunting(
 ) -> (usize, usize) {
     hitscan_in(
         seed,
-        salt,
+        secret,
         haven,
         cols,
         occ,
@@ -2521,7 +2522,7 @@ pub fn hitscan_hunting(
 #[allow(clippy::too_many_arguments)]
 fn hitscan_in(
     seed: u64,
-    salt: u64,
+    secret: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -2686,18 +2687,20 @@ fn hitscan_in(
             } else {
                 0
             };
-        // A salted shot's key is a PRF of the secret (`rng::sip24`), not a
-        // mix of it: the shooter reads ~20 bits of every key back off
-        // `EV_SHOT` at a tick it picks, and splitmix64 inverts, so a mixed
-        // salt came back out offline — and with it the casino, the loot and
-        // the mechs, which share it. A salt of 0 is the seed's key exactly,
-        // so every fixture keeps its cone.
-        let key = if salt == 0 {
+        // Keyed on the world's secret (`World::secret_seed`), not the public
+        // seed: a client that knows the seed and the tick its shot runs on
+        // could otherwise pre-invert the cone and fire with no spread. A
+        // salted shot's key is a PRF of the secret (`rng::sip24`), not a mix
+        // of it: the shooter reads ~20 bits of every key back off `EV_SHOT`
+        // at a tick it picks, and splitmix64 inverts, so a mixed secret came
+        // back out offline. An unsalted world's secret is its seed, and its
+        // key the seed's exactly, so every fixture keeps its cone.
+        let key = if secret == seed {
             crate::rng::splitmix64(
                 seed ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
             )
         } else {
-            crate::rng::sip24(salt, seed ^ CH_CONE, tick, i as u64)
+            crate::rng::sip24(secret, seed ^ CH_CONE, tick, i as u64)
         };
         let ctx = Shot {
             seed,

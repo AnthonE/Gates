@@ -39,6 +39,7 @@
 //! arbitrary bytes (client-driven on the server side), and the golden
 //! suite flips bits to prove it.
 
+#![forbid(unsafe_code)]
 /// Admin commands, parsed out of a chat line — no wire bytes of their own
 /// (`admin.rs`'s header has the transport argument).
 pub mod admin;
@@ -52,8 +53,8 @@ pub mod version;
 pub mod voice;
 
 pub use auth::{
-    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
-    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    companion_message, siwe_message, siwe_message_for, Address, Auth, Challenge, Signature,
+    ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1324,13 +1325,17 @@ pub use voice::{
 /// v138 — captions: `SUB_CAPTION` carries what a nearby player said out
 /// loud as text, or a line translated into the receiver's language
 /// (`lang.rs`).
-/// v139 — a shop buy (`ACT_SHOP`, `SHOP_OP_BUY`) carries the offer it was
-/// pressed against (item, lot and price, 16 bits each, after `times`), and
-/// a shop refusal admits 10 (`REFUSE_SH_CHANGED`): the owner can no longer
-/// swap the row between the buyer's view and the buy. A deploy refusal
-/// admits 27 and 28 (`REFUSE_D_OWN_CAP`, one hand's share of the containers
-/// or turrets; `REFUSE_D_BAG_SPENT`, a bag still cooling down).
-pub const PROTO_VER: u16 = 139;
+/// v139 — a shop buy names the offer it was shown (`ACT_SHOP` buy carries
+/// item, lot and price after `times`); a row rewritten since is refused.
+/// v139 — clothing v1: seven wear slots (`WEAR_SLOTS` 3 → 7: legs, hands,
+/// shirt, face), so `EventMsg::Worn` carries seven and a catalog row's
+/// `wear_slot` is three bits; the row carries its `warmth_pct` and
+/// `ward_pct` for the wear panel; and `SUB_EXPOSURE` carries the minutes
+/// left on each tea after the breath.
+/// v140 — a deploy refusal admits 27 and 28 (`REFUSE_D_OWN_CAP`, one hand's
+/// share of the containers or turrets; `REFUSE_D_BAG_SPENT`, a bag still
+/// cooling down).
+pub const PROTO_VER: u16 = 140;
 
 /// This game's slug in the elo catalog.
 ///
@@ -3084,17 +3089,11 @@ pub fn encode_action_shop(key: u32, act: ShopAct, buf: &mut [u8]) -> Result<usiz
             w.write(price as u32, 16)?;
         }
         ShopAct::Clear { .. } => {}
-        ShopAct::Buy {
-            times,
-            item,
-            lot,
-            price,
-            ..
-        } => {
+        ShopAct::Buy { times, terms, .. } => {
             w.write(times as u32, 5)?;
-            w.write(item as u32, 16)?;
-            w.write(lot as u32, 16)?;
-            w.write(price as u32, 16)?;
+            w.write(terms.item as u32, 16)?;
+            w.write(terms.lot as u32, 16)?;
+            w.write(terms.price as u32, 16)?;
         }
     }
     Ok(w.finish())
@@ -3166,13 +3165,11 @@ fn shop_act_ok(act: &ShopAct) -> bool {
     match *act {
         ShopAct::Set { item, lot, .. } => lot > 0 && (item as usize) < MAX_ITEM_DEFS,
         ShopAct::Clear { .. } => true,
-        ShopAct::Buy {
-            times, item, lot, ..
-        } => {
+        ShopAct::Buy { times, terms, .. } => {
             times > 0
                 && times <= sim_core::shop::SHOP_TIMES_MAX
-                && lot > 0
-                && (item as usize) < MAX_ITEM_DEFS
+                && terms.lot > 0
+                && (terms.item as usize) < MAX_ITEM_DEFS
         }
     }
 }
@@ -4126,9 +4123,11 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 sim_core::shop::SHOP_OP_BUY => ShopAct::Buy {
                     row,
                     times: r.read(5)? as u8,
-                    item: r.read(16)? as u16,
-                    lot: r.read(16)? as u16,
-                    price: r.read(16)? as u16,
+                    terms: sim_core::shop::ShopOffer {
+                        item: r.read(16)? as u16,
+                        lot: r.read(16)? as u16,
+                        price: r.read(16)? as u16,
+                    },
                 },
                 _ => return Err(WireError::Malformed),
             };
@@ -5311,9 +5310,11 @@ mod tests {
         let act = ShopAct::Buy {
             row: (sim_core::limits::SHOP_ROWS - 1) as u8,
             times: sim_core::shop::SHOP_TIMES_MAX,
-            item: (MAX_ITEM_DEFS - 1) as u16,
-            lot: 0xFFFF,
-            price: 0xA5C3,
+            terms: sim_core::shop::ShopOffer {
+                item: (MAX_ITEM_DEFS - 1) as u16,
+                lot: 0xFFFF,
+                price: 0xA5C3,
+            },
         };
         let mut buf = [0u8; 32];
         let n = encode_action_shop(0xDEAD_BEEF, act, &mut buf).unwrap();
@@ -5327,9 +5328,11 @@ mod tests {
         let no_lot = ShopAct::Buy {
             row: 0,
             times: 1,
-            item: 0,
-            lot: 0,
-            price: 1,
+            terms: sim_core::shop::ShopOffer {
+                item: 0,
+                lot: 0,
+                price: 1,
+            },
         };
         assert!(encode_action_shop(1, no_lot, &mut buf).is_err());
     }

@@ -341,15 +341,19 @@ fn inert_loot_content_leaves_barrels_standing() {
     );
 }
 
-/// **A smashed barrel rolls on the world's secret** (`loot::salted`): the
-/// seed, the cell and the last swing's tick are all the smasher's, so on
+/// **A smashed barrel rolls on the world's secret** (`World::secret_seed`):
+/// the seed, the cell and the last swing's tick are all the smasher's, so on
 /// them alone a client could time the swing to the tick that pays. Two
 /// worlds, one smash on one tick, two salts. Mutant: the plain seed at
 /// the barrel arm's `roll_into`.
 #[test]
 fn a_barrel_rolls_on_the_worlds_salt() {
-    use sim_core::loot::salted;
     const SALT: u64 = 0xFEED;
+    let secret = {
+        let mut w = Box::new(World::new(SEED));
+        w.arc.salt = SALT;
+        w.secret_seed()
+    };
     // The cell `scanned_slot` finds, by its own walk.
     let (cx, cz) = {
         let scatter = terrain::ScatterTable::alpha_default();
@@ -380,11 +384,7 @@ fn a_barrel_rolls_on_the_worlds_salt() {
     let (at_salted, salty) = smashed(SALT);
     assert_eq!(at, at_salted, "both worlds smash on one tick");
     assert_eq!(plain, roll(SEED, at), "an unsalted world rolls the seed");
-    assert_eq!(
-        salty,
-        roll(salted(SEED, SALT), at),
-        "a salted one its secret"
-    );
+    assert_eq!(salty, roll(secret, at), "a salted one its secret");
     assert_ne!(salty, plain, "the salt never reached the barrel");
 }
 
@@ -408,4 +408,17 @@ fn two_barrels_roll_independently() {
         differed,
         "every cell rolls the same barrel — cell is unused"
     );
+}
+
+/// **Loot, cones, genes and duds key on a secret, not the public seed.**
+/// Every client is told the seed (it draws terrain from it) and can aim a
+/// press at a known tick, so a draw keyed on the seed alone is one a client
+/// can time. An unsalted world reads back its seed exactly — which is why no
+/// pinned hash moved — and a salted one does not.
+#[test]
+fn timeable_draws_key_on_the_arc_secret() {
+    let mut w = World::new(SEED);
+    assert_eq!(w.secret_seed(), SEED, "an unsalted world is its seed");
+    w.arc.salt = 0x5EC2_E7ED_0000_0001;
+    assert_ne!(w.secret_seed(), SEED, "a salted one is not");
 }

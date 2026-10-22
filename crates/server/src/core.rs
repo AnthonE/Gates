@@ -375,6 +375,12 @@ pub struct ShardCore {
     /// whose header says it holds no `ShardStats`: a list of addresses is
     /// data, not a side effect.
     admins: crate::admin::Admins,
+    /// The ban list as the companion sees it: an in-memory copy of the
+    /// accept loop's (never saved), seeded at boot and moved by the same
+    /// insert/unban the accept loop applies, under the same cap. A ban puts
+    /// the body to sleep and the sleeper stays; this is what keeps the
+    /// wallet off the companion's team view, chat and alerts meanwhile.
+    banned: crate::admin::Bans,
     /// The spectator seats (`NETCODE.md` §2.3): seat `i` is connection slot
     /// `MAX_PLAYERS + i`, and holds the connection slot it watches. `None` is
     /// an empty seat. A seat is **fed only while its target is still that
@@ -553,6 +559,20 @@ const EVICT_MIN_SLEEP_TICKS: u64 = 30 * 60 * sim_core::limits::TICK_HZ as u64;
 /// including players whose bodies were evicted earlier. With it a refusal
 /// needs three quarters of the bodies awake.
 const EVICT_MAX_HELD: usize = MAX_PLAYERS / 4;
+
+/// A team-channel line, typed or translated: the team's, never a seat's.
+/// Consent to be watched is the target's own (`HELLO_AGENT`,
+/// `HELLO_WATCHABLE`); a teammate typing to the team gave none, and a human
+/// on an agent's team was read live by an anonymous watcher of the agent.
+/// The team drip is withheld from seats for the same reason. Voice captions
+/// ride the local channel and stay: a seat already hears that voice.
+fn team_only(bytes: &[u8]) -> bool {
+    match protocol::decode_event(bytes) {
+        Ok(protocol::EventMsg::Chat { channel, .. }) => channel == protocol::Channel::Team,
+        Ok(protocol::EventMsg::Caption(c)) => c.channel == protocol::Channel::Team,
+        _ => false,
+    }
+}
 
 /// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
 /// `ShardStats::phase_hist` files them. The index is the histogram row.
@@ -1012,6 +1032,7 @@ impl ShardCore {
             worn_seen: [WORN_NONE; MAX_PLAYERS],
             worn_dressed: 0,
             admins: crate::admin::Admins::none(),
+            banned: crate::admin::Bans::new(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
@@ -1499,6 +1520,13 @@ impl ShardCore {
             Some(slot) => *self.keys.get(slot)?.as_ref()?,
             None => self.sleepers.key_of(id)?,
         };
+        // A banned wallet is nobody to the companion: its sleeper stays on
+        // the island, but the page is a door too. Blank in the snap, it
+        // cannot sign in, and a session it already holds sees no team,
+        // hears no line and gets no alert.
+        if self.banned.contains(&key) {
+            return None;
+        }
         core::str::from_utf8(key.as_bytes())
             .ok()
             .map(str::to_ascii_lowercase)
@@ -1538,6 +1566,10 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        if self.banned.contains(&line.wallet) {
+            ShardStats::bump(&stats.chat_undelivered);
+            return;
+        }
         let id = (0..MAX_PLAYERS)
             .find(|&s| {
                 self.clients[s].connected
@@ -3987,7 +4019,12 @@ impl ShardCore {
             let mut mirrored = |lane: Lane, slot: usize, bytes: &[u8]| -> bool {
                 let mut send = send.borrow_mut();
                 let ok = (*send)(lane, slot, bytes);
-                if watched && lane == Lane::Event && slot < MAX_PLAYERS {
+                if watched
+                    && lane == Lane::Event
+                    && slot < MAX_PLAYERS
+                    && mirror.iter().any(|&t| t as usize == slot)
+                    && !team_only(bytes)
+                {
                     for (i, &t) in mirror.iter().enumerate() {
                         if t as usize == slot && !(*send)(Lane::Event, MAX_PLAYERS + i, bytes) {
                             refused[i] = true;
@@ -4186,6 +4223,13 @@ impl ShardCore {
         self.admins = admins;
     }
 
+    /// The ban list at boot, for the companion's copy (`banned`).
+    pub fn install_bans(&mut self, keys: &[PlayerKey]) {
+        for &k in keys {
+            let _ = self.banned.insert(k);
+        }
+    }
+
     /// Run one slash line on behalf of `from_slot` (admin v0).
     ///
     /// **Permission is the wallet's, never the client's claim.** The key
@@ -4367,6 +4411,9 @@ impl ShardCore {
                     self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
+                if let AdminAct::Ban { key, .. } = act {
+                    let _ = self.banned.insert(key);
+                }
                 logged = logged.with(id as i64, 0, 0);
             }
             AdminCmd::Unban { prefix } => {
@@ -4380,6 +4427,7 @@ impl ShardCore {
                     self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
                     return;
                 }
+                let _ = self.banned.remove_prefix(&prefix);
                 logged = logged.note(prefix.as_bytes());
             }
             AdminCmd::Say { text } => {
@@ -8933,23 +8981,23 @@ impl ShardCore {
                             // this box's. An oven carries no lock
                             // (`lockable`) and passes as bare.
                             let b = self.world.deploys.boxes()[i];
+                            // A turret's rounds are shown only to the hands
+                            // it answers to, as the move verb allows them
+                            // (`World::move_item`): its ammo count is raid
+                            // intelligence. A shop's stock is anyone's look.
                             let ok = self
                                 .world
                                 .deploys
-                                .lock_passes(b.cx, b.cz, b.level, b.loc, p.id);
+                                .lock_passes(b.cx, b.cz, b.level, b.loc, p.id)
+                                && (self.world.deploys.oven_states()[i].arch
+                                    != sim_core::deploy::ARCH_TURRET
+                                    || sim_core::shop::may_edit(
+                                        &self.world.pieces,
+                                        &self.world.deploys,
+                                        i,
+                                        p.id,
+                                    ));
                             lock_refused = !ok;
-                            ok
-                        })
-                        .filter(|&i| {
-                            // A player's turret shows its rounds only to
-                            // the hands it spares, the move verb's own
-                            // rule (`World::move_item`): a stranger who
-                            // could see the box could count its ammo.
-                            let w = &self.world;
-                            let ok = w.deploys.oven_states()[i].arch
-                                != sim_core::deploy::ARCH_TURRET
-                                || sim_core::shop::may_edit(&w.pieces, &w.deploys, i, p.id);
-                            lock_refused |= !ok;
                             ok
                         }),
                     // A world container resolves against the store, never
@@ -11708,6 +11756,52 @@ mod tests {
         for (i, msgs) in out.iter().enumerate().skip(MAX_PLAYERS) {
             if i != seat {
                 assert!(msgs.is_empty(), "seat slot {i} heard {msgs:?}");
+            }
+        }
+    }
+
+    /// **A seat never hears its target's team channel.** The target's
+    /// teammate typed to the team, not to a watcher of the agent beside them
+    /// (`team_only`); a global line still reaches the seat as before.
+    #[test]
+    fn a_seat_never_hears_its_targets_team_channel() {
+        const OTHER: u32 = PLAYER + 1;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        assert!(core.connect(1, OTHER));
+        core.tick_bare(&stats, |_, _, _| true);
+        let seat = MAX_PLAYERS + 2;
+        assert!(core.connect_spectator(seat, PLAYER, 0), "seated");
+        core.tick_bare(&stats, |_, _, _| true);
+        core.teams
+            .op(PLAYER, protocol::TEAM_OP_INVITE, OTHER, 0, |_| Ok(()))
+            .unwrap();
+        core.teams
+            .op(OTHER, protocol::TEAM_OP_ACCEPT, PLAYER, 0, |_| Ok(()))
+            .unwrap();
+        let chats = |msgs: &[Vec<u8>]| -> Vec<protocol::Channel> {
+            msgs.iter()
+                .filter_map(|b| match decode_event(b) {
+                    Ok(EventMsg::Chat { channel, .. }) => Some(channel),
+                    _ => None,
+                })
+                .collect()
+        };
+        for channel in [protocol::Channel::Team, protocol::Channel::Global] {
+            core.world.tick(&[]);
+            core.push_chat(
+                1,
+                ChatMsg {
+                    channel,
+                    text: protocol::chat::ChatText::sanitize(b"meet at the hill").unwrap(),
+                },
+            );
+            let out = fanned(&mut core, &stats);
+            assert_eq!(chats(&out[0]), vec![channel], "the target hears it");
+            let heard = chats(&out[seat]);
+            match channel {
+                protocol::Channel::Team => assert!(heard.is_empty(), "team line mirrored"),
+                _ => assert_eq!(heard, vec![channel], "a global line still reaches the seat"),
             }
         }
     }

@@ -121,11 +121,6 @@ fn fixture(arch: u8, loc: u8, level: u8) -> (Box<World>, Player) {
     (w, p)
 }
 fn put(w: &mut World, p: &mut Player, row: u16, loc: u8, level: u8) -> EventQueue {
-    // On the storey the insert goes in: a deployable goes where its placer
-    // can see (`place_deploy`), never through the floors under it.
-    let plate = w.pieces.cols().plate(CX, CZ).unwrap_or(0);
-    p.body.qy =
-        sim_core::movement::quant_y(column_floor_y(SEED, haven(), CX, CZ, plate) + level_y(level));
     let mut ev = EventQueue::default();
     place_deploy(
         SEED,

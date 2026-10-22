@@ -261,10 +261,10 @@ spectate = true
 # At most 80 declared agents at once, so 20 seats always stay a person's.
 agent_seats = 80
 
-# This box's public address, which neither per-source cap counts. The house
+# This box's public address, which no per-source cap counts. The house
 # agents (gates-village@, gates-teammate@, gates-buddy@, the buddies runner)
 # dial game.elopros.com from this box, so they arrive from 5.161.193.186, and
 # `bind` is a wildcard the shard cannot read that address from. Unlisted, all
-# of them share one source's 8 connections. If the box's address moves, move
+# of them share one source's 8 seats. If the box's address moves, move
 # it here too (and in the units' IPAddressAllow lines).
 own_sources = "5.161.193.186"

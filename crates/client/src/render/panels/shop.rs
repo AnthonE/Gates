@@ -23,7 +23,7 @@ const PANEL_W: f32 = 760.0;
 
 /// A buy: the row, how many lots, and the offer the button was drawn from,
 /// which the press names so the machine refuses it if the row changed
-/// (`sim_core::shop::REFUSE_SH_CHANGED`).
+/// (`sim_core::shop::REFUSE_SH_OFFER`).
 #[derive(Component, Clone, Copy)]
 pub struct ShopBuy(pub u8, pub u8, pub sim_core::shop::ShopOffer);
 
@@ -141,15 +141,7 @@ pub fn build_screen(
                     kit::button(
                         line,
                         &format!("BUY ×{n}"),
-                        ShopBuy(
-                            r as u8,
-                            n,
-                            sim_core::shop::ShopOffer {
-                                item: row.item,
-                                lot: row.lot,
-                                price: row.price,
-                            },
-                        ),
+                        ShopBuy(r as u8, n, row.terms()),
                         afford && lots >= n as u16,
                     );
                 }
@@ -259,9 +251,7 @@ pub fn clicks(
                 ShopAct::Buy {
                     row: b.0,
                     times: b.1,
-                    item: b.2.item,
-                    lot: b.2.lot,
-                    price: b.2.price,
+                    terms: b.2,
                 },
                 "buying…",
             );

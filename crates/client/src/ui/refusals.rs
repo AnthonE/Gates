@@ -154,10 +154,10 @@ pub const DEPLOY: [&str; 29] = [
     "not ready",
     "already watered",
     "not while swimming",
-    // One hand's share of the shard's containers or turrets (v139): the
+    // One hand's share of the shard's containers or turrets (v140): the
     // world has room, you do not.
     "you have too many of those placed",
-    // A bag that respawned you, cooling down (v139). The owner's alone:
+    // A bag that respawned you, cooling down (v140). The owner's alone:
     // anyone else is told "you haven't been let in".
     "that bag isn't ready yet",
 ];
@@ -278,14 +278,13 @@ pub fn shop(code: u8) -> String {
     use sim_core::shop::*;
     match code as u32 {
         REFUSE_SH_REACH => "step up to the machine".into(),
-        REFUSE_SH_OFFER => "that offer is not up".into(),
+        REFUSE_SH_OFFER => "that offer changed or is gone — look again".into(),
         REFUSE_SH_STOCK => "sold out".into(),
         REFUSE_SH_FUNDS => "you cannot pay for that".into(),
         REFUSE_SH_FULL => "no room in your pack for that".into(),
         REFUSE_SH_TAKINGS => "the machine has no room for the junk".into(),
         REFUSE_SH_ALLOWED => "only its owner's crew sets its offers".into(),
         REFUSE_SH_CAP => "too many shops on the island".into(),
-        REFUSE_SH_CHANGED => "that offer just changed - check it and buy again".into(),
         _ => "the machine does not answer".into(),
     }
 }

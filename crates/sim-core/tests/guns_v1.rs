@@ -291,8 +291,9 @@ fn the_sights_tighten_the_cone_at_range() {
 }
 
 /// The bearing `EV_SHOT` reports for one hip shot on `tick`, fired through
-/// the shard's pass under the world's secret `salt`.
-fn bearing_salted(tick: u64, salt: u64, cc: &CombatContent) -> u32 {
+/// the shard's pass under the world's secret seed `secret`
+/// (`World::secret_seed`).
+fn bearing_salted(tick: u64, secret: u64, cc: &CombatContent) -> u32 {
     use sim_core::mech::{DrumShot, Drums};
     use sim_core::mob::{MobContent, Mobs};
     let mut ps = range(20.0);
@@ -314,7 +315,7 @@ fn bearing_salted(tick: u64, salt: u64, cc: &CombatContent) -> u32 {
     };
     ranged::hitscan_hunting(
         SEED,
-        salt,
+        secret,
         hv(),
         &ColIndex::new(),
         &mut sc.occupants(),
@@ -333,10 +334,11 @@ fn bearing_salted(tick: u64, salt: u64, cc: &CombatContent) -> u32 {
 }
 
 /// The world's secret keys the cone, so the seed, the tick and the slot a
-/// shooter knows do not name where its round strays — and a salt of 0 is
-/// the seed's cone exactly, the unsalted `hitscan` every fixture fires.
-/// Mutants: passing 0 for the salt reds the first `assert_ne`, a key that
-/// ignores which salt it was handed the second.
+/// shooter knows do not name where its round strays — and an unsalted
+/// world's secret (its seed) is the seed's cone exactly, the unsalted
+/// `hitscan` every fixture fires. Mutants: passing the seed for the secret
+/// reds the first `assert_ne`, a key that ignores which secret it was
+/// handed the second.
 #[test]
 fn the_cone_is_keyed_on_the_worlds_secret() {
     let cc = fixture(
@@ -347,20 +349,20 @@ fn the_cone_is_keyed_on_the_worlds_secret() {
         1,
     );
     for tick in 0..8 {
-        let zero = bearing_salted(tick, 0, &cc);
+        let zero = bearing_salted(tick, SEED, &cc);
         let mut ps = range(20.0);
         let plain = fire(tick, &cc, &mut ps);
         let plain = plain.entries().iter().find(|e| e.code == EV_SHOT);
         assert_eq!(
             zero,
             plain.expect("the shot fired").b,
-            "salt 0 is the seed's cone"
+            "an unsalted secret is the seed's cone"
         );
         let (a, b) = (
             bearing_salted(tick, 0xA11CE, &cc),
             bearing_salted(tick, 0xB0B, &cc),
         );
-        assert_ne!(a, zero, "tick {tick}: the salt never reached the cone");
-        assert_ne!(a, b, "tick {tick}: two salts drew one cone");
+        assert_ne!(a, zero, "tick {tick}: the secret never reached the cone");
+        assert_ne!(a, b, "tick {tick}: two secrets drew one cone");
     }
 }

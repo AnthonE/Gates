@@ -585,18 +585,19 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
 }
 
 /// **A crate rolls on the world's secret, first fill and refill both**
-/// (`loot::salted`): the seed, the cell and the open's tick are all a
+/// (`World::secret_seed`): the seed, the cell and the open's tick are all a
 /// client's, so on them alone a looter could time the open to the tick
 /// that pays. The crate is given the barrel's varied table, since this
 /// file's own is a constant and cannot show which seed it drew on.
 /// Mutants: the plain seed at either `roll` in `WorldConts::open`.
 #[test]
 fn a_crate_rolls_on_the_worlds_salt_first_fill_and_refill() {
-    use sim_core::loot::{salted, LOOT_BARREL};
+    use sim_core::loot::LOOT_BARREL;
     const SALT: u64 = 0xFEED;
     let mut w = world();
     w.loot.tables[LOOT_CRATE] = LootContent::probe_fixture().tables[LOOT_BARREL];
     w.arc.salt = SALT;
+    let secret = w.secret_seed();
     let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
     join_at(&mut w, x, z);
     let key = cell_key(cx, cz);
@@ -610,7 +611,7 @@ fn a_crate_rolls_on_the_worlds_salt_first_fill_and_refill() {
     let at = w.tick;
     open(&mut w, cx, cz);
     let got = w.world_conts.entries()[0].items;
-    assert_eq!(got, roll(&w, salted(SEED, SALT), at), "the first fill");
+    assert_eq!(got, roll(&w, secret, at), "the first fill");
     assert_ne!(got, roll(&w, SEED, at), "the first fill ignored the salt");
 
     // Empty it into the pack's free slots, then wait out the refill.
@@ -627,7 +628,7 @@ fn a_crate_rolls_on_the_worlds_salt_first_fill_and_refill() {
     let at = w.tick;
     open(&mut w, cx, cz);
     let got = w.world_conts.entries()[0].items;
-    assert_eq!(got, roll(&w, salted(SEED, SALT), at), "the refill");
+    assert_eq!(got, roll(&w, secret, at), "the refill");
     assert_ne!(got, roll(&w, SEED, at), "the refill ignored the salt");
 }
 

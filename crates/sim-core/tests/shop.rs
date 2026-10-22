@@ -11,8 +11,8 @@ use sim_core::inventory::{CONT_BOX, CONT_SELF};
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS};
 use sim_core::movement::Body;
 use sim_core::shop::{
-    ShopAct, REFUSE_SH_ALLOWED, REFUSE_SH_CHANGED, REFUSE_SH_FULL, REFUSE_SH_FUNDS,
-    REFUSE_SH_OFFER, REFUSE_SH_REACH, REFUSE_SH_STOCK, REFUSE_SH_TAKINGS, SHOP_OP_BUY,
+    ShopAct, ShopOffer, REFUSE_SH_ALLOWED, REFUSE_SH_FULL, REFUSE_SH_FUNDS, REFUSE_SH_OFFER,
+    REFUSE_SH_REACH, REFUSE_SH_STOCK, REFUSE_SH_TAKINGS, SHOP_OP_BUY,
 };
 use sim_core::world::{Command, World, EV_DEPLOY_REFUSED, EV_SHOP, EV_SHOP_REFUSED};
 
@@ -173,16 +173,12 @@ const OFFER: ShopAct = ShopAct::Set {
     price: 10,
 };
 
-/// `times` lots of [`OFFER`], as the buyer's view drew it.
-const fn buy(times: u8) -> ShopAct {
-    ShopAct::Buy {
-        row: 1,
-        times,
-        item: CORN,
-        lot: 3,
-        price: 10,
-    }
-}
+/// The terms `OFFER` shows a buyer.
+const TERMS: ShopOffer = ShopOffer {
+    item: CORN,
+    lot: 3,
+    price: 10,
+};
 
 #[test]
 fn an_owner_sets_an_offer_and_a_stranger_buys_it() {
@@ -193,7 +189,16 @@ fn an_owner_sets_an_offer_and_a_stranger_buys_it() {
     let s = slot_of(&w, STRANGER);
     w.players[s].inv[0] = stack(JUNK, 25);
 
-    press(&mut w, STRANGER, key, buy(2));
+    press(
+        &mut w,
+        STRANGER,
+        key,
+        ShopAct::Buy {
+            row: 1,
+            times: 2,
+            terms: TERMS,
+        },
+    );
     assert_eq!(answer(&w), Ok((SHOP_OP_BUY as u32) << 16 | 1 << 8 | 2));
     let inv = &w.players[s].inv;
     assert_eq!(count(inv, CORN), 6, "two lots of three");
@@ -212,32 +217,25 @@ fn every_refusal_names_its_reason_and_moves_nothing() {
     press(&mut w, OWNER, key, OFFER);
     assert!(answer(&w).is_ok());
     // No such offer.
-    let empty_row = ShopAct::Buy {
-        row: 0,
-        times: 1,
-        item: CORN,
-        lot: 3,
-        price: 10,
-    };
-    refused(&mut w, STRANGER, key, empty_row, REFUSE_SH_OFFER);
-    // Bait and switch: the owner reprices the row under the buyer's view, a
-    // lot of one at three times the price. The buy names the offer it saw.
-    set_slot(&mut w, key, 0, stack(CORN, 10));
-    w.players[s].inv[0] = stack(JUNK, 100);
-    let switch = ShopAct::Set {
-        row: 1,
-        item: CORN,
-        lot: 1,
-        price: 30,
-    };
-    press(&mut w, OWNER, key, switch);
-    assert!(answer(&w).is_ok());
-    refused(&mut w, STRANGER, key, buy(1), REFUSE_SH_CHANGED);
-    press(&mut w, OWNER, key, OFFER);
-    assert!(answer(&w).is_ok());
+    refused(
+        &mut w,
+        STRANGER,
+        key,
+        ShopAct::Buy {
+            row: 0,
+            times: 1,
+            terms: TERMS,
+        },
+        REFUSE_SH_OFFER,
+    );
     // Out of stock: two corn for a lot of three.
     set_slot(&mut w, key, 0, stack(CORN, 2));
-    let buy = buy(1);
+    w.players[s].inv[0] = stack(JUNK, 100);
+    let buy = ShopAct::Buy {
+        row: 1,
+        times: 1,
+        terms: TERMS,
+    };
     refused(&mut w, STRANGER, key, buy, REFUSE_SH_STOCK);
     // Funds: nine junk for a price of ten.
     set_slot(&mut w, key, 0, stack(CORN, 10));
@@ -360,4 +358,46 @@ fn the_offers_survive_a_save_and_an_older_file_is_refused() {
     blob[0..2].copy_from_slice(&26u16.to_le_bytes());
     let mut back = Box::new(World::new(SEED));
     assert!(back.load(&blob).is_err(), "a format 26 file is refused");
+}
+
+/// **A buy is charged only on the terms it was shown.** The owner reprices
+/// the row between the buyer's look and their press: the buy is refused as
+/// a gone offer and nothing moves, and the same press on the new terms goes
+/// through.
+#[test]
+fn a_buy_on_terms_the_owner_rewrote_is_refused_and_moves_nothing() {
+    let (mut w, key) = shop_world();
+    press(&mut w, OWNER, key, OFFER);
+    assert!(answer(&w).is_ok());
+    set_slot(&mut w, key, 0, stack(CORN, 10));
+    let s = slot_of(&w, STRANGER);
+    w.players[s].inv[0] = stack(JUNK, 25);
+    press(
+        &mut w,
+        OWNER,
+        key,
+        ShopAct::Set {
+            row: 1,
+            item: CORN,
+            lot: 3,
+            price: 20,
+        },
+    );
+    assert!(answer(&w).is_ok());
+    let stale = ShopAct::Buy {
+        row: 1,
+        times: 1,
+        terms: TERMS,
+    };
+    refused(&mut w, STRANGER, key, stale, REFUSE_SH_OFFER);
+    assert_eq!(count(&w.players[s].inv, JUNK), 25, "nothing was charged");
+    assert_eq!(count(&machine(&w, key), CORN), 10);
+    let shown = ShopAct::Buy {
+        row: 1,
+        times: 1,
+        terms: ShopOffer { price: 20, ..TERMS },
+    };
+    press(&mut w, STRANGER, key, shown);
+    assert!(answer(&w).is_ok());
+    assert_eq!(count(&w.players[s].inv, JUNK), 5);
 }

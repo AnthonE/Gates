@@ -663,30 +663,16 @@ fn a_satchel_on_a_triangles_wall_blows_where_the_wall_is() {
     assert!(t.hp - tri_after < 125, "and only a share");
 }
 
-/// Select the satchel (hotbar slot 1) without planting.
-fn select_satchel(w: &mut World) {
-    w.tick(&[Command::Input {
-        id: RAIDER,
-        frame: sim_core::input::InputFrame {
-            seq: 901,
-            sel: 1,
-            ..sim_core::input::InputFrame::default()
-        },
-        favour: 0,
-    }]);
-}
-
-/// A charge goes on a face its planter can see: the outer wall from
-/// outside, and never the wall behind it. Flat reach alone planted on the
-/// second wall of two — or an inner door, or a cupboard — from outside.
+/// **A charge is planted on what the raider can see.** Planar reach alone let
+/// a raider at the outer wall plant on the wall behind it (and the cupboard
+/// or box inside): a room with walls at both low-x and high-x, a raider a
+/// metre outside the low-x wall. The far wall is refused from outside and
+/// moves nothing; the near wall takes the plant; the far wall takes one from
+/// inside the room.
 #[test]
-fn a_charge_is_planted_on_the_face_in_sight_and_not_through_a_wall() {
-    use sim_core::build::REFUSE_B_REACH;
-    use sim_core::world::EV_BUILD_REFUSED;
+fn a_charge_is_not_planted_through_a_wall() {
     let (mut w, cx, cz) = raid_world();
-    // Arm's length past the cell, so reach is not what refuses.
     w.combat.throw[SATCHEL as usize].reach_cm = 500;
-    // The cell's far wall, behind the planted one from outside.
     w.tick(&[Command::Place {
         id: RAIDER,
         row: 1,
@@ -698,35 +684,43 @@ fn a_charge_is_planted_on_the_face_in_sight_and_not_through_a_wall() {
         plate: 0,
     }]);
     assert_eq!(w.pieces.len(), 3, "foundation + two walls");
-    select_satchel(&mut w);
-    let (_, z) = cell_center(cx, cz);
-    let wall_x = cx as f32 * BUILD_CELL_M;
-    w.players[0].body = Body::at(SEED, hv(SEED), wall_x - 1.0, z);
-    w.tick(&[Command::Throw {
+    let (x, z) = cell_center(cx, cz);
+    let inside = Body::at(SEED, hv(SEED), x, z);
+    let outside = Body::at(SEED, hv(SEED), cx as f32 * BUILD_CELL_M - 1.0, z);
+    w.tick(&[Command::Input {
         id: RAIDER,
-        deploy: false,
-        cx: cx + 1,
-        cz,
-        level: 0,
-        loc: LOC_EDGE_XLO,
+        frame: sim_core::input::InputFrame {
+            seq: 900,
+            sel: 1,
+            ..sim_core::input::InputFrame::default()
+        },
+        favour: 0,
     }]);
-    assert_eq!(w.charges.len(), 0, "the far wall is behind the near one");
+    let throw = |w: &mut World, at: Body, wall_cx: u16| -> bool {
+        w.players[0].body = at;
+        let before = w.charges.len();
+        w.tick(&[Command::Throw {
+            id: RAIDER,
+            deploy: false,
+            cx: wall_cx,
+            cz,
+            level: 0,
+            loc: LOC_EDGE_XLO,
+        }]);
+        w.charges.len() > before
+    };
     assert!(
-        w.events
-            .entries()
-            .iter()
-            .any(|e| e.code == EV_BUILD_REFUSED && e.a == RAIDER && e.b == REFUSE_B_REACH),
-        "refused as out of reach"
+        !throw(&mut w, outside, cx + 1),
+        "planted through the near wall"
     );
-    w.tick(&[Command::Throw {
-        id: RAIDER,
-        deploy: false,
-        cx,
-        cz,
-        level: 0,
-        loc: LOC_EDGE_XLO,
-    }]);
-    assert_eq!(w.charges.len(), 1, "the near wall's outer face is in sight");
+    assert!(
+        throw(&mut w, outside, cx),
+        "the near wall is in plain sight"
+    );
+    assert!(
+        throw(&mut w, inside, cx + 1),
+        "and the far wall from inside"
+    );
 }
 
 /// A body behind a wall the blast does not stand on is shielded by it —

@@ -19,9 +19,6 @@ pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
 /// How long a transcript file is kept (`transcript_days`): two weeks, long
 /// enough for a report to be filed and read.
 pub const DEFAULT_TRANSCRIPT_DAYS: u32 = 14;
-/// Connections one source may hold (`conns_per_source`): a household or a
-/// café playing at once, not a fleet.
-pub const DEFAULT_CONNS_PER_SOURCE: u16 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetSim {
@@ -336,18 +333,9 @@ pub struct ShardConfig {
     /// person's however many agents dial. People are never counted against
     /// it. Zero is the shipping default and caps nothing.
     pub agent_seats: u32,
-    /// **Connections one source may hold at once** (`conns_per_source`):
-    /// handshaking, playing or watching, an IPv4 address or an IPv6 /64
-    /// (`net.rs` `SourceGate`). Without it one host could take every seat
-    /// and, joining past the bodies, evict every sleeper. Rust's
-    /// `server.maxconnectionsperip` is the same rule. The shard's own host —
-    /// loopback, which the load bots and every wire suite dial from, and its
-    /// bound address, which its population dials — is never counted, and
-    /// neither is any address in `own_sources`.
-    /// [`DEFAULT_CONNS_PER_SOURCE`] unless set; 0 caps nothing.
-    pub conns_per_source: u16,
-    /// **This host's own public addresses** (`own_sources`), counted by
-    /// neither per-source cap (`conns_per_source`, nor the in-flight one). A
+    /// **This host's own public addresses** (`own_sources`), counted by no
+    /// per-source cap (`net.rs`: the in-flight handshakes, the network's and
+    /// the seats, `SEATS_PER_SOURCE`). A
     /// shard bound to a wildcard (`0.0.0.0`) cannot know the address its
     /// house agents arrive from — they dial its public name, so they come
     /// from the box's public address — and without this all of them count as
@@ -497,7 +485,6 @@ impl ShardConfig {
             transcript_days: DEFAULT_TRANSCRIPT_DAYS,
             population: 0,
             agent_seats: 0,
-            conns_per_source: DEFAULT_CONNS_PER_SOURCE,
             own_sources: Vec::new(),
             agents_only: false,
             spectate: Spectate::OFF,
@@ -731,7 +718,6 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut transcript_days = DEFAULT_TRANSCRIPT_DAYS;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
-    let mut conns_per_source = DEFAULT_CONNS_PER_SOURCE;
     let mut own_sources: Vec<std::net::IpAddr> = Vec::new();
     let mut agents_only: Option<bool> = None;
     let mut team_max: Option<u8> = None;
@@ -1058,10 +1044,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // operator wrote is a line they meant" rule holds without a
             // separate check. Off is the key being absent.
             "companion_addr" => {
-                companion_addr =
-                    Some(value.parse().map_err(|e| {
-                        format!("shard.toml line {}: bad companion_addr: {e}", n + 1)
-                    })?);
+                let addr: SocketAddr = value
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad companion_addr: {e}", n + 1))?;
+                // The watch origin's rule: a serial hand-rolled listener that
+                // signs people in is published through a reviewed proxy
+                // (nginx buffers, rate-limits and terminates TLS), never
+                // bound where the internet can hold its one thread.
+                if !addr.ip().is_loopback() {
+                    return Err(format!(
+                        "shard.toml line {}: companion_addr must be loopback; publish it through a reverse proxy",
+                        n + 1
+                    ));
+                }
+                companion_addr = Some(addr);
             }
             "status_addr" => {
                 status_addr = Some(
@@ -1345,17 +1341,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     )
                 })?;
             }
-            "conns_per_source" => {
-                conns_per_source = value.parse().map_err(|_| {
-                    format!(
-                        "shard.toml line {}: conns_per_source must be a whole number of \
-                         connections up to 65535 (0 caps nothing; default {})",
-                        n + 1,
-                        DEFAULT_CONNS_PER_SOURCE
-                    )
-                })?;
-            }
-            // The host's own public addresses, which neither per-source cap
+            // The host's own public addresses, which no per-source cap
             // counts (`ShardConfig::own_sources`).
             "own_sources" => {
                 own_sources = parse_own_sources(value)
@@ -1675,7 +1661,6 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,
-        conns_per_source,
         own_sources,
         agents_only: agents_only.unwrap_or(false),
         spectate,
@@ -2203,29 +2188,6 @@ mod auth_cfg_tests {
         ] {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("agent_seats"), "{err}");
-        }
-    }
-
-    #[test]
-    fn conns_per_source_defaults_on_and_reads_whole_numbers() {
-        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
-        assert_eq!(
-            parse_shard_toml(base).unwrap().conns_per_source,
-            DEFAULT_CONNS_PER_SOURCE
-        );
-        assert_eq!(
-            ShardConfig::ephemeral(1).conns_per_source,
-            DEFAULT_CONNS_PER_SOURCE
-        );
-        let off = parse_shard_toml(&format!("{base}conns_per_source = 0\n")).unwrap();
-        assert_eq!(off.conns_per_source, 0);
-        for bad in [
-            "conns_per_source = -1\n",
-            "conns_per_source = 70000\n",
-            "conns_per_source = lots\n",
-        ] {
-            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
-            assert!(err.contains("conns_per_source"), "{err}");
         }
     }
 

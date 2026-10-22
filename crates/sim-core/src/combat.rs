@@ -562,6 +562,16 @@ pub const WEAR_HEAD: u8 = 1;
 pub const WEAR_BODY: u8 = 2;
 /// `Player::worn[2]`: boots (Rust's, 2026-10-18).
 pub const WEAR_FEET: u8 = 3;
+/// `Player::worn[3..7]` (clothing v1, Rust's seven clothing slots): pants,
+/// gloves, the shirt under the body piece (a hoodie under a road sign
+/// jacket), and a mask or bandana under the hat. `WEAR_BODY` is the outer
+/// torso layer from here on: vests, plates, jackets, ponchos.
+pub const WEAR_LEGS: u8 = 4;
+pub const WEAR_HANDS: u8 = 5;
+pub const WEAR_SHIRT: u8 = 6;
+pub const WEAR_FACE: u8 = 7;
+// `ArmorDef::fills` is a bit per slot in a byte.
+const _: () = assert!(crate::limits::WEAR_SLOTS <= 8);
 
 /// The most a whole worn set may take off one hit, in percent.
 ///
@@ -598,11 +608,13 @@ pub struct ArmorDef {
     /// refuses a row past 90, so a `u8` cannot be overrun by content.
     pub reduction_pct: u8,
     /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
-    /// `WEAR_NONE`, `WEAR_HEAD`, `WEAR_BODY` or `WEAR_FEET`.
+    /// `WEAR_NONE`, or `WEAR_HEAD` through `WEAR_FACE`.
     pub slot: u8,
-    /// Rust's Full Body layer (the hazmat suit): worn in `slot`, it fills
-    /// every other wear slot too (`wear_clashes`).
-    pub full: bool,
+    /// The other wear slots this piece fills, a bit per zero-based slot
+    /// (clothing v1, Rust's two-layer pieces): a snow jacket fills the
+    /// shirt, a coffee can the face, the hazmat suit (Rust's Full Body)
+    /// every slot. Nothing goes on in a filled slot (`wear_clashes`).
+    pub fills: u8,
 }
 
 /// The whole combat ruleset the sim knows. Construction input like the
@@ -756,7 +768,7 @@ impl CombatContent {
         armor: [ArmorDef {
             reduction_pct: 0,
             slot: WEAR_NONE,
-            full: false,
+            fills: 0,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
         // 100, not 0 — see the field. An inert recovery rule must destroy
@@ -837,12 +849,12 @@ impl CombatContent {
         c.armor[4] = ArmorDef {
             reduction_pct: 10,
             slot: WEAR_HEAD,
-            full: false,
+            fills: 0,
         };
         c.armor[5] = ArmorDef {
             reduction_pct: 20,
             slot: WEAR_BODY,
-            full: false,
+            fills: 0,
         };
         // **Item 6 is a hitscan firearm and item 7 is its round**, and this
         // row is the whole reason `probe_combat`'s rewind claim is true.
@@ -1450,8 +1462,9 @@ pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
 }
 
 /// Whether `item` landing in wear slot `s` clashes with what else is worn:
-/// a full-body piece (`ArmorDef::full`, Rust's hazmat suit) goes on over
-/// nothing, and nothing goes on over it. The other slots are read as they
+/// a piece that fills another slot (`ArmorDef::fills`: a snow jacket the
+/// shirt, the hazmat suit every slot) goes on over nothing in it, and
+/// nothing goes on in a slot something worn fills. The other slots are read as they
 /// stand, which is right for every move `wearable_in` lets through: it
 /// refuses wear-to-wear moves between slots, so the slot a landing stack
 /// leaves is never another wear slot.
@@ -1462,10 +1475,17 @@ pub fn wear_clashes(
     item: u16,
     s: u8,
 ) -> bool {
-    let full = |i: u16| (i as usize) < MAX_ITEM_DEFS && cc.armor[i as usize].full;
-    worn.iter()
-        .enumerate()
-        .any(|(t, w)| t != s as usize && w.count > 0 && (full(item) || full(w.item)))
+    let fills = |i: u16| {
+        if (i as usize) < MAX_ITEM_DEFS {
+            cc.armor[i as usize].fills
+        } else {
+            0
+        }
+    };
+    let mine = fills(item);
+    worn.iter().enumerate().any(|(t, w)| {
+        t != s as usize && w.count > 0 && (mine & (1 << t) != 0 || fills(w.item) & (1 << s) != 0)
+    })
 }
 
 /// What gets through `pct` percent of protection.

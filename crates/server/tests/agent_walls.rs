@@ -5975,8 +5975,12 @@ fn a_survivor_climbs_to_the_blue_door_loots_the_room_and_comes_back_down() {
         h.explain()
     );
     // The red card goes up the chain another time; this run waits out the
-    // door, then walks: out, by the lever, and down.
+    // door, then walks: out, by the lever, and down. Any other card the crate
+    // rolled goes too, or it walks off to swipe that one instead.
     drop_item(&mut h, red);
+    for other in ["item.keycard_green", "item.keycard_blue"] {
+        drop_item(&mut h, content.item_index(other).unwrap());
+    }
     for _ in 0..90 * TICK_HZ {
         if h.shard.world.card_door_bits & 2 == 0 {
             break;

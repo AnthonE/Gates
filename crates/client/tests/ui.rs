@@ -285,7 +285,12 @@ fn every_container_draws_at_the_sims_own_width() {
             "kind {kind} changed width when the derivation landed"
         );
     }
-    assert_eq!(slots::container_cols(CONT_WEAR), WEAR_SLOTS);
+    // Seven since clothing v1, past a grid row; the paperdoll draws them in
+    // two columns of its own (`inv.rs` `WEAR_LEFT`/`WEAR_RIGHT`).
+    assert_eq!(
+        slots::container_cols(CONT_WEAR),
+        WEAR_SLOTS.min(slots::GRID_COLS)
+    );
 }
 
 /// Every live kind has a title of its own, and none of them falls through.
@@ -5610,12 +5615,12 @@ fn the_protection_total_stops_at_the_cap_on_both_sides() {
     cc.armor[4] = sim_core::combat::ArmorDef {
         reduction_pct: 60,
         slot: combat::WEAR_HEAD,
-        full: false,
+        fills: 0,
     };
     cc.armor[5] = sim_core::combat::ArmorDef {
         reduction_pct: 50,
         slot: combat::WEAR_BODY,
-        full: false,
+        fills: 0,
     };
     let cat = catalog_for(&cc);
 
@@ -6018,8 +6023,10 @@ fn no_container_is_headed_with_a_literal() {
 #[test]
 fn the_paperdoll_is_as_wide_as_the_body_is() {
     let code = inv_code();
+    // Since clothing v1 the row walks the slots in the body's order, an
+    // array the sim's count sizes.
     assert!(
-        code.contains("0..WEAR_SLOTS"),
+        code.contains("WEAR_ROW: [u8; WEAR_SLOTS]"),
         "the wear panel does not walk `WEAR_SLOTS` — a hardcoded pair of \
          cells draws two slots of however many the sim has, and \
          `reference/ARMOR.md` §9.3 has three more queued"

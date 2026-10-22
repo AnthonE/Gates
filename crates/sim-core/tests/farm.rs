@@ -1173,16 +1173,18 @@ fn a_clone_plants_its_genes_and_a_blank_seed_rolls() {
     );
 }
 
-/// **A salted world rolls a genome on its secret**: the cell, the tick and
-/// the next plant id are a planter's to know, so on the seed alone a sowing
-/// could be timed to a good genome. Mutant: the plain seed at the call.
+/// **A salted world rolls a genome on its secret** (`World::secret_seed`):
+/// the cell, the tick and the next plant id are a planter's to know, so on
+/// the seed alone a sowing could be timed to a good genome. Mutant: the
+/// plain seed at the call.
 #[test]
 fn a_blank_seed_rolls_on_the_worlds_secret() {
-    use sim_core::farm::{genes_seed, roll_genes};
+    use sim_core::farm::roll_genes;
     let (mut w, cx, cz) = farm_world();
     w.cook.farm.good_gene_pm = 500;
     w.cook.farm.bad_w_pm = 500;
     w.arc.salt = 0xFEED;
+    let secret = w.secret_seed();
     let host = place_planter(&mut w, cx, cz, 0);
     let mut moved = 0;
     for spot in 0..4u8 {
@@ -1193,7 +1195,7 @@ fn a_blank_seed_rolls_on_the_worlds_secret() {
         let fc = &w.cook.farm;
         assert_eq!(
             got,
-            roll_genes(fc, genes_seed(SEED, 0xFEED), cx, cz, tick, next),
+            roll_genes(fc, secret, cx, cz, tick, next),
             "spot {spot}: the roll is the salted seed's"
         );
         moved += (got != roll_genes(fc, SEED, cx, cz, tick, next)) as u32;

@@ -33,24 +33,6 @@ const CH_LOOT: u32 = 99;
 /// content take the column without moving any other roll.
 const GUARANTEED_SALT: u64 = 0x8000;
 
-/// The seed a world's loot rolls draw from ([`LootContent::roll_into`]'s
-/// `seed`): the world seed with its secret mixed in (`mech::ArcState::salt`,
-/// which no client is ever sent, as for the casino). Without it a roll was
-/// the seed, the cell and the tick, all three in a client's hands, so a
-/// client could time the open or the smash to the tick that paid the
-/// revolver. A salt of 0 (an unsalted world, every test fixture) rolls as
-/// it always did. Keyed through `rng::salted` (a PRF of the salt) rather
-/// than xored in, so what a looter learns of this seed names neither the
-/// salt nor the casino's, the mechs' or the gun's draws.
-#[inline]
-pub fn salted(seed: u64, salt: u64) -> u64 {
-    crate::rng::salted(seed, salt, CH_LOOT_SALT)
-}
-
-/// [`salted`]'s channel: the loot tables' seed apart from every other
-/// stream keyed on the same salt.
-const CH_LOOT_SALT: u64 = 0x6C6F_6F74_5F73_6131;
-
 /// Baked table index for `container = "barrel"`. The container *name* is
 /// content and the *index* is code, exactly as `deploy.rs`'s `ARCH_*` maps
 /// an archetype string to a row: content may re-price a barrel, it may not
@@ -372,23 +354,6 @@ mod tests {
             differed |= a != b;
         }
         assert!(differed, "tick never entered the draw");
-    }
-
-    /// The world's secret moves the roll, so the seed, the cell and the tick
-    /// a client knows do not name it; an unsalted world rolls as before.
-    #[test]
-    fn the_salt_moves_the_roll_and_zero_is_the_old_one() {
-        let gc = GatherContent::probe_fixture();
-        let lc = LootContent::probe_fixture();
-        assert_eq!(salted(7, 0), 7);
-        let mut same = 0;
-        for tick in 0..64u64 {
-            let (mut a, mut b) = (empty(), empty());
-            lc.roll_into(LOOT_BARREL, &gc, salted(7, 1), cell(11, 13), tick, &mut a);
-            lc.roll_into(LOOT_BARREL, &gc, salted(7, 2), cell(11, 13), tick, &mut b);
-            same += (a == b) as u32;
-        }
-        assert!(same < 16, "{same} of 64 rolls ignored the salt");
     }
 
     #[test]

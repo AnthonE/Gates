@@ -39,6 +39,8 @@ pub const EAT_CAP: f32 = 100.0;
 /// The damage of one shot or swing a full bar stands for — a shotgun's
 /// whole spread (14 × 15) sits near the top, a bat (20) near the foot.
 pub const DAMAGE_CAP: f32 = 250.0;
+/// The warmth one piece fills its bar at: the snow jacket's (clothing v1).
+pub const WARMTH_CAP: f32 = 90.0;
 
 fn frac(v: f32, cap: f32) -> Option<f32> {
     Some((v / cap).clamp(0.0, 1.0))
@@ -51,10 +53,8 @@ fn secs(ticks: u32) -> f32 {
 /// The worn slot's word, by `combat::WEAR_*`.
 pub fn worn_on(wear_slot: u8) -> Option<&'static str> {
     match wear_slot {
-        sim_core::combat::WEAR_HEAD => Some("HEAD"),
-        sim_core::combat::WEAR_BODY => Some("BODY"),
-        sim_core::combat::WEAR_FEET => Some("FEET"),
-        _ => None,
+        sim_core::combat::WEAR_NONE => None,
+        w => Some(crate::ui::slots::wear_slot_label(w as usize - 1)).filter(|l| *l != "-"),
     }
 }
 
@@ -128,6 +128,23 @@ pub fn stats(row: ItemRow, stack: ItemStack, loaded: Option<u16>) -> Vec<Stat> {
             value: format!("{}%", row.armor_pct),
             frac: frac(row.armor_pct as f32, ARMOR_MAX_PCT as f32),
         });
+        // Rust's Cold row (clothing v1): the share of the cold it keeps
+        // out, or lets in for a sheet of metal; its bar is a third of a
+        // full winter kit.
+        if row.warmth_pct != 0 {
+            out.push(Stat {
+                label: "WARMTH",
+                value: format!("{:+}%", row.warmth_pct),
+                frac: frac(row.warmth_pct.max(0) as f32, WARMTH_CAP),
+            });
+        }
+        if row.ward_pct > 0 {
+            out.push(Stat {
+                label: "VERDIGRIS",
+                value: format!("{}%", row.ward_pct),
+                frac: frac(row.ward_pct as f32, 100.0),
+            });
+        }
         if let Some(on) = worn_on(row.wear_slot) {
             out.push(Stat {
                 label: "WORN ON",

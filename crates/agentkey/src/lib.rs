@@ -282,23 +282,34 @@ impl AgentKey {
         nonce_hex: &str,
         issued_at: u64,
     ) -> Option<Signature> {
-        let b = nonce_hex.as_bytes();
-        if b.len() != NONCE_BYTES * 2 {
-            return None;
-        }
-        let mut nonce = [0u8; NONCE_BYTES];
-        for (i, out) in nonce.iter_mut().enumerate() {
-            *out = (hex_val(b[2 * i])? << 4) | hex_val(b[2 * i + 1])?;
-        }
-        Some(self.sign_siwe(domain, &nonce, issued_at))
+        Some(self.sign_siwe(domain, &nonce_from_hex(nonce_hex)?, issued_at))
+    }
+
+    /// Sign in to a shard's companion page (`server::companion`): its own
+    /// text (`protocol::companion_message`), which no shard takes as a game
+    /// login. `domain` is the host this agent DIALLED, never a name the
+    /// page's response put in front of it: that is what keeps a page that is
+    /// not the shard's from collecting a sign-in it can use.
+    pub fn sign_companion_hex(
+        &self,
+        domain: &str,
+        nonce_hex: &str,
+        issued_at: u64,
+    ) -> Option<Signature> {
+        let nonce = nonce_from_hex(nonce_hex)?;
+        let sum = self.address.to_checksum_hex();
+        let addr = core::str::from_utf8(&sum).unwrap_or("0x");
+        let mut text = [0u8; SIWE_MESSAGE_MAX];
+        let n = protocol::companion_message(domain, domain, addr, &nonce, issued_at, &mut text)
+            .min(SIWE_MESSAGE_MAX);
+        Some(self.sign_personal(&text[..n]))
     }
 
     /// Sign a change to this wallet's Elo Pros face — its display name and
     /// profile picture, what every Gates nametag shows (scry-forge
     /// `meter/faces.py`). The text is composed HERE from typed fields, the
-    /// platform's `elo play` shape for the `profile` action, so this is the
-    /// second and last text this key signs and still no caller hands it a
-    /// sentence. `None` for a field the caller has no business sending: a
+    /// platform's `elo play` shape for the `profile` action, so no caller
+    /// hands this key a sentence. `None` for a field the caller has no business sending: a
     /// name that is not 1–16 printable ASCII, a digest that is not 64 hex
     /// (or `""`, which clears the picture), a kind that is not `agent` or
     /// `human` (self-declared; an agent says `agent`), a label that fails
@@ -456,6 +467,20 @@ fn face_text(
     Some(format!(
         "elo play\naction: profile\nwallet: {wallet}\nday: {day}\ndetail: {detail}"
     ))
+}
+
+/// A 32-byte nonce from the lowercase hex a challenge carries; `None` for
+/// anything that is not 64 hex digits.
+fn nonce_from_hex(nonce_hex: &str) -> Option<[u8; NONCE_BYTES]> {
+    let b = nonce_hex.as_bytes();
+    if b.len() != NONCE_BYTES * 2 {
+        return None;
+    }
+    let mut nonce = [0u8; NONCE_BYTES];
+    for (i, out) in nonce.iter_mut().enumerate() {
+        *out = (hex_val(b[2 * i])? << 4) | hex_val(b[2 * i + 1])?;
+    }
+    Some(nonce)
 }
 
 fn hex_val(c: u8) -> Option<u8> {

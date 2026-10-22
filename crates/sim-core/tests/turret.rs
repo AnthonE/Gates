@@ -224,6 +224,46 @@ fn a_turret_spares_its_owner_after_they_reconnect() {
     assert_eq!(hurt_owner, 0, "it shot its owner after a reconnect");
 }
 
+/// **Nobody the gun would shoot may unload it by hand.** A stranger in reach
+/// moving the turret's rounds out is refused like a locked box and takes
+/// nothing; its owner's same move empties it.
+#[test]
+fn a_stranger_cannot_unload_a_turret_and_its_owner_can() {
+    use sim_core::deploy::REFUSE_D_OWNER;
+    use sim_core::inventory::{CONT_BOX, CONT_SELF};
+    use sim_core::world::EV_DEPLOY_REFUSED;
+    let (mut w, key) = turret_world(64);
+    let i = w.deploys.box_index(key).unwrap();
+    let (bx, bz) = (w.deploys.boxes()[i].cx, w.deploys.boxes()[i].cz);
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    let (sx, sz) = cell_center(bx + 1, bz);
+    w.players[s].body = Body::at(SEED, &w.haven, sx, sz);
+    let take = |id| Command::Move {
+        id,
+        cont: key,
+        from_kind: CONT_BOX,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 10,
+        count: 64,
+    };
+    w.tick(&[take(STRANGER)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER && e.b == REFUSE_D_OWNER),
+        "a stranger's unload was not refused as the owner's"
+    );
+    assert!(
+        !w.players[s].inv.iter().any(|st| st.item == ROUND),
+        "the stranger walked off with rounds"
+    );
+    assert_eq!(rounds_left(&w, key), 64);
+    w.tick(&[take(OWNER)]);
+    assert_eq!(rounds_left(&w, key), 0, "the owner unloads their own gun");
+}
+
 /// **Only the hands it spares open its box** (exploit sweep 2026-10). A
 /// turret carries no lock, and its box was anybody's: a stranger in reach
 /// could empty its rounds, or stuff it, with the move verb. The reference

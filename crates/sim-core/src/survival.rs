@@ -113,6 +113,13 @@ pub struct ConsumableDef {
     /// handful of berries now and then a berry seed (`World`'s consume arm).
     pub leaves: u16,
     pub leaves_pm: u16,
+    /// A tea (`exposure::Brew`, clothing v1): `brew` is its kind plus one
+    /// (0: not a tea), what it gives, its floor, and how many seconds it
+    /// works for.
+    pub brew: u8,
+    pub brew_amount: u16,
+    pub brew_floor_dc: i16,
+    pub brew_s: u16,
 }
 
 impl Default for ConsumableDef {
@@ -133,13 +140,22 @@ impl ConsumableDef {
         use_ticks: 0,
         leaves: NO_ITEM,
         leaves_pm: 0,
+        brew: 0,
+        brew_amount: 0,
+        brew_floor_dc: crate::exposure::NO_FLOOR,
+        brew_s: 0,
     };
 
     /// Does this row do anything at all? The bake refuses a row that does
     /// not, so this is the sim's read of "is the held item food".
     #[inline]
     pub fn is_food(&self) -> bool {
-        self.health > 0 || self.food > 0 || self.water > 0 || self.fel != 0 || self.bleed != 0
+        self.health > 0
+            || self.food > 0
+            || self.water > 0
+            || self.fel != 0
+            || self.bleed != 0
+            || self.brew > 0
     }
 }
 
@@ -597,6 +613,21 @@ pub fn announce_vitals(sc: &SurvivalContent, p: &Player, events: &mut EventQueue
     );
 }
 
+/// Pour `def`'s tea into `p`, replacing any of the same kind (Rust's: one
+/// tea of a kind at a time, the last one drunk).
+pub fn brew(def: ConsumableDef, p: &mut Player) {
+    if def.brew == 0 || def.brew_s == 0 {
+        return;
+    }
+    if let Some(b) = p.brew.get_mut(def.brew as usize - 1) {
+        *b = crate::exposure::Brew {
+            amount: def.brew_amount,
+            floor_dc: def.brew_floor_dc,
+            left_s: def.brew_s,
+        };
+    }
+}
+
 /// Start `def`'s heal ramp on `p` — the half of eating that does not spend
 /// anything, shared by `consume` and a revive (`World::treat`).
 pub fn start_heal(def: ConsumableDef, p: &mut Player, heal_pct: u32) {
@@ -660,7 +691,8 @@ pub fn consume(
         || (def.water > 0 && p.water < sc.max_water)
         || (def.bleed < 0 && p.bleed > 0)
         || (def.fel < 0 && p.fel > 0)
-        || def.fel > 0;
+        || def.fel > 0
+        || def.brew > 0;
     if def.health == 0 && !would_feed {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_FULL, 0);
         return false;
@@ -695,6 +727,7 @@ pub fn consume(
     p.food = p.food.saturating_add(def.food).min(sc.max_food);
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
     p.fel = (i32::from(p.fel) + i32::from(def.fel)).clamp(0, 1000) as u16;
+    brew(def, p);
     p.bleed = p.bleed.saturating_sub(def.bleed.unsigned_abs());
     if p.bleed == 0 {
         p.bleed_acc = 0;

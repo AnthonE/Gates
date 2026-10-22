@@ -2332,14 +2332,17 @@ fn stand_a_storey(w: &mut World, cx: u16, cz: u16) {
     place_piece(w, PIECE_FLOOR, cx, cz, UPPER, LOC_PLANE);
 }
 
-/// Stand everyone on the floor the door at `(cx, cz, UPPER, DOOR_EDGE)`
-/// hangs from: a door is worked from its own storey (`reach.rs`), never
-/// from the ground under its floor.
-fn up_to_the_door(w: &mut World, cx: u16, cz: u16) {
-    let rec = *w
-        .deploys
-        .find(cx, cz, UPPER, DOOR_EDGE)
-        .expect("the door stands");
+/// Stand everyone on `UPPER`'s floor (the one the door at `(cx, cz, UPPER,
+/// DOOR_EDGE)` hangs from): what stands on a storey is put there and worked
+/// from that storey (`reach.rs`), never from the ground under its floor.
+fn up_a_storey(w: &mut World, cx: u16, cz: u16) {
+    let rec = sim_core::deploy::DeployRec {
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        ..Default::default()
+    };
     let (x, z) = sim_core::build::anchor(cx, cz, DOOR_EDGE);
     let floor =
         sim_core::reach::Target::door(SEED, hv(SEED), w.pieces.cols(), &rec, (x, z + 1.0)).base_y;
@@ -2370,7 +2373,7 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
 }
 
 /// Stand everyone on the floor of `level` in the column: a deployable goes
-/// where its placer can see (`deploy::place_deploy`), never through the
+/// where its placer can see (`World::deploy_seen`), never through the
 /// floor of the storey it goes on.
 fn stand_on_level(w: &mut World, cx: u16, cz: u16, level: u8) {
     let plate = w.pieces.cols().plate(cx, cz).unwrap_or(0);
@@ -2714,8 +2717,8 @@ fn deploy_placed_names_the_cell_then_the_address_then_the_owner() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     let d = only(&w, EV_DEPLOY_PLACED);
     distinct3(d, "EV_DEPLOY_PLACED");
@@ -2761,8 +2764,8 @@ fn knock_and_auth_name_the_door_then_the_player() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
     w.tick(&[Command::Access {
         id: BUILDER,
@@ -2854,8 +2857,8 @@ fn door_names_the_cell_then_its_whole_state_then_who_moved_it() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     // A door places bare and closed (lock v1), so the three bits all read
     // 0 and a check taken here could not tell any of them apart. Drive
@@ -2976,6 +2979,7 @@ fn stock_names_the_feeder_first_and_the_cell_second() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     w.tick(&[Command::Feed {
         id: BUILDER,
@@ -3017,6 +3021,7 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     let placed = only(&w, EV_DEPLOY_PLACED);
     w.tick(&[Command::Feed {
@@ -5261,8 +5266,8 @@ fn trust_names_the_actor_the_owner_and_a_door_worked_while_they_slept() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     stand_an_outsider(&mut w);
     put_the_builder_to_sleep(&mut w);
 
@@ -5332,8 +5337,8 @@ fn trust_names_a_grant_taken_on_the_lock_of_a_body_that_is_gone() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
     bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
     w.tick(&[Command::Access {
         id: BUILDER,
@@ -5549,8 +5554,8 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
     place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
-    up_to_the_door(&mut w, cx, cz);
 
     // Your own door, worked by your own hand: the leaf moves, `EV_DOOR`
     // announces it, and no trust relationship was exercised.
@@ -5688,6 +5693,7 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     stand_a_storey(&mut w, cx, cz);
+    up_a_storey(&mut w, cx, cz);
     place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
     stand_an_outsider(&mut w);
 
@@ -6063,9 +6069,11 @@ fn a_shop_press_names_the_presser_the_machine_then_the_press() {
         act: ShopAct::Buy {
             row: 2,
             times: 1,
-            item: 3,
-            lot: 2,
-            price: 5,
+            terms: sim_core::shop::ShopOffer {
+                item: 3,
+                lot: 2,
+                price: 5,
+            },
         },
     }]);
     let ev = only(&w, EV_SHOP_REFUSED);

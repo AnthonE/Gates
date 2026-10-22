@@ -735,12 +735,11 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         cond: 0,
         skin: 0,
     };
-    // Stand on the foundation the bench is bolted to — before placing it,
-    // since a deployable goes where its placer can see (`place_deploy`),
-    // and the stance `walled_world` left is outside the wall. `col_base_y`
-    // is not public, so the fixture asks the same question `build` answers
-    // for it: the column's floor under whatever plate the foundation
-    // latched.
+    // Stand on the foundation the bench is bolted to, before it is put
+    // down: a hand puts nothing down through a wall (`World::deploy_seen`),
+    // and the stance is outside this one. `col_base_y` is not public, so
+    // the fixture asks the same question `build` answers for it: the
+    // column's floor under whatever plate the foundation latched.
     let top = sim_core::build::column_floor_y(
         SEED,
         hv(SEED),
@@ -1070,9 +1069,7 @@ fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
     let (cx, cz, top) = benched_world(&mut w, 20);
     // A floor over the cell, and a second bench standing on it.
     place(&mut w, PIECE_FLOOR, cx, cz, 1, LOC_PLANE);
-    // Stand on the upper floor — a deployable goes where its placer can
-    // see (`place_deploy`), never through the ceiling — and fire down its
-    // own storey from there.
+    // Up on that floor to put the bench on it: not through it from below.
     w.players[0].body.qy = quant_y(top + LEVEL_H_M);
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -1096,6 +1093,7 @@ fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
             .map(|e| e.b)
     );
 
+    // Fire down the upper floor's own storey.
     let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
     let hit = only(&ev, EV_STRUCT_HIT);
     assert_ne!(

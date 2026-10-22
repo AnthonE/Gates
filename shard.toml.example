@@ -194,10 +194,6 @@ seed = 20260731
 # the rest of the seats stay a person's. Unset or 0 = no cap.
 # agent_seats = 80
 #
-# Connections one address (an IPv4 address, an IPv6 /64) may hold at once:
-# handshaking, playing or watching. This host itself is never counted. 0 = no cap.
-# conns_per_source = 8
-#
 # This host's own public addresses, which no per-source cap counts. Loopback
 # and a specific `bind` address are exempt already; with a wildcard `bind`
 # (0.0.0.0) list the address your own agents or bots arrive from when they

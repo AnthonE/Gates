@@ -197,9 +197,6 @@ impl Charges {
 /// as a "fix".
 #[allow(clippy::too_many_arguments)]
 pub fn place(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    doors: u32,
     bc: &BuildContent,
     dc: &DeployContent,
     cc: &crate::combat::CombatContent,
@@ -279,31 +276,6 @@ pub fn place(
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > reach_m * reach_m {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
-        return;
-    }
-    // ...and the face it sticks to in plain sight (`reach.rs`). Flat
-    // distance alone planted through walls and floors: on the second wall
-    // of two, an inner door, a cupboard behind a wall, from outside all of
-    // them. A charge goes on the face the planter is looking at — a wall's
-    // or a door's own side, a ceiling's underside from the room below.
-    let cols = pieces.cols();
-    let eye = crate::reach::eye(p);
-    let seen = if deploy {
-        let rec = &deploys.entries()[i];
-        let t = crate::reach::Target::deploy(
-            seed,
-            haven,
-            cols,
-            rec,
-            dc.defs[rec.row as usize].arch,
-            (eye.0, eye.2),
-        );
-        crate::reach::sight(seed, haven, cols, doors, eye, (t.x, t.base_y + t.mid, t.z))
-    } else {
-        crate::reach::clear_piece(seed, haven, pieces, doors, (cx, cz, level, loc), eye)
-    };
-    if !seen {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
@@ -398,23 +370,20 @@ impl Duds {
 
 /// The item a charge drops instead of blowing, or `None` for a blast: its
 /// row's `dud_pct` against a roll that is a pure function of the charge
-/// and the world's secret (`ArcState::salt`). Every other input is one a
-/// client knows — the seed is in the welcome, the rest is its own plant —
-/// so without the salt a modified client could plant only on the ticks
-/// that blow. Replay-safe: the salt is saved with the world.
-pub fn dud(seed: u64, salt: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Option<u16> {
+/// and `secret`, the world's secret seed (`World::secret_seed`). Every
+/// other input is one a client knows — the seed is in the welcome, the rest
+/// is its own plant — so on the public seed a modified client could plant
+/// only on the ticks that blow. Replay-safe: the salt is saved with the
+/// world.
+pub fn dud(secret: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Option<u16> {
     let (item, def) = cc.planted_throw(c.structure, c.damage, c.blast_cm)?;
     if def.dud_pct == 0 {
         return None;
     }
     let addr = (c.level as u64) << 8 | c.loc as u64 | (c.deploy as u64) << 16;
     let roll = crate::rng::splitmix64(
-        crate::rng::cell_hash(
-            seed ^ salt.rotate_left(23),
-            c.cx as i32,
-            c.cz as i32,
-            CH_DUD,
-        ) ^ c.fires_at
+        crate::rng::cell_hash(secret, c.cx as i32, c.cz as i32, CH_DUD)
+            ^ c.fires_at
             ^ (c.owner as u64) << 24
             ^ addr << 56,
     );
@@ -528,7 +497,7 @@ impl BlastMobs {
 #[allow(clippy::too_many_arguments)]
 pub fn tick_fuses(
     seed: u64,
-    salt: u64,
+    secret: u64,
     haven: &crate::terrain::Haven,
     doors: u32,
     bc: &BuildContent,
@@ -564,7 +533,7 @@ pub fn tick_fuses(
             continue;
         }
         set_off += 1;
-        if let Some(item) = dud(seed, salt, cc, &c) {
+        if let Some(item) = dud(secret, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
             let (x, z) = epicentre(pieces, deploys, &c);
             let y = floor_y(seed, haven, pieces, deploys, &c) + 0.8;
