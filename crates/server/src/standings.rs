@@ -847,6 +847,7 @@ pub fn discord_text(wipe: u32, c: &Closed, next: Option<&str>) -> String {
 pub fn post_discord(url: &str, text: &str) -> Result<(), String> {
     let body = discord_body(text);
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(crate::tls::ureq())
         .timeout_global(Some(std::time::Duration::from_secs(5)))
         .build()
         .into();

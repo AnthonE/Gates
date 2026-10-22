@@ -117,6 +117,9 @@ pub struct Settings {
     /// `quality` and none of the rows) lands on a frame somebody designed
     /// rather than on the default.
     pub quality: Quality,
+    /// The game may still move the preset for the player (`potato.rs`):
+    /// true until they touch a graphics row themselves.
+    pub quality_auto: bool,
     /// **What the renderer is actually asked for**, one field per row on the
     /// GRAPHICS tab. `render/quality.rs` owns the type, the preset table and
     /// the per-target clamp.
@@ -206,6 +209,7 @@ impl Default for Settings {
             // `quality::default_gfx` is the one owner of that per-target
             // choice; this pair must agree, and `tests/quality.rs` says so.
             quality: DEFAULT_PRESET,
+            quality_auto: true,
             gfx: quality::default_gfx(),
             sensitivity: 1.0,
             invert_look: false,
@@ -332,6 +336,27 @@ pub enum Knob {
     Shake,
 }
 
+impl Knob {
+    /// The GRAPHICS tab's rows: the preset and everything it writes.
+    pub fn is_graphics(self) -> bool {
+        matches!(
+            self,
+            Knob::Quality
+                | Knob::Shadows
+                | Knob::ShadowDistance
+                | Knob::ShadowCascades
+                | Knob::ShadowMapPx
+                | Knob::Ambient
+                | Knob::Smaa
+                | Knob::Taa
+                | Knob::Bloom
+                | Knob::TreeLod
+                | Knob::Clouds
+                | Knob::RenderScale
+        )
+    }
+}
+
 impl Settings {
     /// Streamer mode as it stands: the player's switch, or the launcher's.
     pub fn streamer(&self) -> bool {
@@ -345,6 +370,11 @@ impl Settings {
     /// testable without a window, and so a keyboard path added later cannot
     /// reach a different clamp than the mouse path.
     pub fn adjust(&mut self, knob: Knob, delta: i32) {
+        // A player who touched a graphics row has chosen; the auto-detect
+        // leaves them alone from here on.
+        if knob.is_graphics() {
+            self.quality_auto = false;
+        }
         match knob {
             // Steps along `Quality::LADDER` and STOPS at each end rather than
             // wrapping. A wrap would put a player who clicked once too often
@@ -552,6 +582,7 @@ impl Settings {
                 | Knob::Clouds
                 | Knob::RenderScale => {
                     self.quality = d.quality;
+                    self.quality_auto = d.quality_auto;
                     self.gfx = d.gfx;
                 }
                 Knob::DiscordPresence => self.discord_presence = d.discord_presence,
@@ -670,6 +701,7 @@ impl Settings {
         Persisted {
             fov_deg: self.fov_deg,
             quality: self.quality,
+            quality_auto: self.quality_auto,
             sensitivity: self.sensitivity,
             invert_look: self.invert_look,
             vsync: self.vsync,
@@ -731,6 +763,7 @@ impl Settings {
             // the default), so unlike every numeric row above there is no
             // out-of-range state to sanitize here.
             quality: p.quality,
+            quality_auto: p.quality_auto,
             gfx: gfx_from_file(p.quality, p.gfx),
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,

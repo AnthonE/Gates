@@ -248,6 +248,23 @@ fn plane_value(x: f32, z: f32) -> f32 {
     a + (b - a) * uz
 }
 
+/// The turf, linear: the grass cards' own mean colour (the opaque texels of
+/// `clutter::CARD_ATLAS`), which the grass identity is drawn as where the
+/// blades have sunk (`foliage::GRASS_FADE_END_M`) and partly under them
+/// ([`TURF_NEAR`]).
+///
+/// **Why the ground does not simply carry this as its albedo.** The tufts
+/// average about twice the ground's value (this against
+/// `GROUND_ALBEDO[1]`), so every gap between them read as a hole and the
+/// meadow past the fade dropped to dark felt; the Rust frames' turf keeps
+/// its colour to the horizon (2026-10-21). `GROUND_ALBEDO` is the identity
+/// the fill's bounce and `ART.md` §3's bands are pinned to, so the turf is a
+/// distance blend over it instead.
+pub const TURF_ALBEDO: [f32; 3] = [0.106, 0.117, 0.023];
+/// How much of [`TURF_ALBEDO`] the grass identity carries inside the grass's
+/// fade, under the tufts. **(knob)**
+pub const TURF_NEAR: f32 = 0.6;
+
 /// The Verdigris' ash, linear: what sand and forest litter go to at full
 /// corruption. A green-black grey at the albedo floor's edge (`ART.md`: no
 /// pure black). **(knob)**
@@ -558,7 +575,9 @@ pub struct GroundSplatParams {
     pub pavement: Vec4,
     /// xyz = branch linear albedo; w = edge wear.
     pub road_dirt: Vec4,
-    /// x/y = distance fade start/end, derived from the terrain ring.
+    /// x/y = distance fade start/end, derived from the terrain ring; z/w =
+    /// the grass's fade start/end (`foliage::GRASS_FADE_*`), where the turf
+    /// takes over.
     pub road_lod: Vec4,
     /// xyz = paint reflectance; w = maximum worn coverage.
     pub paint_yellow: Vec4,
@@ -640,6 +659,8 @@ pub struct GroundSplatParams {
     pub blight_now: Vec4,
     /// Live: xy the ward's centre.
     pub blight_ward: Vec4,
+    /// xyz = [`TURF_ALBEDO`], w = [`TURF_NEAR`].
+    pub turf: Vec4,
     /// Live: each disc, (x, z, radius, depth), a hot spot's depth negative.
     /// Last, so the array closes the struct on both sides.
     pub blight_discs: [Vec4; BLIGHT_DISCS],
@@ -684,7 +705,12 @@ impl GroundSplatParams {
                 ROAD_DIRT_ALBEDO[2],
                 ROAD_EDGE_WEAR,
             ),
-            road_lod: Vec4::new(ROAD_FADE_START_M, ROAD_FADE_END_M, 0.0, 0.0),
+            road_lod: Vec4::new(
+                ROAD_FADE_START_M,
+                ROAD_FADE_END_M,
+                super::foliage::GRASS_FADE_START_M,
+                super::foliage::GRASS_FADE_END_M,
+            ),
             paint_yellow: Vec4::new(
                 ROAD_PAINT_YELLOW[0],
                 ROAD_PAINT_YELLOW[1],
@@ -811,6 +837,15 @@ impl GroundSplatParams {
             // material draws the heart alone.
             blight_now: Vec4::new(sim_core::blight::F0, 0.0, 0.0, 0.0),
             blight_ward: Vec4::ZERO,
+            turf: Vec4::new(
+                TURF_ALBEDO[0],
+                TURF_ALBEDO[1],
+                TURF_ALBEDO[2],
+                std::env::var("GATES_TUNE_TURF_NEAR")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(TURF_NEAR),
+            ), // TUNE
             blight_discs: [Vec4::ZERO; BLIGHT_DISCS],
         }
     }

@@ -246,6 +246,7 @@ impl AgentVoice {
         let (speech_tx, speech) = rtrb::RingBuffer::<(String, bool)>::new(4);
         let (mut err_ears, ear_errors) = rtrb::RingBuffer::<String>::new(8);
         let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(crate::tls::ureq())
             .timeout_global(Some(SERVICE_TIMEOUT))
             .http_status_as_error(false)
             .build()

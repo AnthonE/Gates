@@ -49,7 +49,8 @@ pub fn begin_fetch(state: &mut HubState, url: String) {
 /// from a host named by another host, and one of the values in it will be
 /// handed to the player's desktop to open.
 fn fetch_blocking(url: &str) -> Result<Manifest, String> {
-    let mut res = ureq::get(url)
+    let mut res = crate::tls::agent()
+        .get(url)
         .call()
         .map_err(|e| format!("title manifest: {e}"))?;
     let bytes = res
