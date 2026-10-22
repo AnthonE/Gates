@@ -262,7 +262,7 @@ pub fn spawn(
                             look.half[1] * 1.9,
                         ))),
                         MeshMaterial3d(materials.add(StandardMaterial {
-                            base_color: Color::srgb(0.46, 0.41, 0.35),
+                            base_color: Color::srgb(0.60, 0.48, 0.36),
                             perceptual_roughness: 0.95,
                             ..default()
                         })),
