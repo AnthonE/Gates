@@ -3259,6 +3259,32 @@ impl World {
         )
     }
 
+    /// Whether the player in `slot` sees what a charge would be planted on
+    /// (`reach.rs`): a deployable the way the use verb sees it, a piece when
+    /// the first thing built on the line to it is that piece. Planar reach
+    /// alone let a raider at the outer wall plant on the cupboard, the box
+    /// or the inner wall behind it. True when nothing stands at the address:
+    /// `charge::place` names that refusal.
+    fn charge_seen(&self, slot: usize, deploy: bool, addr: (u16, u16, u8, u8)) -> bool {
+        if deploy {
+            return self.door_seen(slot, addr);
+        }
+        let Some(i) = self.pieces.find_index(addr.0, addr.1, addr.2, addr.3) else {
+            return true;
+        };
+        let (eye, _) = self.hand(slot);
+        crate::reach::clear_piece(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            &self.build,
+            &self.pieces,
+            i,
+            eye,
+        )
+    }
+
     /// Whether the player in `slot` reaches entry `i` of the box store — a
     /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
     /// same storey and nothing built in the way (`reach.rs`). The move verb
@@ -6893,22 +6919,27 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    crate::charge::place(
-                        &self.build,
-                        &self.deploy,
-                        &self.combat,
-                        &mut self.charges,
-                        &self.deploys,
-                        &self.pieces,
-                        &mut self.players[slot],
-                        self.tick,
-                        deploy,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        &mut self.events,
-                    );
+                    if !self.charge_seen(slot, deploy, (cx, cz, level, loc)) {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, crate::build::REFUSE_B_REACH, 0);
+                    } else {
+                        crate::charge::place(
+                            &self.build,
+                            &self.deploy,
+                            &self.combat,
+                            &mut self.charges,
+                            &self.deploys,
+                            &self.pieces,
+                            &mut self.players[slot],
+                            self.tick,
+                            deploy,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Vend { id, offer, times } => {

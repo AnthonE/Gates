@@ -662,3 +662,63 @@ fn a_satchel_on_a_triangles_wall_blows_where_the_wall_is() {
     assert!(tri_after < t.hp, "the triangle under it takes a share");
     assert!(t.hp - tri_after < 125, "and only a share");
 }
+
+/// **A charge is planted on what the raider can see.** Planar reach alone let
+/// a raider at the outer wall plant on the wall behind it (and the cupboard
+/// or box inside): a room with walls at both low-x and high-x, a raider a
+/// metre outside the low-x wall. The far wall is refused from outside and
+/// moves nothing; the near wall takes the plant; the far wall takes one from
+/// inside the room.
+#[test]
+fn a_charge_is_not_planted_through_a_wall() {
+    let (mut w, cx, cz) = raid_world();
+    w.combat.throw[SATCHEL as usize].reach_cm = 500;
+    w.tick(&[Command::Place {
+        id: RAIDER,
+        row: 1,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert_eq!(w.pieces.len(), 3, "foundation + two walls");
+    let (x, z) = cell_center(cx, cz);
+    let inside = Body::at(SEED, hv(SEED), x, z);
+    let outside = Body::at(SEED, hv(SEED), cx as f32 * BUILD_CELL_M - 1.0, z);
+    w.tick(&[Command::Input {
+        id: RAIDER,
+        frame: sim_core::input::InputFrame {
+            seq: 900,
+            sel: 1,
+            ..sim_core::input::InputFrame::default()
+        },
+        favour: 0,
+    }]);
+    let throw = |w: &mut World, at: Body, wall_cx: u16| -> bool {
+        w.players[0].body = at;
+        let before = w.charges.len();
+        w.tick(&[Command::Throw {
+            id: RAIDER,
+            deploy: false,
+            cx: wall_cx,
+            cz,
+            level: 0,
+            loc: LOC_EDGE_XLO,
+        }]);
+        w.charges.len() > before
+    };
+    assert!(
+        !throw(&mut w, outside, cx + 1),
+        "planted through the near wall"
+    );
+    assert!(
+        throw(&mut w, outside, cx),
+        "the near wall is in plain sight"
+    );
+    assert!(
+        throw(&mut w, inside, cx + 1),
+        "and the far wall from inside"
+    );
+}
