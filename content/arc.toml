@@ -265,8 +265,9 @@ lines = [
 
 # The alpha's gift. A topic with `gift = "<season>"` gives every skin of that
 # season (`content/skins.toml`) to the wallet that asks, once, and says one of
-# its three `gift:` lines: `guest` (no wallet to give to), `owned` (already
-# given) or `given` (just now). `server/src/gifts.rs` keeps the ledger.
+# its `gift:` lines: `guest` (no wallet to give to), `early` (a wallet that
+# has not played long enough this wipe yet), `owned` (already given) or
+# `given` (just now). `server/src/gifts.rs` keeps the ledger.
 [[speaker]]
 id = "speaker.outfitter"
 name = "THE OUTFITTER"
@@ -278,6 +279,7 @@ title = "THE FOUNDER'S GIFT"
 gift = "founder"
 lines = [
     { when = "gift:guest", text = "You were here before the rest of them, and I would mark you for it. But I cannot give a thing to a name I cannot keep. Sign in and come back." },
+    { when = "gift:early", text = "You are new to this island yet. Walk it a while, work it, then come back and I will mark you for it." },
     { when = "gift:owned", text = "You have them already. Any workbench will put them on. The one behind me does." },
     { when = "gift:given", text = "You were here first, so these are yours, the bat and the hatchet. Yours for as long as you are you, past the end of this world and the next. Any workbench will put them on. The one behind me does." },
 ]
@@ -292,6 +294,7 @@ gift = "abyss"
 price = { item = "item.junk", count = 100 }
 lines = [
     { when = "gift:guest", text = "The rug's pattern goes to a wallet, and I cannot send a thing to a name I cannot keep. Sign in and come back." },
+    { when = "gift:early", text = "I sell the pattern to people this island knows, and it does not know you yet. Walk it a while, work it, then come back. Your junk stays with you." },
     { when = "gift:owned", text = "Your wallet holds the pattern. Twenty cloth and you can weave one anywhere." },
     { when = "gift:short", text = "A hundred junk for the pattern, and you are short. Come back with it." },
     { when = "gift:waiting", text = "Paid for, and still on its way to your wallet. A minute or two. Nothing more to pay." },

@@ -107,9 +107,10 @@ pub fn todo_line(w: &WorkView, now: f64) -> String {
              island, or it wakes by itself {} with an empty tank.",
             span(hours_until(w.def.fallback_at, now))
         ),
-        WORK_LIT if w.def.fuel_max > 0 && w.fuel == 0 => {
-            "Its tank is dry, so the boost is off. Fuel it to bring the boost back.".into()
-        }
+        WORK_LIT if w.def.fuel_max > 0 && w.fuel == 0 => format!(
+            "Its tank is dry, so the boost is off. It relights on {} or more in one go.",
+            thousands(sim_core::works::rekindle_min(&w.def))
+        ),
         WORK_LIT if w.def.fuel_max > 0 => {
             "Burning. Keep the tank fed and the boost stays on for everyone.".into()
         }

@@ -302,7 +302,10 @@ pub fn arc(code: u8) -> String {
     match code as u32 {
         REFUSE_A_REACH => "step up to the work".into(),
         REFUSE_A_SEALED => "it is sealed — it opens later in the wipe".into(),
-        REFUSE_A_NOTHING => "you carry nothing it still needs".into(),
+        // The sim says the same for fuel short of a dry tank's minimum.
+        REFUSE_A_NOTHING => {
+            "you carry nothing it still needs, or too little to relight a dry tank".into()
+        }
         REFUSE_A_LIT => "it already burns — it takes fuel now".into(),
         REFUSE_A_COLD => "it is cold — fill its quota first".into(),
         REFUSE_A_FULL => "its tank is full".into(),
