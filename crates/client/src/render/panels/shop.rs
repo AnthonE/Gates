@@ -21,7 +21,9 @@ use sim_core::shop::ShopAct;
 
 const PANEL_W: f32 = 760.0;
 
-/// A buy: the row and how many lots.
+/// A buy: the row, how many lots, and the offer the button was drawn from,
+/// which the press names so the machine refuses it if the row changed
+/// (`sim_core::shop::REFUSE_SH_OFFER`).
 #[derive(Component, Clone, Copy)]
 pub struct ShopBuy(pub u8, pub u8, pub sim_core::shop::ShopOffer);
 

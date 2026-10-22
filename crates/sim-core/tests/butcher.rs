@@ -47,6 +47,16 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
         pct: KNIFE_PCT,
         wear: KNIFE_WEAR,
     };
+    // The pig's own rows: a cut pays only what the species is born holding.
+    let loot = &mut w.mob.defs[MOB_PIG as usize].loot;
+    for (row, (item, count)) in loot.iter_mut().zip([(MEAT, 4), (FAT, 10)]) {
+        *row = ItemStack {
+            item,
+            count,
+            cond: 0,
+            skin: 0,
+        };
+    }
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
     for m in w.mobs.m.iter_mut() {
@@ -206,4 +216,94 @@ fn a_hand_with_no_butcher_row_cuts_nothing() {
     assert!(paid.is_empty(), "a club with no row paid {paid:?}");
     let left = carcass_left(&w, id).expect("the carcass is untouched");
     assert_eq!((left[0].count, left[1].count), (4, 10));
+}
+
+/// The carcass dupe (exploit sweep 2026-10): any stack moved into a
+/// carcass came back at the blade's rate, 150% a cut. A carcass is
+/// take-only on both of a move's landing sites, and a cut pays only what
+/// the body was born holding.
+#[test]
+fn a_carcass_takes_nothing_and_a_cut_pays_only_its_own_rows() {
+    use sim_core::inventory::{CONT_BAG, CONT_SELF, REFUSE_M_NO_INPUT};
+    use sim_core::world::{EV_MOVED, EV_MOVE_REFUSED};
+    const JUNK: u16 = 84;
+    let (mut w, id) = carcass_before(KNIFE);
+    w.gather.stack_max[JUNK as usize] = 1000;
+    w.gather.item_count = w.gather.item_count.max(JUNK + 1);
+    w.players[0].inv[1] = ItemStack {
+        item: JUNK,
+        count: 1000,
+        cond: 0,
+        skin: 0,
+    };
+    let mv = |w: &mut World, from_kind, from_slot, to_kind, to_slot, count| {
+        w.tick(&[Command::Move {
+            id: 1,
+            cont: id,
+            from_kind,
+            from_slot,
+            to_kind,
+            to_slot,
+            count,
+        }]);
+        w.events
+            .entries()
+            .iter()
+            .filter(|e| (e.code == EV_MOVED || e.code == EV_MOVE_REFUSED) && e.a == 1)
+            .map(|e| (e.code, e.b))
+            .next()
+    };
+
+    // In, onto an empty slot of the carcass.
+    let r = mv(&mut w, CONT_SELF, 1, CONT_BAG, 5, 1000);
+    assert_eq!(r, Some((EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)));
+    // In by a swap: the carcass's meat dragged onto the junk would send the
+    // junk backwards into the carcass.
+    let r = mv(&mut w, CONT_BAG, 0, CONT_SELF, 1, 4);
+    assert_eq!(r, Some((EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)));
+    assert_eq!(w.players[0].inv[1].count, 1000, "the junk never left");
+    let left = carcass_left(&w, id).expect("the carcass");
+    assert!(left.iter().all(|s| s.item != JUNK || s.count == 0));
+    // Taking out onto an empty slot is still the ordinary take.
+    let r = mv(&mut w, CONT_BAG, 1, CONT_SELF, 2, 10);
+    assert_eq!(r.map(|r| r.0), Some(EV_MOVED), "a take still works");
+    assert_eq!(
+        (w.players[0].inv[2].item, w.players[0].inv[2].count),
+        (FAT, 10)
+    );
+
+    // Belt and braces: a stack that got in anyway is not meat. It is left
+    // for the hand, and the cut goes past it to the species' own row.
+    let i = w.backpacks.index_of_id(id).expect("the carcass");
+    w.backpacks.set_slot(
+        i,
+        0,
+        ItemStack {
+            item: JUNK,
+            count: 1000,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    w.backpacks.set_slot(
+        i,
+        3,
+        ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    let mut seq = 0;
+    let paid = swing(&mut w, id, &mut seq);
+    assert_eq!(paid, vec![(MEAT, 6)], "the cut skipped the junk");
+    let paid = swing(&mut w, id, &mut seq);
+    assert!(paid.is_empty(), "nothing grown is left to cut: {paid:?}");
+    let left = carcass_left(&w, id).expect("the junk keeps it standing");
+    assert_eq!(
+        (left[0].item, left[0].count),
+        (JUNK, 1000),
+        "not multiplied"
+    );
 }

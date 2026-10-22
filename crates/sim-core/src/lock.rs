@@ -161,7 +161,7 @@ pub struct LockRec {
     pub guests: GuestList,
     /// Consecutive wrong entries. Feeds both the shock (scaled, forgiven
     /// after [`SHOCK_RESET_TICKS`]) and the lockout (counted to
-    /// [`LOCKOUT_TRIES`], forgiven only by a correct code).
+    /// [`LOCKOUT_TRIES`], forgiven only by the main code).
     pub misses: u8,
     /// Tick of the last wrong entry — the shock window's start.
     pub last_miss: u64,

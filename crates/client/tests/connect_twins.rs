@@ -157,7 +157,18 @@ fn expand(steps: Vec<String>) -> Vec<String> {
 fn both_twins_drive_the_same_handshake_in_the_same_order() {
     let (native, web) = twins();
     let a = expand(names_after(&native, "net::handshake::"));
-    let b = expand(names_after(&web, "net::handshake::"));
+    let mut b = expand(names_after(&web, "net::handshake::"));
+    // The browser's one extra step, and it is forced: only a page signs for a
+    // host other than the one it dials (`signs_as`), so only a page can be
+    // handed a `?hash=` pin for its own host. It must come straight after
+    // the address check, before anything is dialled.
+    assert_eq!(
+        b.get(..2),
+        Some(&["server_host".to_string(), "pin_refused".to_string()][..]),
+        "the browser connect no longer refuses a pinned certificate for its own host \
+         before dialling: {b:?}"
+    );
+    b.remove(1);
     assert_eq!(
         a,
         // v73: the hello says what the session is (`hello_as`), and a

@@ -382,6 +382,60 @@ pub fn in_doorway(z: &Ziggurat, d: usize, x: f32, wz: f32, feet: f32) -> bool {
         && feet + 1.8 > z.floor_y + b[1]
 }
 
+/// Move a body that door `d`'s shut leaf would hold out to the door's
+/// reader; true if it moved. `movement::step` lifts its veto for a body
+/// already inside a solid (being stuck must not be absorbing), so a body
+/// left in a shut leaf walks on through it, into the room behind with no
+/// card. The test is `blocks`' own, for the leaf alone.
+pub fn out_of_leaf(z: &Ziggurat, d: usize, body: &mut crate::movement::Body) -> bool {
+    use crate::collide::{CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
+    use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
+    let Some(leaf) = PARTS.iter().find(|p| p.door as usize == d + 1) else {
+        return false;
+    };
+    let Some((rx, ry, rz)) = reader_world(z, d, false) else {
+        return false;
+    };
+    let (x, wz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    let (lx, lz) = kit::to_local(&z.placed(), x, wz);
+    let feet = body.qy as f32 * POS_Y_Q;
+    let shut = core::slice::from_ref(leaf);
+    if !z.live
+        || !kit::blocks_local(
+            shut,
+            z.floor_y,
+            0,
+            lx,
+            lz,
+            feet,
+            CAPSULE_RADIUS_M,
+            CAPSULE_HEIGHT_M,
+        )
+    {
+        return false;
+    }
+    *body = crate::movement::Body {
+        qx: quant_xz(rx),
+        qy: quant_y(ry),
+        qz: quant_xz(rz),
+        qvy: 0,
+        grounded: true,
+    };
+    true
+}
+
+/// [`out_of_leaf`] for each door whose bit is set in `doors`; true if it
+/// moved.
+pub fn out_of_leaves(z: &Ziggurat, doors: u32, body: &mut crate::movement::Body) -> bool {
+    let mut moved = false;
+    for d in 0..CARD_DOORS {
+        if doors & (1 << d) != 0 {
+            moved |= out_of_leaf(z, d, body);
+        }
+    }
+    moved
+}
+
 /// The kit as JSON for `ci/site_kit.py` (`examples/kit_dump.rs`).
 pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
     let mut anchors = [("", 0.0, 0.0, 0.0); CRATES.len() + 2 * CARD_DOORS];
@@ -418,8 +472,17 @@ pub const REFUSE_S_MAX: u32 = REFUSE_S_CARD;
 /// four doors, a 200 card two (Rust's green/blue 4, red 2).
 pub const SWIPE_WEAR: u16 = 100;
 
+/// How high above the floor it stands on the exit lever is, metres — what
+/// a hand pulling it must see.
+pub const LEVER_MID_M: f32 = 1.0;
+
 /// Swipe at door `d`'s reader with its card, or pull its lever from inside.
 /// Opens the door for `DOOR_OPEN_TICKS`; refusals are events.
+///
+/// `sees` answers whether a point is in plain sight of the swiper's eye
+/// (`reach::sight`, card doors as they stand). The lever needs it: it
+/// stands within `SWIPE_REACH_M` of the door's outside, so reach alone
+/// pulled it from outside the shut door, through the leaf, with no card.
 #[allow(clippy::too_many_arguments)]
 pub fn swipe(
     z: &Ziggurat,
@@ -429,6 +492,7 @@ pub fn swipe(
     p: &mut crate::world::Player,
     d: usize,
     events: &mut crate::world::EventQueue,
+    sees: impl Fn((f32, f32, f32)) -> bool,
 ) {
     use crate::world::{EV_SWIPE, EV_SWIPE_REFUSED};
     let refuse = |events: &mut crate::world::EventQueue, code: u32| {
@@ -448,7 +512,8 @@ pub fn swipe(
                 && crate::fmath::fabs(feet - y) <= 2.0
         })
     };
-    let lever = at(true);
+    let lever = at(true)
+        && reader_world(z, d, true).is_some_and(|(x, y, wz)| sees((x, y + LEVER_MID_M, wz)));
     if !lever {
         if !at(false) {
             refuse(events, REFUSE_S_REACH);

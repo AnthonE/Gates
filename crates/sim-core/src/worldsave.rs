@@ -1256,10 +1256,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // file is not a client.
             mag: save.mag,
             mag_round: save.mag_round,
-            // The gun's cone and trigger settle over a restart.
+            // The gun's cone and trigger settle over a restart, and a bow's
+            // draw with them.
             bloom: 0,
             shot_at: 0,
             trigger_spent: false,
+            draw_on: 0,
             ws_cell,
             ws_mark,
             death_by,
@@ -1824,7 +1826,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- burning fuses ---------------------------------------------------
-    let mut charges = [ChargeRec::default(); MAX_LIVE_CHARGES];
+    let mut charges = crate::boxed_array::<ChargeRec, MAX_LIVE_CHARGES>(ChargeRec::default());
     for c in charges.iter_mut().take(n_charges) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -2263,11 +2265,11 @@ mod tests {
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 1_024 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
+            + 2_048 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
-            + 64 * 25                       // charges
+            + 1_200 * 25                    // charges (every seat's share: 100 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
@@ -2403,8 +2405,12 @@ mod tests {
         assert_eq!(crate::farm::PLANT_BYTES, 58);
         // 5_318_002 at format 31: four more worn stacks and three teas, 50
         // bytes on 100 bodies (clothing v1).
+        // 5_492_834 with no format change, where clothing v1 met two raised
+        // caps in one merge: the live charges' from 64 to every seat's share
+        // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
+        // hand's share was capped (1,024 × 143) — counts, so old saves load.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_318_002,
+            WORLD_SAVE_MAX_BYTES, 5_492_834,
             "the world save ceiling moved"
         );
     }

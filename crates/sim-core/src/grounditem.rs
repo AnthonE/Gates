@@ -61,7 +61,7 @@
 
 use crate::backpack::LOOT_REACH_M;
 use crate::gather::{inv_add_spilling_skinned, GatherContent, ItemStack};
-use crate::limits::{INV_SLOTS, MAX_GROUND_ITEMS, MAX_TOSSES, TICK_HZ};
+use crate::limits::{DROP_HEADROOM, INV_SLOTS, MAX_GROUND_ITEMS, MAX_TOSSES, TICK_HZ};
 use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
 use crate::terrain::{self, Haven};
@@ -239,6 +239,10 @@ impl GroundItems {
     /// offsets ([`TOSS_XZ_MAX_Q`], [`TOSS_Y_MAX_Q`]) — off a cliff — is not
     /// remembered, and the stack is simply there. Returns the record's id,
     /// or 0 if nothing was laid.
+    ///
+    /// **A throw never evicts.** Past `MAX_GROUND_ITEMS - DROP_HEADROOM`
+    /// records it lays nothing and returns 0, and the caller's bag at the
+    /// feet catches the stack (`limits::DROP_HEADROOM` has the why).
     pub fn toss(
         &mut self,
         bc: &crate::backpack::BackpackContent,
@@ -247,6 +251,9 @@ impl GroundItems {
         tick: u64,
         from: (i32, i32, i32),
     ) -> u32 {
+        if self.len >= MAX_GROUND_ITEMS - DROP_HEADROOM {
+            return 0;
+        }
         let id = self.drop_one(bc, at, stack, tick, [0; 3]);
         let off = (from.0 - at.0, from.1 - at.1, from.2 - at.2);
         let fits = |v: i32, max: i32| (-max..=max).contains(&v);

@@ -1173,6 +1173,36 @@ fn a_clone_plants_its_genes_and_a_blank_seed_rolls() {
     );
 }
 
+/// **A salted world rolls a genome on its secret** (`World::secret_seed`):
+/// the cell, the tick and the next plant id are a planter's to know, so on
+/// the seed alone a sowing could be timed to a good genome. Mutant: the
+/// plain seed at the call.
+#[test]
+fn a_blank_seed_rolls_on_the_worlds_secret() {
+    use sim_core::farm::roll_genes;
+    let (mut w, cx, cz) = farm_world();
+    w.cook.farm.good_gene_pm = 500;
+    w.cook.farm.bad_w_pm = 500;
+    w.arc.salt = 0xFEED;
+    let secret = w.secret_seed();
+    let host = place_planter(&mut w, cx, cz, 0);
+    let mut moved = 0;
+    for spot in 0..4u8 {
+        let next = w.farm.next_id();
+        let tick = w.tick;
+        plant(&mut w, host, spot);
+        let got = plant_of(&w, next).genes;
+        let fc = &w.cook.farm;
+        assert_eq!(
+            got,
+            roll_genes(fc, secret, cx, cz, tick, next),
+            "spot {spot}: the roll is the salted seed's"
+        );
+        moved += (got != roll_genes(fc, SEED, cx, cz, tick, next)) as u32;
+    }
+    assert!(moved >= 2, "the salt moved only {moved} of 4 genomes");
+}
+
 /// **Crossbreeding counts only the touching plants of its own crop in its
 /// own bed, alive**: hemp beside corn, a corn two columns over, a corn in
 /// another planter and a dying corn all leave it alone, and a touching
@@ -2601,6 +2631,29 @@ fn berries_leave_a_seed_about_a_quarter_of_the_time() {
 
 /// What [`berries_leave_a_seed_about_a_quarter_of_the_time`] counts.
 const BERRY_SEEDS_OFF_400: u32 = 103;
+
+/// **The meal's roll is on the world's secret too**: the eater's id and the
+/// tick are the eater's, so on the seed alone a meal could be timed to the
+/// tick that pays. Same meals, same ticks, another salt: other meals pay,
+/// about as many. Mutant: the plain seed in `leave_seed`.
+#[test]
+fn a_salted_world_pays_other_meals() {
+    let meals = |salt: u64| {
+        let mut w = eat_world();
+        w.arc.salt = salt;
+        (0..200)
+            .map(|_| {
+                eat(&mut w, BERRIES);
+                seed_paid(&w, BERRY_SEED).is_some()
+            })
+            .collect::<Vec<bool>>()
+    };
+    let (plain, salted) = (meals(0), meals(0xFEED));
+    let paid = salted.iter().filter(|&&p| p).count();
+    assert!((30..=70).contains(&paid), "{paid} seeds off 200 meals");
+    let differ = plain.iter().zip(&salted).filter(|(a, b)| a != b).count();
+    assert!(differ >= 40, "the salt moved only {differ} of 200 meals");
+}
 
 /// **A potato seed grows and picks five potatoes** at full health: the
 /// crop's own count, with nothing in the sim that knows it is a potato.

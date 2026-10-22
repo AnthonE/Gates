@@ -2474,7 +2474,7 @@ impl Content {
                         sp.id
                     ));
                 }
-                let mut gifts = [false; 5];
+                let mut gifts = [false; 6];
                 for l in &t.lines {
                     if l.text.is_empty() || l.text.len() > ARC_TEXT_BYTES {
                         return Err(format!(
@@ -2502,9 +2502,9 @@ impl Content {
                 if let Some(season) = &t.gift {
                     self.gift_set(season)
                         .map_err(|e| format!("arc: {}: {e}", sp.id))?;
-                    if gifts[..3] != [true; 3] {
+                    if gifts[..3] != [true; 3] || !gifts[Gift::Early as usize] {
                         return Err(format!(
-                            "arc: {}: `{}` needs a gift:guest, gift:owned and gift:given line",
+                            "arc: {}: `{}` needs a gift:guest, gift:owned, gift:given and gift:early line",
                             sp.id, t.title
                         ));
                     }
@@ -2649,9 +2649,10 @@ impl Content {
                 "given" => Gift::Given,
                 "short" => Gift::Short,
                 "waiting" => Gift::Waiting,
+                "early" => Gift::Early,
                 _ => {
                     return Err(format!(
-                        "`{w}`: a gift line is guest, owned, given, short or waiting"
+                        "`{w}`: a gift line is guest, owned, given, short, waiting or early"
                     ))
                 }
             }),
@@ -3134,6 +3135,9 @@ pub enum Gift {
     /// Paid for, and its token is still on the way to the wallet
     /// (`server/src/mints.rs`): nothing was taken.
     Waiting,
+    /// A wallet that has not played long enough this wipe to be given or
+    /// sold anything (`server/src/gifts.rs` `GIFT_MIN_MINUTES`): come back.
+    Early,
 }
 
 impl When {

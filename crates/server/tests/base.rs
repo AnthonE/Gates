@@ -147,16 +147,28 @@ fn build(f: &mut Fixture, cx: u16, cz: u16) -> BasePlan {
     let mut plan = BasePlan::new(OWNER, cx, cz);
     // Two passes: the second is what a raid would get, refused wherever the
     // first already built. One command a tick, the wire's own rate.
+    // The ground floor's height as the body last stood on it.
+    let mut ground_qy = f.w.players[slot].body.qy;
     for _ in 0..2 * STARTER.len() {
         // Onto the op's spot (beside a door for its lock), as the profile
-        // walks it there.
+        // walks it there, and onto its storey (the box upstairs is put down
+        // from up there: a hand places only what it sees).
         let (x, z) = plan.stand(STARTER);
-        let qy = f.w.players[slot].body.qy;
+        let level = plan.stand_level(STARTER);
         let mut body = Body::at(SEED, &f.w.haven, x, z);
-        body.qy = body.qy.max(qy);
+        body.qy = if level == 0 {
+            body.qy.max(ground_qy)
+        } else {
+            let plate = f.w.pieces.cols().plate(cx, cz).expect("the core is built");
+            let floor = column_floor_y(SEED, &f.w.haven, cx, cz, plate);
+            movement::quant_y(floor + LEVEL_H_M * f32::from(level))
+        };
         f.w.players[slot].body = body;
         let cmd = base_step(&mut plan, f.rows, STARTER);
         f.w.tick(&[cmd]);
+        if level == 0 {
+            ground_qy = f.w.players[slot].body.qy;
+        }
     }
     plan
 }

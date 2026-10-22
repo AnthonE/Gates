@@ -605,6 +605,87 @@ fn a_playout_claim_past_the_measured_bound_buys_only_the_bound() {
     assert_eq!(high(&stats), 1, "a cap that cost nothing accuses nobody");
 }
 
+/// **A catch-up sprint is not a late ack.** After a stall the sim loop runs
+/// its backlog back to back (`net.rs`'s pacing), and the world tick outruns
+/// every client's acks with no round trip changing. For the second after,
+/// the round-trip bound and the favour cap allow the sprint
+/// (`ShardCore::note_pace_backlog`); then they lapse. Nobody is accused
+/// either way: one late datagram is not a persistent disagreement.
+#[test]
+fn a_catch_up_sprint_widens_the_round_trip_bound_for_a_second() {
+    let (mut core, stats) = shard();
+    // 20 ms: one tick of trip, plus the slack.
+    stats.slot_rtt_us.store(0, 20_000);
+    let bound = 1 + stats::RTT_AGE_SLACK_TICKS as u64;
+    let late = bound + 4;
+    assert_eq!(
+        measure_one(&mut core, &stats, 1, late),
+        bound,
+        "held to the trip"
+    );
+    core.note_pace_backlog(4);
+    let sum = favour_reading(&stats).1;
+    assert_eq!(
+        measure_one(&mut core, &stats, 2, late),
+        late,
+        "the sprint is owed"
+    );
+    assert_eq!(favour_reading(&stats).1 - sum, late + 5, "and paid in full");
+    for _ in 0..sim_core::limits::TICK_HZ {
+        tick(&mut core, &stats);
+    }
+    assert_eq!(
+        measure_one(&mut core, &stats, 3, late),
+        bound,
+        "then it lapses"
+    );
+    assert_eq!(ShardStats::get(&stats.favour_disagree), 0);
+    assert_eq!(ShardStats::get(&stats.favour_playout_high), 0);
+}
+
+/// **The slack lapses a second after the largest sprint.** Smaller notes
+/// inside that second neither lower it nor hold it open: the old ratchet
+/// re-armed the largest on every note, so a loop reporting any backlog
+/// at all kept every round-trip bound wide for good.
+#[test]
+fn small_sprints_do_not_hold_a_large_slack_open() {
+    let (mut core, stats) = shard();
+    stats.slot_rtt_us.store(0, 20_000);
+    let bound = 1 + stats::RTT_AGE_SLACK_TICKS as u64;
+    let late = bound + 8;
+    let second = sim_core::limits::TICK_HZ as u64;
+    let t0 = core.world.tick;
+    core.note_pace_backlog(8);
+    core.note_pace_backlog(1);
+    for _ in 0..5 {
+        tick(&mut core, &stats);
+    }
+    let t_small = core.world.tick;
+    core.note_pace_backlog(2);
+    assert_eq!(
+        measure_one(&mut core, &stats, 1, late),
+        late,
+        "the small notes lowered the sprint's slack"
+    );
+    // The next frame lands past the large note's second and inside the
+    // one a re-arm at the small note would have opened.
+    let at = core.world.tick + SNAPSHOT_INTERVAL_TICKS + late;
+    assert!(
+        at > t0 + second && at <= t_small + second,
+        "the fixture no longer lands between the two seconds"
+    );
+    assert_eq!(
+        measure_one(&mut core, &stats, 2, late),
+        bound,
+        "the small notes held the large slack open"
+    );
+    // A larger note does raise and re-arm it.
+    core.note_pace_backlog(2);
+    core.note_pace_backlog(8);
+    assert_eq!(measure_one(&mut core, &stats, 3, late), late);
+    assert_eq!(ShardStats::get(&stats.favour_disagree), 0);
+}
+
 /// **6b · A client that has never acked executes its frames and buys
 /// nothing.** The frame still runs — this is not a refusal — and the
 /// counters must show the granted set is empty rather than showing nothing

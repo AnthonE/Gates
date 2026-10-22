@@ -787,6 +787,17 @@ pub fn tick_use(
     }
 }
 
+/// Whether a use in the hands holds them: begun, and the hand that began
+/// it still up (put away, `tick_use` cancels it). Rust's bandage is the
+/// held item, but a `Consume` may name any slot and the hand-held item
+/// fired on through the wrap, so the wrap holds the hand instead: nothing
+/// in it swings, draws, fires or throws until the wrap lands (`World::tick`'s
+/// arm, `ranged::hitscan`, `Command::Throw`).
+#[inline]
+pub fn hands_busy(p: &Player) -> bool {
+    p.use_at != 0 && p.frame.sel == p.use_sel
+}
+
 /// Drop any use in the hands. One place, `clear_heal`'s reason.
 #[inline]
 pub fn clear_use(p: &mut Player) {

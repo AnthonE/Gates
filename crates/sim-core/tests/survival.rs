@@ -427,3 +427,80 @@ fn a_disarmed_drink_refuses_out_loud() {
         "a disarmed verb still answers the press"
     );
 }
+
+/// A bandage wrapped from a slot that is not in the hand holds the hand
+/// anyway (Rust's bandage is the held item, `survival::hands_busy`): a
+/// `Consume` may name any slot, and the spear in hand swung on through the
+/// wrap. It swings again once the wrap lands.
+#[test]
+fn a_wrap_from_the_pack_holds_the_hand() {
+    use sim_core::gather::{GatherContent, ItemStack};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::limits::HOTBAR_SLOTS;
+    use sim_core::survival::ConsumableDef;
+    use sim_core::world::EV_SWING;
+    const SPEAR: u16 = 0;
+    const BANDAGE: u16 = 1;
+    const WRAP: u8 = 60;
+    let mut w = lone_world();
+    w.gather = GatherContent::probe_fixture();
+    w.survival.consumable[BANDAGE as usize] = ConsumableDef {
+        health: 20,
+        use_ticks: WRAP,
+        ..ConsumableDef::NONE
+    };
+    let pack = HOTBAR_SLOTS + 1;
+    w.players[0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[pack] = ItemStack {
+        item: BANDAGE,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].hp -= 30;
+    let mut seq = 0u16;
+    let mut swing = |w: &mut World, extra: &[Command]| {
+        seq += 1;
+        let mut cmds = vec![Command::Input {
+            id: 1,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                sel: 0,
+                ..InputFrame::default()
+            },
+            favour: 0,
+        }];
+        cmds.extend_from_slice(extra);
+        w.tick(&cmds);
+        count(w, EV_SWING)
+    };
+    swing(
+        &mut w,
+        &[Command::Consume {
+            id: 1,
+            slot: pack as u8,
+        }],
+    );
+    assert_ne!(w.players[0].use_at, 0, "setup: the wrap began");
+    let mut swung = 0;
+    while w.players[0].use_at != 0 {
+        let n = swing(&mut w, &[]);
+        // The tick it lands, the hand is free again.
+        if w.players[0].use_at != 0 {
+            swung += n;
+        }
+    }
+    assert_eq!(
+        swung, 0,
+        "the spear swung while the hands wrapped a bandage"
+    );
+    assert_eq!(w.players[0].inv[pack].count, 1, "the wrap landed");
+    let after: usize = (0..2 * TICK_HZ).map(|_| swing(&mut w, &[])).sum();
+    assert!(after > 0, "the hand is free once the wrap lands");
+}

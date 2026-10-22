@@ -578,7 +578,14 @@ fn affordability_is_the_tightest_input() {
         skin: 0,
     };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        2
+    );
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
     inv[1] = ItemStack {
@@ -593,10 +600,24 @@ fn affordability_is_the_tightest_input() {
         cond: 0,
         skin: 0,
     };
-    assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[1],
+            &inv,
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        1
+    );
 
     // Nothing in the bag pays for nothing.
-    assert_eq!(craft::affordable(&recipes.recipes[0], &empty()), 0);
+    assert_eq!(
+        craft::affordable(
+            &recipes.recipes[0],
+            &empty(),
+            &protocol::event::ItemCatalog::EMPTY
+        ),
+        0
+    );
 }
 
 #[test]
@@ -609,7 +630,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
         cond: 0,
         skin: 0,
     };
-    let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
+    let (lines, n) = craft::ingredients(
+        &recipes.recipes[0],
+        3,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
     assert_eq!(lines[0].amount, 3);
@@ -618,7 +644,12 @@ fn the_ingredient_table_scales_with_the_stepper() {
     // Five of nine is short, which is what the reference paints red.
     assert!(lines[0].short());
 
-    let (lines, _) = craft::ingredients(&recipes.recipes[0], 1, &inv);
+    let (lines, _) = craft::ingredients(
+        &recipes.recipes[0],
+        1,
+        &inv,
+        &protocol::event::ItemCatalog::EMPTY,
+    );
     assert_eq!(lines[0].total, 3);
     assert!(!lines[0].short());
 }
@@ -1331,7 +1362,7 @@ fn a_bush_is_picked_with_e_and_never_swung() {
         Occupant::BerryBush as u8,
         "a swing still lands on a bush"
     );
-    let pick = resolve_pick(aim, &mut island);
+    let pick = resolve_pick(aim, &mut island, w.pieces.cols());
     assert_eq!(
         pick.occupant,
         Occupant::BerryBush as u8,
@@ -2027,6 +2058,14 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
                 wear: 0,
             };
         }
+        // The wolf is born holding the meat: a cut pays only a species' own
+        // rows, so a carcass is no multiplier for what was put in it.
+        w.mob.defs[MOB_WOLF as usize].loot[0] = ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
         w.dev_spawn = Some((px, tz));
         w.tick(&[Command::Join { id: 1 }]);
         // At full condition: a broken tool is refused at a carcass as at a
@@ -2301,6 +2340,62 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         "no wall: the stance must reach the tree"
     );
     assert_eq!(pick(true), 0, "a wall across the look takes the swing");
+}
+
+/// **Nor is `E` offered on a bush through a wall**: the shard's
+/// `Command::Pick` asks for sight (`reach::clear_from`) and drops a pick
+/// through one without a word, so the prompt asks the same. The tree test's
+/// wiring above, aimed at a bush across a cell edge.
+#[test]
+fn a_wall_the_core_was_sent_shadows_the_bush() {
+    use client::ui::interact::resolve_pick;
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_piece_defs, encode_event_piece_placed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{BuildContent, PieceRec, BUILD_CELL_M, LOC_EDGE_XLO};
+    use sim_core::movement::{Body, POS_Y_Q};
+
+    let seed = 7;
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, bx, by, bz) = find_slot(seed, Occupant::BerryBush).expect("seed 7 has a bush");
+    let (_, top) = swing_volume(Occupant::BerryBush);
+    let k = (bx / BUILD_CELL_M + 0.5).floor();
+    let edge = k * BUILD_CELL_M;
+    let px = if edge <= bx { edge - 0.4 } else { edge + 0.4 };
+    let py = Body::at(seed, &haven, px, bz).qy as f32 * POS_Y_Q;
+    let aim = aim_at(px, py, bz, bx, by + top * 0.5, bz);
+    let bc = BuildContent::probe_fixture();
+    let wall = PieceRec {
+        cx: k as u16,
+        cz: (bz / BUILD_CELL_M).floor() as u16,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 1,
+        hp: bc.pieces[1].hp,
+        ..PieceRec::default()
+    };
+    let pick = |with_wall: bool| {
+        let mut core = Box::new(ClientCore::new(seed, 1, 0));
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
+        core.on_stream(&buf[..len]).expect("defs apply");
+        if with_wall {
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
+            core.on_stream(&buf[..len]).expect("piece applies");
+        }
+        let (mut island, shadows) = swing_island(&mut core, 0);
+        resolve_pick(aim, &mut island, shadows.cols).occupant
+    };
+    assert_eq!(
+        pick(false),
+        Occupant::BerryBush as u8,
+        "no wall: the stance must reach the bush"
+    );
+    assert_eq!(pick(true), 0, "E was offered on a bush through a wall");
 }
 
 // ---------------------------------------------------------------------------
@@ -6331,6 +6426,64 @@ mod quick {
             (args.from_kind, args.to_kind, args.count, args.bag),
             (CONT_WORLD, CONT_SELF, 60, BAG),
             "taking out of a crate stopped working, or lost its handle"
+        );
+    }
+
+    /// **A carcass or a body is take-only too** (`World::move_item`'s
+    /// mob-tagged bag): the panel knows one by its look (`WireBag::kind`),
+    /// refuses a deposit, or a take that would swap the occupant in, by the
+    /// sim's own `deposits_into`, and says a carcass's sentence rather than
+    /// the crate's.
+    #[test]
+    fn a_carcass_takes_nothing_and_says_so_in_its_own_words() {
+        use client::ui::slots::{refusal_text, refusal_text_in, take_only_bag, take_only_refused};
+        use protocol::event::{WireBag, BAG_KIND_BODY, BAG_KIND_PACK};
+        let bag = |kind| WireBag {
+            id: BAG,
+            kind,
+            ..WireBag::default()
+        };
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(1)]),
+            "an animal's carcass"
+        );
+        assert!(
+            take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_BODY)]),
+            "a body"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG, &[bag(BAG_KIND_PACK)]),
+            "a pack takes"
+        );
+        assert!(
+            !take_only_bag(CONT_BAG, BAG + 1, &[bag(1)]),
+            "another bag's look"
+        );
+        assert!(!take_only_bag(CONT_BOX, BAG, &[bag(1)]), "only an open bag");
+
+        let (wood, axe, none) = (stack(WOOD, 5), stack(HATCHET, 1), ItemStack::default());
+        assert!(
+            take_only_refused(true, CONT_SELF, CONT_BAG, wood, none),
+            "a drop in"
+        );
+        assert!(
+            take_only_refused(true, CONT_BAG, CONT_SELF, wood, axe),
+            "a take onto the axe swaps the axe in"
+        );
+        assert!(
+            !take_only_refused(true, CONT_BAG, CONT_SELF, wood, none),
+            "a take"
+        );
+        assert!(
+            !take_only_refused(false, CONT_SELF, CONT_BAG, wood, none),
+            "a pack"
+        );
+
+        let no_input = sim_core::inventory::REFUSE_M_NO_INPUT as u8;
+        assert!(refusal_text_in(no_input, CONT_BAG).contains("carcass"));
+        assert_eq!(
+            refusal_text_in(no_input, CONT_WORLD),
+            refusal_text(no_input)
         );
     }
 

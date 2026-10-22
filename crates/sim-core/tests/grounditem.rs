@@ -249,6 +249,37 @@ fn the_cap_evicts_the_stack_nearest_its_despawn() {
     );
 }
 
+/// **A thrown stack never evicts** (exploit sweep 2, resource#5): one
+/// client's one-unit drops filled the island's store and pushed out every
+/// barrel's scatter and landed arrow. Past the headroom a toss lays nothing
+/// (the caller's bag at the feet takes it), and a barrel still lands.
+#[test]
+fn a_toss_keeps_out_of_the_stores_headroom_and_a_barrel_does_not() {
+    use sim_core::limits::DROP_HEADROOM;
+    let bc = BackpackContent::probe_fixture();
+    let mut g = GroundItems::new();
+    let (qx, qz) = land_spot();
+    let at = (qx, 0, qz);
+    let mut t = 0u64;
+    while g.toss(&bc, at, stack(1, 1), t, at) != 0 {
+        t += 1;
+    }
+    assert_eq!(
+        g.len(),
+        MAX_GROUND_ITEMS - DROP_HEADROOM,
+        "throws took the headroom"
+    );
+    let before = g.entries().to_vec();
+    assert_eq!(g.toss(&bc, at, stack(1, 1), t, at), 0);
+    assert_eq!(g.entries(), &before[..], "a throw evicted a stack");
+    assert_eq!(g.scatter(&bc, SEED, hv(), 7, qx, qz, &roll(1), t), 1);
+    assert_eq!(
+        g.len(),
+        MAX_GROUND_ITEMS - DROP_HEADROOM + 1,
+        "the barrel landed"
+    );
+}
+
 // ------------------------------------------------------------- the take
 
 fn world() -> World {

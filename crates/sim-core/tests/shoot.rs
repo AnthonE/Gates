@@ -39,7 +39,7 @@ use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::fmath::fabs;
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
+use sim_core::limits::{MAX_ARROWS, MAX_ARROWS_PER_OWNER, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::{Barren, Occupants, Pristine, Scratch};
 use sim_core::ranged::{self, Arrows, Kill, ARROW_EYE_MM, SURF_BUILT, SURF_GROUND};
@@ -671,20 +671,13 @@ fn every_arrow_is_announced_and_nothing_else_is() {
     );
 
     // And a full store, which is the one refusal that happens *after* the
-    // cadence is paid, so it is the easiest to announce by accident.
-    let mut full = Arrows::new();
-    let mut stuffer = archer(9, 0.0, 50.0, 0.0, yaw, pitch, u16::MAX);
-    for t in 0..MAX_ARROWS as u64 {
-        ranged::draw(
-            t * 60,
-            &cc,
-            &mut full,
-            &mut EventQueue::default(),
-            &mut stuffer,
-        );
-    }
+    // cadence is paid, so it is the easiest to announce by accident. Filled
+    // by as many archers as it takes (`fill`), and refused to one with no
+    // arrow in it, so the refusal is the store's and not the archer's share.
+    let mut full = fill(&cc, yaw, pitch);
     assert_eq!(full.len(), MAX_ARROWS, "the store is full");
     let mut ev = EventQueue::default();
+    let mut stuffer = archer(9, 0.0, 50.0, 0.0, yaw, pitch, u16::MAX);
     ranged::draw(
         MAX_ARROWS as u64 * 60,
         &cc,
@@ -698,22 +691,37 @@ fn every_arrow_is_announced_and_nothing_else_is() {
     );
 }
 
+/// A store filled to `MAX_ARROWS` by as many archers as one archer's share
+/// (`MAX_ARROWS_PER_OWNER`) takes, ids from 100 so none is 1, 2 or 9.
+fn fill(cc: &CombatContent, yaw: u16, pitch: u8) -> Arrows {
+    let mut arrows = Arrows::new();
+    let mut t = 0u64;
+    while arrows.len() < MAX_ARROWS {
+        let id = 100 + (arrows.len() / MAX_ARROWS_PER_OWNER) as u32;
+        let mut p = archer(id, 0.0, 50.0, 0.0, yaw, pitch, 1);
+        ranged::draw(t, cc, &mut arrows, &mut EventQueue::default(), &mut p);
+        assert_eq!(p.inv[7].count, 0, "fixture: every filler looses");
+        t += 60;
+    }
+    arrows
+}
+
 /// A full store refuses the shot and the ammo stays in the quiver. The
 /// overflow policy `MAX_ARROWS` states, asserted rather than asserted-about.
 #[test]
 fn a_full_store_refuses_the_shot_and_keeps_the_ammo() {
-    let mut arrows = Arrows::new();
     let cc = bow_fixture();
+    let mut arrows = fill(&cc, 0, LEVEL);
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 999);
-
-    let mut t = 0u64;
-    while arrows.len() < MAX_ARROWS {
-        ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
-        t += 60;
-    }
     assert_eq!(arrows.len(), MAX_ARROWS);
     let ammo_before = p.inv[7].count;
-    ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
+    ranged::draw(
+        MAX_ARROWS as u64 * 60,
+        &cc,
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut p,
+    );
     assert_eq!(
         arrows.len(),
         MAX_ARROWS,
@@ -722,6 +730,48 @@ fn a_full_store_refuses_the_shot_and_keeps_the_ammo() {
     assert_eq!(
         p.inv[7].count, ammo_before,
         "a refused shot must cost the shooter nothing"
+    );
+}
+
+/// **One archer's share of the sky** (`MAX_ARROWS_PER_OWNER`): past it the
+/// loose is refused as a full store refuses it (no arrow, no tracer and
+/// nothing out of the quiver) while the store has room, and another
+/// archer still shoots. Without it a score of accounts lobbing arrows high
+/// kept the shard-wide store full and every bow and rocket refused.
+#[test]
+fn one_archer_holds_at_most_its_share_of_the_store() {
+    let cc = bow_fixture();
+    let mut arrows = Arrows::new();
+    let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 999);
+    let mut t = 0u64;
+    for _ in 0..MAX_ARROWS_PER_OWNER {
+        ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
+        t += 60;
+    }
+    assert_eq!(
+        arrows.len(),
+        MAX_ARROWS_PER_OWNER,
+        "fixture: every loose flew"
+    );
+    let ammo_before = p.inv[7].count;
+    let mut ev = EventQueue::default();
+    ranged::draw(t, &cc, &mut arrows, &mut ev, &mut p);
+    assert_eq!(
+        arrows.len(),
+        MAX_ARROWS_PER_OWNER,
+        "one archer took more than its share"
+    );
+    assert_eq!(p.inv[7].count, ammo_before, "the refusal spent an arrow");
+    assert!(
+        !ev.entries().iter().any(|e| e.code == EV_SHOT),
+        "a refused loose drew a tracer"
+    );
+    let mut q = archer(2, 0.0, 50.0, 0.0, 0, LEVEL, 999);
+    ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut q);
+    assert_eq!(
+        arrows.len(),
+        MAX_ARROWS_PER_OWNER + 1,
+        "the share is each archer's, not the shard's"
     );
 }
 

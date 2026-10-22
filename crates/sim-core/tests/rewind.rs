@@ -351,6 +351,84 @@ fn a_slot_that_was_empty_at_that_tick_falls_back_even_for_the_same_id() {
     }
 }
 
+/// `write_row`'s `dead` branch: a corpse keeps its slot, its id and its
+/// body through the death screen, so recorded it would answer for the
+/// same id after the respawn — a shot favoured back across the wake would
+/// hit the respawned player where they died. Mutant: recording the corpse
+/// hands back `died_at` here.
+#[test]
+fn a_tick_spent_dead_falls_back_to_present_after_the_respawn() {
+    let (mut w, history) = walked_world();
+    assert_the_body_moved(&history);
+
+    w.players[0].dead = true;
+    for _ in 0..REWIND_TICKS {
+        w.tick(&[]);
+    }
+    let died_at = w.players[0].body;
+
+    // Up again, somewhere else, under the same id.
+    w.players[0].dead = false;
+    w.players[0].body.qx = died_at.qx + 77_777;
+    let live = live_of(&w, 0);
+    assert_eq!(live.id, WALKER);
+    assert_ne!(live.qx, died_at.qx);
+
+    for back in 1..=REWIND_TICKS as u8 {
+        assert_eq!(
+            w.rewind.pose_at(w.tick, 0, back, live),
+            live,
+            "the body was a corpse {back} ticks ago — where it lay must not \
+             answer for the player who got up"
+        );
+    }
+}
+
+/// The rows just BEFORE a death are live poses under the same id, and a
+/// respawn needs no delay, so inside the ring's depth they used to answer
+/// for the new body: a favoured shot hit the respawned player where they
+/// fell. `World::wake` forgets the slot's column. Mutant: dropping the
+/// `forget` hands back the walk's last steps at depths 4 and past.
+#[test]
+fn a_fast_respawn_is_not_hit_where_the_last_life_stood() {
+    let (mut w, history) = walked_world();
+    assert_the_body_moved(&history);
+
+    w.players[0].dead = true;
+    w.tick(&[]);
+    w.tick(&[]);
+    w.tick(&[Command::Respawn {
+        id: WALKER,
+        on_bag: false,
+    }]);
+    assert!(!w.players[0].dead, "the respawn took");
+    let live = live_of(&w, 0);
+    assert_eq!(live.id, WALKER, "the same id, which is the whole case");
+    // Every depth that reaches back into the walk must hold a pose the new
+    // body is not standing on, or this would pass against a ring that
+    // answered the old life (the beach is the join's spawn, which the walk
+    // left).
+    let mut walked = 0;
+    for back in 1..=REWIND_MAX_TICKS {
+        let want = (w.tick - back as u64) as usize;
+        if let Some(b) = history.get(want) {
+            assert_ne!(
+                (live.qx, live.qy, live.qz),
+                (b.qx, b.qy, b.qz),
+                "the new body must stand away from tick {want}'s pose"
+            );
+            walked += 1;
+        }
+        assert_eq!(
+            w.rewind.pose_at(w.tick, 0, back, live),
+            live,
+            "{back} ticks back is the last life — it must not answer for the \
+             body that respawned"
+        );
+    }
+    assert!(walked >= 10, "only {walked} depths reached the walk");
+}
+
 #[test]
 fn an_out_of_range_slot_falls_back_to_present() {
     let (w, _) = walked_world();

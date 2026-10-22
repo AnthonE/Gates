@@ -470,7 +470,10 @@ impl Backpacks {
     /// A bag that grows gets its expiry pushed out to what its new
     /// contents ask for and never pulled in — otherwise dropping a common
     /// item into a bag holding a rare one would shorten the rare one's
-    /// clock, which is the ladder paying backwards.
+    /// clock, which is the ladder paying backwards. **Except in THE GATE's
+    /// safe zone**, where no one else may loot it (`may_loot`): there a
+    /// spill topped up hourly kept a locker no raider could reach for as
+    /// long as its owner liked, so a bag there lives its first clock only.
     ///
     /// An inert ladder (`base_ticks == 0`) catches nothing and the
     /// overflow is destroyed exactly as it was before this lane existed —
@@ -487,6 +490,7 @@ impl Backpacks {
         owner: u32,
         items: &mut [ItemStack; INV_SLOTS],
         tick: u64,
+        town: &crate::town::Town,
         events: &mut EventQueue,
     ) -> Option<u32> {
         if bc.base_ticks == 0 {
@@ -544,7 +548,11 @@ impl Backpacks {
                 }
             }
             let want = tick + bc.lifetime_ticks(&self.entries[i].items) as u64;
-            if want > self.entries[i].expires {
+            let (bx, bz) = (
+                self.entries[i].qx as f32 * POS_XZ_Q,
+                self.entries[i].qz as f32 * POS_XZ_Q,
+            );
+            if want > self.entries[i].expires && !crate::town::safe(town, bx, bz) {
                 self.entries[i].expires = want;
             }
             if items.iter().all(|s| s.count == 0) {
@@ -769,11 +777,18 @@ impl Backpacks {
     /// `pct` percent and never less than one. What does not fit goes to
     /// `spill`, as a gather's overflow does. An emptied carcass leaves by
     /// `loot_nearest`'s route. Returns false when there was nothing to cut.
+    ///
+    /// Only an item `grown` names is cut: what the body was born holding
+    /// (`World::butcher`). Anything else in it is loot, taken by hand at
+    /// face value. The rate is meat's, and a cut that paid it on any stack
+    /// was a 150% copier for whatever a player parked in a carcass.
+    #[allow(clippy::too_many_arguments)]
     pub fn butcher(
         &mut self,
         i: usize,
         gc: &GatherContent,
         pct: u16,
+        grown: impl Fn(u16) -> bool,
         p: &mut Player,
         spill: &mut [ItemStack; INV_SLOTS],
         events: &mut EventQueue,
@@ -783,7 +798,7 @@ impl Backpacks {
         }
         let Some(s) = (0..INV_SLOTS).find(|&s| {
             let st = self.entries[i].items[s];
-            st.count > 0 && gc.stack_max_of(st.item) > 0
+            st.count > 0 && gc.stack_max_of(st.item) > 0 && grown(st.item)
         }) else {
             return false;
         };
@@ -915,6 +930,7 @@ mod tests {
             i,
             &GatherContent::probe_fixture(),
             100,
+            |item| item == 9,
             &mut cutter,
             &mut spill,
             &mut ev

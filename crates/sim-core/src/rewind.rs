@@ -170,13 +170,20 @@ impl Rewind {
     /// because "they don't move"; in this tree they do, and the exclusion
     /// buys nothing anyway — the ring is a fixed array, so skipping a slot
     /// saves zero bytes and adds a branch to the hot write.
+    ///
+    /// **A corpse is not.** It keeps its slot, its id and its body while
+    /// the death screen waits, so recorded as a pose it would answer for
+    /// the same id after the respawn: a shot favoured back across the wake
+    /// would land on the player now standing at the beach by hitting where
+    /// they died. Written empty, a dead tick falls back to the live body
+    /// as an empty slot's does.
     pub fn write_row(&mut self, tick: u64, players: &[Player; MAX_PLAYERS]) {
         let r = Self::row_of(tick);
         let row = &mut self.rows[r];
         let mut i = 0;
         while i < MAX_PLAYERS {
             let p = &players[i];
-            row[i] = if p.active {
+            row[i] = if p.active && !p.dead {
                 RewindPose::live(p)
             } else {
                 RewindPose::EMPTY
@@ -184,6 +191,24 @@ impl Rewind {
             i += 1;
         }
         self.stamps[r] = tick;
+    }
+
+    /// A new body under the same id (`World::wake`): blank the slot's
+    /// column, so nothing the last life stood on answers for this one.
+    /// `write_row` empties only the ticks spent dead, and the rows just
+    /// before the death still hold live poses under the id, so a respawn
+    /// inside the ring's depth (no delay is required) was hit where the
+    /// player fell by a shot favoured back across the death. Stamps stay:
+    /// an empty row falls back to the live body as an empty slot's does.
+    pub fn forget(&mut self, slot: usize) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
+        let mut r = 0;
+        while r < REWIND_TICKS {
+            self.rows[r][slot] = RewindPose::EMPTY;
+            r += 1;
+        }
     }
 
     /// Where slot `slot` stood `back` ticks before `tick`, or `live` when the

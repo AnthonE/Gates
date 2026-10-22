@@ -2372,11 +2372,26 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
+/// Stand everyone on the floor of `level` in the column: a deployable goes
+/// where its placer can see (`World::deploy_seen`), never through the
+/// floor of the storey it goes on.
+fn stand_on_level(w: &mut World, cx: u16, cz: u16, level: u8) {
+    let plate = w.pieces.cols().plate(cx, cz).unwrap_or(0);
+    let floor = sim_core::build::column_floor_y(SEED, hv(SEED), cx, cz, plate)
+        + sim_core::build::level_y(level);
+    for p in w.players.iter_mut().filter(|p| p.active) {
+        p.body.qy = sim_core::movement::quant_y(floor);
+    }
+}
+
 /// Bolt the code lock onto the door at the address. Its own helper
 /// because a lock mints **no** deploy record — it is a record about one
 /// (`lock.rs`) — so `place_deploy`'s "the store grew by one" assertion is
 /// the wrong check for it, and the right one is that the lock store grew.
 fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.locks().len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -2397,6 +2412,9 @@ fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
 
 /// Place a deployable and leave the world standing on the tick it landed.
 fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -6266,6 +6284,77 @@ fn a_work_names_itself_what_happened_and_who() {
     assert_eq!(w.works.w[0].points_of(BUILDER), 20_000, "two whole lines");
 }
 
+/// A dry tank relights only on a tenth of a full one: less is refused and
+/// stays in the pack, so one unit cannot switch a ceiling on (and earn the
+/// rekindle) again and again. A tank still burning takes any amount.
+#[test]
+fn a_dry_tank_takes_a_real_refill_to_relight() {
+    use sim_core::works::{
+        rekindle_min, WorksContent, ARG_ALL, OP_DEPOSIT, OP_FUEL, REFUSE_A_NOTHING,
+        WORKS_PERIOD_TICKS, WORK_EV_REKINDLED, WORK_LIT, WORK_OPEN,
+    };
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    let mut wc = WorksContent::probe_fixture();
+    wc.defs[0].fuel_max = 100;
+    w.works_def = wc;
+    assert_eq!(rekindle_min(&w.works_def.defs[0]), 10);
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let spot = w.works_def.defs[0].spot;
+    let (x, _, z) = sim_core::spot::world(&w.haven, &spot).expect("the fixture seed has a town");
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    let stack = |item, count| ItemStack {
+        item,
+        count,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[0] = stack(0, 6);
+    w.players[0].inv[1] = stack(1, 2);
+    for _ in 0..WORKS_PERIOD_TICKS {
+        if w.works.w[0].state == WORK_OPEN {
+            break;
+        }
+        w.tick(&[]);
+    }
+    w.tick(&[Command::Arc {
+        id: BUILDER,
+        op: OP_DEPOSIT,
+        target: 0,
+        arg: ARG_ALL,
+    }]);
+    assert_eq!(w.works.w[0].state, WORK_LIT);
+    // Burnt dry (the fixture's ceiling is unlock 2).
+    w.works.w[0].fuel = 0;
+    w.works.refresh(&w.works_def);
+    assert_eq!(w.works.unlocks, 0b01);
+    let fuel = Command::Arc {
+        id: BUILDER,
+        op: OP_FUEL,
+        target: 0,
+        arg: 0,
+    };
+    w.players[0].inv[1] = stack(1, 9);
+    w.tick(&[fuel]);
+    let ev = only(&w, EV_ARC_REFUSED);
+    assert_eq!((ev.a, ev.b), (BUILDER, REFUSE_A_NOTHING));
+    assert_eq!(count(&w, EV_WORK), 0);
+    assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 1), 9, "kept");
+    assert_eq!((w.works.w[0].fuel, w.works.unlocks), (0, 0b01));
+
+    w.players[0].inv[1] = stack(1, 10);
+    w.tick(&[fuel]);
+    let ev = only(&w, EV_WORK);
+    assert_eq!((ev.a, ev.b, ev.c), (0, WORK_EV_REKINDLED, BUILDER));
+    assert_eq!((w.works.w[0].fuel, w.works.unlocks), (10, 0b11));
+
+    // Burning: one unit tops it up, and nothing is rekindled.
+    w.players[0].inv[1] = stack(1, 1);
+    w.tick(&[fuel]);
+    assert_eq!(count(&w, EV_WORK), 0);
+    assert_eq!(w.works.w[0].fuel, 11);
+}
+
 /// `EV_EXTRACTED: a = player, b = the exchange, c = units` — coin through the
 /// exchange: refused while it is shut, refused at a zero allowance, then
 /// taken up to the allowance the command carries and no further.
@@ -6444,6 +6533,19 @@ fn lore_and_locks_name_the_player_the_op_and_the_solver() {
     }
     assert!(solved, "the answer opened the lock");
     assert!(w.arc.mechs[0].rest_until > w.tick, "the lock rests");
+    // Every client is sent the dials, so the resting lock's scramble must
+    // name no dial's answer and must not be a fixed function of it (it was
+    // `want + 1 + j`, which read the wipe's answer to the whole shard).
+    let n = def.dials as usize;
+    let rest = w.arc.mechs[0].dials;
+    assert!(
+        (0..n).all(|j| rest[j] != want[j]),
+        "the lock rests on its answer"
+    );
+    assert!(
+        (0..n).any(|j| rest[j] != (want[j] + 1 + j as u8) % def.values),
+        "the resting dials are the answer, shifted"
+    );
     assert_eq!(
         sim_core::craft::inv_count(&w.players[0].inv, def.reward),
         def.reward_n as u32,

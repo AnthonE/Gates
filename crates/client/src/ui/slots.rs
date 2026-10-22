@@ -51,7 +51,8 @@ use sim_core::combat::{
 use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
-    deposit_refused, is_own, CONT_BODY, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
+    deposit_refused, deposits_into, is_own, CONT_BAG, CONT_BODY, CONT_BOX, CONT_MAX, CONT_SELF,
+    CONT_WEAR, CONT_WORLD,
 };
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
@@ -359,6 +360,45 @@ pub fn move_args(
     })
 }
 
+/// Is the open container a carcass or a body: a `CONT_BAG` that does not
+/// look like a pack ([`WireBag::kind`])? Those are exactly the bags the sim
+/// keys on a mob-tagged owner (`WireBag::of`: an animal's slot or
+/// `CORPSE_OWNER`), which `World::move_item` makes take-only. A bag not in
+/// the client's set answers `false`, and the shard still refuses.
+///
+/// [`WireBag::kind`]: protocol::event::WireBag::kind
+pub fn take_only_bag(cont_kind: u8, cont_handle: u32, bags: &[protocol::event::WireBag]) -> bool {
+    cont_kind == CONT_BAG
+        && bags
+            .iter()
+            .any(|b| b.id == cont_handle && b.kind != protocol::event::BAG_KIND_PACK)
+}
+
+/// Would this move put something into a take-only bag ([`take_only_bag`]):
+/// forward, or by a swap sending the occupant back? The sim's own
+/// `deposits_into`, asked as `World::move_item` asks it, so a drag, a
+/// right-click and the red edge refuse what the shard would.
+pub fn take_only_refused(
+    take_only: bool,
+    from_kind: u8,
+    to_kind: u8,
+    src: ItemStack,
+    dst: ItemStack,
+) -> bool {
+    take_only && deposits_into(CONT_BAG, from_kind, to_kind, src, dst)
+}
+
+/// [`refusal_text`] for what is open: `REFUSE_M_NO_INPUT` is a crate's and
+/// a carcass's alike (one code, the shard's), so the sentence is picked by
+/// the open kind, the way `note_refusal` picks the oven's by its machine.
+pub fn refusal_text_in(reason: u8, cont_kind: u8) -> &'static str {
+    if reason as u32 == sim_core::inventory::REFUSE_M_NO_INPUT && cont_kind == CONT_BAG {
+        "a carcass takes nothing - you can only take from it"
+    } else {
+        refusal_text(reason)
+    }
+}
+
 /// Why a move bounced, for the panel's status line. `sim_core`'s
 /// `REFUSE_M_*` in words; the numbers are the sim's and the sentences are
 /// this side's.
@@ -384,18 +424,19 @@ pub fn refusal_text(reason: u8) -> &'static str {
         // reaches this arm is the disagreement — a stale catalog, or a
         // slot the server knows about and this build does not.
         REFUSE_M_WEAR => "that is not what goes in that slot",
-        // The container's own refusal (v64). Named after the crate
-        // because `CONT_WORLD` is the only kind that gives it today and
-        // `container_title` calls that panel `CRATE` — the word on the
-        // screen and the word in the line are the same one.
+        // The container's own refusal (v64). Named after the crate, which
+        // `container_title` calls that panel; a carcass gives it too, and
+        // `refusal_text_in` says that one's sentence by the open kind.
         REFUSE_M_NO_INPUT => "that crate gives loot and takes none",
         // The research table's two (v73). Its slot rule names both slots,
         // because the fix is to put the thing in the OTHER one as often as
         // it is to take it away.
         REFUSE_M_TABLE => "the table takes one thing to research and its junk",
         REFUSE_M_BUSY => "the table is researching - wait for it to finish",
-        // THE GATE's "No Looting" (v92), Rust's popup.
-        REFUSE_M_SAFE => "you can't loot other players in a safe zone",
+        // THE GATE's "No Looting" (v92), Rust's popup. A bag lying in the
+        // zone is take-only for its owner too, so the same reason refuses
+        // a stash into one.
+        REFUSE_M_SAFE => "you can't loot other players, or stash in a bag, in a safe zone",
         // A give (v102): their pack, not a slot you dragged to.
         REFUSE_M_GIVE => "their pack has no room for that",
         _ => "refused",

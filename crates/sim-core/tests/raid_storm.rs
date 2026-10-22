@@ -24,10 +24,14 @@
 //! ## What it asserts, and why each one can go red
 //!
 //! 1. **Every store stays inside its cap, every tick.** The invariant.
-//! 2. **The charge store actually fills** and answers `REFUSE_B_FULL`.
-//!    Without this the first assertion is a pass it didn't earn — a storm
-//!    that never reaches a cap proves nothing about the cap. Delete the
-//!    `MAX_LIVE_CHARGES` check in `charge::place` and this goes red.
+//! 2. **Every planter fills its own share** (`MAX_CHARGES_PER_OWNER`) and
+//!    is answered `REFUSE_B_FULL`, while the shard's store, sized off every
+//!    seat's share, never fills. Without this the first assertion is a pass
+//!    it didn't earn — a storm that never reaches a cap proves nothing about
+//!    the cap. Delete the per-owner check in `charge::place` and this goes
+//!    red. What one tick sets off (`MAX_DETONATIONS_PER_TICK`) has its own
+//!    gate below, which takes more fuses running out together than this
+//!    storm's paced plants line up.
 //! 3. **No tick removes more pieces than `MAX_REMOVALS_PER_TICK`**, and
 //!    the storm removes pieces in bulk (asserted separately), so the
 //!    budget is under real pressure rather than nominally observed.
@@ -50,7 +54,7 @@
 //! **they are no longer un-driven**: `tests/combat_storm.rs` (2026-08-30)
 //! is the sibling that reaches them, at every seat the world has. It is a
 //! second file rather than a flag on this one for a reason worth keeping
-//! — the five equality assertions below (`peak_charges`, `peak_removals`,
+//! — the five equality assertions below (`peak_share`, `peak_removals`,
 //! `peak_events`) were sized for a plot whose owner is alive to rebuild,
 //! so arming this fixture would have desaturated them and the gate would
 //! have gone quiet while staying green. What neither storm has is the
@@ -65,13 +69,17 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::bots::{raid_step, RaidPlan, RaidRows, RAID_CYCLE};
-use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, REFUSE_B_FULL};
+use sim_core::build::{
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE, REFUSE_B_FULL,
+};
 use sim_core::combat::{CombatContent, ThrowDef};
 use sim_core::deploy::{DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::input::InputFrame;
 use sim_core::limits::{
-    MAX_BOXES, MAX_COMMANDS_PER_TICK, MAX_DEPLOYS, MAX_EVENTS_PER_TICK, MAX_LIVE_CHARGES,
-    MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_REMOVALS_PER_TICK,
+    MAX_BOXES, MAX_CHARGES_PER_OWNER, MAX_COMMANDS_PER_TICK, MAX_DEPLOYS, MAX_DETONATIONS_PER_TICK,
+    MAX_EVENTS_PER_TICK, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS,
+    MAX_REMOVALS_PER_TICK,
 };
 use sim_core::movement::Body;
 use sim_core::rng::Pcg32;
@@ -216,8 +224,8 @@ fn storm_deploy() -> DeployContent {
 /// header), a structure number that takes a 100 hp piece off the board in
 /// one plant, a 3 m blast so the neighbouring pieces take a falloff share,
 /// and a **90-tick fuse** — the fuse is what makes the storm a storm,
-/// because a charge that resolved in four ticks would never let the live
-/// store reach `MAX_LIVE_CHARGES`.
+/// because a charge that resolved in four ticks would never let a planter
+/// reach its share (`MAX_CHARGES_PER_OWNER`).
 fn storm_combat() -> CombatContent {
     let mut c = CombatContent::probe_fixture();
     c.throw[CHARGE_ITEM as usize] = ThrowDef {
@@ -292,6 +300,8 @@ struct Storm {
     /// Byte length and buffer of the world save taken after the last tick.
     save: Vec<u8>,
     peak_charges: usize,
+    /// Most live charges one planter held at once.
+    peak_share: usize,
     peak_pieces: usize,
     peak_deploys: usize,
     peak_locks: usize,
@@ -350,6 +360,7 @@ fn storm() -> Storm {
         hash: 0,
         save: Vec::new(),
         peak_charges: 0,
+        peak_share: 0,
         peak_pieces: 0,
         peak_deploys: 0,
         peak_locks: 0,
@@ -411,6 +422,11 @@ fn storm() -> Storm {
 
         // ---- what the storm actually reached ----
         s.peak_charges = s.peak_charges.max(w.charges.len());
+        let mut shares = [0usize; PLAYERS + 1];
+        for c in w.charges.entries() {
+            shares[c.owner as usize] += 1;
+        }
+        s.peak_share = s.peak_share.max(shares.iter().copied().max().unwrap_or(0));
         s.peak_pieces = s.peak_pieces.max(w.pieces.len());
         s.peak_deploys = s.peak_deploys.max(w.deploys.len());
         s.peak_locks = s.peak_locks.max(w.deploys.locks().len());
@@ -463,12 +479,20 @@ fn test_raid_storm() {
     let s = storm();
 
     assert_eq!(
-        s.peak_charges, MAX_LIVE_CHARGES,
-        "the storm never filled the charge store — it proved nothing about the cap"
+        s.peak_share, MAX_CHARGES_PER_OWNER,
+        "no planter ever filled its share — the storm proved nothing about the cap"
     );
     assert!(
         s.saw_charge_store_full,
-        "a full charge store must answer REFUSE_B_FULL, not silently drop the plant"
+        "a full share must answer REFUSE_B_FULL, not silently drop the plant"
+    );
+    // No more than every attacker's share at once, and that is nowhere near
+    // the shard's store: no few hands refuse the island's other raids.
+    const _: () = assert!(PLOTS * MAX_CHARGES_PER_OWNER < MAX_LIVE_CHARGES);
+    assert!(
+        s.peak_charges <= PLOTS * MAX_CHARGES_PER_OWNER,
+        "{} live charges from {PLOTS} planters",
+        s.peak_charges
     );
     // Measured 64 of 64: the storm pins the removal budget against its
     // ceiling and it holds. Equality rather than `<=` on purpose — `<=`
@@ -588,4 +612,83 @@ fn the_storm_is_deterministic_and_saves_whole() {
         a.hash,
         "a storm's world did not survive its own save/load round trip"
     );
+}
+
+/// **More fuses run out on one tick than a tick sets off**
+/// (`MAX_DETONATIONS_PER_TICK`): planters enough that their whole shares,
+/// planted together on their own foundations, come due together past the
+/// cap. That tick sets off the cap's worth; the rest stay stuck, due, and
+/// go off on the next — none is lost, none waits two.
+#[test]
+fn a_tick_sets_off_at_most_its_cap_and_the_rest_go_next() {
+    const PLANTERS: usize = MAX_DETONATIONS_PER_TICK / MAX_CHARGES_PER_OWNER + 1;
+    const ALL: usize = PLANTERS * MAX_CHARGES_PER_OWNER;
+    const _: () = assert!(ALL > MAX_DETONATIONS_PER_TICK && PLANTERS <= PLOTS);
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = storm_deploy();
+    w.combat = storm_combat();
+    let cells = plots(SEED);
+    let (sx, sz) = cell_center(cells[0].0, cells[0].1);
+    w.dev_spawn = Some((sx, sz));
+    let mut cmds = Vec::new();
+    for (i, &(cx, cz)) in cells.iter().enumerate().take(PLANTERS) {
+        let id = i as u32 + 1;
+        w.tick(&[Command::Join { id }]);
+        let slot = slot_of(&w, id);
+        let (x, z) = cell_center(cx, cz);
+        w.players[slot].body = Body::at(SEED, hv(SEED), x, z);
+        restock(&mut w.players[slot].inv);
+        // A foundation of its own, and the charge in hand.
+        cmds.push(Command::Place {
+            id,
+            row: FOUNDATION_ROW,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        });
+        cmds.push(Command::Input {
+            id,
+            frame: InputFrame {
+                seq: 1,
+                sel: 0,
+                ..InputFrame::default()
+            },
+            favour: 0,
+        });
+    }
+    w.tick(&cmds);
+    // Every share, in one tick: one fuse for all of them.
+    cmds.clear();
+    for (i, &(cx, cz)) in cells.iter().enumerate().take(PLANTERS) {
+        for _ in 0..MAX_CHARGES_PER_OWNER {
+            cmds.push(Command::Throw {
+                id: i as u32 + 1,
+                deploy: false,
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+            });
+        }
+    }
+    w.tick(&cmds);
+    assert_eq!(w.charges.len(), ALL, "every share planted");
+    let mut waited = 0;
+    while w.charges.len() == ALL {
+        w.tick(&[]);
+        waited += 1;
+        assert!(waited < 200, "the fuses never ran out");
+    }
+    assert_eq!(
+        w.charges.len(),
+        ALL - MAX_DETONATIONS_PER_TICK,
+        "the tick the fuses ran out set off more or less than its cap"
+    );
+    w.tick(&[]);
+    assert_eq!(w.charges.len(), 0, "the rest went off the next tick");
 }

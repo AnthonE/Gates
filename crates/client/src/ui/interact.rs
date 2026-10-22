@@ -2430,14 +2430,36 @@ pub fn resolve_open(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> S
 /// `melee::pick_cast` — [`resolve_open`]'s cast, taking the nearest
 /// occupant only if a hand picks it — at the reach the sim checks
 /// (`gather::PICK_REACH_M`, measured from the same eye to the same swing
-/// volume), so the prompt never offers a pick `gather::pick` refuses.
-pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+/// volume), and in sight of the hand as the shard's `Command::Pick` asks
+/// (`reach::clear_from` to the plant lying where it stands), so the prompt
+/// never offers a pick the shard refuses.
+pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> SwingPick {
     let ray = at.ray(sim_core::gather::PICK_REACH_M);
     let seed = island.seed;
-    match melee::pick_cast(seed, &mut island.occupants(), &ray) {
-        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
-        None => SwingPick::default(),
+    let Some(hit) = melee::pick_cast(seed, &mut island.occupants(), &ray) else {
+        return SwingPick::default();
+    };
+    // The shard's hand: not through a wall.
+    let body = at.body();
+    let s = hit.slot;
+    let reached = sim_core::reach::clear_from(
+        seed,
+        island.haven,
+        cols,
+        island.doors,
+        sim_core::reach::eye_of(&body, at.crouched),
+        body.qy as f32 * sim_core::movement::POS_Y_Q,
+        sim_core::reach::Target::lying(
+            seed,
+            island.haven,
+            cols,
+            (quant_xz(s.x), quant_y(s.y), quant_xz(s.z)),
+        ),
+    );
+    if !reached {
+        return SwingPick::default();
     }
+    pick_of(at, hit.cx, hit.cz, hit.slot)
 }
 
 /// The plant the eye's ray meets first within `reach`, by its pick cylinder

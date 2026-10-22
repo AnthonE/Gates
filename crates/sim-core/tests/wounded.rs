@@ -11,8 +11,8 @@
 //!    a function of the seed);
 //! 4. the minute — a second lethal blow inside `REWOUND_TICKS` of getting up
 //!    is a death outright, and one after it is a fall again;
-//! 5. the crawl — a downed body moves at a third of the walk and its swing
-//!    button swings nothing;
+//! 5. the crawl — a downed body moves at a third of the walk, its swing
+//!    button swings nothing and its trigger fires nothing;
 //! 6. the doors — `live_slot_of` refuses a downed body, `awake_slot_of`
 //!    keeps it;
 //! 7. the sleeper — a lethal blow on a sleeper is a death, and a downed body
@@ -31,7 +31,7 @@ use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q, WALK_SPEED};
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_HAND, EV_CONSUMED, EV_DEATH, EV_HEALTH, EV_HIT,
-    EV_RECOVERED, EV_SWING, EV_WOUNDED,
+    EV_RECOVERED, EV_SHOT, EV_SWING, EV_WOUNDED,
 };
 use sim_core::wound::{
     crawl_frame, recover_chance_pm, recovers, CRAWL_DIV, REWOUND_TICKS, WOUNDED_HP,
@@ -652,6 +652,73 @@ fn a_downed_body_crawls_at_a_third_of_the_walk_and_swings_at_nothing() {
     assert!(crawled > 0.5, "and it did move: {crawled} m");
     // The frame the sim stepped is what `crawl_frame` says it is.
     assert_eq!(crawl_frame(&go).move_z, 127 / CRAWL_DIV);
+}
+
+/// The gun's half of "swings at nothing". A firearm resolves outside the
+/// player loop that skips a crawl's arm (`ranged::hitscan`), and a downed
+/// body keeps hp and its stored trigger bit, so the pass has to refuse it
+/// itself — without that a downed player emptied the magazine from the
+/// ground. Run twice over the same geometry, down and standing, so the
+/// silence is the rule and not a gun that never fires.
+#[test]
+fn a_downed_body_cannot_fire_a_gun() {
+    // `CombatContent::probe_fixture`'s firearm, its round, and its magazine.
+    const GUN: u16 = 6;
+    const ROUND: u16 = 7;
+    const MAG: u16 = 6;
+    let shots_by_victim = |down: bool| -> (u32, u16) {
+        let mut w = duel_world();
+        if down {
+            let mut seq = 0;
+            swing_until(&mut w, &mut seq, EV_WOUNDED);
+            stand_down(&mut w);
+            assert!(w.players[1].wounded && !w.players[1].dead);
+        } else {
+            w.players[1].hp = 100;
+        }
+        w.players[1].inv[0] = ItemStack {
+            item: GUN,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        w.players[1].mag[0] = MAG;
+        w.players[1].mag_round[0] = ROUND;
+        // Facing the attacker, trigger down, for well past the cadence.
+        let pitch = aim_at(&w, 1, 0);
+        let mut shots = 0;
+        for i in 0..40u16 {
+            w.tick(&[Command::Input {
+                id: VICTIM,
+                frame: InputFrame {
+                    seq: i + 1,
+                    buttons: BTN_PRIMARY,
+                    yaw: YAW.wrapping_add(32_768),
+                    pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                    pitch_fine: 0,
+                },
+                favour: 0,
+            }]);
+            shots += w
+                .events
+                .entries()
+                .iter()
+                .filter(|e| e.code == EV_SHOT && e.a == VICTIM)
+                .count() as u32;
+        }
+        (shots, w.players[1].mag[0])
+    };
+    let (standing, left) = shots_by_victim(false);
+    assert!(standing > 1, "fixture: a standing body fires ({standing})");
+    assert_eq!(left, MAG - standing as u16, "and each shot spends a round");
+    assert_eq!(
+        shots_by_victim(true),
+        (0, MAG),
+        "a downed body fired its gun"
+    );
 }
 
 #[test]

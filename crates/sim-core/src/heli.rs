@@ -72,7 +72,8 @@ pub const Y_CEIL_Q: i32 = 14_000;
 /// Ticks between two looks (the target's line of sight, or a scan for a new
 /// one). Half a second: a look is a world walk, the expensive part.
 const LOOK_TICKS: u64 = 15;
-/// Candidates one scan tests for line of sight, nearest first.
+/// Candidates one scan tests for line of sight, nearest first; one more is
+/// then taken in turn from the rest (`sentry::rotating_pick`).
 const LOOK_TRIES: usize = 2;
 /// A sight line is walked at most this many samples, whatever its length.
 /// Coarser than a bullet's spacing on a long look; the round it fires
@@ -220,6 +221,9 @@ pub struct Heli {
     pub orbit: u16,
     pub next_shot: u64,
     pub burst_left: u8,
+    /// Where a scan's rotating try starts (`sentry::rotating_pick`): one
+    /// past the last slot it took, kept when a target goes.
+    pub scan: u8,
 }
 
 impl Default for Heli {
@@ -247,6 +251,7 @@ impl Default for Heli {
             orbit: 0,
             next_shot: 0,
             burst_left: 0,
+            scan: 0,
         }
     }
 }
@@ -276,6 +281,7 @@ impl Heli {
         b[72..80].copy_from_slice(&self.seen_at.to_le_bytes());
         b[80..88].copy_from_slice(&self.next_shot.to_le_bytes());
         b[88..90].copy_from_slice(&self.orbit.to_le_bytes());
+        b[90] = self.scan;
         b
     }
 
@@ -535,24 +541,41 @@ fn look(
             return;
         }
     }
-    // Nearest first, `LOOK_TRIES` of them: a selection by repeated scan
+    // The `LOOK_TRIES` nearest, then one more in turn from the rest
+    // (`sentry::rotating_pick`, so hidden bodies nearer than a threat in
+    // plain view cannot shield it for good): a selection by repeated scan
     // rather than a sort, so nothing here allocates or needs a buffer.
     let reach2 = def.detect_mm as f32 * def.detect_mm as f32;
-    let mut tried = [usize::MAX; LOOK_TRIES];
-    for t in 0..LOOK_TRIES {
-        let mut best: Option<(f32, usize)> = None;
-        for (i, p) in players.iter().enumerate() {
-            if !huntable(cc, p) || tried[..t].contains(&i) {
-                continue;
+    let (hx, hz) = (heli.x, heli.z);
+    let d2_of = |p: &Player| {
+        let (px, pz) = feet_xz_mm(p);
+        let (dx, dz) = ((px - hx) as f32, (pz - hz) as f32);
+        dx * dx + dz * dz
+    };
+    let mut tried = [usize::MAX; LOOK_TRIES + 1];
+    for t in 0..=LOOK_TRIES {
+        let pick = if t < LOOK_TRIES {
+            let mut best: Option<(f32, usize)> = None;
+            for (i, p) in players.iter().enumerate() {
+                if !huntable(cc, p) || tried[..t].contains(&i) {
+                    continue;
+                }
+                let d2 = d2_of(p);
+                if d2 <= reach2 && best.is_none_or(|(b, _)| d2 < b) {
+                    best = Some((d2, i));
+                }
             }
-            let (px, pz) = feet_xz_mm(p);
-            let (dx, dz) = ((px - heli.x) as f32, (pz - heli.z) as f32);
-            let d2 = dx * dx + dz * dz;
-            if d2 <= reach2 && best.is_none_or(|(b, _)| d2 < b) {
-                best = Some((d2, i));
+            best.map(|(_, i)| i)
+        } else {
+            let i = crate::sentry::rotating_pick(players, heli.scan as usize, |i, p| {
+                !tried[..t].contains(&i) && huntable(cc, p) && d2_of(p) <= reach2
+            });
+            if let Some(i) = i {
+                heli.scan = ((i + 1) % MAX_PLAYERS) as u8;
             }
-        }
-        let Some((_, i)) = best else {
+            i
+        };
+        let Some(i) = pick else {
             return;
         };
         tried[t] = i;

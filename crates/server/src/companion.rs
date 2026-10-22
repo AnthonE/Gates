@@ -78,6 +78,10 @@ const SESSIONS_PER_WALLET: usize = 8;
 /// so a wallet that signs in again still evicts its oldest, and small enough
 /// that the island's wallets cannot fill `USED_KEPT` between them.
 const LOGINS_PER_WALLET: usize = 2 * SESSIONS_PER_WALLET;
+// Full, the table keeps only the island's nonces (`Web::login`), and those
+// always fit: a nonce pushed out of `used` is a signed login anyone who saw
+// it could replay, so nothing else ever evicts one.
+const _: () = assert!(sim_core::limits::MAX_PLAYERS * LOGINS_PER_WALLET < USED_KEPT);
 pub const SESSION_SECS: u64 = 30 * 24 * 3600;
 /// The most of a request this reads: request line, headers and body.
 const REQUEST_CAP: usize = 8192;
@@ -504,6 +508,22 @@ impl Web {
         // challenge window, so it cannot fill the table either.
         if self.used.values().filter(|(_, w)| *w == wallet).count() >= LOGINS_PER_WALLET {
             return Response::error(429, "slow down");
+        }
+        if self.used.len() >= USED_KEPT {
+            // A nonce outlives its body, so wallets cycled through the
+            // island's bodies could still fill the table under their own cap
+            // each: full, it drops the nonces of wallets no longer on the
+            // island. They cannot sign in, and one could be replayed only by
+            // its signer's own body back within its minutes. The island's
+            // own always fit (the assert on `LOGINS_PER_WALLET`).
+            let here: std::collections::BTreeSet<&str> = self
+                .snap
+                .people
+                .iter()
+                .map(|p| p.wallet.as_str())
+                .filter(|w| !w.is_empty())
+                .collect();
+            self.used.retain(|_, (_, w)| here.contains(w.as_str()));
         }
         if self.used.len() >= USED_KEPT {
             return Response::error(503, "busy");
@@ -1064,6 +1084,9 @@ mod tests {
         let (mut w, _rx) = web();
         let login = login_body(&mut w, &key(7), 1000);
         assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 403);
+        // A refused wallet spends no room in the replay table: throwaway
+        // wallets cannot fill it and lock everyone else out.
+        assert!(w.used.is_empty());
         island(&mut w, &[(&addr(&key(7)), 0)]);
         let first = sign_in(&mut w, &key(7), 1000);
         let mut last = String::new();
@@ -1072,6 +1095,44 @@ mod tests {
         }
         assert_eq!(w.handle(&get("/api/team", Some(&first)), 1100).status, 401);
         assert_eq!(w.handle(&get("/api/team", Some(&last)), 1100).status, 200);
+    }
+
+    /// A nonce outlives its body, so wallets cycled through the island's
+    /// bodies can fill the replay table under `LOGINS_PER_WALLET` each. Full,
+    /// it drops the nonces of wallets gone from the island and the island
+    /// still signs in; the island's own are kept, and a table they alone
+    /// filled (more than the assert lets them hold) is still busy.
+    #[test]
+    fn wallets_gone_from_the_island_give_their_room_back() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
+        let until = 1000 + CHALLENGE_SECS + 5;
+        let nonce = |i: usize| {
+            let mut n = [0u8; NONCE_BYTES];
+            n[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            n
+        };
+        let kept = [0xffu8; NONCE_BYTES];
+        w.used.insert(kept, (until, addr(&key(8))));
+        for i in 0..USED_KEPT - 1 {
+            let gone = format!("0x{:040x}", i / LOGINS_PER_WALLET + 1);
+            w.used.insert(nonce(i), (until, gone));
+        }
+        assert_eq!(w.used.len(), USED_KEPT);
+        sign_in(&mut w, &key(7), 1000);
+        assert_eq!(w.used.len(), 2, "only the island's nonces stay");
+        assert!(
+            w.used.contains_key(&kept),
+            "an island wallet's nonce was dropped"
+        );
+
+        w.used.clear();
+        for i in 0..USED_KEPT {
+            w.used.insert(nonce(i), (until, addr(&key(8))));
+        }
+        let login = login_body(&mut w, &key(7), 1000);
+        assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 503);
+        assert_eq!(w.used.len(), USED_KEPT);
     }
 
     /// A full session table evicts from the wallet holding the most, not the

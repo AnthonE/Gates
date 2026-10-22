@@ -113,3 +113,35 @@ fn a_seat_out_of_reach_refuses() {
     assert_eq!(w.players[slot(&w, A)].seat, 0);
     assert_eq!(at(&w, A), before);
 }
+
+/// A sit moves the feet across, never up or down, and is a short walk: a
+/// body on top of a cabinet, or behind one, is not sat down past it.
+#[test]
+fn a_seat_off_the_floor_or_behind_a_cabinet_refuses() {
+    let mut w = world();
+    // The first slot machine's stool, sat in from the far side of its
+    // cabinet: in reach, with the cabinet in between.
+    let (sx, sz) = town::seat_world(&w.haven.town, 0).unwrap();
+    let (lx, lz) = town::SLOT_SPOTS[0];
+    let (bx, bz) = sim_core::kit::to_world(&w.haven.town.placed(), lx, lz + 1.9);
+    assert!((bx - sx) * (bx - sx) + (bz - sz) * (bz - sz) < 2.0 * 2.0);
+    stand_at(&mut w, A, bx, bz);
+    let before = at(&w, A);
+    w.tick(&[Command::Sit { id: A, seat: 0 }]);
+    assert_eq!(w.players[slot(&w, A)].seat, 0, "sat through a cabinet");
+    assert_eq!(at(&w, A), before);
+
+    // In the open, but a cabinet's height over the floor.
+    stand_at(&mut w, A, sx + 1.5, sz);
+    let i = slot(&w, A);
+    w.players[i].body.qy += 180;
+    let before = at(&w, A);
+    w.tick(&[Command::Sit { id: A, seat: 0 }]);
+    assert_eq!(w.players[slot(&w, A)].seat, 0, "sat down from 1.8 m up");
+    assert_eq!(at(&w, A), before);
+
+    // And from the floor the same seat takes it.
+    stand_at(&mut w, A, sx + 1.5, sz);
+    w.tick(&[Command::Sit { id: A, seat: 0 }]);
+    assert_eq!(w.players[slot(&w, A)].seat, 1);
+}

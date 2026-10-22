@@ -159,6 +159,13 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &I
         if w.def.fuel_max > 0 {
             let carry = have(w.def.fuel);
             let lit = w.state == WORK_LIT;
+            // A dry tank relights only on a tenth of a full one from one
+            // pack (`works::rekindle_min`); the sim refuses less.
+            let need = if w.fuel == 0 {
+                sim_core::works::rekindle_min(&w.def)
+            } else {
+                1
+            };
             kit::section(p, "THE TANK");
             kit::row(p, |r| {
                 icon(r, core, icons, w.def.fuel, ICON_PX);
@@ -174,7 +181,7 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &I
                     r,
                     format!("you have {}", words::thousands(carry)),
                     96.0,
-                    if carry > 0 { TEXT } else { TEXT_DIM },
+                    if carry >= need { TEXT } else { TEXT_DIM },
                 );
                 kit::button(
                     r,
@@ -184,11 +191,21 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &I
                         target: k as u8,
                         arg: 0,
                     },
-                    lit && carry > 0 && w.fuel < w.def.fuel_max,
+                    lit && carry >= need && w.fuel < w.def.fuel_max,
                 );
             });
             if !lit {
                 kit::line(p, "the tank takes fuel once it burns", 11.0, TEXT_DIM);
+            } else if w.fuel == 0 {
+                kit::line(
+                    p,
+                    format!(
+                        "a dry tank relights on {} or more at once — pool it in one pack",
+                        words::thousands(need)
+                    ),
+                    11.0,
+                    TEXT_DIM,
+                );
             }
         }
         if core.bank.work as usize == k {

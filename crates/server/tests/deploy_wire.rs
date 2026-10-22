@@ -2000,6 +2000,144 @@ fn a_late_joiner_sees_a_fire_burning() {
     );
 }
 
+/// **A fire's lit bit is aimed, names its striker to the striker alone, and
+/// a walk back restates it.** `EV_OVEN` used to reach every client on the
+/// island with the presser's id. Now a client 500 m off is not told the
+/// fire went out — so it still holds it lit — and when it walks back, the
+/// re-armed deploy walk restates every converter in range, the cold ones
+/// too, and the fire is out on its screen as well.
+#[test]
+fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.cook = sim_core::oven::CookContent::probe_fixture();
+    let (cx, cz) = buildable_block(SEED, CX, CZ, 1, 1);
+    let m = sim_core::build::BUILD_CELL_M;
+    let base = ((cx as f32 + 0.5) * m, (cz as f32 + 0.5) * m);
+    core.world.dev_spawn = Some(base);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    // The fire, filled and struck: `a_late_joiner_sees_a_fire_burning`'s.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 6,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 4,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.deploys.len(), 1, "the fire was not placed");
+    let d = core.world.deploys.entries()[0];
+    let i = core
+        .world
+        .deploys
+        .box_index(sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc))
+        .expect("a fire is a container");
+    core.world.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 0,
+            count: 40,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    let strike = ActionMsg::Use {
+        cx: d.cx,
+        cz: d.cz,
+        level: d.level,
+        loc: d.loc,
+    };
+    act(&mut core, 0, strike);
+    let mut seen = Vec::new();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    assert!(
+        core.world.deploys.oven_states()[i].lit,
+        "the fire did not light"
+    );
+    let by = |slot: usize, seen: &[(usize, protocol::EventMsg)]| -> Vec<u32> {
+        seen.iter()
+            .filter_map(|(s, m)| match m {
+                protocol::EventMsg::Oven { by, .. } if *s == slot => Some(*by),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(by(0, &seen), [id_of(0)], "the striker hears its own id");
+    let other = by(1, &seen);
+    assert_eq!(other.len(), 1, "the client beside it hears it struck");
+    assert!(
+        other[0] != 0 && other[0] != id_of(0),
+        "and by a hand, not whose"
+    );
+    for (slot, c) in &clients {
+        assert!(
+            c.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+            "client {slot} sees it cold"
+        );
+    }
+
+    // Slot 1 walks 500 m off (its walks re-arm there), and the fire is put
+    // out behind it.
+    let w1 = world_slot(&core, id_of(1));
+    core.world.players[w1].body =
+        sim_core::movement::Body::at(SEED, hv(SEED), base.0 + 500.0, base.1);
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    act(&mut core, 0, strike);
+    let mut seen = Vec::new();
+    pump_seen(&mut core, &stats, &mut clients, &mut seen);
+    assert!(
+        !core.world.deploys.oven_states()[i].lit,
+        "the fire did not go out"
+    );
+    assert!(!clients[0].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc));
+    assert!(
+        by(1, &seen).is_empty(),
+        "a client 500 m off was told the fire went out"
+    );
+    assert!(
+        clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "the far client was meant to hold the stale state the walk back repairs"
+    );
+
+    // Back to the fire: the re-arm's walk says it is out.
+    core.world.players[w1].body = sim_core::movement::Body::at(SEED, hv(SEED), base.0, base.1);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(
+        !clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "walking back left a fire burning that went out while it was away"
+    );
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
 /// Encode an action as a client does, and hand the server what it decodes:
 /// the wire's half of a verb, which `act` alone skips.
 fn act_wire(

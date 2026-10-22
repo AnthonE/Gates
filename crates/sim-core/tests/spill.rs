@@ -25,6 +25,7 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::INV_SLOTS;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
+use sim_core::town::Town;
 use sim_core::world::{Command, EventQueue, Player, World, EV_BAG_DROPPED, EV_GATHER};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
@@ -422,7 +423,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         skin: 0,
     };
     assert_eq!(
-        bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev),
+        bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &Town::NONE, &mut ev,),
         Some(id),
         "same address: merged into the standing bag, not a new one"
     );
@@ -468,7 +469,18 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         skin: 0,
     };
     let made = bp
-        .spill_at(&bc, &gc, far_q, 0, 0, 1, &mut spill, 110, &mut ev)
+        .spill_at(
+            &bc,
+            &gc,
+            far_q,
+            0,
+            0,
+            1,
+            &mut spill,
+            110,
+            &Town::NONE,
+            &mut ev,
+        )
         .unwrap();
     assert_ne!(made, near, "a second bag, not the first one moved");
     assert_eq!(bp.len(), 2);
@@ -506,7 +518,7 @@ fn a_spill_never_merges_into_somebody_else_s_bag() {
         skin: 0,
     };
     let mine = bp
-        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &mut ev)
+        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &Town::NONE, &mut ev)
         .unwrap();
     assert_ne!(mine, theirs, "a bag of my own, not theirs topped up");
     assert_eq!(bp.len(), 2);
@@ -1105,7 +1117,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
         cond: 0,
         skin: 0,
     };
-    let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &mut ev);
+    let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &Town::NONE, &mut ev);
     assert!(made.is_some(), "nothing stood up — the case did not run");
     assert!(
         buf.iter().all(|s| s.count == 0),
@@ -1115,7 +1127,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
 
     // The same buffer, drained again in the same tick. A caller doing this
     // must not be able to conjure a second copy.
-    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &mut ev);
+    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &Town::NONE, &mut ev);
     assert_eq!(
         bp.len(),
         1,
@@ -1170,6 +1182,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         1,
         &mut buf,
         20,
+        &Town::NONE,
         &mut ev,
     );
     assert!(made.is_none(), "an inert ladder catches nothing");
@@ -1290,7 +1303,7 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         skin: 0,
     };
     let stood = bp
-        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev)
+        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &Town::NONE, &mut ev)
         .expect("the leftovers stand a bag up");
     assert_ne!(stood, first, "the second bag is the leftovers' own");
 
@@ -1338,7 +1351,7 @@ fn a_skin_survives_a_bag_both_ways() {
     };
     let mut spill = [ItemStack::default(); INV_SLOTS];
     spill[0] = skinned;
-    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &mut ev)
+    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &Town::NONE, &mut ev)
         .expect("a bag in reach catches it");
     assert_eq!(bp.len(), 1, "merged rather than minted");
     assert!(
@@ -1356,4 +1369,43 @@ fn a_skin_survives_a_bag_both_ways() {
         "take-all stripped the skin: {:?}",
         p.inv
     );
+}
+
+/// **A bag in THE GATE's safe zone lives its first clock only** (exploit
+/// sweep 2, resource#2). Nobody else may loot it there, so a spill topped
+/// up before the clock ran out kept an unraidable locker for as long as its
+/// owner liked. Out on the island the merge still pushes the clock out.
+#[test]
+fn a_spill_into_a_bag_in_the_safe_zone_never_pushes_its_clock_out() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let town = Town {
+        live: true,
+        ..Town::NONE
+    };
+    let one = || {
+        let mut buf = [ItemStack::default(); INV_SLOTS];
+        buf[0] = ItemStack {
+            item: FILLER,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        buf
+    };
+    for (where_, safe) in [(&town, true), (&Town::NONE, false)] {
+        let mut bp = Backpacks::new();
+        let mut ev = EventQueue::default();
+        bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut one(), 10, where_, &mut ev)
+            .expect("the first spill stands a bag");
+        let first = bp.entries()[0].expires;
+        bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut one(), 500, where_, &mut ev);
+        assert_eq!(bp.len(), 1, "the second spill merged");
+        let after = bp.entries()[0].expires;
+        if safe {
+            assert_eq!(after, first, "the town bag's clock moved");
+        } else {
+            assert!(after > first, "a bag in the open stopped topping up");
+        }
+    }
 }

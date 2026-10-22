@@ -1333,7 +1333,10 @@ pub use voice::{
 /// `wear_slot` is three bits; the row carries its `warmth_pct` and
 /// `ward_pct` for the wear panel; and `SUB_EXPOSURE` carries the minutes
 /// left on each tea after the breath.
-pub const PROTO_VER: u16 = 139;
+/// v140 — a deploy refusal admits 27 and 28 (`REFUSE_D_OWN_CAP`, one hand's
+/// share of the containers or turrets; `REFUSE_D_BAG_SPENT`, a bag still
+/// cooling down).
+pub const PROTO_VER: u16 = 140;
 
 /// This game's slug in the elo catalog.
 ///
@@ -5298,6 +5301,41 @@ mod tests {
             lit: false,
             held_skin: 0,
         }
+    }
+
+    /// A buy carries the offer it was pressed against (v139), every field of
+    /// it, and a buy naming no lot does not encode (the decoder asks the same
+    /// `shop_act_ok`).
+    #[test]
+    fn a_shop_buy_round_trips_the_offer_it_saw() {
+        let act = ShopAct::Buy {
+            row: (sim_core::limits::SHOP_ROWS - 1) as u8,
+            times: sim_core::shop::SHOP_TIMES_MAX,
+            terms: sim_core::shop::ShopOffer {
+                item: (MAX_ITEM_DEFS - 1) as u16,
+                lot: 0xFFFF,
+                price: 0xA5C3,
+            },
+        };
+        let mut buf = [0u8; 32];
+        let n = encode_action_shop(0xDEAD_BEEF, act, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]).unwrap(),
+            ActionMsg::Shop {
+                key: 0xDEAD_BEEF,
+                act
+            }
+        );
+        let no_lot = ShopAct::Buy {
+            row: 0,
+            times: 1,
+            terms: sim_core::shop::ShopOffer {
+                item: 0,
+                lot: 0,
+                price: 1,
+            },
+        };
+        assert!(encode_action_shop(1, no_lot, &mut buf).is_err());
     }
 
     #[test]

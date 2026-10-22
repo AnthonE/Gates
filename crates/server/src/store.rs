@@ -36,10 +36,13 @@
 //!
 //! Every capacity has a bound and a stated overflow policy (wall 4): the
 //! table holds `MAX_SAVED_PLAYERS` distinct players and a full table
-//! **evicts the least recently saved**, counted. Their next join is a fresh
-//! character, which is the honest outcome — the alternative is refusing to
-//! remember anyone new, and a shard that has been up long enough to fill
-//! this table is exactly the shard where a new player matters.
+//! **evicts the record least worth keeping** (`worth`: blueprints and
+//! glyphs, then anything past a spawn kit), the least recently saved among
+//! equals, counted — and at a bounded rate when that record is worth
+//! anything. Their next join is a fresh character. A newcomer worth less
+//! than everyone, or past the rate, is refused and counted instead: a free
+//! keypair is a new wallet, so "always remember the newest" let a script
+//! erase every offline player's character.
 //!
 //! ## Boot validation is a refusal, never a silent wipe
 //!
@@ -291,6 +294,8 @@ struct Entry {
     key: Option<PlayerKey>,
     stamp: u64,
     save: PlayerSave,
+    /// [`worth`] of `save`, kept so a full table's scan does not recount it.
+    worth: u32,
 }
 
 /// The index: key → save, owned by exactly one thread.
@@ -304,6 +309,47 @@ struct Entry {
 /// by the storage thread, and the two never touch each other's state.
 pub struct SaveStore {
     slots: Box<[Entry]>,
+    /// Records a full table may still push out of somebody else's row now
+    /// ([`EVICTS_PER_HOUR`]), and the stamp they were last counted to.
+    /// In memory: a restart starts with a full bucket.
+    evict_tokens: u64,
+    evict_at: u64,
+}
+
+/// How many worthwhile records ([`worth`] above zero) a full table may push
+/// out per hour of stamps, and the most it may push out at once. A flood of
+/// new wallets that each earned a little worth churns at most this many of
+/// anybody else's an hour, so emptying the table takes it days and every
+/// player who comes back meanwhile re-files in a row of their own (never
+/// refused). An honest shard meets real newcomers far slower than this.
+pub const EVICTS_PER_HOUR: u64 = 128;
+
+/// Items a fresh spawn carries (`content/balance.toml` `[[spawn_kit]]`: a
+/// bat and a torch). A record carrying no more than this, wearing nothing
+/// and crafting nothing, holds nothing a fresh character would not.
+const KIT_ITEMS: u32 = 2;
+
+/// Whether a record holds anything a fresh spawn does not: more than a
+/// spawn kit carried, anything worn, or a craft job running. What a looter
+/// could take, so also what `ShardCore::evict_victim` guards a sleeper for.
+pub fn holds(s: &PlayerSave) -> bool {
+    let carried: u32 = s.inv.iter().map(|i| u32::from(i.count)).sum();
+    carried > KIT_ITEMS
+        || s.worn.iter().any(|w| w.count != 0)
+        || s.jobs.iter().any(|j| j.remaining != 0)
+}
+
+/// What a record is worth keeping when a full table has to forget somebody
+/// ([`SaveStore::put`]), in tiers: 2 for knowing any blueprint or glyph
+/// (the progression that survives a wipe, `wipe.rs`), plus 1 for
+/// [`holds`]. A throwaway wallet's record is worth 0.
+///
+/// Tiers, not a count: a count made a table of wipe survivors refuse every
+/// newcomer who had not learned as much as the least-learned of them, so a
+/// mature shard stopped remembering new players. One blueprint or stone
+/// now ties any survivor (displacing one at the budget's pace).
+pub fn worth(s: &PlayerSave) -> u32 {
+    2 * u32::from(s.known != 0 || s.glyphs != 0) + u32::from(holds(s))
 }
 
 /// Where a `put` landed, and whether somebody was pushed out to make room.
@@ -333,10 +379,30 @@ impl SaveStore {
                 key: None,
                 stamp: 0,
                 save: PlayerSave::EMPTY,
+                worth: 0,
             },
         );
         Self {
             slots: v.into_boxed_slice(),
+            evict_tokens: 0,
+            evict_at: 0,
+        }
+    }
+
+    /// Count the eviction budget up to `now`: [`EVICTS_PER_HOUR`] an hour,
+    /// at most that many banked. `evict_at` advances only by the time that
+    /// became whole tokens, so a stream of puts a second apart still earns.
+    fn refill(&mut self, now: u64) {
+        let gained = now
+            .saturating_sub(self.evict_at)
+            .saturating_mul(EVICTS_PER_HOUR)
+            / 3600;
+        if self.evict_tokens + gained >= EVICTS_PER_HOUR {
+            self.evict_tokens = EVICTS_PER_HOUR;
+            self.evict_at = now;
+        } else if gained > 0 {
+            self.evict_tokens += gained;
+            self.evict_at += gained * 3600 / EVICTS_PER_HOUR;
         }
     }
 
@@ -354,27 +420,69 @@ impl SaveStore {
     /// File `save` under `key` at `stamp`, and say which record to write.
     ///
     /// Overflow policy, stated where it is implemented: the player's own
-    /// slot if they have one, else a free slot, else **the least recently
-    /// saved slot in the table**. Eviction always succeeds — the table is
-    /// non-empty and `stamp` is now — so this cannot fail, and a caller has
-    /// no refusal to handle.
-    pub fn put(&mut self, key: &PlayerKey, stamp: u64, save: PlayerSave) -> Put {
+    /// slot if they have one, else a free slot — neither is ever refused —
+    /// else **the least worth keeping** ([`worth`]), the least recently
+    /// saved among equals. `None` ⇒ not filed: the newcomer is worth less
+    /// than that, or pushing out a record worth anything would overspend
+    /// [`EVICTS_PER_HOUR`]. A refused key is remembered by nobody, as a
+    /// guest is; its body is still in the world.
+    ///
+    /// It used to take the least recently saved row whatever was in it, so
+    /// a script filing ~4096 throwaway wallets erased every offline
+    /// player's record (gear, blueprints, glyphs) and, after a wipe, every
+    /// survivor's blueprints. Now a throwaway's record can only push out
+    /// another throwaway's, and anything worth more goes at the budget's
+    /// pace.
+    pub fn put(&mut self, key: &PlayerKey, stamp: u64, save: PlayerSave) -> Option<Put> {
+        self.file(key, stamp, save, false)
+    }
+
+    /// [`Self::put`] for an eviction record (`SaveMsg::key`): the body has
+    /// left the world, so this is the player's only copy outside the
+    /// shard's in-memory memo. A record worth anything is not refused for
+    /// being worth less than the row it would push out, only by the budget:
+    /// a newcomer on a table of wipe survivors keeps their gear. A record
+    /// worth 0 has nothing to keep and goes through `put`'s gate, so a
+    /// flood of throwaways evicting each other spends none of the budget an
+    /// honest eviction needs.
+    pub fn put_evicted(&mut self, key: &PlayerKey, stamp: u64, save: PlayerSave) -> Option<Put> {
+        self.file(key, stamp, save, worth(&save) > 0)
+    }
+
+    /// `put` and `put_evicted`: `ungated` skips only the worth gate.
+    fn file(
+        &mut self,
+        key: &PlayerKey,
+        stamp: u64,
+        save: PlayerSave,
+        ungated: bool,
+    ) -> Option<Put> {
         let mine = self.slots.iter().position(|e| e.key.as_ref() == Some(key));
         let (index, evicted) = match mine {
             Some(i) => (i, false),
             None => match self.slots.iter().position(|e| e.key.is_none()) {
                 Some(i) => (i, false),
                 None => {
-                    // Least recently saved. `min_by_key` over a slice is a
-                    // deterministic scan — no map iteration anywhere near
-                    // this, which is what wall 1's sibling ban is about.
-                    let i = self
+                    // `min_by_key` over a slice is a deterministic scan — no
+                    // map iteration anywhere near this, which is what wall
+                    // 1's sibling ban is about.
+                    let (i, gone) = self
                         .slots
                         .iter()
                         .enumerate()
-                        .min_by_key(|(_, e)| e.stamp)
-                        .map(|(i, _)| i)
+                        .min_by_key(|(_, e)| (e.worth, e.stamp))
+                        .map(|(i, e)| (i, e.worth))
                         .expect("the table is never empty");
+                    if !ungated && worth(&save) < gone {
+                        return None;
+                    }
+                    if gone > 0 {
+                        self.refill(stamp);
+                        if self.evict_tokens == 0 {
+                            return None;
+                        }
+                        self.evict_tokens -= 1;
+                    }
                     (i, true)
                 }
             },
@@ -383,8 +491,9 @@ impl SaveStore {
             key: Some(*key),
             stamp,
             save,
+            worth: worth(&save),
         };
-        Put { index, evicted }
+        Some(Put { index, evicted })
     }
 
     /// File a record loaded from disk at **its own file index**. `put`
@@ -397,6 +506,7 @@ impl SaveStore {
             key: Some(*key),
             stamp,
             save,
+            worth: worth(&save),
         };
     }
 
@@ -940,6 +1050,7 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_core::gather::ItemStack;
 
     fn key(s: &str) -> PlayerKey {
         PlayerKey::new(s.as_bytes()).expect("fits")
@@ -1027,22 +1138,23 @@ mod tests {
         let mut store = SaveStore::new();
         let (a, b) = (key("a"), key("b"));
         assert_eq!(store.find(&a), None);
-        let first = store.put(&a, 1, save_with(10));
+        let first = store.put(&a, 1, save_with(10)).expect("room");
         assert!(!first.evicted);
-        store.put(&b, 2, save_with(20));
+        store.put(&b, 2, save_with(20)).expect("room");
         assert_eq!(store.find(&a).map(|s| s.hp), Some(10));
         assert_eq!(store.find(&b).map(|s| s.hp), Some(20));
         assert_eq!(store.live(), 2);
         // The same key overwrites its own record rather than taking a second.
-        let again = store.put(&a, 3, save_with(11));
+        let again = store.put(&a, 3, save_with(11)).expect("its own row");
         assert_eq!(again.index, first.index);
         assert!(!again.evicted);
         assert_eq!(store.find(&a).map(|s| s.hp), Some(11));
         assert_eq!(store.live(), 2);
     }
 
-    /// The stated overflow policy, exercised at the bound: a full table
-    /// evicts the least recently saved and says so.
+    /// The stated overflow policy, exercised at the bound: among records of
+    /// equal worth, a full table evicts the least recently saved and says
+    /// so.
     #[test]
     fn a_full_table_evicts_the_oldest() {
         let mut store = SaveStore::new();
@@ -1050,7 +1162,7 @@ mod tests {
         for i in 0..MAX_SAVED_PLAYERS {
             let k = PlayerKey::new(&(i as u32).to_le_bytes()).expect("fits");
             // Stamps ascending, so slot 0 is the oldest.
-            store.put(&k, i as u64 + 1, save_with(1));
+            store.put(&k, i as u64 + 1, save_with(1)).expect("room");
             if i == 0 {
                 first_key = Some(k);
             }
@@ -1059,13 +1171,187 @@ mod tests {
         let oldest = first_key.expect("set");
         assert!(store.find(&oldest).is_some());
         let newcomer = key("someone-new");
-        let put = store.put(&newcomer, u64::MAX, save_with(99));
+        let put = store
+            .put(&newcomer, u64::MAX, save_with(99))
+            .expect("worth as much as the oldest");
         assert!(put.evicted, "a full table must report the eviction");
         assert_eq!(store.find(&oldest), None, "the oldest save must be gone");
         assert_eq!(store.find(&newcomer).map(|s| s.hp), Some(99));
         assert_eq!(store.live(), MAX_SAVED_PLAYERS);
     }
 
+    /// A record carrying `n` of item 3 and knowing `bits` blueprints.
+    fn holding(n: u16, bits: u32) -> PlayerSave {
+        let mut s = save_with(50);
+        s.inv[0] = ItemStack {
+            item: 3,
+            count: n,
+            cond: 0,
+            skin: 0,
+        };
+        s.known = (1u128 << bits) - 1;
+        s
+    }
+
+    #[test]
+    fn worth_counts_what_a_fresh_spawn_does_not_have() {
+        let mut kit = save_with(100);
+        for (slot, item) in [(0, 1), (1, 2)] {
+            kit.inv[slot] = ItemStack {
+                item,
+                count: 1,
+                cond: 0,
+                skin: 0,
+            };
+        }
+        assert_eq!(worth(&kit), 0, "a bat and a torch are a spawn kit");
+        assert_eq!(worth(&holding(40, 0)), 1);
+        let mut dressed = save_with(100);
+        dressed.worn[0] = ItemStack {
+            item: 4,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        assert_eq!(worth(&dressed), 1);
+        // Tiers, not counts: one blueprint is worth as much as thirty.
+        assert_eq!(worth(&holding(0, 1)), 2);
+        assert_eq!(worth(&holding(0, 30)), 2);
+        assert_eq!(worth(&holding(40, 30)), 3);
+        let mut read = save_with(100);
+        read.glyphs = 0b101;
+        assert_eq!(worth(&read), 2);
+    }
+
+    /// **A mature table still remembers newcomers** (the r5 session#2
+    /// finding). A table of wipe survivors who learned five blueprints each
+    /// takes a newcomer who learned one (a tier tie, at the budget's cost),
+    /// still refuses a gear-only one by `put`, but files the gear-only one's
+    /// eviction record: that body has left the world, and the record is its
+    /// only copy. The budget still binds an eviction record, and one worth
+    /// nothing gets no pass at all.
+    #[test]
+    fn a_mature_table_files_newcomers_and_their_eviction_records() {
+        let real = |i: usize| PlayerKey::new(format!("real-{i}").as_bytes()).expect("fits");
+        let mut store = SaveStore::new();
+        for i in 0..MAX_SAVED_PLAYERS {
+            store.put(&real(i), 1, holding(0, 5)).expect("room");
+        }
+        let t0 = 1_700_000_000u64;
+        let put = store
+            .put(&key("learned-one"), t0, holding(1, 1))
+            .expect("a tier tie");
+        assert!(put.evicted);
+        assert_eq!(store.find(&real(0)), None, "the oldest survivor went");
+        assert_eq!(store.evict_tokens, EVICTS_PER_HOUR - 1, "one token spent");
+        assert_eq!(store.put(&key("gear-only"), t0, holding(40, 0)), None);
+        let put = store
+            .put_evicted(&key("gear-only"), t0, holding(40, 0))
+            .expect("an eviction record worth something is filed");
+        assert!(put.evicted);
+        assert_eq!(store.find(&key("gear-only")).map(|s| worth(&s)), Some(1));
+        assert_eq!(
+            store.put_evicted(&key("kit-only"), t0, save_with(9)),
+            None,
+            "worth nothing: put's gate"
+        );
+        // Spend the bucket: an eviction record is refused past it.
+        while store.evict_tokens > 0 {
+            let n = store.evict_tokens;
+            let k = PlayerKey::new(format!("flood-{n}").as_bytes()).expect("fits");
+            store
+                .put_evicted(&k, t0, holding(40, 0))
+                .expect("budget left");
+        }
+        assert_eq!(
+            store.put_evicted(&key("one-more"), t0, holding(40, 0)),
+            None,
+            "the budget binds an eviction record too"
+        );
+        // A returning player's own row is never refused.
+        assert!(store.put_evicted(&real(5), t0, save_with(9)).is_some());
+    }
+
+    /// **A flood of throwaway wallets erases nobody** (the session#2
+    /// finding). A table full of real players — gear, blueprints — refuses
+    /// any number of spawn-kit records, and once a few throwaways hold rows
+    /// they only push each other out.
+    #[test]
+    fn throwaway_records_never_push_out_real_ones() {
+        let mut store = SaveStore::new();
+        let real = |i: usize| PlayerKey::new(format!("real-{i}").as_bytes()).expect("fits");
+        for i in 0..MAX_SAVED_PLAYERS - 4 {
+            let s = if i % 2 == 0 {
+                holding(500, 0)
+            } else {
+                holding(0, 5)
+            };
+            store.put(&real(i), 1_000 + i as u64, s).expect("room");
+        }
+        let t0 = 1_700_000_000u64;
+        let mut refused = 0;
+        for n in 0..500u64 {
+            let k = PlayerKey::new(format!("sybil-{n}").as_bytes()).expect("fits");
+            if store.put(&k, t0 + n, save_with(100)).is_none() {
+                refused += 1;
+            }
+        }
+        // Four free rows took four; the rest churned those four.
+        assert_eq!(refused, 0, "a throwaway may still replace a throwaway");
+        for i in 0..MAX_SAVED_PLAYERS - 4 {
+            assert!(store.find(&real(i)).is_some(), "real player {i} was erased");
+        }
+        // Gear-only records are the cheapest real ones, and still out of a
+        // throwaway's reach.
+        let sybil = key("one-more");
+        let mut full = SaveStore::new();
+        for i in 0..MAX_SAVED_PLAYERS {
+            full.put(&real(i), 1, holding(500, 0)).expect("room");
+        }
+        assert_eq!(full.put(&sybil, t0, save_with(100)), None);
+        // A wipe's survivors (blueprints only, `wipe.rs`) likewise.
+        let mut wiped = SaveStore::new();
+        for i in 0..MAX_SAVED_PLAYERS {
+            wiped.put(&real(i), 1, holding(0, 1)).expect("room");
+        }
+        assert_eq!(wiped.put(&sybil, t0, holding(500, 0)), None);
+        // The refused never displaced its own: a returning player always
+        // re-files in their row.
+        assert!(wiped.put(&real(7), t0, save_with(100)).is_some());
+    }
+
+    /// Pushing out a record worth anything spends the hourly budget: a
+    /// flood that earned a little worth churns at most
+    /// [`EVICTS_PER_HOUR`] an hour, then waits.
+    #[test]
+    fn worthwhile_evictions_are_rate_limited() {
+        let mut store = SaveStore::new();
+        for i in 0..MAX_SAVED_PLAYERS {
+            let k = PlayerKey::new(format!("real-{i}").as_bytes()).expect("fits");
+            store.put(&k, 1, holding(40, 0)).expect("room");
+        }
+        let t0 = 1_700_000_000u64;
+        let mut taken = 0;
+        for n in 0..1_000u64 {
+            let k = PlayerKey::new(format!("flood-{n}").as_bytes()).expect("fits");
+            if store.put(&k, t0, holding(40, 0)).is_some() {
+                taken += 1;
+            }
+        }
+        assert_eq!(taken, EVICTS_PER_HOUR, "the burst is the budget");
+        // A quarter of an hour on, a quarter of the budget is back.
+        let mut later = 0;
+        for n in 0..1_000u64 {
+            let k = PlayerKey::new(format!("later-{n}").as_bytes()).expect("fits");
+            if store.put(&k, t0 + 900, holding(40, 0)).is_some() {
+                later += 1;
+            }
+        }
+        assert_eq!(later, EVICTS_PER_HOUR / 4);
+        // A flood record worth nothing evicts a flood record worth nothing
+        // freely, but there is none: the table is all worth 1.
+        assert_eq!(store.put(&key("kit"), t0 + 900, save_with(9)), None);
+    }
     /// The offsets add up to the declared record size, and the record is
     /// what the header advertises. Asserted rather than trusted: both
     /// numbers are derived, and a drift between them is exactly the

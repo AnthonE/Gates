@@ -1378,6 +1378,13 @@ pub struct Player {
     /// A semi-automatic fired on this pull, so the trigger has to come up
     /// before it fires again (`combat::Gun::semi`). Neither hashed nor saved.
     pub trigger_spent: bool,
+    /// The tick a bow's draw carries on to: `ranged::draw` writes `tick + 1`
+    /// on every tick it finds a drawn weapon in hand, and a bow it finds on
+    /// any other tick — moved into the selected slot, back out of the safe
+    /// zone, up off the ground — starts its draw then, aim held or not.
+    /// Neither hashed nor saved, `trigger_spent`'s rule: what it changes is
+    /// `next_swing`, which is both.
+    pub draw_on: u64,
     /// Weak-spot chase: the cell this player last landed a hit on
     /// (`NO_CELL` = none) and the mark there — its heading in the low byte,
     /// which way round it travels in `gather::WS_MARK_CCW`. Sim state.
@@ -1680,6 +1687,7 @@ impl Default for Player {
             bloom: 0,
             shot_at: 0,
             trigger_spent: false,
+            draw_on: 0,
             ws_cell: NO_CELL,
             ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -2627,8 +2635,9 @@ pub struct World {
     /// Placed deployables + the hearth list — sim state, hashed.
     pub deploys: Deploys,
     /// Planted satchel charges with a fuse burning — sim state, hashed.
-    /// Small enough to sit inline (`MAX_LIVE_CHARGES` × 24 B ≈ 1.5 kB)
-    /// beside the stores it damages, unlike `backpacks` next door.
+    /// Its entries are on the heap (`MAX_LIVE_CHARGES` is a share a seat,
+    /// × 24 B ≈ 29 kB), boxed once at construction like `backpacks` next
+    /// door.
     pub charges: crate::charge::Charges,
     /// Fires fire arrows left burning — sim state, hashed. Inline for
     /// `charges`' reason, 2 kB.
@@ -3087,10 +3096,35 @@ impl World {
             );
             return;
         }
+        // What the body was born holding, and only that, is cut at the
+        // blade's rate: the species' rows and a site guard's, or a player
+        // corpse's share. The move verb keeps a carcass take-only; this is
+        // the second lock on the same door.
+        let Some(owner) = self.backpacks.entries().get(c.bag).map(|b| b.owner) else {
+            return;
+        };
+        let (mc, bc) = (&self.mob, &self.backpack);
+        let grown = |item: u16| {
+            let born = |r: &ItemStack| r.item == item && r.count > 0 && r.item != NO_ITEM;
+            if owner == crate::backpack::CORPSE_OWNER {
+                return bc.body.iter().any(born);
+            }
+            let Some(slot) = crate::mob::slot_of_id(owner) else {
+                return false;
+            };
+            let guard: &[ItemStack] = if crate::mob::guard_site_of(slot).is_some() {
+                &mc.guard_loot
+            } else {
+                &[]
+            };
+            let def = mc.def(crate::mob::kind_of(slot));
+            def.loot.iter().chain(guard).any(born)
+        };
         let cut = self.backpacks.butcher(
             c.bag,
             &self.gather,
             row.pct,
+            grown,
             &mut self.players[i],
             spill,
             &mut self.events,
@@ -3196,7 +3230,12 @@ impl World {
             // respawn 20–45 min" — reused, not re-spoken).
             inventory::CONT_WORLD => {
                 let c = self.world_conts.entries()[ci];
-                let refill = crate::worldcont::refill_ticks(self.seed, c.cx, c.cz, self.tick);
+                let refill = crate::worldcont::refill_ticks(
+                    gather::respawn_seed(self.seed, self.arc.salt),
+                    c.cx,
+                    c.cz,
+                    self.tick,
+                );
                 self.world_conts
                     .set_slot(ci, s as usize, v, self.tick, refill);
             }
@@ -3283,13 +3322,15 @@ impl World {
 
     /// Whether the player in `slot` may put deployable `row` down where a
     /// `PlaceDeploy` names it: in plain sight (the thing as it would stand,
-    /// or the door or box a lock bolts onto),
-    /// unless the spot is inside a claim they are crew of. A base with no
-    /// hearth yet is nobody's claim, and a hand outside its walls dropped a
-    /// cupboard (the claim over the whole building) or a bag (a respawn
-    /// inside) through them. Crew building through their own walls changes
-    /// nothing anyone else holds. True for a request `place_deploy` refuses
-    /// on its own terms.
+    /// or the door or box a lock bolts onto), claimed ground or not — Rust's
+    /// rule. A base with no hearth yet is nobody's claim, and a hand outside
+    /// its walls dropped a cupboard (the claim over the whole building) or a
+    /// bag (a respawn inside) through them. Nor does a claim stand in for
+    /// sight: a claim is any hearth's whose base reaches within the cushion,
+    /// so a raider's own hearth on a foundation beside a hearthless base
+    /// claimed that base for them, and a bag, box or lock then went in
+    /// through its wall. A builder furnishes from inside. True for a request
+    /// `place_deploy` refuses on its own terms.
     fn deploy_seen(
         &self,
         slot: usize,
@@ -3354,7 +3395,7 @@ impl World {
             storey: false,
             ..crate::reach::Target::deploy(self.seed, &self.haven, cols, &rec, arch, (eye.0, eye.2))
         };
-        if crate::reach::clear_from(
+        crate::reach::clear_from(
             self.seed,
             &self.haven,
             cols,
@@ -3362,24 +3403,49 @@ impl World {
             eye,
             feet,
             t,
-        ) {
-            return true;
-        }
-        let (x, z) = rec.place_xz(cols);
-        let id = self.players[slot].id;
-        crate::claim::any_claim(&self.pieces, &self.deploys, x, z)
-            && !crate::claim::foreign_claim(&self.pieces, &self.deploys, x, z, id)
+        )
     }
 
     /// Whether the player in `slot` sees what a charge would be planted on
-    /// (`reach.rs`): a deployable the way the use verb sees it, a piece when
+    /// (`reach.rs`): a deployable on the line alone (no storey rule), a piece when
     /// the first thing built on the line to it is that piece. Planar reach
     /// alone let a raider at the outer wall plant on the cupboard, the box
     /// or the inner wall behind it. True when nothing stands at the address:
     /// `charge::place` names that refusal.
     fn charge_seen(&self, slot: usize, deploy: bool, addr: (u16, u16, u8, u8)) -> bool {
         if deploy {
-            return self.door_seen(slot, addr);
+            let Some(rec) = self.deploys.find(addr.0, addr.1, addr.2, addr.3) else {
+                return true;
+            };
+            let Some(def) = self.deploy.defs.get(rec.row as usize) else {
+                return true;
+            };
+            let (eye, feet) = self.hand(slot);
+            let cols = self.pieces.cols();
+            // The line alone, as for a piece (`reach::clear_piece`) and as
+            // `deploy_seen` places it: a door or a box a storey up in plain
+            // sight is a raider's to reach from the ground; a wall or a floor
+            // in the way still refuses.
+            let t = crate::reach::Target {
+                storey: false,
+                ..crate::reach::Target::deploy(
+                    self.seed,
+                    &self.haven,
+                    cols,
+                    rec,
+                    def.arch,
+                    (eye.0, eye.2),
+                )
+            };
+            return crate::reach::clear_from(
+                self.seed,
+                &self.haven,
+                cols,
+                self.card_door_bits,
+                eye,
+                feet,
+                t,
+            );
         }
         let Some(i) = self.pieces.find_index(addr.0, addr.1, addr.2, addr.3) else {
             return true;
@@ -3984,6 +4050,39 @@ impl World {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
             return;
+        }
+        // A carcass is take-only too, as the reference's corpses are: a
+        // mob-tagged owner (`may_loot`'s rule) — an animal's, a guard's, a
+        // player's corpse, wreckage. Load-bearing, not tidiness: a cut pays
+        // a carcass's stack at the blade's rate (`World::butcher`, 150% for
+        // a metal hatchet), so a stack parked in one came back half again.
+        // Both landing sites, as above.
+        if ground == inventory::CONT_BAG
+            && self.backpacks.entries()[ci].owner & crate::limits::MOB_ID_TAG != 0
+            && inventory::deposits_into(inventory::CONT_BAG, from_kind, to_kind, src, dst)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
+            return;
+        }
+        // A bag in THE GATE's safe zone is take-only, its owner's hand
+        // included: nobody else may loot it there (`may_loot`), so a fresh
+        // spill bag refilled by moves every lifetime was a locker no raider
+        // could reach. Takes and rearranging inside it stay, so the owner
+        // can still empty it. Both landing sites, as above.
+        if ground == inventory::CONT_BAG
+            && inventory::deposits_into(inventory::CONT_BAG, from_kind, to_kind, src, dst)
+        {
+            let b = &self.backpacks.entries()[ci];
+            if crate::town::safe(
+                &self.haven.town,
+                b.qx as f32 * POS_XZ_Q,
+                b.qz as f32 * POS_XZ_Q,
+            ) {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_SAFE, addr);
+                return;
+            }
         }
 
         // 4. Plan. This is the whole of the validation, and it holds no
@@ -4611,9 +4710,16 @@ impl World {
     /// dud, a meal's seed. Terrain, scatter and anything a client draws
     /// itself keep `self.seed`. A world nobody salted reads back `self.seed`
     /// exactly, so no pinned hash moves.
+    ///
+    /// A PRF of the salt (`rng::salted`, SipHash-2-4), not a mix of it: what
+    /// a player reads back off these draws can at most name this seed, never
+    /// the salt the casino and the mechs also key on. The cone, the one draw
+    /// that shows ~20 bits a shot, keys a PRF on its own channel of the salt
+    /// (`CH_CONE_KEY`, `ranged::hitscan_in`), so naming this seed names no
+    /// shot.
     #[inline]
     pub fn secret_seed(&self) -> u64 {
-        self.seed ^ self.arc.salt.rotate_left(41)
+        crate::rng::salted(self.seed, self.arc.salt, CH_SECRET_SEED)
     }
 
     /// Seat this wipe's blight salt and redraw its outbreaks from it.
@@ -5136,7 +5242,14 @@ impl World {
     fn die(&mut self, slot: usize, by: u32, cause: u8, item: u16, range_cm: u16) {
         // A copy of the body as it fell: the bag is built from it after
         // the slot is already being written, and `Player` is `Copy`.
-        let body = self.players[slot];
+        let mut body = self.players[slot];
+        // Fallen in a card doorway: out at the reader now, where the sweep
+        // puts the corpse when the leaf shuts on it (`card_door_sweep`), so
+        // the bag, the corpse and the death marker go with it. A bag's
+        // address is sent once (`Backpacks::stand_up`) and never moves, so
+        // one dropped in the leaf was sealed in the stone behind the door.
+        let zig = self.haven.ziggurat;
+        crate::monument::out_of_leaves(&zig, u32::MAX, &mut body.body);
         // **The announcement and the count live here** (wounded v0), and
         // not at the eight sites that reach the funnel. Until 2026-09-13
         // every kill site pushed `EV_DEATH` itself on the funnel's `died`
@@ -5158,11 +5271,16 @@ impl World {
         // height as the feet: a body that fell on a floor lies on it.
         let (fx, fz) = crate::yaw_lut::yaw_dir(body.frame.yaw);
         let back = crate::backpack::CORPSE_BACK_M;
-        let at = (
-            movement::quant_xz(body.body.qx as f32 * POS_XZ_Q - fx * back),
-            body.body.qy,
-            movement::quant_xz(body.body.qz as f32 * POS_XZ_Q - fz * back),
-        );
+        let mut corpse = movement::Body {
+            qx: movement::quant_xz(body.body.qx as f32 * POS_XZ_Q - fx * back),
+            qy: body.body.qy,
+            qz: movement::quant_xz(body.body.qz as f32 * POS_XZ_Q - fz * back),
+            ..movement::Body::default()
+        };
+        // Feet beside a doorway and the middle in it: the corpse goes out
+        // at the reader too.
+        crate::monument::out_of_leaves(&zig, u32::MAX, &mut corpse);
+        let at = (corpse.qx, corpse.qy, corpse.qz);
         self.backpacks
             .drop_corpse(&self.backpack, at, self.tick, &mut self.events);
         self.players[slot] = Player {
@@ -5436,6 +5554,9 @@ impl World {
             death_at: body.death_at,
             ..Player::default()
         };
+        // The new body has no past: a shot favoured back across the death
+        // must not find the old one's last steps (`Rewind::forget`).
+        self.rewind.forget(slot);
         // A player who starved does not respawn already starving.
         survival::grant(&self.survival, &mut self.players[slot]);
         // **And a player who died does not respawn unable to play**
@@ -5648,6 +5769,7 @@ impl World {
                     bloom: 0,
                     shot_at: 0,
                     trigger_spent: false,
+                    draw_on: 0,
                     // Dry and warm: the store's record is a body that left
                     // the world, and it comes back the way a body wakes.
                     wet: 0,
@@ -5696,6 +5818,9 @@ impl World {
                     death_at: None,
                     seat: 0,
                 };
+                // A record taken in a card doorway comes back to a door
+                // that may be shut.
+                self.out_of_shut_leaves(slot);
                 craft::rearm(
                     &self.craft,
                     &self.deploy,
@@ -5874,6 +5999,8 @@ impl World {
         // none until the server reads them again, so a skin sold while the
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
+        // Asleep in a card doorway across a restart: the door shut on it.
+        self.out_of_shut_leaves(slot);
         if self.players[slot].dead {
             // Nothing to announce: a corpse has no vitals, and the respawn
             // that answers the screen announces the new body's.
@@ -6106,6 +6233,7 @@ impl World {
             owner,
             spill,
             tick,
+            &self.haven.town,
             &mut self.events,
         );
     }
@@ -6428,6 +6556,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     craft::enqueue(
                         &self.craft,
+                        &self.gather,
                         &self.skins,
                         self.works.unlocks,
                         &self.deploy,
@@ -6848,7 +6977,31 @@ impl World {
                         && self.deploys.box_index(key).is_some_and(|b| {
                             self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER
                         });
-                    if planted {
+                    // Both arms take what the hand can see, the use verb's
+                    // rule: an unlocked bag or turret was lifted through a
+                    // wall, a wall taken down from the far side of another.
+                    let (eye, _) = self.hand(slot);
+                    let seen = if deploy {
+                        self.door_seen(slot, (cx, cz, level, loc))
+                    } else {
+                        crate::reach::sees_piece(
+                            self.seed,
+                            &self.haven,
+                            &self.pieces,
+                            self.card_door_bits,
+                            (cx, cz, level, loc),
+                            eye,
+                        )
+                    };
+                    if !seen {
+                        if deploy {
+                            self.events
+                                .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        } else {
+                            self.events
+                                .push(EV_BUILD_REFUSED, id, build::REFUSE_B_REACH, 0);
+                        }
+                    } else if planted {
                         // Only a hand that could lift it hears it is planted.
                         let why = deploy::pick_up_hand(
                             &self.pieces,
@@ -6869,6 +7022,7 @@ impl World {
                             &mut self.pieces,
                             &mut self.deploys,
                             &mut self.players[slot],
+                            self.tick,
                             cx,
                             cz,
                             level,
@@ -6901,7 +7055,7 @@ impl World {
                         self.farm.uproot_host(key, &mut self.events);
                     }
                     // One buffer for both arms: they are two verbs behind
-                    // one command and exactly one of them ran.
+                    // one command and at most one of them ran.
                     self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
@@ -7049,7 +7203,11 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // A charge is not thrown from hands wrapping a bandage.
+                if let Some(slot) = self
+                    .live_slot_of(id)
+                    .filter(|&s| !survival::hands_busy(&self.players[s]))
+                {
                     if !self.charge_seen(slot, deploy, (cx, cz, level, loc)) {
                         self.events
                             .push(EV_BUILD_REFUSED, id, crate::build::REFUSE_B_REACH, 0);
@@ -7204,6 +7362,15 @@ impl World {
             Command::Swipe { id, door } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let z = self.haven.ziggurat;
+                    // The lever is pulled from where it can be seen: not
+                    // through its own shut door (`monument::swipe`).
+                    let (eye, _) = self.hand(slot);
+                    let (seed, haven, cols, bits) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                    );
                     crate::monument::swipe(
                         &z,
                         &self.cards,
@@ -7212,6 +7379,7 @@ impl World {
                         &mut self.players[slot],
                         door as usize,
                         &mut self.events,
+                        |to| crate::reach::sight(seed, haven, cols, bits, eye, to),
                     );
                     self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
                 }
@@ -7441,20 +7609,42 @@ impl World {
                         cx as i32,
                         cz as i32,
                     );
-                    let mut spill = [ItemStack::default(); INV_SLOTS];
-                    gather::pick(
+                    // In sight of the hand, as every other hand verb is
+                    // (`reach::clear_from`): a plant or a pile standing
+                    // inside a base was picked through its wall.
+                    let (eye, feet) = self.hand(slot);
+                    let at = crate::reach::Target::lying(
                         self.seed,
-                        self.tick,
-                        &self.gather,
-                        &mut self.slot_lives,
-                        &mut self.events,
-                        &mut self.players[slot],
-                        &mut spill,
-                        cx,
-                        cz,
-                        &s,
+                        &self.haven,
+                        self.pieces.cols(),
+                        (quant_xz(s.x), quant_y(s.y), quant_xz(s.z)),
                     );
-                    self.drain_spill(slot, &mut spill);
+                    let seen = gather::pickable(s.occupant)
+                        && crate::reach::clear_from(
+                            self.seed,
+                            &self.haven,
+                            self.pieces.cols(),
+                            self.card_door_bits,
+                            eye,
+                            feet,
+                            at,
+                        );
+                    if seen {
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
+                        gather::pick(
+                            gather::respawn_seed(self.seed, self.arc.salt),
+                            self.tick,
+                            &self.gather,
+                            &mut self.slot_lives,
+                            &mut self.events,
+                            &mut self.players[slot],
+                            &mut spill,
+                            cx,
+                            cz,
+                            &s,
+                        );
+                        self.drain_spill(slot, &mut spill);
+                    }
                 }
             }
             Command::Plant {
@@ -7639,21 +7829,57 @@ impl World {
         let y = p.body.qy as f32 * POS_Y_Q;
         let id = p.id;
         let r = POUR_RADIUS_M;
+        let (eye, feet) = self.hand(i);
+        let (seed, cols, doors) = (self.seed, self.pieces.cols(), self.card_door_bits);
         let events = &mut self.events;
         let mut doused = self.fires.douse(x, y, z, r, |f| {
             events.push(EV_FIRE, fire_a(0, f.qx), f.qz as u32, f.qy as u32);
         });
-        let (boxes, ovens) = self.deploys.oven_parts_mut();
-        for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+        // The splash reaches only what a hand at the pourer reaches, the
+        // press's own rule (`reach::clear_box`: in sight, on its storey).
+        // Planar alone, a pour from outside a wall or through a floor put
+        // out every furnace and salted every planter within 4 m.
+        let mut seen = [0u64; crate::limits::MAX_BOXES.div_ceil(64)];
+        for (j, (b, st)) in self
+            .deploys
+            .boxes()
+            .iter()
+            .zip(self.deploys.oven_states())
+            .enumerate()
+        {
             let (bx, bz) = b.xz();
             let (dx, dz) = (bx - x, bz - z);
-            // Planar, as a box's own reach is (`Deploys::box_in_reach`).
-            if st.burns() && st.lit && dx * dx + dz * dz <= r * r {
+            if ((st.burns() && st.lit) || st.arch == deploy::ARCH_PLANTER)
+                && dx * dx + dz * dz <= r * r
+                && crate::reach::clear_box(
+                    seed,
+                    &self.haven,
+                    cols,
+                    doors,
+                    &self.deploy,
+                    &self.deploys,
+                    j,
+                    eye,
+                    feet,
+                )
+            {
+                seen[j / 64] |= 1 << (j % 64);
+            }
+        }
+        let sees_box = |j: usize| seen[j / 64] >> (j % 64) & 1 != 0;
+        let (boxes, ovens) = self.deploys.oven_parts_mut();
+        for (j, (b, st)) in boxes.iter().zip(ovens.iter_mut()).enumerate() {
+            if st.burns() && st.lit && sees_box(j) {
                 st.lit = false;
                 crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
                 doused += 1;
             }
         }
+        let haven = &self.haven;
+        let sees_ground = |q: (i32, i32, i32)| {
+            let at = crate::reach::Target::lying(seed, haven, cols, q);
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        };
         let (boxes, ovens) = self.deploys.oven_parts_mut();
         let watered = crate::farm::pour(
             &self.cook.farm,
@@ -7663,6 +7889,8 @@ impl World {
             (x, z),
             r,
             salt,
+            sees_box,
+            sees_ground,
         );
         self.players[i].inv[sel].item = v.empty;
         let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
@@ -7711,12 +7939,22 @@ impl World {
         false
     }
 
-    /// Fall damage for slot `i`, whose body was `before` ahead of this
-    /// tick's step. True when the landing downed or killed it — the
-    /// caller's `continue`, as for the cold.
+    /// Fall damage for slot `i`, whose body was `before` ahead of the step
+    /// just taken. Called after EVERY `movement::step` a body takes, so a
+    /// throttle tick's two steps each answer for their own landing. True
+    /// when the landing downed or killed it — the caller's `continue`, as
+    /// for the cold.
+    ///
+    /// A landing is a fall the step stopped: onto ground the body stands
+    /// on, or onto a face, which stops it dead (`qvy` 0) but slides it
+    /// rather than standing it (`movement::face_fall`), so `grounded` alone
+    /// let a drop onto any cliff land free. Nothing else zeroes a falling
+    /// body's speed: gravity always adds, a ceiling only stops a rise, and
+    /// water is the sea check below.
     fn fall(&mut self, i: usize, before: movement::Body) -> bool {
         let body = self.players[i].body;
-        if before.grounded || !body.grounded {
+        let landed = body.grounded || (before.qvy < 0 && body.qvy == 0);
+        if before.grounded || !landed {
             return false;
         }
         // The speed going in: last tick's fall plus this tick's gravity.
@@ -7729,9 +7967,16 @@ impl World {
             return false;
         }
         let dmg = ((speed - FALL_SAFE_MPS) * FALL_HP_PER_MPS).min(u16::MAX as f32) as u16;
-        let id = self.players[i].id;
+        let p = self.players[i];
         if survival::fall(&mut self.players[i], dmg, &mut self.events) == survival::Step::Died {
-            self.down_or_die(i, id, DEATH_BY_FALL, NO_ITEM, 0, false);
+            if p.wounded {
+                // A downed body's drop only finishes what its downer
+                // started: credited under the stored facts, as the
+                // bleed-out credits them (`wound_tick`), not to the body.
+                self.die(i, p.death_by, p.death_cause, p.death_item, p.death_range_cm);
+            } else {
+                self.down_or_die(i, p.id, DEATH_BY_FALL, NO_ITEM, 0, false);
+            }
             return true;
         }
         false
@@ -7972,23 +8217,35 @@ impl World {
     fn safe_zone(&mut self) {
         let town = self.haven.town;
         let sweep = self.tick.is_multiple_of(crate::limits::TICK_HZ as u64);
+        let armed = self.sentry_def.armed();
         let mut overslept = [false; MAX_PLAYERS];
         for (i, p) in self.players.iter_mut().enumerate() {
             if !p.active {
                 continue;
             }
-            p.hostile = p.hostile.saturating_sub(1);
             let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
             let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
             p.safe = crate::town::safe(&town, x, z);
+            // Hostility runs down on the clock, asleep or not — except a
+            // sleeper's inside the zone, which waits for its owner. Else a
+            // fight at the gate ended by running in and logging off before
+            // the sentries fired: the guns ignore a sleeper, and the owner
+            // woke five minutes later protected.
+            if !(p.sleeping && p.safe) {
+                p.hostile = p.hostile.saturating_sub(1);
+            }
             if p.safe && !p.dead && !p.sleeping {
                 p.gate_spawn = true;
             }
+            // And a hostile one at once while the guns are armed: the
+            // guns ignore a sleeper and restart their lock at each wake, so
+            // short reconnects burned the frozen hostility down unshot.
             overslept[i] = sweep
                 && p.safe
                 && p.sleeping
                 && !p.dead
-                && self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS;
+                && ((armed && p.hostile > 0)
+                    || self.tick.saturating_sub(p.slept_at) >= SAFE_SLEEP_TICKS);
         }
         for (i, kill) in overslept.iter().enumerate() {
             if *kill {
@@ -8000,6 +8257,12 @@ impl World {
 
     /// The card doors, once a tick: a door whose time is up does not shut on
     /// a body in its doorway (it waits a second and tries again).
+    ///
+    /// Only a live, awake body holds it. A sleeper or a corpse left in the
+    /// doorway held it for the rest of the wipe (a corpse stays `active`
+    /// where it fell), so one swipe, or a walk in behind a swiper and a
+    /// logout, opened the card loop to everyone. When the door shuts, any
+    /// body its leaf would hold goes out to the reader (`out_of_leaf`).
     fn card_door_sweep(&mut self) {
         let z = self.haven.ziggurat;
         if !z.live {
@@ -8011,20 +8274,31 @@ impl World {
                 continue;
             }
             let blocked = self.players.iter().any(|p| {
-                p.active && {
+                p.active && !p.dead && !p.sleeping && {
                     let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
                     let wz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
                     let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
                     crate::monument::in_doorway(&z, d, x, wz, feet)
                 }
             });
-            self.card_doors[d] = if blocked {
-                self.tick + crate::limits::TICK_HZ as u64
-            } else {
-                0
-            };
+            if blocked {
+                self.card_doors[d] = self.tick + crate::limits::TICK_HZ as u64;
+                continue;
+            }
+            self.card_doors[d] = 0;
+            for p in self.players.iter_mut().filter(|p| p.active) {
+                crate::monument::out_of_leaf(&z, d, &mut p.body);
+            }
         }
         self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+    }
+
+    /// A body arriving in the world (a restore, a sleeper woken) out of any
+    /// shut card door's leaf. `card_doors` is not saved, so after a restart
+    /// every door is shut on whoever slept in its doorway.
+    fn out_of_shut_leaves(&mut self, slot: usize) {
+        let z = self.haven.ziggurat;
+        crate::monument::out_of_leaves(&z, !self.card_door_bits, &mut self.players[slot].body);
     }
 
     pub fn tick(&mut self, commands: &[Command]) {
@@ -8203,6 +8477,7 @@ impl World {
                     sel: self.players[i].frame.sel,
                     ..InputFrame::default()
                 };
+                let falling = self.players[i].body;
                 movement::step(
                     seed,
                     &self.haven,
@@ -8217,6 +8492,11 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // It lands as hard as it would have awake: logging off
+                // mid-fall must not be a parachute.
+                if self.fall(i, falling) {
+                    continue;
+                }
                 // A sleeper floats, but one left on a sunken floor drowns.
                 self.breathe(i);
                 continue;
@@ -8243,6 +8523,9 @@ impl World {
                 if self.wound_tick(i) {
                     continue;
                 }
+                // A downed body falls as hard as a standing one, step by
+                // step as the live branch below does.
+                let mut falling = self.players[i].body;
                 if let Some(prev) = catchup[i] {
                     let prev = crate::wound::crawl_frame(&prev);
                     movement::step(
@@ -8259,6 +8542,10 @@ impl World {
                         &mut self.players[i].body,
                         &prev,
                     );
+                    if self.fall(i, falling) {
+                        continue;
+                    }
+                    falling = self.players[i].body;
                 }
                 let frame = crate::wound::crawl_frame(&self.players[i].frame);
                 movement::step(
@@ -8275,6 +8562,9 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                if self.fall(i, falling) {
+                    continue;
+                }
                 // A body down in the water still has to breathe.
                 self.breathe(i);
                 continue;
@@ -8327,7 +8617,8 @@ impl World {
             // The verbs below never see it — the older frame's buttons
             // never act, exactly as they never acted when the throttle
             // silently dropped it.
-            let falling = self.players[i].body;
+            let start = self.players[i].body;
+            let mut falling = start;
             if let Some(prev) = catchup[i] {
                 movement::step(
                     seed,
@@ -8343,6 +8634,13 @@ impl World {
                     &mut self.players[i].body,
                     &prev,
                 );
+                // Each step answers for its own landing. The older frame
+                // can land the body and the newer jump or walk it straight
+                // back off, and one check across both saw only the air.
+                if self.fall(i, falling) {
+                    continue;
+                }
+                falling = self.players[i].body;
             }
             let frame = self.players[i].frame;
             movement::step(
@@ -8359,7 +8657,7 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
-            crate::seat::stand_if_moved(&mut self.players[i], &falling);
+            crate::seat::stand_if_moved(&mut self.players[i], &start);
             if self.fall(i, falling) {
                 continue;
             }
@@ -8397,8 +8695,10 @@ impl World {
             // all, so nothing leaves the zone to hurt anyone outside it.
             // The client holsters it on screen (`ItemRow::holster`).
             // Nor fired from the water: a swimmer keeps only melee.
+            // Nor anything while a bandage is wrapped on (`hands_busy`).
             let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
-                || combat::waterlogged(&self.combat, &self.players[i]);
+                || combat::waterlogged(&self.combat, &self.players[i])
+                || survival::hands_busy(&self.players[i]);
             let took_arm = holstered
                 || ranged::draw(
                     tick,
@@ -8462,10 +8762,35 @@ impl World {
                 );
                 // A punch that met anything at all hurts the hand.
                 let punched = held == NO_ITEM && !matches!(reached, melee::Reached::Nothing);
+                // **A broken weapon lands no blow** (`NOW.md` §0dur 2): not
+                // on a body, an animal or a wall, as a broken bow looses
+                // nothing and a broken gun fires nothing. The node and the
+                // carcass refuse it in their own arms (`gather::land`,
+                // `butcher`). The broken tool's sentence, bounded by the
+                // swing cadence; `strike_due` held the slot to the one the
+                // swing was taken with.
+                let sel = self.players[i].frame.sel as usize;
+                let reached = match reached {
+                    melee::Reached::Body { .. }
+                    | melee::Reached::Mob(_)
+                    | melee::Reached::World { built: Some(_), .. }
+                        if self.combat.broken(self.players[i].inv[sel]) =>
+                    {
+                        self.events.push(
+                            EV_GATHER_REFUSED,
+                            self.players[i].id,
+                            ((held as u32) << 16) | gather::REFUSE_G_BROKEN,
+                            0,
+                        );
+                        melee::Reached::Nothing
+                    }
+                    r => r,
+                };
                 match reached {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
                             seed,
+                            gather::respawn_seed(seed, self.arc.salt),
                             tick,
                             &self.gather,
                             &self.loot,
@@ -8616,6 +8941,9 @@ impl World {
                 // (`grounditem::rest_spot`), so loot can come to rest
                 // downhill of the barrel rather than floating at the
                 // height the barrel stood at.
+                // The roll draws on the world's secret (`secret_seed`): the
+                // seed, the cell and the tick are all a client's, and the
+                // last swing's tick is one it chooses.
                 let mut items = [ItemStack::default(); INV_SLOTS];
                 let key = cell_key(cx, cz);
                 self.loot
@@ -8671,6 +8999,7 @@ impl World {
             seed,
             secret,
             &self.haven,
+            self.card_door_bits,
             &self.build,
             &self.deploy,
             &self.combat,
@@ -9084,7 +9413,10 @@ impl World {
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
-            secret,
+            // The cone's own channel of the salt, not `secret`: the barrel,
+            // crate, gene, meal and dud draws mix `secret` through splitmix,
+            // so what they show can name it, and it must not name the cone.
+            crate::rng::salted(seed, self.arc.salt, CH_CONE_KEY),
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -10207,6 +10539,15 @@ fn stack_bytes(s: &ItemStack) -> [u8; 8] {
     b[6..8].copy_from_slice(&s.skin.to_le_bytes());
     b
 }
+
+/// [`World::secret_seed`]'s channel of the salt (`rng::salted`), apart from
+/// the respawn jitter's (`gather::respawn_seed`).
+const CH_SECRET_SEED: u64 = 0x7365_6372_6574_5f73;
+
+/// The gun cone's channel of the salt (`rng::salted`), apart from
+/// [`CH_SECRET_SEED`]'s: the cone shows the most of any draw, and the draws
+/// on the secret seed show enough to name that seed.
+const CH_CONE_KEY: u64 = 0x636f_6e65_5f6b_6579;
 
 #[cfg(test)]
 mod tests {

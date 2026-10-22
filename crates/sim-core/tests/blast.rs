@@ -722,3 +722,38 @@ fn a_charge_is_not_planted_through_a_wall() {
         "and the far wall from inside"
     );
 }
+
+/// A body behind a wall the blast does not stand on is shielded by it —
+/// radius damage wants a clear line, the reference's rule. The control is
+/// the same body at the same spot with the wall not built: hurt.
+#[test]
+fn a_wall_between_shields_a_body_from_the_blast() {
+    use sim_core::build::LOC_EDGE_ZLO;
+    let hurt = |shield: bool| {
+        let (mut w, cx, cz) = raid_world();
+        if shield {
+            w.tick(&[Command::Place {
+                id: RAIDER,
+                row: 1,
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_EDGE_ZLO,
+                freehand: false,
+                plate: 0,
+            }]);
+            assert_eq!(w.pieces.len(), 3, "foundation + two walls");
+        }
+        let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
+        // Outside the low-z edge, ~2.2 m from the planted wall's middle.
+        w.players[1].body = Body::at(SEED, hv(SEED), x0 + 0.5, z0 - 0.6);
+        let full = w.players[1].hp;
+        plant(&mut w, cx, cz, LOC_EDGE_XLO);
+        let (x, z) = cell_center(cx, cz);
+        w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
+        wait_out(&mut w);
+        full - w.players[1].hp
+    };
+    assert!(hurt(false) > 0, "in the open, the blast reaches the body");
+    assert_eq!(hurt(true), 0, "behind the wall, it does not");
+}

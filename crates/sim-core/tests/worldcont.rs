@@ -584,6 +584,54 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
     assert_eq!(w.world_conts.len(), 1, "still one record for the cell");
 }
 
+/// **A crate rolls on the world's secret, first fill and refill both**
+/// (`World::secret_seed`): the seed, the cell and the open's tick are all a
+/// client's, so on them alone a looter could time the open to the tick
+/// that pays. The crate is given the barrel's varied table, since this
+/// file's own is a constant and cannot show which seed it drew on.
+/// Mutants: the plain seed at either `roll` in `WorldConts::open`.
+#[test]
+fn a_crate_rolls_on_the_worlds_salt_first_fill_and_refill() {
+    use sim_core::loot::LOOT_BARREL;
+    const SALT: u64 = 0xFEED;
+    let mut w = world();
+    w.loot.tables[LOOT_CRATE] = LootContent::probe_fixture().tables[LOOT_BARREL];
+    w.arc.salt = SALT;
+    let secret = w.secret_seed();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    let key = cell_key(cx, cz);
+    let roll = |w: &World, seed: u64, tick: u64| {
+        let mut out = [ItemStack::default(); INV_SLOTS];
+        w.loot
+            .roll_into(LOOT_CRATE, &w.gather, seed, key, tick, &mut out);
+        out
+    };
+
+    let at = w.tick;
+    open(&mut w, cx, cz);
+    let got = w.world_conts.entries()[0].items;
+    assert_eq!(got, roll(&w, secret, at), "the first fill");
+    assert_ne!(got, roll(&w, SEED, at), "the first fill ignored the salt");
+
+    // Empty it into the pack's free slots, then wait out the refill.
+    for s in 0..INV_SLOTS {
+        let held = w.world_conts.entries()[0].items[s];
+        if held.count > 0 {
+            let to = w.players[0].inv.iter().position(|t| t.count == 0);
+            take(&mut w, cx, cz, s as u8, to.unwrap() as u8, held.count);
+        }
+    }
+    let due = w.world_conts.entries()[0].refill_at;
+    assert!(due > 0, "emptying the crate armed its refill");
+    advance_to(&mut w, due);
+    let at = w.tick;
+    open(&mut w, cx, cz);
+    let got = w.world_conts.entries()[0].items;
+    assert_eq!(got, roll(&w, secret, at), "the refill");
+    assert_ne!(got, roll(&w, SEED, at), "the refill ignored the salt");
+}
+
 /// Nothing a player does can postpone the refill, because nothing a player
 /// does can put anything **in** (`REFUSE_M_NO_INPUT`, wire v64).
 ///
@@ -1340,4 +1388,41 @@ fn a_sanctum_crate_is_not_opened_from_the_ledge_outside() {
     zstand(&mut w, &z, -10.0, -4.0, 15.0);
     open(&mut w, cx, cz);
     assert_eq!(w.world_conts.len(), 1, "opened from inside the sanctum");
+}
+
+/// **A crate's refill waits on the world's secret too**
+/// (`gather::respawn_seed`, the barrel's and the node's seed): on the seed
+/// and the first take's tick alone, a looter read the wait ahead and took
+/// on the tick that came back soonest. A salt of 0 keeps the old wait.
+#[test]
+fn a_crate_refill_waits_on_the_worlds_salt() {
+    use sim_core::gather::respawn_seed;
+    use sim_core::worldcont::refill_ticks;
+    const SALT: u64 = 0xFEED;
+    assert_eq!(
+        respawn_seed(SEED, 0),
+        SEED,
+        "an unsalted world keeps its waits"
+    );
+    let mut w = world();
+    w.arc.salt = SALT;
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    let items = w.world_conts.entries()[0].items;
+    let s = (0..INV_SLOTS).find(|&s| items[s].count > 0).unwrap();
+    let to = w.players[0].inv.iter().position(|t| t.count == 0).unwrap();
+    let at = w.tick;
+    take(&mut w, cx, cz, s as u8, to as u8, 1);
+    let due = w.world_conts.entries()[0].refill_at;
+    assert_eq!(
+        due,
+        at + refill_ticks(respawn_seed(SEED, SALT), cx, cz, at),
+        "the first take armed the salted wait"
+    );
+    assert_ne!(
+        due,
+        at + refill_ticks(SEED, cx, cz, at),
+        "the refill ignored the salt"
+    );
 }

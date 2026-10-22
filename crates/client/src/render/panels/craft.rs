@@ -37,7 +37,7 @@ use super::{
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
 use crate::ui::craft::{
     affordable, cell_abbrev, class_count, countdown_label, ingredients, item_label, rows, seconds,
-    station_label, Row, CELL_LINE_CHARS, RAIL,
+    station_label, worn_line, Row, CELL_LINE_CHARS, RAIL,
 };
 
 /// Rust's favourite star, gold (≈#C8B02A).
@@ -734,7 +734,7 @@ fn detail_body(
 
     // The ingredient table, headed exactly as the reference heads it, with
     // each ingredient's picture beside its name.
-    let (lines, n) = ingredients(def, count, &core.inv);
+    let (lines, n) = ingredients(def, count, &core.inv, &core.catalog);
     pane.spawn(Node {
         flex_direction: FlexDirection::Column,
         row_gap: Val::Px(3.0),
@@ -768,9 +768,15 @@ fn detail_body(
             );
         }
     });
+    // A line short only because what the pack holds is worn: an input that
+    // must go in whole (`craft::input_ceil`) says so, rather than a HAVE of
+    // 0 beside a revolver the player can see.
+    if let Some(why) = worn_line(&core.catalog, &lines[..n]) {
+        pane.spawn((Text::new(why), font_bold(11.0), TextColor(TEXT_SHORT)));
+    }
 
     // The stepper and the button.
-    let max = affordable(def, &core.inv);
+    let max = affordable(def, &core.inv, &core.catalog);
     pane.spawn(Node {
         flex_direction: FlexDirection::Row,
         column_gap: Val::Px(6.0),
@@ -1762,7 +1768,9 @@ pub fn clicks(
                 }
             }
         } else {
-            let can = def.map(|d| affordable(d, &core.inv)).unwrap_or(0);
+            let can = def
+                .map(|d| affordable(d, &core.inv, &core.catalog))
+                .unwrap_or(0);
             if can == 0 {
                 // A cell kept for its queue: the pack pays for no more.
                 ui.say(format!("need materials for another {name}"));
@@ -1840,7 +1848,9 @@ pub fn clicks(
         };
         // The ceiling is what the inventory pays for, clamped into `u16`
         // because that is the wire's width for a craft count.
-        let max = affordable(def, &core.inv).min(u16::MAX as u32).max(1) as u16;
+        let max = affordable(def, &core.inv, &core.catalog)
+            .min(u16::MAX as u32)
+            .max(1) as u16;
         ui.count = match step.0 {
             STEP_MAX => max,
             by => (ui.count as i32 + by).clamp(1, max as i32) as u16,
