@@ -53,7 +53,7 @@ use crate::build::{
 use crate::combat::held_item;
 use crate::craft::{inv_count, inv_take};
 use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
-use crate::limits::{MAX_CHARGES_PER_OWNER, MAX_LIVE_CHARGES};
+use crate::limits::{MAX_CHARGES_PER_OWNER, MAX_DETONATIONS_PER_TICK, MAX_LIVE_CHARGES};
 use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_CHARGE_PLACED, STRUCT_DEPLOY_BIT};
 
 /// One planted charge, burning.
@@ -87,19 +87,23 @@ pub struct ChargeRec {
     /// decremented: a decrement is state that a dropped tick can corrupt,
     /// and an absolute deadline against `world.tick` cannot drift.
     pub fires_at: u64,
-    /// Who planted it. Not used to refuse anything — see `place` — but it
-    /// is on the event so a client can tell its own charge from a
-    /// stranger's, and a kill-credit rule later has somewhere to read.
+    /// Who planted it. Never used to refuse by whose wall it is — see
+    /// `place` — only to count a planter's own share
+    /// (`MAX_CHARGES_PER_OWNER`); it is on the event so a client can tell
+    /// its own charge from a stranger's, and a kill-credit rule later has
+    /// somewhere to read.
     pub owner: u32,
 }
 
 /// The live charge store — sim state, hashed. Dense and insertion-ordered,
 /// rewritten by swap-remove, exactly like `Pieces` and the box list; the
 /// order is deterministic because every insert and every removal is a
-/// command's or a tick's consequence, replayed in the same order.
+/// command's or a tick's consequence, replayed in the same order. Boxed:
+/// sized off every seat's share (`MAX_LIVE_CHARGES`), it is too big for
+/// `World`'s frame, and it is allocated once, with the world.
 #[derive(Clone, Debug)]
 pub struct Charges {
-    entries: [ChargeRec; MAX_LIVE_CHARGES],
+    entries: Box<[ChargeRec; MAX_LIVE_CHARGES]>,
     len: usize,
 }
 
@@ -118,20 +122,9 @@ impl Charges {
         }
     }
 
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            entries: [ChargeRec {
-                cx: 0,
-                cz: 0,
-                level: 0,
-                loc: 0,
-                deploy: false,
-                structure: 0,
-                damage: 0,
-                blast_cm: 0,
-                fires_at: 0,
-                owner: 0,
-            }; MAX_LIVE_CHARGES],
+            entries: crate::boxed_array(ChargeRec::default()),
             len: 0,
         }
     }
@@ -316,8 +309,9 @@ pub fn place(
     }
     // Check the store, check the pocket, then spend both. `push` is
     // checked before `inv_take` runs so a full store never eats a charge.
-    // The planter's own share first (`MAX_CHARGES_PER_OWNER`): a few hands
-    // must not hold the shard's whole store.
+    // The planter's own share (`MAX_CHARGES_PER_OWNER`) is what binds: the
+    // store holds every seat's whole share, so a few hands cannot fill it
+    // and refuse everyone else's raid; its own check is the backstop.
     let mine = charges.entries().iter().filter(|c| c.owner == p.id).count();
     if charges.len() >= MAX_LIVE_CHARGES || mine >= MAX_CHARGES_PER_OWNER {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
@@ -365,9 +359,11 @@ const CH_DUD: u32 = 119;
 
 /// The throwable a charge that went out drops, and where — parked for
 /// `World::tick` to lay on the ground, which needs stores the fuse pass
-/// does not hold. Exactly bounded: one per live charge.
+/// does not hold. Exactly bounded: one per charge a tick sets off
+/// (`MAX_DETONATIONS_PER_TICK`), so it stays small enough for the tick's
+/// own frame.
 pub struct Duds {
-    entries: [(u16, f32, f32, f32); MAX_LIVE_CHARGES],
+    entries: [(u16, f32, f32, f32); MAX_DETONATIONS_PER_TICK],
     len: usize,
 }
 
@@ -380,7 +376,7 @@ impl Default for Duds {
 impl Duds {
     pub const fn new() -> Self {
         Self {
-            entries: [(0, 0.0, 0.0, 0.0); MAX_LIVE_CHARGES],
+            entries: [(0, 0.0, 0.0, 0.0); MAX_DETONATIONS_PER_TICK],
             len: 0,
         }
     }
@@ -550,8 +546,11 @@ pub fn tick_fuses(
     duds: &mut Duds,
     events: &mut EventQueue,
 ) {
+    // Blown or gone out, at most `MAX_DETONATIONS_PER_TICK` this tick: the
+    // rest of what is due stays where it is stuck and goes next tick.
+    let mut set_off = 0;
     let mut i = 0;
-    while i < charges.len {
+    while i < charges.len && set_off < MAX_DETONATIONS_PER_TICK {
         let c = charges.entries[i];
         if c.fires_at > tick {
             i += 1;
@@ -564,6 +563,7 @@ pub fn tick_fuses(
             charges.remove_at(i);
             continue;
         }
+        set_off += 1;
         if let Some(item) = dud(seed, salt, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
             let (x, z) = epicentre(pieces, deploys, &c);

@@ -3175,19 +3175,18 @@ pub fn place_deploy(
             return;
         }
     }
-    // ...and, on ground no hearth claims, where it goes in plain sight of
-    // the placer's eye (`reach.rs`). Flat reach alone placed through walls
-    // and floors: a raider's own hearth stood up inside a stranger's
-    // hearthless base from outside it, which claimed the base, or a lock
-    // bolted onto its door. Inside a claim the check above already stands
-    // for it — any claim left here is the placer's own (crew of every
-    // hearth over the spot), and a stranger's is refused — so a builder
-    // furnishing their own base from the yard is not asked. An insert or a
-    // lock is aimed at its doorway's face on the placer's side, or at what
-    // the lock bolts to. No storey rule: a foundation's top is placed on
-    // from the ground beside it.
+    // ...and where it goes in plain sight of the placer's eye (`reach.rs`),
+    // claimed ground or not — Rust's rule. Flat reach alone placed through
+    // walls and floors: a raider's own hearth stood up inside a stranger's
+    // hearthless base from outside it, or a lock bolted onto its door. Nor
+    // does a claim over the spot excuse it: a claim is any hearth's whose
+    // base reaches within the cushion, so a raider's hearth on a foundation
+    // beside a hearthless base claimed that base for them, and a bag, box or
+    // lock then went in through its wall. A builder furnishes from inside.
+    // An insert or a lock is aimed at its doorway's face on the placer's
+    // side, or at what the lock bolts to. No storey rule: a foundation's
+    // top is placed on from the ground beside it.
     let eye = crate::reach::eye(p);
-    let own = crate::claim::any_claim(pieces, deploys, ax, az);
     let cols = pieces.cols();
     let aim = aim.unwrap_or_else(|| {
         let host = deploys.find(cx, cz, level, loc).copied();
@@ -3204,7 +3203,7 @@ pub fn place_deploy(
     });
     // Card doors only stand where nothing may be built
     // (`terrain::build_reserved`, above), so all of them read as shut.
-    if !own && !crate::reach::sight(seed, haven, cols, 0, eye, aim) {
+    if !crate::reach::sight(seed, haven, cols, 0, eye, aim) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return;
     }
@@ -4851,19 +4850,12 @@ mod tests {
         );
     }
 
-    /// A deployable goes where the placer can see it: a raider outside a
-    /// walled, hearthless 1×1 cannot stand their own hearth up inside it
-    /// (which claimed the base), and the builder inside places it as ever.
-    #[test]
-    fn a_hearth_is_not_placed_through_a_wall() {
+    /// A foundation at (CX, CZ) walled on all four sides by `p`: a sealed,
+    /// hearthless 1×1.
+    fn walled_room(bc: &BuildContent, pieces: &mut Pieces, p: &mut Player) {
         use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO};
-        let dc = DeployContent::probe_fixture();
-        let bc = BuildContent::probe_fixture();
-        let mut pieces = Pieces::new();
-        let mut deploys = Deploys::new();
+        founded(bc, pieces, p, CX, CZ);
         let mut ev = EventQueue::default();
-        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 1)]);
-        founded(&bc, &mut pieces, &mut owner, CX, CZ);
         for (cx, cz, loc) in [
             (CX, CZ, LOC_EDGE_XLO),
             (CX, CZ, LOC_EDGE_ZLO),
@@ -4873,10 +4865,10 @@ mod tests {
             crate::build::place(
                 SEED,
                 hv(),
-                &bc,
-                &deploys,
-                &mut pieces,
-                &mut owner,
+                bc,
+                &Deploys::new(),
+                pieces,
+                p,
                 0,
                 1,
                 cx,
@@ -4889,6 +4881,20 @@ mod tests {
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED, "wall {loc}");
         }
+    }
+
+    /// A deployable goes where the placer can see it: a raider outside a
+    /// walled, hearthless 1×1 cannot stand their own hearth up inside it
+    /// (which claimed the base), and the builder inside places it as ever.
+    #[test]
+    fn a_hearth_is_not_placed_through_a_wall() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 1)]);
+        walled_room(&bc, &mut pieces, &mut owner);
         let mut raider = Player {
             id: 9,
             active: true,
@@ -4935,6 +4941,71 @@ mod tests {
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "and inside it");
         assert_eq!(deploys.hearths().len(), 1);
         assert_eq!(deploys.hearths()[0].owner, owner.id);
+    }
+
+    /// Nor does a claim stand in for sight. A claim is any hearth's whose
+    /// base reaches within the cushion, so a raider whose own hearth stands
+    /// on a foundation beside a stranger's hearthless room — apart from it
+    /// or joined to it — claims the room for themselves; its wall must
+    /// still stop a bench (a bag, a box, a lock) going in through it.
+    #[test]
+    fn a_raider_s_own_claim_places_nothing_through_a_stranger_s_wall() {
+        use crate::world::{EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED};
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let m = crate::build::BUILD_CELL_M;
+        let (room_x, room_z) = ((CX as f32 + 0.5) * m, (CZ as f32 + 0.5) * m);
+        // The raider's foundation: two cells west with bare ground between,
+        // then edge to edge with the room's low-z side.
+        for (fx, fz) in [(CX - 2, CZ), (CX, CZ - 1)] {
+            let mut pieces = Pieces::new();
+            let mut deploys = Deploys::new();
+            let mut ev = EventQueue::default();
+            let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99)]);
+            walled_room(&bc, &mut pieces, &mut owner);
+            let mut raider = player_at_cell(fx, fz, &[(0, 99), (1, 99), (2, 1), (3, 1)]);
+            raider.id = 9;
+            founded(&bc, &mut pieces, &mut raider, fx, fz);
+            let put = |pieces: &mut Pieces,
+                       deploys: &mut Deploys,
+                       p: &mut Player,
+                       (row, cx, cz): (u16, u16, u16),
+                       ev: &mut EventQueue| {
+                place_deploy(
+                    SEED,
+                    hv(),
+                    &dc,
+                    &bc,
+                    pieces,
+                    deploys,
+                    p,
+                    0,
+                    row,
+                    cx,
+                    cz,
+                    0,
+                    LOC_PLANE,
+                    crate::footprint::Pose::CENTRE,
+                    ev,
+                );
+            };
+            put(&mut pieces, &mut deploys, &mut raider, (0, fx, fz), &mut ev);
+            assert_eq!(last(&ev).0, EV_DEPLOY_PLACED, "the raider's own hearth");
+            assert!(crate::claim::any_claim(&pieces, &deploys, room_x, room_z));
+            assert!(!crate::claim::foreign_claim(
+                &pieces, &deploys, room_x, room_z, raider.id
+            ));
+            // Outside the room's west wall, a metre off it: the bench (row
+            // 1) at the room's middle, 2.5 m away, through the wall.
+            raider.body = Body::at(SEED, hv(), CX as f32 * m - 1.0, room_z);
+            put(&mut pieces, &mut deploys, &mut raider, (1, CX, CZ), &mut ev);
+            assert_eq!(
+                (last(&ev).0, last(&ev).2),
+                (EV_DEPLOY_REFUSED, REFUSE_D_REACH),
+                "a bench through the wall of a room the raider's claim took in ({fx}, {fz})"
+            );
+            assert!(deploys.entries().iter().all(|d| (d.cx, d.cz) != (CX, CZ)));
+        }
     }
 
     /// A rug lies under anything (`layers`): a bench goes down on one and a

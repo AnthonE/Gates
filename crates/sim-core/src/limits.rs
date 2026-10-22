@@ -1222,11 +1222,14 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// one charge — so wall 4 applies at its sharpest: without a cap, a
 /// client spamming the plant verb grows a per-tick scan without bound.
 ///
-/// Sized off what a raid actually is rather than off a player count: a
-/// stone wall at 1750 hp takes four of the alpha's 500-structure charges,
-/// so 64 is sixteen simultaneous walls coming down — more than any raid
-/// this shard's `MAX_PLAYERS` can mount at once, and small enough that the
-/// fuse scan is 64 integer compares a tick.
+/// Sized off the seats: every one of them holding its whole share
+/// (`MAX_CHARGES_PER_OWNER`) at once. The store is shard-wide, and one a
+/// handful of accounts planting on an empty field could fill would refuse
+/// every other raid on the island — at 64 it took six, since a paced hand
+/// keeps about ten lit and a per-owner cap above that never bound. Now no
+/// planter under its own share meets a full store. Tens of kB, so boxed
+/// (`charge::Charges`); the fuse scan is integer compares, and what one
+/// tick sets off is capped apart (`MAX_DETONATIONS_PER_TICK`).
 ///
 /// Overflow policy: **refuse** — the plant is refused with `REFUSE_B_FULL`
 /// and the charge stays in the raider's inventory. Refusing costs the
@@ -1234,17 +1237,24 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// would let one player disarm another's raid by planting into a full
 /// store, which is a grief verb rather than a cap.
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
-pub const MAX_LIVE_CHARGES: usize = 64;
+pub const MAX_LIVE_CHARGES: usize = MAX_PLAYERS * MAX_CHARGES_PER_OWNER;
 
-/// Live charges one planter may have burning at once. The store above is
-/// shard-wide, and a handful of accounts planting on an empty field could
-/// fill it and refuse every other raid on the island. Twelve is more than
-/// a paced hand ever has lit honestly — one plant a second
-/// (`server::pace`) against a ten-second fuse is ten — so a real raid
-/// never meets it. Overflow policy: **refuse**, `MAX_LIVE_CHARGES`' own
-/// (`REFUSE_B_FULL`, the charge stays in the pack).
+/// Live charges one planter may have burning at once: the share the store
+/// above is sized from. Twelve is more than a paced hand ever has lit
+/// honestly — one plant a second (`server::pace`) against a ten-second
+/// fuse is ten — so a real raid never meets it; it is the sim's own bound
+/// on a hand nothing paces. Overflow policy: **refuse**, `MAX_LIVE_CHARGES`'
+/// own (`REFUSE_B_FULL`, the charge stays in the pack).
 pub const MAX_CHARGES_PER_OWNER: usize = 12;
-const _: () = assert!(MAX_CHARGES_PER_OWNER < MAX_LIVE_CHARGES);
+const _: () = assert!(MAX_LIVE_CHARGES >= MAX_PLAYERS * MAX_CHARGES_PER_OWNER);
+
+/// Charges one tick sets off — blown or gone out — at most. With the store
+/// sized off the seats, far more than a tick's blast pass was ever sized
+/// for can come due together; 64 is the old store's whole size, sixteen
+/// stone walls coming down at once. Overflow policy: **defer** — the rest
+/// stay where they are stuck, due, and go off on the next tick, in store
+/// order; nothing is lost, and a paced island never comes near it.
+pub const MAX_DETONATIONS_PER_TICK: usize = 64;
 
 /// Fires burning on the ground at once (`fire.rs`) — what fire arrows leave.
 /// A bow looses one every 1.25 s and a fire lasts at most 40 s, so one archer

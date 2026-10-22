@@ -655,10 +655,11 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 1, 2, 0, Z),
     // Doors: metal on the front if there is one, else wood; wood on the
     // inner one (refused wherever a door already hangs). The front door is
-    // first because it is the one a single door goes on. Its lock is set
-    // from inside the airlock, reached through the inner doorway before
-    // that door hangs; then the inner door and its lock from the room
-    // ([`stand_m`]: a lock is worked within a hand's reach of its door).
+    // first because it is the one a single door goes on. It is hung and its
+    // lock set from inside the airlock, reached through the inner doorway
+    // before that door hangs; then the inner door and its lock from the room
+    // ([`stand_m`]: a door is hung in sight of it, a lock worked within a
+    // hand's reach of its door).
     Deploy(Kit::MetalDoor, 1, 1, 0, X),
     Deploy(Kit::Door, 1, 1, 0, X),
     Deploy(Kit::Lock, 1, 1, 0, X),
@@ -691,7 +692,8 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(0, 0, 0, P, MAT_STONE),
     Upgrade(1, 0, 0, P, MAT_STONE),
     Upgrade(1, 1, 0, P, MAT_STONE),
-    // Loot upstairs, over the cupboard.
+    // Loot upstairs, over the cupboard, put down from up there
+    // ([`stand_level`]).
     Deploy(Kit::Box, 0, 0, 1, P),
     // What stone did not reach goes to wood with what wood is left (refused
     // as a step down wherever stone got there first).
@@ -764,14 +766,18 @@ pub const AIRLOCK_STAND_M: (f32, f32) = (4.4, 3.7);
 pub const INNER_STAND_M: (f32, f32) = (4.5, 2.2);
 
 /// Where the owner stands for `op`, in metres from the plot cell's low
-/// corner: [`STARTER_STAND_M`] for everything but the two doors' locks,
-/// which are worked from beside their doors, and the airlock's two outer
-/// walls, past build reach from the core and worked from the room. A door
-/// is reached at `backpack::LOOT_REACH_M`, in sight and on its storey
-/// (`reach.rs`), and neither door is, from the core.
+/// corner: [`STARTER_STAND_M`] for everything but the two doors, their
+/// locks and codes, which are worked from beside their doors, and the
+/// airlock's two outer walls, past build reach from the core and worked
+/// from the room. A door is reached at `backpack::LOOT_REACH_M`, in sight
+/// and on its storey (`reach.rs`), and neither door is, from the core; nor
+/// is the front doorway in sight of it, and a door is hung only where the
+/// hand sees (`deploy::place_deploy`). [`stand_level`] is the storey.
 pub fn stand_m(op: BaseOp) -> (f32, f32) {
     match op {
-        Deploy(Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => AIRLOCK_STAND_M,
+        Deploy(Kit::MetalDoor | Kit::Door | Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => {
+            AIRLOCK_STAND_M
+        }
         Deploy(Kit::Door, 1, 1, 0, Z) | Deploy(Kit::Lock, 1, 1, 0, Z) | Code(1, 1, 0, Z) => {
             INNER_STAND_M
         }
@@ -780,6 +786,17 @@ pub fn stand_m(op: BaseOp) -> (f32, f32) {
         | Upgrade(2, 1, 0, X, _)
         | Upgrade(1, 2, 0, Z, _) => INNER_STAND_M,
         _ => STARTER_STAND_M,
+    }
+}
+
+/// The storey the owner stands on for `op`: the ground floor but for a
+/// deployable on a floor above it (the box over the cupboard), put down
+/// from that floor, over [`stand_m`]'s spot. A hand places only what it
+/// sees (`deploy::place_deploy`), and from below, the floor is in the way.
+pub fn stand_level(op: BaseOp) -> u8 {
+    match op {
+        Deploy(Kit::Hearth | Kit::Box, _, _, level, P) => level,
+        _ => 0,
     }
 }
 
@@ -809,6 +826,12 @@ impl BasePlan {
     pub fn cell(&self, dx: i8, dz: i8) -> (u16, u16) {
         let at = |c: u16, d: i8| (c as i32 + d as i32).clamp(0, u16::MAX as i32) as u16;
         (at(self.cx, dx), at(self.cz, dz))
+    }
+
+    /// The storey the owner stands on for the next op of `blueprint`
+    /// ([`stand_level`]).
+    pub fn stand_level(&self, blueprint: &[BaseOp]) -> u8 {
+        stand_level(blueprint[self.next as usize % blueprint.len()])
     }
 
     /// Where the owner stands for the next op of `blueprint`, world metres
