@@ -70,6 +70,10 @@ const USED_KEPT: usize = 65536;
 /// Signed-in sessions, all wallets and one wallet's, and how long one lasts.
 const SESSIONS_KEPT: usize = 4096;
 const SESSIONS_PER_WALLET: usize = 8;
+/// Sign-ins one wallet may make per challenge window: past its own sessions,
+/// so a wallet that signs in again still evicts its oldest, and small enough
+/// that the island's wallets cannot fill `USED_KEPT` between them.
+const LOGINS_PER_WALLET: usize = 2 * SESSIONS_PER_WALLET;
 pub const SESSION_SECS: u64 = 30 * 24 * 3600;
 /// The most of a request this reads: request line, headers and body.
 const REQUEST_CAP: usize = 8192;
@@ -326,8 +330,8 @@ pub struct Web {
     /// of `keccak(secret, random, issued_at)`, so nothing is kept per
     /// challenge and nobody can flood one out of a table.
     secret: [u8; 32],
-    /// nonce → when it stops mattering
-    used: BTreeMap<[u8; NONCE_BYTES], u64>,
+    /// nonce → (when it stops mattering, the wallet that signed it)
+    used: BTreeMap<[u8; NONCE_BYTES], (u64, String)>,
     /// token → (wallet, expires)
     sessions: BTreeMap<String, (String, u64)>,
     /// wallet → (tokens, unix ms of the last refill)
@@ -480,12 +484,9 @@ impl Web {
         if now > issued_at + CHALLENGE_SECS || issued_at > now + 5 {
             return Response::error(401, "challenge expired");
         }
-        self.used.retain(|_, until| *until > now);
+        self.used.retain(|_, (until, _)| *until > now);
         if self.used.contains_key(&nonce) {
             return Response::error(401, "challenge already used");
-        }
-        if self.used.len() >= USED_KEPT {
-            return Response::error(503, "busy");
         }
         let auth = protocol::Auth {
             address,
@@ -495,13 +496,24 @@ impl Web {
             Ok(k) => k,
             Err(e) => return Response::error(401, e.reason()),
         };
-        self.used.insert(nonce, issued_at + CHALLENGE_SECS + 5);
         let wallet = String::from_utf8_lossy(key.as_bytes()).to_ascii_lowercase();
         // Only a wallet with a body on the island signs in here, which keeps
         // the wallets that can hold sessions to the island's own population.
+        // Asked **before** the nonce is spent: a stranger's fresh keys must
+        // not be able to fill the used-nonce table and lock the island out.
         if !self.snap.people.iter().any(|p| p.wallet == wallet) {
             return Response::error(403, "not on the island");
         }
+        // And one island wallet spends at most `LOGINS_PER_WALLET` nonces a
+        // challenge window, so it cannot fill the table either.
+        if self.used.values().filter(|(_, w)| *w == wallet).count() >= LOGINS_PER_WALLET {
+            return Response::error(429, "slow down");
+        }
+        if self.used.len() >= USED_KEPT {
+            return Response::error(503, "busy");
+        }
+        self.used
+            .insert(nonce, (issued_at + CHALLENGE_SECS + 5, wallet.clone()));
         let mut raw = [0u8; 32];
         if getrandom::getrandom(&mut raw).is_err() {
             return Response::error(503, "no entropy");
@@ -782,19 +794,20 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
     let Some(mut req) = parse_head(&buf[..head_end]) else {
         return Ok(());
     };
-    let want = req.1;
     let body_at = head_end + 4;
-    if body_at + want > buf.len() {
+    // Checked: a Content-Length near `usize::MAX` wrapped this sum past the
+    // bound and panicked the slice, which took the listener's one thread.
+    let Some(end) = body_at.checked_add(req.1).filter(|&e| e <= buf.len()) else {
         return Ok(());
-    }
-    while have < body_at + want {
-        let n = s.read(&mut buf[have..body_at + want])?;
+    };
+    while have < end {
+        let n = s.read(&mut buf[have..end])?;
         if n == 0 {
             return Ok(());
         }
         have += n;
     }
-    req.0.body = buf[body_at..body_at + want].to_vec();
+    req.0.body = buf[body_at..end].to_vec();
     let r = web.handle(&req.0, now);
     let reason = match r.status {
         200 => "OK",
@@ -811,7 +824,10 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
         "HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n\
          Access-Control-Allow-Headers: Authorization, Content-Type\r\n\
-         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n",
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\n\
+         Content-Security-Policy: frame-ancestors 'none'; base-uri 'none'; object-src 'none'\r\n\
+         Referrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
         r.status,
         r.ctype,
         r.body.len()
@@ -1015,6 +1031,46 @@ mod tests {
         }
         assert_eq!(w.handle(&get("/api/team", Some(&first)), 1100).status, 401);
         assert_eq!(w.handle(&get("/api/team", Some(&last)), 1100).status, 200);
+    }
+
+    /// A stranger's fresh keys spend no nonce (the island check comes
+    /// first), and an island wallet spends a bounded number per window — so
+    /// nobody can fill the used-nonce table and lock the island out.
+    #[test]
+    fn strangers_and_one_wallet_cannot_fill_the_nonce_table() {
+        let (mut w, _rx) = web();
+        for k in 20..30 {
+            let login = login_body(&mut w, &key(k), 1000);
+            assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 403);
+        }
+        assert!(w.used.is_empty(), "a refused stranger spends nothing");
+        island(&mut w, &[(&addr(&key(7)), 0)]);
+        for i in 0..LOGINS_PER_WALLET as u64 {
+            sign_in(&mut w, &key(7), 1000 + i);
+        }
+        let login = login_body(&mut w, &key(7), 1100);
+        assert_eq!(w.handle(&post("/api/login", None, login), 1100).status, 429);
+        // The window passes and the wallet may sign in again.
+        let late = 1000 + CHALLENGE_SECS + 10;
+        sign_in(&mut w, &key(7), late);
+    }
+
+    /// A Content-Length that would wrap the body's end is refused, not
+    /// sliced: the listener has one thread and a panic took it.
+    #[test]
+    fn a_wrapping_content_length_closes_without_a_panic() {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = l.local_addr().unwrap();
+        let mut c = std::net::TcpStream::connect(at).unwrap();
+        c.write_all(b"POST /api/login HTTP/1.1\r\nContent-Length: 18446744073709551615\r\n\r\n")
+            .unwrap();
+        let (s, _) = l.accept().unwrap();
+        let (mut w, _rx) = web();
+        assert!(answer(s, &mut w, 1000).is_ok());
+        let mut out = Vec::new();
+        let _ = c.read_to_end(&mut out);
+        assert!(out.is_empty(), "closed unanswered");
     }
 
     /// The page's own host is signed when the shard accepts it; anything else

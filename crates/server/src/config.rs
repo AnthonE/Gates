@@ -990,10 +990,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // operator wrote is a line they meant" rule holds without a
             // separate check. Off is the key being absent.
             "companion_addr" => {
-                companion_addr =
-                    Some(value.parse().map_err(|e| {
-                        format!("shard.toml line {}: bad companion_addr: {e}", n + 1)
-                    })?);
+                let addr: SocketAddr = value
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad companion_addr: {e}", n + 1))?;
+                // The watch origin's rule: a serial hand-rolled listener that
+                // signs people in is published through a reviewed proxy
+                // (nginx buffers, rate-limits and terminates TLS), never
+                // bound where the internet can hold its one thread.
+                if !addr.ip().is_loopback() {
+                    return Err(format!(
+                        "shard.toml line {}: companion_addr must be loopback; publish it through a reverse proxy",
+                        n + 1
+                    ));
+                }
+                companion_addr = Some(addr);
             }
             "status_addr" => {
                 status_addr = Some(
