@@ -2021,7 +2021,9 @@ fn only_the_feed_drain_pops_the_core() {
 /// second reader ever wants it, it joins the feed and leaves this list in
 /// the same commit.
 fn destructive_verbs() -> Vec<String> {
-    const EXEMPT: [&str; 1] = ["pop_chat"];
+    // Chat's own rings, read only by `render::chat::drain`: the chat lines
+    // and their captions (v138), which nothing else in the client wants.
+    const EXEMPT: [&str; 2] = ["pop_chat", "pop_caption"];
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../client-core/src/core.rs");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
