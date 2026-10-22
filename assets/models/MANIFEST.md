@@ -1477,7 +1477,17 @@ Prompts, in full, for the IP rail:
 >
 > **works_shard** — "A single fallen carved stone block fragment on a plain white background, three-quarter view. A broken chunk of weathered warm sandstone 60 centimetres long, 40 centimetres wide and 35 centimetres tall. One face is carved with a plain ornamental band and a thin inlaid bronze strip with green verdigris; the other faces are rough fractured stone with chipped edges. Ancient and weathered. Exactly one fragment. No glow, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone, rough fractured faces, chipped edges, carved ornamental band, thin bronze inlay with green verdigris, no glow, no text, no letters, no symbols"
 
-## `site/works_exchange.glb` — the Exchange's gateway, Meshy, 2026-10-22
+## `site/works_exchange_counter.glb` — the Exchange's counter, Meshy, 2026-10-22
+
+**Cut, the same day, to its counter:** THE GATE grew to 92 m and the
+Exchange became the gate's own work (its ring is the readout,
+`render/gate_fx.rs`), so the 3 m gateway below went and only the brass
+counter in front of it ships: `ci/cut_glb.py <imported> --box -2 -1 -2 2 4
+0.2` dropped 9,090 of 10,398 triangles (everything behind z 0.2), then
+`ktx_pack.py --size 1024`. 1,308 triangles left, standing at x −0.77..0.5,
+y 0.05..0.9, z 0.28..1.06; the gateway's vertices stay in the buffer,
+unreferenced. `site/works_exchange.glb` no longer ships. The rows below are
+the gateway as rolled.
 
 Same terms and pipeline as the Crucible above. **72 credits for three rolls**, run serially. One
 ships, uniform into 3.0 × 3.1 × 2.6 (the street's room short of the guards' beat; the string

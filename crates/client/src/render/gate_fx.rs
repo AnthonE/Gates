@@ -129,7 +129,17 @@ pub struct Hanging {
     ends: [Vec3; 2],
     /// Which fragment, or `u8::MAX` for a chip.
     frag: u8,
+    /// Where it sits once the ring is mended: a fragment back in its place
+    /// in the circle, a chip on the circle it fell from (and gone into it).
+    mend: Vec3,
 }
+
+/// The ring's veil: lapis light filling the circle as the Exchange's quota
+/// does (`render/works.rs` `wake`).
+#[derive(Component)]
+pub struct GateVeil;
+/// The veil's radius, inside the ring's inner face.
+const VEIL_R: f32 = RING_R - RING_HALF - 0.4;
 
 // -------------------------------------------------------- the discharge ---
 
@@ -314,6 +324,10 @@ pub struct GateFx {
     lapis_at: Option<LinearRgba>,
     /// The beacons' brightness last written, `lapis_at`'s rule.
     beacon_k: Option<f32>,
+    /// THE EXCHANGE as the ring shows it, eased: how far its quota is met
+    /// (the ring mends) and its tank (the veil burns).
+    fill: f32,
+    heat: f32,
     /// Quads the last write filled, so the next clears only what it used.
     drawn: usize,
     /// Whether the eye is near enough for motes and arcs.
@@ -840,6 +854,7 @@ pub fn spawn(
             rock: true,
             ends,
             frag: i as u8,
+            mend: RING_C + pivot,
         };
         let piece = commands
             .spawn((
@@ -890,6 +905,7 @@ pub fn spawn(
             rock: false,
             ends: [Vec3::ZERO; 2],
             frag: u8::MAX,
+            mend: RING_C + on_ring(deg, RING_R, 0.0),
         };
         commands.spawn((
             ChildOf(root),
@@ -899,6 +915,23 @@ pub fn spawn(
             Transform::from_translation(home).with_rotation(base),
         ));
     }
+
+    commands.spawn((
+        ChildOf(root),
+        GateVeil,
+        Mesh3d(meshes.add(Circle::new(VEIL_R))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::BLACK,
+            alpha_mode: AlphaMode::Add,
+            unlit: true,
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        })),
+        Transform::from_translation(RING_C),
+        Visibility::Hidden,
+        NotShadowCaster,
+    ));
 
     // The arcs' flash and the dais lights, all dark until something lights
     // them.
@@ -1003,6 +1036,8 @@ pub fn spawn(
         flash_at: RING_C,
         lapis_at: None,
         beacon_k: None,
+        fill: 0.0,
+        heat: 0.0,
         drawn: QUADS,
         near: false,
         arcs_seen: false,
@@ -1016,6 +1051,7 @@ pub fn spawn(
 /// seams, and light what is lit.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn animate(
+    net: Option<NonSend<super::Net>>,
     time: Res<Time>,
     eye: Res<Eye>,
     gain: Res<FlameGain>,
@@ -1031,6 +1067,10 @@ pub fn animate(
     >,
     mut dais: Query<(&DaisLight, &mut PointLight), Without<ArcLight>>,
     mut beacons: Query<&mut Visibility, With<Beacon>>,
+    mut veil: Query<
+        (&mut Visibility, &MeshMaterial3d<StandardMaterial>),
+        (With<GateVeil>, Without<Beacon>),
+    >,
 ) {
     let (Some(mut gate), Some(glow)) = (gate, glow) else {
         return;
@@ -1048,18 +1088,69 @@ pub fn animate(
     gate.near = dist < NEAR_M;
     gate.arcs_seen = dist < ARC_FAR_M;
 
+    // THE EXCHANGE is the gate's work: its quota mends the ring, its tank
+    // burns the veil.
+    let exchange = net.as_ref().and_then(|n| {
+        n.session
+            .core
+            .arc
+            .known()
+            .find(|(_, w)| w.def.spot.site == sim_core::spot::SITE_TOWN)
+            .map(|(_, w)| *w)
+    });
+    let (fill, heat) = exchange.as_ref().map_or((0.0, 0.0), super::works::wake);
+    let ease = 1.0 - (-dt * 0.4).exp();
+    gate.fill += (fill - gate.fill) * ease;
+    gate.heat += (heat - gate.heat) * ease;
+    let mended = gate.fill * gate.fill * (3.0 - 2.0 * gate.fill);
+    for (mut vis, mat) in &mut veil {
+        let state = exchange.map_or(0, |w| w.state);
+        let want = if state == sim_core::works::WORK_SEALED {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        let k = if state == sim_core::works::WORK_LIT && gate.heat < 0.05 {
+            // Embers: the tank is dry, the veil a dull red.
+            LinearRgba::rgb(0.10, 0.015, 0.03)
+        } else {
+            let breath = 1.0 + 0.35 * gate.heat * (t * TAU / BREATH_S).sin();
+            LinearRgba::rgb(0.03, 0.07, 0.22)
+                * (0.15 + 0.85 * mended)
+                * (1.0 + 2.0 * gate.heat)
+                * breath
+        };
+        if let Some(m) = materials.get_mut(&mat.0) {
+            m.base_color = Color::LinearRgba(k);
+        }
+    }
+
     // The hanging pieces, and the gaps between them this frame.
     let mut ends = [[Vec3::ZERO; 2]; FRAGS.len()];
     for (h, mut tf) in &mut pieces {
         let s = (t * h.hz * TAU + h.phase).sin();
-        let pos = h.home + Vec3::Y * h.bob * s;
-        let rot = if h.rock {
+        let fallen = h.home + Vec3::Y * h.bob * s;
+        let pos = fallen.lerp(h.mend, mended);
+        let sway = if h.rock {
             Quat::from_axis_angle(h.axis, h.spin * (t * h.hz * 0.7 * TAU + h.phase).sin()) * h.base
         } else {
             Quat::from_axis_angle(h.axis, h.spin * t) * h.base
         };
+        // A fragment turns back into the circle; a chip keeps tumbling and
+        // shrinks into the ring it mends.
+        let rot = if h.rock {
+            sway.slerp(Quat::IDENTITY, mended)
+        } else {
+            sway
+        };
         tf.translation = pos;
         tf.rotation = rot;
+        if !h.rock {
+            tf.scale = Vec3::splat((1.0 - mended).max(0.001));
+        }
         if let Some(e) = ends.get_mut(h.frag as usize) {
             *e = [pos + rot * h.ends[0], pos + rot * h.ends[1]];
         }
@@ -1145,7 +1236,8 @@ pub fn animate(
 
     // The motes.
     if gate.near {
-        for _ in 0..gate.count(VORTEX_RATE, dt) {
+        let vortex = VORTEX_RATE * (0.4 + gate.fill + gate.heat);
+        for _ in 0..gate.count(vortex, dt) {
             let life = gate.range((5.0, 8.0));
             let r = gate.range((RING_R - 1.2 * K, RING_R - 0.5 * K));
             let m = Mote {
@@ -1612,6 +1704,8 @@ mod tests {
             flash_at: Vec3::ZERO,
             lapis_at: None,
             beacon_k: None,
+            fill: 0.0,
+            heat: 0.0,
             drawn: 0,
             near: true,
             arcs_seen: true,

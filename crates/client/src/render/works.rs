@@ -196,31 +196,27 @@ const CRUCIBLE: Look = Look {
     hover_r: 2.0,
 };
 
-/// THE EXCHANGE (`content/arc.toml`), on THE GATE's main street: a blind
-/// sandstone gateway with bronze gearing, its opening shut by a blue glazed
-/// panel with a bronze porthole, and a brass-topped counter in front,
-/// generated, 3.00 × 2.99 × 2.12 m. Turned about so the counter faces the
-/// gate players walk in from. The porthole is 0.7 m round about (0.02, 1.39)
-/// on both faces, the panel's faces at z −0.45 and −1.0, measured off the
-/// model. No fire: a street gets a veil that glows, and stones that hover
-/// under the string lights (3.5 m over it).
+/// THE EXCHANGE (`content/arc.toml`), on THE GATE's main street under the
+/// gate's ring: a waist-high sandstone counter with a brass top, a slot, a
+/// tray and a geared sorter, generated (cut from the gateway it stood before,
+/// `site/works_exchange_counter.glb`), 1.27 × 0.85 × 0.78 m standing at
+/// x −0.77..0.5, z 0.28..1.06 of the model. Turned about to face the gate
+/// players walk in from. The gate itself is its monument: its ring mends and
+/// fills as the quota does (`gate_fx.rs`), so the counter wears no veil and
+/// no stones of its own.
 const EXCHANGE: Look = Look {
-    glb: "models/site/works_exchange.glb",
-    half: [1.5, 1.06],
+    glb: "models/site/works_exchange_counter.glb",
+    half: [0.8, 1.1],
     turn: core::f32::consts::PI,
     ring: None,
     fire: None,
-    glow: [0.02, 1.39, -0.2],
+    glow: [-0.14, 1.3, 0.67],
     pool: None,
-    veil: Some(Veil {
-        at: [0.02, 1.39, -0.43],
-        r: 0.62,
-        back_z: Some(-1.03),
-    }),
+    veil: None,
     core: None,
-    stones: 4,
-    hover_y: 2.2,
-    hover_r: 2.0,
+    stones: 0,
+    hover_y: 0.0,
+    hover_r: 0.0,
 };
 
 /// Each site's own look, by `sim_core::spot` site code (keyed on the site,
@@ -494,7 +490,7 @@ fn stones(look: &Look) -> impl Iterator<Item = StoneAt> + '_ {
 /// How far along a work is, as its terminal shows it: the quota met (0
 /// sealed, 1 once lit) and the tank (0 unless it burns, and never below a
 /// third while it does, so a nearly dry tank still reads as burning).
-fn wake(w: &WorkView) -> (f32, f32) {
+pub(super) fn wake(w: &WorkView) -> (f32, f32) {
     match w.state {
         WORK_OPEN => (w.progress_pm() as f32 / 1000.0, 0.0),
         WORK_LIT if w.fuel > 0 => {
