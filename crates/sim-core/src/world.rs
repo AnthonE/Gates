@@ -5331,6 +5331,9 @@ impl World {
             death_at: body.death_at,
             ..Player::default()
         };
+        // The new body has no past: a shot favoured back across the death
+        // must not find the old one's last steps (`Rewind::forget`).
+        self.rewind.forget(slot);
         // A player who starved does not respawn already starving.
         survival::grant(&self.survival, &mut self.players[slot]);
         // **And a player who died does not respawn unable to play**
