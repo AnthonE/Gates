@@ -1,6 +1,6 @@
 //! The lore, drawn (`ARC.md` F5–F7): the speakers as people (the player
-//! rig at idle, the shopkeepers' shade), the inscriptions as black slabs
-//! ([`SLAB_GLB`]) cut with the ancients' glyphs and a gold ring on top, and
+//! rig at idle, the shopkeepers' shade), the inscriptions as sandstone
+//! stelae ([`SLAB_GLB`]) cut with the ancients' glyphs and a gold ring on top, and
 //! each mechanism's dials as
 //! stone drums ([`DIAL_GLB`]) whose notch turns as the dials do. Where each
 //! stands is `sim_core::spot`'s answer, so it is drawn where the sim
@@ -15,24 +15,27 @@ use client_core::arc::LoreView;
 use super::{Net, WorldEntity, WorldId};
 use crate::ui::glyphs::{self, ADVANCE, GLYPH_COLS, GLYPH_ROWS, LEADING};
 
-/// An inscription's stone: a blank basalt stele on a footing, 1.31 m wide,
-/// 2.0 m tall, generated. The ring on top stays an exact torus.
+/// An inscription's stone: a blank sandstone stele framed in bronze, a band
+/// of lapis tiles under its bronze cap, on a footing, 1.30 m wide, 2.0 m
+/// tall, generated. The ring on top stays an exact torus.
 pub const SLAB_GLB: &str = "models/site/lore_slab.glb";
 /// How far the stele stands in the ground (`ART.md` rule 2).
 const SLAB_SINK_M: f32 = 0.1;
-/// A dial's drum: a basalt drum 1.1 m across, its top at 1.0 m, generated.
+/// A dial's drum: a sandstone drum bound in bronze and lapis, 0.83 m
+/// across, its top at 1.0 m, generated.
 pub const DIAL_GLB: &str = "models/site/lore_dial.glb";
 
-/// The stele's broad faces, measured off [`SLAB_GLB`]: front +Z at 0.120 m,
-/// back −Z at −0.114 m, flat to ±3 mm over the carved field. The carving
+/// The stele's broad faces, measured off [`SLAB_GLB`]: front +Z at 0.106 m,
+/// back −Z at −0.111 m, flat to ±2 mm over the carved field. The carving
 /// stands 6 mm proud of each so it never fights the stone.
-const FACE_FRONT_Z: f32 = 0.126;
-const FACE_BACK_Z: f32 = -0.120;
+const FACE_FRONT_Z: f32 = 0.112;
+const FACE_BACK_Z: f32 = -0.117;
 /// The carved field on each face, in the slab's frame: 1.0 m by 1.2 m,
-/// its middle 1.125 m up, inside the chipped edges.
+/// its middle 0.95 m up, inside the bronze frame (|x| 0.58), over the
+/// footing (0.2 m) and under the lapis band (1.7 m).
 const CARVE_W_M: f32 = 1.0;
 const CARVE_H_M: f32 = 1.2;
-const CARVE_MID_M: f32 = 1.125;
+const CARVE_MID_M: f32 = 0.95;
 /// The most a glyph's cell is cut, so a short text is not a billboard.
 const CARVE_MAX_CELL_M: f32 = 0.035;
 /// How much of a cell's top the groove's upper wall shades, and how dark.
@@ -204,9 +207,9 @@ pub fn spawn(
         };
         let (slab, slab_material) = super::mobs::model(&server, SLAB_GLB);
         let ring = materials.add(worn_gold());
-        // Fresh-cut basalt: the grey under the black.
+        // Fresh-cut sandstone: the pale under the weathered face.
         let bare = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.66, 0.65, 0.61),
+            base_color: Color::srgb(0.94, 0.82, 0.64),
             perceptual_roughness: 0.95,
             ..default()
         });

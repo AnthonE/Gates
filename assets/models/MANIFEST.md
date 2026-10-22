@@ -1259,8 +1259,8 @@ is not the box's middle); `ci/cut_glb.py` is new.
 | `site/sentry_head.glb` | sentry_head | sentry and turret head (`sentry::HEAD_GLB`) | `01a140f8-ddf6` | `01a140f9-30cc` | 2,202 | 0.80 × 0.40 × 0.89 | uniform to 0.8 wide, `--turn=y90 --center --shift=0,0,0.17` (pivot mid-housing) |
 | `deploy/turret_base.glb` | turret_base | DEPLOY row 18 and the sentries' pedestal | `01a140f8-df9e` | `01a140f9-5ab8` | 2,050 | 0.70 × 0.56 × 0.70 | uniform to the `DEPLOY` row |
 | `site/works_plinth.glb` | works_plinth | a work's plinth and bowl (`works::PLINTH_GLB`) | `01a140f8-e4f5` | `01a140f9-daf6` | 3,144 | 1.60 × 1.58 × 1.60 | uniform to 1.6 wide; the gold ring stays a torus |
-| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a140f9-bae1` | `01a140fa-87b8` | 2,177 | 1.59 × 2.00 × 0.55 | uniform to 2.0 tall; the ring on top stays a torus |
-| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a140f9-e137` | `01a140fa-85a8` | 2,209 | 1.11 × 1.00 × 1.11 | uniform to 1.0 tall; the gold notch stays code |
+| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a16500-f8f7` | `01a16501-78d5` | 2,564 | 1.30 × 2.00 × 0.39 | re-rolled in sandstone 2026-10-22 (below); uniform to 2.0 tall; the ring on top stays a torus |
+| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a16505-0f2e` | `01a16505-64e3` | 2,551 | 0.83 × 1.00 × 0.82 | re-rolled in sandstone 2026-10-22 (below); uniform to 1.0 tall; the gold notch stays code |
 | `site/searchlight.glb` | searchlight | a watchtower's lamp head (`town_fx::SEARCHLIGHT_GLB`) | `01a140fa-81b3` | `01a140fb-2473` | 2,069 | 0.51 × 0.46 × 0.60 | uniform, `--turn=x-90 --center` (lens up +Y); an emissive disc lies on the lens |
 
 **Rolled and not shipped:** the red oil drum (`01a140f7-1533` / `01a140f7-b9c4`) shaded its lid
@@ -1752,3 +1752,23 @@ uniform into 7.0 × 3.0 × 2.0 (the container yard's open lane between the stack
 Prompts, in full, for the IP rail:
 
 > **works_spine** — "A single ancient machine conduit ruin on a plain white background, three-quarter front view. A long straight segment of a giant golden conduit 700 centimetres long and 70 centimetres thick, made like a spine: a gilded bronze pipe ringed every 50 centimetres by heavy bronze vertebra collars with short fins, lying level in four carved sandstone cradles 90 centimetres tall that stand on a low sandstone causeway 700 centimetres long, 200 centimetres wide and 30 centimetres tall. Along its top five empty glass insulator bells in bronze cages, each 40 centimetres tall, stand in a row. Gilt worn through to bronze, green verdigris patina, soot, cracked stone. Ancient, ornate, weathered. Exactly one conduit. No glow, no light, no crystals inside the glass, no wires, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone causeway and cradles, worn gilded bronze conduit and vertebra collars with green verdigris patina, clear empty glass insulator bells in bronze cages, soot, no glow, no text, no letters, no symbols"
+
+## `site/lore_slab.glb`, `site/lore_dial.glb` — the lore in sandstone, Meshy, 2026-10-22
+
+The black basalt stele and drum re-rolled as the ruins' own stone (the rows above carry the
+shipped tasks; the basalt prompts above are history). **96 credits for four rolls**, two of
+each. Same pipeline; `ktx_pack.py --size 1024`.
+
+**Rolled and not shipped:** the second slab (`01a16503-e04d` / `01a16504-6167`), sound but
+rougher in its field; the first dial (`01a16502-2e6c` / `01a16502-ad45`), whose top read
+patchier.
+
+**Anchors measured off the slab:** the broad faces flat at z +0.106 / −0.111 (±2 mm) over the
+carved field, the bronze frame at |x| 0.58, the footing to 0.2 m, the lapis band from 1.7 m
+(`lore::FACE_FRONT_Z`, `CARVE_MID_M`).
+
+Prompts, in full, for the IP rail:
+
+> **lore_slab** (sandstone) — "A single tall upright stone stele on a plain white background, three-quarter view. A standing slab of weathered warm sandstone 130 centimetres wide, 200 centimetres tall and 30 centimetres thick, both of its broad faces smooth, flat and completely blank, each face framed by a narrow inset bronze strip along its edges, a thin band of deep blue glazed tiles across the slab just under its top, its top edge squared under a low bronze cap, standing in a low rough sandstone footing. Ancient, weathered, chipped corners, green verdigris on the bronze. Exactly one slab. No carving on the faces, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone with smooth blank flat faces, chipped corners, narrow bronze edge strips and cap with green verdigris patina, a thin band of deep blue glazed tiles, no text, no letters, no symbols"
+>
+> **lore_dial** (sandstone) — "A single short round stone drum on a plain white background, three-quarter view. A solid cylinder of weathered warm sandstone 84 centimetres across and 100 centimetres tall, its flat top smooth with a low bronze rim, two bronze bands around its body with a ring of deep blue glazed tiles between them, a slightly wider rough sandstone base. Ancient, weathered, chipped, green verdigris on the bronze. Exactly one drum. No ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone, smooth top, chipped edges, bronze rim and bands with green verdigris patina, a ring of deep blue glazed tiles, no text, no letters, no symbols"
