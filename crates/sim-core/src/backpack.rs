@@ -470,7 +470,10 @@ impl Backpacks {
     /// A bag that grows gets its expiry pushed out to what its new
     /// contents ask for and never pulled in — otherwise dropping a common
     /// item into a bag holding a rare one would shorten the rare one's
-    /// clock, which is the ladder paying backwards.
+    /// clock, which is the ladder paying backwards. **Except in THE GATE's
+    /// safe zone**, where no one else may loot it (`may_loot`): there a
+    /// spill topped up hourly kept a locker no raider could reach for as
+    /// long as its owner liked, so a bag there lives its first clock only.
     ///
     /// An inert ladder (`base_ticks == 0`) catches nothing and the
     /// overflow is destroyed exactly as it was before this lane existed —
@@ -487,6 +490,7 @@ impl Backpacks {
         owner: u32,
         items: &mut [ItemStack; INV_SLOTS],
         tick: u64,
+        town: &crate::town::Town,
         events: &mut EventQueue,
     ) -> Option<u32> {
         if bc.base_ticks == 0 {
@@ -544,7 +548,11 @@ impl Backpacks {
                 }
             }
             let want = tick + bc.lifetime_ticks(&self.entries[i].items) as u64;
-            if want > self.entries[i].expires {
+            let (bx, bz) = (
+                self.entries[i].qx as f32 * POS_XZ_Q,
+                self.entries[i].qz as f32 * POS_XZ_Q,
+            );
+            if want > self.entries[i].expires && !crate::town::safe(town, bx, bz) {
                 self.entries[i].expires = want;
             }
             if items.iter().all(|s| s.count == 0) {

@@ -86,9 +86,10 @@ use crate::craft::{inv_count, inv_take};
 use crate::footprint::{Pose, Rect};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
-    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
-    MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS,
-    MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOXES_PER_OWNER,
+    MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS,
+    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, MAX_TURRETS_PER_OWNER,
+    UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -166,12 +167,12 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or the crew
-/// of the claim it stands in.
+/// rounds a gun on top spends on anybody who is not its owner or on a crew
+/// with its owner where it stands (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
-/// the island's coin. Only its owner and the crew of the claim it stands in
+/// the island's coin. Only its owner and its owner's crew where it stands
 /// move items in or out (`turret::spares`, the turret's rule).
 pub const ARCH_VENDING: u8 = 19;
 /// Rust's barbed wooden barricade: the log wall with wire wound through it,
@@ -3272,8 +3273,29 @@ pub fn place_deploy(
     }
     // Checked before the insert for the same reason the hearth cap is: the
     // record below cannot be written into a full store, so the append that
-    // follows the insert needs no second guard.
-    if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
+    // follows the insert needs no second guard. Each hand's share of that
+    // store is capped too (`MAX_BOXES_PER_OWNER`), or one player's cheap
+    // boxes kept every fire and furnace on the shard from being placed.
+    if holds_items(def.arch)
+        && (deploys.boxes.len == MAX_BOXES
+            || deploys.boxes.entries[..deploys.boxes.len]
+                .iter()
+                .filter(|b| b.owner == p.id)
+                .count()
+                >= MAX_BOXES_PER_OWNER)
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
+    // The turret table is shard-wide (`MAX_TURRETS`), so one hand may hold
+    // only its share of it.
+    if def.arch == ARCH_TURRET
+        && deploys.entries[..deploys.len]
+            .iter()
+            .filter(|d| d.owner == p.id && dc.defs[d.row as usize].arch == ARCH_TURRET)
+            .count()
+            >= MAX_TURRETS_PER_OWNER
+    {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -3631,9 +3653,12 @@ pub fn use_door(
     Some(deploys.entries[i].owner)
 }
 
-/// A key lock also opens for the base's hearth crew: anyone the building
-/// is authorized to (inside a hearth's claim and on every crew there).
-/// Rust shares a key lock by crafting keys; the crew is ours.
+/// A key lock also opens for its owner's hearth crew: anyone on a crew
+/// with the lock's owner, on a hearth whose claim covers the door
+/// (`claim::shares_crew`). Rust shares a key lock by crafting keys; the
+/// crew is ours. Not "on every crew here": a raider's own hearth on a
+/// foundation beside a hearthless base claims its doors too, and that rule
+/// let the raider through every key lock in it.
 fn key_crew_passes(
     pieces: &Pieces,
     deploys: &Deploys,
@@ -3643,19 +3668,19 @@ fn key_crew_passes(
     loc: u8,
     id: u32,
 ) -> bool {
-    if !deploys
+    let Some(owner) = deploys
         .locks
         .find(cx, cz, level, loc)
-        .is_some_and(|l| l.is_key())
-    {
+        .filter(|l| l.is_key())
+        .map(|l| l.owner)
+    else {
         return false;
-    }
+    };
     let Some(d) = deploys.find(cx, cz, level, loc) else {
         return false;
     };
     let (x, z) = d.place_xz(pieces.cols());
-    crate::claim::any_claim(pieces, deploys, x, z)
-        && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
+    crate::claim::shares_crew(pieces, deploys, x, z, owner, id)
 }
 
 /// Apply one lock request (`Command::Access`): run `op` against the code
@@ -3867,6 +3892,7 @@ pub fn pick_up(
     pieces: &mut Pieces,
     deploys: &mut Deploys,
     p: &mut Player,
+    tick: u64,
     cx: u16,
     cz: u16,
     level: u8,
@@ -3889,6 +3915,14 @@ pub fn pick_up(
     if def.arch == ARCH_VENDING && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
+    // A spent bag stays down until it is ready again: lifted and set back
+    // down it would be born ready (`Deploys::insert`), and the cooldown
+    // would last one pickup. The bag's own refusal, the nearest sentence
+    // the wire has for "not this bag, not yet".
+    if def.arch == ARCH_BAG && deploys.bag_ready[i] > tick {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_BAG_CAP, 0);
         return;
     }
     // A container comes up empty or not at all.
@@ -7230,6 +7264,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -7276,6 +7311,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -7295,6 +7331,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -7344,6 +7381,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -7369,6 +7407,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -7695,6 +7734,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut stranger,
+            0,
             CX,
             CZ,
             0,
@@ -7720,6 +7760,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut p,
+            0,
             CX,
             CZ,
             0,
@@ -7985,6 +8026,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut guest,
+            0,
             CX,
             CZ,
             0,
@@ -8029,6 +8071,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut friend,
+            0,
             CX,
             CZ,
             0,
@@ -8132,6 +8175,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut guest,
+            0,
             CX,
             CZ,
             0,
@@ -8173,6 +8217,7 @@ mod tests {
             &mut pieces,
             &mut deploys,
             &mut nobody,
+            0,
             CX,
             CZ,
             0,
@@ -9392,5 +9437,363 @@ mod tests {
                 .count(),
             MAX_CATCHERS
         );
+    }
+
+    /// **A raider's own hearth does not open a key lock** (exploit sweep 2,
+    /// base-life#0). A key lock opens for its owner's crew, and the claim a
+    /// raider's hearth on a foundation beside a hearthless base casts over
+    /// it — two cells off, then joined edge to edge — is not that crew. The
+    /// owner's own hearth with a teammate on it opens it for the teammate,
+    /// even with the raider's hearth still reaching the door.
+    #[test]
+    fn a_raiders_own_hearth_beside_a_hearthless_base_opens_none_of_its_key_locks() {
+        let mut dc = DeployContent::probe_fixture();
+        dc.key_lock_item = 7;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().locked);
+
+        const RAIDER: u32 = 9;
+        const MATE: u32 = 11;
+        let press = |deploys: &mut Deploys, pieces: &mut Pieces, id: u32| {
+            let mut who = player_at_cell(CX, CZ, &[]);
+            who.id = id;
+            let mut ev = EventQueue::default();
+            use_door(
+                &dc,
+                pieces,
+                deploys,
+                &mut who,
+                CX,
+                CZ,
+                0,
+                LOC_EDGE_XLO,
+                &mut ev,
+            );
+            let open = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open;
+            if open {
+                // Shut it again for the next press.
+                let mut owner = player_at_cell(CX, CZ, &[]);
+                use_door(
+                    &dc,
+                    pieces,
+                    deploys,
+                    &mut owner,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_EDGE_XLO,
+                    &mut ev,
+                );
+            }
+            open
+        };
+
+        // The raider's foundation two cells off the base, a hearth on it.
+        pieces.insert_for_test(CX - 3, CZ, 0, LOC_PLANE, 0, &bc);
+        deploys.push_hearth_for_test(CX - 3, CZ, 0, RAIDER);
+        let (x, z) = deploys
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .place_xz(pieces.cols());
+        assert!(
+            crate::claim::any_claim(&pieces, &deploys, x, z)
+                && !crate::claim::foreign_claim(&pieces, &deploys, x, z, RAIDER),
+            "the fixture no longer puts the door inside the raider's own claim"
+        );
+        assert!(
+            !press(&mut deploys, &mut pieces, RAIDER),
+            "the raider's hearth opened the key lock"
+        );
+        // Joined edge to edge: the base is now on the raider's component.
+        pieces.insert_for_test(CX - 2, CZ, 0, LOC_PLANE, 0, &bc);
+        pieces.insert_for_test(CX - 1, CZ, 0, LOC_PLANE, 0, &bc);
+        assert!(
+            !press(&mut deploys, &mut pieces, RAIDER),
+            "joined to the base, it still did"
+        );
+
+        // The owner's own hearth, a teammate on its crew: the teammate
+        // opens it, the raider's claim over the same door notwithstanding;
+        // the raider still does not.
+        deploys.push_hearth_for_test(CX, CZ, 0, 7);
+        let h = deploys.hearths().len() - 1;
+        let _ = deploys.hearths_mut()[h].crew.add(MATE);
+        assert!(
+            press(&mut deploys, &mut pieces, MATE),
+            "the owner's crew is shut out of the owner's door"
+        );
+        assert!(!press(&mut deploys, &mut pieces, RAIDER));
+        assert!(!press(&mut deploys, &mut pieces, 13), "a stranger");
+    }
+
+    /// **A spent bag stays down** (exploit sweep 2, base-life#1): lifted and
+    /// set back down it would be born ready, and the cooldown would last one
+    /// pickup. Ready again, it comes up.
+    #[test]
+    fn a_spent_bag_cannot_be_lifted_until_it_is_ready() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut gc = GatherContent::probe_fixture();
+        gc.stack_max[5] = 10;
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(5, 1)]);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        let loc = deploys.entries()[0].loc;
+        let (x, z) = cell_center(CX, CZ);
+        assert!(deploys.claim_bag(&dc, p.id, x, z, 100).is_some());
+        let lift = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player, tick| {
+            let mut ev = EventQueue::default();
+            pick_up(
+                &dc,
+                &gc,
+                pieces,
+                deploys,
+                p,
+                tick,
+                CX,
+                CZ,
+                0,
+                loc,
+                &mut ev,
+                &mut [ItemStack::default(); INV_SLOTS],
+            );
+            last(&ev)
+        };
+        let r = lift(&mut deploys, &mut pieces, &mut p, 101);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_BAG_CAP)
+        );
+        assert_eq!(deploys.len(), 1, "the spent bag came up");
+        lift(&mut deploys, &mut pieces, &mut p, 100 + BAG_COOLDOWN_TICKS);
+        assert_eq!(deploys.len(), 0, "a ready bag comes up");
+        assert_eq!(crate::craft::inv_count(&p.inv, 5), 1);
+    }
+
+    /// **One hand's share of the container store** (exploit sweep 2,
+    /// base-life#2): the store is shard-wide and a box is cheap.
+    #[test]
+    fn one_hand_places_only_its_share_of_the_container_store() {
+        let dc = boxed_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (9, 2)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        // The hand's share already standing, far off.
+        for (k, b) in deploys.boxes.entries[..MAX_BOXES_PER_OWNER]
+            .iter_mut()
+            .enumerate()
+        {
+            *b = BoxRec {
+                cx: 100 + k as u16,
+                cz: 100,
+                owner: p.id,
+                ..BoxRec::default()
+            };
+        }
+        deploys.boxes.len = MAX_BOXES_PER_OWNER;
+        let mut place = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player| {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                pieces,
+                deploys,
+                p,
+                0,
+                7,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        // A box of somebody else's in that row, and the same placement goes.
+        deploys.boxes.entries[0].owner = 9;
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(r.0, crate::world::EV_DEPLOY_PLACED);
+    }
+
+    /// The probe fixture's box rows plus a turret (row 8, item 12).
+    fn turret_fixture() -> DeployContent {
+        let mut d = boxed_fixture();
+        d.defs[8] = DeployDef {
+            arch: ARCH_TURRET,
+            placement: PLACE_ANY,
+            hp: 1000,
+            matter: MATTER_METAL,
+            item: 12,
+            n_costs: 0,
+            costs: [(0, 0); MAX_DEPLOY_COSTS],
+        };
+        d.def_count = 9;
+        d
+    }
+
+    /// A turret record and its (empty) box at `(cx, cz)`, placed with no
+    /// rules — the turret table's fixture.
+    fn stand_turret(deploys: &mut Deploys, cx: u16, cz: u16, owner: u32) {
+        assert!(deploys.insert(
+            DeployRec {
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                row: 8,
+                owner,
+                hp: 1000,
+                ..DeployRec::default()
+            },
+            0,
+        ));
+        let n = deploys.boxes.len;
+        deploys.boxes.entries[n] = BoxRec {
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            owner,
+            ..BoxRec::default()
+        };
+        deploys.boxes.len += 1;
+    }
+
+    /// **One hand holds only its share of the turret table** (exploit
+    /// sweep 2, pve#4): the table is shard-wide.
+    #[test]
+    fn one_hand_places_only_its_share_of_the_turrets() {
+        let dc = turret_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(12, 2)]);
+        for k in 0..MAX_TURRETS_PER_OWNER as u16 {
+            stand_turret(&mut deploys, 100 + k, 100, p.id);
+        }
+        let mut place = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player| {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                pieces,
+                deploys,
+                p,
+                0,
+                8,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!((r.0, r.2), (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_FULL));
+        let i = deploys.find_index(100, 100, 0, LOC_PLANE).unwrap();
+        deploys.remove_at(i, &dc);
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(
+            r.0,
+            crate::world::EV_DEPLOY_PLACED,
+            "one fewer, and it goes"
+        );
+    }
+
+    /// **A full turret table gives way to a loaded gun** (exploit sweep 2,
+    /// pve#4): dry turrets parked first held every entry, and a loaded one
+    /// placed after them never got one.
+    #[test]
+    fn a_full_turret_table_gives_a_dry_entry_up_to_a_loaded_turret() {
+        use crate::limits::MAX_TURRETS;
+        use crate::turret::{reconcile, Turret};
+        const AMMO: u16 = 13;
+        let dc = turret_fixture();
+        let mut deploys = Deploys::new();
+        for k in 0..=MAX_TURRETS as u16 {
+            stand_turret(&mut deploys, 100 + k, 100, 1 + k as u32 / 12);
+        }
+        let mut table = [Turret::default(); MAX_TURRETS];
+        let mut slots = [crate::mob::Mob::default(); MAX_TURRETS];
+        let held = |table: &[Turret; MAX_TURRETS], cx: u16| {
+            table.iter().any(|t| t.live && t.cx == cx && t.cz == 100)
+        };
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        let last_cx = 100 + MAX_TURRETS as u16;
+        assert!(held(&table, 100) && !held(&table, last_cx), "first come");
+        // A dry one stays out while every entry is dry...
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(!held(&table, last_cx));
+        // ...and loaded, it takes the first dry entry.
+        let b = deploys
+            .box_index(box_key(last_cx, 100, 0, LOC_PLANE))
+            .unwrap();
+        deploys.set_box_slot(
+            b,
+            0,
+            ItemStack {
+                item: AMMO,
+                count: 5,
+                cond: 0,
+                skin: 0,
+            },
+        );
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(held(&table, last_cx), "a loaded turret got no entry");
+        assert!(!held(&table, 100), "the first dry one gave its entry up");
+        // A loaded one keeps it.
+        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        assert!(held(&table, last_cx) && !held(&table, 100));
     }
 }

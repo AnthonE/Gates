@@ -285,6 +285,60 @@ pub fn any_claim(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32) -> bool {
         .any(|h| w.seen[..w.len].contains(&key(h.cx, h.cz)))
 }
 
+/// The hearths whose claim covers a point **and whose crew holds one
+/// hand** — [`crew_cover`]'s answer, kept so a caller asking about many
+/// players pays for one walk.
+pub struct CrewCover {
+    idx: [u16; MAX_HEARTHS],
+    n: usize,
+}
+
+impl CrewCover {
+    /// Whether `id` shares one of these crews with the hand they were found
+    /// for.
+    pub fn holds(&self, deploys: &Deploys, id: u32) -> bool {
+        let hearths = deploys.hearths();
+        self.idx[..self.n]
+            .iter()
+            .any(|&i| hearths.get(i as usize).is_some_and(|h| h.crew.contains(id)))
+    }
+}
+
+/// Every hearth whose claim covers `(x, z)` and lists `who` on its crew.
+///
+/// **The question a grant asks, where `foreign_claim` is the one a refusal
+/// asks.** A claim is any hearth's whose base reaches within the cushion,
+/// so "on every crew here" answered *yes* to a raider whose own hearth stood
+/// on a foundation beside a hearthless base, and *no* to a defender once a
+/// stranger's hearth stood 16–18 m off the base's edge. A grant tied to a
+/// hand — a key lock's owner, a turret's — asks instead whether you share a
+/// crew with that hand here, and nobody can put another hand on their crew:
+/// `crew_op` only ever adds the caller.
+pub fn crew_cover(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32, who: u32) -> CrewCover {
+    let mut c = CrewCover {
+        idx: [0; MAX_HEARTHS],
+        n: 0,
+    };
+    let hearths = deploys.hearths();
+    if !hearths.iter().any(|h| h.crew.contains(who)) {
+        return c;
+    }
+    let w = reach(pieces, x, z);
+    for (i, h) in hearths.iter().enumerate().take(MAX_HEARTHS) {
+        if h.crew.contains(who) && w.seen[..w.len].contains(&key(h.cx, h.cz)) {
+            c.idx[c.n] = i as u16;
+            c.n += 1;
+        }
+    }
+    c
+}
+
+/// Whether some hearth whose claim covers `(x, z)` has both `a` and `b` on
+/// its crew ([`crew_cover`]'s rule, asked once).
+pub fn shares_crew(pieces: &Pieces, deploys: &Deploys, x: f32, z: f32, a: u32, b: u32) -> bool {
+    crew_cover(pieces, deploys, x, z, a).holds(deploys, b)
+}
+
 // ---------------------------------------------------------------------------
 // The cached volume — the same shape, held still for the sweep
 // ---------------------------------------------------------------------------
@@ -800,6 +854,49 @@ mod tests {
                 "cell {cx} answered differently for two identical worlds"
             );
         }
+    }
+
+    /// **A stranger's claim neither grants nor takes away a crew's standing**
+    /// (exploit sweep 2, pve#2 and base-life#0). A base with its hearth and
+    /// a crewmate, a turret at its edge, and a stranger's foundation and
+    /// hearth on open ground within the cushion of that edge: the turret
+    /// (`turret::spares`, the vending machine's rule too) still spares the
+    /// crewmate and still shoots the stranger. Over a hearthless base, the
+    /// stranger's hearth makes the stranger nobody's crewmate either.
+    #[test]
+    fn a_strangers_hearth_beside_a_base_moves_nobodys_crew() {
+        const MATE: u32 = 8;
+        let cells: Vec<(u16, u16)> = (100..105).map(|cx| (cx, 100)).collect();
+        let (mut pieces, mut deploys) = base(&cells);
+        let _ = deploys.hearths_mut()[0].crew.add(MATE);
+        // The stranger's foundation 15 m off the turret's cell, three empty
+        // cells between: in the cushion, not on the base.
+        let bc = BuildContent::probe_fixture();
+        pieces.insert_for_test(109, 100, 0, LOC_PLANE, 0, &bc);
+        deploys.push_hearth_for_test(109, 100, 0, STRANGER);
+        let (x, z) = centre(104, 100);
+        assert!(
+            foreign_claim(&pieces, &deploys, x, z, MATE),
+            "the fixture no longer puts the stranger's claim over the turret"
+        );
+        let spares = |id| crate::turret::spares(&pieces, &deploys, OWNER, x, z, id);
+        assert!(spares(OWNER) && spares(MATE), "the crew is shot");
+        assert!(!spares(STRANGER), "the stranger is spared");
+
+        // The same turret's owner with no hearth of their own: the
+        // stranger's claim reaches the turret, and spares the stranger not.
+        let mut bare = Pieces::new();
+        for &(cx, cz) in &cells {
+            bare.insert_for_test(cx, cz, 0, LOC_PLANE, 0, &bc);
+        }
+        bare.insert_for_test(109, 100, 0, LOC_PLANE, 0, &bc);
+        let mut theirs = Deploys::new();
+        theirs.push_hearth_for_test(109, 100, 0, STRANGER);
+        assert!(any_claim(&bare, &theirs, x, z));
+        assert!(!crate::turret::spares(
+            &bare, &theirs, OWNER, x, z, STRANGER
+        ));
+        assert!(!shares_crew(&bare, &theirs, x, z, OWNER, STRANGER));
     }
 
     /// A `World` is constructible with the module in it — the smoke that

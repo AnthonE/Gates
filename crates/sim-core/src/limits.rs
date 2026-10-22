@@ -692,7 +692,8 @@ pub const MAX_HEARTHS: usize = 512;
 /// roster slot below the town's sentries, taken from the animals' range —
 /// 64 leaves 187 animal slots, about three times what the shipped
 /// densities spawn. Past it, a placed turret stands inert until one comes
-/// down. Was 24 until wire v121, which a few bases on a full shard used up.
+/// down or a dry one gives its entry up to it (`turret::reconcile`). Was 24
+/// until wire v121, which a few bases on a full shard used up.
 pub const MAX_TURRETS: usize = 64;
 
 /// Rust's turret interference (2023): at most this many turrets within
@@ -701,6 +702,13 @@ pub const MAX_TURRETS: usize = 64;
 pub const TURRET_INTERFERENCE: usize = 12;
 /// The interference radius, metres.
 pub const TURRET_INTERFERENCE_M: f32 = 40.0;
+
+/// Turrets one player may have placed (`deploy::place_deploy`): more than
+/// [`TURRET_INTERFERENCE`] in one place never all fire anyway, and the
+/// [`MAX_TURRETS`] table is shard-wide, so one hand may not hold all of it.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
+const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
@@ -854,6 +862,14 @@ pub const MAX_BACKPACKS: usize = 256;
 /// one with the barrels.
 pub const MAX_GROUND_ITEMS: usize = 512;
 
+/// Of [`MAX_GROUND_ITEMS`], the slots a thrown stack (`Command::Drop`)
+/// never takes: a throw into a store this full lands in the bag at the
+/// thrower's feet instead (`grounditem::GroundItems::toss`). The store is
+/// shard-wide and evicts, so a flood of one-unit drops otherwise pushed out
+/// every barrel's scatter and every landed arrow on the island; with this,
+/// a drop never evicts anything and those keep the last quarter.
+pub const DROP_HEADROOM: usize = MAX_GROUND_ITEMS / 4;
+
 /// Stacks in the air at once (`grounditem::Tosses`): a `Command::Drop` throws
 /// its stack out of the hand, and the throw is remembered only while it
 /// flies (two thirds of a second off a standing hand on level ground).
@@ -876,6 +892,13 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// here for the same reason: nothing is lost by refusing a box that was
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOXES: usize = 1_024;
+/// Of [`MAX_BOXES`], how many one player may have placed — boxes, fires,
+/// furnaces, planters, turrets, every container (`deploy::holds_items`).
+/// The store is shard-wide and a small box is cheap, so without a share one
+/// player kept every fire, furnace and box on the island from being placed.
+/// Overflow policy: **refuse** with `REFUSE_D_FULL`, as for the store.
+pub const MAX_BOXES_PER_OWNER: usize = 64;
+const _: () = assert!(MAX_BOXES >= 16 * MAX_BOXES_PER_OWNER);
 
 /// Living plants on the island at once, in planter beds and on the open
 /// ground (`farm.rs`). One fixed store; a farm period visits at most
