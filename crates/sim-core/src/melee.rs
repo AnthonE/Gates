@@ -134,6 +134,17 @@ pub const HEMP_PICK_TOP_M: f32 = 1.25;
 /// A ground pickup's pick volume: about the pile it is drawn as.
 pub const PICKUP_PICK_R_M: f32 = 0.35;
 pub const PICKUP_PICK_TOP_M: f32 = 0.4;
+/// Wild corn's pick volume (`Occupant::WildCorn`): the ripe stalk the client
+/// draws, `farm::LOOK_H_M`'s corn height and the bed plant's pick radius.
+/// **(knob)**
+pub const CORN_PICK_R_M: f32 = 0.3;
+/// See [`CORN_PICK_R_M`].
+pub const CORN_PICK_TOP_M: f32 = 1.8;
+/// A wild pumpkin's: a low vine and its fruit, wider than it is tall.
+/// **(knob)**
+pub const PUMPKIN_PICK_R_M: f32 = 0.4;
+/// See [`PUMPKIN_PICK_R_M`].
+pub const PUMPKIN_PICK_TOP_M: f32 = 0.45;
 
 /// The volume a **swing** tests an occupant against, `(radius, top)` metres
 /// at slot scale 1: `terrain::occupant_volume` — the same cylinder a body
@@ -145,6 +156,8 @@ pub const fn swing_volume(o: Occupant) -> (f32, f32) {
     match o {
         Occupant::BerryBush => (BUSH_SWING_R_M, BUSH_SWING_TOP_M),
         Occupant::Hemp => (HEMP_PICK_R_M, HEMP_PICK_TOP_M),
+        Occupant::WildCorn => (CORN_PICK_R_M, CORN_PICK_TOP_M),
+        Occupant::WildPumpkin => (PUMPKIN_PICK_R_M, PUMPKIN_PICK_TOP_M),
         // A ground pickup: a knee-high pile you bend to.
         o if o.is_pickup() => (PICKUP_PICK_R_M, PICKUP_PICK_TOP_M),
         // The saguaro's trunk: its arms are solid, but a swing aims at the
@@ -183,6 +196,12 @@ const _: () = {
     }
     if HEMP_PICK_R_M > widest {
         widest = HEMP_PICK_R_M;
+    }
+    if CORN_PICK_R_M > widest {
+        widest = CORN_PICK_R_M;
+    }
+    if PUMPKIN_PICK_R_M > widest {
+        widest = PUMPKIN_PICK_R_M;
     }
     assert!(
         REACH_M + widest * SLOT_SCALE_MAX + MELEE_PROBE_M < CELL_SIZE,
@@ -465,8 +484,9 @@ pub fn openable(o: Occupant) -> bool {
 }
 
 /// The plant a hand reaching along `ray` would pick (`E`, `gather::pick`):
-/// the nearest occupant the ray enters, if that is a grown berry bush or
-/// hemp — a trunk, a node or a crate in front of it is in the way, and a
+/// the nearest occupant the ray enters, if that is a grown
+/// [`gather::pickable`] (a berry bush, hemp, wild corn or pumpkin, a ground
+/// pickup) — a trunk, a node or a crate in front of it is in the way, and a
 /// sprout still growing back has nothing on it yet. The client's `[E] PICK`
 /// prompt and the server's agent both ask this, so they agree on which plant.
 pub fn pick_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {

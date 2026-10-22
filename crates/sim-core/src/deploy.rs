@@ -160,10 +160,10 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// Rust's wooden barricade: a free-standing wall of sharpened logs that
 /// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
 pub const ARCH_BARRICADE: u8 = 16;
-/// A planter box (crops v0, `NOW.md` §5): a container that **grows**. Seeds
-/// in its beds become a crop over minutes on the ovens' own sweep
-/// (`oven.rs`), with no fuel and no switch — a planter is always growing,
-/// and what grows into what is rows in `content/cooking.toml`.
+/// A planter box (farming v2, `farm.rs`): six bed spots whose plants live in
+/// the farm store, and one box slot that is its water tank. A seed goes in
+/// the soil by hand (`Command::Plant`); what grows into what is the
+/// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
 /// rounds a gun on top spends on anybody who is not its owner or the crew
@@ -184,6 +184,10 @@ pub const ARCH_FLOOR_SPIKES: u8 = 21;
 /// A rug: a flat cloth floor piece a body walks over. Its row's comfort
 /// (`deployables.toml` `comfort`, `World::furnish_comfort`) is what it does.
 pub const ARCH_RUG: u8 = 22;
+/// A water catcher (farming v2, `farm.rs`): a tarp funnel over a barrel. It
+/// banks rain under open sky, fills an empty waterskin in its one slot, and
+/// waters the planters and ground plants within its reach.
+pub const ARCH_CATCHER: u8 = 23;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -206,7 +210,7 @@ pub const ARCH_RUG: u8 = 22;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 23] = [
+pub const DEPLOY_VOL: [[f32; 3]; 24] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
     [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
@@ -230,6 +234,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 23] = [
     [1.8, 1.4, 0.6],     // 20 barbed barricade — the barricade's wall
     [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
     [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
+    [0.9, 1.1, 0.9],     // 23 water catcher — a funnel over a barrel
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -326,6 +331,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_RECYCLER
         || arch == ARCH_RESEARCH
         || arch == ARCH_PLANTER
+        || arch == ARCH_CATCHER
         || arch == ARCH_TURRET
         || arch == ARCH_VENDING
 }
@@ -542,8 +548,23 @@ pub const REFUSE_D_AUTH_FULL: u32 = 18;
 /// inventory that could not hold them would be the worst kind of loss —
 /// silent, and caused by the player's own verb.
 pub const REFUSE_D_NOT_EMPTY: u32 = 19;
+/// Farming v2 (`farm.rs`): the stack named is not a seed this island grows,
+/// or the hand holds no full waterskin for a water.
+pub const REFUSE_D_PLANT_ITEM: u32 = 20;
+/// The bed spot is past the planter's six, or already holds a plant.
+pub const REFUSE_D_PLANT_SPOT: u32 = 21;
+/// Nothing grows here: open ground the seed cannot take — the sea's edge,
+/// a road, an authored site, a slope, a biome that is not soft, a roof or
+/// something built over it (`farm::ground_ok`).
+pub const REFUSE_D_PLANT_SOIL: u32 = 22;
+/// The island's plant store is full (`limits::MAX_PLANTS`).
+pub const REFUSE_D_PLANTS_FULL: u32 = 23;
+/// The plant is not at the stage the verb needs (a pick before it is ripe).
+pub const REFUSE_D_PLANT_STAGE: u32 = 24;
+/// The planter's tank has no room for a skin.
+pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_NOT_EMPTY;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_PLANT_WATER;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -923,11 +944,6 @@ pub struct DeployRec {
     /// deliberately does not maintain this and why it is absent from
     /// `state_hash`. Read it on a client, never on a shard.
     pub dmg: u8,
-    /// A planter's beds as they are drawn (crops v1, wire v100): two bits a
-    /// bed, `oven::planter_stages`. Wire-only and filled at encode, `dmg`'s
-    /// posture — the sim keeps it on the planter's `OvenState::bank` and
-    /// announces a change with `EV_GROW`. Zero for everything else.
-    pub grow: u8,
     /// The lock bolted on is a key lock, not a code lock (wire v120), so
     /// the client draws a padlock and offers no keypad. Wire-only and
     /// filled at encode from the lock store, `dmg`'s posture: not hashed,
@@ -1634,6 +1650,15 @@ impl Deploys {
             return;
         }
         self.boxes.entries[i].items[s] = stack;
+    }
+
+    /// Set box `i`'s water tank, a planter's or a catcher's (`farm.rs`).
+    /// Total like [`Self::set_box_slot`], and it writes nothing into any
+    /// other container, whose tank the save refuses.
+    pub fn set_box_water(&mut self, i: usize, water: u32) {
+        if i < self.boxes.len && crate::oven::OvenState::arch_has_tank(self.boxes.ovens[i].arch) {
+            self.boxes.ovens[i].water = water;
+        }
     }
 
     /// Planar distance from a box to a player, against [`STATION_REACH_M`].
@@ -2361,6 +2386,22 @@ pub fn body_base_y(
     }
 }
 
+/// [`body_base_y`] for the deployable box `b` belongs to: the box carries
+/// its record's address and pose, which is all that reads. For a caller
+/// that holds the box store mutably and cannot look the record up (the
+/// farm's tank, `farm::step`).
+pub fn box_base_y(seed: u64, haven: &terrain::Haven, cols: &ColIndex, b: &BoxRec, arch: u8) -> f32 {
+    let rec = DeployRec {
+        cx: b.cx,
+        cz: b.cz,
+        level: b.level,
+        loc: b.loc,
+        pose: b.pose,
+        ..DeployRec::default()
+    };
+    body_base_y(seed, haven, cols, &rec, arch)
+}
+
 /// The collision index's row for a blocking deployable, or `None` for one
 /// that does not block. Its ground is computed here, once, by the same
 /// function on the server and in the client's predictor.
@@ -2950,7 +2991,6 @@ pub fn stand_authored(
         has_lock: false,
         locked: false,
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -3182,6 +3222,18 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
+    // The catchers' own cap: each one's watering scan is bounded by it.
+    if def.arch == ARCH_CATCHER
+        && deploys
+            .oven_states()
+            .iter()
+            .filter(|o| o.arch == ARCH_CATCHER)
+            .count()
+            >= crate::limits::MAX_CATCHERS
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
     if inv_count(&p.inv, def.item) < 1 {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
         return;
@@ -3205,7 +3257,6 @@ pub fn place_deploy(
         locked: false,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -3690,6 +3741,42 @@ pub fn lock_op(
     None
 }
 
+/// Whether `p`'s hand may lift the deployable at the address, before
+/// anything about what is in it: one stands there, it is no world fixture,
+/// it is within build reach, in no one else's claim, and its lock passes
+/// the hand. Its index, or the `REFUSE_D_*` [`pick_up`] would say. Asked
+/// first by every pick-up, so an empty-or-not rule never answers a hand
+/// that could not have lifted it anyway.
+pub fn pick_up_hand(
+    pieces: &Pieces,
+    deploys: &Deploys,
+    p: &Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> Result<usize, u32> {
+    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
+        return Err(REFUSE_D_SPOT);
+    };
+    if deploys.entries[i].owner == WORLD_OWNER {
+        return Err(REFUSE_D_OWNER);
+    }
+    let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        return Err(REFUSE_D_REACH);
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        return Err(REFUSE_D_CLAIM);
+    }
+    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
+        return Err(REFUSE_D_OWNER);
+    }
+    Ok(i)
+}
+
 /// Take a deployable back up and return its item — **pickup v1**
 /// (`reference/BUILDING.md` §7 verb 11, and `DOORS.md` §7 verb 9, which
 /// are the same verb seen from two documents).
@@ -3732,29 +3819,14 @@ pub fn pick_up(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) {
-    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
-        return;
+    let i = match pick_up_hand(pieces, deploys, p, cx, cz, level, loc) {
+        Ok(i) => i,
+        Err(why) => {
+            events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
+            return;
+        }
     };
-    if deploys.entries[i].owner == WORLD_OWNER {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
     let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
-    let (px, pz) = player_xz(p);
-    let (dx, dz) = (ax - px, az - pz);
-    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
-        return;
-    }
-    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
-        return;
-    }
-    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
     // A vending machine comes up only for the hands it answers to: on open
@@ -6033,7 +6105,6 @@ mod tests {
                 has_lock: false,
                 locked: false,
                 dmg: 0,
-                grow: 0,
                 keyed: false,
             },
             0,
@@ -9037,6 +9108,76 @@ mod tests {
         assert_eq!(
             deploys.boxes.len, MAX_BOXES,
             "the record took the last slot"
+        );
+    }
+
+    /// **The 129th water catcher refuses** (`MAX_CATCHERS`): each catcher's
+    /// watering scan walks the boxes and the ground plants, so their number
+    /// is capped on its own, below the box store's. Written against the
+    /// private store like the box cap above; the 128 standing catchers are
+    /// oven rows, which is what the guard counts.
+    #[test]
+    fn the_129th_catcher_refuses_and_the_128th_places() {
+        use crate::limits::MAX_CATCHERS;
+        let mut dc = DeployContent::probe_fixture();
+        dc.defs[4] = DeployDef {
+            arch: ARCH_CATCHER,
+            placement: PLACE_FOUNDATION,
+            hp: 150,
+            item: 6,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 5;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 9), (6, 4)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        let place =
+            |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player, ev: &mut EventQueue| {
+                ev.clear();
+                place_deploy(
+                    SEED,
+                    hv(),
+                    &dc,
+                    &bc,
+                    pieces,
+                    deploys,
+                    p,
+                    0,
+                    4,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_PLANE,
+                    crate::footprint::Pose::CENTRE,
+                    ev,
+                );
+            };
+
+        deploys.boxes.len = MAX_CATCHERS;
+        for o in deploys.boxes.ovens[..MAX_CATCHERS].iter_mut() {
+            o.arch = ARCH_CATCHER;
+        }
+        let before = deploys.len();
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_REFUSED);
+        assert_eq!(last(&ev).2, REFUSE_D_FULL, "the 129th catcher refuses");
+        assert_eq!(deploys.len(), before, "and leaves no record standing");
+        assert_eq!(crate::craft::inv_count(&p.inv, 6), 4, "nor spends the item");
+
+        // One catcher fewer (a box in its row) and the same placement goes.
+        deploys.boxes.ovens[0].arch = ARCH_BOX;
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        assert_eq!(
+            deploys
+                .oven_states()
+                .iter()
+                .filter(|o| o.arch == ARCH_CATCHER)
+                .count(),
+            MAX_CATCHERS
         );
     }
 }

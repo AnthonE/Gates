@@ -50,8 +50,17 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 
 use sim_core::world::{
     Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
-    EV_DRANK, EV_PIECE_REMOVED, EV_RESPAWN, EV_STRUCT_HIT,
+    EV_DRANK, EV_PIECE_REMOVED, EV_PLANT, EV_PLANT_GONE, EV_RESPAWN, EV_STRUCT_HIT,
 };
+
+/// The farm's planter (farming v2): a deploy row appended to the fixture
+/// here, on an item past the gather fixture's twelve, so neither
+/// `DeployContent::probe_fixture` nor the parity probe carries one.
+const PLANTER_ITEM: u16 = 12;
+/// And its water catcher, on the next item.
+const CATCHER_ITEM: u16 = 13;
+/// Bot 8 farms: it stands still by the planter, plants and picks.
+const FARMER: usize = 7;
 
 /// One tick's commands: every bot's input plus a craft enqueue, a cancel,
 /// a place, an upgrade, a repair, a charge plant, and an eat, so the
@@ -345,6 +354,35 @@ fn test_alloc_zero() {
     // *counted* while a bag exists for it to find. Bot 6's is placed below,
     // through the real verb.
     world.deploy = DeployContent::probe_fixture();
+    // The farm (farming v2): a planter row, and the corn fixture on a crop
+    // short enough to ripen inside the window, so `farm::step`'s stages,
+    // its ripe clock, the plant verb and the pick all run in it.
+    world.gather.item_count = PLANTER_ITEM + 1;
+    world.gather.stack_max[PLANTER_ITEM as usize] = 1;
+    let planter_row = world.deploy.def_count;
+    world.deploy.defs[planter_row as usize] = sim_core::deploy::DeployDef {
+        arch: sim_core::deploy::ARCH_PLANTER,
+        placement: sim_core::deploy::PLACE_ANY,
+        hp: 100,
+        matter: sim_core::deploy::MATTER_WOOD,
+        item: PLANTER_ITEM,
+        n_costs: 0,
+        costs: [(0, 0); 4],
+    };
+    world.deploy.def_count += 1;
+    world.gather.item_count = CATCHER_ITEM + 1;
+    world.gather.stack_max[CATCHER_ITEM as usize] = 1;
+    let catcher_row = world.deploy.def_count;
+    world.deploy.defs[catcher_row as usize] = sim_core::deploy::DeployDef {
+        arch: sim_core::deploy::ARCH_CATCHER,
+        item: CATCHER_ITEM,
+        ..world.deploy.defs[planter_row as usize]
+    };
+    world.deploy.def_count += 1;
+    world.cook.farm = sim_core::farm::FarmContent::probe_fixture();
+    world.cook.farm.crops[0].grow_ticks = 90;
+    world.cook.farm.ripe_ticks = 60;
+    world.cook.farm.dying_ticks = 30;
     // The animal fixture, and it is the largest per-tick addition in this
     // file: 100 bots spread over the island wake most of a 64-slot roster,
     // so the counted window holds the hatch, the staggered think (the
@@ -477,6 +515,177 @@ fn test_alloc_zero() {
         1,
         "the staged bag did not place — the fixture, not the gate"
     );
+    // Bot 8's planter, placed through the real verb before the counters
+    // open, with a full skin (fixture item 2) in its water slot and seeds
+    // (fixture item 1) in the farmer's hand.
+    let farm_cell = buildable_cell(&world, SEED, 700, 700);
+    let (fx, fz) = cell_center(farm_cell.0, farm_cell.1);
+    // And a patch of soft open ground beside where the farmer stands, for
+    // the ground half of the plant verb: a meadow or forest point the
+    // terrain and the build would take, scanned rather than typed for
+    // `buildable_cell`'s reason, a metre or two off the planter's side.
+    let soft = (0..64)
+        .map(|k| {
+            (
+                fx - 1.8 + (k % 8) as f32 * 0.5,
+                fz + 0.2 + (k / 8) as f32 * 0.35,
+            )
+        })
+        .find(|&(x, z)| {
+            let mut occ = sim_core::occupy::Occupants {
+                table: &world.scatter,
+                haven: hv(SEED),
+                harvested: &sim_core::occupy::Pristine,
+                cache: &mut world.slot_cache,
+                doors: 0,
+            };
+            let Ok(y) = sim_core::farm::ground_site(
+                SEED,
+                hv(SEED),
+                world.pieces.cols(),
+                &mut occ,
+                x,
+                z,
+                || false,
+            ) else {
+                return false;
+            };
+            let biome = sim_core::terrain::biome_at(SEED, y, x, z) as usize;
+            world.cook.farm.soil_pm[biome] > 0
+                && sim_core::fmath::fabs(x - fx) > 1.0
+                && sim_core::farm::in_sow_reach((x, y, z), (fx, y + 1.6, fz + 1.0))
+        })
+        .expect("no soft ground beside the farmer's planter — the fixture, not the gate");
+    world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz);
+    world.players[FARMER].inv[3] = ItemStack {
+        item: PLANTER_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    world.players[FARMER].inv[4] = ItemStack {
+        item: world.cook.farm.crops[0].seed,
+        count: 100,
+        cond: 0,
+        skin: 0,
+    };
+    world.tick(&[Command::PlaceDeploy {
+        id: FARMER as u32 + 1,
+        row: planter_row,
+        cx: farm_cell.0,
+        cz: farm_cell.1,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let planter = sim_core::deploy::box_key(farm_cell.0, farm_cell.1, 0, 0);
+    let planter_i = world
+        .deploys
+        .box_index(planter)
+        .expect("the farmer's planter did not place — the fixture, not the gate");
+    world.deploys.set_box_slot(
+        planter_i,
+        0,
+        ItemStack {
+            item: world.cook.farm.water_full,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz + 1.0);
+    // Two water catchers within 3 m of both the planter and the soft
+    // ground, clear of it: one placed now, its barrel full and an empty
+    // skin in its slot, so the window's catcher passes fill the skin and
+    // sprinkle the planter and the ground plant; the other placed by the
+    // farmer inside the window, so the catchers' place-time count runs in
+    // it (every later press refuses the taken spot).
+    let near = |x: f32, z: f32, (ax, az): (f32, f32), r: f32| {
+        (x - ax) * (x - ax) + (z - az) * (z - az) <= r * r
+    };
+    let catchers = |w: &World| {
+        w.deploys
+            .oven_states()
+            .iter()
+            .filter(|o| o.arch == sim_core::deploy::ARCH_CATCHER)
+            .count()
+    };
+    // Each in a build cell of its own: one deployable to a cell's plane.
+    let mut spots = (0..169).filter_map(|k| {
+        let (x, z) = (
+            (soft.0 + fx) * 0.5 + (k % 13) as f32 * 0.4 - 2.4,
+            (soft.1 + fz) * 0.5 + (k / 13) as f32 * 0.4 - 2.4,
+        );
+        (near(x, z, (fx, fz), 2.6) && near(x, z, soft, 2.6) && !near(x, z, soft, 1.0))
+            .then(|| sim_core::footprint::quantize(x, z))
+            .flatten()
+            .filter(|&(cx, cz, _, _)| (cx, cz) != farm_cell)
+    });
+    world.players[FARMER].inv[5] = ItemStack {
+        item: CATCHER_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let first = spots
+        .by_ref()
+        .find(|&(cx, cz, ox, oz)| {
+            let before = catchers(&world);
+            world.tick(&[Command::PlaceDeploy {
+                id: FARMER as u32 + 1,
+                row: catcher_row,
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                pose: sim_core::footprint::Pose { ox, oz, yaw: 0 },
+            }]);
+            catchers(&world) > before
+        })
+        .expect("no water catcher placed by the farm — the fixture, not the gate");
+    let catcher_key = sim_core::deploy::box_key(first.0, first.1, 0, 0);
+    let catcher = world
+        .deploys
+        .box_index(catcher_key)
+        .expect("the catcher is a container");
+    world
+        .deploys
+        .set_box_water(catcher, world.cook.farm.catcher_cap_wu);
+    world.deploys.set_box_slot(
+        catcher,
+        0,
+        ItemStack {
+            item: world.cook.farm.water_empty,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    let centre = |(cx, cz, ox, oz): (u16, u16, i8, i8)| {
+        sim_core::footprint::centre(cx, cz, sim_core::footprint::Pose { ox, oz, yaw: 0 })
+    };
+    let second = spots
+        .find(|&s| {
+            (s.0, s.1) != (first.0, first.1) && !near(centre(s).0, centre(s).1, centre(first), 1.5)
+        })
+        .expect("no second catcher spot by the farm — the fixture, not the gate");
+    world.players[FARMER].inv[5] = ItemStack {
+        item: CATCHER_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz + 1.0);
+    let soft_q = (
+        sim_core::movement::quant_xz(soft.0),
+        sim_core::movement::quant_xz(soft.1),
+    );
+    let skin = ItemStack {
+        item: world.cook.farm.water_full,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
 
     let mut assisted_world = sim_core::probe::assist_probe_world(42);
     let mut headroom = sim_core::probe::headroom_probe();
@@ -621,6 +830,10 @@ fn test_alloc_zero() {
     // own state exists and is reached), and whether any of them acted.
     let mut screen_ticks = 0u32;
     let mut corpse_acted = 0u32;
+    let mut planted = 0u32;
+    let mut picked = 0u32;
+    let mut sown = 0u32;
+    let mut poured = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
             &mut rng,
@@ -628,6 +841,15 @@ fn test_alloc_zero() {
             t.wrapping_add(30),
             builder_cell(&world),
         );
+        // The farmer stands still by its planter.
+        cmds[FARMER] = Command::Input {
+            id: FARMER as u32 + 1,
+            frame: InputFrame {
+                seq: t,
+                ..InputFrame::default()
+            },
+            favour: 0,
+        };
         for i in [2usize, 3, 4] {
             cmds[i] = Command::Input {
                 id: i as u32 + 1,
@@ -667,7 +889,7 @@ fn test_alloc_zero() {
         // grows on the stack rather than stealing a bot's input slot —
         // `MAX_COMMANDS_PER_TICK` is 256 and this is 113, so they all
         // still apply, and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 17];
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 22];
         all[..MAX_PLAYERS + 7].copy_from_slice(&cmds);
         all[MAX_PLAYERS + 7] = Command::Loot { id: 3 };
         all[MAX_PLAYERS + 8] = Command::Loot { id: 4 };
@@ -720,7 +942,74 @@ fn test_alloc_zero() {
             target: 0,
             arg: (t % 3) as u8,
         };
+        // The farmer plants a spot a tick (a taken one refuses) and picks
+        // the first ripe plant, or asks a pick of an unripe one.
+        all[MAX_PLAYERS + 17] = Command::Plant {
+            id: FARMER as u32 + 1,
+            slot: 4,
+            host: planter,
+            spot: (t % 6) as u8,
+            qx: 0,
+            qz: 0,
+        };
+        let target = world
+            .farm
+            .entries()
+            .iter()
+            .find(|p| p.stage == sim_core::farm::STAGE_RIPE)
+            .or(world.farm.entries().first())
+            .map_or(0, |p| p.id);
+        all[MAX_PLAYERS + 18] = Command::Tend {
+            id: FARMER as u32 + 1,
+            plant: target,
+            act: sim_core::farm::TEND_PICK,
+        };
+        // …and sows the soft ground beside it (a standing plant there
+        // refuses for spacing), and pours a skin on the first ground plant
+        // (one with room takes it, a full one refuses). The skin in its
+        // hand is refilled every tick.
+        all[MAX_PLAYERS + 19] = Command::Plant {
+            id: FARMER as u32 + 1,
+            slot: 4,
+            host: sim_core::farm::HOST_GROUND,
+            spot: 0,
+            qx: soft_q.0,
+            qz: soft_q.1,
+        };
+        all[MAX_PLAYERS + 20] = Command::Tend {
+            id: FARMER as u32 + 1,
+            plant: world
+                .farm
+                .entries()
+                .iter()
+                .find(|p| p.host == sim_core::farm::HOST_GROUND)
+                .map_or(0, |p| p.id),
+            act: sim_core::farm::TEND_WATER,
+        };
+        // …and places the second catcher (the first press lands).
+        all[MAX_PLAYERS + 21] = Command::PlaceDeploy {
+            id: FARMER as u32 + 1,
+            row: catcher_row,
+            cx: second.0,
+            cz: second.1,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose {
+                ox: second.2,
+                oz: second.3,
+                yaw: 0,
+            },
+        };
+        world.players[FARMER].inv[0] = skin;
+        world.players[FARMER].frame.sel = 0;
+        let ground_before = world.farm.ground_count();
         world.tick(&all);
+        if world.farm.ground_count() > ground_before {
+            sown += 1;
+        }
+        if world.players[FARMER].inv[0].item == world.cook.farm.water_empty {
+            poured += 1;
+        }
         let pieces_now = world.pieces.len();
         if pieces_now > pieces_prev {
             placed_in_window += 1;
@@ -764,6 +1053,10 @@ fn test_alloc_zero() {
                 }
             } else if ev.code == EV_DRANK {
                 drank += 1;
+            } else if ev.code == EV_PLANT && ev.b == 0 {
+                planted += 1;
+            } else if ev.code == EV_PLANT_GONE && ev.b == sim_core::farm::GONE_PICKED as u32 {
+                picked += 1;
             } else if ev.code == EV_RESPAWN {
                 if ev.b == 1 {
                     bag_wakes += 1;
@@ -972,6 +1265,36 @@ fn test_alloc_zero() {
         world.players[0].inv[20].count < 60_000,
         "no stack shrank inside the counted window — the consume write path \
          fell out of the alloc gate"
+    );
+    // The farm's verbs and its tick, each read off what it announced.
+    assert!(
+        planted > 0 && picked > 0,
+        "the farmer planted {planted} and picked {picked} inside the counted \
+         window — the plant verb, the grow to ripe and the pick must all be in \
+         the alloc gate"
+    );
+    assert!(
+        sown > 0 && poured > 0,
+        "the farmer sowed the ground {sown} times and poured {poured} skins \
+         inside the counted window — the ground plant verb and its water must \
+         be in the alloc gate"
+    );
+    // The catchers: the window's pass filled the first one's skin, and the
+    // farmer's press placed the second.
+    let filled = world
+        .deploys
+        .box_index(catcher_key)
+        .map(|i| world.deploys.boxes()[i].items[0].item);
+    assert_eq!(
+        filled,
+        Some(world.cook.farm.water_full),
+        "the catcher pass did not fill its skin inside the counted window"
+    );
+    assert_eq!(
+        catchers(&world),
+        2,
+        "the farmer's catcher did not place inside the counted window — the \
+         catchers' place-time count fell out of the alloc gate"
     );
     // The bag, raid, starve and eat counters above are all read off the
     // event ring, so a saturated ring would let them go quiet for a reason

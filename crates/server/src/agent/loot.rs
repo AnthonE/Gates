@@ -313,7 +313,11 @@ pub fn take_plan(core: &ClientCore) -> Option<(u8, u8, u16)> {
         let max = core.catalog.row(usize::from(stack.item)).stack_max.max(1);
         let onto = order.clone().find(|&i| {
             let s = core.inv[i];
-            s.count > 0 && s.item == stack.item && s.count < max
+            s.count > 0
+                && s.item == stack.item
+                && s.skin == stack.skin
+                && s.cond == stack.cond
+                && s.count < max
         });
         let to = onto.or_else(|| order.clone().find(|&i| core.inv[i].count == 0));
         if let Some(to) = to {

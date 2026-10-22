@@ -28,6 +28,7 @@ pub mod deploy;
 pub mod depot;
 pub mod exposure;
 pub mod face;
+pub mod farm;
 pub mod fire;
 pub mod fmath;
 pub mod footprint;

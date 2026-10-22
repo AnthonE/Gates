@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 184] = [
+const GOLDEN: [&[u8]; 189] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -216,7 +216,7 @@ const GOLDEN: [&[u8]; 184] = [
     include_bytes!("golden/action_respawn_at.bin"),
     include_bytes!("golden/event_worn.bin"),
     include_bytes!("golden/action_treat.bin"),
-    include_bytes!("golden/event_planter.bin"),
+    include_bytes!("golden/event_plant.bin"),
     include_bytes!("golden/event_stump_grubbed.bin"),
     include_bytes!("golden/action_take_stock.bin"),
     include_bytes!("golden/action_give.bin"),
@@ -247,6 +247,11 @@ const GOLDEN: [&[u8]; 184] = [
     include_bytes!("golden/action_sit.bin"),
     include_bytes!("golden/action_place_at.bin"),
     include_bytes!("golden/action_place_free.bin"),
+    include_bytes!("golden/event_plant_gone.bin"),
+    include_bytes!("golden/event_plant_sync.bin"),
+    include_bytes!("golden/action_plant_bed.bin"),
+    include_bytes!("golden/action_plant_ground.bin"),
+    include_bytes!("golden/action_tend.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -501,7 +506,7 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 151);
     // A syringe on a downed body (v99).
     g!(seen, golden_action, 152);
-    // A planter's beds (v100).
+    // One plant (v135), in v100's planter-beds slot.
     g!(seen, golden_event, 153);
     // A grubbed stump (v101).
     g!(seen, golden_event, 154);
@@ -552,8 +557,14 @@ fn test_protocol_golden() {
     // The lattice placement verbs (v134).
     g!(seen, golden_action, 182);
     g!(seen, golden_action, 183);
+    // Farming v2 (v135).
+    g!(seen, golden_event, 184);
+    g!(seen, golden_event, 185);
+    g!(seen, golden_action, 186);
+    g!(seen, golden_action, 187);
+    g!(seen, golden_action, 188);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 184, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 189, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -752,6 +763,33 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_drop(slot, count, &mut buf).unwrap()
+        }
+        "action_plant_bed.bin" => {
+            let (slot, target) = protocol::goldens::action_plant_bed();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Plant { slot, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_plant(slot, target, &mut buf).unwrap()
+        }
+        "action_plant_ground.bin" => {
+            let (slot, target) = protocol::goldens::action_plant_ground();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Plant { slot, target },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_plant(slot, target, &mut buf).unwrap()
+        }
+        "action_tend.bin" => {
+            let (plant, act) = protocol::goldens::action_tend();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Tend { plant, act },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_tend(plant, act, &mut buf).unwrap()
         }
         "action_pick.bin" => {
             let cell = protocol::goldens::action_pick();
@@ -2658,20 +2696,36 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             protocol::encode_event_skins_owned(&owned, &mut buf).unwrap()
         }
-        "event_planter.bin" => {
-            let (cx, cz, level, loc, stages) = protocol::goldens::event_planter();
+        "event_plant.bin" => {
+            let p = protocol::goldens::event_plant();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Planter {
-                    cx,
-                    cz,
-                    level,
-                    loc,
-                    stages
+                EventMsg::Plant(p),
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_plant(&p, &mut buf).unwrap()
+        }
+        "event_plant_gone.bin" => {
+            let (id, reason) = protocol::goldens::event_plant_gone();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::PlantGone { id, reason },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_plant_gone(id, reason, &mut buf).unwrap()
+        }
+        "event_plant_sync.bin" => {
+            let (reset, recs) = protocol::goldens::event_plant_sync();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::PlantSync {
+                    reset,
+                    recs,
+                    count: protocol::PLANT_SYNC_BATCH as u8,
                 },
                 "{name}: decode mismatch"
             );
-            protocol::encode_event_planter(cx, cz, level, loc, stages, &mut buf).unwrap()
+            protocol::encode_event_plant_sync(reset, &recs, &mut buf).unwrap()
         }
         "event_worn.bin" => {
             let (id, items, skins) = protocol::goldens::event_worn();

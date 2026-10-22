@@ -18,9 +18,10 @@
 
 use crate::event::{SkinCatalog, SkinRow};
 use crate::{
-    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
-    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WireToss, BAG_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, PlantTarget,
+    Refuse, SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WirePlant, WireToss,
+    BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH,
+    PLANT_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -43,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 184] = [
+pub const FIXTURES: [&str; 189] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -275,8 +276,9 @@ pub const FIXTURES: [&str; 184] = [
     "event_worn.bin",
     // A syringe on a downed body (v99).
     "action_treat.bin",
-    // A planter's beds (v100).
-    "event_planter.bin",
+    // One plant (v135; this slot held v100's planter beds, the same
+    // subtype code, so the positional list keeps its shape).
+    "event_plant.bin",
     // A grubbed stump (v101).
     "event_stump_grubbed.bin",
     // Stock taken back out of a hearth (v101).
@@ -330,6 +332,13 @@ pub const FIXTURES: [&str; 184] = [
     // and a foundation placed free.
     "action_place_at.bin",
     "action_place_free.bin",
+    // Farming v2 (v135): a plant leaving, the join walk, the plant verb
+    // both ways, and the tend verb.
+    "event_plant_gone.bin",
+    "event_plant_sync.bin",
+    "action_plant_bed.bin",
+    "action_plant_ground.bin",
+    "action_tend.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1885,7 +1894,6 @@ pub fn event_deploy_placed() -> DeployRec {
         locked: true,
         has_lock: true,
         keyed: true,
-        grow: 0b11_00_10_01,
         // `event_piece_placed`'s rule for the hp (v102).
         hp: 0x5AC3,
         ..DeployRec::default()
@@ -1935,7 +1943,6 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
         if !sim_core::deploy::is_edge_loc(rec.loc) {
             rec.pose = pose;
         }
-        rec.grow = rng.next_bounded(256) as u8;
         rec
     });
     (true, recs)
@@ -2549,8 +2556,8 @@ pub fn snapshot_cap() -> SnapshotCase {
         if e.qvy == 0 {
             e.qvy = -1; // keep every velocity on the wire
         }
-        // **Every code point the held field can legally take, once.**
-        // `MAX_SNAPSHOT_ENTITIES` and `MAX_ITEM_DEFS` are both 64, so this
+        // **The held field's low code points, once each.**
+        // `MAX_SNAPSHOT_ENTITIES` is 64 and `MAX_ITEM_DEFS` 160, so this
         // walks 0..=63 across the 64 records and the sentinel is pinned
         // by the two fixtures above. It costs nothing in bytes — an
         // absolute record spends `HELD_BITS` whatever the value is — and
@@ -2668,10 +2675,71 @@ pub fn event_charge_placed_deploy() -> (bool, u16, u16, u8, u8, u8, u16) {
 /// `(cx, cz, level, lit, by)`.
 /// The slot (wire v89) is 5, distinct from the level beside it so a swap
 /// of the two shows.
-/// A planter's beds (v100): every bed a different stage, so a byte read
-/// reversed or shifted cannot match.
-pub fn event_planter() -> (u16, u16, u8, u8, u8) {
-    (71, 905, 2, 6, 0b10_01_11_00)
+/// A ripe pumpkin in bed spot 4 (wire v135): every field nonzero and
+/// distinct from its neighbours, the genome GGYHWX, dry, at band 8.
+pub fn event_plant() -> WirePlant {
+    WirePlant {
+        id: 0x0102_0304,
+        look: sim_core::farm::LOOK_PUMPKIN,
+        stage: sim_core::farm::STAGE_RIPE,
+        spot: 4,
+        genes: 2 + 2 * 5 + 3 * 25 + 4 * 125 + 625,
+        band: 8,
+        dry: true,
+        qx: 123_457,
+        qy: -1_203,
+        qz: 98_765,
+    }
+}
+
+/// Plant 0x0BAD_F00D withered away (wire v135).
+pub fn event_plant_gone() -> (u32, u8) {
+    (0x0BAD_F00D, sim_core::farm::GONE_WITHERED)
+}
+
+/// A full plant-sync batch with the reset bit set: every look, stage and
+/// bed spot, the ground spot, both dry states and the band's ends.
+pub fn event_plant_sync() -> (bool, [WirePlant; PLANT_SYNC_BATCH]) {
+    let mut rng = Pcg32::new(0x0050_4C41_4E54, 23);
+    let recs = core::array::from_fn(|i| WirePlant {
+        id: 1 + i as u32 * 7_919,
+        look: (i % sim_core::farm::LOOK_COUNT as usize) as u8,
+        stage: (i % 8) as u8,
+        spot: if i % 7 == 6 {
+            sim_core::farm::SPOT_GROUND
+        } else {
+            (i % 6) as u8
+        },
+        genes: rng.next_bounded(sim_core::farm::GENOME_VALUES) as u16,
+        band: (i % 11) as u8,
+        dry: i % 2 == 1,
+        qx: rng.next_bounded(1 << 18) as i32,
+        qy: rng.next_bounded(1 << 14) as i32 - 2048,
+        qz: rng.next_bounded(1 << 18) as i32,
+    });
+    (true, recs)
+}
+
+/// Plant from inventory slot 13 into bed spot 5 of the planter at box key
+/// 0x0012_3456 (wire v135).
+pub fn action_plant_bed() -> (u8, PlantTarget) {
+    (
+        13,
+        PlantTarget::Bed {
+            host: 0x0012_3456,
+            spot: 5,
+        },
+    )
+}
+
+/// Plant from slot 29 on the ground at (200_001, 3) (wire v135).
+pub fn action_plant_ground() -> (u8, PlantTarget) {
+    (29, PlantTarget::Ground { qx: 200_001, qz: 3 })
+}
+
+/// Water plant 0x00C0_FFEE (wire v135): `TEND_WATER`, the widest verb.
+pub fn action_tend() -> (u32, u8) {
+    (0x00C0_FFEE, sim_core::farm::TEND_WATER)
 }
 
 pub fn event_oven_lit() -> (u16, u16, u8, u8, bool, u32) {

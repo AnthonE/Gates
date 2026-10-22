@@ -183,3 +183,9 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `shape_wall.png` | `ci/icons/shape_wall.svg` (ours) |
 | `shape_wall_frame.png` | `ci/icons/shape_wall_frame.svg` (ours) |
 | `shape_window.png` | `ci/icons/shape_window.svg` (ours) |
+| `water_catcher.png` | `ci/icons/water_catcher.py` (ours) |
+| `potato.png` | `ci/icons/crops.py` (ours) |
+| `potato_seed.png` | `ci/icons/crops.py` (ours) |
+| `pumpkin.png` | `ci/icons/crops.py` (ours) |
+| `pumpkin_seed.png` | `ci/icons/crops.py` (ours) |
+| `berry_seed.png` | `ci/icons/crops.py` (ours) |

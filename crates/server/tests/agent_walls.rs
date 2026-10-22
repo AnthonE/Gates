@@ -271,6 +271,8 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Sit { .. } => "sit",
         ActionMsg::Swipe { .. } => "swipe",
         ActionMsg::Pick { .. } => "pick",
+        ActionMsg::Plant { .. } => "plant",
+        ActionMsg::Tend { .. } => "tend",
         ActionMsg::Arc { .. } => "arc",
         ActionMsg::Drop { .. } => "drop",
         ActionMsg::Treat { .. } => "treat",
@@ -1187,7 +1189,7 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     });
     let fed = h.until(9_000, |b| b.stats.drinks >= 1 && b.stats.eaten >= 1);
     assert!(fed, "no drink and meal: {}", h.explain());
-    assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
+    assert!(h.bot.memory().food.feeds.any(), "a meal teaches what feeds");
 
     // 3. A blow it survives, mid-goal: the fight reflex takes the frames —
     //    it turns on the body that struck it and fights back — the goal
@@ -4842,8 +4844,12 @@ fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
         ..common::stack(&content, id)
     };
     h.until(5, |_| false);
-    let mut kit = vec![stack("item.wood", 1000); 6];
-    kit.extend([stack("item.stone", 1000); 6]);
+    // Four thousand each, not six: the base costs far less, and the surplus
+    // filled the pack and the one box between them, so two salvage pieces
+    // off a roadside barrel left no slot for the gunpowder it then makes
+    // (a full pack is never "ready", and it explored for good).
+    let mut kit = vec![stack("item.wood", 1000); 4];
+    kit.extend([stack("item.stone", 1000); 4]);
     kit.extend([
         stack("item.cloth", 400),
         stack("item.metal_frags", 1000),

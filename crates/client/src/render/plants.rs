@@ -119,6 +119,8 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
         (Occupant::BerryBush, _) => 0.55,
         (Occupant::Hemp, _) => 0.6,
+        (Occupant::WildCorn, _) => 0.4,
+        (Occupant::WildPumpkin, _) => 0.5,
         _ => return None,
     };
     Some(reach * grow(o, scenery))
@@ -1471,5 +1473,769 @@ fn flower_head(s: &mut Soup, c: Vec3, face: Vec3, r: f32, petal: [f32; 3], spin:
         let (e0, e1) = (pt(a, r * 0.28) + lift, pt(a + TAU / 5.0, r * 0.28) + lift);
         s.tri(eye, e0, e1, |_| ec, Some(sky), 0.9);
         s.tri(eye, e1, e0, |_| ec, Some(sky), 0.9);
+    }
+}
+
+// ---------------------------------------------------------------- crops
+
+/// Corn's stalk and leaves, linear.
+const CORN_ROOT: [f32; 3] = [0.07, 0.10, 0.03];
+const CORN_TIP: [f32; 3] = [0.16, 0.22, 0.06];
+const CORN_LEAF: [f32; 3] = [0.06, 0.15, 0.025];
+const CORN_LEAF_TIP: [f32; 3] = [0.13, 0.21, 0.05];
+const CORN_TASSEL: [f32; 3] = [0.34, 0.26, 0.10];
+
+/// A corn plant grown (farming v2, `render::crops`): a tapered stalk, eight
+/// strap leaves arching out and drooping, alternate sides up the stalk, and
+/// a tassel at the top — ground-rooted at y = 0, `farm::LOOK_H_M` tall.
+/// `(stalk and tassel, leaves)`, both opaque and vertex-coloured; the leaves
+/// shade toward a dome under the ground, hemp's reason.
+pub fn corn_stalk(variant: u32) -> (Mesh, Mesh) {
+    let seed = seed_of(0xc0e2_5000, variant);
+    let h = sim_core::farm::LOOK_H_M[sim_core::farm::LOOK_CORN as usize]
+        * (0.94 + 0.12 * hash01(seed, 1));
+    let bow = Vec3::new(hash01(seed, 2) - 0.5, 0.0, hash01(seed, 3) - 0.5) * 0.08;
+    let at = |t: f32| Vec3::Y * (t * h) + bow * (t * PI).sin();
+    let r = |t: f32| 0.024 * (1.0 - t) + 0.007 * t;
+
+    let mut stalk = Soup::default();
+    const SEGS: usize = 7;
+    for i in 0..SEGS {
+        let (t0, t1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
+        let (t0, t1) = (t0 * 0.92, t1 * 0.92);
+        let col = lerp3(CORN_ROOT, CORN_TIP, smooth01(t0 * 1.2));
+        let a = if i == 0 {
+            at(t0) - Vec3::Y * 0.05
+        } else {
+            at(t0)
+        };
+        twig(&mut stalk, a, at(t1), r(t0), r(t1), col);
+    }
+    // The tassel: a spray of thin spikes off the top.
+    let top = at(0.92);
+    for k in 0..6u32 {
+        let a = hash01(seed, 40 + k) * TAU;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let tip = top + Vec3::Y * (0.1 + 0.08 * hash01(seed, 50 + k)) + out * 0.07;
+        twig(&mut stalk, top, tip, 0.004, 0.0015, CORN_TASSEL);
+    }
+
+    let mut leaves = Soup::default();
+    let dome = Vec3::new(0.0, -h, 0.0);
+    let yaw0 = hash01(seed, 4) * TAU;
+    for k in 0..8u32 {
+        let f = k as f32 / 7.0;
+        let t = 0.12 + 0.62 * f;
+        let base = at(t);
+        let yaw = yaw0 + k as f32 * PI + (hash01(seed, 10 + k) - 0.5) * 0.7;
+        let out = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+        let side = Vec3::new(-out.z, 0.0, out.x);
+        // Longest in the middle of the stalk, as corn's are.
+        let len =
+            h * (0.3 + 0.16 * (1.0 - (2.0 * f - 1.0).abs())) * (0.9 + 0.2 * hash01(seed, 20 + k));
+        let lift = 0.5 + 0.25 * hash01(seed, 30 + k);
+        let w0 = 0.075;
+        const N: usize = 6;
+        let point =
+            |s: f32| base + out * (len * s * 0.85) + Vec3::Y * (len * (lift * s - 0.75 * s * s));
+        let width = |s: f32| w0 * (1.0 - s).powf(0.7) + 0.004;
+        for i in 0..N {
+            let (s0, s1) = (i as f32 / N as f32, (i + 1) as f32 / N as f32);
+            let (p0, p1) = (point(s0), point(s1));
+            let (h0, h1) = (side * (width(s0) * 0.5), side * (width(s1) * 0.5));
+            let c0 = lerp3(CORN_LEAF, CORN_LEAF_TIP, s0);
+            let c1 = lerp3(CORN_LEAF, CORN_LEAF_TIP, s1);
+            let col = move |v: Vec3| {
+                let k = ((v - p0).length() / (p1 - p0).length().max(1e-3)).min(1.0);
+                let c = lerp3(c0, c1, k);
+                [c[0], c[1], c[2], 1.0]
+            };
+            leaves.tri(p0 - h0, p0 + h0, p1 + h1, col, Some(dome), 0.5);
+            leaves.tri(p0 - h0, p1 + h1, p1 - h1, col, Some(dome), 0.5);
+        }
+    }
+    (stalk.mesh(), leaves.mesh())
+}
+
+/// A seedling (farming v2): a short stem and two small leaves, ground-rooted
+/// at y = 0, about 12 cm tall at its own scale. One opaque vertex-coloured
+/// mesh.
+pub fn sprout(variant: u32) -> Mesh {
+    let seed = seed_of(0x5b20_0700, variant);
+    let mut s = Soup::default();
+    let h = 0.08;
+    twig(
+        &mut s,
+        Vec3::Y * -0.01,
+        Vec3::Y * h,
+        0.004,
+        0.003,
+        STALK_TIP,
+    );
+    let dome = Vec3::new(0.0, -0.3, 0.0);
+    let yaw0 = hash01(seed, 1) * TAU;
+    for k in 0..2u32 {
+        let a = yaw0 + k as f32 * PI;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let side = Vec3::new(-out.z, 0.0, out.x);
+        let base = Vec3::Y * h;
+        let tip = base + out * 0.07 + Vec3::Y * 0.03;
+        let mid = (base + tip) * 0.5 + Vec3::Y * 0.01;
+        let w = side * 0.022;
+        let col = |_: Vec3| [CORN_LEAF_TIP[0], CORN_LEAF_TIP[1], CORN_LEAF_TIP[2], 1.0];
+        s.tri(base, mid - w, tip, col, Some(dome), 0.5);
+        s.tri(base, tip, mid + w, col, Some(dome), 0.5);
+    }
+    s.mesh()
+}
+
+/// A ground plant's mound of heaped soil (farming v2, open ground): a low
+/// dome 18 cm in radius rising 4 cm over y = 0, its underside buried so it
+/// sits on a slope without a lip showing.
+pub fn soil_mound() -> Mesh {
+    Sphere::new(1.0)
+        .mesh()
+        .uv(16, 8)
+        .scaled_by(Vec3::new(0.18, 0.05, 0.18))
+        .translated_by(Vec3::Y * -0.01)
+}
+
+/// A planted seed's patch of turned soil (farming v2): a disc 12 cm across
+/// the radius and a centimetre tall, standing on y = 0.
+pub fn soil_disc() -> Mesh {
+    Cylinder::new(0.12, 0.01)
+        .mesh()
+        .resolution(14)
+        .build()
+        .translated_by(Vec3::Y * 0.005)
+}
+
+// ── The second wave of crops ───────────────────────────────────────────────
+//
+// Potato, pumpkin and the planted berry bush (farming v2's S6). Potato and
+// pumpkin wear leaf cards drawn here, hemp's way, so a crop is code and no
+// photograph; the berry bush is the wild bush's own build.
+
+/// The potato's stems and flowers, linear.
+const POTATO_STEM: [f32; 3] = [0.05, 0.085, 0.025];
+const POTATO_STEM_TIP: [f32; 3] = [0.09, 0.16, 0.045];
+const POTATO_FLOWER: [[f32; 3]; 2] = [[0.78, 0.76, 0.86], [0.50, 0.40, 0.72]];
+
+/// The pumpkin's vine and flowers, linear.
+const VINE: [f32; 3] = [0.055, 0.11, 0.03];
+const VINE_TIP: [f32; 3] = [0.10, 0.19, 0.05];
+const PUMPKIN_FLOWER: [f32; 3] = [0.85, 0.52, 0.02];
+
+/// A pumpkin's skin, linear: deep orange, darker down its grooves, paler
+/// where it lay on the ground, and its dry stem.
+const PUMPKIN_SKIN: [f32; 3] = [0.62, 0.20, 0.018];
+const PUMPKIN_GROOVE: [f32; 3] = [0.34, 0.09, 0.010];
+const PUMPKIN_PATCH: [f32; 3] = [0.55, 0.36, 0.10];
+const PUMPKIN_STEM: [f32; 3] = [0.13, 0.12, 0.045];
+
+/// A ripe pumpkin's size, metres: across and tall.
+pub const PUMPKIN_W: f32 = 0.34;
+pub const PUMPKIN_H: f32 = 0.28;
+
+/// The drawn crop leaf cards' edge, texels (hemp's).
+pub const CROP_LEAF_PX: u32 = HEMP_LEAF_PX;
+
+/// Rasterise a drawn leaf card `n` texels square: `shade(p)` is the leaf's
+/// sRGB colour at image point `p` (0..1, y down) or `None` off the leaf.
+/// Coverage is supersampled 4×4 as hemp's is, the colour is the covered
+/// samples' mean, and a bare texel carries `bleed` so the filtered edge
+/// never fringes dark.
+fn raster_leaf(n: u32, bleed: Vec3, shade: impl Fn(Vec2) -> Option<Vec3>) -> Vec<u8> {
+    const SS: u32 = 4;
+    let nf = n as f32;
+    let mut out = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let (mut cover, mut sum) = (0u32, Vec3::ZERO);
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let p = Vec2::new(
+                        (x as f32 + (sx as f32 + 0.5) / SS as f32) / nf,
+                        (y as f32 + (sy as f32 + 0.5) / SS as f32) / nf,
+                    );
+                    if let Some(c) = shade(p) {
+                        cover += 1;
+                        sum += c;
+                    }
+                }
+            }
+            let c = if cover == 0 {
+                bleed
+            } else {
+                sum / cover as f32
+            };
+            let i = ((y * n + x) * 4) as usize;
+            out[i..i + 4].copy_from_slice(&[
+                c.x.clamp(0.0, 255.0) as u8,
+                c.y.clamp(0.0, 255.0) as u8,
+                c.z.clamp(0.0, 255.0) as u8,
+                (cover * 255 / (SS * SS)) as u8,
+            ]);
+        }
+    }
+    out
+}
+
+/// The distance from `p` to the segment `a`–`b`, and how far along it the
+/// nearest point lies (0..1).
+fn to_segment(p: Vec2, a: Vec2, b: Vec2) -> (f32, f32) {
+    let d = b - a;
+    let t = ((p - a).dot(d) / d.length_squared().max(1e-9)).clamp(0.0, 1.0);
+    ((p - (a + d * t)).length(), t)
+}
+
+/// The potato's leaf: pinnate, a rachis up the card with three pairs of
+/// ovate leaflets, a tiny pair between each, and one at the tip, its
+/// petiole at the bottom-centre (the card [`hemp_leaf`] lays).
+pub fn potato_leaf_image() -> Image {
+    super::tree::alpha_card(potato_leaf_rgba(CROP_LEAF_PX), CROP_LEAF_PX)
+}
+
+/// [`potato_leaf_image`]'s level 0, RGBA8 sRGB.
+pub fn potato_leaf_rgba(n: u32) -> Vec<u8> {
+    let blade = Vec3::new(66.0, 112.0, 40.0);
+    let rib = Vec3::new(118.0, 152.0, 74.0);
+    let rim = Vec3::new(46.0, 84.0, 28.0);
+    let base = Vec2::new(0.5, 0.97);
+    let end = Vec2::new(0.5, 0.37);
+    // (where on the rachis, angle off up, length): the tip, then the pairs,
+    // then the small ones between them.
+    const LEAFLETS: [(f32, f32, f32); 11] = [
+        (1.0, 0.0, 0.33),
+        (0.3, 1.2, 0.25),
+        (0.3, -1.2, 0.25),
+        (0.56, 1.0, 0.29),
+        (0.56, -1.0, 0.29),
+        (0.82, 0.78, 0.27),
+        (0.82, -0.78, 0.27),
+        (0.43, 1.35, 0.08),
+        (0.43, -1.35, 0.08),
+        (0.69, 1.2, 0.09),
+        (0.69, -1.2, 0.09),
+    ];
+    // An ovate leaflet's half-width at `s` of its length, as a share of its
+    // length: widest under halfway, a drawn-out point, the edge a soft wave.
+    let width = |s: f32| -> f32 {
+        if !(0.0..=1.0).contains(&s) {
+            return -1.0;
+        }
+        let body = (s.powf(0.75) * PI).sin().max(0.0).powf(0.9) * (1.0 - 0.25 * s);
+        0.34 * body * (1.0 + 0.04 * (s * 19.0).sin())
+    };
+    raster_leaf(n, blade, |p| {
+        let (d, t) = to_segment(p, base, end);
+        if d < 0.011 * (1.0 - 0.4 * t) {
+            return Some(rib * 0.85);
+        }
+        let mut best: Option<(f32, f32, usize)> = None;
+        for (i, &(at, ang, len)) in LEAFLETS.iter().enumerate() {
+            let hub = base.lerp(end, at);
+            let dir = Vec2::new(ang.sin(), -ang.cos());
+            let rel = p - hub;
+            let along = rel.dot(dir) / len;
+            let across = (rel.x * dir.y - rel.y * dir.x).abs() / len;
+            let w = width(along);
+            if w > 0.0 && across <= w {
+                let k = across / w;
+                if best.is_none_or(|b| k < b.1) {
+                    best = Some((along, k, i));
+                }
+            }
+        }
+        let (along, k, i) = best?;
+        let c = if k < 0.08 {
+            rib
+        } else {
+            blade.lerp(rim, smooth01((k - 0.6) / 0.4))
+        };
+        // The lateral veins, swept toward the tip.
+        let vein = ((along * 13.0 - k * 4.0).fract() - 0.5).abs() < 0.06 && k < 0.85;
+        let c = if vein { c.lerp(rib, 0.3) } else { c };
+        Some(c * (0.92 + 0.14 * hash01(0x9071, i as u32) + 0.06 * along))
+    })
+}
+
+/// The pumpkin's leaf: broad and palmate, five shallow lobes round a hub
+/// with a pale vein to each, a toothed rim and a heart-shaped notch where
+/// the petiole (bottom-centre) meets the blade.
+pub fn pumpkin_leaf_image() -> Image {
+    super::tree::alpha_card(pumpkin_leaf_rgba(CROP_LEAF_PX), CROP_LEAF_PX)
+}
+
+/// [`pumpkin_leaf_image`]'s level 0, RGBA8 sRGB.
+pub fn pumpkin_leaf_rgba(n: u32) -> Vec<u8> {
+    let blade = Vec3::new(46.0, 94.0, 32.0);
+    let rib = Vec3::new(150.0, 178.0, 116.0);
+    let rim = Vec3::new(32.0, 68.0, 22.0);
+    let mottle = Vec3::new(112.0, 142.0, 92.0);
+    let base = Vec2::new(0.5, 0.98);
+    let hub = Vec2::new(0.5, 0.6);
+    // Lobe directions, radians off straight up.
+    const LOBES: [f32; 5] = [0.0, 1.2, -1.2, 2.3, -2.3];
+    let rad = 0.42;
+    // The blade's edge at angle `th` (0 up, ±π down) from the hub.
+    let edge = |th: f32| -> f32 {
+        let mut b = 0.0f32;
+        for &l in &LOBES {
+            let d = (th - l) / 0.5;
+            b = b.max((-d * d).exp());
+        }
+        let sinus = smooth01((PI - th.abs()) / 0.8);
+        let teeth = 1.0 - 0.03 * (th * 30.0).fract();
+        rad * (0.74 + 0.26 * b) * (0.08 + 0.92 * sinus) * teeth
+    };
+    raster_leaf(n, blade, |p| {
+        let rel = p - hub;
+        let rho = rel.length();
+        let th = rel.x.atan2(-rel.y);
+        let e = edge(th);
+        if rho > e {
+            // Off the blade, the petiole down the notch to the card's foot.
+            let (d, _) = to_segment(p, base, hub);
+            return (d < 0.016).then_some(rib * 0.7);
+        }
+        let k = rho / e;
+        // Arc distance to the nearest main vein.
+        let vein = LOBES
+            .iter()
+            .map(|&l| (th - l).abs() * rho)
+            .fold(f32::MAX, f32::min);
+        let c = blade.lerp(rim, smooth01((k - 0.72) / 0.28));
+        // The side veins, leaving each main vein swept toward the rim.
+        let side_vein =
+            ((rho * 26.0 - vein * 22.0).fract() - 0.5).abs() < 0.07 && vein > 0.008 && k < 0.92;
+        let c = if vein < 0.005 + 0.007 * (1.0 - k) {
+            rib
+        } else if side_vein {
+            c.lerp(rib, 0.35)
+        } else if vein < 0.04 && hash01((p.x * 70.0) as u32, (p.y * 70.0) as u32 ^ 0x51) < 0.4 {
+            // The silver mottling a squash leaf carries along its veins.
+            c.lerp(mottle, 0.3)
+        } else {
+            c
+        };
+        Some(c * (0.9 + 0.12 * (1.0 - k)))
+    })
+}
+
+/// A potato plant grown (farming v2, `render::crops`): five stems lean out
+/// of the clump's heart and arch over, three compound leaves on each and one
+/// at the crown, so it reads as a rounded mound of soft leaves about
+/// `farm::LOOK_H_M` tall and as wide, with a few white and violet flowers on
+/// top. `(stems and flowers, leaves)`: the stems opaque and vertex-coloured,
+/// the leaves cards wearing [`potato_leaf_image`].
+pub fn leafy_mound(variant: u32) -> (Mesh, Mesh) {
+    use sim_core::farm::{LOOK_H_M, LOOK_POTATO};
+    let seed = seed_of(0x9071_a700, variant);
+    let h = LOOK_H_M[LOOK_POTATO as usize] * (0.94 + 0.08 * hash01(seed, 1));
+    let mut stems = Soup::default();
+    let mut leaves = Soup::default();
+    // Below the ground, hemp's reason: every leaf's normal leans up.
+    let dome = Vec3::new(0.0, -h, 0.0);
+    let sky = Vec3::new(0.0, -2.0, 0.0);
+    const STEMS: u32 = 5;
+    let yaw0 = hash01(seed, 2) * TAU;
+    for k in 0..STEMS {
+        let a = yaw0 + k as f32 * TAU / STEMS as f32 + (hash01(seed, 10 + k) - 0.5) * 0.6;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let top = h * (0.55 + 0.17 * hash01(seed, 20 + k));
+        let reach = 0.06 + 0.05 * hash01(seed, 30 + k);
+        let at = |t: f32| out * (reach * (t * PI * 0.5).sin()) + Vec3::Y * (top * t);
+        const SEGS: usize = 3;
+        for i in 0..SEGS {
+            let (t0, t1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
+            let a0 = if i == 0 {
+                at(t0) - Vec3::Y * 0.04
+            } else {
+                at(t0)
+            };
+            let col = lerp3(POTATO_STEM, POTATO_STEM_TIP, t0);
+            twig(
+                &mut stems,
+                a0,
+                at(t1),
+                0.009 * (1.0 - 0.5 * t0),
+                0.009 * (1.0 - 0.5 * t1),
+                col,
+            );
+        }
+        for (j, t) in [0.45f32, 0.75, 1.0].into_iter().enumerate() {
+            let q = k * 3 + j as u32;
+            let side = if q.is_multiple_of(2) { 1.0 } else { -1.0 };
+            let ya = a + side * (0.5 + 0.6 * hash01(seed, 40 + q));
+            let lo = Vec3::new(ya.sin(), 0.0, ya.cos());
+            let pitch = -0.35 + 0.8 * t + (hash01(seed, 60 + q) - 0.5) * 0.25;
+            let len = (0.24 - 0.05 * t) * (0.9 + 0.2 * hash01(seed, 80 + q));
+            let roll = (hash01(seed, 100 + q) - 0.5) * 0.6;
+            hemp_leaf(
+                &mut leaves,
+                at(t),
+                lo,
+                pitch,
+                roll,
+                len,
+                0.85 + 0.2 * t,
+                dome,
+            );
+        }
+        // Flowers on three of the stems: a short stalk above the leaves.
+        if k < 3 {
+            let tip = at(1.0) + Vec3::Y * (h * 0.14) + out * 0.02;
+            twig(&mut stems, at(1.0), tip, 0.003, 0.002, POTATO_STEM_TIP);
+            for f in 0..2u32 {
+                let off =
+                    Vec3::new(hash01(seed, 120 + k * 2 + f) - 0.5, 0.0, 0.5 - f as f32) * 0.035;
+                let face = (Vec3::Y + out * 0.3).normalize();
+                flower_head(
+                    &mut stems,
+                    tip + off,
+                    face,
+                    0.017,
+                    POTATO_FLOWER[((k + f) % 2) as usize],
+                    hash01(seed, 140 + k * 2 + f) * TAU,
+                    sky,
+                );
+            }
+        }
+    }
+    // The crown: one leaf raised over the heart, so the clump is round.
+    hemp_leaf(
+        &mut leaves,
+        Vec3::Y * (h * 0.5),
+        Vec3::new(yaw0.cos(), 0.0, -yaw0.sin()),
+        1.0,
+        0.0,
+        0.16,
+        1.05,
+        dome,
+    );
+    (stems.mesh(), leaves.mesh())
+}
+
+/// A pumpkin vine grown (farming v2, `render::crops`): three runners curl
+/// out from the root along the ground, each carrying two broad lobed leaves
+/// raised on their stalks and ending in a tendril, with one more leaf at
+/// the crown and two yellow flowers — low and sprawling, about 0.8 m across
+/// and `farm::LOOK_H_M` tall. `(vine and flowers, leaves)`: the vine opaque
+/// and vertex-coloured, the leaves cards wearing [`pumpkin_leaf_image`].
+pub fn pumpkin_vine(variant: u32) -> (Mesh, Mesh) {
+    use sim_core::farm::{LOOK_H_M, LOOK_PUMPKIN};
+    let seed = seed_of(0x9a3b_1700, variant);
+    let h = LOOK_H_M[LOOK_PUMPKIN as usize] * (0.92 + 0.08 * hash01(seed, 1));
+    let mut vine = Soup::default();
+    let mut leaves = Soup::default();
+    let dome = Vec3::new(0.0, -h, 0.0);
+    let sky = Vec3::new(0.0, -2.0, 0.0);
+    let yaw0 = hash01(seed, 2) * TAU;
+    // A leaf on a stalk rising from `p`, its blade turned `out`.
+    let leaf = |vine: &mut Soup, leaves: &mut Soup, p: Vec3, out: Vec3, q: u32| {
+        let stalk = h * (0.42 + 0.3 * hash01(seed, 200 + q));
+        let top = p + Vec3::Y * stalk + out * 0.04;
+        twig(vine, p, top, 0.006, 0.004, VINE_TIP);
+        let pitch = 0.12 + 0.22 * hash01(seed, 220 + q);
+        let len = 0.26 + 0.06 * hash01(seed, 240 + q);
+        let roll = (hash01(seed, 260 + q) - 0.5) * 0.5;
+        hemp_leaf(leaves, top, out, pitch, roll, len, 0.95, dome);
+    };
+    for k in 0..3u32 {
+        let a = yaw0 + k as f32 * TAU / 3.0 + (hash01(seed, 10 + k) - 0.5) * 0.7;
+        let curl = (1.2 + 0.8 * hash01(seed, 20 + k)) * if k % 2 == 0 { 1.0 } else { -1.0 };
+        let len = 0.26 + 0.06 * hash01(seed, 30 + k);
+        let path = |s: f32| {
+            let ang = a + curl * s * s;
+            Vec3::new(ang.sin(), 0.0, ang.cos()) * (len * s)
+                + Vec3::Y * (0.015 + 0.01 * (s * 9.0 + k as f32).sin().abs())
+        };
+        const SEGS: usize = 8;
+        for i in 0..SEGS {
+            let (s0, s1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
+            let col = lerp3(VINE, VINE_TIP, s0);
+            let a0 = if i == 0 {
+                path(s0) - Vec3::Y * 0.03
+            } else {
+                path(s0)
+            };
+            twig(
+                &mut vine,
+                a0,
+                path(s1),
+                0.011 - 0.006 * s0,
+                0.011 - 0.006 * s1,
+                col,
+            );
+        }
+        // The tendril: a thin coil off the runner's end.
+        let end = path(1.0);
+        let dir = (path(1.0) - path(0.9)).normalize_or(Vec3::X);
+        let side = Vec3::new(-dir.z, 0.0, dir.x);
+        let coil = |u: f32| {
+            let ang = u * TAU * 2.0;
+            end + dir * (0.05 * u)
+                + side * (0.022 * ang.sin())
+                + Vec3::Y * (0.022 * (1.0 - ang.cos()) + 0.03 * u)
+        };
+        for i in 0..10 {
+            let (u0, u1) = (i as f32 / 10.0, (i + 1) as f32 / 10.0);
+            twig(&mut vine, coil(u0), coil(u1), 0.0022, 0.0018, VINE_TIP);
+        }
+        for (j, s) in [0.35f32, 0.78].into_iter().enumerate() {
+            let q = k * 2 + j as u32;
+            let p = path(s);
+            let away = Vec3::new(p.x, 0.0, p.z).normalize_or(Vec3::Z);
+            let turn = (hash01(seed, 40 + q) - 0.5) * 1.4;
+            let out = Quat::from_rotation_y(turn) * away;
+            leaf(&mut vine, &mut leaves, p, out, q);
+        }
+        if k < 2 {
+            // A flower on a short stalk off the runner's middle.
+            let p = path(0.55);
+            let tip = p + Vec3::Y * 0.07;
+            twig(&mut vine, p, tip, 0.004, 0.003, VINE_TIP);
+            let away = Vec3::new(p.x, 0.0, p.z).normalize_or(Vec3::Z);
+            flower_head(
+                &mut vine,
+                tip,
+                (Vec3::Y + away * 0.5).normalize(),
+                0.035,
+                PUMPKIN_FLOWER,
+                hash01(seed, 60 + k) * TAU,
+                sky,
+            );
+        }
+    }
+    let crown = Vec3::new(yaw0.sin(), 0.0, yaw0.cos());
+    leaf(&mut vine, &mut leaves, Vec3::Y * 0.02, crown, 99);
+    (vine.mesh(), leaves.mesh())
+}
+
+/// A pumpkin (farming v2's fruit on the vine): ten rounded ribs down a
+/// squat ball [`PUMPKIN_W`] across and [`PUMPKIN_H`] tall, dimpled at both
+/// poles, paler where it lay on the ground, with a dry curled stem —
+/// standing on y = 0. One vertex-coloured mesh, smooth.
+pub fn pumpkin(variant: u32) -> Mesh {
+    pumpkin_mesh(variant, true)
+}
+
+/// [`pumpkin`]'s ribbed shell alone, unpainted and with no stem: the prop
+/// kit's held pumpkin paints it and gives it its own (`render::heldkit`).
+pub fn pumpkin_shell(variant: u32) -> Mesh {
+    pumpkin_mesh(variant, false)
+}
+
+fn pumpkin_mesh(variant: u32, whole: bool) -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let seed = seed_of(0x9a3b_f00d, variant);
+    const LON: u32 = 60;
+    const LAT: u32 = 22;
+    const RIBS: f32 = 10.0;
+    let (rw, rh) = (PUMPKIN_W * 0.5, PUMPKIN_H * 0.5);
+    let lop = 1.0 + 0.06 * (hash01(seed, 1) - 0.5);
+    // A rib's crest, 1 mid-lobe and 0 down a groove.
+    let crest = |ph: f32| (ph * RIBS * 0.5).sin().abs().sqrt();
+    let at = |th: f32, ph: f32| -> Vec3 {
+        let (st, ct) = th.sin_cos();
+        // sin π is a hair under zero in f32, and its root a NaN.
+        let st = st.max(0.0);
+        let r = rw * st * (0.9 + 0.1 * crest(ph) * st.sqrt());
+        // The poles sink in: the stem's dimple and the blossom end's.
+        let dimple = if ct > 0.0 {
+            0.04 * (1.0 - st).powi(3)
+        } else {
+            -0.02 * (1.0 - st).powi(3)
+        };
+        Vec3::new(r * ph.cos() * lop, rh * ct - dimple, r * ph.sin() / lop)
+    };
+    let (mut pos, mut nrm, mut col, mut uv, mut idx) = (
+        Vec::<[f32; 3]>::new(),
+        Vec::<[f32; 3]>::new(),
+        Vec::<[f32; 4]>::new(),
+        Vec::<[f32; 2]>::new(),
+        Vec::<u32>::new(),
+    );
+    let e = 1e-3;
+    for i in 0..=LAT {
+        let th = i as f32 / LAT as f32 * PI;
+        for j in 0..=LON {
+            let ph = j as f32 / LON as f32 * TAU;
+            let p = at(th, ph);
+            let n = if i == 0 {
+                Vec3::Y
+            } else if i == LAT {
+                -Vec3::Y
+            } else {
+                let dth = at(th + e, ph) - at(th - e, ph);
+                let dph = at(th, ph + e) - at(th, ph - e);
+                dph.cross(dth).normalize_or(p.normalize_or(Vec3::Y))
+            };
+            let groove = 1.0 - crest(ph);
+            let mut c = lerp3(PUMPKIN_SKIN, PUMPKIN_GROOVE, groove * 0.8);
+            let ct = th.cos();
+            if ct < -0.55 {
+                c = lerp3(c, PUMPKIN_PATCH, smooth01((-ct - 0.55) / 0.35) * 0.7);
+            }
+            let k = 0.86 + 0.14 * hash01(seed, 10 + j / 6);
+            pos.push(p.to_array());
+            nrm.push(n.to_array());
+            col.push([c[0] * k, c[1] * k, c[2] * k, 1.0]);
+            uv.push([j as f32 / LON as f32, i as f32 / LAT as f32]);
+        }
+    }
+    let w = LON + 1;
+    for i in 0..LAT {
+        for j in 0..LON {
+            let a = i * w + j;
+            let b = a + w;
+            idx.extend([a, a + 1, b, a + 1, b + 1, b]);
+        }
+    }
+    // The stem: a short tapered stalk out of the top dimple, bent over.
+    let top = at(0.0, 0.0) - Vec3::Y * 0.006;
+    let rings = if whole { 4 } else { 0 };
+    let bend = Vec3::new(hash01(seed, 2) - 0.5, 0.0, hash01(seed, 3) - 0.5).normalize_or(Vec3::X);
+    let stem = |t: f32| top + Vec3::Y * (0.06 * t) + bend * (0.025 * t * t);
+    const SIDES: u32 = 7;
+    let base = pos.len() as u32;
+    for r in (0..=rings).filter(|_| whole) {
+        let t = r as f32 / rings as f32;
+        let c = stem(t);
+        let ax = (stem((t + 0.05).min(1.0)) - stem((t - 0.05).max(0.0))).normalize_or(Vec3::Y);
+        let u = ax.cross(Vec3::X).normalize_or(Vec3::Z);
+        let v = ax.cross(u);
+        let rad = 0.016 - 0.006 * t;
+        for s in 0..=SIDES {
+            let a = s as f32 / SIDES as f32 * TAU;
+            let d = u * a.cos() + v * a.sin();
+            pos.push((c + d * rad).to_array());
+            nrm.push(d.to_array());
+            let k = 0.8 + 0.2 * t;
+            col.push([
+                PUMPKIN_STEM[0] * k,
+                PUMPKIN_STEM[1] * k,
+                PUMPKIN_STEM[2] * k,
+                1.0,
+            ]);
+            uv.push([s as f32 / SIDES as f32, t]);
+        }
+    }
+    let sw = SIDES + 1;
+    for r in 0..rings {
+        for s in 0..SIDES {
+            let a = base + r * sw + s;
+            let b = a + sw;
+            idx.extend([a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    // Stand it on y = 0.
+    let lo = pos.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+    for p in &mut pos {
+        p[1] -= lo;
+    }
+    let mut m = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    if whole {
+        m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    }
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+    use bevy::mesh::VertexAttributeValues;
+
+    fn extent(m: &Mesh) -> (Vec3, Vec3) {
+        let Some(VertexAttributeValues::Float32x3(ps)) = m.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions");
+        };
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for p in ps {
+            lo = lo.min(Vec3::from_array(*p));
+            hi = hi.max(Vec3::from_array(*p));
+        }
+        (lo, hi)
+    }
+
+    /// The crops come out the size the sim picks them at
+    /// (`farm::LOOK_H_M`), and roughly as wide as the asset brief says.
+    #[test]
+    fn the_new_crops_are_the_size_they_are_picked_at() {
+        use sim_core::farm::{LOOK_H_M, LOOK_POTATO, LOOK_PUMPKIN};
+        for v in 0..4 {
+            let (stems, leaves) = leafy_mound(v);
+            let (lo, hi) = extent(&leaves);
+            let (_, top) = extent(&stems);
+            let h = hi.y.max(top.y);
+            let want = LOOK_H_M[LOOK_POTATO as usize];
+            assert!((h - want).abs() < want * 0.2, "potato {v} is {h:.2} m tall");
+            let w = (hi.x - lo.x).max(hi.z - lo.z);
+            assert!((0.4..0.9).contains(&w), "potato {v} is {w:.2} m across");
+
+            let (vine, leaves) = pumpkin_vine(v);
+            let (lo, hi) = extent(&leaves);
+            let (_, top) = extent(&vine);
+            let h = hi.y.max(top.y);
+            let want = LOOK_H_M[LOOK_PUMPKIN as usize];
+            assert!((h - want).abs() < want * 0.25, "vine {v} is {h:.2} m tall");
+            let w = (hi.x - lo.x).max(hi.z - lo.z);
+            assert!((0.6..1.1).contains(&w), "vine {v} is {w:.2} m across");
+
+            let pm = pumpkin(v);
+            if let Some(VertexAttributeValues::Float32x3(ps)) =
+                pm.attribute(Mesh::ATTRIBUTE_POSITION)
+            {
+                assert!(ps.iter().flatten().all(|c| c.is_finite()), "a NaN vertex");
+            }
+            let (lo, hi) = extent(&pm);
+            assert!(lo.y.abs() < 1e-4, "a pumpkin stands on the ground");
+            let body = hi.y - lo.y;
+            assert!(
+                body > PUMPKIN_H && body < PUMPKIN_H + 0.08,
+                "a pumpkin and its stem are {body:.2} m tall"
+            );
+            let w = (hi.x - lo.x).max(hi.z - lo.z);
+            assert!(
+                (w - PUMPKIN_W).abs() < 0.03,
+                "a pumpkin is {w:.3} m across ({lo} .. {hi})"
+            );
+        }
+    }
+
+    /// A drawn leaf is a leaf: some of the card is opaque, its corners are
+    /// bare, and the petiole reaches the bottom-centre where the card is
+    /// laid from.
+    #[test]
+    fn the_drawn_leaves_cover_their_cards_and_leave_the_corners_bare() {
+        let n = 64;
+        for (name, px) in [
+            ("potato", potato_leaf_rgba(n)),
+            ("pumpkin", pumpkin_leaf_rgba(n)),
+        ] {
+            let alpha = |x: u32, y: u32| px[((y * n + x) * 4 + 3) as usize];
+            let opaque = (0..n * n)
+                .filter(|&i| px[(i * 4 + 3) as usize] > 128)
+                .count();
+            let share = opaque as f32 / (n * n) as f32;
+            assert!(
+                (0.2..0.75).contains(&share),
+                "{name}: {share:.2} of the card is leaf"
+            );
+            for (x, y) in [(0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)] {
+                assert_eq!(alpha(x, y), 0, "{name}: corner ({x}, {y}) is covered");
+            }
+            assert!(alpha(n / 2, n - 3) > 128, "{name}: no petiole at the base");
+        }
     }
 }

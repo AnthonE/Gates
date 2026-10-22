@@ -1496,6 +1496,20 @@ pub struct Plan;
 #[derive(Component)]
 pub struct PromptLine;
 
+/// A crop's readout under the prompt (farming v2): `CORN SAPLING · 80% · `,
+/// then the six genes as spans, G/Y/H green and W/X red, then
+/// ` · NEEDS WATER` when it thirsts. Empty unless the pick is a crop.
+#[derive(Component)]
+pub struct PlantInfoLine;
+
+/// One span of [`PlantInfoLine`]: 0..6 the genes, 6 the thirst.
+#[derive(Component)]
+pub struct PlantInfoSpan(pub usize);
+
+/// A gene's colour on the readout: the good letters green, the bad red.
+const GENE_GOOD: Color = Color::srgb(0.45, 0.9, 0.4);
+const GENE_BAD: Color = Color::srgb(0.95, 0.38, 0.32);
+
 /// One row of the announce stack, under the prompt. Row 0 is the newest and
 /// sits where the single toast line always sat; the rest run downward.
 #[derive(Component)]
@@ -2423,6 +2437,35 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
+    // A crop's readout, a line under the prompt (farming v2).
+    commands
+        .spawn((
+            super::WorldEntity,
+            PlantInfoLine,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(PROMPT_TOP_PCT + 3.2),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Text::new(""),
+            super::ui::font(PROMPT_FONT_PX - 2.0),
+            TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+            super::ui::TEXT_SHADOW,
+            TextLayout::new_with_justify(Justify::Center),
+            Pickable::IGNORE,
+        ))
+        .with_children(|c| {
+            for k in 0..=sim_core::farm::GENE_SLOTS {
+                c.spawn((
+                    PlantInfoSpan(k),
+                    TextSpan::new(""),
+                    super::ui::font_bold(PROMPT_FONT_PX - 2.0),
+                    TextColor(Color::srgba(0.9, 0.9, 0.84, 0.88)),
+                ));
+            }
+        });
     // The announce stack. Absolutely positioned per row rather than a flex
     // column: every row then has a fixed home whether or not the ones above
     // it are live, so a line arriving does not shove the readout — a number
@@ -2735,9 +2778,10 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
-    // The bandage being wrapped on (`ui::wrap`), for the hand's line.
-    bite: Option<Res<super::verbs::Bite>>,
-    time: Res<Time>,
+    sow: Option<Res<super::farm_ghost::PlantAimed>>,
+    // The bandage being wrapped on (`ui::wrap`) and the clock it reads,
+    // for the hand's line: one param, the system is at Bevy's sixteen.
+    wrap: (Option<Res<super::verbs::Bite>>, Res<Time>),
 ) {
     let core = &net.session.core;
 
@@ -2845,9 +2889,19 @@ pub fn update(
                 (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
                 (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
+        } else if click == crate::ui::hold::Click::Plant {
+            // A seed says where its ghost stands: a bed, soft ground, or
+            // why the ground would refuse it.
+            crate::ui::hold::plant_hint(
+                &core.catalog,
+                &core.research,
+                held,
+                sow.as_ref().map_or_else(Default::default, |s| s.0),
+            )
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
+            let (bite, time) = &wrap;
             let wrapping = bite
                 .as_deref()
                 .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
@@ -3215,7 +3269,7 @@ pub fn feedback(
                 crate::ui::place::RESERVED_LINE.to_string()
             }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
-            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy_after(code, net.farm_sent),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
             super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
@@ -4180,6 +4234,53 @@ pub fn compass_pins(
         let a = if m.off_row { 0.45 } else { 0.9 };
         if ink.0.alpha() != a {
             ink.0 = ink.0.with_alpha(a);
+        }
+    }
+}
+
+/// Write a crop's readout under the prompt from the `E` pick (farming v2).
+pub fn plant_info(
+    aimed: Res<Aimed>,
+    pad: Res<super::verbs::Pad>,
+    mut line: Query<&mut Text, With<PlantInfoLine>>,
+    mut spans: Query<(&PlantInfoSpan, &mut TextSpan, &mut TextColor)>,
+) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let pick = &aimed.0;
+    let show = pick.verb == crate::ui::interact::Verb::Plant && !pad.0.is_open();
+    let head = if show {
+        pick.info_head()
+    } else {
+        String::new()
+    };
+    if text.0 != head {
+        text.0 = head;
+    }
+    let genes = sim_core::farm::letters(pick.plant.genes);
+    for (span, mut t, mut col) in &mut spans {
+        let (want, colour) = if !show {
+            (String::new(), None)
+        } else if span.0 < sim_core::farm::GENE_SLOTS {
+            let c = genes[span.0];
+            let good = matches!(c, b'G' | b'Y' | b'H');
+            (
+                (c as char).to_string(),
+                Some(if good { GENE_GOOD } else { GENE_BAD }),
+            )
+        } else if pick.plant.dry {
+            (" · NEEDS WATER".to_string(), None)
+        } else {
+            (String::new(), None)
+        };
+        if t.0 != want {
+            t.0 = want;
+        }
+        if let Some(c) = colour {
+            if col.0 != c {
+                col.0 = c;
+            }
         }
     }
 }
