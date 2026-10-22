@@ -36,15 +36,20 @@ use super::fx::Fx;
 use super::rig::{EyeCam, FlameGain};
 use super::town::{self, TownGlow};
 use super::{Eye, WorldEntity, WorldId};
+use sim_core::town as kit_town;
 
 // ------------------------------------------------------------- the ring ---
 
 /// The ring's circle, kit-local: `ci/site_kit.py` fits it to `town::PARTS`'
-/// gilt decor — centre (0, 18) in the XY plane, radius 7.6.
-const RING_C: Vec3 = Vec3::new(0.0, 18.0, 0.0);
-const RING_R: f32 = 7.6;
+/// gilt decor, so both read the sim's numbers (`sim_core::town::RING_*`).
+const RING_C: Vec3 = Vec3::new(0.0, kit_town::RING_CY, 0.0);
+const RING_R: f32 = kit_town::RING_R;
 /// Half the ring's squared section (the dresser's `half`).
-const RING_HALF: f32 = 0.6;
+const RING_HALF: f32 = kit_town::RING_HALF;
+/// How much bigger the gate stands than the 7.6 m ring the sways, chips,
+/// bolts and lights here were tuned on: lengths scale by it, lumens by its
+/// square.
+const K: f32 = RING_R / 7.6;
 /// Where the standing arc ends, degrees round the circle: the dresser's run
 /// of decor boxes from −30° to 210°, padded 12° either side.
 const BREAK_LO: f32 = 222.0;
@@ -188,8 +193,8 @@ const ARC_CORE: [f32; 3] = [2.6, 4.2, 9.0];
 const ARC_GLOW: [f32; 3] = [0.25, 0.6, 1.8];
 /// The flash an arc lights, lumens: a crackle and a surge, at the night
 /// eye's gain, never under the surge's daylight floor.
-const ARC_LUMENS: f32 = 700.0;
-const SURGE_LUMENS: f32 = 9_000.0;
+const ARC_LUMENS: f32 = 700.0 * K * K;
+const SURGE_LUMENS: f32 = 9_000.0 * K * K;
 const SURGE_DAY_LUMENS: f32 = 160_000.0;
 const ARC_COLOR: Color = Color::srgb(0.55, 0.75, 1.0);
 
@@ -248,24 +253,32 @@ const ARC_FAR_M: f32 = 600.0;
 /// A shaft of light standing off a gilt cap at night: its height, width at
 /// the cap and at the top, metres. **(knob)**
 const BEACON_LEN_M: f32 = 320.0;
-const BEACON_W0: f32 = 2.4;
-const BEACON_W1: f32 = 15.0;
+const BEACON_W0: f32 = 2.4 * K;
+const BEACON_W1: f32 = 30.0;
 /// Its colour at full night, linear: pale lapis.
 const BEACON_RGB: [f32; 3] = [0.26, 0.46, 1.0];
 /// The halo on the cap.
-const HALO_M: f32 = 3.4;
-/// The caps' tops, kit-local (`town::PARTS`' gilt caps).
-const CAPS: [Vec3; 2] = [Vec3::new(-9.5, 31.05, 0.0), Vec3::new(9.5, 31.05, 0.0)];
+const HALO_M: f32 = 3.4 * K;
+/// The caps' tops, kit-local (`town::GATE_CAP`).
+const CAP_X: f32 = (kit_town::GATE_CAP[0] + kit_town::GATE_CAP[3]) * 0.5;
+const CAPS: [Vec3; 2] = [
+    Vec3::new(-CAP_X, kit_town::GATE_CAP[4] + 0.05, 0.0),
+    Vec3::new(CAP_X, kit_town::GATE_CAP[4] + 0.05, 0.0),
+];
 
 /// The dais lights: lapis pools at the pylons' feet. Lumens at full night.
-const DAIS_LUMENS: f32 = 1_100.0;
-const DAIS_RANGE_M: f32 = 15.0;
-const DAIS: [Vec3; 2] = [Vec3::new(-9.5, 2.2, 0.0), Vec3::new(9.5, 2.2, 0.0)];
+const DAIS_LUMENS: f32 = 1_100.0 * K * K;
+const DAIS_RANGE_M: f32 = 15.0 * K;
+/// Just inside the plinths, where the lapis pools at the pylons' feet.
+const DAIS_X: f32 = kit_town::GATE_FOOT[0] - 1.5;
+const DAIS: [Vec3; 2] = [Vec3::new(-DAIS_X, 2.2, 0.0), Vec3::new(DAIS_X, 2.2, 0.0)];
+/// Where a ground strike lands on the dais, off centre: under a broken end.
+const DAIS_STRIKE_X: f32 = kit_town::GATE_DAIS[0] + 2.5;
 const DAIS_COLOR: Color = Color::srgb(0.35, 0.6, 1.0);
 /// The glow in the break, under the ring's middle, and its reach.
-const GAP_AT: Vec3 = Vec3::new(0.0, 11.0, 0.0);
-const GAP_LUMENS: f32 = 600.0;
-const GAP_RANGE_M: f32 = 9.0;
+const GAP_AT: Vec3 = Vec3::new(0.0, kit_town::RING_CY - RING_R - 4.0, 0.0);
+const GAP_LUMENS: f32 = 600.0 * K * K;
+const GAP_RANGE_M: f32 = 9.0 * K;
 
 /// The seams' glow by day and at full night (linear), and what a surge adds.
 const LAPIS_DAY: LinearRgba = LinearRgba::rgb(0.25, 0.55, 1.6);
@@ -399,12 +412,15 @@ impl GateFx {
                 } else {
                     self.gaps[GAPS - 1][1]
                 };
-                let x = if lo { -7.5 } else { 7.5 } + self.signed() * 1.5;
-                (from, Vec3::new(x, 0.5, self.signed() * 3.0))
+                let x = DAIS_STRIKE_X * if lo { -1.0 } else { 1.0 } + self.signed() * 1.5;
+                (
+                    from,
+                    Vec3::new(x, kit_town::GATE_DAIS[4], self.signed() * 3.0),
+                )
             }
         };
         let life = self.range((0.09, 0.2));
-        let i = self.bolt(a, b, 0.22, width, life, BOLT_PTS);
+        let i = self.bolt(a, b, 0.22, width * K, life, BOLT_PTS);
         if i == usize::MAX {
             return;
         }
@@ -414,7 +430,7 @@ impl GateFx {
             let len = (b - a).length() * self.range((0.25, 0.45));
             let away = Vec3::new(self.signed(), self.signed() - 0.4, self.signed())
                 .normalize_or(Vec3::NEG_Y);
-            self.bolt(from, from + away * len, 0.3, width * 0.6, life * 0.8, 9);
+            self.bolt(from, from + away * len, 0.3, width * K * 0.6, life * 0.8, 9);
         }
         let mid = a.lerp(b, 0.5);
         self.flash_at = mid;
@@ -596,10 +612,10 @@ fn fragment(a0: f32, a1: f32, seed: u32) -> (Mesh, Mesh, Vec3) {
         );
         let li = ri - 0.02;
         lapis.quad(
-            p(t0, li, 0.12),
-            p(t1, li, 0.12),
-            p(t1, li, -0.12),
-            p(t0, li, -0.12),
+            p(t0, li, 0.12 * K),
+            p(t1, li, 0.12 * K),
+            p(t1, li, -0.12 * K),
+            p(t0, li, -0.12 * K),
             -rad,
         );
     }
@@ -611,7 +627,8 @@ fn fragment(a0: f32, a1: f32, seed: u32) -> (Mesh, Mesh, Vec3) {
         let corners = [p(t, ri, -h), p(t, ro, -h), p(t, ro, h), p(t, ri, h)];
         let j = |x: u32| super::props::hash01(seed.wrapping_add(k as u32 * 7), x) * 2.0 - 1.0;
         // Off-centre and shallow: a slanted snap, not a gable.
-        let tip = p(t, RING_R + 0.45 * j(1), 0.45 * j(2)) + tangent * (0.06 + 0.1 * (j(3) + 1.0));
+        let tip = p(t, RING_R + 0.45 * K * j(1), 0.45 * K * j(2))
+            + tangent * K * (0.06 + 0.1 * (j(3) + 1.0));
         for e in 0..4 {
             gilt.tri(corners[e], corners[(e + 1) % 4], tip, tangent);
         }
@@ -791,7 +808,9 @@ pub fn spawn(
         .spawn((GateRoot, WorldEntity, tf, Visibility::default()))
         .id();
     let gilt = materials.add(town::dressed_material(Surface::Gilt, &server));
-    let obsidian = materials.add(town::dressed_material(Surface::Obsidian, &server));
+    let mut stone = town::dressed_material(Surface::Ashlar, &server);
+    stone.base_color = Color::srgb(0.86, 0.70, 0.52);
+    let stone = materials.add(stone);
 
     let mut seed = (world.seed as u32) ^ 0x6A7E_0001;
     let mut roll = || {
@@ -803,7 +822,7 @@ pub fn spawn(
 
     for (i, f) in FRAGS.iter().enumerate() {
         let (g, l, pivot) = fragment(f.a0, f.a1, 0x51A7 + i as u32 * 31);
-        let home = RING_C + pivot + f.drift;
+        let home = RING_C + pivot + f.drift * K;
         let base = Quat::from_euler(EulerRot::XYZ, f.tilt.x, f.tilt.y, f.tilt.z);
         let ends = [
             on_ring(f.a0, RING_R, 0.0) - pivot,
@@ -813,7 +832,7 @@ pub fn spawn(
         let hang = Hanging {
             home,
             base,
-            bob: f.bob,
+            bob: f.bob * K,
             hz: f.hz,
             phase: f.phase,
             axis: tangent,
@@ -848,11 +867,12 @@ pub fn spawn(
         // Round the break and a little in front of and behind it, fallen a
         // few metres at most.
         let deg = 228.0 + 84.0 * roll();
-        let r = RING_R + (roll() * 2.0 - 1.0) * 1.6;
-        let home =
-            RING_C + on_ring(deg, r, (roll() * 2.0 - 1.0) * 1.8) + Vec3::Y * (-0.4 - 2.2 * roll());
+        let r = RING_R + (roll() * 2.0 - 1.0) * 1.6 * K;
+        let home = RING_C
+            + on_ring(deg, r, (roll() * 2.0 - 1.0) * 1.8 * K)
+            + Vec3::Y * (-0.4 - 2.2 * roll()) * K;
         let is_gilt = k % 3 != 2;
-        let size = if is_gilt {
+        let size = K * if is_gilt {
             0.12 + 0.22 * roll()
         } else {
             0.2 + 0.3 * roll()
@@ -862,7 +882,7 @@ pub fn spawn(
         let hang = Hanging {
             home,
             base,
-            bob: 0.08 + 0.18 * roll(),
+            bob: (0.08 + 0.18 * roll()) * K,
             hz: 0.12 + 0.2 * roll(),
             phase: roll() * TAU,
             axis,
@@ -875,11 +895,7 @@ pub fn spawn(
             ChildOf(root),
             hang,
             Mesh3d(meshes.add(chip(size, 0xC41F + k as u32))),
-            MeshMaterial3d(if is_gilt {
-                gilt.clone()
-            } else {
-                obsidian.clone()
-            }),
+            MeshMaterial3d(if is_gilt { gilt.clone() } else { stone.clone() }),
             Transform::from_translation(home).with_rotation(base),
         ));
     }
@@ -892,7 +908,7 @@ pub fn spawn(
         PointLight {
             color: ARC_COLOR,
             intensity: 0.0,
-            range: 26.0,
+            range: 26.0 * K,
             shadows_enabled: false,
             ..default()
         },
@@ -1077,18 +1093,19 @@ pub fn animate(
         gate.flash_left = 0.45;
         gate.flash_life = 0.45;
         gate.flash_lumens = SURGE_LUMENS;
-        gate.flash_at = RING_C + Vec3::Y * -6.0;
+        gate.flash_at = RING_C + Vec3::Y * -6.0 * K;
         // Close enough and you feel it in your feet.
         if let Some(mut shake) = shake {
-            let at = gate.tf.transform_point(RING_C - Vec3::Y * 10.0);
-            shake.add_at(0.2, at, eye.pos, 10.0, 32.0);
+            let at = gate.tf.transform_point(RING_C - Vec3::Y * 10.0 * K);
+            shake.add_at(0.2, at, eye.pos, 10.0 * K, 32.0 * K);
         }
         if gate.near {
             // A ring of sparks thrown out of the break.
             for _ in 0..40 {
                 let deg = gate.range((BREAK_LO, BREAK_HI));
-                let pos = RING_C + on_ring(deg, RING_R + gate.signed() * 0.8, gate.signed());
-                let vel = (on_ring(deg, 1.0, gate.signed() * 0.5) * gate.range((1.0, 3.5)))
+                let pos =
+                    RING_C + on_ring(deg, RING_R + gate.signed() * 0.8 * K, gate.signed() * K);
+                let vel = (on_ring(deg, 1.0, gate.signed() * 0.5) * gate.range((1.0, 3.5)) * K)
                     + Vec3::Y * gate.range((0.0, 1.5));
                 let life = gate.range((1.2, 2.4));
                 let m = Mote {
@@ -1097,7 +1114,7 @@ pub fn animate(
                     kind: Kind::Burst,
                     pos,
                     vel,
-                    size: gate.range((0.04, 0.09)),
+                    size: gate.range((0.04, 0.09)) * K,
                     ..Mote::default()
                 };
                 gate.mote(m);
@@ -1130,17 +1147,17 @@ pub fn animate(
     if gate.near {
         for _ in 0..gate.count(VORTEX_RATE, dt) {
             let life = gate.range((5.0, 8.0));
-            let r = gate.range((6.4, 7.1));
+            let r = gate.range((RING_R - 1.2 * K, RING_R - 0.5 * K));
             let m = Mote {
                 left: life,
                 life,
                 kind: Kind::Vortex,
                 theta: gate.roll() * TAU,
                 r,
-                z: gate.signed() * 0.7,
-                omega: gate.range((0.22, 0.5)),
+                z: gate.signed() * 0.7 * K,
+                omega: gate.range((0.22, 0.5)) / K.sqrt(),
                 vr: r / life * gate.range((0.3, 0.75)),
-                size: gate.range((0.045, 0.1)),
+                size: gate.range((0.045, 0.1)) * K,
                 phase: gate.roll() * TAU,
                 ..Mote::default()
             };
@@ -1151,14 +1168,21 @@ pub fn animate(
             // Off the dais either side of the street, or out of a fallen
             // block's cracks.
             let pos = match (gate.roll() * 5.0) as u32 {
-                0 => Vec3::new(gate.range((16.5, 21.5)), 1.9, gate.range((-11.5, -7.5))),
-                1 => Vec3::new(gate.range((-21.5, -16.5)), 2.3, gate.range((-9.5, -6.5))),
+                k @ 0..=1 => {
+                    let b = kit_town::FALLEN[k as usize];
+                    Vec3::new(
+                        gate.range((b[0] + 0.5, b[3] - 0.5)),
+                        b[4] + 0.1,
+                        gate.range((b[2] + 0.5, b[5] - 0.5)),
+                    )
+                }
                 k => {
                     let side = if k % 2 == 0 { -1.0 } else { 1.0 };
+                    let d = kit_town::GATE_DAIS;
                     Vec3::new(
-                        side * gate.range((5.8, 13.6)),
-                        0.55,
-                        gate.range((-5.6, 5.6)),
+                        side * gate.range((d[0] + 0.3, d[3] - 0.4)),
+                        d[4] + 0.05,
+                        gate.range((d[2] + 0.4, d[5] - 0.4)),
                     )
                 }
             };
@@ -1178,7 +1202,12 @@ pub fn animate(
         for _ in 0..gate.count(MIST_RATE * night, dt) {
             let life = gate.range((6.0, 9.0));
             let side = if gate.roll() < 0.5 { -1.0 } else { 1.0 };
-            let pos = Vec3::new(side * gate.range((6.0, 13.5)), 0.8, gate.range((-5.5, 5.5)));
+            let d = kit_town::GATE_DAIS;
+            let pos = Vec3::new(
+                side * gate.range((d[0] + 0.5, d[3] - 0.5)),
+                d[4] + 0.3,
+                gate.range((d[2] + 0.5, d[5] - 0.5)),
+            );
             let vel = Vec3::new(side * gate.range((0.05, 0.2)), 0.02, gate.signed() * 0.12);
             let m = Mote {
                 left: life,
@@ -1198,14 +1227,14 @@ pub fn animate(
             let deg = gate.range((STAND_FROM, STAND_TO));
             let face = gate.roll();
             let pos = if face < 0.5 {
-                RING_C + on_ring(deg, RING_R + RING_HALF + 0.02, gate.signed() * 0.5)
+                RING_C + on_ring(deg, RING_R + RING_HALF + 0.02, gate.signed() * 0.5 * K)
             } else {
                 let z = if face < 0.75 {
                     RING_HALF + 0.02
                 } else {
                     -RING_HALF - 0.02
                 };
-                RING_C + on_ring(deg, RING_R + gate.signed() * 0.5, z)
+                RING_C + on_ring(deg, RING_R + gate.signed() * 0.5 * K, z)
             };
             let life = gate.range((0.25, 0.5));
             let m = Mote {
@@ -1213,7 +1242,7 @@ pub fn animate(
                 life,
                 kind: Kind::Glint,
                 pos,
-                size: gate.range((0.18, 0.42)),
+                size: gate.range((0.18, 0.42)) * K,
                 phase: gate.roll() * TAU,
                 ..Mote::default()
             };
