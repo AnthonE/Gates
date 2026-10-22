@@ -19,7 +19,7 @@
 use bevy::prelude::*;
 use client_core::arc::WorkView;
 use sim_core::landmark::LandmarkKind;
-use sim_core::spot::{Spot, SITE_LANDMARK0};
+use sim_core::spot::{Spot, SITE_LANDMARK0, SITE_TOWN};
 use sim_core::terrain::Haven;
 use sim_core::works::{WORK_LIT, WORK_OPEN};
 
@@ -48,6 +48,13 @@ pub struct WorkPool {
 /// The glass core that glows with the tank, and the state it last showed.
 #[derive(Component)]
 pub struct WorkCore {
+    k: u8,
+    shown: u32,
+}
+/// The veil that glows in a ring as the quota fills, and breathes while
+/// the tank burns; and the state it last showed.
+#[derive(Component)]
+pub struct WorkVeil {
     k: u8,
     shown: u32,
 }
@@ -97,6 +104,23 @@ pub struct Pool {
     pub kind: PoolKind,
 }
 
+/// A gold ring standing on edge across +Z: its centre and its inner and
+/// outer radius.
+#[derive(Clone, Copy, Debug)]
+pub struct Ring {
+    pub at: [f32; 3],
+    pub r: [f32; 2],
+}
+
+/// A veil: a disc `r` across facing +Z at `at`, and its twin at `back_z` on
+/// the far face of something finished on both.
+#[derive(Clone, Copy, Debug)]
+pub struct Veil {
+    pub at: [f32; 3],
+    pub r: f32,
+    pub back_z: Option<f32>,
+}
+
 /// How one work's terminal is drawn, in the model's frame: +Z its front, y
 /// up from the ground under its highest corner.
 #[derive(Clone, Copy, Debug)]
@@ -106,12 +130,13 @@ pub struct Look {
     pub half: [f32; 2],
     /// A turn on top of its site's, radians.
     pub turn: f32,
-    /// The gold ring's centre, standing on edge across +Z.
-    pub ring: Option<[f32; 3]>,
-    /// Where the fire burns, and where the open glow shines from.
-    pub fire: [f32; 3],
+    pub ring: Option<Ring>,
+    /// Where the fire burns while the tank does (none for a work that
+    /// shows its tank another way), and where the open glow shines from.
+    pub fire: Option<[f32; 3]>,
     pub glow: [f32; 3],
     pub pool: Option<Pool>,
+    pub veil: Option<Veil>,
     /// A glass core's centre and radius.
     pub core: Option<([f32; 3], f32)>,
     /// How many fallen stones lie around it, and the ring they hover in once
@@ -128,10 +153,14 @@ pub static PLINTH: Look = Look {
     glb: PLINTH_GLB,
     half: [0.8, 0.8],
     turn: 0.0,
-    ring: Some([0.0, 2.35, -0.95]),
-    fire: [0.0, 1.73, 0.0],
+    ring: Some(Ring {
+        at: [0.0, 2.35, -0.95],
+        r: [1.05, 1.25],
+    }),
+    fire: Some([0.0, 1.73, 0.0]),
     glow: [0.0, 2.35, -0.6],
     pool: None,
+    veil: None,
     core: None,
     stones: 0,
     hover_y: 0.0,
@@ -148,8 +177,11 @@ const CRUCIBLE: Look = Look {
     glb: "models/site/works_crucible.glb",
     half: [1.6, 1.6],
     turn: 0.0,
-    ring: Some([-0.13, 2.85, -1.2]),
-    fire: [-0.13, 2.53, -0.31],
+    ring: Some(Ring {
+        at: [-0.13, 2.85, -1.2],
+        r: [1.05, 1.25],
+    }),
+    fire: Some([-0.13, 2.53, -0.31]),
     glow: [-0.13, 2.6, -0.31],
     pool: Some(Pool {
         at: [-0.13, -0.31],
@@ -157,15 +189,46 @@ const CRUCIBLE: Look = Look {
         y: [1.65, 2.16],
         kind: PoolKind::Molten,
     }),
+    veil: None,
     core: Some(([1.15, 0.80, -0.30], 0.43)),
     stones: 5,
     hover_y: 3.3,
     hover_r: 2.0,
 };
 
+/// THE EXCHANGE (`content/arc.toml`), on THE GATE's main street: a blind
+/// sandstone gateway with bronze gearing, its opening shut by a blue glazed
+/// panel with a bronze porthole, and a brass-topped counter in front,
+/// generated, 3.00 × 2.99 × 2.12 m. Turned about so the counter faces the
+/// gate players walk in from. The porthole is 0.7 m round about (0.02, 1.39)
+/// on both faces, the panel's faces at z −0.45 and −1.0, measured off the
+/// model. No fire: a street gets a veil that glows, and stones that hover
+/// under the string lights (3.5 m over it).
+const EXCHANGE: Look = Look {
+    glb: "models/site/works_exchange.glb",
+    half: [1.5, 1.06],
+    turn: core::f32::consts::PI,
+    ring: None,
+    fire: None,
+    glow: [0.02, 1.39, -0.2],
+    pool: None,
+    veil: Some(Veil {
+        at: [0.02, 1.39, -0.43],
+        r: 0.62,
+        back_z: Some(-1.03),
+    }),
+    core: None,
+    stones: 4,
+    hover_y: 2.2,
+    hover_r: 2.0,
+};
+
 /// Each site's own look, by `sim_core::spot` site code (keyed on the site,
 /// not the row, so a reordered or renamed row keeps its ruin).
-pub static LOOKS: [(u8, Look); 1] = [(SITE_LANDMARK0 + LandmarkKind::Anvil as u8, CRUCIBLE)];
+pub static LOOKS: [(u8, Look); 2] = [
+    (SITE_LANDMARK0 + LandmarkKind::Anvil as u8, CRUCIBLE),
+    (SITE_TOWN, EXCHANGE),
+];
 
 /// The look a work at `site` wears.
 pub fn look(site: u8) -> &'static Look {
@@ -269,32 +332,34 @@ pub fn spawn(
                         Transform::from_xyz(0.0, (top + bottom) * 0.5, 0.0),
                     ));
                 }
-                if let Some(at) = look.ring {
+                if let Some(ring) = look.ring {
                     c.spawn((
-                        Mesh3d(meshes.add(Torus::new(1.05, 1.25))),
+                        Mesh3d(meshes.add(Torus::new(ring.r[0], ring.r[1]))),
                         MeshMaterial3d(gold),
-                        Transform::from_translation(Vec3::from_array(at))
+                        Transform::from_translation(Vec3::from_array(ring.at))
                             .with_rotation(Quat::from_rotation_x(core::f32::consts::FRAC_PI_2)),
                     ));
                 }
-                c.spawn((
-                    WorkFire(k as u8),
-                    PointLight {
-                        color: FIRE_COLOR,
-                        intensity: 0.0,
-                        range: FIRE_RANGE_M,
-                        shadows_enabled: false,
-                        ..default()
-                    },
-                    Transform::from_translation(Vec3::from_array(look.fire)),
-                    FireFx {
-                        flames: true,
-                        flame_dy: -0.35,
-                        smoke_dy: 0.5,
-                        scale: 1.0,
-                        tongues: Tongues::Pit,
-                    },
-                ));
+                if let Some(at) = look.fire {
+                    c.spawn((
+                        WorkFire(k as u8),
+                        PointLight {
+                            color: FIRE_COLOR,
+                            intensity: 0.0,
+                            range: FIRE_RANGE_M,
+                            shadows_enabled: false,
+                            ..default()
+                        },
+                        Transform::from_translation(Vec3::from_array(at)),
+                        FireFx {
+                            flames: true,
+                            flame_dy: -0.35,
+                            smoke_dy: 0.5,
+                            scale: 1.0,
+                            tongues: Tongues::Pit,
+                        },
+                    ));
+                }
                 c.spawn((
                     WorkGlow(k as u8),
                     PointLight {
@@ -323,6 +388,31 @@ pub fn spawn(
                         Transform::from_xyz(p.at[0], p.y[0], p.at[1]),
                         Visibility::Hidden,
                     ));
+                }
+                if let Some(v) = look.veil {
+                    let disc = meshes.add(Circle::new(v.r));
+                    let glow = materials.add(StandardMaterial {
+                        base_color: Color::BLACK,
+                        alpha_mode: AlphaMode::Add,
+                        unlit: true,
+                        cull_mode: None,
+                        double_sided: true,
+                        ..default()
+                    });
+                    let back = v.back_z.map(|z| Vec3::new(v.at[0], v.at[1], z));
+                    let faces = [Some(Vec3::from_array(v.at)), back];
+                    for at in faces.into_iter().flatten() {
+                        c.spawn((
+                            WorkVeil {
+                                k: k as u8,
+                                shown: u32::MAX,
+                            },
+                            Mesh3d(disc.clone()),
+                            MeshMaterial3d(glow.clone()),
+                            Transform::from_translation(at),
+                            Visibility::Hidden,
+                        ));
+                    }
                 }
                 if let Some((at, r)) = look.core {
                     c.spawn((
@@ -476,6 +566,14 @@ pub fn animate(
         Without<WorkStone>,
     >,
     mut cores: Query<(&mut WorkCore, &MeshMaterial3d<StandardMaterial>)>,
+    mut veils: Query<
+        (
+            &mut WorkVeil,
+            &mut Visibility,
+            &MeshMaterial3d<StandardMaterial>,
+        ),
+        Without<WorkPool>,
+    >,
     mut stones: Query<(&mut WorkStone, &mut Transform), Without<WorkPool>>,
 ) {
     let arc = &net.session.core.arc;
@@ -529,6 +627,39 @@ pub fn animate(
                 WORK_OPEN => LinearRgba::rgb(1.2, 0.5, 0.1) * fill,
                 _ => LinearRgba::BLACK,
             };
+        }
+    }
+    for (mut v, mut vis, mat) in veils.iter_mut() {
+        let Some(w) = arc.works.get(v.k as usize) else {
+            continue;
+        };
+        let (fill, heat) = wake(w);
+        let want = if w.state == WORK_OPEN || w.state == WORK_LIT {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        // A burning veil breathes, so it is written every frame; otherwise
+        // only when what it shows moves.
+        let key = shown(w, fill, heat);
+        if heat == 0.0 && v.shown == key {
+            continue;
+        }
+        v.shown = key;
+        let glow = match w.state {
+            WORK_LIT if heat > 0.0 => {
+                LinearRgba::rgb(0.25, 0.55, 1.6)
+                    * (1.0 + 0.6 * heat)
+                    * (1.0 + 0.3 * (t * 1.3).sin())
+            }
+            WORK_LIT => LinearRgba::rgb(0.35, 0.06, 0.12),
+            _ => LinearRgba::rgb(0.12, 0.25, 0.7) * (0.15 + 0.85 * fill),
+        };
+        if let Some(m) = materials.get_mut(&mat.0) {
+            m.base_color = Color::LinearRgba(glow);
         }
     }
     for (mut s, mut at) in stones.iter_mut() {
