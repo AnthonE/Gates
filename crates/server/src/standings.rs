@@ -100,6 +100,17 @@ const ROW_FIELDS: usize = 13;
 pub const EXTRACT_TICKER: &str = "JUNK";
 /// `flags`: joined as a declared agent.
 const FLAG_AGENT: u64 = 1;
+/// A row under this many minutes with nothing else on it ([`Row::idle`])
+/// gives way to a new wallet when the table is full.
+const IDLE_MINUTES: u32 = 10;
+/// The same killer taking the same victim again within this many ticks
+/// (an hour) is not another kill on the boards.
+pub const KILL_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
+/// One rekindle deed per wallet per work within this many ticks (an hour).
+pub const REKINDLE_REPEAT_TICKS: u64 = 3600 * sim_core::limits::TICK_HZ as u64;
+/// Pairs [`Recent`] remembers. A pair older than its window, or pushed out
+/// by this many newer ones, counts again.
+const RECENT: usize = 1024;
 
 /// What the standings weigh, baked from `content/arc.toml` `[standings]`.
 #[derive(Clone, Debug, Default)]
@@ -225,7 +236,8 @@ pub struct Row {
     pub deaths: u32,
     /// Their share of what their bases held at the last count. Hundredths.
     pub hoard: u64,
-    /// Minutes played this wipe (counted once a minute while connected).
+    /// Minutes played this wipe: counted once a minute while connected,
+    /// alive, awake and moving or acting (`ShardCore::standings_minute`).
     pub played: u32,
     /// Ever joined as a declared agent this wipe.
     pub agent: bool,
@@ -233,9 +245,25 @@ pub struct Row {
     pub extracted: u64,
     /// JUNK put through the exchange, before the fee: what the cap counts.
     pub taken: u64,
+    /// Catalog ids bought from THE OUTFITTER this wipe: one sale each a
+    /// wipe ([`Standings::buy`]).
+    pub bought: Vec<u16>,
 }
 
 impl Row {
+    /// Nothing on it but a few minutes (and deaths): the row a full table
+    /// gives away first ([`Standings::row`]).
+    fn idle(&self) -> bool {
+        self.played < IDLE_MINUTES
+            && self.given == 0
+            && self.deeds == 0
+            && self.kills == 0
+            && self.hoard == 0
+            && self.extracted == 0
+            && self.taken == 0
+            && self.bought.is_empty()
+    }
+
     /// The row's score on `board`, whole points (kills on THE FIGHT).
     pub fn score(&self, board: u8, r: &Rules) -> u64 {
         match board {
@@ -840,6 +868,53 @@ fn discord_body(text: &str) -> String {
 
 // ---- this wipe ---------------------------------------------------------------
 
+/// Pairs seen lately, for the "not again within the hour" rules (a kill of
+/// the same victim, a rekindle of the same work): a fixed ring of `(pair,
+/// tick)`, the oldest overwritten, so a flood of distinct pairs costs a
+/// scan and never memory. Not saved: a restart forgets the last hour.
+struct Recent {
+    seen: Box<[Option<(u64, u64)>]>,
+    next: usize,
+}
+
+impl Recent {
+    fn new() -> Self {
+        Recent {
+            seen: vec![None; RECENT].into_boxed_slice(),
+            next: 0,
+        }
+    }
+
+    /// Whether `pair` was not seen in the `window` ticks before `now`; if
+    /// not, it is seen now. A tick behind the one recorded (a new world)
+    /// is not "within".
+    fn fresh(&mut self, pair: u64, now: u64, window: u64) -> bool {
+        let seen = self
+            .seen
+            .iter()
+            .flatten()
+            .any(|&(p, at)| p == pair && at <= now && now - at < window);
+        if seen {
+            return false;
+        }
+        self.seen[self.next] = Some((pair, now));
+        self.next = (self.next + 1) % self.seen.len();
+        true
+    }
+}
+
+/// FNV-1a over `parts`, a separator after each: a [`Recent`] pair.
+fn pair_of(parts: &[&[u8]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for &b in part.iter().chain(&[0xff]) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
 /// What the writer thread is handed: the file, and the JSON the status
 /// endpoint serves.
 struct Flush {
@@ -871,6 +946,10 @@ pub struct Standings {
     out: Option<rtrb::Producer<Flush>>,
     /// Wallets not ranked because the table was full.
     pub refused: u64,
+    /// `(killer, victim)` kills this last hour ([`Self::kill`]).
+    recent_kills: Recent,
+    /// `(wallet, work)` rekindles this last hour ([`Self::rekindled`]).
+    recent_rekindles: Recent,
 }
 
 impl Default for Standings {
@@ -900,6 +979,8 @@ impl Standings {
             base: None,
             out: None,
             refused: 0,
+            recent_kills: Recent::new(),
+            recent_rekindles: Recent::new(),
         }
     }
 
@@ -975,8 +1056,18 @@ impl Standings {
                             agent: n(9) & FLAG_AGENT != 0,
                             extracted: n(10),
                             taken: n(11),
+                            bought: Vec::new(),
                         },
                     );
+                }
+                // After the rows: a file from before these lines has none,
+                // and a shard from before them skips them.
+                Some(&"bought") if f.len() >= 3 => {
+                    if let (Some(row), Ok(c)) = (self.rows.get_mut(f[1]), f[2].parse::<u16>()) {
+                        if !row.bought.contains(&c) {
+                            row.bought.push(c);
+                        }
+                    }
                 }
                 Some(&"deed") if f.len() >= 3 && self.deeds.len() < MAX_DEEDS => {
                     self.deeds.push((f[1].to_string(), f[2].to_string()));
@@ -988,14 +1079,29 @@ impl Standings {
 
     /// The row for `key`, made if there is room. `label` refreshes it when
     /// not empty.
+    ///
+    /// A full table makes room by dropping its least-played idle row
+    /// ([`Row::idle`]): otherwise a few thousand throwaway wallets, a minute
+    /// each, would fill it for the wipe and leave every wallet after them
+    /// unranked and unable to extract ([`Self::allowance`]).
     fn row(&mut self, key: &str, label: &str) -> Option<&mut Row> {
         if !filable(key) {
             return None;
         }
         if !self.rows.contains_key(key) {
             if self.rows.len() >= MAX_ROWS {
-                self.refused += 1;
-                return None;
+                let idle = self
+                    .rows
+                    .iter()
+                    .filter(|(_, r)| r.idle())
+                    .min_by_key(|(_, r)| r.played)
+                    .map(|(k, _)| k.clone());
+                let Some(idle) = idle else {
+                    self.refused += 1;
+                    return None;
+                };
+                self.rows.remove(&idle);
+                self.dirty = true;
             }
             self.rows.insert(key.to_string(), Row::default());
         }
@@ -1041,16 +1147,52 @@ impl Standings {
         }
     }
 
-    /// A player killed another. Either side may be nobody we rank.
-    pub fn kill(&mut self, killer: Option<(&str, &str)>, victim: Option<(&str, &str)>) {
-        if let Some(row) = killer.and_then(|(k, l)| self.row(k, l)) {
-            row.kills += 1;
-            self.dirty = true;
-        }
+    /// A player killed another at world tick `now`. Either side may be
+    /// nobody we rank. The death always counts; the kill does not when the
+    /// same killer took the same wallet within the hour
+    /// ([`KILL_REPEAT_TICKS`]), nor, on a shard that pays, when the victim
+    /// has not played the purse's `min_minutes` (a guest never has): alts
+    /// walked into one gun would otherwise be a fight board of their own.
+    pub fn kill(&mut self, killer: Option<(&str, &str)>, victim: Option<(&str, &str)>, now: u64) {
         if let Some(row) = victim.and_then(|(k, l)| self.row(k, l)) {
             row.deaths += 1;
             self.dirty = true;
         }
+        let Some((k, l)) = killer else {
+            return;
+        };
+        if self.prizes.armed() {
+            let played = victim
+                .and_then(|(v, _)| self.rows.get(v))
+                .map_or(0, |r| r.played);
+            if played < self.prizes.min_minutes {
+                return;
+            }
+        }
+        if let Some((v, _)) = victim {
+            let pair = pair_of(&[k.as_bytes(), v.as_bytes()]);
+            if !self.recent_kills.fresh(pair, now, KILL_REPEAT_TICKS) {
+                return;
+            }
+        }
+        if let Some(row) = self.row(k, l) {
+            row.kills += 1;
+            self.dirty = true;
+        }
+    }
+
+    /// `key` relit work `work`'s dry tank at world tick `now`: the rekindle
+    /// deed, once an hour per wallet and work ([`REKINDLE_REPEAT_TICKS`]).
+    pub fn rekindled(&mut self, key: &str, label: &str, work: u32, now: u64) {
+        let pair = pair_of(&[key.as_bytes(), &work.to_le_bytes()]);
+        if !self
+            .recent_rekindles
+            .fresh(pair, now, REKINDLE_REPEAT_TICKS)
+        {
+            return;
+        }
+        let points = self.rules.rekindled_points;
+        self.deed(key, label, points, None);
     }
 
     /// The hoards, recounted: `(key, label, hundredths)` for every crew
@@ -1115,13 +1257,49 @@ impl Standings {
         self.exits.cap * pct as u64 / 100
     }
 
-    /// What `key` may still take out this wipe.
-    pub fn allowance(&self, key: &str, pct: u32) -> u64 {
+    /// What `key` may still take out this wipe. Its row is made here, so
+    /// [`Self::extracted`] finds it. Zero when no row can be made (a table
+    /// full of rows that are not idle): the take would be recorded nowhere,
+    /// so the coin would leave the pack for no credit and the next try
+    /// would see the whole cap again. Zero too for a wallet that played
+    /// this wipe as a declared agent when agents are not paid.
+    pub fn allowance(&mut self, key: &str, pct: u32) -> u64 {
         if !is_wallet(key) {
             return 0;
         }
-        let taken = self.rows.get(key).map_or(0, |r| r.taken);
+        let agents = self.prizes.agents;
+        let Some(row) = self.row(key, "") else {
+            return 0;
+        };
+        if row.agent && !agents {
+            return 0;
+        }
+        let taken = row.taken;
         self.cap(pct).saturating_sub(taken)
+    }
+
+    /// Whether `key` bought catalog id `catalog` this wipe.
+    pub fn bought(&self, key: &str, catalog: u16) -> bool {
+        self.rows
+            .get(key)
+            .is_some_and(|r| r.bought.contains(&catalog))
+    }
+
+    /// `key` bought `catalogs` from THE OUTFITTER: one sale each per
+    /// wallet a wipe. A token can be sent on and bought again, so without
+    /// this a priced gift is a tap of tokens for the coin, around
+    /// `extract_cap`. False, recording nothing, when no row can be made.
+    pub fn buy(&mut self, key: &str, catalogs: &[u16]) -> bool {
+        let Some(row) = self.row(key, "") else {
+            return false;
+        };
+        for &c in catalogs {
+            if !row.bought.contains(&c) {
+                row.bought.push(c);
+            }
+        }
+        self.dirty = true;
+        true
     }
 
     /// What `key` would be paid on `board` if the wipe ended now.
@@ -1207,6 +1385,11 @@ impl Standings {
                 r.taken,
                 r.label
             ));
+        }
+        for (k, r) in &self.rows {
+            for c in &r.bought {
+                t.push_str(&format!("bought\t{k}\t{c}\n"));
+            }
         }
         for (k, what) in &self.deeds {
             t.push_str(&format!("deed\t{k}\t{what}\n"));
@@ -1507,8 +1690,12 @@ mod tests {
         s.gave("0xaaaa", "ALICE", 1, 10);
         // B holds a base worth 120, and killed A twice.
         s.set_hoards(&[("0xbbbb".into(), "BOB".into(), 12_000)]);
-        s.kill(Some(("0xbbbb", "")), Some(("0xaaaa", "")));
-        s.kill(Some(("0xbbbb", "")), Some(("0xaaaa", "")));
+        s.kill(Some(("0xbbbb", "")), Some(("0xaaaa", "")), 0);
+        s.kill(
+            Some(("0xbbbb", "")),
+            Some(("0xaaaa", "")),
+            KILL_REPEAT_TICKS,
+        );
         assert!(s.rebuild());
         assert_eq!(s.board(BOARD_WORKS).top, vec![("ALICE".to_string(), 50)]);
         assert_eq!(s.board(BOARD_HOARD).top, vec![("BOB".to_string(), 120)]);
@@ -1538,15 +1725,21 @@ mod tests {
         let mut s = Standings::open(rules(), prizes.clone(), Some(&base), 3);
         s.gave(ALICE, "ALICE", 0, 500);
         s.deed(ALICE, "", 600, Some("lit THE CRUCIBLE"));
-        s.kill(Some((CAROL, "CAROL")), None);
-        // An agent outscores Carol on the fight and is ranked, never paid.
-        s.kill(Some((BOT, "BOT")), None);
-        s.kill(Some((BOT, "BOT")), None);
         for _ in 0..2 {
             s.minute(ALICE, "", false);
             s.minute(CAROL, "", false);
             s.minute(BOT, "", true);
         }
+        // The purse is armed: a kill counts on a victim who played its
+        // minutes, and the same pair again only an hour on.
+        s.kill(Some((CAROL, "CAROL")), Some((ALICE, "ALICE")), 0);
+        // An agent outscores Carol on the fight and is ranked, never paid.
+        s.kill(Some((BOT, "BOT")), Some((ALICE, "ALICE")), 0);
+        s.kill(
+            Some((BOT, "BOT")),
+            Some((ALICE, "ALICE")),
+            KILL_REPEAT_TICKS,
+        );
         // Carol puts 100 JUNK through the exchange at a 2% fee, cap 150.
         s.exits = Exits {
             cap: 150,
@@ -1574,7 +1767,7 @@ mod tests {
 
         // What the bench reads: whole points by board, and the fight's both
         // sides.
-        s.kill(Some((BOT, "BOT")), Some((CAROL, "CAROL")));
+        s.kill(Some((BOT, "BOT")), Some((CAROL, "CAROL")), 0);
         s.save_now().unwrap();
         let rows = saved_rows(&base);
         let (bot, carol) = (&rows[BOT], &rows[CAROL]);
@@ -1700,16 +1893,16 @@ mod tests {
         s.gave(ALICE, "ALICE", 0, 500);
         s.deed(ALICE, "", 600, Some("lit THE CRUCIBLE"));
         s.deed("dev-key", "DEV", 10, Some("solved \"THE LOCK\""));
-        s.kill(Some((BOT, "BOT")), None);
+        s.kill(Some((BOT, "BOT")), None, 0);
         s.minute(BOT, "", true);
-        s.kill(Some((GUEST, "")), None);
+        s.kill(Some((GUEST, "")), None, 0);
         s.rebuild();
         s.save_now().unwrap();
         close_wipe(&base, 3, &prizes, &Exits::default()).unwrap();
 
         let mut s = Standings::open(rules(), prizes, Some(&base), 4);
         s.gave(CAROL, "CAROL", 1, 4);
-        s.kill(Some((BOT, "BOT")), None);
+        s.kill(Some((BOT, "BOT")), None, 0);
         s.minute(BOT, "", true);
         s.gave("dev-key", "DEV", 0, 1);
         s.rebuild();
@@ -1809,6 +2002,133 @@ mod tests {
         assert_eq!((p[0].wipe, p[0].board, p[0].rank), (10, 0, 1));
         assert_eq!(p.last().unwrap().wipe, 3);
         assert!(p.iter().all(|l| l.rank <= 3));
+    }
+
+    /// A full table makes room from its idle rows; one with none to give
+    /// lets no new wallet extract, since nothing it took would be recorded
+    /// and its allowance would be the whole cap every time.
+    #[test]
+    fn a_full_table_gives_way_to_idle_rows_or_refuses_extraction() {
+        let wallet = |i: usize| format!("0x{i:040x}");
+        let mut s = Standings {
+            rules: rules(),
+            exits: Exits {
+                cap: 100,
+                fee_pct: 0,
+                min_minutes: 0,
+            },
+            ..Standings::off()
+        };
+        for i in 1..=MAX_ROWS {
+            s.minute(&wallet(i), "", false);
+        }
+        // Idle rows: the newcomer takes the place of one.
+        assert_eq!(s.allowance(ALICE, 100), 100);
+        assert!(s.row_of(ALICE).is_some());
+        assert_eq!(s.rows.len(), MAX_ROWS);
+        s.extracted(ALICE, "", 100);
+        assert_eq!(s.allowance(ALICE, 100), 0);
+
+        // Every row with something on it: nobody new gets a row, or a way out.
+        let keys: Vec<String> = s.rows.keys().cloned().collect();
+        for k in keys {
+            s.gave(&k, "", 0, 1);
+        }
+        assert_eq!(s.allowance(CAROL, 100), 0, "no row, nothing leaves");
+        s.extracted(CAROL, "", 50);
+        assert!(s.row_of(CAROL).is_none());
+        assert_eq!(s.allowance(CAROL, 100), 0, "and still nothing");
+        assert!(s.refused > 0);
+    }
+
+    /// A declared agent's wallet takes nothing out while agents are not
+    /// paid, whichever connection it comes back on.
+    #[test]
+    fn an_agents_wallet_takes_nothing_out_unless_agents_are_paid() {
+        let mut s = Standings {
+            exits: Exits {
+                cap: 100,
+                fee_pct: 0,
+                min_minutes: 0,
+            },
+            ..Standings::off()
+        };
+        s.minute(BOT, "", true);
+        assert_eq!(s.allowance(BOT, 100), 0);
+        s.prizes.agents = true;
+        assert_eq!(s.allowance(BOT, 100), 100);
+    }
+
+    /// The same pair again within the hour is no new kill, and a purse
+    /// counts only victims who played its minutes. Deaths always count.
+    #[test]
+    fn a_kill_counts_once_an_hour_a_pair_and_only_on_a_player() {
+        let mut s = Standings::off();
+        let (alice, carol) = (Some((ALICE, "")), Some((CAROL, "")));
+        s.kill(alice, carol, 0);
+        s.kill(alice, carol, KILL_REPEAT_TICKS - 1);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 1);
+        assert_eq!(s.row_of(CAROL).unwrap().deaths, 2);
+        s.kill(alice, Some((BOT, "")), 1);
+        s.kill(alice, carol, KILL_REPEAT_TICKS);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 3);
+
+        s.prizes = Prizes {
+            ticker: "ELO".into(),
+            places: [vec![], vec![], vec![], vec![100]],
+            min_minutes: 2,
+            agents: false,
+        };
+        let dave = "0xdddddddddddddddddddddddddddddddddddddddd";
+        s.minute(dave, "", false);
+        s.kill(alice, Some((dave, "")), 0);
+        s.kill(alice, None, 0);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 3, "a fresh alt or a guest");
+        s.minute(dave, "", false);
+        s.kill(alice, Some((dave, "")), 0);
+        assert_eq!(s.row_of(ALICE).unwrap().kills, 4);
+    }
+
+    /// The rekindle deed is once an hour per wallet and work.
+    #[test]
+    fn a_rekindle_is_a_deed_once_an_hour_a_work() {
+        let mut s = Standings {
+            rules: rules(),
+            ..Standings::off()
+        };
+        s.rekindled(ALICE, "", 4, 0);
+        s.rekindled(ALICE, "", 4, REKINDLE_REPEAT_TICKS - 1);
+        assert_eq!(s.row_of(ALICE).unwrap().deeds, 50 * 100);
+        s.rekindled(ALICE, "", 3, 10);
+        s.rekindled(CAROL, "", 4, 10);
+        s.rekindled(ALICE, "", 4, REKINDLE_REPEAT_TICKS);
+        assert_eq!(s.row_of(ALICE).unwrap().deeds, 150 * 100);
+        assert_eq!(s.row_of(CAROL).unwrap().deeds, 50 * 100);
+    }
+
+    /// What THE OUTFITTER sold this wipe is kept with the standings: read
+    /// back after a restart, gone with the wipe, and a file from before it
+    /// still loads.
+    #[test]
+    fn a_purchase_is_kept_for_the_wipe() {
+        let dir = std::env::temp_dir().join(format!("gates-bought-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("world.bin");
+        let old = "wipe\t3\nrow\t0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t0\t0\t0\t0\t0\t0\t7\t0\t0\t0\tALICE\n";
+        std::fs::write(standings_path(&base), old).unwrap();
+        let mut s = Standings::open(rules(), Prizes::default(), Some(&base), 3);
+        assert_eq!(s.row_of(ALICE).unwrap().played, 7);
+        assert!(!s.bought(ALICE, 10));
+        assert!(s.buy(ALICE, &[10]));
+        assert!(s.bought(ALICE, 10) && !s.bought(ALICE, 11) && !s.bought(CAROL, 10));
+        s.save_now().unwrap();
+        let again = Standings::open(rules(), Prizes::default(), Some(&base), 3);
+        assert!(again.bought(ALICE, 10));
+        assert_eq!(again.row_of(ALICE).unwrap().label, "ALICE");
+        assert!(saved_rows(&base).contains_key(ALICE));
+        let next = Standings::open(rules(), Prizes::default(), Some(&base), 4);
+        assert!(!next.bought(ALICE, 10));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
