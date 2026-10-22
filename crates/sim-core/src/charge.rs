@@ -53,7 +53,7 @@ use crate::build::{
 use crate::combat::held_item;
 use crate::craft::{inv_count, inv_take};
 use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
-use crate::limits::MAX_LIVE_CHARGES;
+use crate::limits::{MAX_CHARGES_PER_OWNER, MAX_LIVE_CHARGES};
 use crate::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_CHARGE_PLACED, STRUCT_DEPLOY_BIT};
 
 /// One planted charge, burning.
@@ -204,6 +204,9 @@ impl Charges {
 /// as a "fix".
 #[allow(clippy::too_many_arguments)]
 pub fn place(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    doors: u32,
     bc: &BuildContent,
     dc: &DeployContent,
     cc: &crate::combat::CombatContent,
@@ -286,9 +289,37 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
         return;
     }
+    // ...and the face it sticks to in plain sight (`reach.rs`). Flat
+    // distance alone planted through walls and floors: on the second wall
+    // of two, an inner door, a cupboard behind a wall, from outside all of
+    // them. A charge goes on the face the planter is looking at — a wall's
+    // or a door's own side, a ceiling's underside from the room below.
+    let cols = pieces.cols();
+    let eye = crate::reach::eye(p);
+    let seen = if deploy {
+        let rec = &deploys.entries()[i];
+        let t = crate::reach::Target::deploy(
+            seed,
+            haven,
+            cols,
+            rec,
+            dc.defs[rec.row as usize].arch,
+            (eye.0, eye.2),
+        );
+        crate::reach::sight(seed, haven, cols, doors, eye, (t.x, t.base_y + t.mid, t.z))
+    } else {
+        crate::reach::clear_piece(seed, haven, pieces, doors, (cx, cz, level, loc), eye)
+    };
+    if !seen {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
+        return;
+    }
     // Check the store, check the pocket, then spend both. `push` is
     // checked before `inv_take` runs so a full store never eats a charge.
-    if charges.len() >= MAX_LIVE_CHARGES {
+    // The planter's own share first (`MAX_CHARGES_PER_OWNER`): a few hands
+    // must not hold the shard's whole store.
+    let mine = charges.entries().iter().filter(|c| c.owner == p.id).count();
+    if charges.len() >= MAX_LIVE_CHARGES || mine >= MAX_CHARGES_PER_OWNER {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
         return;
     }
@@ -370,16 +401,24 @@ impl Duds {
 }
 
 /// The item a charge drops instead of blowing, or `None` for a blast: its
-/// row's `dud_pct` against a roll that is a pure function of the charge.
-pub fn dud(seed: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Option<u16> {
+/// row's `dud_pct` against a roll that is a pure function of the charge
+/// and the world's secret (`ArcState::salt`). Every other input is one a
+/// client knows — the seed is in the welcome, the rest is its own plant —
+/// so without the salt a modified client could plant only on the ticks
+/// that blow. Replay-safe: the salt is saved with the world.
+pub fn dud(seed: u64, salt: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Option<u16> {
     let (item, def) = cc.planted_throw(c.structure, c.damage, c.blast_cm)?;
     if def.dud_pct == 0 {
         return None;
     }
     let addr = (c.level as u64) << 8 | c.loc as u64 | (c.deploy as u64) << 16;
     let roll = crate::rng::splitmix64(
-        crate::rng::cell_hash(seed, c.cx as i32, c.cz as i32, CH_DUD)
-            ^ c.fires_at
+        crate::rng::cell_hash(
+            seed ^ salt.rotate_left(23),
+            c.cx as i32,
+            c.cz as i32,
+            CH_DUD,
+        ) ^ c.fires_at
             ^ (c.owner as u64) << 24
             ^ addr << 56,
     );
@@ -493,7 +532,9 @@ impl BlastMobs {
 #[allow(clippy::too_many_arguments)]
 pub fn tick_fuses(
     seed: u64,
+    salt: u64,
     haven: &crate::terrain::Haven,
+    doors: u32,
     bc: &BuildContent,
     dc: &DeployContent,
     cc: &crate::combat::CombatContent,
@@ -523,7 +564,7 @@ pub fn tick_fuses(
             charges.remove_at(i);
             continue;
         }
-        if let Some(item) = dud(seed, cc, &c) {
+        if let Some(item) = dud(seed, salt, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
             let (x, z) = epicentre(pieces, deploys, &c);
             let y = floor_y(seed, haven, pieces, deploys, &c) + 0.8;
@@ -532,8 +573,8 @@ pub fn tick_fuses(
             continue;
         }
         detonate(
-            seed, haven, bc, dc, cc, &c, pieces, deploys, players, budget, kills, mobs, hit_mobs,
-            events,
+            seed, haven, doors, bc, dc, cc, &c, pieces, deploys, players, budget, kills, mobs,
+            hit_mobs, events,
         );
         // Swap-remove without advancing: the entry now at `i` is the one
         // that was last, and it has not been tested yet.
@@ -636,6 +677,7 @@ const BLAST_TARGET_CAP: usize = 9 * crate::limits::MAX_BUILD_SOCKETS * 4;
 fn detonate(
     seed: u64,
     haven: &crate::terrain::Haven,
+    doors: u32,
     bc: &BuildContent,
     dc: &DeployContent,
     cc: &crate::combat::CombatContent,
@@ -666,13 +708,135 @@ fn detonate(
         damage: c.damage,
         blast_cm: c.blast_cm,
         owner: c.owner,
-        mark_lift: 0.8,
+        mark_lift: WAIST_M,
     };
-    blast(
-        seed, haven, bc, dc, cc, &b, pieces, deploys, players, budget, kills, mobs, hit_mobs,
-        events,
+    let seen = seen_from(pieces, doors, c, b.at);
+    blast_seen(
+        seed, haven, bc, dc, cc, &b, &seen, pieces, deploys, players, budget, kills, mobs,
+        hit_mobs, events,
     );
 }
+
+/// How high on what it is stuck to a planted charge sits, metres: a
+/// wall's waist. Where the flash is drawn and where the blast looks out
+/// at bodies from.
+const WAIST_M: f32 = 0.8;
+
+/// Most points a planted blast looks out from: a foundation's top and its
+/// four sides.
+const SEEN_FROM: usize = 5;
+
+/// Where a blast sees bodies from (`reference/PROJECTILES.md`: radius
+/// damage needs a clear line). No points sees everything in the radius —
+/// a rocket's blast, whose flight this module is not told.
+#[derive(Clone, Copy)]
+struct Seen {
+    from: [(f32, f32, f32); SEEN_FROM],
+    n: usize,
+    doors: u32,
+}
+
+impl Seen {
+    const ALL: Seen = Seen {
+        from: [(0.0, 0.0, 0.0); SEEN_FROM],
+        n: 0,
+        doors: 0,
+    };
+
+    /// Whether any of `to` is in plain sight of the blast. Walked from the
+    /// body out, so a body pressed to a wall's face reads as in front of
+    /// it rather than in it.
+    fn sees(
+        &self,
+        seed: u64,
+        haven: &crate::terrain::Haven,
+        cols: &crate::collide::ColIndex,
+        to: &[(f32, f32, f32)],
+    ) -> bool {
+        self.n == 0
+            || self.from[..self.n].iter().any(|&f| {
+                to.iter()
+                    .any(|&t| crate::reach::sight(seed, haven, cols, self.doors, t, f))
+            })
+    }
+}
+
+/// The points a planted charge's blast looks out from: just off every face
+/// of what it is stuck to, since the store does not keep which face that
+/// was — a wall's two sides (a door's are its doorway's), a slab's top and
+/// underside, a foundation's top and sides, a box's middle. What the charge
+/// is stuck to never shields a body from it; any other wall, floor or roof
+/// does, so a satchel on a floor no longer reaches the room below it, nor
+/// one on an outer wall the room behind the next. A flight is open stairs
+/// and sees everything; a piece already gone is looked out from where it
+/// stood.
+fn seen_from(pieces: &Pieces, doors: u32, c: &ChargeRec, (ax, ay, az): (f32, f32, f32)) -> Seen {
+    use crate::build::BUILD_CELL_M;
+    use crate::hull::{HULL_DIAG, HULL_EDGE, HULL_HALF, HULL_RISER, HULL_TRI};
+    use crate::reach::{DOOR_SIDE_M, LIFT_M};
+    let mut s = Seen { doors, ..Seen::ALL };
+    let mut push = |p: (f32, f32, f32)| {
+        if s.n < SEEN_FROM {
+            s.from[s.n] = p;
+            s.n += 1;
+        }
+    };
+    let hull = if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
+        None
+    } else {
+        crate::reach::piece_hull(pieces, (c.cx, c.cz, c.level, c.loc))
+    };
+    let Some(h) = hull else {
+        push((ax, ay + WAIST_M, az));
+        return s;
+    };
+    let half = BUILD_CELL_M * 0.5;
+    let world = |a: f32, b: f32| (h.ox + a * h.ux + b * h.vx, h.oz + a * h.uz + b * h.vz);
+    let k = core::f32::consts::FRAC_1_SQRT_2;
+    let (mid, across) = match h.kind {
+        HULL_RISER => return Seen::ALL,
+        HULL_EDGE => ((half, 0.0), Some((0.0, DOOR_SIDE_M))),
+        // The cell's diagonal, A (0,0)->(3,3) or B (3,0)->(0,3): across it.
+        HULL_DIAG if h.loc == crate::build::LOC_DIAG_B => {
+            ((half, half), Some((k * DOOR_SIDE_M, k * DOOR_SIDE_M)))
+        }
+        HULL_DIAG => ((half, half), Some((k * DOOR_SIDE_M, -k * DOOR_SIDE_M))),
+        HULL_HALF => (crate::build::anchor(0, 0, h.loc), None),
+        HULL_TRI => ((half, BUILD_CELL_M * 0.866_025_4 / 3.0), None),
+        _ => ((half, half), None),
+    };
+    if let Some((wa, wb)) = across {
+        let y = h.floor_y + (h.height() * 0.5).min(WAIST_M);
+        for sign in [-1.0, 1.0] {
+            let (x, z) = world(mid.0 + wa * sign, mid.1 + wb * sign);
+            push((x, y, z));
+        }
+        return s;
+    }
+    let (x, z) = world(mid.0, mid.1);
+    push((x, h.floor_y + WAIST_M, z));
+    if h.level != 0 {
+        push((x, h.floor_y - crate::collide::PLANE_THICKNESS_M - LIFT_M, z));
+        return s;
+    }
+    // A foundation's sides, out from each one's middle.
+    let (pts, n) = h.footprint();
+    for i in 0..n {
+        let (p0, p1) = (pts[i], pts[(i + 1) % n]);
+        let (mx, mz) = ((p0.0 + p1.0) * 0.5, (p0.1 + p1.1) * 0.5);
+        let (dx, dz) = (mx - x, mz - z);
+        let len = (dx * dx + dz * dz).sqrt().max(f32::EPSILON);
+        push((
+            mx + dx / len * DOOR_SIDE_M,
+            h.floor_y - LIFT_M,
+            mz + dz / len * DOOR_SIDE_M,
+        ));
+    }
+    s
+}
+
+/// How far above its feet an animal is looked at by a blast, metres.
+const MOB_MID_M: f32 = 0.5;
 
 /// One explosion: where it is (metres), the build cell whose 3×3 ring it
 /// scans, and what it takes off a structure and a body at its heart. A
@@ -712,6 +876,44 @@ pub fn blast(
     hit_mobs: &mut BlastMobs,
     events: &mut EventQueue,
 ) {
+    blast_seen(
+        seed,
+        haven,
+        bc,
+        dc,
+        cc,
+        b,
+        &Seen::ALL,
+        pieces,
+        deploys,
+        players,
+        budget,
+        kills,
+        mobs,
+        hit_mobs,
+        events,
+    );
+}
+
+/// [`blast`], hurting only the bodies `seen` sees.
+#[allow(clippy::too_many_arguments)]
+fn blast_seen(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    bc: &BuildContent,
+    dc: &DeployContent,
+    cc: &crate::combat::CombatContent,
+    b: &Blast,
+    seen: &Seen,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    players: &mut [Player; crate::limits::MAX_PLAYERS],
+    budget: &mut usize,
+    kills: &mut BlastKills,
+    mobs: &crate::mob::Mobs,
+    hit_mobs: &mut BlastMobs,
+    events: &mut EventQueue,
+) {
     use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
     use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
@@ -739,6 +941,65 @@ pub fn blast(
         let (dx, dy, dz) = (x - ax, y - ay, z - az);
         ((dx * dx + dy * dy + dz * dz).sqrt() * 100.0) as i64
     };
+
+    // --- who the blast can see, asked before anything breaks: a wall
+    // shields what is behind it even when this blast brings it down, the
+    // reference's order (every hit is decided at the one instant).
+    let mut hidden = [false; crate::limits::MAX_PLAYERS];
+    let mut hidden_mobs = [false; crate::limits::MAX_MOBS];
+    if seen.n > 0 && c.damage > 0 {
+        let cols = pieces.cols();
+        for (slot, p) in players.iter().enumerate() {
+            if !p.active || p.hp == 0 {
+                continue;
+            }
+            let (px, py, pz) = (
+                p.body.qx as f32 * crate::movement::POS_XZ_Q,
+                p.body.qy as f32 * crate::movement::POS_Y_Q,
+                p.body.qz as f32 * crate::movement::POS_XZ_Q,
+            );
+            if falloff(c.damage, dist_cm(px, py, pz), blast) == 0 {
+                continue;
+            }
+            // Its middle and its eye, over any floor laid under it since
+            // (`reach::Target::lying`'s lift).
+            let base = py.max(crate::collide::piece_ground(
+                seed,
+                haven,
+                cols,
+                px,
+                pz,
+                py + crate::reach::LIFT_M,
+            ));
+            let to = [
+                (px, base + crate::reach::BODY_MID_M, pz),
+                (px, base + crate::reach::eye(p).1 - py, pz),
+            ];
+            hidden[slot] = !seen.sees(seed, haven, cols, &to);
+        }
+        for (slot, m) in mobs.m.iter().enumerate() {
+            if !m.alive || m.hp == 0 {
+                continue;
+            }
+            let (mx, my, mz) = (
+                m.body.qx as f32 * crate::movement::POS_XZ_Q,
+                m.body.qy as f32 * crate::movement::POS_Y_Q,
+                m.body.qz as f32 * crate::movement::POS_XZ_Q,
+            );
+            if falloff(c.damage, dist_cm(mx, my, mz), blast) == 0 {
+                continue;
+            }
+            let base = my.max(crate::collide::piece_ground(
+                seed,
+                haven,
+                cols,
+                mx,
+                mz,
+                my + crate::reach::LIFT_M,
+            ));
+            hidden_mobs[slot] = !seen.sees(seed, haven, cols, &[(mx, base + MOB_MID_M, mz)]);
+        }
+    }
 
     // --- structures: collect addresses, then re-resolve and damage. The
     // planted target is found by the same scan at distance ~zero, so it
@@ -887,7 +1148,7 @@ pub fn blast(
     // satchel thrown into a wolf pack now does too.
     for (slot, m) in mobs.m.iter().enumerate() {
         // The heli cannot be hurt yet (`heli.rs`); a satchel is no exception.
-        if !m.alive || m.hp == 0 || m.kind == crate::mob::MOB_HELI {
+        if !m.alive || m.hp == 0 || m.kind == crate::mob::MOB_HELI || hidden_mobs[slot] {
             continue;
         }
         let d = dist_cm(
@@ -914,7 +1175,7 @@ pub fn blast(
     // whether the zone shielded the body or not.
     let mut attacked = false;
     for (slot, p) in players.iter_mut().enumerate() {
-        if !p.active || p.hp == 0 {
+        if !p.active || p.hp == 0 || hidden[slot] {
             continue;
         }
         let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;

@@ -2369,11 +2369,26 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
+/// Stand everyone on the floor of `level` in the column: a deployable goes
+/// where its placer can see (`deploy::place_deploy`), never through the
+/// floor of the storey it goes on.
+fn stand_on_level(w: &mut World, cx: u16, cz: u16, level: u8) {
+    let plate = w.pieces.cols().plate(cx, cz).unwrap_or(0);
+    let floor = sim_core::build::column_floor_y(SEED, hv(SEED), cx, cz, plate)
+        + sim_core::build::level_y(level);
+    for p in w.players.iter_mut().filter(|p| p.active) {
+        p.body.qy = sim_core::movement::quant_y(floor);
+    }
+}
+
 /// Bolt the code lock onto the door at the address. Its own helper
 /// because a lock mints **no** deploy record — it is a record about one
 /// (`lock.rs`) — so `place_deploy`'s "the store grew by one" assertion is
 /// the wrong check for it, and the right one is that the lock store grew.
 fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.locks().len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -2394,6 +2409,9 @@ fn bolt_lock(w: &mut World, cx: u16, cz: u16, level: u8, loc: u8) {
 
 /// Place a deployable and leave the world standing on the tick it landed.
 fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
+    if level != GROUND {
+        stand_on_level(w, cx, cz, level);
+    }
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,

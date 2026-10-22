@@ -6674,7 +6674,31 @@ impl World {
                         && self.deploys.box_index(key).is_some_and(|b| {
                             self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER
                         });
-                    if planted {
+                    // Both arms take what the hand can see, the use verb's
+                    // rule: an unlocked bag or turret was lifted through a
+                    // wall, a wall taken down from the far side of another.
+                    let (eye, _) = self.hand(slot);
+                    let seen = if deploy {
+                        self.door_seen(slot, (cx, cz, level, loc))
+                    } else {
+                        crate::reach::clear_piece(
+                            self.seed,
+                            &self.haven,
+                            &self.pieces,
+                            self.card_door_bits,
+                            (cx, cz, level, loc),
+                            eye,
+                        )
+                    };
+                    if !seen {
+                        if deploy {
+                            self.events
+                                .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        } else {
+                            self.events
+                                .push(EV_BUILD_REFUSED, id, build::REFUSE_B_REACH, 0);
+                        }
+                    } else if planted {
                         // Only a hand that could lift it hears it is planted.
                         let why = deploy::pick_up_hand(
                             &self.pieces,
@@ -6727,7 +6751,7 @@ impl World {
                         self.farm.uproot_host(key, &mut self.events);
                     }
                     // One buffer for both arms: they are two verbs behind
-                    // one command and exactly one of them ran.
+                    // one command and at most one of them ran.
                     self.announce_spill(slot, &spill);
                     self.drain_spill(slot, &mut spill);
                 }
@@ -6773,7 +6797,21 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) {
+                    // A crew op is worked at the hearth too, not through
+                    // the wall in front of it: a bare hearth's crew was
+                    // joined from outside its base.
+                    let hearth = self
+                        .deploys
+                        .hearths()
+                        .iter()
+                        .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+                        .map(|h| (h.cx, h.cz, h.level, h.loc));
+                    if deploy::op_is_crew(op)
+                        && hearth.is_some_and(|addr| !self.door_seen(slot, addr))
+                    {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else if deploy::op_is_crew(op) {
                         let owner = deploy::crew_op(
                             &mut self.deploys,
                             &self.players[slot],
@@ -6874,6 +6912,9 @@ impl World {
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     crate::charge::place(
+                        self.seed,
+                        &self.haven,
+                        self.card_door_bits,
                         &self.build,
                         &self.deploy,
                         &self.combat,
@@ -7022,6 +7063,15 @@ impl World {
             Command::Swipe { id, door } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let z = self.haven.ziggurat;
+                    // The lever is pulled from where it can be seen: not
+                    // through its own shut door (`monument::swipe`).
+                    let (eye, _) = self.hand(slot);
+                    let (seed, haven, cols, bits) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                    );
                     crate::monument::swipe(
                         &z,
                         &self.cards,
@@ -7030,6 +7080,7 @@ impl World {
                         &mut self.players[slot],
                         door as usize,
                         &mut self.events,
+                        |to| crate::reach::sight(seed, haven, cols, bits, eye, to),
                     );
                     self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
                 }
@@ -8480,7 +8531,9 @@ impl World {
         let mut duds = crate::charge::Duds::new();
         crate::charge::tick_fuses(
             seed,
+            self.arc.salt,
             &self.haven,
+            self.card_door_bits,
             &self.build,
             &self.deploy,
             &self.combat,

@@ -1228,6 +1228,16 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
 pub const MAX_LIVE_CHARGES: usize = 64;
 
+/// Live charges one planter may have burning at once. The store above is
+/// shard-wide, and a handful of accounts planting on an empty field could
+/// fill it and refuse every other raid on the island. Twelve is more than
+/// a paced hand ever has lit honestly — one plant a second
+/// (`server::pace`) against a ten-second fuse is ten — so a real raid
+/// never meets it. Overflow policy: **refuse**, `MAX_LIVE_CHARGES`' own
+/// (`REFUSE_B_FULL`, the charge stays in the pack).
+pub const MAX_CHARGES_PER_OWNER: usize = 12;
+const _: () = assert!(MAX_CHARGES_PER_OWNER < MAX_LIVE_CHARGES);
+
 /// Fires burning on the ground at once (`fire.rs`) — what fire arrows leave.
 /// A bow looses one every 1.25 s and a fire lasts at most 40 s, so one archer
 /// keeps about 32 alight and two fill it. Overflow policy: the **oldest**

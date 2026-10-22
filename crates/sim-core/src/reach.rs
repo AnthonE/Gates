@@ -25,6 +25,7 @@
 use crate::collide::{self, ColIndex};
 use crate::deploy::{DeployContent, Deploys};
 use crate::grounditem::GroundItemRec;
+use crate::hull::Hull;
 use crate::limits::{ARROW_STEP_MM, HAND_SIGHT_TESTS_MAX};
 use crate::movement::{POS_XZ_Q, POS_Y_Q, STEP_UP};
 use crate::ranged::{ARROW_R_M, MM_PER_M};
@@ -399,6 +400,150 @@ pub fn clear_door(
     };
     let t = Target::deploy(seed, haven, cols, rec, def.arch, (eye.0, eye.2));
     clear_from(seed, haven, cols, doors, eye, feet_y, t)
+}
+
+/// Most points [`piece_faces`] offers: a foundation's top and the two of
+/// its sides that face the eye.
+pub const PIECE_FACES: usize = 3;
+
+/// The collision row of the piece at `addr` (`hull.rs`) — a grid address
+/// or a spelled id, the row is the piece's shape either way.
+pub fn piece_hull(pieces: &crate::build::Pieces, addr: (u16, u16, u8, u8)) -> Option<&Hull> {
+    let rec = pieces.find(addr.0, addr.1, addr.2, addr.3)?;
+    pieces.cols().hulls().find(crate::build::hull_key(rec.id))
+}
+
+/// Where a hand aims at the built piece `h` from `eye`: a point just off
+/// each face of it the eye could be looking at — [`DOOR_SIDE_M`] out of a
+/// wall on the eye's side, [`LIFT_M`] above a slab and below its
+/// underside, and out from a foundation's sides toward the eye. Taken at a
+/// face's nearest stretch to the eye, a margin in from its ends, so a wall
+/// seen end-on is aimed at its own face and never round its corner. A face
+/// behind another wall, a floor or the piece itself is a point the walk
+/// cannot reach ([`clear_piece`]): the second wall of two, a ceiling from
+/// the room above it, a foundation's top from under the base.
+pub fn piece_faces(h: &Hull, eye: (f32, f32, f32)) -> ([(f32, f32, f32); PIECE_FACES], usize) {
+    use crate::build::{BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_B, SHAPE_FOUNDATION_STEPS};
+    use crate::hull::{HULL_DIAG, HULL_EDGE, HULL_HALF, HULL_RISER, HULL_TRI};
+    let half = BUILD_CELL_M * 0.5;
+    let side = |d: f32| if d < 0.0 { -DOOR_SIDE_M } else { DOOR_SIDE_M };
+    let inset = |v: f32| v.clamp(DOOR_SIDE_M, BUILD_CELL_M - DOOR_SIDE_M);
+    // A point in the row's own frame, in the world.
+    let world = |a: f32, b: f32| (h.ox + a * h.ux + b * h.vx, h.oz + a * h.uz + b * h.vz);
+    let (lx, lz) = h.local(eye.0, eye.2);
+    let mut out = [(0.0, 0.0, 0.0); PIECE_FACES];
+    if h.kind == HULL_EDGE || h.kind == HULL_DIAG {
+        // A wall's middle, or a door's handle on a tall one.
+        let y = h.floor_y + (h.height() * 0.5).min(DOOR_MID_M);
+        let (a, b) = if h.kind == HULL_EDGE {
+            (inset(lx), side(lz))
+        } else {
+            // The cell's diagonal: A runs (0,0)->(3,3), B (3,0)->(0,3);
+            // `d` along it, `w` across it.
+            let k = core::f32::consts::FRAC_1_SQRT_2;
+            let (dx, dz) = if h.loc == LOC_DIAG_B { (-k, k) } else { (k, k) };
+            let (wx, wz) = (dz, -dx);
+            let (ex, ez) = (lx - half, lz - half);
+            let reach = half * core::f32::consts::SQRT_2 - DOOR_SIDE_M;
+            let t = (ex * dx + ez * dz).clamp(-reach, reach);
+            let s = side(ex * wx + ez * wz);
+            (half + dx * t + wx * s, half + dz * t + wz * s)
+        };
+        let (x, z) = world(a, b);
+        out[0] = (x, y, z);
+        return (out, 1);
+    }
+    // A body: a square's nearest stretch, a half's or a triangle's middle.
+    let (a, b) = match h.kind {
+        HULL_HALF => crate::build::anchor(0, 0, h.loc),
+        HULL_TRI => (half, BUILD_CELL_M * 0.866_025_4 / 3.0),
+        _ => (inset(lx), inset(lz)),
+    };
+    if h.kind == HULL_RISER {
+        // A flight: over and under its surface, at its middle if not over
+        // it there, at the stairwell's middle where it has none (a
+        // spiral's open core).
+        let at =
+            |a: f32, b: f32| crate::circulation::surface(h.shape, h.loc, a, b).map(|y| (a, b, y));
+        let Some((a, b, dy)) = at(a, b).or_else(|| at(half, half)) else {
+            let (x, z) = world(half, half);
+            out[0] = (x, h.floor_y + LEVEL_H_M * 0.5, z);
+            return (out, 1);
+        };
+        let (x, z) = world(a, b);
+        out[0] = (x, h.floor_y + dy + LIFT_M, z);
+        if h.shape == SHAPE_FOUNDATION_STEPS {
+            return (out, 1);
+        }
+        out[1] = (x, h.floor_y + dy - collide::PLANE_THICKNESS_M - LIFT_M, z);
+        return (out, 2);
+    }
+    let (x, z) = world(a, b);
+    out[0] = (x, h.floor_y + LIFT_M, z);
+    if h.level != 0 {
+        out[1] = (x, h.floor_y - collide::PLANE_THICKNESS_M - LIFT_M, z);
+        return (out, 2);
+    }
+    // A foundation is solid to the ground: its sides are faces too, the
+    // ones toward an eye standing off it (a raised base's footing from the
+    // field). A neighbour's foundation against a side fills it, and the
+    // point lands in that solid.
+    let mut n = 1;
+    let (pts, k) = h.footprint();
+    if k < 3 {
+        return (out, n);
+    }
+    let (mut cx, mut cz) = (0.0, 0.0);
+    for &(px, pz) in &pts[..k] {
+        cx += px / k as f32;
+        cz += pz / k as f32;
+    }
+    for i in 0..k {
+        let (p0, p1) = (pts[i], pts[(i + 1) % k]);
+        let (ex, ez) = (p1.0 - p0.0, p1.1 - p0.1);
+        let len = (ex * ex + ez * ez).sqrt();
+        if len <= 2.0 * DOOR_SIDE_M || n == PIECE_FACES {
+            continue;
+        }
+        let (ux, uz) = (ex / len, ez / len);
+        // Outward: away from the middle.
+        let (mut nx, mut nz) = (uz, -ux);
+        if (cx - p0.0) * nx + (cz - p0.1) * nz > 0.0 {
+            (nx, nz) = (-nx, -nz);
+        }
+        if (eye.0 - p0.0) * nx + (eye.2 - p0.1) * nz <= 0.0 {
+            continue;
+        }
+        let t = ((eye.0 - p0.0) * ux + (eye.2 - p0.1) * uz).clamp(DOOR_SIDE_M, len - DOOR_SIDE_M);
+        out[n] = (
+            p0.0 + ux * t + nx * DOOR_SIDE_M,
+            h.floor_y - LIFT_M,
+            p0.1 + uz * t + nz * DOOR_SIDE_M,
+        );
+        n += 1;
+    }
+    (out, n)
+}
+
+/// Whether any face of the built piece at `addr` is in plain sight of
+/// `eye` ([`piece_faces`], [`sight`]). No storey rule: a ceiling is
+/// reached from the room under it and a roof from the field below. True
+/// when nothing stands there: the verb's own refusal names that.
+pub fn clear_piece(
+    seed: u64,
+    haven: &Haven,
+    pieces: &crate::build::Pieces,
+    doors: u32,
+    addr: (u16, u16, u8, u8),
+    eye: (f32, f32, f32),
+) -> bool {
+    let Some(h) = piece_hull(pieces, addr) else {
+        return true;
+    };
+    let (faces, n) = piece_faces(h, eye);
+    faces[..n]
+        .iter()
+        .any(|&f| sight(seed, haven, pieces.cols(), doors, eye, f))
 }
 
 /// The first of `cand` — `(key, index)` pairs, smallest key first and ties to

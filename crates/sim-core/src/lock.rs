@@ -161,7 +161,7 @@ pub struct LockRec {
     pub guests: GuestList,
     /// Consecutive wrong entries. Feeds both the shock (scaled, forgiven
     /// after [`SHOCK_RESET_TICKS`]) and the lockout (counted to
-    /// [`LOCKOUT_TRIES`], forgiven only by a correct code).
+    /// [`LOCKOUT_TRIES`], forgiven only by the main code).
     pub misses: u8,
     /// Tick of the last wrong entry — the shock window's start.
     pub last_miss: u64,
@@ -534,7 +534,12 @@ fn enter(locks: &mut Locks, i: usize, id: u32, code: u16, tick: u64) -> Outcome 
     if !l.remember(id, want) {
         return Outcome::ListFull;
     }
-    l.misses = 0;
+    // Only the main code forgives the streak. A guest code did too, and a
+    // guest alternating seven main-code guesses with their own code never
+    // reached the eighth miss: 10 000 codes in minutes, no shutter.
+    if want == GRANT_FULL {
+        l.misses = 0;
+    }
     Outcome::Authorized { grant: want }
 }
 
@@ -766,6 +771,33 @@ mod tests {
         assert_eq!(
             locks.entries[0].misses, 0,
             "and a correct code clears the streak"
+        );
+    }
+
+    #[test]
+    fn a_guest_code_does_not_forgive_the_main_code_streak() {
+        let mut locks = armed();
+        apply(&mut locks, 0, OWNER, ACCESS_OP_SET_GUEST, 4321, 0);
+        // Seven wrong main-code guesses, then the guest's own code, over
+        // and over: the eighth miss must still shut the keypad.
+        let mut shut = false;
+        let mut t = 1;
+        for guess in 0..LOCKOUT_TRIES as u16 * 2 {
+            if guess % 7 == 6 {
+                apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 4321, t);
+                t += 1;
+            }
+            if let Outcome::Wrong { shut: s, .. } =
+                apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 5000 + guess, t)
+            {
+                shut |= s;
+            }
+            t += 1;
+        }
+        assert!(shut, "a guest's own code is not a brute-force reset");
+        assert_eq!(
+            apply(&mut locks, 0, FRIEND, ACCESS_OP_ENTER, 1234, t),
+            Outcome::LockedOut
         );
     }
 

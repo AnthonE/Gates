@@ -323,3 +323,49 @@ fn the_crates_sit_on_their_rooms_floors() {
     }
     assert_eq!(tiers, [1, 1, 2]);
 }
+
+/// The exit lever opens its door with no card from inside — and not from
+/// outside through the shut leaf. The blue lever (local 21, 0) is 2.8 m
+/// from a body pressed against the leaf's outer face (x 22.6..23.4), inside
+/// `SWIPE_REACH_M`, so reach alone opened the room to anyone.
+#[test]
+fn the_exit_lever_is_not_pulled_through_its_shut_door() {
+    use sim_core::monument::REFUSE_S_REACH;
+    use sim_core::movement::{quant_xz, quant_y, Body};
+    use sim_core::world::{Command, World, EV_SWIPE, EV_SWIPE_REFUSED};
+    let seed = 20_260_731;
+    let mut w = World::new(seed);
+    w.tick(&[Command::Join { id: 1 }]);
+    let z = w.haven.ziggurat;
+    assert!(z.live);
+    let stand = |w: &mut World, lx: f32, lz: f32| {
+        let (x, wz) = kit::to_world(&z.placed(), lx, lz);
+        w.players[0].body = Body {
+            qx: quant_xz(x),
+            qy: quant_y(z.floor_y + 5.0),
+            qz: quant_xz(wz),
+            qvy: 0,
+            grounded: true,
+        };
+    };
+    stand(&mut w, 23.8, 0.0);
+    w.tick(&[Command::Swipe { id: 1, door: 1 }]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_SWIPE_REFUSED && e.b == REFUSE_S_REACH),
+        "the lever is not pulled through the shut leaf"
+    );
+    assert_eq!(w.card_door_bits & 2, 0, "and the blue door stays shut");
+    stand(&mut w, 21.5, 0.0);
+    w.tick(&[Command::Swipe { id: 1, door: 1 }]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_SWIPE && e.c == 1),
+        "inside, the lever needs no card"
+    );
+    assert_eq!(w.card_door_bits & 2, 2, "and the door opens");
+}
