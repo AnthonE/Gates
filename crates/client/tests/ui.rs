@@ -2022,6 +2022,14 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
                 wear: 0,
             };
         }
+        // The wolf is born holding the meat: a cut pays only a species' own
+        // rows, so a carcass is no multiplier for what was put in it.
+        w.mob.defs[MOB_WOLF as usize].loot[0] = ItemStack {
+            item: MEAT,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
         w.dev_spawn = Some((px, tz));
         w.tick(&[Command::Join { id: 1 }]);
         // At full condition: a broken tool is refused at a carcass as at a
