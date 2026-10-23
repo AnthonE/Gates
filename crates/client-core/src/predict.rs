@@ -69,11 +69,15 @@ pub struct Predictor {
     /// rewind-and-replay overwrites it with wherever the replay's last-but-one
     /// step landed, which is the right answer for the one thing it is for.
     prev: Body,
-    /// Unacked input tail, oldest first — the wire's redundancy source and
-    /// the reconciliation replay source. Overflow policy: drop oldest, the
-    /// wire cap (`limits.rs MAX_INPUT_FRAMES`); past it the server was
-    /// reusing inputs anyway and the next reconcile corrects us.
-    tail: [InputFrame; MAX_INPUT_FRAMES],
+    /// Unacked input tail, oldest first — the reconciliation replay source,
+    /// and its newest `MAX_INPUT_FRAMES` the wire's redundancy
+    /// ([`Self::wire_tail`]). Held as deep as the body ring, not at the wire
+    /// cap: past ~300 ms RTT the unacked tail is longer than the wire
+    /// carries, and a replay missing its oldest frames lands somewhere the
+    /// server never went — so every snapshot after it mispredicted again,
+    /// a second-long cascade per lost snapshot (`server/tests/netem.rs`).
+    /// Overflow policy: drop oldest.
+    tail: [InputFrame; RING],
     tail_len: usize,
     ring_seq: [u16; RING],
     ring_body: [Body; RING],
@@ -111,7 +115,7 @@ impl Predictor {
             started: false,
             body: Body::default(),
             prev: Body::default(),
-            tail: [InputFrame::default(); MAX_INPUT_FRAMES],
+            tail: [InputFrame::default(); RING],
             tail_len: 0,
             ring_seq: [0; RING],
             ring_body: [Body::default(); RING],
@@ -125,6 +129,25 @@ impl Predictor {
 
     pub fn tail(&self) -> &[InputFrame] {
         &self.tail[..self.tail_len]
+    }
+
+    /// The newest `MAX_INPUT_FRAMES` of the tail, oldest first: what an
+    /// input datagram carries.
+    pub fn wire_tail(&self) -> &[InputFrame] {
+        &self.tail[self.tail_len.saturating_sub(MAX_INPUT_FRAMES)..self.tail_len]
+    }
+
+    /// Forget the frames no datagram will carry again. Called when a
+    /// snapshot says the shard ran dry (`repeat_count`): it held none of the
+    /// unacked frames then, and the ones already past the wire window were
+    /// lost for good, so a replay that kept them would walk the body
+    /// somewhere the shard never will — a blackout's worth of stride.
+    pub fn drop_unsendable(&mut self) {
+        let dead = self.tail_len.saturating_sub(MAX_INPUT_FRAMES);
+        if dead > 0 {
+            self.tail.copy_within(dead..self.tail_len, 0);
+            self.tail_len -= dead;
+        }
     }
 
     /// The seed this predictor steps under — the one `movement::step` is
@@ -141,7 +164,7 @@ impl Predictor {
     /// with the same walls the server does, one in-flight placement of
     /// skew at most (a mismatch there is just a reconcile).
     pub fn step(&mut self, frame: InputFrame, cols: &ColIndex, occ: &mut Occupants) {
-        if self.tail_len == MAX_INPUT_FRAMES {
+        if self.tail_len == RING {
             self.tail.copy_within(1.., 0);
             self.tail_len -= 1;
         }
@@ -738,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_drops_oldest_at_the_wire_cap() {
+    fn the_wire_carries_the_newest_frames_and_the_replay_keeps_them_all() {
         let cols = Box::new(ColIndex::new());
         // The predictor collides with the same island the server does.
         let mut occ = Scratch::live(SEED);
@@ -746,7 +769,27 @@ mod tests {
         for seq in 1..=(MAX_INPUT_FRAMES as u16 + 5) {
             p.step(frame(seq, 0), &cols, &mut occ.occupants());
         }
-        assert_eq!(p.tail().len(), MAX_INPUT_FRAMES);
-        assert_eq!(p.tail()[0].seq, 6, "oldest dropped first");
+        assert_eq!(
+            p.tail().len(),
+            MAX_INPUT_FRAMES + 5,
+            "the replay keeps every unacked frame"
+        );
+        assert_eq!(p.wire_tail().len(), MAX_INPUT_FRAMES);
+        assert_eq!(p.wire_tail()[0].seq, 6, "the wire carries the newest");
+        for seq in (MAX_INPUT_FRAMES as u16 + 6)..=(RING as u16 + 3) {
+            p.step(frame(seq, 0), &cols, &mut occ.occupants());
+        }
+        assert_eq!(p.tail().len(), RING);
+        assert_eq!(p.tail()[0].seq, 4, "past the ring, oldest dropped first");
+        p.drop_unsendable();
+        assert_eq!(
+            p.tail(),
+            p.wire_tail(),
+            "a dry shard keeps only what the wire carries"
+        );
+        assert_eq!(
+            p.tail()[0].seq,
+            RING as u16 + 3 - MAX_INPUT_FRAMES as u16 + 1
+        );
     }
 }

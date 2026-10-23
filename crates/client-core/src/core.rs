@@ -1559,6 +1559,12 @@ pub const PLAYOUT_JITTER_K: f64 = 2.0;
 /// 16 ms of slide per second — beneath notice, and fast enough to double
 /// the buffer inside a rough patch's first seconds.
 pub const PLAYOUT_SLEW_PER_S: f64 = 0.5;
+/// Consecutive starved ticks a snapshot must report before the predictor
+/// forgets the frames the wire no longer carries (`drop_unsendable`). One
+/// or two is a late datagram under jitter, and those frames may still land;
+/// a run this long is the link gone. Measured on `server/tests/netem.rs`:
+/// trimming on any starve cost the 250 ms / 10 % link 3× the corrections.
+const OUTAGE_REPEAT_TICKS: u8 = 3;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
 
@@ -5621,7 +5627,7 @@ impl ClientCore {
         }
         self.input_due = false;
         let (ack, ack_bits) = self.view.ack_fields();
-        let tail = self.predict.tail();
+        let tail = self.predict.wire_tail();
         // The playout report (wire v61): how far behind the acked snapshot
         // this client is drawing remotes right now, rounded to the tick, so
         // the server's lag-comp favour prices the past THIS player sees.
@@ -5719,6 +5725,11 @@ impl ClientCore {
                     }
                 } else if let Some(own) = self.view.get(self.player_id).copied() {
                     self.harvested.set_now(self.clock.client_tick);
+                    // A shard dry for a run of ticks is an outage, not a
+                    // late datagram: the frames past the wire window were lost.
+                    if header.repeat_count >= OUTAGE_REPEAT_TICKS {
+                        self.predict.drop_unsendable();
+                    }
                     self.predict.reconcile(
                         &own,
                         header.last_executed_seq,

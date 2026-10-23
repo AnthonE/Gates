@@ -479,7 +479,7 @@ fn main() {
     if a.slow > 0 {
         let mut by: Vec<(Duration, u64)> =
             sim.iter().copied().zip(sim_at.iter().copied()).collect();
-        by.sort_unstable_by(|x, y| y.0.cmp(&x.0));
+        by.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
         for (d, t) in by.iter().take(a.slow) {
             println!("  slow sim tick {t:>8}  {:8.1} µs", d.as_secs_f64() * 1e6);
         }

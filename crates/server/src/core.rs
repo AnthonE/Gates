@@ -10038,10 +10038,6 @@ impl ShardCore {
         }
     }
 
-    /// Priority-filled snapshot for one client (DESIGN.md §5.5): removals
-    /// first, then own entity, then stale-preempted and accumulator-ranked
-    /// interest entities until budget or cap. Returns the encoded length,
-    /// or None only on an encoder-refusal bug (counted, never panicking).
     /// Build [`Self::wire_cache`] for this tick's snapshots.
     fn fill_wire_cache(&mut self) {
         for w in 0..MAX_PLAYERS {
@@ -10058,6 +10054,10 @@ impl ShardCore {
         }
     }
 
+    /// Priority-filled snapshot for one client (DESIGN.md §5.5): removals
+    /// first, then own entity, then stale-preempted and accumulator-ranked
+    /// interest entities until budget or cap. Returns the encoded length,
+    /// or None only on an encoder-refusal bug (counted, never panicking).
     fn encode_snapshot(&mut self, slot: usize, stats: &ShardStats) -> Option<usize> {
         let tick = self.world.tick;
         self.more_n = 0;
