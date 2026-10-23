@@ -11079,6 +11079,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/space.rs"),
         },
         Module {
+            file: "attach.rs",
+            src: include_str!("../../sim-core/src/attach.rs"),
+        },
+        Module {
             file: "building.rs",
             src: include_str!("../../sim-core/src/building.rs"),
         },

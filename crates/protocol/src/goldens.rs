@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 191] = [
+pub const FIXTURES: [&str; 194] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -344,6 +344,11 @@ pub const FIXTURES: [&str; 191] = [
     "event_vessel.bin",
     // Captions (v138): a translated transcript's second piece.
     "event_caption.bin",
+    // Weapon attachments (v143): a gun's mask, and the two verbs at their
+    // widths' last values.
+    "event_mods.bin",
+    "action_attach.bin",
+    "action_detach.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2465,6 +2470,22 @@ pub fn event_fire() -> (i32, i32, i32, u32) {
 /// so a swap reddens.
 pub fn event_ammo() -> (u16, u16) {
     (3, 260)
+}
+
+/// The rifle in row 3 (v143) wearing the top and bottom attachments, the
+/// halves distinct so a swapped byte shows.
+pub fn event_mods() -> (u16, u8) {
+    (0x0103, 0b1000_0001)
+}
+
+/// The attach verb (v143) on the pack's last slot.
+pub fn action_attach() -> u8 {
+    (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The detach verb (v143) on the last attachment bit.
+pub fn action_detach() -> u8 {
+    (sim_core::limits::MAX_MODS - 1) as u8
 }
 
 /// A full batch of arrows in bodies with `reset` set: players and animals
