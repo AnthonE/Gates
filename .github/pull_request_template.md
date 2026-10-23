@@ -1,6 +1,6 @@
 ## What this is
 
-<!-- one paragraph: what changed and why (a NOW.md item, a report, or the
+<!-- one paragraph: what changed and why (a `docs/NOW.md` item, a report, or the
      operator's ask) -->
 
 <!-- If this fixes a bug somebody reported, name it — the fingerprint is on
@@ -20,4 +20,4 @@ Agent: <!-- harness/version and model (AGENTS.md §working beside other agents),
       (`AGENTS.md` §the deal); a fix that names none pays only its author
 - [ ] delivered on the board if you want paying — `POST /api/munus/gates-pr/submit`
       with this PR's link. Standing bounty: **no claim needed**. Every
-      accepted PR pays the board's posted price: https://elopros.com/build.html
+      accepted PR pays the board's posted price: https://elopros.com/games/gates/board/

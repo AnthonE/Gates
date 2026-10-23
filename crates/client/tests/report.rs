@@ -497,7 +497,7 @@ fn the_json_is_valid_and_carries_the_derived_keys() {
     assert_eq!(v["kind"], "numbers");
     assert_eq!(v["fingerprint"], r.fingerprint_hex());
     assert_eq!(v["issue_title"], "[numbers] arrows cost too much");
-    assert_eq!(v["read_first"], "CONTENT.md");
+    assert_eq!(v["read_first"], "docs/CONTENT.md");
     assert_eq!(v["reported"], "2026-08-20T14:03:11Z");
     assert_eq!(v["place"]["seed"], 7);
     // A consumer listing open reports groups on `fingerprint`, so it has to be

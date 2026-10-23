@@ -28,11 +28,11 @@ Paste that file here and you can skip almost everything below.
 **Which part is wrong** — pick one, it decides who reads this and which doc
 they open first:
 
-- [ ] `look` — it draws wrong (`ART.md`)
-- [ ] `world` — the island is wrong (`TERRAIN.md`)
-- [ ] `verb` — an action did the wrong thing (`DESIGN.md`)
-- [ ] `net` — it lagged or rubber-banded (`NETCODE.md`)
-- [ ] `numbers` — a value feels wrong (`CONTENT.md`)
+- [ ] `look` — it draws wrong (`docs/ART.md`)
+- [ ] `world` — the island is wrong (`docs/TERRAIN.md`)
+- [ ] `verb` — an action did the wrong thing (`docs/DESIGN.md`)
+- [ ] `net` — it lagged or rubber-banded (`docs/NETCODE.md`)
+- [ ] `numbers` — a value feels wrong (`docs/CONTENT.md`)
 - [ ] `crash` — it died (attach the crash report the game wrote)
 
 **Build** — the client's corner shows the release; `gates --help` prints it too.
@@ -49,5 +49,5 @@ they open first:
 ---
 
 Fixing this pays. Every accepted PR pays the board's posted price:
-https://elopros.com/build.html — there is nothing to claim and nobody is
+https://elopros.com/games/gates/board/ — there is nothing to claim and nobody is
 ahead of you.

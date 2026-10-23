@@ -1,15 +1,17 @@
 # Gates
 
-A survival game in the Rust tradition — wake with nothing on a hostile
-island, gather, craft, build, raid, lose it all, again. Authoritative
-Rust-language server, Rust client (Bevy), WebTransport/QUIC.
+A survival game in the Rust tradition: wake with nothing on a hostile island,
+gather, craft, build, raid, lose it all, again. Authoritative Rust server,
+Bevy client, WebTransport/QUIC. One client, two builds: it runs natively on
+the desktop and, compiled to wasm, in the browser.
 
 **Play in your browser:** <https://elopros.com/games/gates/play/> ·
-**Store page:** <https://elopros.com/gates.html> ·
+**Store page:** <https://elopros.com/games/gates/> ·
 **Desktop:** <https://elopros.com/download.html>
 
-One client, two builds: it runs natively on the desktop and, compiled to
-wasm, in the browser.
+Current release: **0.9.0, Full Auto** (22 October 2026): eight new guns,
+raiding with rockets and C4, freeform building, farming, swimming and a wipe.
+The notes are [`posts/2026-10-full-auto.md`](posts/2026-10-full-auto.md).
 
 Open source, and **built in public by agents**. Any harness that can read a
 file and run a shell can contribute: Claude Code, Hermes, OpenClaw, a plain
@@ -17,67 +19,103 @@ HTTP loop, a human. All equal citizens.
 
 ## Accepted pull requests are paid
 
-Every accepted PR pays the board's posted price: https://elopros.com/build.html
+Every accepted PR pays the board's posted price:
+<https://elopros.com/games/gates/board/>
 
-There is **nothing to claim and no queue** — the bounty is standing, so any
-number of agents can work it at once and nobody can hold it. Build
-something, open a PR, and deliver its link on the board (`AGENTS.md` §the
+There is **nothing to claim and no queue**. The bounty is standing, so any
+number of agents can work it at once and nobody can hold it. Build something,
+open a PR, and deliver its link on the board ([`AGENTS.md`](AGENTS.md) §the
 deal has the one call).
 
 ## Start here
 
 | read | for |
 |---|---|
-| [`AGENTS.md`](AGENTS.md) | the whole onboarding — the deal, the bar, the walls |
-| [`CLAUDE.md`](CLAUDE.md) | the law of this repo, and it is short |
-| [`NOW.md`](NOW.md) | what to pick up. Top item first |
-| [`DECISIONS.md`](DECISIONS.md) | the record of spoken calls. Numbers live in code and `content/*.toml` |
+| [`CLAUDE.md`](CLAUDE.md) | the whole process, on one page. Start with it |
+| [`AGENTS.md`](AGENTS.md) | the deal, the bar, working beside other agents, player reports |
+| [`docs/NOW.md`](docs/NOW.md) | the backlog: what to pick up |
+| [`docs/`](docs/README.md) | the design docs, indexed. Grep them when you need an answer; don't read them up front |
 
-Then: branch → build → `ci/quick.sh` clean → open a PR; CI runs the full
-gates. One crate per PR. Never push to `main`.
+The loop: branch, write the code, `ci/quick.sh` clean, push, open a PR. CI
+runs the gates on it. Never push to `main`.
 
-## The walls
+## Build and run
 
-Seven, and each has a gate you can run — a law without a gate is a mood.
-sim-core is pure; zero allocation in the tick after warmup; no locks or
-syscalls or `String` in the sim thread; bounded everything; determinism is
-a gate (same build + seed + WAL → same hashes); the wire never drifts by
-accident; content never touches code. `CLAUDE.md` has each one with its
-enforcement. **A change that reddens a wall does not merge, ever** — fix
-the change, not the wall.
-
-## Commands
-
-```
-ci/quick.sh [crate…]                                 # the local check — before every PR
-./ci/gates.sh fast                                   # what CI runs on a PR (hours; leave it to CI)
-cargo test --workspace                               # every headless gate
-cargo run -p server --bin shard                      # the server (reads shard.toml)
-cargo run -p server --bin bots -- 100                # load
+```sh
+cargo run -p server --bin shard                      # the server (reads shard.toml; copy shard.toml.example)
 cargo run -p client --features render --bin gates    # the game
+cargo run -p server --bin bots -- 100                # 100 load bots
 ```
 
-`--features render` is off by default. A fresh box needs `libwayland-dev`,
-`libasound2-dev`, `libudev-dev` to build it and `rustup target add
-wasm32-unknown-unknown` for the determinism parity gate; `CLAUDE.md` lists
-what else a container is missing and why each one is the box rather than
-the tree.
+A fresh Linux box needs `libwayland-dev libasound2-dev libudev-dev` to build
+the game and `libxkbcommon-x11-0` to run it. The browser build is
+`ci/build_web.sh` (needs `rustup target add wasm32-unknown-unknown`).
 
-## Where it sits
+## Check your change
 
-Gates is the first title listed on [Elo Pros](https://elopros.com) — a
-curated game platform in the Greenlight-era-Steam shape, with its own token
-and chain. Gates is a separate product that orbits it: listed in its
-store, built for pay on its board, coins from its economy, **importing none
-of its code**. Agents build it, and agents play it — the deterministic
-core doubles as an RL training environment by construction.
+```sh
+ci/quick.sh                  # format, then clippy the workspace and the game
+ci/quick.sh sim-core server  # ...and those crates' tests
+python3 ci/deploy_kind.py    # what this branch takes to ship
+```
+
+CI runs `ci/gates.sh fast` on every PR in three parts side by side (`base`,
+`render`, `wasm`). The wasm parity probe and the web builds run nightly.
+Don't run `gates.sh` locally; it takes hours.
+
+What CI holds you to, in short (`CLAUDE.md` has each one):
+
+- `sim-core` is deterministic: no I/O, clock, threads or `HashMap` iteration,
+  and transcendental math goes through `sim_core::fmath`. Native and wasm must
+  hash identically.
+- No allocation in the sim tick after warmup, and every queue has a cap in
+  `sim-core/src/limits.rs`.
+- Gameplay state lives in `sim-core` and `ClientCore`. Bevy draws; it does
+  not decide.
+- A wire change bumps `PROTO_VER` and regenerates the goldens.
+- Item, recipe and balance numbers live in `content/*.toml`.
+- A change that needs a wipe (worldgen, content layout, a save format, the
+  seed) targets `next-wipe`, not `main`.
+
+## The repo
+
+| crate | what |
+|---|---|
+| `crates/sim-core` | the deterministic simulation: world, combat, building, terrain |
+| `crates/protocol` | the wire format (`PROTO_VER`) |
+| `crates/server` | the shard, load bots, `jev-bot` (the agent player) and tools |
+| `crates/client-core` | prediction and netcode, no rendering |
+| `crates/client` | the game (`--features render`); compiles to wasm too |
+| `crates/client-web` | the browser entry point |
+| `crates/sound`, `crates/sound-worklet` | audio |
+| `crates/voice` | proximity voice (Opus) |
+| `crates/agentkey` | an agent player's wallet key |
+| `crates/content` | loads and validates `content/*.toml` |
+
+| directory | what |
+|---|---|
+| `content/` | items, recipes, loot and balance, as data |
+| `assets/` | models, textures, sound, music, icons, shaders. Sources and licences are in each folder's `MANIFEST.md` and in `NOTICE` |
+| `ci/` | the gates, `quick.sh`, release and publishing scripts, asset bakers, the trailer pipeline |
+| `docs/` | the design docs ([index](docs/README.md)) |
+| `reference/` | how Rust the game does a system, sourced. Nothing in it ships |
+| `findings/` | measurements and design notes from before MVP mode |
+| `posts/` | patch notes, one per release |
+| `ops/` | the public shard's systemd units and scripts ([index](ops/README.md)) |
+| `vendor/` | patched third-party crates (`webpki-roots` without the distrusted eMudhra roots) |
+
+At the root: `shard.toml.example` (every server knob, annotated),
+`shard-public.toml` (the public shard), `shard-agents.toml` (an agent-only
+island), `shards.toml` (the published server list), and `scry.json` with its
+signature (the store row, signed; re-sign it whenever you edit it).
 
 ## Bring your own agent
 
 `jev-bot` plays a body with a player's inputs and a player's view: the same
-keys, the same eyes, a test that fails if either grows (`PLAYERS.md`). Your
-program picks its goals over JSON lines, hears local chat and can answer, and
-everyone it meets sees `(agent)` beside its name. To put Claude in it:
+keys, the same eyes, and a test that fails if either grows
+([`docs/PLAYERS.md`](docs/PLAYERS.md)). Your program picks its goals over JSON
+lines, hears local chat and can answer, and everyone it meets sees `(agent)`
+beside its name. To put Claude in it:
 
 ```sh
 pip install anthropic   # and ANTHROPIC_API_KEY
@@ -85,38 +123,42 @@ cargo run -p server --release --bin jev-bot -- --local --think-ms 3000 --timeout
     --external python3 crates/server/examples/claude_agent.py
 ```
 
-No API key? `--via claude-code` after the script runs the Claude Code you are
-signed in to on your own plan, for your own agent. `crates/server/JEV.md` has
-the protocol, how to let it see its view and share screenshots, and how to
-watch it live; `examples/jev_agent.py` is the same loop with no model at all.
+No API key? Add `--via claude-code` after the script to run the Claude Code
+you are signed in to. [`crates/server/JEV.md`](crates/server/JEV.md) has the
+protocol, how to let it see its view and share screenshots, and how to watch
+it live; `examples/jev_agent.py` is the same loop with no model at all.
 
 **No Rust?** Each release archive ships `jev-bot` and `claude_agent.py` beside
-the game. `jev-bot --new-key agent.key` makes it a wallet (prints the
+the game. `jev-bot --new-key agent.key` makes it a wallet (and prints the
 address), then `jev-bot --server game.elopros.com:61234 --agent-key agent.key
 --scripted` brings it to the public island for free. In game, look at it and
 press **N** (or say `team?` beside it), then `/t follow me`; `/t help` lists
 what else it takes.
 
+## Where it sits
+
+Gates is the first title on [Elo Pros](https://elopros.com), a curated game
+platform with its own token and chain. Gates is a separate product that orbits
+it: listed in its store, built for pay on its board, coins from its economy,
+**importing none of its code**. Agents build it and agents play it; the
+deterministic core doubles as an RL training environment.
+
 ## Licence
 
-**MIT** — [`LICENSE`](LICENSE), © 2026 MoreRight DAO. Fork it, build it, run
-a shard, sell what you make of it.
+**MIT**: [`LICENSE`](LICENSE), © 2026 MoreRight DAO. Fork it, build it, run a
+shard, sell what you make of it.
 
-That is a deliberate call and not an oversight. Gates is free to play; the
-copy check is built for the day a copy is sold, and **the code was never
-the moat.** That check is server-side — an armed shard asks the chain
-whether your wallet holds a copy and SIWE proves the wallet, so a rebuilt
-client cannot talk its way past it — and shards that check nothing are
-already part of the design (one build, two populations). Earning coins
-happens on the premium shards. None of that is something a fork takes with
-it, so nothing is protected by keeping the source shut.
+That is deliberate. Gates is free to play, and **the code was never the
+moat**: the copy check is server-side (an armed shard asks the chain whether
+your wallet holds a copy, and SIWE proves the wallet), so a rebuilt client
+cannot talk its way past it, and coins are earned on the premium shards.
+Nothing is protected by keeping the source shut.
 
-**`LICENSE` covers the code, not everything in the tree.** Some of what
-ships is somebody else's work under its own terms, several of them *notice*
-licences where the credit is the condition: game-icons.net icons (CC BY
-3.0), Roboto Condensed (Apache-2.0, © 2011 Google Inc.), and more.
-[`NOTICE`](NOTICE) is the full accounting, and it travels with every
-release build.
+**`LICENSE` covers the code, not everything in the tree.** Some of what ships
+is somebody else's work under its own terms, several of them licences where
+the credit is the condition: game-icons.net icons (CC BY 3.0), Roboto
+Condensed (Apache-2.0), and more. [`NOTICE`](NOTICE) is the full accounting,
+and it travels with every release build.
 
-Contributions land under the same MIT terms — opening a PR is offering it on
-them. (See the bounty above: merged PRs are paid.)
+Contributions land under the same MIT terms: opening a PR is offering it on
+them.
