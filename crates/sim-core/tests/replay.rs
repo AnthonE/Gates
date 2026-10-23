@@ -568,7 +568,9 @@ const TICKS: u64 = 900;
 /// hash came back exactly.
 /// **Moved → `0xDFE5_FB90_8304_DF97` at clothing v1** (2026-10-22, wipe): `state_hash`
 /// reads seven worn stacks and the teas.
-const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
+/// **Moved → `0x4027_BF8C_A997_07F5` at the reference's walk** (2026-10-23):
+/// `WALK_SPEED` 3.0 → 2.8 m/s.
+const GOLDEN_FINAL_HASH: u64 = 0x4027_BF8C_A997_07F5;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -696,7 +698,9 @@ const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
 /// hash and for its reason.
 /// **Moved → `0xCBE6_446E_651E_CBA2` at clothing v1** (2026-10-22, wipe), with the final
 /// hash.
-const GOLDEN_TRACE_HASH: u64 = 0xCBE6_446E_651E_CBA2;
+/// **Moved → `0x9CF1_FAAB_5BD2_E89E` at the reference's walk** (2026-10-23), with
+/// the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x9CF1_FAAB_5BD2_E89E;
 
 /// Fold a stamped trace into one number.
 ///
