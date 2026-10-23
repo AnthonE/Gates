@@ -570,7 +570,10 @@ const TICKS: u64 = 900;
 /// reads seven worn stacks and the teas.
 /// **Moved → `0x4027_BF8C_A997_07F5` at the reference's walk** (2026-10-23):
 /// `WALK_SPEED` 3.0 → 2.8 m/s.
-const GOLDEN_FINAL_HASH: u64 = 0x4027_BF8C_A997_07F5;
+/// **Moved → `0xD39C_A9F3_3B60_CDE2` at bullets and attachments**
+/// (2026-10-23, wipe): the fixture gun's rounds fly, and `state_hash` reads
+/// the rounds in flight and every gun's attachments.
+const GOLDEN_FINAL_HASH: u64 = 0xD39C_A9F3_3B60_CDE2;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -700,7 +703,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x4027_BF8C_A997_07F5;
 /// hash.
 /// **Moved → `0x9CF1_FAAB_5BD2_E89E` at the reference's walk** (2026-10-23), with
 /// the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x9CF1_FAAB_5BD2_E89E;
+/// **Moved → `0xDA37_9171_8DEE_3E80` at bullets and attachments** (2026-10-23,
+/// wipe), with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0xDA37_9171_8DEE_3E80;
 
 /// Fold a stamped trace into one number.
 ///
