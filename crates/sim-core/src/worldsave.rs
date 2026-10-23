@@ -49,7 +49,7 @@
 //!
 //! ## What is deliberately not here
 //!
-//! - **Arrows in flight.** Sub-second state whose whole meaning is a
+//! - **Arrows and bullets in flight.** Sub-second state whose whole meaning is a
 //!   trajectory between two ticks; restoring one would land it at a time
 //!   nobody shot for. They are dropped, which is the same thing that
 //!   happens to them at the end of their life anyway.
@@ -2252,9 +2252,10 @@ mod tests {
         // format 27: the blueprint mask's high word and the feet's stack in
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
         // 547 → 597 at format 31: four more worn stacks in `PlayerSave`
-        // (+32), the teas in the tail (+18) (clothing v1).
+        // (+32), the teas in the tail (+18) (clothing v1). 597 → 613 at
+        // format 32: an attachment mask a magazine in `PlayerSave`.
         assert_eq!(
-            PLAYER_BYTES, 597,
+            PLAYER_BYTES, 613,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2265,7 +2266,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 597                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31)
+            + 100 * 613                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, the attachments at 32)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
@@ -2414,8 +2415,10 @@ mod tests {
         // caps in one merge: the live charges' from 64 to every seat's share
         // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
         // hand's share was capped (1,024 × 143) — counts, so old saves load.
+        // 5_494_434 at format 32: an attachment mask a magazine, 16 bytes on
+        // 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_492_834,
+            WORLD_SAVE_MAX_BYTES, 5_494_434,
             "the world save ceiling moved"
         );
     }

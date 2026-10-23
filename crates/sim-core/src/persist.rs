@@ -735,7 +735,7 @@ mod tests {
     /// 449 → 481 at `SAVE_FORMAT` 12: four more worn stacks (clothing v1).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 481, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 497, "the on-disk record size moved");
         assert_eq!(MAX_MAGS, 16);
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
