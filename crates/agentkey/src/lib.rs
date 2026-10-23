@@ -40,6 +40,7 @@ use k256::ecdsa::SigningKey;
 use protocol::{siwe_message, Address, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
 use std::path::Path;
 use tiny_keccak::{Hasher, Keccak};
+#[cfg(unix)]
 use zeroize::Zeroize;
 
 /// The largest key file [`AgentKey::load`] will read, in bytes. A key is 64
@@ -492,11 +493,13 @@ fn hex_val(c: u8) -> Option<u8> {
     }
 }
 
-/// 64 hex digits → 32 bytes. Whitespace around and an `0x` in front are
-/// allowed; nothing else is. Never echoes what it refused.
 #[cfg(unix)]
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
+/// 64 hex digits → 32 bytes. Whitespace around and an `0x` in front are
+/// allowed; nothing else is. Never echoes what it refused. Read by
+/// [`AgentKey::load`]'s unix arm, the only one that reads a key file.
+#[cfg(unix)]
 fn parse_secret(text: &[u8]) -> Result<[u8; 32], KeyError> {
     let t = text.trim_ascii();
     let t = t

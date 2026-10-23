@@ -388,7 +388,13 @@ impl Web {
 
     pub fn handle(&mut self, req: &Request, now: u64) -> Response {
         let path = req.path.trim_start_matches('/');
-        match (req.method.as_str(), path) {
+        // HEAD is GET without the body (`serve` drops it): a link checker's
+        // `curl -I` sees what a browser does.
+        let method = match req.method.as_str() {
+            "HEAD" => "GET",
+            m => m,
+        };
+        match (method, path) {
             ("OPTIONS", _) => Response::empty(204),
             ("GET", "" | "index.html") => {
                 Response::file("text/html; charset=utf-8", PAGE.as_bytes())
@@ -864,6 +870,9 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
         r.body.len()
     );
     s.write_all(head.as_bytes())?;
+    if req.0.method == "HEAD" {
+        return Ok(());
+    }
     s.write_all(&r.body)
 }
 
