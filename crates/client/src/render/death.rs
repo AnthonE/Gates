@@ -24,15 +24,14 @@
 
 use bevy::image::Image;
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use crate::ui::death::{self as model, Death, Fact, FactKind, Meters, Ready, Tone, Wake};
-use crate::ui::map::{self, GRID_COLS};
+use crate::ui::map;
 
 use super::hud::Toast;
 use super::map::{
-    BADGE_HOLLOW, BADGE_SOLID, GRID_INK, GRID_LABEL_PX, MAP_MARK_PX, MARK_ICON_FRAC, SITE_LABEL_PX,
-    SITE_LABEL_W,
+    BADGE_HOLLOW, BADGE_SOLID, MAP_MARK_PX, MARK_ICON_FRAC, SITE_LABEL_PX, SITE_LABEL_W,
 };
 use super::screen::Screen;
 use super::{ui, Net, WorldId};
@@ -91,7 +90,7 @@ const COLD_TEXT: Color = Color::srgba(0.62, 0.60, 0.56, 0.6);
 const GO: Color = Color::srgb(0.33, 0.47, 0.16);
 const GO_HOT: Color = Color::srgb(0.41, 0.57, 0.20);
 /// The skull's pin.
-const SKULL: Color = Color::srgb(0.86, 0.17, 0.13);
+pub(super) const SKULL: Color = Color::srgb(0.86, 0.17, 0.13);
 /// THE GATE's gilt, `MarkKind::Town`'s.
 const GATE_INK: Color = Color::srgb(236.0 / 255.0, 190.0 / 255.0, 96.0 / 255.0);
 
@@ -232,10 +231,7 @@ pub fn awaken(
     }
     // Take the pointer back, so waking up does not need a click that would
     // also swing the axe — `pause::act`'s rule, for the same reason.
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = super::web::in_post();
-    }
+    ui::lock_cursor(&mut cursor);
     next.set(Screen::InWorld);
 }
 
@@ -561,7 +557,7 @@ pub fn setup(
                     ImageNode::new(texture),
                 ))
                 .with_children(|frame| {
-                    spawn_grid(frame);
+                    super::map::spawn_grid(frame);
                     // The named places, under everything that is yours —
                     // the map screen's own badges and names.
                     for (i, m) in sites.a[..sites.count].iter().enumerate().rev() {
@@ -821,56 +817,6 @@ pub(super) fn spawn_skull(
                 }
             });
         });
-}
-
-/// The grid, the map screen's: faint lines and every cell's label, so the
-/// square on a button and the square on the map can be read against each
-/// other.
-fn spawn_grid(frame: &mut ChildSpawnerCommands) {
-    for i in 1..GRID_COLS {
-        let t = i as f32 / GRID_COLS as f32 * 100.0;
-        frame.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Percent(t),
-                top: Val::Px(0.0),
-                width: Val::Px(1.0),
-                height: Val::Percent(100.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
-            Pickable::IGNORE,
-        ));
-        frame.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                top: Val::Percent(t),
-                left: Val::Px(0.0),
-                height: Val::Px(1.0),
-                width: Val::Percent(100.0),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
-            Pickable::IGNORE,
-        ));
-    }
-    let cell = 100.0 / GRID_COLS as f32;
-    for row in 0..GRID_COLS {
-        for col in 0..GRID_COLS {
-            frame.spawn((
-                ui::label(map::grid_cell_label(col, row), GRID_LABEL_PX, GRID_INK),
-                ui::TEXT_SHADOW,
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(col as f32 * cell),
-                    top: Val::Percent(row as f32 * cell),
-                    padding: UiRect::axes(Val::Px(3.0), Val::Px(1.0)),
-                    ..default()
-                },
-                Pickable::IGNORE,
-            ));
-        }
-    }
 }
 
 /// A bag of yours on the map: the map screen's bed badge — solid when it

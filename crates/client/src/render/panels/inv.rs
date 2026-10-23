@@ -731,7 +731,10 @@ fn take_all_button(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(rest),
-            super::Hover { rest, hot },
+            super::Hover {
+                idle: rest,
+                over: hot,
+            },
         ))
         .with_children(|b| {
             b.spawn((
@@ -842,13 +845,13 @@ pub struct FireSwitch;
 const FIRE_W_PX: f32 = 4.0 * SLOT_PX + 3.0 * CELL_GAP_PX;
 /// The bands' ground, a step darker than the panel — Rust draws the fire's
 /// three bands in one dark well.
-const FIRE_WELL: Color = Color::srgba(0.125, 0.114, 0.102, 0.96);
+pub(super) const FIRE_WELL: Color = Color::srgba(0.125, 0.114, 0.102, 0.96);
 /// The switch: green to light it, red to put it out (Rust's two).
-const SWITCH_ON: Color = Color::srgb(0.36, 0.47, 0.20);
-const SWITCH_ON_HOT: Color = Color::srgb(0.43, 0.56, 0.25);
+pub(super) const SWITCH_ON: Color = Color::srgb(0.36, 0.47, 0.20);
+pub(super) const SWITCH_ON_HOT: Color = Color::srgb(0.43, 0.56, 0.25);
 const SWITCH_OFF: Color = Color::srgb(0.64, 0.24, 0.19);
 const SWITCH_OFF_HOT: Color = Color::srgb(0.75, 0.30, 0.24);
-const SWITCH_TEXT: Color = Color::srgb(0.96, 0.94, 0.89);
+pub(super) const SWITCH_TEXT: Color = Color::srgb(0.96, 0.94, 0.89);
 
 /// The camp fire, in the container's seat — Rust's: FUEL over INPUT over
 /// OUTPUT with an arrow between each, a flame on what is burning and
@@ -1062,7 +1065,10 @@ fn controls(parent: &mut ChildSpawnerCommands, lit: bool, width: Val) {
                     ..default()
                 },
                 BackgroundColor(rest),
-                super::Hover { rest, hot },
+                super::Hover {
+                    idle: rest,
+                    over: hot,
+                },
             ))
             .with_children(|b| {
                 b.spawn((
@@ -2825,8 +2831,7 @@ pub fn ghost_follow(
     };
     let (x, y) = ghost_origin(p.x, p.y, SLOT_PX);
     for mut node in ghosts.iter_mut() {
-        node.left = Val::Px(x);
-        node.top = Val::Px(y);
+        crate::render::ui::place(&mut node, Val::Px(x), Val::Px(y));
     }
 }
 

@@ -197,8 +197,8 @@ fn tab_bar(left: &mut ChildSpawnerCommands, ui: &Ui, icons: &Icons, tab: u8) {
                 BackgroundColor(rest),
                 // The open tab is already lit; only the others light.
                 Hover {
-                    rest,
-                    hot: if open { GO } else { CELL_HOVER },
+                    idle: rest,
+                    over: if open { GO } else { CELL_HOVER },
                 },
             ))
             .with_children(|b| {
@@ -449,7 +449,10 @@ fn cell(
                 ..default()
             },
             BackgroundColor(rest),
-            Hover { rest, hot },
+            Hover {
+                idle: rest,
+                over: hot,
+            },
             BorderColor::all(rim),
         ))
         .with_children(|inner| {

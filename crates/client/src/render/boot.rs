@@ -220,7 +220,10 @@ pub fn update(
         }
     }
     if let Ok(mut node) = bar.single_mut() {
-        node.width = Val::Percent(warm.boot.fraction() * 100.0);
+        let want = Val::Percent(warm.boot.fraction() * 100.0);
+        if node.width != want {
+            node.width = want;
+        }
     }
 
     match warm.boot.next() {

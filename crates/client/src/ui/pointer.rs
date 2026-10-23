@@ -140,9 +140,137 @@ impl Pointer {
     }
 }
 
+/// Frames a fresh lock request may stay ungranted before it counts as
+/// refused. A browser grants within a frame or two; a refusal (no user
+/// gesture behind it, or asked again too soon after the player pressed Esc)
+/// never arrives as anything Bevy can see.
+pub const LOCK_GRACE_FRAMES: u32 = 30;
+/// Frames after a request before a granted lock counts as settled, so the
+/// tail of the lock just let go (a panel opened and closed inside a frame or
+/// two) is not mistaken for the player's Esc.
+pub const LOCK_SETTLE_FRAMES: u32 = 4;
+
+/// What [`BrowserLock::step`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockFix {
+    /// The window's grab mode and the page agree, or may still come to.
+    Keep,
+    /// The game let go but the page still holds the lock: ask again.
+    Unlock,
+    /// The lock asked for never came. Let the cursor go, so it is not an
+    /// invisible arrow over a view that does not turn, and so the next click
+    /// is a capture (and swallowed as one).
+    Refused,
+    /// The page held the lock and the player took it back: Esc, or the tab
+    /// losing focus. The browser ate that Esc, so this is the game's Esc.
+    Taken,
+}
+
+/// The browser's half of the pointer.
+///
+/// Bevy never hears that a page let go of the pointer: winit asks for the
+/// lock and never listens for `pointerlockchange`, so after Esc the window
+/// still says `Locked` and hides the cursor, no menu opens, and the click
+/// that recaptures is not swallowed (the window thought it was locked all
+/// along) and swings. Stepped once a frame with what the window wants and
+/// what `document.pointerLockElement` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BrowserLock {
+    /// Frames the window has wanted the lock without a break.
+    wanting: u32,
+    /// Whether the page has held a settled lock since the window asked.
+    held: bool,
+}
+
+impl BrowserLock {
+    /// Whether the lock was asked for exactly one frame ago: the moment to
+    /// ask for anything else the same click allows (`web::follow_pointer_lock`
+    /// asks for fullscreen then, never first, because a fullscreen request
+    /// spends the click and a lock asked for after it is refused).
+    pub fn asked_last_frame(&self) -> bool {
+        self.wanting == 2
+    }
+
+    pub fn step(&mut self, want: bool, has: bool) -> LockFix {
+        if !want {
+            self.wanting = 0;
+            self.held = false;
+            return if has { LockFix::Unlock } else { LockFix::Keep };
+        }
+        self.wanting = self.wanting.saturating_add(1);
+        if has {
+            if self.wanting > LOCK_SETTLE_FRAMES {
+                self.held = true;
+            }
+            return LockFix::Keep;
+        }
+        if self.held {
+            LockFix::Taken
+        } else if self.wanting > LOCK_GRACE_FRAMES {
+            LockFix::Refused
+        } else {
+            LockFix::Keep
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Esc in a browser: the lock was held, then the page let go while the
+    /// window still wants it. That is the player's Esc, once.
+    #[test]
+    fn a_browser_esc_is_seen() {
+        let mut b = BrowserLock::default();
+        assert!(!b.asked_last_frame());
+        for _ in 0..2 {
+            assert_eq!(b.step(true, false), LockFix::Keep, "the request is pending");
+        }
+        assert!(
+            b.asked_last_frame(),
+            "fullscreen is asked for the frame after the lock"
+        );
+        for _ in 0..10 {
+            assert_eq!(b.step(true, true), LockFix::Keep);
+        }
+        assert_eq!(b.step(true, false), LockFix::Taken);
+        // The game answers by letting go; nothing more is owed.
+        assert_eq!(b.step(false, false), LockFix::Keep);
+    }
+
+    /// A request that is never granted gives the cursor back after the grace,
+    /// and is not taken for an Esc.
+    #[test]
+    fn a_refused_lock_frees_the_cursor() {
+        let mut b = BrowserLock::default();
+        for _ in 0..LOCK_GRACE_FRAMES {
+            assert_eq!(b.step(true, false), LockFix::Keep);
+        }
+        assert_eq!(b.step(true, false), LockFix::Refused);
+    }
+
+    /// The old lock still draining when the new request goes out (a panel
+    /// shut a frame after it opened) is not an Esc.
+    #[test]
+    fn the_tail_of_the_last_lock_is_not_an_esc() {
+        let mut b = BrowserLock::default();
+        assert_eq!(
+            b.step(true, true),
+            LockFix::Keep,
+            "the old lock, still held"
+        );
+        assert_eq!(b.step(true, false), LockFix::Keep, "its release lands");
+        assert_eq!(b.step(true, true), LockFix::Keep, "the new one is granted");
+    }
+
+    /// The game let go and the page still holds it: ask again until it does.
+    #[test]
+    fn a_lock_the_game_let_go_is_let_go() {
+        let mut b = BrowserLock::default();
+        assert_eq!(b.step(false, true), LockFix::Unlock);
+        assert_eq!(b.step(false, false), LockFix::Keep);
+    }
 
     /// The press that put down the last lock empties the slot under it, and
     /// the empty hand it leaves must not punch until the button comes up.

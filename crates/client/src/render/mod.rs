@@ -1062,6 +1062,13 @@ impl Plugin for GatesRenderPlugin {
             Update,
             web::heap_report.run_if(|| cfg!(target_arch = "wasm32")),
         )
+        // The page's pointer lock, which Bevy never hears let go
+        // (`web::follow_pointer_lock`). After every system that grabs or
+        // frees the pointer this frame.
+        .add_systems(
+            PostUpdate,
+            web::follow_pointer_lock.run_if(|| cfg!(target_arch = "wasm32")),
+        )
         // Key hints follow the player's binds, on every screen.
         .add_systems(Update, binds::keyed)
         // Take the page's handoff overlay down once this app has drawn.
@@ -1255,13 +1262,12 @@ impl Plugin for GatesRenderPlugin {
                 Update,
                 (
                     settings::apply_view,
-                    // F11 and the browser's own exits both feed the setting
-                    // `apply_window` reads, so both run before it.
-                    settings::apply_window
-                        .after(settings::fullscreen_key)
-                        .after(settings::follow_browser_fullscreen),
+                    // F11 feeds the setting `apply_window` reads. A browser
+                    // leaving fullscreen on its own does not: ON there means
+                    // fullscreen while playing, and the next capture puts it
+                    // back (`web::follow_pointer_lock`).
+                    settings::apply_window.after(settings::fullscreen_key),
                     settings::fullscreen_key,
-                    settings::follow_browser_fullscreen,
                     settings::follow_focus,
                     settings::save_on_change,
                     settings::mirror_streamer,

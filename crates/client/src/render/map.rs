@@ -600,7 +600,9 @@ pub fn setup(
                 if let Some(h) = overlay.clone() {
                     spawn_blight_layer(frame, h);
                 }
-                // The grid's LINES. The labels follow, one per cell.
+                // The grid: the lines, and the label in every one of the
+                // 256 cells (`spawn_grid`, which the death screen's map
+                // shares).
                 //
                 // ⚠ **This comment used to say the letters and numbers were
                 // "drawn on the rails outside".** They were not drawn at
@@ -610,59 +612,7 @@ pub fn setup(
                 // squares a side with no way to name one is a grid you can
                 // see and cannot use, and the operator asked for the
                 // reference's version of it (2026-09-16).
-                for i in 1..GRID_COLS {
-                    let t = i as f32 / GRID_COLS as f32 * 100.0;
-                    frame.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Percent(t),
-                            top: Val::Px(0.0),
-                            width: Val::Px(1.0),
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
-                    ));
-                    frame.spawn((
-                        Node {
-                            position_type: PositionType::Absolute,
-                            top: Val::Percent(t),
-                            left: Val::Px(0.0),
-                            height: Val::Px(1.0),
-                            width: Val::Percent(100.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
-                    ));
-                }
-                // …and the label in every one of the 256 cells, off
-                // `ui::map::grid_cell_label` — the SAME function the readout
-                // above the island calls, so the square a player reads off
-                // the picture and the square the panel tells them they are
-                // standing in cannot disagree. A second copy of `letter` +
-                // `row + 1` here is the hand-kept mirror `CLAUDE.md` records
-                // going stale twice.
-                //
-                // They carry `ui::TEXT_SHADOW` for the reason the floating
-                // HUD strings do: this text has no chrome behind it and the
-                // island does, so the same grey is comfortable over forest
-                // and gone over beach.
-                let cell = 100.0 / GRID_COLS as f32;
-                for row in 0..GRID_COLS {
-                    for col in 0..GRID_COLS {
-                        frame.spawn((
-                            ui::label(map::grid_cell_label(col, row), GRID_LABEL_PX, GRID_INK),
-                            ui::TEXT_SHADOW,
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Percent(col as f32 * cell),
-                                top: Val::Percent(row as f32 * cell),
-                                padding: UiRect::axes(Val::Px(3.0), Val::Px(1.0)),
-                                ..default()
-                            },
-                        ));
-                    }
-                }
+                spawn_grid(frame);
                 // The marks, UNDER the player: a sibling spawned later draws
                 // on top, and *where am I* outranks everything else drawn
                 // here. Spawned in REVERSE resolve order, so the push order
@@ -1193,8 +1143,11 @@ pub fn track(
     let [x, _, z] = net.session.core.predict.render_position();
     let (px, py) = map::world_to_map(x, z, 1);
     if let Ok((mut node, mut xf)) = markers.single_mut() {
-        node.left = Val::Percent(px * 100.0);
-        node.top = Val::Percent(py * 100.0);
+        ui::place(
+            &mut node,
+            Val::Percent(px * 100.0),
+            Val::Percent(py * 100.0),
+        );
         // The same yaw the compass strip reads, through the same function —
         // `map_player` is drawn pointing north at rest, so this is the
         // bearing with no offset (`ci/icons/map_player.svg`).
@@ -1234,12 +1187,20 @@ pub fn mates(
         match shown(dot.0) {
             Some(m) => {
                 let (px, py) = map::world_to_map(f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5, 1);
-                node.left = Val::Percent(px * 100.0);
-                node.top = Val::Percent(py * 100.0);
-                ink.0 = super::team::ink(m.state);
-                *vis = Visibility::Inherited;
+                ui::place(
+                    &mut node,
+                    Val::Percent(px * 100.0),
+                    Val::Percent(py * 100.0),
+                );
+                let want = super::team::ink(m.state);
+                if ink.0 != want {
+                    ink.0 = want;
+                }
+                vis.set_if_neq(Visibility::Inherited);
             }
-            None => *vis = Visibility::Hidden,
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
     for (name, mut text) in &mut names {
@@ -1272,11 +1233,16 @@ pub fn heli(net: NonSend<Net>, mut marks: Query<(&mut Node, &mut Visibility), Wi
     for (mut node, mut vis) in &mut marks {
         match at {
             Some((px, py)) => {
-                node.left = Val::Percent(px * 100.0);
-                node.top = Val::Percent(py * 100.0);
-                *vis = Visibility::Inherited;
+                ui::place(
+                    &mut node,
+                    Val::Percent(px * 100.0),
+                    Val::Percent(py * 100.0),
+                );
+                vis.set_if_neq(Visibility::Inherited);
             }
-            None => *vis = Visibility::Hidden,
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
 }
@@ -1622,4 +1588,61 @@ pub fn forget(mut island: ResMut<Island>) {
 /// the HUD cannot disagree about which way the player is looking.
 fn bearing_text(yaw: f32) -> String {
     format!("facing {:03.0}°", crate::look::bearing_deg(yaw))
+}
+
+/// The grid: faint lines and every cell's label, on the map screen and the
+/// death screen's map, so the square on a button and the square on the map
+/// can be read against each other.
+///
+/// The labels come off `ui::map::grid_cell_label`, the SAME function the
+/// readout above the island calls, so the square a player reads off the
+/// picture and the square the panel says they stand in cannot disagree. They
+/// carry `ui::TEXT_SHADOW` because this text has no chrome behind it: the same
+/// grey is comfortable over forest and gone over beach. None of it takes the
+/// pointer.
+pub(super) fn spawn_grid(frame: &mut ChildSpawnerCommands) {
+    for i in 1..GRID_COLS {
+        let t = i as f32 / GRID_COLS as f32 * 100.0;
+        frame.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(t),
+                top: Val::Px(0.0),
+                width: Val::Px(1.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
+            Pickable::IGNORE,
+        ));
+        frame.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(t),
+                left: Val::Px(0.0),
+                height: Val::Px(1.0),
+                width: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
+            Pickable::IGNORE,
+        ));
+    }
+    let cell = 100.0 / GRID_COLS as f32;
+    for row in 0..GRID_COLS {
+        for col in 0..GRID_COLS {
+            frame.spawn((
+                ui::label(map::grid_cell_label(col, row), GRID_LABEL_PX, GRID_INK),
+                ui::TEXT_SHADOW,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Percent(col as f32 * cell),
+                    top: Val::Percent(row as f32 * cell),
+                    padding: UiRect::axes(Val::Px(3.0), Val::Px(1.0)),
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ));
+        }
+    }
 }

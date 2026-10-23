@@ -46,10 +46,10 @@ const STAR: Color = Color::srgb(0.784, 0.690, 0.165);
 const COUNT: Color = Color::srgb(0.47, 0.69, 0.89);
 /// The job being worked, and the pointer on it: Rust's interface green
 /// (#738D45), the reference's *"the currently crafting item is green"*.
-const QUEUE_HEAD: Color = Color::srgba(0.451, 0.553, 0.271, 0.92);
-const QUEUE_HEAD_HOT: Color = Color::srgba(0.53, 0.64, 0.33, 0.96);
+pub(super) const QUEUE_HEAD: Color = Color::srgba(0.451, 0.553, 0.271, 0.92);
+pub(super) const QUEUE_HEAD_HOT: Color = Color::srgba(0.53, 0.64, 0.33, 0.96);
 /// The progress along the head tile's foot.
-const QUEUE_FILL: Color = Color::srgba(0.86, 0.95, 0.70, 0.95);
+pub(super) const QUEUE_FILL: Color = Color::srgba(0.86, 0.95, 0.70, 0.95);
 /// The cancel cross on a queue tile — Rust's orange (#C26D33).
 const CANCEL: Color = Color::srgb(0.761, 0.427, 0.200);
 /// The empty queue's label, faded the way Rust fades it.
@@ -217,8 +217,8 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     },
                     BackgroundColor(rest),
                     Hover {
-                        rest,
-                        hot: if on {
+                        idle: rest,
+                        over: if on {
                             crate::render::ui::ACCENT_HOVER
                         } else {
                             CELL_HOVER
@@ -826,8 +826,8 @@ fn detail_body(
             // A dead button does not light: the pointer on it is not an
             // invitation.
             Hover {
-                rest,
-                hot: if can { CELL_HOVER } else { rest },
+                idle: rest,
+                over: if can { CELL_HOVER } else { rest },
             },
             BorderColor::all(if can { LINE_HOT } else { LINE }),
         ))
@@ -1031,8 +1031,8 @@ fn skin_tile(
         tile.insert((
             SkinChip(t.catalog),
             Hover {
-                rest,
-                hot: if t.picked { QUEUE_HEAD_HOT } else { CELL_HOVER },
+                idle: rest,
+                over: if t.picked { QUEUE_HEAD_HOT } else { CELL_HOVER },
             },
         ));
     } else {
@@ -1565,8 +1565,8 @@ fn queue_tile(
             },
             BackgroundColor(rest),
             Hover {
-                rest,
-                hot: if head { QUEUE_HEAD_HOT } else { CELL_HOVER },
+                idle: rest,
+                over: if head { QUEUE_HEAD_HOT } else { CELL_HOVER },
             },
             BorderColor::all(if head { LINE_HOT } else { LINE }),
         ))

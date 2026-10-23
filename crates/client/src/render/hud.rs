@@ -1782,7 +1782,7 @@ const COMPASS_MARK_PX: f32 = 16.0;
 /// under the compass stands below.
 pub const COMPASS_BOTTOM_PX: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX;
 /// The skull's red, the death screen's pin.
-const DEATH_MARK_INK: Color = Color::srgb(0.86, 0.17, 0.13);
+use super::death::SKULL as DEATH_MARK_INK;
 
 /// One tick of the tape's pool, and the two things it carries.
 #[derive(Component)]

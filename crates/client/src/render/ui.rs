@@ -246,7 +246,7 @@ pub const FRIEND: Color = Color::srgb(0.42, 0.86, 0.88);
 /// Carried per entity rather than assumed, because the settings sidebar's
 /// selected row is the accent blue and every other button is grey, and a hover system
 /// that hard-coded one pair would repaint the selection on the way past it.
-#[derive(Component)]
+#[derive(Component, Clone, Copy)]
 pub struct Hover {
     pub idle: Color,
     pub over: Color,
@@ -265,10 +265,25 @@ impl Hover {
     pub fn new(idle: Color, over: Color) -> Self {
         Self { idle, over }
     }
+
+    /// A panel button: whatever it rests on, lit to the panels' cell hover.
+    pub fn on(idle: Color) -> Self {
+        Self {
+            idle,
+            over: super::panels::CELL_HOVER,
+        }
+    }
+
+    /// The same, lit to a colour of its own (the kiosk's green BUY).
+    pub fn hot(self, over: Color) -> Self {
+        Self { over, ..self }
+    }
 }
 
-/// One hover handler for every screen. Runs wherever a menu is up; a button
+/// One hover handler for every screen and every in-world panel. A button
 /// with no `Hover` is simply not repainted, which is what an inert row wants.
+/// Slot cells are not these: `inv::drag_pointer` paints their hover with the
+/// drag's other states.
 ///
 /// Three states, not two: a press is the lit colour pushed a shade down and
 /// the button sunk a hair ([`PRESS_SCALE`]), so the hand feels the click
@@ -285,8 +300,12 @@ pub fn hover(
             Interaction::Hovered => (h.over, 1.0),
             Interaction::Pressed => (pressed(h.over), PRESS_SCALE),
         };
-        *bg = BackgroundColor(want);
-        xf.scale = Vec2::splat(scale);
+        // Checked, so a hover that lands on the colour already drawn does
+        // not mark the node changed.
+        bg.set_if_neq(BackgroundColor(want));
+        if xf.scale != Vec2::splat(scale) {
+            xf.scale = Vec2::splat(scale);
+        }
     }
 }
 
@@ -305,6 +324,28 @@ pub fn free_cursor(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>) 
     if let Ok(mut c) = cursor.single_mut() {
         c.grab_mode = CursorGrabMode::None;
         c.visible = true;
+    }
+}
+
+/// Move an absolutely placed node, touching it only when it moved. Writing
+/// the same value still marks the node changed, and a changed node is a
+/// layout pass: a marker that tracks something every frame pays one per
+/// frame for standing still.
+pub fn place(node: &mut Mut<Node>, left: Val, top: Val) {
+    if node.left != left || node.top != top {
+        node.left = left;
+        node.top = top;
+    }
+}
+
+/// Take the pointer back for the world: locked, and hidden except inside an
+/// X post, where the view drags and the cursor shows where (`web::in_post`).
+/// Every screen and text field that hands the mouse back does this, so
+/// leaving it does not need a click that would also swing.
+pub fn lock_cursor(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>) {
+    if let Ok(mut c) = cursor.single_mut() {
+        c.grab_mode = CursorGrabMode::Locked;
+        c.visible = super::web::in_post();
     }
 }
 

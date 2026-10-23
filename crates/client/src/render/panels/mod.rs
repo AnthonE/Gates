@@ -452,57 +452,11 @@ impl Ui {
     }
 }
 
-/// A button that lights while the pointer is on it.
-///
-/// **The panels had no hover state at all**, so nothing on them answered the
-/// pointer until a click round-tripped through a redraw, which is a large
-/// part of why the craft screen felt dead. `rest` is the fill the build
-/// drew, `hot` the one under the pointer; [`hover`] swaps them on the frame
-/// the pointer arrives or leaves, with no redraw. Slot cells are not these:
-/// `inv::drag_pointer` paints their hover with the drag's other states.
-#[derive(Component, Clone, Copy)]
-pub struct Hover {
-    pub rest: Color,
-    pub hot: Color,
-}
-
-impl Hover {
-    /// The usual pair: whatever it rests on, lit to [`CELL_HOVER`].
-    pub fn on(rest: Color) -> Self {
-        Self {
-            rest,
-            hot: CELL_HOVER,
-        }
-    }
-
-    /// The same, lit to a colour of its own (the kiosk's green BUY).
-    pub fn hot(self, hot: Color) -> Self {
-        Self { hot, ..self }
-    }
-}
-
-/// Light the button under the pointer, and sink it while it is pressed
-/// (`ui::hover`'s three states, for the panels).
-pub fn hover(
-    mut q: Query<
-        (&Interaction, &Hover, &mut BackgroundColor, &mut UiTransform),
-        Changed<Interaction>,
-    >,
-) {
-    for (interaction, h, mut bg, mut xf) in q.iter_mut() {
-        let (want, scale) = match interaction {
-            Interaction::None => (h.rest, 1.0),
-            Interaction::Hovered => (h.hot, 1.0),
-            Interaction::Pressed => (super::ui::pressed(h.hot), super::ui::PRESS_SCALE),
-        };
-        if bg.0 != want {
-            bg.0 = want;
-        }
-        if xf.scale != Vec2::splat(scale) {
-            xf.scale = Vec2::splat(scale);
-        }
-    }
-}
+/// A button that lights while the pointer is on it: `ui`'s, so a panel and
+/// a menu cannot light differently. The panels had no hover state at first,
+/// and nothing on them answered the pointer until a click round-tripped
+/// through a redraw.
+pub use super::ui::Hover;
 
 /// The card a panel draws on. [`pop_in`] grows it in as the panel opens.
 #[derive(Component)]
@@ -1060,7 +1014,7 @@ pub fn register(app: &mut App) {
                 inv::table_clock,
                 rebuild,
                 inv::ghost_follow,
-                (hover, pop_in, hud_under_pages),
+                (pop_in, hud_under_pages),
                 tooltip,
             )
                 .chain()

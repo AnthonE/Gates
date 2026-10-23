@@ -28,7 +28,7 @@
 //!     game; what was missing was the second half.
 
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use super::screen::{Connecting, Menu, Screen};
 use super::settings::Settings;
@@ -448,6 +448,7 @@ pub fn act(
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
     reports: Option<ResMut<super::report::Reports>>,
+    net: Option<NonSend<Net>>,
 ) {
     let Some(verb) = chosen.0.take() else {
         return;
@@ -455,10 +456,10 @@ pub fn act(
     match verb {
         Verb::Resume => {
             // Take the pointer back, so resuming does not need a click that
-            // would also swing the axe.
-            if let Ok(mut c) = cursor.single_mut() {
-                c.grab_mode = CursorGrabMode::Locked;
-                c.visible = super::web::in_post();
+            // would also swing the axe. Not for a spectator, who has nothing
+            // to aim and whose mouse `input::gather` leaves free.
+            if !net.is_some_and(|n| n.session.watching.is_some()) {
+                ui::lock_cursor(&mut cursor);
             }
             next.set(Screen::InWorld);
         }

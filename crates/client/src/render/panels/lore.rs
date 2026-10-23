@@ -39,9 +39,7 @@ pub struct TopicButton(pub u8, pub u8);
 pub struct OfferButton(pub u8, pub u8);
 
 /// Rust's green go button, the craft queue's head.
-const GO: Color = Color::srgba(0.451, 0.553, 0.271, 0.92);
-const GO_HOT: Color = Color::srgba(0.53, 0.64, 0.33, 0.96);
-const GO_TEXT: Color = Color::srgba(0.86, 0.95, 0.70, 0.95);
+use super::craft::{QUEUE_FILL as GO_TEXT, QUEUE_HEAD as GO, QUEUE_HEAD_HOT as GO_HOT};
 /// A skin picture on an offer card, px.
 const OFFER_ICON_PX: f32 = 34.0;
 
@@ -353,7 +351,7 @@ fn go_button<M: Component>(p: &mut ChildSpawnerCommands, label: &str, marker: M,
             ..default()
         },
         BackgroundColor(bg),
-        Hover { rest: bg, hot },
+        Hover::new(bg, hot),
         BorderColor::all(if armed { GO_TEXT } else { LINE }),
     ))
     .with_children(|b| {

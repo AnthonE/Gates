@@ -51,7 +51,7 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::render::renderer::RenderAdapterInfo;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use crate::report::{
     self, Audio, Build, Kind, Machine, Netstat, Place, Receipt, Report, Vitals, TITLE_MAX,
@@ -378,10 +378,7 @@ fn release(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>, screen: 
     if *screen.get() != Screen::InWorld {
         return;
     }
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = super::web::in_post();
-    }
+    super::ui::lock_cursor(cursor);
 }
 
 /// The browser's user agent; `None` on the desktop.

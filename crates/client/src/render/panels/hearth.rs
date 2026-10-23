@@ -12,8 +12,8 @@ use bevy::prelude::*;
 use client_core::core::ClientCore;
 
 use super::{
-    font, font_bold, Hover, Panel, Tip, Ui, CELL_BG, CELL_FULL, CELL_GAP_PX, CELL_HOVER, LINE,
-    SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
+    font, font_bold, Hover, Panel, Tip, Ui, CELL_BG, CELL_FULL, CELL_GAP_PX, LINE, SLOT_PX, TEXT,
+    TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::hearth::{self as words, Row};
@@ -23,14 +23,12 @@ use crate::ui::hearth::{self as words, Row};
 const COL_W_PX: f32 = 6.0 * SLOT_PX + 5.0 * CELL_GAP_PX;
 /// A cost cell under COST PER 24 HOURS: smaller than a slot, it is a price.
 const COST_PX: f32 = 44.0;
-/// The upkeep box's fill, a shade under the panel's.
-const WELL: Color = Color::srgba(0.125, 0.114, 0.102, 0.96);
+/// The upkeep box's fill, a shade under the panel's: the furnace's well.
+use super::inv::FIRE_WELL as WELL;
 /// Protected, and decaying.
 const SAFE: Color = Color::srgb(0.60, 0.88, 0.55);
-/// FEED, Rust's green.
-const FEED_BG: Color = Color::srgb(0.36, 0.47, 0.20);
-const FEED_HOT: Color = Color::srgb(0.43, 0.56, 0.25);
-const FEED_TEXT: Color = Color::srgb(0.96, 0.94, 0.89);
+/// FEED, Rust's green: the furnace switch's.
+use super::inv::{SWITCH_ON as FEED_BG, SWITCH_ON_HOT as FEED_HOT, SWITCH_TEXT as FEED_TEXT};
 
 /// The whole column, or a region of it a drag can be released over: a
 /// release here feeds instead of dropping (`inv::drag_pointer`).
@@ -292,10 +290,7 @@ fn stock_cell(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icon
                 ..default()
             },
             BackgroundColor(rest),
-            Hover {
-                rest,
-                hot: CELL_HOVER,
-            },
+            Hover::on(rest),
             BorderColor::all(LINE),
             Tip(if filled {
                 format!(
@@ -375,10 +370,7 @@ fn feed_button(parent: &mut ChildSpawnerCommands) {
                 ..default()
             },
             BackgroundColor(FEED_BG),
-            Hover {
-                rest: FEED_BG,
-                hot: FEED_HOT,
-            },
+            Hover::new(FEED_BG, FEED_HOT),
             Tip("puts up to 500 of each upkeep material you carry into the hearth".into()),
         ))
         .with_children(|b| {
