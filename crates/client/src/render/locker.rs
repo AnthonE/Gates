@@ -344,9 +344,10 @@ fn card(g: &mut ChildSpawnerCommands, skin: &StoreSkin, owned: u32, icons: Optio
                 ..default()
             })
             .with_children(|row| {
-                let (bg, text, ink) = match &skin.price {
-                    Some(p) => (ui::PRICE, p.clone(), ui::TITLE),
-                    None => (ui::ROW_IDLE, "COMING SOON".to_string(), ui::FAINT),
+                let (bg, text, ink) = match (&skin.price, &skin.earn) {
+                    (Some(p), _) => (ui::PRICE, p.clone(), ui::TITLE),
+                    (None, Some(e)) => (ui::ROW_IDLE, e.to_uppercase(), ui::DIM),
+                    (None, None) => (ui::ROW_IDLE, "COMING SOON".to_string(), ui::FAINT),
                 };
                 row.spawn((
                     Node {

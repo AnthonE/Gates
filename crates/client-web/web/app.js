@@ -2059,9 +2059,11 @@ function skinCard(s) {
   fits.textContent = String(s.covers || "");
   const price = document.createElement("span");
   const onSale = Boolean(s.on_sale && s.price_text);
-  price.className = "price" + (onSale ? "" : " soon");
+  // A skin nobody sells but play gives says how (`earn`), not "coming soon".
+  const earn = !onSale && s.earn ? String(s.earn) : "";
+  price.className = "price" + (onSale ? "" : " soon") + (earn ? " earn" : "");
   if (onSale) price.innerHTML = CART;
-  price.append(onSale ? String(s.price_text) : "Coming soon");
+  price.append(onSale ? String(s.price_text) : earn || "Coming soon");
   txt.append(h, fits, price);
   el.append(art, txt);
   return el;
