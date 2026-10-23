@@ -125,7 +125,7 @@
 //! the ground does, or touch each material holding the image after [`drain`],
 //! which forces the re-prepare. `NOW.md` §0web carries it.
 
-use bevy::asset::AssetId;
+use bevy::asset::{AssetId, RenderAssetUsages};
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
@@ -618,7 +618,20 @@ pub fn drain(
         let Some(image) = images.get_mut(id) else {
             continue;
         };
+        // **A page keeps no model map's pixels once they are on the GPU.**
+        // Loaded with Bevy's default usage, every image keeps its CPU copy
+        // in the main world, and in a browser that copy is the wasm heap:
+        // 0.9.0's ~820 images took a page from 560 MB to 2 GB in eleven
+        // seconds and it died there (2026-10-23). A `models/` map is only
+        // ever sampled by a material, so it goes RENDER_WORLD, and the
+        // extract hands its buffer to the GPU instead of cloning it. The
+        // ground's photographs keep theirs: `textures::stack_ground` reads
+        // them on the CPU.
+        let release = cfg!(target_arch = "wasm32") && path.starts_with(MIPPED_DIRS[1]);
         if !wants(image) {
+            if release && image.asset_usage != RenderAssetUsages::RENDER_WORLD {
+                image.asset_usage = RenderAssetUsages::RENDER_WORLD;
+            }
             continue;
         }
         let (w, h) = (
@@ -640,6 +653,9 @@ pub fn drain(
         // field directly rather than going through it.
         image.texture_descriptor.mip_level_count = levels(w, h);
         image.data = Some(data);
+        if release {
+            image.asset_usage = RenderAssetUsages::RENDER_WORLD;
+        }
         chained.0.push(id);
         budget = budget.saturating_sub(u64::from(w) * u64::from(h));
     }

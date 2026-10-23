@@ -184,8 +184,11 @@ pub fn setup(
             Msaa::Off,
             Camera {
                 // Above the rig, and blended over it rather than replacing
-                // it, so the fade at the end shows the world underneath.
-                order: 1,
+                // it, so the fade at the end shows the world underneath. 2,
+                // not 1: a scaled world presents at the rig's order + 1
+                // (`render_scale`), and two cameras at one order draw in an
+                // order nobody chose (0.9.0's POTATO boot did exactly that).
+                order: 2,
                 clear_color: ClearColorConfig::Custom(Color::NONE),
                 output_mode: CameraOutputMode::Write {
                     blend_state: Some(BlendState::ALPHA_BLENDING),
