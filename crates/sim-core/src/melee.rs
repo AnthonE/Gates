@@ -647,12 +647,26 @@ pub fn occupant_cast(
 pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
+    // The segment's planar reach: every point of it is within this of `o`.
+    let reach = (u.0 * u.0 + u.2 * u.2).sqrt();
     let mut best: Option<MobHit> = None;
     for (slot, m) in mobs.m.iter().enumerate() {
         if !m.alive || m.hp == 0 {
             continue;
         }
         let def = mc.def(m.kind);
+        // Out of reach, so the box solve below cannot answer: its planar
+        // half-diagonal is under 0.6 × the box's length, and the metre of
+        // slack dwarfs any rounding, so this only skips certain misses.
+        let len = f32::from(def.body_r_cm) * 0.01 * ANIMAL_LEN_PER_R;
+        let (dx, dz) = (
+            o.0 - m.body.qx as f32 * POS_XZ_Q,
+            o.2 - m.body.qz as f32 * POS_XZ_Q,
+        );
+        let far = reach + 0.6 * len + 1.0;
+        if dx * dx + dz * dz > far * far {
+            continue;
+        }
         let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body, m.yaw) else {
             continue;
         };

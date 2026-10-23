@@ -434,6 +434,14 @@ impl SlotCache {
         c
     }
 
+    /// `terrain::ground` at any point, through this cache's worldgen memo:
+    /// the same bits, minus re-hashing the corners a neighbouring read just
+    /// hashed. What a ray's dozen samples a metre apart mostly share.
+    #[inline]
+    pub(crate) fn ground(&mut self, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+        terrain::ground_memo(&mut self.lat, seed, haven, x, z)
+    }
+
     /// The sim's ground at whole-metre point (`ix`, `iz`), resolved once per
     /// seed.
     #[inline]
