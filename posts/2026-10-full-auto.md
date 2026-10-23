@@ -2,20 +2,20 @@
 
 **Patch notes · 22 October 2026**
 
-Since Green Veil, Gates got Rust's guns, rockets and C4, and a tech tree that
-goes much further. You can build at any angle, farm, swim, bleed, and dress
-for the cold in seven slots. THE GATE grew into a sandstone city with a
+Since Green Veil, Gates got eight new guns, rockets and C4, and a tech tree
+that goes much further. You can build at any angle, farm, swim, bleed, and
+dress for the cold in seven slots. THE GATE grew into a sandstone city with a
 casino in the middle, and your team can follow the base from a phone. Loot,
-food, water and melee all work the way they do in Rust now. This update
-comes with a wipe. Here is what changed.
+food, water and melee were all reworked. This update comes with a wipe. Here
+is what changed.
 
 ---
 
 ## Guns
 
-Gates has Rust's gun roster. Every gun has an aim cone, bloom from sustained
-fire, recoil you pull down, and damage that falls off with range. Aiming down
-the sights tightens the cone and halves the kick.
+Eight new guns join the revolver. Every gun has an aim cone, bloom from
+sustained fire, recoil you pull down, and damage that falls off with range.
+Aiming down the sights tightens the cone and halves the kick.
 
 | Gun | Damage | Rounds | Fire | Ammo | Hits to kill, unarmoured |
 |---|---|---|---|---|---|
@@ -60,7 +60,7 @@ the sights tightens the cone and halves the kick.
 
 - **Freeform building.** A foundation placed on open ground starts its own
   building, turned to face wherever you're looking. Any base, at any angle.
-- Triangles are equilateral now, the same as Rust's.
+- Triangles are equilateral now.
 - Walls, floors, stairs, doors, windows, deployables and upkeep all work on a
   turned building the same as a square one.
 - The placement ghost asks the server the same question the server asks, so
@@ -68,7 +68,7 @@ the sights tightens the cone and halves the kick.
 - A new build wheel: the chosen shape in green, a big icon, its name, a line
   on what it is and its price, and 21 new shape icons.
 - Q and E pick a building skin on the hammer's Upgrade.
-- The hearth is the size of Rust's tool cupboard, as tall as a player.
+- The hearth is as tall as a player now: 1.54 × 1.8 × 0.92 m.
 - Stone upgrades thud into place, metal goes on with two hammer blows, and
   repairs hammer.
 
@@ -94,7 +94,7 @@ the sights tightens the cone and halves the kick.
 
 - **Swimming.** Water deeper than 1.15 m floats you. Crouch dives, jump rises,
   and you steer where you look. You hold your breath for 10 seconds and then
-  drown, as in Rust. No guns, bows, charges or building while you swim.
+  drown. No guns, bows, charges or building while you swim.
 - Foundations stand in up to 2 m of water. Other deployables need dry land.
 - **Right mouse pours** a full skin or jug. Fresh water puts out fires and
   waters planters. Salt water dries them out.
@@ -107,7 +107,7 @@ the sights tightens the cone and halves the kick.
 
 ## Clothing, bleeding and teas
 
-- **Seven clothing slots**, like Rust: head, face, shirt, body, legs, hands
+- **Seven clothing slots**: head, face, shirt, body, legs, hands
   and feet.
 - **Fourteen new clothes:** Burlap Trousers, Burlap Shoes, Burlap Gloves, Hide
   Pants, Hide Boots, Hide Vest, Leather Gloves, Hoodie, Pants, Jacket, Snow
@@ -130,7 +130,7 @@ the sights tightens the cone and halves the kick.
 
 ## A bigger tech tree
 
-The tech tree is a full-screen page now, in Rust's layout: a LEVEL tab for
+The tech tree is a full-screen page now: a LEVEL tab for
 each bench, your JUNK count, and an item rail with UNLOCK. Unlocking a node
 buys the whole path to it.
 
@@ -145,7 +145,7 @@ Sixteen new items to unlock:
   helmet or boots with it.
 - The beancan, the barbed barricade and the floor spikes.
 
-Benches and the research table stand on bare ground now, like Rust.
+Benches and the research table stand on bare ground now.
 
 ## Melee lands where it's drawn
 
@@ -159,7 +159,7 @@ Benches and the research table stand on bare ground now, like Rust.
   shots and swings on a high ping land where they looked like they would.
 - **Punching.** An empty hand throws a weak punch (5 damage) that costs you
   2 hp.
-- No grunt when you're hurt, as in Rust. A headshot plays a crunch, and the
+- No grunt when you're hurt. A headshot plays a crunch, and the
   shooter hears it too.
 - Wolves yelp, boars squeal and stags bleat when you hit them, and each cries
   out when it dies.
@@ -168,7 +168,7 @@ Benches and the research table stand on bare ground now, like Rust.
 
 - **A city now.** THE GATE is a 92 m sandstone gate with a 41 m ring, and the
   containers around it are the ancient city's blocks.
-- **The casino.** Rust's Big Wheel and slot machines, staked in JUNK, under a
+- **The casino.** A Big Wheel and slot machines, staked in JUNK, under a
   timber-trussed roof that keeps the rain off.
   - The wheel has 25 segments: twelve 1s, six 3s, four 5s, two 10s and one
     20. A win pays your stake times the number, plus your stake back. Bets
@@ -182,7 +182,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - **Vending machines** stand at the six stalls, run by shopkeepers who greet
   you, face you and thank you after a sale.
 - **Guards** walk the town with revolvers, and one walks the casino.
-- The workbench, recyclers and other stations are Rust's size. Recyclers hum
+- The workbench, recyclers and other stations are bigger. Recyclers hum
   only while they run, and their engines catch and run down.
 
 ## The works
@@ -192,8 +192,8 @@ Benches and the research table stand on bare ground now, like Rust.
   counter under the gate, and its ring mends as the quota fills.
 - Works wake as they fill: pools rise, glass cores glow with the tank, and
   stones rise, hover and circle once a work burns.
-- The work terminal is Rust-style: its three steps, one line on what to do,
-  what it unlocks for everyone, and what its tank boosts. Quotas have pictures
+- A new work terminal: its three steps, one line on what to do, what it
+  unlocks for everyone, and what its tank boosts. Quotas have pictures
   and bars, and FUEL tells you a dry tank's minimum to relight.
 - **Shoot THE RING LOCK's dials** with an arrow to turn them.
 - The glyph stones are carved. The ancients' script is cut into both faces,
@@ -219,10 +219,10 @@ Benches and the research table stand on bare ground now, like Rust.
   the key lock and the metal door.
 - A key lock has its own panel: press L to lock, unlock or take it.
 - Doors fill their doorways (1.2 × 2.2 m), and a door opens where you're
-  looking at it. Your eye is at Rust's height, 1.5 m.
+  looking at it. Your eye is at 1.5 m.
 - Metal doors open on a latch and slam, garage doors roll, and both ring when
   knocked.
-- **The hearth is Rust's tool cupboard.** E opens the full inventory page with
+- **The hearth is a tool cupboard.** E opens the full inventory page with
   the hearth beside it: upkeep cost per 24 hours, how long you're protected,
   the stock as cells (a click takes 500 back), and a FEED button. Drag or
   right-click materials onto it to feed it.
@@ -238,13 +238,13 @@ Benches and the research table stand on bare ground now, like Rust.
 - Building tools act only on the piece under your crosshair. The placement
   ghost aims where you look and slides out of walls.
 
-## Survival like Rust
+## Survival, reworked
 
 - **You wake hurt, hungry and thirsty:** 55 health, 75 food, 50 water.
 - **Food and water last longer.** Standing still, a full stomach lasts three
   hours (from one) and full water two hours (from 40 minutes).
-- **Loot follows Rust.** Trees give wood only. Barrels, crates and the
-  Ziggurat's rooms give JUNK, parts and gear at Rust's rates, with no cloth,
+- **Loot is reworked.** Trees give wood only. Barrels, crates and the
+  Ziggurat's rooms give JUNK, parts and gear, with no cloth,
   fat, frags, sulfur, gunpowder or corn. Ore pickups give 50.
 - The first workbench costs 500 wood and 100 frags. THE GATE sells the frags.
 - **Cacti** grow green in the desert. They're solid, prick you if you push into
@@ -256,7 +256,7 @@ Benches and the research table stand on bare ground now, like Rust.
 
 - **Cliffs are solid.** You can't walk up a rock face from any angle, and you
   slide down one. Bodies, arrows and dropped items all hit the rock you see.
-- **A desert closer to Rust's:** paler sand under golden dry grass, cycads,
+- **A new desert:** paler sand under golden dry grass, cycads,
   sandstone cliffs and boulders, and palms 12 m tall in three shapes, with
   dead fronds under the crown.
 - Every boulder and loose rock is 1.4 times bigger, and rock blends at its
@@ -280,7 +280,7 @@ Benches and the research table stand on bare ground now, like Rust.
 
 ## Friends, teams and the companion
 
-- **The companion**, Gates' answer to Rust+: sign in on the web with your
+- **The companion:** sign in on the web with your
   wallet for your team's map, team chat both ways, and raid alerts when your
   base takes hits. TEAM APP in the main menu takes you there.
 - **Elo Pros friends in game:** a FRIENDS tab, a friends rail, friends on your
@@ -288,7 +288,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - Click a name in chat or on the standings for a profile card: Elo Pros
   picture, whether they're playing, hours in Gates, and ADD FRIEND, ACCEPT or
   REMOVE.
-- **Contacts**, like Rust's. Stand near a signed-in player for 3 seconds and
+- **Contacts.** Stand near a signed-in player for 3 seconds and
   they go in your contacts with a mugshot. Mark them FRIENDLY or ENEMY, and
   their nametag turns blue or red. Whoever kills you is marked an enemy
   unless they're a friend. Each contact takes a note of up to 120 characters.
@@ -296,7 +296,7 @@ Benches and the research table stand on bare ground now, like Rust.
 
 ## Menus, HUD and settings
 
-- **A new HUD, closer to Rust's:** a tape compass across the top, a flat belt,
+- **A new HUD:** a tape compass across the top, a flat belt,
   paler vitals and full-width chips.
 - **Inventory:** click an item for its card (stats, description, actions).
   ISLAND, CRAFTING, TEAM and CONTACTS share one strip, and the belt stands
@@ -318,7 +318,7 @@ Benches and the research table stand on bare ground now, like Rust.
 
 ## Voice and sound
 
-- **Push to talk is V** (and Mouse 4), as in Rust. Pick up moves to `` ` ``.
+- **Push to talk is V** (and Mouse 4). Pick up moves to `` ` ``.
 - A VOICE CHAT section in AUDIO settings: on or off, mic volume, hold, toggle
   or open mic, the open-mic threshold, and the mic device on desktop.
 - New binds to mute your mic and mute all voices, and MUTE IN BACKGROUND.
@@ -349,7 +349,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - Skins can be priced in JUNK.
 - **A free copy of Gates** goes to every player who signs in and joins, until
   1 December. The house pays the gas.
-- **Unlocks**, like Rust's Frog Boots: an item only its owners can craft. The
+- **Unlocks:** an item only its owners can craft. The
   first is the **Abyss Rug**, which gives comfort with no fire and lies under
   any deployable. THE OUTFITTER sells it for 100 JUNK, one a wipe, and it
   arrives in your wallet as an item you can sell. Whoever holds it can craft
@@ -487,7 +487,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - The placement ghost asks the server's own rules, and placed pieces show at
   once
 - The build wheel: a new layout and 21 new shape icons
-- The hearth is Rust's cupboard size
+- The hearth is as tall as a player
 - Cliffs are solid: no walking up faces, and you slide down them
 - Bodies, arrows and dropped items hit the rock that's drawn
 - Falls land on every step and on faces
@@ -508,7 +508,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - The helicopter only hunts armed players, and stays out of the rain
 - You spawn at 55 health, 75 food and 50 water
 - Food lasts three hours and water two, standing still
-- Loot and gathering follow Rust: trees give wood only, and containers give
+- Loot and gathering reworked: trees give wood only, and containers give
   JUNK, parts and gear
 - Ore pickups give 50
 - The first workbench costs 500 wood and 100 frags
@@ -516,7 +516,7 @@ Benches and the research table stand on bare ground now, like Rust.
 - Benches and the research table stand on bare ground
 - Unlocking a tech-tree node buys the whole path to it
 - THE GATE is a 92 m sandstone gate in an ancient city
-- THE GATE's stations are Rust's size
+- THE GATE's stations are bigger
 - The recycler hum plays only while a recycler runs
 - The work terminal shows its steps, what it unlocks, and quota bars
 - Slots pay only on three of a kind
