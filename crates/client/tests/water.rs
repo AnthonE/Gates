@@ -1646,8 +1646,10 @@ fn the_reflected_sky_follows_the_day() {
     assert_eq!(f, [0.0; 3], "a night floor by day");
     let [_, _, _, fnight] = sky_light(noon_sun, 0.0, 1.0);
     assert!(lum(fnight) > 0.0, "the night sky is black");
+    // Two percent: the desert's darker fill (`fill::SKY_FILL_SCALE` ×1.8)
+    // put the noon zenith under the fixed floor's old 1% bound, at 1.3%.
     assert!(
-        lum(fnight) < 0.01 * lum(z),
+        lum(fnight) < 0.02 * lum(z),
         "the night sky is as bright as the day"
     );
     let low = Vec3::new(0.95, 0.05, 0.0).normalize();

@@ -394,9 +394,17 @@ fn every_packed_model_is_in_a_table_or_named() {
     let mut on_disk = Vec::new();
     walk(&asset_path("models"), &mut on_disk);
     let tables: BTreeSet<&str> = packed_models().into_iter().collect();
+    // The rock pieces carry no images either: only their shape is read, and
+    // they draw in the ground's splat material (`render::boulders`).
+    let pieces = client::render::boulders::PIECE_GLB
+        .iter()
+        .chain(&client::render::boulders::PIECE_FAR_GLB);
+    let pieces: BTreeSet<&str> = pieces.copied().collect();
     for f in &on_disk {
         assert!(
-            tables.contains(f.as_str()) || NO_NORMAL_MAP.contains(&f.as_str()),
+            tables.contains(f.as_str())
+                || NO_NORMAL_MAP.contains(&f.as_str())
+                || pieces.contains(f.as_str()),
             "{f} is on disk and in no table this test reads — add it to a table or name it"
         );
     }
