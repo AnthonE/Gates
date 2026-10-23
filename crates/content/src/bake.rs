@@ -2909,7 +2909,7 @@ impl Content {
                     .map_err(|_| format!("bake: mob `{}` {what} {v} overflows the sim", m.id))
             };
             // A percentage of the axis, floored: 50% is 63, which is
-            // 1.4882 m/s out of `WALK_SPEED`. Floored rather than rounded
+            // 1.389 m/s out of `WALK_SPEED`. Floored rather than rounded
             // because the axis is the ceiling on speed and a content
             // number should never buy more than it asked for.
             let axis = |pct: u32| -> u8 { ((pct.min(100) * 127) / 100) as u8 };

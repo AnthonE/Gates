@@ -47,7 +47,7 @@ name = "Pig"
 # full strength; on wipe day the fel tier's 60% makes it 90, four swings.
 hp = 150
 
-# 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
+# 50% of WALK_SPEED = 1.39 m/s, an amble a player outwalks without trying.
 walk_pct = 50
 
 # **100% of SPRINT_SPEED = 5.5 m/s: the player's own top speed** (operator,
@@ -202,7 +202,7 @@ name = "Wolf"
 # swings of the kit's stone hatchet, as the boar; 90 on wipe day.
 hp = 150
 
-# 55% of WALK_SPEED = 1.64 m/s: a patrol, marginally brisker than the pig's
+# 55% of WALK_SPEED = 1.52 m/s: a patrol, marginally brisker than the pig's
 # amble, so a wolf crossing a meadow reads as going somewhere.
 walk_pct = 55
 
