@@ -186,8 +186,19 @@ Gates 2 is a complete game without Steam, so a refusal costs a channel, not
 the product.
 
 - **It still ships:** a direct download (GitHub release, the elo depot) and
-  itch.io. Check the Epic Games Store's policy on blockchain games for
-  **Gates itself** before naming it anywhere.
+  itch.io.
+- **Epic takes Gates itself, with conditions** (its *Blockchain Technology
+  Guidelines*, as quoted by search on 2026-10-23; the page didn't load
+  directly, so re-read it before signing): a signed Blockchain Rider; the
+  **base product free**, with no add-ons sold through Epic; we handle
+  payments, support, fraud and refunds; **no links to crypto or NFT
+  marketplaces on Epic's pages**, so elopros.com's trade terminal can't be
+  linked; not sold in China or South Korea; a Blockchain/NFT tag, a
+  disclosure FAQ, and no gambling, where real-world value includes coins
+  and NFTs (keep the elo gacha out of it). An AO rating is accepted only if
+  blockchain is its sole cause. Gates and Gates 2 would be **separate
+  listings** there too. Open question: a free Epic download whose
+  public island needs a ticket bought off Epic.
 - **The story is true, so tell it straight.** Quote Valve's line verbatim and
   show that the Steam build has no chain in it (the P3 guard is the proof).
   If they refused anyway, that is the argument `scry-forge` `PITCH.md` §3b
