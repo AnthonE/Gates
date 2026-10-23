@@ -1094,11 +1094,11 @@ const GPU_FAILED = "gates.webgpu.failed";
 /* Started at load, beside the `build.json` fetch, rather than after it. */
 const gpuProbe = (async () => {
   if (!navigator.gpu) return { ok: false, why: "no WebGPU in this browser" };
-  /* Desktop Linux Chrome only has WebGPU behind a flag, and a frame drawn wrong
-     there (grey fog, a white edge) never reaches the fallback. `?gfx=webgpu`
-     still opts in. */
-  const ua = navigator.userAgent;
-  if (/Linux/.test(ua) && !/Android|CrOS/.test(ua)) return { ok: false, why: "WebGPU on desktop Linux is unvalidated" };
+  /* Desktop Linux takes WebGPU too when the browser offers a real adapter.
+     It was held to WebGL2 for a frame once drawn wrong there (grey fog, a
+     white edge), but on 2026-10-23 the WebGL2 module drew the whole world
+     black on Linux + NVIDIA (ANGLE over OpenGL) while WebGPU drew it right.
+     A refused pipeline or a lost device still falls back below. */
   try {
     /* A blocklisted GPU answers null; a wedged one may never answer. */
     const adapter = await Promise.race([
