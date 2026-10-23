@@ -58,7 +58,7 @@ CLIENT = ("crates/client/", "crates/client-web/", "crates/sound/", "crates/sound
 # Nothing a player runs: docs, tooling, ops, and tests (a golden moving is a
 # PIN above, read by value, not by its file).
 NO_DEPLOY = ("posts/", "reference/", "findings/", "ci/", "ops/", ".github/", ".claude/",
-             "docs/")
+             "docs/", ".gitignore")
 TESTS = re.compile(r"^crates/[^/]+/(tests|benches|examples)/")
 
 NEXT = {
