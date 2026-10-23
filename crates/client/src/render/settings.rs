@@ -2054,25 +2054,6 @@ pub fn fullscreen_key(keyboard: Res<ButtonInput<KeyCode>>, mut settings: ResMut<
     }
 }
 
-/// wasm only in effect: when the browser leaves fullscreen on its own (Esc,
-/// or its own UI), turn the setting off to match. Bevy never hears about
-/// that exit, so without this the row reads ON over a windowed canvas and
-/// the next click on it is spent turning off something already off.
-///
-/// Edge-triggered on the browser's state, so a request still pending at
-/// boot (the page's default is ON) is not mistaken for an exit. No file
-/// to write in a browser, so this costs no saved preference.
-pub fn follow_browser_fullscreen(mut settings: ResMut<Settings>, mut was: Local<bool>) {
-    let Some(now) = super::web::browser_fullscreen() else {
-        return;
-    };
-    if *was && !now && settings.fullscreen {
-        settings.fullscreen = false;
-        settings.dirty = true;
-    }
-    *was = now;
-}
-
 /// Field of view onto the camera. Runs in every state: the camera may not
 /// exist yet (menu) and may be rebuilt later (a second world), and a setting
 /// that only applied while the settings screen was open would be a setting

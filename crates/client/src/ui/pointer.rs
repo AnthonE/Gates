@@ -183,6 +183,14 @@ pub struct BrowserLock {
 }
 
 impl BrowserLock {
+    /// Whether the lock was asked for exactly one frame ago: the moment to
+    /// ask for anything else the same click allows (`web::follow_pointer_lock`
+    /// asks for fullscreen then, never first, because a fullscreen request
+    /// spends the click and a lock asked for after it is refused).
+    pub fn asked_last_frame(&self) -> bool {
+        self.wanting == 2
+    }
+
     pub fn step(&mut self, want: bool, has: bool) -> LockFix {
         if !want {
             self.wanting = 0;
@@ -215,9 +223,14 @@ mod tests {
     #[test]
     fn a_browser_esc_is_seen() {
         let mut b = BrowserLock::default();
+        assert!(!b.asked_last_frame());
         for _ in 0..2 {
             assert_eq!(b.step(true, false), LockFix::Keep, "the request is pending");
         }
+        assert!(
+            b.asked_last_frame(),
+            "fullscreen is asked for the frame after the lock"
+        );
         for _ in 0..10 {
             assert_eq!(b.step(true, true), LockFix::Keep);
         }

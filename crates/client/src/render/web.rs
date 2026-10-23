@@ -394,12 +394,23 @@ pub fn pointer_locked() -> Option<bool> {
 /// opens the Esc menu, the way Esc does on the desktop. A request the page
 /// refused frees the cursor instead of leaving it hidden over a dead view.
 ///
+/// **Fullscreen comes back with the pointer.** FULLSCREEN (on by default) is
+/// how the browser game is played, and a page can only enter it inside a
+/// click's few seconds: a boot that took longer never got there, and Esc
+/// outside Chromium's keyboard lock leaves it along with the pointer. So the
+/// click that captures the pointer, or the one on Resume, puts it back. One
+/// frame AFTER the lock is asked for, never with it: a fullscreen request
+/// spends the click, and a lock asked for after it is refused for want of
+/// one (measured in Chromium).
+///
 /// Never inside an X post: the frame has no pointer lock to give, the window
 /// says `Locked` by design and the view drags (`in_post`).
 pub fn follow_pointer_lock(
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     screen: Option<Res<State<super::Screen>>>,
     mut next: ResMut<NextState<super::Screen>>,
+    settings: Res<super::settings::Settings>,
+    canvas: Option<Res<Canvas>>,
     mut lock: Local<crate::ui::pointer::BrowserLock>,
 ) {
     use crate::ui::pointer::LockFix;
@@ -430,6 +441,42 @@ pub fn follow_pointer_lock(
             }
         }
     }
+    if lock.asked_last_frame() && settings.fullscreen && browser_fullscreen() == Some(false) {
+        if let Some(canvas) = canvas {
+            request_fullscreen(&canvas.0);
+        }
+    }
+}
+
+/// Put the canvas named by `selector` in fullscreen, as winit does. Refused
+/// outside a click's few seconds, and the refusal is swallowed: the next
+/// capture asks again.
+fn request_fullscreen(selector: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+        thread_local! {
+            static IGNORE: Closure<dyn FnMut(JsValue)> = Closure::new(|_| ());
+        }
+        let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.query_selector(selector).ok().flatten())
+        else {
+            return;
+        };
+        let ask = js_sys::Reflect::get(&el, &JsValue::from_str("requestFullscreen"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+        if let Some(Ok(p)) = ask.map(|f| f.call0(&el)) {
+            if let Ok(p) = p.dyn_into::<js_sys::Promise>() {
+                IGNORE.with(|f| {
+                    let _ = p.catch(f);
+                });
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = selector;
 }
 
 /// Frames the app draws before the page's handoff overlay is taken down.

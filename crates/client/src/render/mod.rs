@@ -1262,13 +1262,12 @@ impl Plugin for GatesRenderPlugin {
                 Update,
                 (
                     settings::apply_view,
-                    // F11 and the browser's own exits both feed the setting
-                    // `apply_window` reads, so both run before it.
-                    settings::apply_window
-                        .after(settings::fullscreen_key)
-                        .after(settings::follow_browser_fullscreen),
+                    // F11 feeds the setting `apply_window` reads. A browser
+                    // leaving fullscreen on its own does not: ON there means
+                    // fullscreen while playing, and the next capture puts it
+                    // back (`web::follow_pointer_lock`).
+                    settings::apply_window.after(settings::fullscreen_key),
                     settings::fullscreen_key,
-                    settings::follow_browser_fullscreen,
                     settings::follow_focus,
                     settings::save_on_change,
                     settings::mirror_streamer,
