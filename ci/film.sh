@@ -12,7 +12,8 @@
 #
 # record options: --population N (10) · --spawn x,z (2353,3107) · --walk x,z
 #                 (where the recorder stands, 2336,3086) · --no-charges (the
-#                 raiders are armed by default) · --seed N · --port N
+#                 raiders are armed by default) · --charge ITEM (what they
+#                 plant, item.satchel_charge) · --seed N · --port N
 #                 The defaults are the tape the lists in ci/film/ were shot on
 #                 (`ci/film.sh record film/zig.rec 1200`): a camp of towers
 #                 150 m down the sunset axis from the Black Ziggurat, raided
@@ -47,13 +48,14 @@ record)
   TAPE="${1:?record needs a tape path}"; shift
   SECONDS_=600
   case "${1:-}" in ''|*[!0-9.]*) ;; *) SECONDS_="$1"; shift ;; esac
-  POPULATION=10; SPAWN="2353,3107"; WALK="2336,3086"; CHARGES=1; SEED=20260731; PORT=4433
+  POPULATION=10; SPAWN="2353,3107"; WALK="2336,3086"; CHARGES=1; CHARGE=item.satchel_charge; SEED=20260731; PORT=4433
   while [ $# -gt 0 ]; do
     case "$1" in
       --population) POPULATION="$2"; shift 2 ;;
       --spawn) SPAWN="$2"; shift 2 ;;
       --walk) WALK="$2"; shift 2 ;;
       --no-charges) CHARGES=0; shift ;;
+      --charge) CHARGE="$2"; shift 2 ;;
       --seed) SEED="$2"; shift 2 ;;
       --port) PORT="$2"; shift 2 ;;
       *) fail "unknown record option $1" ;;
@@ -66,7 +68,7 @@ record)
   # What a Rust starter base costs (sim_core::bots::STARTER): the owners build
   # one, the raiders carry the same kit and use none of it.
   KIT="item.wood:1000, item.stone:1000, item.hearth:1, item.door_metal:1, item.door_wood:1, item.box_small:1, item.lock_code:1"
-  [ "$CHARGES" = 0 ] || KIT="item.satchel_charge:1, $KIT"
+  [ "$CHARGES" = 0 ] || KIT="$CHARGE:1, $KIT"
   cat > "$WORK/film.toml" <<TOML
 bind = "127.0.0.1:$PORT"
 seed = $SEED
