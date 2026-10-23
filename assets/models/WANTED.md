@@ -553,3 +553,162 @@ how often each is in a hand**: sulfur, gunpowder, animal fat, bone fragments,
 tarp, the waterskins and the three gun bodies (Meshy, ~260 credits), then the
 garments together with their worn versions. The Blender rows cost nothing
 but a session.
+
+## 13 · Skins wanted — our own takes on what sells
+
+The catalog today (`content/skins.toml`, 1–22) is held weapons and tools,
+plus one tint, one painted tunic and one rug unlock. Rust's best sellers in
+2025–26 are a handful of looks: heat-treated metal, black and gold, a
+glowing relic, red-hot blades, the battered veteran gun, a cheap matched wood
+set, camo sets, a glowing garage door, the grinning face mask and hazmat
+reskins. We copy the **archetype, never the design or the name**. §0.3 holds
+for every prompt: describe the object, and never name the reference game, its
+items or its studio. The albedo stays in `LUMA_BAND` (`ART.md` §5), which also
+caps how dark a blackout look or how white a winter look can go.
+
+The tags say what each row needs:
+- **R** ships now. Either `ci/meshy_retexture.py` on the shipped mesh (new
+  maps, same UVs, as the Realm drop did) or a painted PNG on a canvas item
+  (`skinkit`). Each is a `skins.toml` row, a `SKIN_MODELS` entry
+  (`.glowing()` where it says glow), an icon from `iconbake --skins` and a
+  `MANIFEST.md` row. It is never a wipe.
+- **B** needs a real base model first (§14).
+- **P** needs looks on deployables or worn pieces, which the validator refuses
+  today (§13.3).
+
+Catalog ids are *proposed* until the row ships. An id is the
+`EloItem:GATES` catalogId forever, so take the next free one at ship time.
+
+### 13.1 · Weapon and tool sets
+
+| cat? | name | covers | look (prompt basis) | glow | tag |
+|---|---|---|---|---|---|
+| 23 | Anneal AR | item.assault_rifle | heat-treated steel, temper bands straw to gold to purple to blue, oil-slick sheen | | R |
+| 24 | Anneal Thompson | item.thompson | same | | R |
+| 25 | Anneal Custom SMG | item.custom_smg | same | | R |
+| 26 | Anneal Python | item.python | same | | R |
+| 27 | Anneal Mace | item.mace | same, on the head | | R |
+| 28 | Regent AR | item.assault_rifle | matte black body, engraved gold filigree, gold front sight | sight | R |
+| 29 | Regent Custom SMG | item.custom_smg | same | sight | R |
+| 30 | Regent Bolt Rifle | item.bolt_rifle | same | sight | R |
+| 31 | Regent Longsword | item.longsword | black blade, gold-inlaid fuller and guard | | R |
+| 32 | Relic SMG | item.custom_smg | pale carved stone fused into the frame, cyan runes in the cracks | yes | R, given only |
+| 33 | Relic Longsword | item.longsword | same; the runes run down the blade | yes | R, given only |
+| 34 | Ember Longsword | item.longsword | blade glowing red-hot at the edge, char-black near the guard | yes | R |
+| 35 | Ember AR | item.assault_rifle | black char, orange ember cracks | yes | R |
+| 36 | Ember Pickaxe | item.pickaxe_metal | same; matches the Ember Hatchet (2) | yes | R |
+| 37 | Bloodline AR | item.assault_rifle | crimson lacquer on black, clean edges, not neon | | R |
+| 38 | Bloodline Shotgun | item.pump_shotgun | same | | R |
+| 39 | Bloodline Semi Pistol | item.semi_pistol | same | | R |
+| 40 | Old Reliable AR | item.assault_rifle | flaking red-orange paint, mismatched wood stock, tape wraps, field repairs | | R |
+| 41 | Old Reliable Bolt Rifle | item.bolt_rifle | same | | R |
+| 42 | Timberline Hatchet | item.hatchet_metal | warm wood grain, red plaid grip wrap | | R |
+| 43 | Timberline Pickaxe | item.pickaxe_metal | same | | R |
+| 44 | Timberline Hammer | item.hammer | same | | R |
+| 45 | Timberline AR | item.assault_rifle | wood-grain furniture, plaid sling | | R |
+| 46 | Carved Semi Rifle | item.semi_rifle | walnut engraved with leaves and knots | | R |
+| 47 | Carved Bow | item.bow | same | | R |
+| 48 | Carved Crossbow | item.crossbow | same | | B |
+| 49 | Bitgrid Semi Rifle | item.semi_rifle | subtle grey-green square-pixel camo | | R |
+| 50 | Bitgrid AR | item.assault_rifle | same | | R |
+| 51 | Bitgrid Thompson | item.thompson | same | | R |
+| 52 | Nightwork AR | item.assault_rifle | matte black, no shine, at the luma floor | | R |
+| 53 | Nightwork Thompson | item.thompson | same | | R |
+| 54 | Nightwork Bolt Rifle | item.bolt_rifle | same | | R |
+| 55 | Thicket Bolt Rifle | item.bolt_rifle | moss-and-bark camo, twine wraps | | R |
+| 56 | Thicket Bow | item.bow | same | | R |
+| 57 | Snowblind Semi Rifle | item.semi_rifle | off-white with grey frost wear | | R |
+| 58 | Snowblind AR | item.assault_rifle | same | | R |
+| 59 | Thornback Sword | item.sword_salvaged | barbed wire wrapped, spikes welded on the spine | | R |
+| 60 | Thornback Mace | item.mace | same | | R |
+| 61 | Fireworks Launcher | item.rocket_launcher | carnival stripes, a painted star burst at the muzzle | | R |
+
+**First drop, by impact per credit:** Anneal, Regent, the Ember additions and
+Bloodline. The Relic pair is the scarce one: give it through
+`gifts.rs` and THE OUTFITTER (an event or wipe-day gift, like the founder
+gifts) and never sell it.
+
+### 13.2 · Painted canvas looks (cheapest; no Meshy)
+
+PNG on the frozen UV templates (`render/canvas.rs`), checked by
+`skinkit check`, with the script beside the PNG (as `draw_field_medic.py` is).
+
+| cat? | name | covers | look |
+|---|---|---|---|
+| 62 | Junkyard Bat | item.bat | nails, bottle caps and stickers |
+| 63 | Barber Bat | item.bat | red and white spiral stripe |
+| 64 | Tally Bat | item.bat | scratched tally marks down the barrel |
+| 65 | Pig Print Tunic | item.armor_burlap_body | a hand-stamped pig, our own mob |
+| 66 | Junk King Tunic | item.armor_burlap_body | a crown sewn from scrap |
+| 67 | Gate Crasher Tunic | item.armor_burlap_body | a painted gate kicked open |
+| 68 | Wipe Survivor Tunic | item.armor_burlap_body | "I SURVIVED WIPE" in stencil |
+
+### 13.3 · Base and worn (P: needs a pipeline first)
+
+**Deployable looks** need these changes:
+- lift `validate.rs`'s refusal
+- carry the catalog id on the placed structure
+- draw a per-skin GLB in `DEPLOY_ASSET` (`render/structures.rs`)
+
+That is likely a wire change (`PROTO_VER`) and may be a save format, which would
+make it WIPE and target `next-wipe`. Check `ci/deploy_kind.py` when built. Door looks also need wood and metal doors split first (§0.4).
+
+| name | covers | look |
+|---|---|---|
+| Reactor Door | item.garage_door, item.door_metal | hazard stripes, radiation dials that glow at night |
+| Bulkhead Door / Garage | item.door_metal, item.garage_door | riveted striped steel shutter |
+| Airlock Door | item.door_metal | porthole hatch, wheel lock |
+| Strongbox | item.box_large | iron-strapped old chest |
+| Regent Door / Box | item.door_metal, item.box_large | the black-and-gold set on the base |
+| Scrapheap Sentry | item.autoturret | junk-welded plates, mismatched paint |
+| Regent Sentry | item.autoturret | black and gold |
+| Patchwork Bag | item.sleeping_bag | quilted rag patches |
+| Painted Furnace | item.furnace | soot-stained folk-painted stone |
+
+**Worn looks** need real garment models (§14.1) before a look is more than a
+tint on a lathe.
+
+| name | covers | look |
+|---|---|---|
+| Grinning Can | item.armor_coffeecan_head | a wide painted toothy grin; the face-mask best seller, ours |
+| Wolf Pelt | item.armor_bone_head | worn as a wolf's head and pelt (wolves are a mob) |
+| Ash Trench | item.armor_ash_suit, item.armor_ash_mask | trench coat, respirator, helmet-and-goggles soldier |
+| Polar Hazmat | item.armor_hazmat_suit | white with orange panels |
+| Plaid Hazmat | item.armor_hazmat_suit | red plaid and denim |
+| Rag Hazmat | item.armor_hazmat_suit | patched with rags and scrap, wasteland bandit |
+| Snowblind set | snow jacket, balaclava, hoodie, pants | matches the 13.1 rifles |
+| Thicket set | hide body, legs, feet | matches the 13.1 bolt rifle and bow |
+
+## 14 · Programmer art to replace
+
+Ranked by how often a player sees it.
+
+1. **Clothing on bodies**: 24 rigid lathes and boxes with flat tints
+   (`render/worn.rs:155–460`). The vest is two cuboids, and the helmets share
+   one dome. The fix is fitted garments, one file for worn and held (§12.2 and
+   the other 19), hazmat first. This unblocks every worn look in §13.3.
+2. **Arrows**: a bare `Cylinder` in flight, lodged and dropped (`tracer.rs`,
+   `lodged.rs`, `structures.rs`), while the bow's nocked arrow already has
+   `heldgen::arrow_mesh`. This is code only, no credits.
+3. **Planted C4, satchel and beancan**: no world mesh. Reuse the held GLBs.
+4. **Revolver, crossbow and torch** (`heldgen.rs`): tinted boxes and flat
+   lathes. Town guards carry the revolver. The torch needs a flame, emissive and a
+   light. The revolver and crossbow are also B in §13.
+5. **Stump** (`props.rs`, a 6-sided prism): every felled tree leaves one (§2).
+6. **24 items with no model**: they show an empty hand, and a pouch when dropped. The teas,
+   charcoal tonic, cactus flesh and vending machine, plus the garments in 1.
+7. **The kit items** (`heldkit.rs`): §12.1 and §12.3.
+8. **The player body reads dark** (albedo luma 0.056, at the floor). Retexture it
+   into the band, and give guards and keepers their own look.
+9. **Very low-poly in-hand items**: meats (220 tris), keycards, bandage, metal
+   hatchet and pickaxe (around 320). Regenerate these at the guns' bar.
+10. **Shared models**:
+    - the stone spear draws the wooden spear
+    - the water jug draws the waterskin
+    - small and large box are one mesh (§0.4)
+    - wood and metal doors are one mesh (§0.4)
+11. **Inserts and effects**: window, garage and glass inserts get a material pass
+    (§12.4); glass is flat 25% white. Heli rotors are box blades, and the
+    sentry lamp is a cube.
+12. **Icons**: 37 flat silhouettes sit beside 120 rendered icons. Re-bake them
+    once 6 and 7 land.
