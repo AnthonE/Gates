@@ -1,0 +1,686 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Gates: Full Auto</title>
+<script type="importmap">{"imports":{"three":"./lib/build/three.module.js","three/addons/":"./lib/examples/jsm/"}}</script>
+<style>
+@font-face { font-family: "Cond"; src: url(fonts/RobotoCondensed-Bold.ttf); font-weight: 700; }
+@font-face { font-family: "Cond"; src: url(fonts/RobotoCondensed-Regular.ttf); font-weight: 400; }
+@font-face { font-family: "SG"; src: url(fonts/spacegrotesk.woff2) format("woff2"), url(fonts/RobotoCondensed-Regular.ttf); font-weight: 400 700; }
+@font-face { font-family: "JB"; src: url(fonts/jbmono.woff2) format("woff2"), url(fonts/RobotoCondensed-Bold.ttf); font-weight: 100 800; }
+html, body { margin: 0; background: #000; overflow: hidden; }
+#stage { position: relative; width: 1920px; height: 1080px; background: #000; }
+#stage canvas { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+</style></head>
+<body>
+<div id="stage">
+  <canvas id="bg" width="1920" height="1080"></canvas>
+  <canvas id="gl" width="1920" height="1080"></canvas>
+  <canvas id="fg" width="1920" height="1080"></canvas>
+</div>
+<script type="module">
+// The Full Auto update trailer. Every frame is a pure function of t: window.seek(t)
+// draws it, render.mjs screenshots it, mix.py lays the audio on the cue list
+// this file exports. Footage is the game's own, shot with ci/film.sh; the 3D
+// models are the game's own GLBs; every number on screen is content/*.toml's.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const W = 1920, H = 1080, FPS = 30;
+const B = 0.65;                          // one beat of Green Veil (~92 bpm)
+const DROP = 24 * B;                     // where the title lands
+const MUSIC_AT = 41.6 - DROP;            // Green Veil offset that lands its kick on DROP
+const Q = new URLSearchParams(location.search);
+
+const C = {
+  bg: '#090b08', panel: '#151a12', pit: '#10140d', line: '#2c3426', ink: '#ece9e1',
+  muted: '#a7a397', mark: '#86b834', markHi: '#b6e85a', blood: '#d0352b', gold: '#e4bb52',
+  verd: '#5df29a', lapis: '#5b86ff', tide: '#36c2b4',
+};
+
+const bg = document.getElementById('bg').getContext('2d');
+const fg = document.getElementById('fg').getContext('2d');
+
+// ── math ──────────────────────────────────────────────────────────────────
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ramp = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, u) => a + (b - a) * u;
+const E = {
+  out: u => 1 - Math.pow(1 - u, 3),
+  in: u => u * u * u,
+  io: u => (u < .5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2),
+  back: u => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); },
+  expo: u => (u >= 1 ? 1 : 1 - Math.pow(2, -10 * u)),
+};
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+// ── assets ────────────────────────────────────────────────────────────────
+const IMG = {}, ICON = {}, CLIPS = {};
+const loadImg = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error(src)); i.src = src; });
+const STILLS = {
+  raiders: 'play-raiders', raid: 'play-raid-satchel', heli: 'play-heli', desert: 'play-island-desert', morning: 'play-island-morning',
+  felwolf: 'play-fel-wolf', aerial: 'play-gate-aerial', above: 'play-gate-above', gateday: 'play-gate-day', inside: 'play-gate-inside',
+  wolves: 'play-wolves', street: 'play-town-street-day', market: 'play-market-street', storm: 'play-storm', verdigris: 'play-verdigris',
+};
+const ICONS = ['beenie_hat', 'bandana', 'hoodie', 'snow_jacket', 'pants', 'leather_gloves', 'boots', 'bandage', 'medkit', 'vending_machine',
+  'hazmat_suit', 'junk', 'corn', 'potato', 'pumpkin', 'berries'];
+
+// ── drawing helpers ───────────────────────────────────────────────────────
+const BOX = { y: 138, h: 804 };         // the 2.39:1 picture inside the letterbox
+function cover(ctx, img, x, y, w, h, z = 1, px = 0, py = 0) {
+  const s = Math.max(w / img.width, h / img.height) * z;
+  const iw = img.width * s, ih = img.height * s;
+  ctx.drawImage(img, x + (w - iw) / 2 + px * (iw - w) / 2, y + (h - ih) / 2 + py * (ih - h) / 2, iw, ih);
+}
+function still(ctx, k, u, o = {}) {
+  const { z0 = 1.04, z1 = 1.12, x0 = 0, x1 = 0, y0 = 0, y1 = 0, grade = 'brightness(.8) contrast(1.08) saturate(.92)', full = false } = o;
+  const y = full ? 0 : BOX.y, h = full ? H : BOX.h;
+  if (!IMG[k]) { ctx.fillStyle = '#111'; ctx.fillRect(0, y, W, h); return; }
+  ctx.save(); ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip(); ctx.filter = grade;
+  cover(ctx, IMG[k], 0, y, W, h, lerp(z0, z1, u), lerp(x0, x1, u), lerp(y0, y1, u));
+  ctx.restore();
+}
+// Footage: the shot's frames if it was filmed, else its stand-in still with a
+// slow push. `lt` is screen seconds into the scene, `speed` retimes the clip.
+function foot(ctx, name, lt, d, o = {}) {
+  const { speed = 1, from = 0, grade = 'contrast(1.04)', fallback = 'aerial', still: so = {}, full = false } = o;
+  const fr = CLIPS[name];
+  if (fr && fr.length) {
+    const i = clamp(Math.floor((from + lt * speed) * FPS), 0, fr.length - 1);
+    ctx.save(); ctx.filter = grade;
+    if (full) cover(ctx, fr[i], 0, 0, W, H, 1.0);
+    else ctx.drawImage(fr[i], 0, BOX.y, W, BOX.h);
+    ctx.restore();
+  } else still(ctx, fallback, clamp(lt / d), { ...so, full });
+}
+const FONT = { cond: (s, w) => `${w || 700} ${s}px Cond`, sg: (s, w) => `${w || 500} ${s}px SG`, mono: (s, w) => `${w || 600} ${s}px JB` };
+function text(ctx, s, x, y, o = {}) {
+  const { kind = 'cond', size = 96, weight, color = C.ink, align = 'center', base = 'alphabetic', track = 0, alpha = 1, shadow = 0, glow = null, scale = 1, glowR = 48 } = o;
+  if (alpha <= 0.002) return;
+  ctx.save(); ctx.globalAlpha = clamp(alpha); ctx.font = FONT[kind](size, weight); ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.letterSpacing = track + 'px'; ctx.fillStyle = color;
+  if (shadow) { ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = shadow; ctx.shadowOffsetY = shadow / 5; }
+  if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = glowR; }
+  const dx = track ? (align === 'center' ? track / 2 : align === 'right' ? track : 0) : 0;
+  if (scale !== 1) { ctx.translate(x, y); ctx.scale(scale, scale); ctx.fillText(s, dx, 0); } else ctx.fillText(s, x + dx, y);
+  ctx.restore();
+}
+function measure(s, kind, size, weight, track = 0) {
+  fg.save(); fg.font = FONT[kind](size, weight); fg.letterSpacing = track + 'px';
+  const w = fg.measureText(s).width - track; fg.restore(); return w;
+}
+// in at `at`, out over the scene's last `out` seconds
+function rv(L, at, len = .42, out = .2) {
+  const a = E.out(ramp(L.t, at, at + len)), o = 1 - ramp(L.t, L.d - out, L.d);
+  return { a: a * o, dy: (1 - a) * 28 };
+}
+function caption(L, lines, o = {}) {
+  const { y = 790, size = 88, at = .15, step = .45, color = C.ink, track = 3, lh = 1.06, align = 'center', x = W / 2, shadow = 34, ctx = fg } = o;
+  lines.forEach((ln, i) => {
+    const s = typeof ln === 'string' ? { s: ln } : ln; const r = rv(L, s.at ?? at + i * step);
+    text(ctx, s.s, x, y + i * size * lh + r.dy, { size: s.size || size, color: s.color || color, align, track, alpha: r.a, shadow, glow: s.glow });
+  });
+}
+// the line in the bottom letterbox bar, or under a graphic
+function sub(L, s, o = {}) {
+  const { y = 1022, at = .7, size = 34, color = C.muted, x = W / 2, align = 'center', ctx = fg, weight = 500 } = o;
+  const r = rv(L, at); text(ctx, s, x, y + r.dy * .4, { kind: 'sg', size, weight, color, align, alpha: r.a });
+}
+function rrect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function chip(ctx, x, y, s, o = {}) {
+  const { color = C.ink, size = 30, alpha = 1, fill = 'rgba(10,12,9,.76)', kind = 'sg', weight = 700, track = 2, icon = null, dot = null, h = size * 1.9 } = o;
+  if (alpha <= 0) return 0;
+  const tw = measure(s, kind, size, weight, track), iw = icon ? h * .78 + 12 : dot ? 26 : 0, w = tw + iw + size * 1.3;
+  ctx.save(); ctx.globalAlpha = clamp(alpha);
+  rrect(ctx, x - w / 2, y - h / 2, w, h, 4); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+  let tx = x - w / 2 + size * .65;
+  if (icon) { ctx.drawImage(icon, tx - 4, y - h * .39, h * .78, h * .78); tx += iw; }
+  if (dot) { ctx.beginPath(); ctx.arc(tx + 7, y, 7, 0, 7); ctx.fillStyle = dot; ctx.fill(); tx += iw; }
+  ctx.restore();
+  text(ctx, s, tx, y + size * .36, { kind, size, weight, color, align: 'left', track, alpha });
+  return w;
+}
+function chipW(s, o = {}) {
+  const { size = 30, kind = 'sg', weight = 700, track = 2, icon = null, dot = null, h = size * 1.9 } = o;
+  return measure(s, kind, size, weight, track) + (icon ? h * .78 + 12 : dot ? 26 : 0) + size * 1.3;
+}
+function ground(ctx, glow = null, gx = W / 2, gy = H / 2, gr = 900) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  if (glow) { const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr); g.addColorStop(0, glow); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+}
+function panel(ctx, x, y, w, h, alpha = 1, stroke = C.line, fill = 'rgba(21,26,18,.94)') {
+  if (alpha <= 0) return; ctx.save(); ctx.globalAlpha = clamp(alpha);
+  rrect(ctx, x, y, w, h, 6); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+}
+function shade(ctx, y0, y1, a0, a1) {   // a vertical darkening band behind type
+  const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, `rgba(0,0,0,${a0})`); g.addColorStop(1, `rgba(0,0,0,${a1})`);
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, y1 - y0);
+}
+
+// ── 3D: the game's own models ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.autoClear = false; renderer.setClearColor(0x000000, 0);
+const ENV = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const ktx = new KTX2Loader().setTranscoderPath('./lib/examples/jsm/libs/basis/').detectSupport(renderer);
+const gltf = new GLTFLoader().setKTX2Loader(ktx);
+const loadGLB = url => new Promise((res, rej) => gltf.load(url, g => res(g.scene), undefined, rej));
+function prep(obj, env = .6) {
+  obj.traverse(m => { if (m.isMesh && m.material) { const ms = Array.isArray(m.material) ? m.material : [m.material]; ms.forEach(x => { x.envMapIntensity = env; }); } });
+  return obj;
+}
+// Lay a held model on its long axis along X, centred, scaled to `size` metres
+// long: a gun reads as a gun whichever way its file was authored.
+function lay(obj, size) {
+  let b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3());
+  const inner = new THREE.Group(); inner.add(obj);
+  // The game's held models run their length along +Y with their top along +Z
+  // (a gun's sights, a blade's edge): stand the top up and lay the length on X.
+  if (s.y >= s.x && s.y >= s.z) inner.rotation.set(-Math.PI / 2, Math.PI / 2, 0, 'YXZ');
+  else if (s.z >= s.x && s.z >= s.y) inner.rotation.y = Math.PI / 2;
+  const mid = new THREE.Group(); mid.add(inner);
+  b = new THREE.Box3().setFromObject(mid); s = b.getSize(new THREE.Vector3());
+  const c = b.getCenter(new THREE.Vector3()); inner.position.sub(c);
+  const pivot = new THREE.Group(); pivot.add(mid); pivot.scale.setScalar(size / Math.max(s.x, s.y, s.z));
+  return pivot;
+}
+// Stand a model on the floor at its centre, scaled to `size` metres tall.
+function stand(obj, size) {
+  const b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+  obj.position.set(-c.x, -b.min.y, -c.z);
+  const pivot = new THREE.Group(); pivot.add(obj); if (size) pivot.scale.setScalar(size / s.y);
+  return pivot;
+}
+function stage(keyCol = 0xfff0d8, rimCol = 0x9fd14a) {
+  const s = new THREE.Scene(); s.environment = ENV;
+  const hemi = new THREE.HemisphereLight(0xd6e4ff, 0x1c2410, .45);
+  const key = new THREE.DirectionalLight(keyCol, 2.6); key.position.set(2.0, 3, 2.6);
+  const rim = new THREE.DirectionalLight(rimCol, 2.2); rim.position.set(-2.6, 1.4, -2.4);
+  s.add(hemi, key, rim);
+  return { s, hemi, key, rim };
+}
+const cam = new THREE.PerspectiveCamera(30, W / H, .01, 100);
+function shoot(st, rect, pos, look, fov = 30) {
+  const [x, y, w, h] = rect;
+  cam.fov = fov; cam.aspect = w / h; cam.position.set(...pos); cam.lookAt(...look); cam.updateProjectionMatrix();
+  renderer.setViewport(x, H - y - h, w, h); renderer.setScissor(x, H - y - h, w, h); renderer.setScissorTest(true);
+  renderer.render(st.s, cam); renderer.setScissorTest(false);
+}
+// The guns, the order the carousel shows them, `len` the metres each is drawn long, with content/weapons.toml's
+// numbers (hits to kill: balance.toml's ttk note, an unarmoured 100).
+const GUNS = [
+  { f: 'assault_rifle', len: 1.75, name: 'ASSAULT RIFLE', dmg: '50', mag: 30, fire: 'FULL AUTO', ttk: '2', snd: 'shot_rifle_0' },
+  { f: 'bolt_action_rifle', len: 1.85, name: 'BOLT ACTION RIFLE', dmg: '80', mag: 4, fire: 'BOLT', ttk: '2', snd: 'shot_bolt_0' },
+  { f: 'thompson', len: 1.55, name: 'THOMPSON', dmg: '38', mag: 20, fire: 'FULL AUTO', ttk: '3', snd: 'shot_smg_0' },
+  { f: 'pump_shotgun', len: 1.75, name: 'PUMP SHOTGUN', dmg: '14×15', mag: 8, fire: 'PUMP', ttk: '1', snd: 'shot_shotgun_0' },
+  { f: 'python_revolver', len: 0.95, name: 'PYTHON REVOLVER', dmg: '55', mag: 6, fire: 'SEMI', ttk: '2', snd: 'shot_pistol_0' },
+  { f: 'semi_automatic_rifle', len: 1.8, name: 'SEMI-AUTO RIFLE', dmg: '40', mag: 16, fire: 'SEMI', ttk: '3', snd: 'shot_rifle_2' },
+  { f: 'custom_smg', len: 1.35, name: 'CUSTOM SMG', dmg: '30', mag: 30, fire: 'FULL AUTO', ttk: '4', snd: 'shot_smg_2' },
+  { f: 'semi_automatic_pistol', len: 0.85, name: 'SEMI-AUTO PISTOL', dmg: '40', mag: 10, fire: 'SEMI', ttk: '3', snd: 'shot_pistol_2' },
+];
+const SETS = [
+  { name: 'VERDIGRIS', color: C.verd, glow: 'rgba(93,242,154,.55)', items: [['verdigris_rifle', 'AR'], ['verdigris_python', 'PYTHON'], ['verdigris_longsword', 'LONGSWORD'], ['verdigris_hatchet', 'HATCHET']] },
+  { name: 'LAPIS', color: C.lapis, glow: 'rgba(91,134,255,.5)', items: [['lapis_thompson', 'THOMPSON'], ['lapis_bolt_rifle', 'BOLT RIFLE'], ['lapis_pickaxe', 'PICKAXE'], ['lapis_mace', 'MACE']] },
+  { name: 'TIDEWRACK', color: C.tide, glow: 'rgba(54,194,180,.5)', items: [['tidewrack_shotgun', 'SHOTGUN'], ['tidewrack_smg', 'SMG'], ['tidewrack_sar', 'SAR'], ['tidewrack_cleaver', 'CLEAVER']] },
+];
+const S3 = {};
+async function build3D() {
+  for (const g of GUNS) { const st = stage(); g.obj = lay(prep(await loadGLB(`glb/${g.f}.glb`), .8), g.len); st.s.add(g.obj); g.st = st; }
+  S3.hero = stage(0xfff4e6, 0xa8e04a); S3.hero.obj = lay(prep(await loadGLB('glb/assault_rifle.glb'), .8), 1.6); S3.hero.s.add(S3.hero.obj);
+  S3.c4 = stage(0xffe2c0, 0xff7040); S3.c4.obj = lay(prep(await loadGLB('glb/timed_explosive_charge.glb'), .7), .9); S3.c4.s.add(S3.c4.obj);
+  S3.rl = stage(0xffe2c0, 0xff7040); S3.rl.obj = lay(prep(await loadGLB('glb/rocket_launcher.glb'), .7), 1.7); S3.rl.s.add(S3.rl.obj);
+  // the farm: a planter and three crops that grow on t
+  const farm = stage(0xffe7c2, 0x9fd14a); farm.key.position.set(2.5, 4, 2);
+  farm.box = stand(prep(await loadGLB('glb/planter_box.glb'), .4), .45); farm.s.add(farm.box);
+  const bb = new THREE.Box3().setFromObject(farm.box), top = bb.max.y - .05, span = bb.getSize(new THREE.Vector3());
+  const along = span.x >= span.z ? 'x' : 'z', len = Math.max(span.x, span.z);
+  farm.crops = [];
+  for (const [i, f, h] of [[0, 'corn_plant', .95], [1, 'potato_plant', .45], [2, 'pumpkin_vine', .5]]) {
+    const p = stand(prep(await loadGLB(`glb/${f}.glb`), .5), h); const o = new THREE.Group(); o.add(p);
+    o.position.y = top; o.position[along] = (i - 1) * len * .3; farm.s.add(o); farm.crops.push(o);
+  }
+  S3.farm = farm;
+  for (const set of SETS) {
+    set.st = [];
+    for (const [f, label] of set.items) {
+      const st = stage(0xfff4e6, 0xffffff); st.rim.color.set(set.color); st.obj = lay(prep(await loadGLB(`glb/${f}.glb`), 1.0), 1.3); st.s.add(st.obj); st.label = label; set.st.push(st);
+    }
+  }
+}
+
+// ── post: bars, grain, vignette, flashes ──────────────────────────────────
+const GRAIN = [];
+function makeGrain() {
+  for (let k = 0; k < 6; k++) {
+    const c = document.createElement('canvas'); c.width = 960; c.height = 540; const x = c.getContext('2d');
+    const d = x.createImageData(960, 540), r = rng(77 + k);
+    for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (r() - .5) * 120; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+    x.putImageData(d, 0, 0); GRAIN.push(c);
+  }
+}
+function post(g) {
+  const v = fg.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.55)'); fg.fillStyle = v; fg.fillRect(0, 0, W, H);
+  fg.save(); fg.globalCompositeOperation = 'soft-light'; fg.globalAlpha = .16; fg.drawImage(GRAIN[Math.floor(g * FPS) % GRAIN.length], 0, 0, W, H); fg.restore();
+  for (const [at, len, col, peak] of FLASHES) {
+    const u = (g - at) / len; if (u < 0 || u > 1) continue;
+    fg.save(); fg.globalAlpha = peak * (1 - E.out(u)); fg.fillStyle = col; fg.fillRect(0, 0, W, H); fg.restore();
+  }
+  const fin = 1 - ramp(g, 0, .7), fout = ramp(g, TOTAL - 1.1, TOTAL - .05);
+  const k = Math.max(fin, fout); if (k > 0) { fg.fillStyle = `rgba(0,0,0,${k})`; fg.fillRect(0, 0, W, H); }
+}
+
+// ── scene pieces ──────────────────────────────────────────────────────────
+// Freeform building, top down: a base on the grid, then one turned to the look
+// with equilateral triangles on its sides.
+function blueprint(L) {
+  ground(bg, 'rgba(134,184,52,.10)', W / 2, 560, 900);
+  const cell = 92;
+  bg.save(); bg.strokeStyle = 'rgba(134,184,52,.10)'; bg.lineWidth = 1;
+  for (let x = W / 2 % cell; x < W; x += cell) { bg.beginPath(); bg.moveTo(x, 0); bg.lineTo(x, H); bg.stroke(); }
+  for (let y = 540 % cell; y < H; y += cell) { bg.beginPath(); bg.moveTo(0, y); bg.lineTo(W, y); bg.stroke(); }
+  bg.restore();
+  const tile = (cx, cy, ang, pts, at, col = C.mark) => {
+    const p = ramp(L.t, at, at + .25); if (p <= 0) return;
+    const s = lerp(1.25, 1, E.out(p));
+    fg.save(); fg.translate(cx, cy); fg.rotate(ang); fg.scale(s, s); fg.globalAlpha = E.out(p) * (1 - ramp(L.t, L.d - .2, L.d));
+    fg.beginPath(); pts.forEach(([x, y], i) => (i ? fg.lineTo(x, y) : fg.moveTo(x, y))); fg.closePath();
+    fg.fillStyle = 'rgba(134,184,52,.22)'; fg.fill(); fg.strokeStyle = col; fg.lineWidth = 3; fg.stroke(); fg.restore();
+  };
+  const sq = [[-cell / 2, -cell / 2], [cell / 2, -cell / 2], [cell / 2, cell / 2], [-cell / 2, cell / 2]];
+  // on the grid, left
+  const gx = W / 2 - 460 - cell / 2 + (W / 2 % cell), gy = 540 - cell / 2;
+  [[0, 0], [1, 0], [0, 1], [1, 1], [2, 0]].forEach(([i, j], k) => tile(gx + i * cell - cell, gy + j * cell, 0, sq, .2 + k * .12));
+  // turned, right: a 2x2 base at 27° and triangles on its outer edges
+  const a = -0.47, ox = W / 2 + 420, oy = 560, ca = Math.cos(a), sa = Math.sin(a);
+  const at = (i, j) => [ox + (i * cell) * ca - (j * cell) * sa, oy + (i * cell) * sa + (j * cell) * ca];
+  [[-.5, -.5], [.5, -.5], [-.5, .5], [.5, .5]].forEach(([i, j], k) => { const [x, y] = at(i, j); tile(x, y, a, sq, 1.25 + k * .12); });
+  const h3 = cell * Math.sqrt(3) / 2, tri = [[-cell / 2, 0], [cell / 2, 0], [0, -h3]];
+  // a triangle on each side of the base's top edge, and one on the right
+  const edge = (i, j, rot) => { const [x, y] = at(i, j); return [x, y, a + rot]; };
+  [[edge(-.5, -1, 0), 1.9], [edge(.5, -1, 0), 2.02], [edge(1, -.5, Math.PI / 2), 2.14], [edge(1, .5, Math.PI / 2), 2.26]].forEach(([[x, y, r], t0]) => tile(x, y, r, tri, t0));
+  // the look that turned it
+  const pa = ramp(L.t, 1.0, 1.4);
+  if (pa > 0) {
+    fg.save(); fg.globalAlpha = pa * (1 - ramp(L.t, L.d - .2, L.d)); fg.strokeStyle = C.ink; fg.setLineDash([10, 10]); fg.lineWidth = 2;
+    fg.beginPath(); fg.moveTo(ox, oy); fg.lineTo(ox + 300 * Math.cos(a - Math.PI / 2), oy + 300 * Math.sin(a - Math.PI / 2)); fg.stroke(); fg.setLineDash([]);
+    fg.beginPath(); fg.arc(ox, oy, 120, -Math.PI / 2, a - Math.PI / 2, true); fg.stroke(); fg.restore();
+    text(fg, '27°', ox + 30, oy - 140, { kind: 'mono', size: 34, color: C.ink, align: 'left', alpha: pa * (1 - ramp(L.t, L.d - .2, L.d)) });
+  }
+  const r1 = rv(L, .2); text(fg, 'ON THE GRID', W / 2 - 520, 830 + r1.dy, { size: 40, track: 4, color: C.muted, alpha: r1.a });
+  const r2 = rv(L, 1.3); text(fg, 'OR ANY ANGLE', W / 2 + 420, 830 + r2.dy, { size: 40, track: 4, color: C.markHi, alpha: r2.a });
+}
+// The big wheel's payouts: 25 segments, twelve 1s, six 3s, four 5s,
+// two 10s, one 20 (sim-core/casino.rs).
+const WHEEL = (() => { const o = [1, 3, 1, 5, 1, 3, 1, 10, 1, 3, 1, 5, 1, 20, 1, 3, 1, 5, 1, 3, 1, 10, 1, 5, 3]; return o; })();
+const WCOL = { 1: '#e9e3cf', 3: '#4f9a3a', 5: '#3e6fd8', 10: '#7b4bc4', 20: '#d8a63a' };
+function wheel(ctx, cx, cy, r, ang, alpha) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = clamp(alpha); ctx.translate(cx, cy);
+  ctx.shadowColor = 'rgba(228,187,82,.35)'; ctx.shadowBlur = 60;
+  ctx.beginPath(); ctx.arc(0, 0, r + 22, 0, 7); ctx.fillStyle = '#3a2b14'; ctx.fill(); ctx.shadowBlur = 0;
+  ctx.lineWidth = 10; ctx.strokeStyle = C.gold; ctx.stroke();
+  const n = WHEEL.length, seg = Math.PI * 2 / n;
+  for (let i = 0; i < n; i++) {
+    const a0 = ang + i * seg;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, a0, a0 + seg); ctx.closePath(); ctx.fillStyle = WCOL[WHEEL[i]]; ctx.fill();
+    ctx.strokeStyle = '#2a1e0c'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.save(); ctx.rotate(a0 + seg / 2); ctx.translate(r * .8, 0); ctx.rotate(Math.PI / 2);
+    ctx.font = FONT.cond(34); ctx.textAlign = 'center'; ctx.fillStyle = WHEEL[i] === 1 ? '#2a1e0c' : '#fff'; ctx.fillText(String(WHEEL[i]), 0, 12); ctx.restore();
+  }
+  ctx.beginPath(); ctx.arc(0, 0, r * .22, 0, 7); ctx.fillStyle = '#2a1e0c'; ctx.fill(); ctx.strokeStyle = C.gold; ctx.lineWidth = 6; ctx.stroke();
+  ctx.restore();
+  // the pointer
+  ctx.save(); ctx.globalAlpha = clamp(alpha); ctx.translate(cx, cy - r - 30); ctx.fillStyle = C.ink;
+  ctx.beginPath(); ctx.moveTo(-22, -26); ctx.lineTo(22, -26); ctx.lineTo(0, 20); ctx.closePath(); ctx.fill(); ctx.restore();
+}
+// A phone with the companion on it: the team map, team chat, and the alert.
+function phone(L, x, y, alpha) {
+  if (alpha <= 0) return;
+  const w = 470, h = 900;
+  fg.save(); fg.globalAlpha = clamp(alpha);
+  fg.shadowColor = 'rgba(0,0,0,.7)'; fg.shadowBlur = 60;
+  rrect(fg, x - w / 2, y - h / 2, w, h, 54); fg.fillStyle = '#0d0f0c'; fg.fill(); fg.shadowBlur = 0;
+  fg.strokeStyle = '#3a4234'; fg.lineWidth = 4; fg.stroke();
+  const sx = x - w / 2 + 22, sy = y - h / 2 + 22, sw = w - 44, sh = h - 44;
+  fg.save(); rrect(fg, sx, sy, sw, sh, 36); fg.clip();
+  fg.fillStyle = '#12160f'; fg.fillRect(sx, sy, sw, sh);
+  if (IMG.companion) cover(fg, IMG.companion, sx, sy, sw, sh);
+  else {
+    // the map: the island from above, the team's dots, the base
+    fg.filter = 'brightness(.75) saturate(.8)';
+    if (IMG.above) cover(fg, IMG.above, sx, sy + 90, sw, 470, 1.4);
+    fg.filter = 'none';
+    fg.fillStyle = 'rgba(13,15,12,.95)'; fg.fillRect(sx, sy, sw, 90);
+    text(fg, 'TEAM', sx + 30, sy + 60, { size: 36, track: 4, align: 'left' });
+    fg.beginPath(); fg.arc(sx + sw - 40, sy + 48, 9, 0, 7); fg.fillStyle = C.mark; fg.fill();
+    const dots = [[.35, .45, C.mark], [.42, .4, C.mark], [.6, .62, C.mark], [.5, .3, C.blood]];
+    dots.forEach(([u, v, c], i) => { fg.beginPath(); fg.arc(sx + sw * u + Math.sin(L.t * 1.3 + i) * 6, sy + 90 + 470 * v + Math.cos(L.t + i) * 5, i === 3 ? 14 : 10, 0, 7); fg.fillStyle = c; fg.fill(); fg.strokeStyle = '#000'; fg.lineWidth = 3; fg.stroke(); });
+    fg.fillStyle = 'rgba(13,15,12,.97)'; fg.fillRect(sx, sy + 560, sw, sh - 560);
+    const lines = [['ash', 'wood run done, heading home'], ['mira', 'bring the rockets'], ['you', 'on my way']];
+    lines.forEach(([n, s], i) => {
+      const a = ramp(L.t, .5 + i * .35, .7 + i * .35);
+      text(fg, n, sx + 30, sy + 620 + i * 62, { kind: 'sg', size: 24, weight: 700, color: n === 'you' ? C.markHi : C.muted, align: 'left', alpha: a });
+      text(fg, s, sx + 30, sy + 650 + i * 62, { kind: 'sg', size: 26, color: C.ink, align: 'left', alpha: a });
+    });
+  }
+  // the raid alert drops in
+  const ra = E.back(ramp(L.t, 1.6, 2.0)), pulse = .5 + .5 * Math.sin(L.t * 12);
+  if (ra > 0) {
+    const ay = sy + lerp(-160, 24, ra);
+    rrect(fg, sx + 16, ay, sw - 32, 128, 18); fg.fillStyle = 'rgba(40,10,8,.96)'; fg.fill(); fg.strokeStyle = C.blood; fg.lineWidth = 3; fg.stroke();
+    fg.beginPath(); fg.arc(sx + 60, ay + 64, 18 + pulse * 4, 0, 7); fg.fillStyle = C.blood; fg.fill();
+    text(fg, 'RAID ALERT', sx + 96, ay + 56, { size: 34, track: 3, color: '#ff8a7a', align: 'left' });
+    text(fg, 'Your base is taking hits', sx + 96, ay + 96, { kind: 'sg', size: 24, color: C.ink, align: 'left' });
+  }
+  fg.restore(); fg.restore();
+}
+
+// ── the scenes ────────────────────────────────────────────────────────────
+// b: [start beat, end beat] on Green Veil's grid.
+const GUN_B = 1.5;   // beats per gun in the carousel
+// Where the C4 goes off, seconds into the `raid` and `blast` shots (ci/film/full-auto-raid.json:
+// the tape's charge lands at 318.2 s), and where the scenes start reading them.
+const RAID_BOOM = 3.6, RAID_FROM = 0.1, BLAST_BOOM = 0.94, BLAST_FROM = 0.5;
+const SCENES = [
+  // cold open: quiet, footage, the build to the drop
+  { id: 'c1-island', b: [0, 6], box: true, draw(L) {
+    foot(bg, 'dawn', L.t, L.d, { fallback: 'morning', still: { z0: 1.12, z1: 1.04 } });
+    caption(L, ['SINCE GREEN VEIL'], { y: 800, size: 64, at: .9, track: 8, color: C.muted });
+  } },
+  { id: 'c2-city', b: [6, 12], box: true, draw(L) {
+    foot(bg, 'gate-rise', L.t, L.d, { fallback: 'gateday', still: { z0: 1.04, z1: 1.14, y0: .3, y1: -.2 } });
+    caption(L, ['WE BUILT A CITY,'], { y: 800, size: 82, at: .3, track: 5 });
+  } },
+  { id: 'c3-walls', b: [12, 18], box: true, draw(L) {
+    foot(bg, 'raid', L.t, L.d, { fallback: 'raid', from: RAID_FROM, still: { z0: 1.14, z1: 1.04, x0: .2 } });
+    caption(L, ['BROKE A FEW WALLS,'], { y: 800, size: 82, at: .25, track: 5 });
+  } },
+  { id: 'c4-rifles', b: [18, 24], draw(L) {
+    bg.fillStyle = '#040503'; bg.fillRect(0, 0, W, H);
+    const u = L.t / L.d, h = S3.hero;
+    h.key.intensity = lerp(0, 3.0, E.io(ramp(L.t, .1, L.d - .4))); h.rim.intensity = lerp(0, 2.6, E.io(ramp(L.t, .8, L.d))); h.hemi.intensity = lerp(0, .3, u);
+    h.obj.rotation.y = lerp(-1.1, -.35, E.io(u)); h.obj.rotation.x = .05;
+    shoot(h, [0, 120, W, 720], [0, .3, lerp(2.3, 1.7, u)], [0, 0, 0], 30);
+    caption(L, ['AND HANDED OUT', { s: 'RIFLES.', color: C.markHi }], { y: 860, size: 82, at: .5, step: 1.0, track: 5 });
+  } },
+  // the drop
+  { id: 's1-title', b: [24, 32], draw(L) {
+    ground(bg, 'rgba(134,184,52,.20)', W / 2, 470, 980);
+    const h = S3.hero; h.key.intensity = 3.0; h.rim.intensity = 2.8; h.hemi.intensity = .4;
+    h.obj.rotation.y = -.35 + L.t * .55; h.obj.rotation.x = .05;
+    const k = Math.exp(-L.t * 7) * .05;
+    shoot(h, [0, 60, W, 640], [Math.sin(L.t * 90) * k, .28 + Math.cos(L.t * 77) * k, lerp(1.45, 1.3, L.t / L.d)], [0, 0, 0], 30);
+    const s = lerp(1.22, 1, E.expo(ramp(L.t, 0, .5))), a = ramp(L.t, 0, .1) * (1 - ramp(L.t, L.d - .2, L.d));
+    text(fg, 'FULL AUTO', W / 2, 820, { size: 236, track: 22, alpha: a, scale: s, shadow: 30, glow: 'rgba(134,184,52,.55)', glowR: 70 });
+    const r1 = rv(L, .9);
+    const tw = measure('THE NEW GATES UPDATE', 'sg', 40, 600, 6);
+    if (IMG.sigil) { fg.save(); fg.globalAlpha = r1.a; fg.drawImage(IMG.sigil, W / 2 - tw / 2 - 50, 882 + r1.dy, 54, 54); fg.restore(); }
+    text(fg, 'THE NEW GATES UPDATE', W / 2 + 32, 922 + r1.dy, { kind: 'sg', size: 40, weight: 600, color: C.muted, track: 6, alpha: r1.a });
+  } },
+  { id: 's2-guns', b: [32, 32 + GUNS.length * GUN_B], draw(L) {
+    const seg = GUN_B * B, k = Math.min(GUNS.length - 1, Math.floor(L.t / seg)), lt = L.t - k * seg, g = GUNS[k];
+    ground(bg, 'rgba(134,184,52,.13)', 1240, 520, 820);
+    // a slam in on the cut: scale and a kick of light
+    const kick = Math.exp(-lt * 9);
+    g.st.key.intensity = 2.6 + 2.2 * kick; g.st.rim.intensity = 2.4; g.st.hemi.intensity = .45;
+    g.obj.rotation.y = -.42 + lt * .35; g.obj.rotation.z = .04 * kick; g.obj.rotation.x = .08;
+    const z = lerp(2.05, 2.25, E.out(ramp(lt, 0, .3)));
+    shoot(g.st, [720, 150, 1160, 760], [0, .32, z], [0, 0, 0], 30);
+    // the card
+    const a = E.out(ramp(lt, 0, .12)), dx = (1 - a) * -60, x = 150 + dx;
+    text(fg, `0${k + 1} / 0${GUNS.length}`, x, 300, { kind: 'mono', size: 30, color: C.mark, align: 'left', alpha: a });
+    text(fg, g.name, x, 400, { size: 96, track: 4, align: 'left', alpha: a, shadow: 20 });
+    const rows = [['DAMAGE', g.dmg], ['ROUNDS', String(g.mag)], ['FIRE', g.fire], ['HITS TO KILL', g.ttk]];
+    rows.forEach(([kk, v], i) => {
+      const ra = E.out(ramp(lt, .06 + i * .06, .2 + i * .06)), y = 500 + i * 92;
+      fg.save(); fg.globalAlpha = ra; fg.fillStyle = C.line; fg.fillRect(x, y + 26, 520, 2); fg.restore();
+      text(fg, kk, x, y, { kind: 'sg', size: 28, weight: 600, color: C.muted, align: 'left', track: 3, alpha: ra });
+      text(fg, v, x + 520, y + 4, { kind: 'mono', size: 46, weight: 700, color: i === 3 ? C.markHi : C.ink, align: 'right', alpha: ra });
+    });
+    // muzzle flash on the cut, at the barrel's end
+    if (kick > .05) { fg.save(); fg.globalCompositeOperation = 'lighter'; const gx = 1300 - 300 * g.len, gy = 470, gr = fg.createRadialGradient(gx, gy, 0, gx, gy, 220 * kick + 40); gr.addColorStop(0, `rgba(255,236,190,${.55 * kick})`); gr.addColorStop(1, 'rgba(255,160,60,0)'); fg.fillStyle = gr; fg.fillRect(gx - 300, gy - 300, 600, 600); fg.restore(); }
+    sub(L, 'Aim cones, bloom, recoil and damage falloff on every gun.', { y: 1000, at: .5 });
+  } },
+  { id: 's3-raid', b: [44, 52], draw(L) {
+    const half = 3 * B;
+    if (L.t < half) {
+      foot(bg, 'blast', L.t, half, { fallback: 'raid', from: BLAST_FROM, grade: 'contrast(1.1) saturate(1.05)', still: { z0: 1.18, z1: 1.08 } });
+      bg.fillStyle = '#000'; bg.fillRect(0, 0, W, BOX.y); bg.fillRect(0, BOX.y + BOX.h, W, H - BOX.y - BOX.h);
+      caption({ ...L, d: half }, ['BRING THE WALLS DOWN.'], { y: 820, size: 96, at: .1, track: 5 });
+    } else {
+      const lt = L.t - half, d = L.d - half;
+      ground(bg, 'rgba(255,112,64,.14)', W / 2, 520, 900);
+      const sc = (st, x, ry, a) => { st.key.intensity = 2.8; st.rim.intensity = 2.6; st.hemi.intensity = .4; st.obj.rotation.y = ry; st.obj.rotation.x = .25; if (a > .01) shoot(st, [x, 230, 860, 560], [0, .4, 2.0], [0, 0, 0], 30); };
+      const a1 = rv({ t: lt, d }, .0, .3), a2 = rv({ t: lt, d }, .25, .3);
+      sc(S3.c4, 60, -.6 + lt * .4, a1.a); sc(S3.rl, 1000, -.4 + lt * .3, a2.a);
+      text(fg, 'C4', 490, 840 + a1.dy, { size: 84, track: 6, alpha: a1.a });
+      text(fg, '10 S FUSE · NEVER A DUD', 490, 896 + a1.dy, { kind: 'sg', size: 28, weight: 600, color: C.muted, track: 2, alpha: a1.a });
+      text(fg, 'ROCKETS', 1430, 840 + a2.dy, { size: 84, track: 6, alpha: a2.a });
+      text(fg, '275 DAMAGE · 3 M BLAST', 1430, 896 + a2.dy, { kind: 'sg', size: 28, weight: 600, color: C.muted, track: 2, alpha: a2.a });
+      const r = rv({ t: lt, d }, .5); text(fg, 'BEANCANS · BARBED BARRICADES · FLOOR SPIKES', W / 2, 1000 + r.dy * .3, { kind: 'sg', size: 30, weight: 600, color: '#ff9a6a', track: 3, alpha: r.a });
+    }
+  } },
+  { id: 's4-build', b: [52, 60], draw(L) {
+    blueprint(L);
+    caption(L, ['BUILD AT ANY ANGLE.'], { y: 230, size: 100, at: .05, track: 5, shadow: 0 });
+    sub(L, 'A foundation on open ground starts its own building, turned to face where you look.', { y: 960, at: 1.6 });
+  } },
+  { id: 's5-farm', b: [60, 66], draw(L) {
+    ground(bg, 'rgba(228,187,82,.12)', W / 2, 560, 900);
+    const f = S3.farm, u = L.t / L.d;
+    f.key.intensity = 2.8; f.rim.intensity = 1.8; f.hemi.intensity = .6;
+    f.crops.forEach((c, i) => { const g = E.back(ramp(L.t, .3 + i * .35, .9 + i * .35)); c.scale.setScalar(Math.max(.001, g)); c.rotation.y = i * 1.3 + L.t * .1; });
+    const R = 2.9, ang = lerp(.55, .95, u);
+    shoot(f, [0, 150, W, 760], [Math.sin(ang) * R, 1.15, Math.cos(ang) * R], [0, .4, 0], 30);
+    caption(L, ['FARM IT.'], { y: 230, size: 110, at: .05, track: 6, shadow: 20 });
+    const chips = [['CORN', 'corn'], ['POTATOES', 'potato'], ['PUMPKINS', 'pumpkin'], ['BERRIES', 'berries']];
+    let x = W / 2 - 520;
+    chips.forEach(([s, ic], i) => { const r = rv(L, .5 + i * .3), o = { icon: ICON[ic], size: 28, alpha: r.a }; const w = chipW(s, o); chip(fg, x + w / 2, 880 + r.dy, s, o); x += w + 26; });
+    sub(L, 'Six beds a planter. Seeds carry genes: crossbreed them, clone them, sow them wild.', { y: 990, at: 1.4 });
+  } },
+  { id: 's6-swim', b: [66, 72], box: true, draw(L) {
+    foot(bg, 'swim', L.t, L.d, { fallback: 'morning', still: { z0: 1.2, z1: 1.1, y0: .6, y1: .4 } });
+    caption(L, ['SWIM. DIVE.', { s: 'DON’T DROWN.', color: '#8fd6ff' }], { y: 720, size: 104, at: .15, step: .9, track: 6 });
+    sub(L, 'Ten seconds of breath. Boil sea water on a fire. Build foundations in the shallows.', { at: 1.2 });
+  } },
+  { id: 's7-bleed', b: [72, 78], draw(L) {
+    const half = 3 * B;
+    if (L.t < half) {
+      const pulse = .5 + .5 * Math.sin(L.t * 9);
+      ground(bg, `rgba(208,53,43,${.16 + .08 * pulse})`, W / 2, 520, 900);
+      const s = lerp(1.25, 1, E.expo(ramp(L.t, 0, .4)));
+      text(fg, 'BLEED.', W / 2, 560, { size: 250, track: 18, color: C.blood, scale: s, alpha: ramp(L.t, 0, .08) * (1 - ramp(L.t, half - .15, half)), glow: 'rgba(208,53,43,.6)' });
+      const r = rv({ t: L.t, d: half }, .5); chip(fg, W / 2, 700 + r.dy, 'BLEEDING  −20 HP/MIN', { alpha: r.a, color: '#ff7a6a', size: 34, kind: 'cond', track: 3, fill: 'rgba(40,10,8,.85)' });
+      const r2 = rv({ t: L.t, d: half }, .9); chip(fg, W / 2, 810 + r2.dy, 'WRAP A BANDAGE · 4 S', { alpha: r2.a, icon: ICON.bandage, size: 30, color: C.ink });
+    } else {
+      const lt = L.t - half, d = L.d - half, LL = { t: lt, d };
+      ground(bg, 'rgba(143,214,255,.10)', W / 2, 560, 900);
+      caption(LL, ['DRESS FOR IT.'], { y: 290, size: 110, at: .02, track: 6, shadow: 0 });
+      const slots = [['HEAD', 'beenie_hat'], ['FACE', 'bandana'], ['SHIRT', 'hoodie'], ['BODY', 'snow_jacket'], ['LEGS', 'pants'], ['HANDS', 'leather_gloves'], ['FEET', 'boots']];
+      const sw = 190, x0 = W / 2 - (slots.length * sw + (slots.length - 1) * 22) / 2;
+      slots.forEach(([n, ic], i) => {
+        const r = rv(LL, .15 + i * .07, .3), x = x0 + i * (sw + 22), y = 420 + r.dy;
+        panel(fg, x, y, sw, sw, r.a, i === 3 ? C.markHi : C.line);
+        if (ICON[ic] && r.a > 0) { fg.save(); fg.globalAlpha = r.a; fg.drawImage(ICON[ic], x + 25, y + 18, sw - 50, sw - 50); fg.restore(); }
+        text(fg, n, x + sw / 2, y + sw + 46, { kind: 'sg', size: 26, weight: 700, color: i === 3 ? C.markHi : C.muted, track: 3, alpha: r.a });
+      });
+      sub(L, 'Seven slots, fourteen new clothes, and teas against the cold, the heat and the Verdigris.', { y: 900, at: half + .9 });
+    }
+  } },
+  { id: 's8-gate', b: [78, 86], box: true, draw(L) {
+    foot(bg, 'city', L.t, L.d, { fallback: 'above', still: { z0: 1.03, z1: 1.14, y0: .1, y1: -.1 } });
+    shade(bg, BOX.y + BOX.h - 330, BOX.y + BOX.h, 0, .6);
+    caption(L, ['THE GATE IS', { s: 'A CITY NOW.', color: C.gold }], { y: 760, size: 92, at: .2, step: .7, track: 6 });
+    sub(L, 'A 92 m sandstone gate, guards on the streets, a vending machine at every stall.', { at: 1.3 });
+  } },
+  { id: 's9-casino', b: [86, 94], draw(L) {
+    const half = 3 * B;
+    if (L.t < half && CLIPS.casino) {
+      foot(bg, 'casino', L.t, half, {});
+      bg.fillStyle = '#000'; bg.fillRect(0, 0, W, BOX.y); bg.fillRect(0, BOX.y + BOX.h, W, H - BOX.y - BOX.h);
+      caption({ ...L, d: half }, ['PLACE YOUR BETS.'], { y: 820, size: 100, at: .1, track: 6 });
+      return;
+    }
+    const lt = CLIPS.casino ? L.t - half : L.t, d = CLIPS.casino ? L.d - half : L.d, LL = { t: lt, d };
+    ground(bg, 'rgba(228,187,82,.14)', 640, 560, 800);
+    // the wheel spins down
+    const spin = 9 * (1 - Math.pow(1 - clamp(lt / (d * .85)), 3));
+    wheel(fg, 620, 580, 330, -Math.PI / 2 - spin * Math.PI * 2 * .37, rv(LL, 0, .3).a);
+    if (!CLIPS.casino) caption(LL, ['PLACE YOUR BETS.'], { y: 230, size: 100, at: .05, track: 6, shadow: 0, x: 1340 });
+    const rows = [['BIG WHEEL', '25 SEGMENTS · ×1 TO ×20'], ['SLOTS', 'THREE OF A KIND'], ['STAKES', 'JUNK']];
+    rows.forEach(([a, b], i) => {
+      const r = rv(LL, .4 + i * .3), y = 420 + i * 150 + r.dy;
+      text(fg, a, 1060, y, { size: 72, track: 5, align: 'left', alpha: r.a, color: i === 0 ? C.gold : C.ink });
+      text(fg, b, 1062, y + 52, { kind: 'sg', size: 30, weight: 600, align: 'left', color: C.muted, track: 2, alpha: r.a });
+    });
+    sub(L, 'In the middle of THE GATE, under a roof, with a lounge facing the wheel.', { y: 1000, at: CLIPS.casino ? half + .8 : 1.6 });
+  } },
+  { id: 's10-companion', b: [94, 100], draw(L) {
+    ground(bg, 'rgba(134,184,52,.10)', 1300, 540, 900);
+    const r = rv(L, 0, .4); phone(L, 1440, 540 + r.dy * 3, r.a);
+    caption(L, ['YOUR BASE,', 'IN YOUR POCKET.'], { y: 440, size: 96, at: .15, step: .55, track: 5, align: 'left', x: 140, shadow: 0 });
+    sub(L, 'Team map, team chat and raid alerts,', { y: 720, at: 1.2, align: 'left', x: 144, size: 32 });
+    sub(L, 'in the companion, in any browser.', { y: 766, at: 1.35, align: 'left', x: 144, size: 32 });
+    const rf = rv(L, 1.6); chip(fg, 144 + chipW('ELO PROS FRIENDS IN GAME', { size: 28 }) / 2, 850 + rf.dy, 'ELO PROS FRIENDS IN GAME', { size: 28, alpha: rf.a, color: '#6bdbe0' });
+  } },
+  { id: 's11-skins', b: [100, 108], draw(L) {
+    const seg = L.d / 3, k = Math.min(2, Math.floor(L.t / seg)), lt = L.t - k * seg, set = SETS[k], LL = { t: lt, d: seg };
+    ground(bg, set.glow.replace(/[\d.]+\)$/, '.16)'), W / 2, 560, 900);
+    text(fg, 'THE REALM DROP', W / 2, 190, { size: 44, track: 10, color: C.muted, alpha: rv(L, 0).a });
+    const s = lerp(1.15, 1, E.expo(ramp(lt, 0, .35)));
+    text(fg, set.name, W / 2, 300, { size: 120, track: 14, color: set.color, scale: s, alpha: ramp(lt, 0, .06) * (1 - ramp(lt, seg - .1, seg)), glow: set.glow });
+    set.st.forEach((st, i) => {
+      const r = rv(LL, .05 + i * .07, .3, .1), x = 60 + i * 450;
+      if (r.a <= .01) return;
+      st.key.intensity = 2.6; st.rim.intensity = 3.0; st.hemi.intensity = .4;
+      st.obj.rotation.y = -.5 + Math.sin(lt * 1.4 + i) * .45; st.obj.rotation.x = .12;
+      shoot(st, [x, 380 + Math.round(r.dy), 450, 420], [0, .15, 1.45], [0, 0, 0], 30);
+      text(fg, st.label, x + 225, 860 + r.dy, { size: 40, track: 4, alpha: r.a });
+    });
+    sub(L, 'Twelve skins in three sets, each painted over the item’s own model.', { y: 990, at: .6 });
+  } },
+  { id: 's12-more', b: [108, 114], box: true, draw(L) {
+    foot(bg, 'desert', L.t, L.d, { fallback: 'desert', grade: 'brightness(.45) contrast(1.05) saturate(.9)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
+    caption(L, ['AND A LOT MORE.'], { y: 300, size: 96, at: .02, track: 6 });
+    const items = ['TECH TREE', 'HAZMAT SUIT', 'VENDING MACHINES', '81 ACHIEVEMENTS', 'TEAS', 'CONTACTS', 'BIGGER DESERT', 'SOLID CLIFFS',
+      'STREAMER MODE', 'POTATO GRAPHICS', 'PUNCHING', 'WATER CATCHERS', 'NEW HUD', 'VOICE SETTINGS'];
+    const perRow = [4, 5, 5]; let n = 0;
+    perRow.forEach((cnt, row) => {
+      const row_items = items.slice(n, n + cnt); n += cnt;
+      const ws = row_items.map(s => chipW(s, { size: 30, kind: 'cond', track: 3 }));
+      let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + (cnt - 1) * 22) / 2;
+      row_items.forEach((s, i) => {
+        const at = .3 + (row * 5 + i) * .1, p = ramp(L.t, at, at + .2), o = { size: 30, kind: 'cond', track: 3, alpha: E.out(p) * (1 - ramp(L.t, L.d - .2, L.d)), color: (row + i) % 3 === 0 ? C.markHi : C.ink };
+        chip(fg, x + ws[i] / 2, 470 + row * 104 - (1 - E.back(p)) * 20, s, o); x += ws[i] + 22;
+      });
+    });
+  } },
+  { id: 's13-end', b: [114, 128], draw(L) {
+    foot(bg, 'dusk', L.t, L.d, { full: true, fallback: 'gateday', grade: 'brightness(.32) contrast(1.05) saturate(.75) blur(4px)', still: { full: true, z0: 1.08, z1: 1.02, grade: 'brightness(.3) contrast(1.05) saturate(.7) blur(5px)' } });
+    const pc = ramp(L.t, .1, .5);
+    if (IMG.sigil) { fg.save(); fg.globalAlpha = pc; const s = lerp(.8, 1, E.back(pc)), sz = 190 * s; fg.shadowColor = 'rgba(134,184,52,.6)'; fg.shadowBlur = 60; fg.drawImage(IMG.sigil, 560 - sz / 2, 400 - sz / 2, sz, sz); fg.restore(); }
+    const r0 = rv(L, .3, .45, .01); text(fg, 'GATES', 700, 470 + r0.dy, { size: 220, track: 16, align: 'left', alpha: r0.a, shadow: 24 });
+    const r1 = rv(L, .7, .45, .01); text(fg, 'FULL AUTO', 708, 560 + r1.dy, { size: 64, track: 14, align: 'left', color: C.markHi, alpha: r1.a, glow: 'rgba(134,184,52,.5)' });
+    const r2 = rv(L, 1.5, .45, .01);
+    fg.save(); fg.globalAlpha = r2.a; fg.fillStyle = C.line; fg.fillRect(W / 2 - 520, 680, 1040, 2); fg.restore();
+    text(fg, 'PLAY FREE IN YOUR BROWSER', W / 2, 780 + r2.dy, { size: 66, track: 8, alpha: r2.a, shadow: 20 });
+    text(fg, 'elopros.com/games/gates', W / 2, 852 + r2.dy, { kind: 'mono', size: 44, weight: 600, color: C.markHi, alpha: r2.a });
+    const r3 = rv(L, 2.6, .5, .01); text(fg, 'Every player who joins gets a free copy, until 1 December.', W / 2, 980 + r3.dy * .4, { kind: 'sg', size: 32, color: C.gold, alpha: r3.a });
+  } },
+];
+for (const s of SCENES) { const [a, b] = s.b.map(x => x * B); s.t0 = a; s.d = b - a; }
+const TOTAL = SCENES[SCENES.length - 1].t0 + SCENES[SCENES.length - 1].d;
+const at = id => SCENES.find(s => s.id === id).t0;
+const FLASHES = [
+  [DROP, .5, '#fff', .9],
+  [at('c3-walls') + RAID_BOOM - RAID_FROM, .3, '#ffd9a0', .45],
+  [at('s3-raid') + BLAST_BOOM - BLAST_FROM, .35, '#ffd9a0', .55],
+  [at('s13-end'), .5, '#fff', .5],
+];
+
+// the audio cue list mix.py lays down, in trailer seconds
+const gunCues = GUNS.map((g, i) => ({ src: `snd/${g.snd}.ogg`, at: at('s2-guns') + i * GUN_B * B, gain: .8 }));
+const CUES = {
+  total: TOTAL,
+  music: [
+    { src: 'music/green_veil.ogg', at: 0, in: MUSIC_AT, len: TOTAL + .1, gain: 1.0, fade_in: 1.2, fade_out: 2.2 },
+    { src: 'sfx/trailer_drone.wav', at: 0, in: 0, len: DROP, gain: .35, fade_in: 1.0, fade_out: .4 },
+  ],
+  sfx: [
+    { src: 'sfx/trailer_riser.wav', at: DROP - 6.0, gain: .5 },
+    { src: 'snd/reload_rifle_0.ogg', at: at('c4-rifles') + 1.4, gain: .9 },
+    { src: 'sfx/trailer_boom.wav', at: DROP, gain: 1.0 },
+    { src: 'snd/shot_rifle_0.ogg', at: DROP, gain: .9 },
+    { src: 'sfx/trailer_braam.wav', at: DROP + .02, gain: .55 },
+    ...gunCues,
+    { src: 'snd/blast_1.ogg', at: at('c3-walls') + RAID_BOOM - RAID_FROM, gain: .8 },
+    { src: 'snd/blast_0.ogg', at: at('s3-raid') + BLAST_BOOM - BLAST_FROM, gain: 1.0 },
+    { src: 'sfx/trailer_boom.wav', at: at('s3-raid') + BLAST_BOOM - BLAST_FROM, gain: .6 },
+    { src: 'snd/collapse_0.ogg', at: at('s3-raid') + BLAST_BOOM - BLAST_FROM + .5, gain: .7 },
+    { src: 'snd/impact_metal_2.ogg', at: at('s3-raid') + 3 * B, gain: .7 },
+    { src: 'snd/shot_rocket_0.ogg', at: at('s3-raid') + 3 * B + .25, gain: .75 },
+    ...[0, 1, 2, 3, 4].map(i => ({ src: 'snd/place_stone_1.ogg', at: at('s4-build') + .2 + i * .12, gain: .35 })),
+    ...[0, 1, 2, 3].map(i => ({ src: 'snd/impactPlank_medium_002.ogg', at: at('s4-build') + 1.25 + i * .12, gain: .45 })),
+    ...[0, 1, 2].map(i => ({ src: 'snd/bush_pick_0.ogg', at: at('s5-farm') + .4 + i * .35, gain: .6 })),
+    { src: 'snd/splash_0.ogg', at: at('s6-swim') + .1, gain: .9 },
+    { src: 'snd/splash_2.ogg', at: at('s6-swim') + 1.0, gain: .7 },
+    { src: 'snd/flesh_1.ogg', at: at('s7-bleed') + .02, gain: .9 },
+    { src: 'snd/headshot_0.ogg', at: at('s7-bleed') + .02, gain: .6 },
+    { src: 'snd/bandage_0.ogg', at: at('s7-bleed') + .9, gain: .8 },
+    { src: 'snd/equip_1.ogg', at: at('s7-bleed') + 3 * B + .15, gain: .6 },
+    { src: 'sfx/trailer_whoosh.wav', at: at('s8-gate') - .3, gain: .3 },
+    { src: 'snd/gate_chime_0.ogg', at: at('s8-gate') + .3, gain: .7 },
+    { src: 'snd/trade_0.ogg', at: at('s9-casino') + .4, gain: .8 },
+    { src: 'snd/sentry_lock_0.ogg', at: at('s10-companion') + 1.65, gain: .7 },
+    ...[0, 1, 2].map(i => ({ src: 'sfx/trailer_whoosh.wav', at: at('s11-skins') + i * (8 * B / 3) - .2, gain: .22 })),
+    ...[0, 1, 2, 3, 4, 5, 6].map(i => ({ src: 'snd/ui_click_0.ogg', at: at('s12-more') + .3 + i * .2, gain: .4 })),
+    { src: 'sfx/trailer_boom.wav', at: at('s13-end') + .05, gain: .7 },
+    { src: 'sfx/trailer_braam.wav', at: at('s13-end') + .05, gain: .5 },
+  ],
+};
+
+function sceneAt(t) { for (const s of SCENES) if (t < s.t0 + s.d) return s; return SCENES[SCENES.length - 1]; }
+function frame(g) {
+  const sc = sceneAt(g);
+  bg.setTransform(1, 0, 0, 1, 0, 0); fg.setTransform(1, 0, 0, 1, 0, 0);
+  bg.clearRect(0, 0, W, H); fg.clearRect(0, 0, W, H); bg.fillStyle = '#000'; bg.fillRect(0, 0, W, H);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear(true, true, true);
+  sc.draw({ t: g - sc.t0, d: sc.d, g });
+  if (sc.box) { bg.fillStyle = '#000'; bg.fillRect(0, 0, W, BOX.y); bg.fillRect(0, BOX.y + BOX.h, W, H - BOX.y - BOX.h); }
+  post(g);
+  return sc.id;
+}
+
+window.TRAILER = { FPS, TOTAL, CUES, SCENES: SCENES.map(s => ({ id: s.id, t0: s.t0, d: s.d })) };
+window.seek = t => new Promise(res => { const id = frame(t); requestAnimationFrame(() => res(id)); });
+
+(async () => {
+  const jobs = [];
+  for (const [k, f] of Object.entries(STILLS)) jobs.push(loadImg(`img/${f}.jpg`).then(i => IMG[k] = i, () => {}));
+  jobs.push(loadImg('img/sigil.png').then(i => IMG.sigil = i, () => {}));
+  jobs.push(loadImg('img/companion.png').then(i => IMG.companion = i, () => {}));
+  for (const k of ICONS) jobs.push(loadImg(`icons/${k}.png`).then(i => ICON[k] = i, () => {}));
+  const index = await fetch('clips/index.json').then(r => r.json(), () => ({}));
+  for (const [name, n] of Object.entries(index)) {
+    CLIPS[name] = new Array(n);
+    for (let i = 0; i < n; i++) jobs.push(loadImg(`clips/${name}/${String(i + 1).padStart(3, '0')}.jpg`).then(im => CLIPS[name][i] = im));
+  }
+  jobs.push(build3D());
+  await Promise.all(jobs);
+  for (const f of ['700 100px Cond', '400 100px Cond', '500 100px SG', '700 100px SG', '600 100px JB', '700 100px JB']) await document.fonts.load(f);
+  makeGrain();
+  for (const s of SCENES) frame(s.t0 + .5);   // warm every stage once so no captured frame is a compile
+  window.READY = true;
+  if (Q.has('play')) {
+    const t0 = performance.now();
+    const tick = () => { const g = ((performance.now() - t0) / 1000) % TOTAL; frame(g); requestAnimationFrame(tick); };
+    tick();
+  } else if (Q.has('t')) frame(+Q.get('t'));
+})().catch(e => { console.log('ERR', e.stack || e.message); window.FAILED = String(e); });
+</script>
+</body></html>
