@@ -175,12 +175,14 @@ function prep(obj, env = .6) {
 }
 // Lay a held model on its long axis along X, centred, scaled to `size` metres
 // long: a gun reads as a gun whichever way its file was authored.
-function lay(obj, size) {
+function lay(obj, size, upright = false) {
   let b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3());
   const inner = new THREE.Group(); inner.add(obj);
   // The game's held models run their length along +Y with their top along +Z
-  // (a gun's sights, a blade's edge): stand the top up and lay the length on X.
-  if (s.y >= s.x && s.y >= s.z) inner.rotation.set(-Math.PI / 2, Math.PI / 2, 0, 'YXZ');
+  // (a gun's sights, a blade's edge): stand the top up and lay the length on X,
+  // or, `upright`, keep the length standing and turn the edge to the side.
+  if (upright) inner.rotation.y = Math.PI / 2;
+  else if (s.y >= s.x && s.y >= s.z) inner.rotation.set(-Math.PI / 2, Math.PI / 2, 0, 'YXZ');
   else if (s.z >= s.x && s.z >= s.y) inner.rotation.y = Math.PI / 2;
   const mid = new THREE.Group(); mid.add(inner);
   b = new THREE.Box3().setFromObject(mid); s = b.getSize(new THREE.Vector3());
@@ -222,17 +224,23 @@ const GUNS = [
   { f: 'custom_smg', len: 1.35, name: 'CUSTOM SMG', dmg: '30', mag: 30, fire: 'FULL AUTO', ttk: '4', snd: 'shot_smg_2' },
   { f: 'semi_automatic_pistol', len: 0.85, name: 'SEMI-AUTO PISTOL', dmg: '40', mag: 10, fire: 'SEMI', ttk: '3', snd: 'shot_pistol_2' },
 ];
+const SKIN_X = [-1.72, -.57, .57, 1.72];   // metres across the row; the camera sees about ±2.33
+const SKIN_HALF_W = 2.33;
 const SETS = [
-  { name: 'VERDIGRIS', color: C.verd, glow: 'rgba(93,242,154,.55)', items: [['verdigris_rifle', 'AR'], ['verdigris_python', 'PYTHON'], ['verdigris_longsword', 'LONGSWORD'], ['verdigris_hatchet', 'HATCHET']] },
-  { name: 'LAPIS', color: C.lapis, glow: 'rgba(91,134,255,.5)', items: [['lapis_thompson', 'THOMPSON'], ['lapis_bolt_rifle', 'BOLT RIFLE'], ['lapis_pickaxe', 'PICKAXE'], ['lapis_mace', 'MACE']] },
-  { name: 'TIDEWRACK', color: C.tide, glow: 'rgba(54,194,180,.5)', items: [['tidewrack_shotgun', 'SHOTGUN'], ['tidewrack_smg', 'SMG'], ['tidewrack_sar', 'SAR'], ['tidewrack_cleaver', 'CLEAVER']] },
+  // [model, label, metres long (or tall, standing), stands]
+  { name: 'VERDIGRIS', color: C.verd, glow: 'rgba(93,242,154,.55)', items: [['verdigris_rifle', 'AR', 1.15], ['verdigris_python', 'PYTHON', .62], ['verdigris_longsword', 'LONGSWORD', 1.0, true], ['verdigris_hatchet', 'HATCHET', .9, true]] },
+  { name: 'LAPIS', color: C.lapis, glow: 'rgba(91,134,255,.5)', items: [['lapis_thompson', 'THOMPSON', 1.05], ['lapis_bolt_rifle', 'BOLT RIFLE', 1.2], ['lapis_pickaxe', 'PICKAXE', 1.0, true], ['lapis_mace', 'MACE', 1.05, true]] },
+  { name: 'TIDEWRACK', color: C.tide, glow: 'rgba(54,194,180,.5)', items: [['tidewrack_shotgun', 'SHOTGUN', 1.1], ['tidewrack_smg', 'SMG', .78], ['tidewrack_sar', 'SAR', 1.1], ['tidewrack_cleaver', 'CLEAVER', .85, true]] },
 ];
 const S3 = {};
 async function build3D() {
   for (const g of GUNS) { const st = stage(); g.obj = lay(prep(await loadGLB(`glb/${g.f}.glb`), .8), g.len); st.s.add(g.obj); g.st = st; }
   S3.hero = stage(0xfff4e6, 0xa8e04a); S3.hero.obj = lay(prep(await loadGLB('glb/assault_rifle.glb'), .8), 1.6); S3.hero.s.add(S3.hero.obj);
-  S3.c4 = stage(0xffe2c0, 0xff7040); S3.c4.obj = lay(prep(await loadGLB('glb/timed_explosive_charge.glb'), .7), .9); S3.c4.s.add(S3.c4.obj);
-  S3.rl = stage(0xffe2c0, 0xff7040); S3.rl.obj = lay(prep(await loadGLB('glb/rocket_launcher.glb'), .7), 1.7); S3.rl.s.add(S3.rl.obj);
+  // the raid kit in one scene, so the launcher runs off the frame instead of a box
+  S3.raid = stage(0xffe2c0, 0xff7040);
+  S3.raid.c4 = lay(prep(await loadGLB('glb/timed_explosive_charge.glb'), .7), .62); S3.raid.c4.position.x = -.78;
+  S3.raid.rl = lay(prep(await loadGLB('glb/rocket_launcher.glb'), .7), 1.75); S3.raid.rl.position.x = 1.15;
+  S3.raid.s.add(S3.raid.c4, S3.raid.rl);
   // the farm: a planter and three crops that grow on t
   const farm = stage(0xffe7c2, 0x9fd14a); farm.key.position.set(2.5, 4, 2);
   farm.box = stand(prep(await loadGLB('glb/planter_box.glb'), .4), .45); farm.s.add(farm.box);
@@ -245,9 +253,11 @@ async function build3D() {
   }
   S3.farm = farm;
   for (const set of SETS) {
-    set.st = [];
-    for (const [f, label] of set.items) {
-      const st = stage(0xfff4e6, 0xffffff); st.rim.color.set(set.color); st.obj = lay(prep(await loadGLB(`glb/${f}.glb`), 1.0), 1.3); st.s.add(st.obj); st.label = label; set.st.push(st);
+    // the set in one scene, a row of four at their own sizes
+    set.st = stage(0xfff4e6, 0xffffff); set.st.rim.color.set(set.color); set.objs = [];
+    for (const [i, [f, label, len, up]] of set.items.entries()) {
+      const o = lay(prep(await loadGLB(`glb/${f}.glb`), 1.0), len, !!up); o.position.x = SKIN_X[i];
+      o.label = label; set.st.s.add(o); set.objs.push(o);
     }
   }
 }
@@ -343,13 +353,20 @@ function phone(L, x, y, alpha) {
   if (alpha <= 0) return;
   const w = 470, h = 900;
   fg.save(); fg.globalAlpha = clamp(alpha);
-  fg.shadowColor = 'rgba(0,0,0,.7)'; fg.shadowBlur = 60;
-  rrect(fg, x - w / 2, y - h / 2, w, h, 54); fg.fillStyle = '#0d0f0c'; fg.fill(); fg.shadowBlur = 0;
+  // The shadow is drawn, not blurred: swiftshader's cached shadow blur came
+  // back after a few frames as a soft grey disc across the left of the frame.
+  for (let k = 8; k >= 1; k--) { rrect(fg, x - w / 2 - k * 7, y - h / 2 - k * 7 + 18, w + k * 14, h + k * 14, 54 + k * 7); fg.fillStyle = `rgba(0,0,0,${.07})`; fg.fill(); }
+  rrect(fg, x - w / 2, y - h / 2, w, h, 54); fg.fillStyle = '#0d0f0c'; fg.fill();
   fg.strokeStyle = '#3a4234'; fg.lineWidth = 4; fg.stroke();
   const sx = x - w / 2 + 22, sy = y - h / 2 + 22, sw = w - 44, sh = h - 44;
   fg.save(); rrect(fg, sx, sy, sw, sh, 36); fg.clip();
   fg.fillStyle = '#12160f'; fg.fillRect(sx, sy, sw, sh);
-  if (IMG.companion) cover(fg, IMG.companion, sx, sy, sw, sh);
+  if (IMG.companion) {
+    // Scaled once to the screen it fills: a full-size screenshot redrawn scaled every
+    // frame corrupted the grain layer on swiftshader over a run of frames.
+    if (!phone.screen) { const c = document.createElement('canvas'); c.width = sw; c.height = sh; cover(c.getContext('2d'), IMG.companion, 0, 0, sw, sh); phone.screen = c; }
+    fg.drawImage(phone.screen, sx, sy);
+  }
   else {
     // the map: the island from above, the team's dots, the base
     fg.filter = 'brightness(.75) saturate(.8)';
@@ -455,13 +472,16 @@ const SCENES = [
     } else {
       const lt = L.t - half, d = L.d - half;
       ground(bg, 'rgba(255,112,64,.14)', W / 2, 520, 900);
-      const sc = (st, x, ry, a) => { st.key.intensity = 2.8; st.rim.intensity = 2.6; st.hemi.intensity = .4; st.obj.rotation.y = ry; st.obj.rotation.x = .25; if (a > .01) shoot(st, [x, 230, 860, 560], [0, .4, 2.0], [0, 0, 0], 30); };
-      const a1 = rv({ t: lt, d }, .0, .3), a2 = rv({ t: lt, d }, .25, .3);
-      sc(S3.c4, 60, -.6 + lt * .4, a1.a); sc(S3.rl, 1000, -.4 + lt * .3, a2.a);
+      const a1 = rv({ t: lt, d }, .0, .3), a2 = rv({ t: lt, d }, .25, .3), st = S3.raid;
+      st.key.intensity = 2.8; st.rim.intensity = 2.6; st.hemi.intensity = .4;
+      const pop = (o, at, ry) => { const p = E.back(ramp(lt, at, at + .35)); o.scale.setScalar(Math.max(.001, p) * o.userData.s0); o.rotation.set(.18, ry, 0); };
+      st.c4.userData.s0 ??= st.c4.scale.x; st.rl.userData.s0 ??= st.rl.scale.x;
+      pop(st.c4, 0, -.6 + lt * .35); pop(st.rl, .25, -.18 + lt * .08);
+      shoot(st, [0, 0, W, H], [0, .35, 3.0], [0, .02, 0], 30);
       text(fg, 'C4', 490, 840 + a1.dy, { size: 84, track: 6, alpha: a1.a });
       text(fg, '10 S FUSE · NEVER A DUD', 490, 896 + a1.dy, { kind: 'sg', size: 28, weight: 600, color: C.muted, track: 2, alpha: a1.a });
-      text(fg, 'ROCKETS', 1430, 840 + a2.dy, { size: 84, track: 6, alpha: a2.a });
-      text(fg, '275 DAMAGE · 3 M BLAST', 1430, 896 + a2.dy, { kind: 'sg', size: 28, weight: 600, color: C.muted, track: 2, alpha: a2.a });
+      text(fg, 'ROCKETS', 1500, 840 + a2.dy, { size: 84, track: 6, alpha: a2.a });
+      text(fg, '275 DAMAGE · 3 M BLAST', 1500, 896 + a2.dy, { kind: 'sg', size: 28, weight: 600, color: C.muted, track: 2, alpha: a2.a });
       const r = rv({ t: lt, d }, .5); text(fg, 'BEANCANS · BARBED BARRICADES · FLOOR SPIKES', W / 2, 1000 + r.dy * .3, { kind: 'sg', size: 30, weight: 600, color: '#ff9a6a', track: 3, alpha: r.a });
     }
   } },
@@ -554,15 +574,17 @@ const SCENES = [
     text(fg, 'THE REALM DROP', W / 2, 190, { size: 44, track: 10, color: C.muted, alpha: rv(L, 0).a });
     const s = lerp(1.15, 1, E.expo(ramp(lt, 0, .35)));
     text(fg, set.name, W / 2, 300, { size: 120, track: 14, color: set.color, scale: s, alpha: ramp(lt, 0, .06) * (1 - ramp(lt, seg - .1, seg)), glow: set.glow });
-    set.st.forEach((st, i) => {
-      const r = rv(LL, .05 + i * .07, .3, .1), x = 60 + i * 450;
-      if (r.a <= .01) return;
-      st.key.intensity = 2.6; st.rim.intensity = 3.0; st.hemi.intensity = .4;
-      st.obj.rotation.y = -.5 + Math.sin(lt * 1.4 + i) * .45; st.obj.rotation.x = .12;
-      shoot(st, [x, 380 + Math.round(r.dy), 450, 420], [0, .15, 1.45], [0, 0, 0], 30);
-      text(fg, st.label, x + 225, 860 + r.dy, { size: 40, track: 4, alpha: r.a });
+    const st = set.st; st.key.intensity = 2.6; st.rim.intensity = 3.0; st.hemi.intensity = .4;
+    set.objs.forEach((o, i) => {
+      o.userData.s0 ??= o.scale.x;
+      const p = E.back(ramp(lt, .05 + i * .07, .4 + i * .07)) * (1 - ramp(lt, seg - .12, seg));
+      o.scale.setScalar(Math.max(.001, p) * o.userData.s0);
+      o.rotation.set(.1, -.45 + Math.sin(lt * 1.3 + i) * .4, 0);
+      const r = rv(LL, .05 + i * .07, .3, .1);
+      text(fg, o.label, W / 2 + SKIN_X[i] / SKIN_HALF_W * W / 2, 905 + r.dy, { size: 40, track: 4, alpha: r.a });
     });
-    sub(L, 'Twelve skins in three sets, each painted over the item’s own model.', { y: 990, at: .6 });
+    shoot(st, [0, 0, W, H], [0, .3, 4.9], [0, .3, 0], 30);
+    sub(L, 'Twelve skins in three sets, each painted over the item’s own model.', { y: 1005, at: .6 });
   } },
   { id: 's12-more', b: [108, 114], box: true, draw(L) {
     foot(bg, 'desert', L.t, L.d, { fallback: 'desert', grade: 'brightness(.45) contrast(1.05) saturate(.9)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
@@ -647,7 +669,9 @@ const CUES = {
 function sceneAt(t) { for (const s of SCENES) if (t < s.t0 + s.d) return s; return SCENES[SCENES.length - 1]; }
 function frame(g) {
   const sc = sceneAt(g);
-  bg.setTransform(1, 0, 0, 1, 0, 0); fg.setTransform(1, 0, 0, 1, 0, 0);
+  // A whole reset, not a setTransform: a clip or shadow left set by one frame
+  // would let clearRect miss and the grain pile up frame on frame.
+  bg.reset(); fg.reset();
   bg.clearRect(0, 0, W, H); fg.clearRect(0, 0, W, H); bg.fillStyle = '#000'; bg.fillRect(0, 0, W, H);
   renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear(true, true, true);
   sc.draw({ t: g - sc.t0, d: sc.d, g });
