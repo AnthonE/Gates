@@ -208,17 +208,17 @@ function shoot(st, rect, pos, look, fov = 30) {
   renderer.setViewport(x, H - y - h, w, h); renderer.setScissor(x, H - y - h, w, h); renderer.setScissorTest(true);
   renderer.render(st.s, cam); renderer.setScissorTest(false);
 }
-// The nine guns, the order the carousel shows them, with content/weapons.toml's
+// The guns, the order the carousel shows them, `len` the metres each is drawn long, with content/weapons.toml's
 // numbers (hits to kill: balance.toml's ttk note, an unarmoured 100).
 const GUNS = [
-  { f: 'assault_rifle', name: 'ASSAULT RIFLE', dmg: '50', mag: 30, fire: 'FULL AUTO', ttk: '2', snd: 'shot_rifle_0' },
-  { f: 'bolt_action_rifle', name: 'BOLT ACTION RIFLE', dmg: '80', mag: 4, fire: 'BOLT', ttk: '2', snd: 'shot_bolt_0' },
-  { f: 'thompson', name: 'THOMPSON', dmg: '38', mag: 20, fire: 'FULL AUTO', ttk: '3', snd: 'shot_smg_0' },
-  { f: 'pump_shotgun', name: 'PUMP SHOTGUN', dmg: '14×15', mag: 8, fire: 'PUMP', ttk: '1', snd: 'shot_shotgun_0' },
-  { f: 'python_revolver', name: 'PYTHON REVOLVER', dmg: '55', mag: 6, fire: 'SEMI', ttk: '2', snd: 'shot_pistol_0' },
-  { f: 'semi_automatic_rifle', name: 'SEMI-AUTO RIFLE', dmg: '40', mag: 16, fire: 'SEMI', ttk: '3', snd: 'shot_rifle_2' },
-  { f: 'custom_smg', name: 'CUSTOM SMG', dmg: '30', mag: 30, fire: 'FULL AUTO', ttk: '4', snd: 'shot_smg_2' },
-  { f: 'semi_automatic_pistol', name: 'SEMI-AUTO PISTOL', dmg: '40', mag: 10, fire: 'SEMI', ttk: '3', snd: 'shot_pistol_2' },
+  { f: 'assault_rifle', len: 1.75, name: 'ASSAULT RIFLE', dmg: '50', mag: 30, fire: 'FULL AUTO', ttk: '2', snd: 'shot_rifle_0' },
+  { f: 'bolt_action_rifle', len: 1.85, name: 'BOLT ACTION RIFLE', dmg: '80', mag: 4, fire: 'BOLT', ttk: '2', snd: 'shot_bolt_0' },
+  { f: 'thompson', len: 1.55, name: 'THOMPSON', dmg: '38', mag: 20, fire: 'FULL AUTO', ttk: '3', snd: 'shot_smg_0' },
+  { f: 'pump_shotgun', len: 1.75, name: 'PUMP SHOTGUN', dmg: '14×15', mag: 8, fire: 'PUMP', ttk: '1', snd: 'shot_shotgun_0' },
+  { f: 'python_revolver', len: 0.95, name: 'PYTHON REVOLVER', dmg: '55', mag: 6, fire: 'SEMI', ttk: '2', snd: 'shot_pistol_0' },
+  { f: 'semi_automatic_rifle', len: 1.8, name: 'SEMI-AUTO RIFLE', dmg: '40', mag: 16, fire: 'SEMI', ttk: '3', snd: 'shot_rifle_2' },
+  { f: 'custom_smg', len: 1.35, name: 'CUSTOM SMG', dmg: '30', mag: 30, fire: 'FULL AUTO', ttk: '4', snd: 'shot_smg_2' },
+  { f: 'semi_automatic_pistol', len: 0.85, name: 'SEMI-AUTO PISTOL', dmg: '40', mag: 10, fire: 'SEMI', ttk: '3', snd: 'shot_pistol_2' },
 ];
 const SETS = [
   { name: 'VERDIGRIS', color: C.verd, glow: 'rgba(93,242,154,.55)', items: [['verdigris_rifle', 'AR'], ['verdigris_python', 'PYTHON'], ['verdigris_longsword', 'LONGSWORD'], ['verdigris_hatchet', 'HATCHET']] },
@@ -227,7 +227,7 @@ const SETS = [
 ];
 const S3 = {};
 async function build3D() {
-  for (const g of GUNS) { const st = stage(); g.obj = lay(prep(await loadGLB(`glb/${g.f}.glb`), .8), 1.75); st.s.add(g.obj); g.st = st; }
+  for (const g of GUNS) { const st = stage(); g.obj = lay(prep(await loadGLB(`glb/${g.f}.glb`), .8), g.len); st.s.add(g.obj); g.st = st; }
   S3.hero = stage(0xfff4e6, 0xa8e04a); S3.hero.obj = lay(prep(await loadGLB('glb/assault_rifle.glb'), .8), 1.6); S3.hero.s.add(S3.hero.obj);
   S3.c4 = stage(0xffe2c0, 0xff7040); S3.c4.obj = lay(prep(await loadGLB('glb/timed_explosive_charge.glb'), .7), .9); S3.c4.s.add(S3.c4.obj);
   S3.rl = stage(0xffe2c0, 0xff7040); S3.rl.obj = lay(prep(await loadGLB('glb/rocket_launcher.glb'), .7), 1.7); S3.rl.s.add(S3.rl.obj);
@@ -540,10 +540,11 @@ const SCENES = [
   } },
   { id: 's10-companion', b: [94, 100], draw(L) {
     ground(bg, 'rgba(134,184,52,.10)', 1300, 540, 900);
-    const r = rv(L, 0, .4); phone(L, 1330, 540 + r.dy * 3, r.a);
+    const r = rv(L, 0, .4); phone(L, 1440, 540 + r.dy * 3, r.a);
     caption(L, ['YOUR BASE,', 'IN YOUR POCKET.'], { y: 440, size: 96, at: .15, step: .55, track: 5, align: 'left', x: 140, shadow: 0 });
-    sub(L, 'The companion: team map, team chat and raid alerts, in any browser.', { y: 720, at: 1.2, align: 'left', x: 144, size: 32 });
-    const rf = rv(L, 1.6); chip(fg, 144 + chipW('ELO PROS FRIENDS IN GAME', { size: 28 }) / 2, 820 + rf.dy, 'ELO PROS FRIENDS IN GAME', { size: 28, alpha: rf.a, color: '#6bdbe0' });
+    sub(L, 'Team map, team chat and raid alerts,', { y: 720, at: 1.2, align: 'left', x: 144, size: 32 });
+    sub(L, 'in the companion, in any browser.', { y: 766, at: 1.35, align: 'left', x: 144, size: 32 });
+    const rf = rv(L, 1.6); chip(fg, 144 + chipW('ELO PROS FRIENDS IN GAME', { size: 28 }) / 2, 850 + rf.dy, 'ELO PROS FRIENDS IN GAME', { size: 28, alpha: rf.a, color: '#6bdbe0' });
   } },
   { id: 's11-skins', b: [100, 108], draw(L) {
     const seg = L.d / 3, k = Math.min(2, Math.floor(L.t / seg)), lt = L.t - k * seg, set = SETS[k], LL = { t: lt, d: seg };
