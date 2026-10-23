@@ -135,7 +135,10 @@ pub fn apply(
                 camera.order = surface.original_order;
                 commands.entity(surface.backdrop).despawn();
                 commands.entity(surface.camera).despawn();
-                commands.entity(eye).remove::<ScaledSurface>();
+                commands
+                    .entity(eye)
+                    .remove::<ScaledSurface>()
+                    .insert(IsDefaultUiCamera);
             }
             continue;
         }
@@ -195,6 +198,9 @@ pub fn apply(
                 Pickable::IGNORE,
             ))
             .id();
+        // The HUD moves to the presentation camera with the frame: one
+        // default UI camera, never two (Bevy warns and picks either).
+        commands.entity(eye).remove::<IsDefaultUiCamera>();
         commands.entity(eye).insert(ScaledSurface {
             image: image.clone(),
             camera: presentation,
