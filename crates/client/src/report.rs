@@ -238,13 +238,13 @@ impl Kind {
     /// a stranger to a file that is not there.
     pub fn read_first(self) -> &'static str {
         match self {
-            Kind::Look => "ART.md",
-            Kind::World => "TERRAIN.md",
-            Kind::Verb => "DESIGN.md",
-            Kind::Net => "NETCODE.md",
-            Kind::Numbers => "CONTENT.md",
+            Kind::Look => "docs/ART.md",
+            Kind::World => "docs/TERRAIN.md",
+            Kind::Verb => "docs/DESIGN.md",
+            Kind::Net => "docs/NETCODE.md",
+            Kind::Numbers => "docs/CONTENT.md",
             Kind::Crash => "CLAUDE.md",
-            Kind::Other => "NOW.md",
+            Kind::Other => "docs/NOW.md",
         }
     }
 
@@ -277,7 +277,7 @@ impl Kind {
                  real signal, and a non-zero `decode errors` is one on its own."
             }
             Kind::Numbers => {
-                "Wall 7: this is `content/*.toml` and never code. `CONTENT.md` §4's \
+                "Wall 7: this is `content/*.toml` and never code. `docs/CONTENT.md` §4's \
                  bands decide whether a change may land, and `reference/BALANCE.md` §6 \
                  says to take the reference game's number unless there is a mechanism \
                  reason to differ."
@@ -289,7 +289,7 @@ impl Kind {
             }
             Kind::Other => {
                 "No kind fit, so start with the prose and pick the doc yourself. \
-                 `NOW.md` is the full queue."
+                 `docs/NOW.md` is the full queue."
             }
         }
     }

@@ -1,5 +1,8 @@
 # findings/ — design notes too long for `NOW.md`
 
+**Closed to new notes** (MVP mode, 2026-09-23: `CLAUDE.md`). What is here stays
+as the record of what was measured and why.
+
 `CLAUDE.md` §loop discipline says detail worth keeping goes to
 `DECISIONS.md` §open (a knob) or a **`gates-loop/findings/` note**, with the
 `NOW.md` item pointing at it in one line.

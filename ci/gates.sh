@@ -57,8 +57,9 @@ done
 #
 # MVP mode (operator, 2026-09-23) brought one tier back. Pull requests run
 # `fast`: everything except the wasm parity probe (43 of the 2026-09-22 run's
-# 90 minutes) and the client-web `--profile web` build. Main, nightly and
-# release run everything, so a break in either surfaces within a merge.
+# 90 minutes) and the client-web `--profile web` build. Pushes to main run
+# `fast` too; nightly, release and a manual run of the workflow run
+# everything, so a break in either surfaces within a day.
 TIER="${1:-${GATES_TIER:-all}}"
 case "$TIER" in
   all | auto) TIER=all ;;

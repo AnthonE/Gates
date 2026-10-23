@@ -7,17 +7,10 @@ skeleton is the product: determinism, netcode, and the hot-path laws outrank
 every feature. This file is the whole onboarding; any harness that can read a
 file and run a shell can contribute.
 
-**The three.js browser client is deleted** (operator, 2026-08-06). This file
-said "browser survival game, three.js client" for months after that; `web/` is
-not in the tree and never comes back.
-
-**But "native is the only client" is retired as of 2026-09-10** (operator,
-2026-09-09: *"people dont wanna download gates"*). The same Rust client now
-compiles to `wasm32-unknown-unknown` and speaks the browser's own
-`WebTransport` — one codebase, two targets, gated in `ci/gates.sh`. The rule
-that survives is the one that mattered: **no second implementation of the
-client**, in any language. `CLAUDE.md` has the detail, including how to read
-the deleted one out of git history when a question about a verb needs it.
+**One client, two targets.** The Rust client runs on the desktop and, compiled
+to `wasm32-unknown-unknown`, in the browser over its own `WebTransport`. The
+old three.js client (`web/`) is deleted and stays deleted: **no second
+implementation of the client**, in any language.
 
 ## The 90-second start
 
@@ -25,7 +18,7 @@ the deleted one out of git history when a question about a verb needs it.
 and is the whole process.
 
 1. Read `CLAUDE.md`.
-2. Pick something from `NOW.md`, or do what the operator asked.
+2. Pick something from `docs/NOW.md`, or do what the operator asked.
 3. Write the code. Run `ci/quick.sh` (format + clippy of the workspace and the
    game; add crate names to run their tests). Skip the docs.
 4. Branch, commit, push, open a PR. CI runs `ci/gates.sh fast`.
@@ -83,7 +76,7 @@ agent rather than a person:
   is why a report is worth something when it is FIXED and not when it is
   filed.
 
-`crates/client/src/report.rs` is what the document is and why; `NOW.md` §0rep
+`crates/client/src/report.rs` is what the document is and why; `docs/NOW.md` §0rep
 is what is still missing around it.
 
 ## The deal — how work becomes money
@@ -100,12 +93,12 @@ loop is live end to end, with no account and no API key:
   of you.** It pays every time it is met, so any number of agents can work
   it at once and no one can hold it. Just build and deliver.
 - **Don't know what to build? The lane also posts picked jobs** — rows
-  whose id starts `gates-`, each derived from this repo's `NOW.md` and
+  whose id starts `gates-`, each derived from this repo's `docs/NOW.md` and
   walls, each naming the doc to read first. They are guidance, not a
   second pot: every one pays through this same standing rule — the
   board's posted price on acceptance, **one payment per accepted PR**,
   however many posted jobs it closes — and this repo wins on conflict:
-  `NOW.md` is the full queue and a picked job is a pointer into it.
+  `docs/NOW.md` is the full queue and a picked job is a pointer into it.
 - Identity is a wallet, and that is all of it — no vow, no sign-up.
   `POST /api/munus/gates-pr/submit` with your PR link and your `wallet`,
   signed (one EIP-191 `personal_sign`). The exact text to sign is served at
@@ -119,7 +112,7 @@ loop is live end to end, with no account and no API key:
   what says who else the merge owes, and a fix that names none pays only its
   author. The fingerprints are printed on every report and by
   `./ci/reports.py <dir>`; a reporter's share and whether it is paid at all
-  is `DECISIONS.md` §open (bug reports v0) and is the operator's.
+  is `docs/DECISIONS.md` §open (bug reports v0) and is the operator's.
 - Full agent onboarding for the elo side, in order:
   `https://elopros.com/api/start`.
 
@@ -153,18 +146,18 @@ lands clean, and they are judged one at a time.
 ## The walls, one line each (the law is `CLAUDE.md`; these are reminders)
 
 1. sim-core is pure — no I/O, clock, threads, map iteration, trig; float
-   ops restricted. Gate: clippy walls + `test_parity_wasm`.
+   ops restricted. Gate: clippy walls on every PR, `test_parity_wasm` nightly.
 2. Zero allocation in the tick after warmup. Gate: `test_alloc_zero`.
 3. No locks, syscalls, `String`, or logging in the sim thread — rings and
    integer event codes only. Gate: clippy (`sim-core/clippy.toml` disallows
    the lock, clock, I/O and `String` types by name). ⚠ **The other half of
    this wall's stated gate does not exist** — there is no soak and so no
-   tick-jitter assert anywhere in the repo. `DESIGN.md` §12 marks it.
+   tick-jitter assert anywhere in the repo. `docs/DESIGN.md` §12 marks it.
 4. Bounded everything; every client-driven `push` checks a cap from
    `limits.rs`. Gate: review + per-site cap tests + `test_raid_storm`
    (`crates/sim-core/tests/raid_storm.rs`, landed 2026-08-14: 64 players
    raiding at the tick's command ceiling, every store's cap asserted per
-   tick). `NETCODE.md` §11's same-named *wire* storm is a different gate
+   tick). `docs/NETCODE.md` §11's same-named *wire* storm is a different gate
    and is still unbuilt.
 5. Determinism: same build + seed + WAL → same hashes. Gate: `test_replay`,
    `test_terrain_golden`.
@@ -172,7 +165,7 @@ lands clean, and they are judged one at a time.
    regenerated goldens in the same commit. Gate: `test_protocol_golden`.
 7. Content never touches code — items and balance live in `content/*.toml`,
    content hash pinned into the WAL header. Gate: `test_content`.
-8. What we sell is `BUSINESS.md` — product, not an engineering wall.
+8. What we sell is `docs/BUSINESS.md` — product, not an engineering wall.
    Tickers are bare: ELO, JUNK, ORBS — never a `$` prefix. Gate:
    `ci/elo_manifest.py`, over the store manifest and **only** over it.
    ⚠ This wall named a `ci/gates.sh` docs check and **there has never been
@@ -206,18 +199,22 @@ cargo run -p client --features render --bin gates   # the game
 ## CI and nightlies
 
 - **`gates` workflow** — runs `./ci/gates.sh` on every PR and push to
-  `main` that touches code paths. A PR runs the `fast` tier, which skips the
-  wasm parity probe and the web build; main runs everything. Red means do
-  not merge; there is no override lane.
+  `main` (or `next-wipe`) that touches code paths, in three jobs side by side
+  (`base`, `render`, `wasm`). PRs and pushes run the `fast` tier, which skips
+  the wasm parity probe and the web-profile builds; a manual run from the
+  Actions tab runs everything. Red means do not merge; there is no override
+  lane.
+- **`deploy-kind` workflow** — names what a PR takes to ship (`CLIENT`,
+  `SHARD`, `WIRE` or `WIPE`; `ci/deploy_kind.py`). A `WIPE` PR into `main` is
+  red: send it to `next-wipe`.
 - **`nightly` workflow** — every night, runs `./ci/gates.sh` against `main`,
   builds the release server, and packages the desktop client as an elo depot
   (`ci/depot.py`) in a second job. It does **not** publish: a build goes live
   when a person writes the origin's `published.json`. The rule it was written
   around still holds — a builder with nothing to build is a fact, not a
-  failure, but the *test* gate is never allowed to skip-pass. (This entry used
-  to warn that the workflow named a wasm client and that the claim was
-  unverified. It was verified 2026-08-09: the header had already been
-  corrected and the depot job exists.)
+  failure, but the *test* gate is never allowed to skip-pass.
+- **`release` workflow** — builds and packages a tagged release. Tagging is
+  the operator's.
 
 ## For any harness
 

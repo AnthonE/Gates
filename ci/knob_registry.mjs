@@ -62,7 +62,7 @@ const check = (cond, msg) => {
 
 // --- the registry side ------------------------------------------------------
 
-const DECISIONS = path.join(ROOT, "DECISIONS.md");
+const DECISIONS = path.join(ROOT, "docs", "DECISIONS.md");
 const md = fs.readFileSync(DECISIONS, "utf8");
 
 // The section header, verbatim. If it is ever renamed this goes red rather

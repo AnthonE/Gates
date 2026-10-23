@@ -21,7 +21,12 @@ WebTransport/QUIC.
 | `client` | the game (`--features render`, `--bin gates`); wasm too |
 | `client-web` | the browser entry point (`ci/build_web.sh`) |
 | `sound`, `sound-worklet` | audio |
+| `voice` | proximity voice (Opus), shared by the client and `jev-bot` |
+| `agentkey` | an agent player's wallet key, kept out of the page |
 | `content` + `content/*.toml` | items, recipes, loot, balance numbers |
+
+The design docs live in `docs/` (`docs/README.md` indexes them). A bare
+`NOW.md` or `DECISIONS.md` in a code comment means the file there.
 
 ## The loop
 
@@ -41,7 +46,7 @@ hours.
 - Write findings notes, research docs, `BRANCH-NOTES.md` or long commit bodies.
 - Add a test for every change, or mutation-test your tests. Add one when the
   logic is tricky or has broken before.
-- Read the big docs before starting. Grep them when you need an answer:
+- Read the big docs before starting. Grep `docs/` when you need an answer:
   `ARC.md` (the wipe arc and its frameworks: read it before touching works,
   unlocks, speakers, inscriptions or puzzles), `DESIGN.md` (product), `NETCODE.md`, `TERRAIN.md`, `RENDER.md`, `ART.md`
   (visual bar), `CONTENT.md` (content schemas), `reference/*.md` (how Rust
