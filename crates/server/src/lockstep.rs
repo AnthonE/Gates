@@ -128,6 +128,9 @@ impl Island {
             dev: true,
             blight_salt: self.core.world.blight_salt,
         });
+        // Onto the island's clock: a mind made after `t0` would otherwise
+        // wait out the wall clock's lead, a different wait every run.
+        bot.set_clock(self.now());
         self.seats.push(Seat {
             bot,
             view: ClientView::new(),

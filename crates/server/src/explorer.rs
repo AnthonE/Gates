@@ -1239,6 +1239,14 @@ impl Survivor {
         self.known_haven = Some((seed, haven));
     }
 
+    /// Put its clocks on `now`, for a driver that keeps its own (the
+    /// lockstep island): `welcome` and the mind read the wall clock, which
+    /// a synthetic clock started earlier would trail.
+    pub fn set_clock(&mut self, now: Instant) {
+        self.seen_at = now;
+        self.mind.set_clock(now);
+    }
+
     pub fn with(mind: Mind, opts: SurvivorOpts) -> Self {
         Self {
             mind,
