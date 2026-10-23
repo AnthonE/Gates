@@ -94,7 +94,11 @@ key_pem = "/home/master/gates-certs/privkey.pem"
 # ⚠ Unlike 0.7.0, `content/` did NOT move under this release. The 2026-09-04
 # wipe was a deliberate one rather than wall 7 refusing a stale world, so a
 # reader looking for a content hash change to explain it will not find one.
-min_client = "0.8.0"
+#
+# **Raised to 0.9.0 on 2026-10-23**, the day after both depots and the page
+# served `0.9.0-g9a72613ad` (manifest checked on both platform rows). The wire
+# (141) refuses 0.8.0 already; this is the floor holding beside it.
+min_client = "0.9.0"
 
 # Guests in (see the header). Turn it back on before arming the ticket door
 # below: `entitle_origin` refuses to boot without it.
