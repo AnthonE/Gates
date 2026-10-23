@@ -74,6 +74,9 @@ from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 im.crop((416, 562, 642, 788)).save(sys.argv[2])
 PY
+# the companion page, screenshotted on a local shard with a crew of agents
+# signed in (its team chat posted through its own api/chat)
+cp companion.png "$B/img/"
 # store stills: the fallback for any footage not shot yet, and some backdrops
 for s in raiders raid-satchel heli island-desert island-morning fel-wolf gate-aerial gate-above gate-day gate-inside \
          wolves town-street-day market-street storm verdigris boar; do
