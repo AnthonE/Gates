@@ -44,8 +44,17 @@ permissions:
   contents: read
 
 jobs:
-  gates:
+  # The gates in three parts side by side (`GATES_PART`, ci/gates.sh): one
+  # job ran them in a line for 60 minutes (run 39892561035), 29 of them the
+  # native suite and 21 the renderer tier. Each part restores and, on main,
+  # saves its own cache, since each compiles a different target/.
+  part:
+    name: gates · ${{ matrix.part }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [base, render, wasm]
     env:
       CARGO_INCREMENTAL: 0
     # Run 35478523217 (2026-09-20) had a cold cache: 44 minutes reached
@@ -69,10 +78,12 @@ jobs:
           # and the developer's box drift three releases apart while the gates
           # read green locally.
           rustup show active-toolchain || rustup toolchain install
-      # Only main SAVES the cache. One is ~4.8 GB against the repo's 10 GB
-      # limit, so when every PR run saved its own copy they evicted main's:
-      # the 2026-09-22 main run started cold on a Cargo.lock unchanged since
-      # 09-16 and took 90 minutes. A PR restores its base branch's cache.
+      # Only main SAVES the cache. One whole-suite cache was ~4.8 GB against
+      # the repo's 10 GB limit, so when every PR run saved its own copy they
+      # evicted main's: the 2026-09-22 main run started cold on a Cargo.lock
+      # unchanged since 09-16 and took 90 minutes. A PR restores its base
+      # branch's cache. The last restore key is the single job's cache from
+      # before the split, so the first split runs start warm.
       - name: cache cargo (restore)
         id: cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -81,14 +92,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: gates-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: gates-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+          key: gates-v3-${{ matrix.part }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            gates-v3-${{ matrix.part }}-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            gates-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
       # `ci/gates.sh`'s native-client gate builds `--features render`, and each
       # of these fails identically without its package: a `pkg-config exited
       # with status code 1` panic from a *-sys build script, with the crate
       # named only in the backtrace. Absent here until 2026-08-11, which is the
       # failure this gate would have hit next once the clippy break above it
-      # was fixed.
+      # was fixed. The browser builds want them too (`render` on wasm32
+      # resolves the same crates' build scripts).
       - name: the three -dev packages --features render needs
         run: |
           sudo apt-get update
@@ -98,6 +112,7 @@ jobs:
       # `ci/flatten_charts.py` say SKIP and exit nonzero without one rather
       # than pass on the cases that did not run.
       - name: numpy and Pillow, for the asset triage self-tests
+        if: matrix.part == 'base'
         run: pip3 install numpy pillow
       - name: the gates
         env:
@@ -105,6 +120,7 @@ jobs:
           # web-profile builds (MVP mode). Nightly, release and a manual run
           # of this workflow run everything.
           GATES_TIER: ${{ github.event_name == 'workflow_dispatch' && 'all' || 'fast' }}
+          GATES_PART: ${{ matrix.part }}
         run: ./ci/gates.sh
       - name: cache cargo (save, main only)
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
@@ -116,3 +132,30 @@ jobs:
             target
           # The key the restore step computed, before target/ existed to hash through.
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # Green only when every part is: a skipped or failed part is red here,
+  # never the "skipped" a required check would read as passing. It names the
+  # tree it passed (`gates-tree-<git tree hash>`), so ci/release.sh can take a
+  # PR's green run for the merge commit when the two trees are the same
+  # tree, rather than waiting on main's own run of the identical files.
+  gates:
+    needs: part
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: every part green
+        run: |
+          [ "${{ needs.part.result }}" = success ] \
+            || { echo "a part of the gates is ${{ needs.part.result }}"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: the tree it tested
+        id: tree
+        run: |
+          t=$(git rev-parse 'HEAD^{tree}')
+          echo "$t" > tree.txt
+          echo "tree=$t" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gates-tree-${{ steps.tree.outputs.tree }}
+          path: tree.txt
+          retention-days: 30

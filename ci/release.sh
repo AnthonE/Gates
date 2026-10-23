@@ -115,6 +115,23 @@ PY
 )
     printf '%s\n' "$report" | sed '$d'
     verdict=$(printf '%s\n' "$report" | tail -1)
+    # A merge commit's tree is often a tree the PR's run already passed (the
+    # PR was up to date with main when it merged): gates.yml's last job names
+    # the tree it tested, so that run counts and main's own run of the same
+    # files need not be waited for. A red run of HEAD still outranks it.
+    case "$verdict" in
+      PENDING* | NONE)
+        tree=$(git rev-parse 'HEAD^{tree}')
+        same=$(gh api "repos/{owner}/{repo}/actions/artifacts?name=gates-tree-$tree" \
+                 --jq '.artifacts[].workflow_run.id' 2>/dev/null | while read -r id; do
+                 [ "$(gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .conclusion 2>/dev/null)" = success ] \
+                   && gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .html_url && break
+               done)
+        if [ -n "$same" ]; then
+          echo "  (HEAD's own run: ${verdict})"
+          verdict="GREEN $same (the same tree, ${tree:0:12})"
+        fi ;;
+    esac
     case "$verdict" in
       GREEN*) echo "  green: ${verdict#GREEN }" ;;
       RED*) refuse "HEAD's gates run is red (${verdict#RED }). Release a commit whose run is green" ;;
