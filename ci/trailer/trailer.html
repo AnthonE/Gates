@@ -178,8 +178,10 @@ function prep(obj, env = .6) {
 function lay(obj, size) {
   let b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3());
   const inner = new THREE.Group(); inner.add(obj);
-  if (s.z >= s.x && s.z >= s.y) inner.rotation.y = Math.PI / 2;
-  else if (s.y >= s.x && s.y >= s.z) inner.rotation.z = Math.PI / 2;
+  // The game's held models run their length along +Y with their top along +Z
+  // (a gun's sights, a blade's edge): stand the top up and lay the length on X.
+  if (s.y >= s.x && s.y >= s.z) inner.rotation.set(-Math.PI / 2, Math.PI / 2, 0, 'YXZ');
+  else if (s.z >= s.x && s.z >= s.y) inner.rotation.y = Math.PI / 2;
   const mid = new THREE.Group(); mid.add(inner);
   b = new THREE.Box3().setFromObject(mid); s = b.getSize(new THREE.Vector3());
   const c = b.getCenter(new THREE.Vector3()); inner.position.sub(c);
@@ -312,7 +314,7 @@ function blueprint(L) {
   const r1 = rv(L, .2); text(fg, 'ON THE GRID', W / 2 - 520, 830 + r1.dy, { size: 40, track: 4, color: C.muted, alpha: r1.a });
   const r2 = rv(L, 1.3); text(fg, 'OR ANY ANGLE', W / 2 + 420, 830 + r2.dy, { size: 40, track: 4, color: C.markHi, alpha: r2.a });
 }
-// Rust's big wheel, Gates' payouts: 25 segments, twelve 1s, six 3s, four 5s,
+// The big wheel's payouts: 25 segments, twelve 1s, six 3s, four 5s,
 // two 10s, one 20 (sim-core/casino.rs).
 const WHEEL = (() => { const o = [1, 3, 1, 5, 1, 3, 1, 10, 1, 3, 1, 5, 1, 20, 1, 3, 1, 5, 1, 3, 1, 10, 1, 5, 3]; return o; })();
 const WCOL = { 1: '#e9e3cf', 3: '#4f9a3a', 5: '#3e6fd8', 10: '#7b4bc4', 20: '#d8a63a' };
@@ -441,8 +443,8 @@ const SCENES = [
       text(fg, v, x + 520, y + 4, { kind: 'mono', size: 46, weight: 700, color: i === 3 ? C.markHi : C.ink, align: 'right', alpha: ra });
     });
     // muzzle flash on the cut, at the barrel's end
-    if (kick > .05) { fg.save(); fg.globalCompositeOperation = 'lighter'; const gx = 1700, gy = 520, gr = fg.createRadialGradient(gx, gy, 0, gx, gy, 220 * kick + 40); gr.addColorStop(0, `rgba(255,236,190,${.55 * kick})`); gr.addColorStop(1, 'rgba(255,160,60,0)'); fg.fillStyle = gr; fg.fillRect(gx - 300, gy - 300, 600, 600); fg.restore(); }
-    sub(L, 'Rust’s guns, Rust’s numbers: aim cones, bloom, recoil and damage falloff.', { y: 1000, at: .5 });
+    if (kick > .05) { fg.save(); fg.globalCompositeOperation = 'lighter'; const gx = 1300 - 300 * g.len, gy = 470, gr = fg.createRadialGradient(gx, gy, 0, gx, gy, 220 * kick + 40); gr.addColorStop(0, `rgba(255,236,190,${.55 * kick})`); gr.addColorStop(1, 'rgba(255,160,60,0)'); fg.fillStyle = gr; fg.fillRect(gx - 300, gy - 300, 600, 600); fg.restore(); }
+    sub(L, 'Aim cones, bloom, recoil and damage falloff on every gun.', { y: 1000, at: .5 });
   } },
   { id: 's3-raid', b: [44, 52], draw(L) {
     const half = 3 * B;
