@@ -66,6 +66,20 @@ case "$TIER" in
   *) fail "unknown tier '$TIER' — pass 'fast' or nothing." ;;
 esac
 
+# Which third of the gates to run (`GATES_PART`, default all): CI runs the
+# three side by side (`.github/workflows/gates.yml`), since run 39892561035
+# spent 60 minutes in one line of them: base (the self-tests, rustfmt,
+# clippy and the native suite, ~33 min), render (the renderer tier and the
+# bot view, ~23) and wasm (the browser builds and, tier all, parity).
+PART="${GATES_PART:-all}"
+case "$PART" in
+  all | base | render | wasm) ;;
+  *) fail "unknown part '$PART' — base, render, wasm or all." ;;
+esac
+want() { [ "$PART" = all ] || [ "$PART" = "$1" ]; }
+
+if want base; then
+
 # The knob registry (`ci/knob_registry.mjs`: DECISIONS.md §open pinned to the
 # source) no longer gates. In MVP mode (operator, 2026-09-23) the code is the
 # source of truth for a number. The script still runs by hand as an audit.
@@ -203,6 +217,9 @@ $NICE cargo test --workspace --profile ci || fail "cargo test"
 # everything under `render::` is cfg'd out of it, and `render::loading`'s tests
 # — which assert that a world is not loaded until the server has said where —
 # would be compiled by the clippy line above and run by nothing.
+fi
+
+if want render; then
 echo "== gate: native client (--features render: clippy + every renderer-tier suite)"
 echo "   (needs libwayland-dev + libasound2-dev + libudev-dev — Bevy defaults, not ours)"
 $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
@@ -233,6 +250,9 @@ $NICE cargo test -p server --features watch --lib watch:: \
 # Costs ~2.7 s for all three (measured 2026-09-09) and cannot move the parity
 # digests below: none of the three declares a `[features]` section, so there
 # is no feature for cargo to unify and `sim_core.wasm`'s bytes are unchanged.
+fi
+
+if want wasm; then
 echo "== gate: wasm build (sim-core + protocol + client-core -> wasm32-unknown-unknown)"
 rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
   || fail "wasm32-unknown-unknown target not installed"
@@ -354,7 +374,7 @@ fi
 # It is the last gate, and main and nightly run it on every merge.
 if [ "$TIER" = "fast" ]; then
   echo "== SKIPPED (tier fast): test_parity_wasm — nightly runs it"
-  echo "ALL GATES GREEN (tier fast)"
+  echo "ALL GATES GREEN (tier fast, $PART)"
   exit 0
 fi
 
@@ -482,4 +502,6 @@ math_calls="$(awk '/^math /{print $2}' "$native_out")"
 # the replacement is `tests/tree.rs`, in Rust, against the mesh we actually
 # draw.
 
-echo "ALL GATES GREEN"
+fi
+
+echo "ALL GATES GREEN ($PART)"
