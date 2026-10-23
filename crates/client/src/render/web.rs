@@ -56,7 +56,7 @@
 //! reload — and the page draws whatever it wants a player to see next.
 
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 /// WebGL2's largest surface on either axis, device pixels.
 ///
@@ -370,6 +370,65 @@ pub fn browser_fullscreen() -> Option<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         None
+    }
+}
+
+/// Whether the page holds the pointer lock (`document.pointerLockElement`).
+/// `None` natively, where the window's own grab mode is the truth.
+pub fn pointer_locked() -> Option<bool> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .map(|d| d.pointer_lock_element().is_some())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// `PostUpdate` on wasm32: keep the window's grab mode honest about the
+/// page's lock (`ui::pointer::BrowserLock`). Esc, or the tab losing focus,
+/// lets go of the lock without the game hearing a key, so in the world that
+/// opens the Esc menu, the way Esc does on the desktop. A request the page
+/// refused frees the cursor instead of leaving it hidden over a dead view.
+///
+/// Never inside an X post: the frame has no pointer lock to give, the window
+/// says `Locked` by design and the view drags (`in_post`).
+pub fn follow_pointer_lock(
+    mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    screen: Option<Res<State<super::Screen>>>,
+    mut next: ResMut<NextState<super::Screen>>,
+    mut lock: Local<crate::ui::pointer::BrowserLock>,
+) {
+    use crate::ui::pointer::LockFix;
+    if in_post() {
+        return;
+    }
+    let Some(has) = pointer_locked() else {
+        return;
+    };
+    let Ok(mut c) = cursor.single_mut() else {
+        return;
+    };
+    let want = c.grab_mode == CursorGrabMode::Locked;
+    match lock.step(want, has) {
+        LockFix::Keep => {}
+        // Written even though it already reads `None`: the write is the
+        // change Bevy acts on, and acting is `exitPointerLock()` again.
+        LockFix::Unlock => c.grab_mode = CursorGrabMode::None,
+        LockFix::Refused => {
+            c.grab_mode = CursorGrabMode::None;
+            c.visible = true;
+        }
+        LockFix::Taken => {
+            c.grab_mode = CursorGrabMode::None;
+            c.visible = true;
+            if screen.is_some_and(|s| *s.get() == super::Screen::InWorld) {
+                next.set(super::Screen::Paused);
+            }
+        }
     }
 }
 

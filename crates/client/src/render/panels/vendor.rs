@@ -28,11 +28,11 @@ pub const VEND_MAX: u8 = 20;
 
 /// The column heads' strip and a row's ground — Rust's shop is darker rows
 /// on the panel, a hair apart.
-const HEAD_BG: Color = Color::srgba(0.118, 0.106, 0.094, 0.85);
-const ROW_BG: Color = Color::srgba(0.212, 0.196, 0.176, 0.92);
+pub(super) const HEAD_BG: Color = Color::srgba(0.118, 0.106, 0.094, 0.85);
+pub(super) const ROW_BG: Color = Color::srgba(0.212, 0.196, 0.176, 0.92);
 /// BUY: Rust's green, a dark plate under its own green ink.
-const BUY_BG: Color = Color::srgba(0.282, 0.357, 0.161, 0.95);
-const BUY_HOT: Color = Color::srgba(0.345, 0.439, 0.196, 1.0);
+pub(super) const BUY_BG: Color = Color::srgba(0.282, 0.357, 0.161, 0.95);
+pub(super) const BUY_HOT: Color = Color::srgba(0.345, 0.439, 0.196, 1.0);
 /// What SOLD OUT is in Rust: a dark red plate under red ink.
 const OUT_BG: Color = Color::srgba(0.239, 0.098, 0.082, 0.92);
 

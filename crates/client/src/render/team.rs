@@ -155,14 +155,19 @@ fn marks(
                 if text.0 != label {
                     text.0 = label;
                 }
-                color.0 = ink(m.state);
+                let want = ink(m.state);
+                if color.0 != want {
+                    color.0 = want;
+                }
                 // Centred over the head: the label's width is not known
                 // here, so it hangs from a point a little left of it.
-                node.left = Val::Px(px.x - 24.0);
-                node.top = Val::Px(px.y - 16.0);
-                *vis = Visibility::Inherited;
+                ui::place(&mut node, Val::Px(px.x - 24.0), Val::Px(px.y - 16.0));
+                vis.set_if_neq(Visibility::Inherited);
             }
-            None => *vis = Visibility::Hidden,
+            // Every frame for every empty seat, so only when it changes.
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
 }

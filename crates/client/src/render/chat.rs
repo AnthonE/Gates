@@ -18,7 +18,7 @@
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use protocol::chat::Channel;
 use protocol::Address;
@@ -327,10 +327,7 @@ fn close(chat: &mut Chat, cursor: &mut Query<&mut CursorOptions, With<PrimaryWin
     chat.dirty = true;
     // Take the pointer back, so getting out of chat does not need a click
     // that would also swing the axe — `pause::act`'s rule.
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = super::web::in_post();
-    }
+    super::ui::lock_cursor(cursor);
 }
 
 /// A whisper goes to a friend over the hive, never to the shard: desktop

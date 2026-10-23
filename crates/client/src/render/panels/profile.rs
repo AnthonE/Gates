@@ -9,7 +9,7 @@
 //! their Elo Pros page, where the same button works.
 
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 use protocol::Address;
 
 use super::kit;
@@ -320,10 +320,7 @@ pub fn relock(mut ui: ResMut<Ui>, mut cursor: Query<&mut CursorOptions, With<Pri
         return;
     }
     ui.profile_relock = false;
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = crate::render::web::in_post();
-    }
+    crate::render::ui::lock_cursor(&mut cursor);
 }
 
 /// A press on the card: a friends op, or their page.

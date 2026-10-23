@@ -28,10 +28,8 @@ use sim_core::limits::TICK_HZ;
 
 const PANEL_W: f32 = 640.0;
 const ROW_H: f32 = 50.0;
-const HEAD_BG: Color = Color::srgba(0.118, 0.106, 0.094, 0.85);
-const ROW_BG: Color = Color::srgba(0.212, 0.196, 0.176, 0.92);
-const BET_BG: Color = Color::srgba(0.282, 0.357, 0.161, 0.95);
-const BET_HOT: Color = Color::srgba(0.345, 0.439, 0.196, 1.0);
+// The kiosk's rows and its green, so the two booths read as one.
+use super::vendor::{BUY_BG as BET_BG, BUY_HOT as BET_HOT, HEAD_BG, ROW_BG};
 /// The casino's gilt, and the slot machine's red enamel.
 const GILT_INK: Color = Color::srgb(0.95, 0.78, 0.38);
 const ENAMEL: Color = Color::srgba(0.36, 0.08, 0.07, 0.96);
