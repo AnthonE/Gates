@@ -37,6 +37,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-ut
 # `k256` with default features off keeps it to the curve and ECDSA recovery.
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2", features = ["keccak"] }
+# A Solana account's sign-in is Ed25519 (`auth::verify_solana_any`). `ring`
+# is already in the graph under rustls, so this is an edge, not a package.
+ring = { version = "0.17", default-features = false }
 # The per-connection nonce. OS entropy, because a guessable nonce is a
 # signature anybody can replay.
 getrandom = "0.2"

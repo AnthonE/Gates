@@ -34,7 +34,9 @@ impl Gates {
     /// (`client::net::web::open` has the table). A public shard with a real
     /// chain needs nothing — the browser trusts it outright.
     ///
-    /// `identity` is the `0x…` address the player is claiming, and `sign` is
+    /// `identity` is the `0x…` address the player is claiming — or, since v142,
+    /// a Solana account's base58 address, whose `sign` answers with its
+    /// `signMessage` signature as base58 — and `sign` is
     /// the wallet that proves it: `(text: string) => Promise<"0x…">`, which is
     /// the shape of the platform's own `Deck.wallet.sign(message, address)`
     /// (`watchtower/js/deck-shim.js` in the platform repo) with the address
@@ -72,8 +74,23 @@ impl Gates {
                  wallet with no address has nothing to prove",
             ));
         }
+        // An `0x…` address is an Ethereum account; anything else must be a
+        // Solana account's base58 address (v142), which signs the Solana form
+        // of the same text with its wallet's `signMessage`.
+        let solana = declared
+            .filter(|a| !a.starts_with("0x") && !a.starts_with("0X"))
+            .map(|a| {
+                protocol::SolanaKey::from_base58(a.as_bytes()).ok_or_else(|| {
+                    JsValue::from_str(
+                        "identity is neither an Ethereum address (0x and 40 hex digits) nor a \
+                         Solana address (base58)",
+                    )
+                })
+            })
+            .transpose()?;
         let address = match declared {
             None => protocol::Address::GUEST,
+            Some(_) if solana.is_some() => protocol::Address::GUEST,
             Some(a) => protocol::Address::from_hex(a.as_bytes()).ok_or_else(|| {
                 JsValue::from_str(
                     "identity is not an Ethereum address — it must be 0x followed by 40 hex digits",
@@ -93,14 +110,22 @@ impl Gates {
             (Some(s), Some(h)) => client::net::handshake::page_domain(s, h, &server),
             _ => None,
         };
-        let session = client::Session::connect(
-            &server,
-            cert_hash.as_deref(),
-            address,
-            sign.as_ref(),
-            signs_as,
-        )
-        .await
+        let session = match (solana, sign.as_ref()) {
+            (Some(key), Some(f)) => {
+                client::Session::connect_solana(&server, cert_hash.as_deref(), key, f, signs_as)
+                    .await
+            }
+            _ => {
+                client::Session::connect(
+                    &server,
+                    cert_hash.as_deref(),
+                    address,
+                    sign.as_ref(),
+                    signs_as,
+                )
+                .await
+            }
+        }
         .map_err(join_error)?;
         Ok(Gates { session, server })
     }

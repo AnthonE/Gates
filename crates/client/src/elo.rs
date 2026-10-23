@@ -662,6 +662,71 @@ pub async fn sign_siwe_web(
     })
 }
 
+/// [`sign_siwe_web`] for a **Solana** account (v142): the page's signer is
+/// handed [`crate::net::handshake::Proof::solana_message`] and answers with
+/// the 64-byte Ed25519 signature its wallet's `signMessage` returned — as
+/// base58 (what Solana tools print) or `0x` hex.
+#[cfg(target_arch = "wasm32")]
+pub async fn sign_siws_web(
+    signer: &js_sys::Function,
+    key: protocol::SolanaKey,
+    proof: &crate::net::handshake::Proof,
+) -> Result<protocol::SolanaSignature, String> {
+    use wasm_bindgen::JsValue;
+
+    let text = proof.solana_message(key);
+    let answer = signer
+        .call1(&JsValue::NULL, &JsValue::from_str(&text))
+        .map_err(|e| crate::net::web::js_err("the wallet refused to be asked", &e))?;
+    let resolved = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&answer))
+        .await
+        .map_err(|e| crate::net::web::js_err("the wallet did not sign", &e))?;
+    let sig = resolved
+        .as_string()
+        .ok_or_else(|| "the wallet answered with something that is not a string".to_string())?;
+    parse_solana_signature(&sig).ok_or_else(|| {
+        "the wallet's answer is not a Solana signature (64 bytes as base58 or 0x hex)".to_string()
+    })
+}
+
+/// A Solana signature's 64 bytes from base58 or `0x` hex.
+// Called by the browser's `sign_siws_web`; natively only its tests reach it.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn parse_solana_signature(s: &str) -> Option<protocol::SolanaSignature> {
+    let s = s.trim();
+    let mut out = [0u8; protocol::SOLANA_SIGNATURE_BYTES];
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        if hex.len() != protocol::SOLANA_SIGNATURE_BYTES * 2 {
+            return None;
+        }
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        }
+        return Some(protocol::SolanaSignature(out));
+    }
+    // base58, big-endian into the fixed buffer; a value past 64 bytes overflows
+    const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if s.is_empty() || s.len() > 88 {
+        return None;
+    }
+    for c in s.bytes() {
+        let mut carry = B58.iter().position(|x| *x == c)? as u32;
+        for b in out.iter_mut().rev() {
+            carry += (*b as u32) * 58;
+            *b = carry as u8;
+            carry >>= 8;
+        }
+        if carry != 0 {
+            return None;
+        }
+    }
+    // Canonical base58: each leading zero byte is one leading `1`. A value
+    // too short to be 64 bytes decodes with zero bytes it never spelled.
+    let zeros = out.iter().take_while(|b| **b == 0).count();
+    let ones = s.bytes().take_while(|c| *c == b'1').count();
+    (zeros == ones).then_some(protocol::SolanaSignature(out))
+}
+
 /// `0x…` hex → 65 bytes. Refuses anything else.
 //
 // Un-gated 2026-09-10, as its own note said it would be: it was `#[cfg(not(
@@ -695,6 +760,30 @@ pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
 #[cfg(test)]
 mod siwe_tests {
     use super::*;
+
+    #[test]
+    fn a_solana_signature_parses_in_all_three_spellings() {
+        let raw = [0xabu8; protocol::SOLANA_SIGNATURE_BYTES];
+        let hex: String = std::iter::once("0x".to_string())
+            .chain(raw.iter().map(|b| format!("{b:02x}")))
+            .collect();
+        assert_eq!(parse_solana_signature(&hex).map(|s| s.0), Some(raw));
+        // base58 of 64 0xab bytes, from the same alphabet Solana prints
+        let key = protocol::SolanaKey([0xab; 32]);
+        let (b, n) = key.to_base58();
+        let half = core::str::from_utf8(&b[..n]).unwrap();
+        assert!(
+            parse_solana_signature(half).is_none(),
+            "32 bytes is not a signature"
+        );
+        // a real Ed25519 signature, as base58 and as hex: the same bytes
+        let b58 = "4oY22N2xKv5geU54swMeqT9WpTuWjjiWahvjrcUhrCpxEa5agVtPHUHURLUvYc7NHJUbayeScuAyfRc992tduKgq";
+        let hex = "0xbe2e4ad0267866dd02bc87697cf29d0e23cb454f32e1dc7b0d422b7b5fccc442191312393a25331481ff4ab55cb241769b5e9ceabbef9ebc9300cb9ba6f1eb0e";
+        assert_eq!(parse_solana_signature(b58), parse_solana_signature(hex));
+        assert!(parse_solana_signature(b58).is_some());
+        assert!(parse_solana_signature("0x1234").is_none());
+        assert!(parse_solana_signature("not base58 0OIl").is_none());
+    }
 
     #[test]
     fn a_well_formed_signature_parses() {

@@ -497,6 +497,7 @@ impl Web {
         let auth = protocol::Auth {
             address,
             signature: Signature(sig),
+            solana: None,
         };
         let key = match crate::auth::verify_companion(&self.accepts, &nonce, issued_at, &auth) {
             Ok(k) => k,
@@ -1080,6 +1081,7 @@ mod tests {
         let auth = protocol::Auth {
             address: key(7).address(),
             signature: page,
+            solana: None,
         };
         let n = unhex::<NONCE_BYTES>(nonce).unwrap();
         assert!(crate::auth::verify_any(&["game.test"], &n, issued, &auth).is_err());

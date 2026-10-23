@@ -466,10 +466,25 @@ $("refresh").addEventListener("click", () => {
    Two more rows, both the platform's (`js/wallets.js` in the platform repo
    draws the same picker): a **phone wallet** (WalletConnect), once the
    platform's `js/wallet-config.js` carries a project ID, through the bundle
-   it names; and **Solana-only wallets** (Wallet Standard), greyed, saying why
-   — sign-in is an Ethereum signature, and Phantom, MetaMask and Backpack hold
-   an Ethereum account beside the Solana one. */
+   it names; and **Solana wallets** (Wallet Standard): a Solana-only wallet
+   signs in with its Solana account (v142) — the Solana form of the same text,
+   built in Rust (`Proof::solana_message`), signed with `signMessage`. A wallet
+   that holds both (Phantom, Backpack, MetaMask) shows once, as its Ethereum
+   row. */
 const WALLET_PICK = "elo.wallet";
+/* A wallet as a key: an `0x` address lowercased, a Solana address as written
+   (base58 is case-sensitive, so lowercasing one names nobody). */
+const wk = (a) => (/^0x/i.test(String(a || "")) ? String(a).toLowerCase() : String(a || ""));
+const isSol = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ""));
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function b58(bytes) {
+  let n = 0n;
+  for (const b of bytes) n = n * 256n + BigInt(b);
+  let out = "";
+  while (n > 0n) { out = B58[Number(n % 58n)] + out; n /= 58n; }
+  for (const b of bytes) { if (b) break; out = "1" + out; }
+  return out;
+}
 const PHONE = "walletconnect";   /* the remembered pick for a phone wallet */
 let pageReady = false;  /* set at start: an announcement before it only queues */
 const announced = [];
@@ -482,7 +497,7 @@ window.addEventListener("eip6963:announceProvider", (e) => {
 });
 window.addEventListener("ethereum#initialized", () => { if (pageReady) walletAppeared(); });
 
-/* Wallet Standard: only the name, icon and chains are read. */
+/* Wallet Standard: Solana wallets, kept so a Solana-only one can sign in. */
 const solana = [];
 const standard = Object.freeze({
   register(...ws) {
@@ -490,7 +505,7 @@ const standard = Object.freeze({
       const chains = w && Array.isArray(w.chains) ? w.chains : [];
       const name = String((w && w.name) || "").trim();
       if (!name || !chains.some((c) => String(c).startsWith("solana:")) || solana.some((x) => x.name === name)) continue;
-      solana.push({ name, icon: String(w.icon || "") });
+      solana.push({ name, icon: String(w.icon || ""), wallet: w });
       if (pageReady) walletAppeared();
     }
     return () => {};
@@ -563,12 +578,14 @@ function wallets() {
     : window.ethereum ? [{ name: legacyName(window.ethereum), icon: "", rdns: "", provider: window.ethereum }] : [];
   const held = new Set(out.map((w) => sameWallet(w.name)));
   for (const s of solana) {
-    if (!held.has(sameWallet(s.name))) out.push({ name: s.name, icon: s.icon, rdns: "", provider: null, solanaOnly: true });
+    if (!held.has(sameWallet(s.name))) {
+      out.push({ name: s.name, icon: s.icon, rdns: "sol:" + s.name, provider: null, solanaOnly: true, sol: s.wallet });
+    }
   }
   if (phoneOn()) out.push({ name: "Phone wallet", icon: PHONE_ICON, rdns: PHONE, provider: null, phone: true });
   return out;
 }
-const usable = () => wallets().filter((w) => !w.solanaOnly);
+const usable = () => wallets();
 const solanaOnly = () => wallets().filter((w) => w.solanaOnly);
 
 let provider = null;    /* the EIP-1193 provider this page signs with */
@@ -603,11 +620,11 @@ function useWallet(p, rdns, isPhone = false) {
    otherwise the picker. Null when the player closes it. */
 async function pickWallet() {
   const all = wallets();
-  const can = all.filter((w) => !w.solanaOnly);
+  const can = all;
   const kept = remembered();
   const known = kept && can.find((w) => w.rdns === kept);
   if (known) return known;
-  if (can.length === 1 && can[0].provider) return can[0];
+  if (can.length === 1 && (can[0].provider || can[0].sol)) return can[0];
   if (!all.length) return null;
   return askWhich(all);
 }
@@ -634,7 +651,7 @@ function askWhich(all) {
       const n = document.createElement("b");
       n.textContent = w.name;
       t.append(n);
-      const note = w.solanaOnly ? "Solana only — needs an Ethereum account"
+      const note = w.solanaOnly ? "Signs in with your Solana account"
         : w.phone ? "Scan a code with your wallet app" : "";
       if (note) {
         const sm = document.createElement("small");
@@ -642,11 +659,10 @@ function askWhich(all) {
         t.append(sm);
       }
       b.append(t);
-      if (w.solanaOnly) b.disabled = true;
-      else b.addEventListener("click", () => { chosen = w; dlg.close(); });
+      b.addEventListener("click", () => { chosen = w; dlg.close(); });
       return b;
     }));
-    $("wallet-note").hidden = !all.some((w) => w.solanaOnly);
+    $("wallet-note").hidden = true;
     dlg.addEventListener("close", () => done(chosen), { once: true });
     dlg.showModal();
   });
@@ -654,6 +670,19 @@ function askWhich(all) {
 $("wallet-cancel").addEventListener("click", () => $("wallet-pick").close());
 
 const lower = (list) => (list || []).map((a) => String(a).toLowerCase());
+/* The Solana wallet this page signs with, when a Solana account signed in. */
+let solWallet = null;
+let solAccount = null;
+const solAcct = (r, w) => (((r && r.accounts) || (w && w.accounts) || [])
+  .find((a) => isSol(a && a.address)) || null);
+async function solConnect(w, silent) {
+  const c = w && w.features && w.features["standard:connect"];
+  if (!c || typeof c.connect !== "function") return null;
+  const r = silent ? await c.connect({ silent: true }) : await c.connect();
+  const a = solAcct(r, w);
+  if (a) { solWallet = w; solAccount = a; provider = null; }
+  return a;
+}
 const wallet = {
   has: () => usable().length > 0,
   async accounts(p = provider) {
@@ -665,6 +694,13 @@ const wallet = {
     const w = await pickWallet();
     if (!w && wallet.has()) throw Object.assign(new Error("no wallet picked."), { cancelled: true });
     if (!w) throw new Error(noWalletLine());
+    if (w.solanaOnly) {
+      let a = null;
+      try { a = await solConnect(w.sol, false); } catch (err) { throw new Error(walletSaid(err)); }
+      if (!a) throw new Error("the wallet shared no Solana account");
+      remember(w.rdns);
+      return String(a.address);
+    }
     const p = w.phone ? await (await phone()).connect(phoneOpts()) : w.provider;
     const a = await p.request({ method: "eth_requestAccounts" });
     if (!a || !a[0]) throw new Error("no account");
@@ -672,6 +708,18 @@ const wallet = {
     return a[0];
   },
   async sign(message, address) {
+    if (isSol(address)) {
+      /* A Solana account signs the text's bytes with its own wallet and the
+         page hands back base58 — what the shard and Elo Pros both read. */
+      const f = solWallet && solWallet.features && solWallet.features["solana:signMessage"];
+      if (!f || !solAccount) throw new Error("no Solana wallet is connected. Press Sign in, then try again.");
+      if (String(solAccount.address) !== String(address))
+        throw new Error("your Solana wallet is on another account — switch to " + short(address) + " and try again.");
+      try {
+        const [out] = await f.signMessage({ account: solAccount, message: new TextEncoder().encode(message) });
+        return b58(out.signature);
+      } catch (err) { throw new Error(walletSaid(err)); }
+    }
     if (!provider) throw new Error("no wallet is connected. Press Sign in, then try again.");
     const want = String(address || "").toLowerCase();
     let have = lower(await wallet.accounts());
@@ -702,8 +750,7 @@ const walletSaid = (err) => err && err.code === 4001 ? "you said no in your wall
 function noWalletLine() {
   const sol = solanaOnly()[0];
   return sol
-    ? `${sol.name} only holds Solana here, and Gates signs in with an Ethereum account, so you play as a guest. `
-      + "Phantom, MetaMask and Backpack hold both: turn Ethereum on in the wallet's settings, then reload."
+    ? `${sol.name} could not be reached. Open it, then press Sign in again.`
     : "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
 }
 
@@ -751,6 +798,17 @@ async function resume() {
       if (a && !address && !signedOut()) { useWallet(p, undefined, true); setAddress(a); return; }
     } catch (err) { /* no session, or the relay is away: the extensions below */ }
   }
+  /* a Solana wallet this page signed in with: asked silently, never a prompt */
+  const kept = remembered();
+  if (kept && kept.startsWith("sol:")) {
+    const s = solana.find((x) => "sol:" + x.name === kept);
+    if (s) {
+      try {
+        const a = solAcct(null, s.wallet) || await solConnect(s.wallet, true);
+        if (a && !address && !signedOut()) { solWallet = s.wallet; solAccount = a; setAddress(String(a.address)); return; }
+      } catch (err) { /* not trusted yet: the next sign-in asks */ }
+    }
+  }
   /* MetaMask answers [] for the first moments of a page and the real account
      after (`store.js` §silentAccount measured it), so a miss is asked again. */
   for (const wait of [0, 400, 1500]) {
@@ -789,6 +847,13 @@ async function signOut() {
   } catch (err) { /* private mode */ }
   const p = provider;
   const wasPhone = providerIsPhone;
+  const sw = solWallet;
+  solWallet = null;
+  solAccount = null;
+  try {
+    const d = sw && sw.features && sw.features["standard:disconnect"];
+    if (d && typeof d.disconnect === "function") await d.disconnect();
+  } catch (err) { /* the flag below still stands */ }
   provider = null;
   providerIsPhone = false;
   /* the next sign-in may pick another wallet */
@@ -804,7 +869,7 @@ async function signOut() {
 
 function setAddress(a) {
   const next = a ? String(a) : null;
-  if ((next || "").toLowerCase() === (address || "").toLowerCase()) { paintAccount(); return; }
+  if (wk(next) === wk(address)) { paintAccount(); return; }
   address = next;
   who = null;
   balance = null;
@@ -842,6 +907,7 @@ async function readWho(addr) {
 /* ELO, from `/api/holdings`, through the platform's own one-minute cache key
    so a visit from the store is already warm. */
 async function readBalance(addr) {
+  if (!/^0x/i.test(addr)) return;   /* ELO here is Robinhood Chain's; a Solana account holds none */
   const key = "elo.bal." + addr.toLowerCase();
   try {
     const got = JSON.parse(sessionStorage.getItem(key) || "null");
@@ -1743,7 +1809,7 @@ async function play({ guest = false } = {}) {
     paintGo();
     const now = (await Promise.race([wallet.accounts(), sleep(2000).then(() => [])]))[0];
     busy = null;
-    if (now && String(now).toLowerCase() !== identity.toLowerCase()) { setAddress(now); identity = now; }
+    if (now && wk(now) !== wk(identity)) { setAddress(now); identity = now; }
   }
   if (!identity && !guest && wallet.has()) {
     busy = { label: "Signing in", sub: "check your wallet" };
@@ -2098,7 +2164,7 @@ $("inv-refresh").addEventListener("click", () => fillStore());
    SPECTATE, on a shard for AI agents only). Your own AI buddies are listed
    beside your friends, without an ask. */
 const FR_ARG = { ask: "to", accept: "from", decline: "from", cancel: "to", remove: "wallet" };
-const WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
+const WALLET_RE = /^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 let frView = null;      /* the last list read, or null */
 let frFor = null;       /* whose list `frView` is */
 let frBusy = false;     /* one change at a time: a second would sign twice */
@@ -2128,8 +2194,8 @@ async function postJSON(path, body, ms = 20000) {
 function frEveryone(v) {
   const friends = v && Array.isArray(v.friends) ? v.friends : [];
   const buddies = v && Array.isArray(v.buddies) ? v.buddies : [];
-  const seen = new Set(friends.map((f) => String(f.wallet).toLowerCase()));
-  return friends.concat(buddies.filter((b) => !seen.has(String(b.wallet).toLowerCase())));
+  const seen = new Set(friends.map((f) => wk(f.wallet)));
+  return friends.concat(buddies.filter((b) => !seen.has(wk(b.wallet))));
 }
 /* Where a friend is playing Gates, or null. */
 const frGates = (f) => f && f.online && f.playing && f.playing.game === "gates" ? f.playing : null;
@@ -2142,10 +2208,10 @@ function frOn(r) {
 async function frRead() {
   const me = address;
   if (!me) { frView = null; frFor = null; paintFriends(); return; }
-  if (frFor && frFor.toLowerCase() !== me.toLowerCase()) frView = null;
+  if (frFor && wk(frFor) !== wk(me)) frView = null;
   if (!onOrigin) { paintFriends(); return; }
   if (!frView) frSay("Reading your friends…");
-  const v = await getJSON("/api/friends/" + encodeURIComponent(me.toLowerCase()));
+  const v = await getJSON("/api/friends/" + encodeURIComponent(wk(me)));
   if (me !== address) return;
   if (v) { frView = v; frFor = me; frSay(""); }
   else frSay("Couldn’t load your friends. Try again.", "bad");
@@ -2168,23 +2234,23 @@ async function whoRead(handle) {
 /* Several vows under one name are one person when every candidate carries
    the subject's wallet (`store.js` frOneWallet). */
 function frOneWallet(d) {
-  const s = String((d && d.subject && d.subject.wallet) || "").toLowerCase();
+  const s = wk((d && d.subject && d.subject.wallet) || "");
   const c = d && d.ambiguous && Array.isArray(d.ambiguous.candidates) ? d.ambiguous.candidates : [];
   return WALLET_RE.test(s) && c.length
-    && c.every((x) => x && String(x.wallet || "").toLowerCase() === s) ? s : "";
+    && c.every((x) => x && wk(x.wallet || "") === s) ? s : "";
 }
 /* The add box: a wallet as it is, a name through /who (`store.js` frResolve,
    and `client::friends::resolve_who` on the desktop). */
 async function frResolve(text) {
   const t = String(text || "").trim();
   if (!t) return [null, "Type a wallet or a name."];
-  if (WALLET_RE.test(t)) return [t.toLowerCase(), null];
+  if (WALLET_RE.test(t)) return [wk(t), null];
   const r = await whoRead(t);
   if (r.status === 200 && r.data && r.data.found) {
     const one = r.data.ambiguous ? frOneWallet(r.data) : "";
     if (r.data.ambiguous && !one) return [null, "More than one goes by “" + t + "”. Paste their wallet instead."];
     const w = one || String(r.data.found.wallet || "");
-    return WALLET_RE.test(w) ? [w.toLowerCase(), null] : [null, "“" + t + "” has no wallet to add."];
+    return WALLET_RE.test(w) ? [wk(w), null] : [null, "“" + t + "” has no wallet to add."];
   }
   if (r.status === 404 || r.status === 422) return [null, "Couldn’t find “" + t + "”. Paste their wallet instead."];
   return [null, "Couldn’t look that up. Try again."];
@@ -2197,19 +2263,19 @@ async function frAct(op, w) {
   if (!me) throw new Error("Sign in first.");
   const args = {};
   args[FR_ARG[op]] = w;
-  const p = await postJSON("/api/friends/prepare", { wallet: me.toLowerCase(), op: op, args: args });
+  const p = await postJSON("/api/friends/prepare", { wallet: wk(me), op: op, args: args });
   if (p.status !== 200 || !p.data || typeof p.data.sign_this !== "string") {
     throw new Error((p.data && p.data.error) || "Couldn’t do that. Try again.");
   }
-  const head = "elo play\naction: friends\nwallet: " + me.toLowerCase() + "\n";
+  const head = "elo play\naction: friends\nwallet: " + wk(me) + "\n";
   const offered = p.data.args || {};
   if (p.data.op !== op || !p.data.sign_this.startsWith(head)
-    || String(offered[FR_ARG[op]] || "").toLowerCase() !== w.toLowerCase()) {
+    || wk(offered[FR_ARG[op]] || "") !== wk(w)) {
     throw new Error("Elo Pros offered a different change. Nothing was signed.");
   }
   const signature = await wallet.sign(p.data.sign_this, me);
   const r = await postJSON("/api/friends/act",
-    { wallet: me.toLowerCase(), op: op, args: offered, at: p.data.at, signature: signature });
+    { wallet: wk(me), op: op, args: offered, at: p.data.at, signature: signature });
   if (r.status === 401) throw new Error("Your wallet’s signature didn’t check out. Try again.");
   if (r.status !== 200 || !r.data || !r.data.view) {
     throw new Error((r.data && r.data.error) || "Couldn’t do that. Try again.");
@@ -2429,7 +2495,7 @@ $("fr-add").addEventListener("submit", async (ev) => {
   const text = input.value.trim();
   if (frPick && frPick.text === text) {
     const w = frPick.w;
-    const ok = await frRun("ask", w, (nv) => (frEveryone(nv).some((f) => String(f.wallet).toLowerCase() === w)
+    const ok = await frRun("ask", w, (nv) => (frEveryone(nv).some((f) => wk(f.wallet) === w)
       ? "You’re friends now." : "Asked. They’ll see it on their profile."));
     if (ok) { frPick = null; input.value = ""; $("fr-pick").replaceChildren(); $("fr-ask").textContent = "Ask"; }
     return;
@@ -2439,7 +2505,7 @@ $("fr-add").addEventListener("submit", async (ev) => {
   frSay("Looking…");
   const [w, err] = await frResolve(text);
   if (!w) { frSay(err, "bad"); return; }
-  if (w === address.toLowerCase()) { frSay("That’s you.", "bad"); return; }
+  if (w === wk(address)) { frSay("That’s you.", "bad"); return; }
   const face = (await getJSON("/api/face/" + encodeURIComponent(w))) || {};
   if (input.value.trim() !== text) { frSay(""); return; }
   frPick = { w: w, text: text };

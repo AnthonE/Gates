@@ -301,6 +301,55 @@ impl Proof {
         .min(protocol::SIWE_MESSAGE_MAX);
         String::from_utf8_lossy(&text[..n]).into_owned()
     }
+
+    /// [`Proof::message`] for a **Solana** account (v142): the same statement,
+    /// domain, URI, nonce and time through [`protocol::siws_message_for`] —
+    /// the function the shard rebuilds it with — and the base58 address as
+    /// written. A Solana wallet's `signMessage` signs these bytes.
+    pub fn solana_message(&self, key: protocol::SolanaKey) -> String {
+        let (b58, len) = key.to_base58();
+        let addr = core::str::from_utf8(&b58[..len]).unwrap_or("");
+        let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+        let n = protocol::siws_message_for(
+            &self.domain,
+            &self.uri,
+            addr,
+            protocol::SLUG,
+            &self.nonce,
+            self.issued_at,
+            &mut text,
+        )
+        .min(protocol::SIWE_MESSAGE_MAX);
+        String::from_utf8_lossy(&text[..n]).into_owned()
+    }
+}
+
+/// Who a browser join claims to be: an Ethereum address (the guest address
+/// is a guest) or a Solana account (v142).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    Ethereum(protocol::Address),
+    Solana(protocol::SolanaKey),
+}
+
+impl Claim {
+    pub fn is_guest(&self) -> bool {
+        matches!(self, Claim::Ethereum(a) if a.is_guest())
+    }
+}
+
+/// The auth frame for a Solana account's signature.
+pub fn solana_auth_frame(
+    key: protocol::SolanaKey,
+    signature: protocol::SolanaSignature,
+    buf: &mut [u8],
+) -> Result<usize, JoinError> {
+    let auth = protocol::Auth {
+        address: protocol::Address::GUEST,
+        signature: protocol::Signature::NONE,
+        solana: Some(protocol::SolanaProof { key, signature }),
+    };
+    protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
 }
 
 /// Step 2a — read the shard's challenge and say what must be signed.
@@ -335,6 +384,18 @@ pub fn proof_wanted(
     signs_as: Option<&str>,
     address: protocol::Address,
 ) -> Result<Option<Proof>, JoinError> {
+    proof_wanted_for(frame, server, signs_as, Claim::Ethereum(address))
+}
+
+/// [`proof_wanted`] for either kind of [`Claim`] — the browser's, which may
+/// be a Solana account. The proof is the same either way; only the text a
+/// signer is handed differs ([`Proof::message`], [`Proof::solana_message`]).
+pub fn proof_wanted_for(
+    frame: &[u8],
+    server: &str,
+    signs_as: Option<&str>,
+    claim: Claim,
+) -> Result<Option<Proof>, JoinError> {
     match peek_kind(frame) {
         Ok(protocol::KIND_CHALLENGE) => {}
         // A frame that says REFUSE but does not decode is still a refusal, and
@@ -355,7 +416,7 @@ pub fn proof_wanted(
     let challenge = protocol::decode_challenge(frame)
         .map_err(|e| JoinError::Failed(format!("challenge: {e:?}")))?;
 
-    if address.is_guest() {
+    if claim.is_guest() {
         return Ok(None);
     }
 
@@ -510,7 +571,11 @@ pub fn auth_frame(
     buf: &mut [u8],
 ) -> Result<usize, JoinError> {
     let auth = match signature {
-        Some(signature) => protocol::Auth { address, signature },
+        Some(signature) => protocol::Auth {
+            address,
+            signature,
+            solana: None,
+        },
         None => protocol::Auth::default(),
     };
     protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))

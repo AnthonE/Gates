@@ -54,8 +54,10 @@ pub mod version;
 pub mod voice;
 
 pub use auth::{
-    companion_message, siwe_message, siwe_message_for, Address, Auth, Challenge, Signature,
-    ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    companion_message, siwe_message, siwe_message_for, siws_message_for, Address, Auth, Challenge,
+    Signature, SolanaKey, SolanaProof, SolanaSignature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
+    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX, SOLANA_ADDRESS_MAX, SOLANA_KEY_BYTES,
+    SOLANA_SIGNATURE_BYTES,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1342,7 +1344,12 @@ pub use voice::{
 /// the id and the absolute fields otherwise. A record with no baseline
 /// (zero-state, overflow) is unchanged. About a quarter of every moving
 /// body's record, and nothing a decoder could not already check.
-pub const PROTO_VER: u16 = 141;
+/// v142 — a Solana account signs in: an auth frame leads with a tag byte,
+/// 0 for the Ethereum proof (address + 65-byte signature, unchanged after the
+/// tag) and 1 for a `SolanaProof` (32-byte Ed25519 key + 64-byte signature
+/// over `siws_message_for`). `REFUSE_LINK` (11) says the shard could not read
+/// whether that Solana account is linked to an Ethereum one.
+pub const PROTO_VER: u16 = 142;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -1861,6 +1868,15 @@ pub const REFUSE_IN_USE: u8 = 9;
 /// No layout moved for this: `Refuse.code` is a full `u8` and this is the
 /// eleventh of 256 values.
 pub const REFUSE_AGENTS: u8 = 10;
+/// A Solana account signed in fine, and the shard could not ask elo whether
+/// it is linked to an Ethereum account — so it cannot tell which save is
+/// this player's. Refused rather than guessed: filing a linked player under
+/// their Solana key for the length of an outage is a second character, the
+/// rotating-key bug `auth.rs` exists to make impossible. Try again shortly.
+///
+/// No layout moved for this code: `Refuse.code` is a full `u8` and this is
+/// the twelfth of 256 values (the auth frame's tag is what bumps v142).
+pub const REFUSE_LINK: u8 = 11;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -1895,6 +1911,10 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
              join again to take over"
         }
         REFUSE_AGENTS => "this shard is for AI agents only — watch it, or pick another shard",
+        REFUSE_LINK => {
+            "the shard could not check which player your Solana wallet is linked to — \
+             try again in a moment"
+        }
         _ => return None,
     })
 }
@@ -6403,6 +6423,7 @@ mod tests {
             (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
             (REFUSE_IN_USE, "REFUSE_IN_USE"),
             (REFUSE_AGENTS, "REFUSE_AGENTS"),
+            (REFUSE_LINK, "REFUSE_LINK"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -6411,7 +6432,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            11,
+            12,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );
@@ -6671,6 +6692,7 @@ mod tests {
             REFUSE_WATCH_ENDED,
             REFUSE_IN_USE,
             REFUSE_AGENTS,
+            REFUSE_LINK,
         ];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {

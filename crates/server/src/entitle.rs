@@ -223,11 +223,62 @@ impl Config {
 /// not a property a URL builder should rest on, and the far end refuses a
 /// malformed wallet with a 422 that we would then have to read as `Unknown`.
 pub fn is_wallet(s: &str) -> bool {
-    s.len() == 42
+    (s.len() == 42
         && s.starts_with("0x")
         && s[2..]
             .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+        // A Solana account's base58 address (v142): the save key of a Solana
+        // player linked to no Ethereum one (`auth::solana_key_of`). elo
+        // answers it through the link — an unlinked one holds no copy, a
+        // definite `Nope` — and base58 has no characters a URL path minds.
+        || protocol::SolanaKey::from_base58(s.as_bytes()).is_some()
+}
+
+/// Is this Solana account linked to an Ethereum one? (`GET /api/link/{w}`.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    /// Linked: the player is this Ethereum address.
+    To(protocol::Address),
+    /// elo says it is linked to nobody — or this shard asks no origin.
+    Unlinked,
+    /// We could not ask, or could not read the answer.
+    Unknown,
+}
+
+/// Which player a Solana account is, at join. Blocking, like
+/// [`check_one`]. A shard with no origin asks nobody and every Solana
+/// account is its own player.
+pub fn link_of(cfg: &Config, solana: &str) -> Link {
+    let Some(origin) = cfg.origin.as_deref() else {
+        return Link::Unlinked;
+    };
+    if protocol::SolanaKey::from_base58(solana.as_bytes()).is_none() {
+        return Link::Unknown;
+    }
+    let Some(body) = get(&format!("{origin}/api/link/{solana}"), cfg.timeout) else {
+        return Link::Unknown;
+    };
+    link_from(&body)
+}
+
+fn link_from(body: &str) -> Link {
+    match json_value_after(body, "\"linked\"") {
+        Some(Tri::False) => Link::Unlinked,
+        Some(Tri::True) => {
+            let evm = body
+                .find("\"evm\"")
+                .map(|at| &body[at + 5..])
+                .and_then(|rest| rest.trim_start().strip_prefix(':'))
+                .and_then(|rest| rest.trim_start().strip_prefix('"'))
+                .and_then(|rest| rest.get(..42));
+            match evm.and_then(|e| protocol::Address::from_hex(e.as_bytes())) {
+                Some(a) if !a.is_guest() => Link::To(a),
+                _ => Link::Unknown,
+            }
+        }
+        _ => Link::Unknown,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +414,13 @@ fn verdicts_from_page(body: &str, wallets: &[String]) -> Vec<Verdict> {
             // needle is built from the wallet rather than assumed, so a
             // future mixed-case caller degrades to `Unknown` instead of
             // silently matching the wrong row.
-            let needle = format!("\"{}\"", w.to_ascii_lowercase());
+            // A base58 key is case-sensitive and the far end answers it as
+            // written; only an `0x` address is lowercased.
+            let needle = if w.starts_with("0x") {
+                format!("\"{}\"", w.to_ascii_lowercase())
+            } else {
+                format!("\"{w}\"")
+            };
             match map.find(&needle) {
                 Some(at) => match json_value_after(&map[at..], "\"entitled\"") {
                     Some(Tri::True) => Verdict::Owns,
@@ -453,6 +510,46 @@ fn read_capped_to(res: &mut ureq::http::Response<ureq::Body>, cap: usize) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_answer_reads_three_ways() {
+        let evm = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
+        assert_eq!(
+            link_from(&format!(
+                "{{\"wallet\":\"x\",\"linked\":true,\"evm\": \"{evm}\",\"solana\":\"x\"}}"
+            )),
+            Link::To(protocol::Address::from_hex(evm.as_bytes()).unwrap())
+        );
+        assert_eq!(link_from("{\"linked\":false,\"evm\":null}"), Link::Unlinked);
+        assert_eq!(link_from("{\"error\":\"no\"}"), Link::Unknown);
+        assert_eq!(
+            link_from("{\"linked\":true,\"evm\":\"0xnope\"}"),
+            Link::Unknown
+        );
+        assert_eq!(
+            link_of(
+                &Config::off(),
+                "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+            ),
+            Link::Unlinked,
+            "a shard with no origin asks nobody"
+        );
+    }
+
+    #[test]
+    fn a_solana_key_is_a_wallet_and_keeps_its_case_in_a_roster() {
+        let sol = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+        assert!(is_wallet(sol));
+        assert!(!is_wallet(&sol.to_ascii_lowercase()));
+        let page = format!(
+            "{{\"wallets\":{{\"{sol}\":{{\"entitled\":false,\"linked\":false}},\
+                            \"{A}\":{{\"entitled\":true}}}}}}"
+        );
+        assert_eq!(
+            verdicts_from_page(&page, &[sol.to_string(), A.to_string()]),
+            vec![Verdict::Nope, Verdict::Owns]
+        );
+    }
 
     const A: &str = "0x00000000000000000000000000000000000000a1";
     const B: &str = "0x00000000000000000000000000000000000000b2";
