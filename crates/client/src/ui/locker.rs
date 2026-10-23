@@ -22,6 +22,9 @@ pub struct StoreSkin {
     pub tint: [u8; 3],
     /// What the card's price chip says, or `None` when it is not on sale.
     pub price: Option<String>,
+    /// How play gives a skin nobody sells (the store row's `earn`, e.g. "Free
+    /// in game"): the card says it in place of "coming soon".
+    pub earn: Option<String>,
 }
 
 /// The platform's slug for this title (`/api/items/store/{slug}`).
@@ -87,6 +90,7 @@ pub fn parse_store(body: &[u8]) -> Result<Vec<StoreSkin>, String> {
             covers: text("covers").unwrap_or("").to_string(),
             tint: text("tint").and_then(parse_tint).unwrap_or([255; 3]),
             price,
+            earn: text("earn").filter(|e| !e.is_empty()).map(str::to_string),
         });
     }
     Ok(out)
@@ -190,7 +194,8 @@ mod tests {
     use super::*;
 
     const STORE: &str = r##"{"game":"gates","configured":true,"reachable":true,"skins":[
-        {"catalog_id":1,"name":"Obsidian Bat","covers":"Bat","tint":"#463e54","on_sale":false},
+        {"catalog_id":1,"name":"Obsidian Bat","covers":"Bat","tint":"#463e54","on_sale":false,
+         "earn":"Free in game"},
         {"catalog_id":4,"name":"Bone Bow","covers":"Hunting Bow","tint":"#ECE2CC",
          "on_sale":true,"price_whole":250,"coin":{"symbol":"JUNK"}},
         {"catalog_id":7,"name":"  ","covers":"Rock","tint":"red","on_sale":true,
@@ -204,6 +209,8 @@ mod tests {
         assert_eq!(s.len(), 3, "a row with no catalog id is skipped");
         assert_eq!(s[0].tint, [0x46, 0x3e, 0x54]);
         assert_eq!(s[0].price, None, "off sale draws no price");
+        assert_eq!(s[0].earn.as_deref(), Some("Free in game"));
+        assert_eq!(s[1].earn, None);
         assert_eq!(s[1].tint, [0xec, 0xe2, 0xcc], "hex case does not matter");
         assert_eq!(s[1].price.as_deref(), Some("250 JUNK"));
         assert_eq!(s[2].name, "Skin", "a blank name is not drawn blank");
