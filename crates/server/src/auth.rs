@@ -253,6 +253,57 @@ fn verify_text<S: AsRef<str>>(
     Err(refused.unwrap_or(AuthError::WrongSigner))
 }
 
+/// Verify a **Solana** account's [`Auth`] (v142): an Ed25519 signature by the
+/// key it names over [`protocol::siws_message_for`], rebuilt here for every
+/// (domain, URI) pair this shard answers to — [`verify_any`]'s binding,
+/// unchanged. Ed25519 is `ring`'s (already linked under rustls), and the key
+/// is the identity: there is nothing to recover, only one key to check.
+pub fn verify_solana_any<S: AsRef<str>>(
+    domains: &[S],
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    auth: &Auth,
+) -> Result<protocol::SolanaKey, AuthError> {
+    let Some(sol) = auth.solana else {
+        return Err(AuthError::Guest);
+    };
+    if sol.key.0 == [0u8; protocol::SOLANA_KEY_BYTES] {
+        return Err(AuthError::Guest);
+    }
+    let (b58, n) = sol.key.to_base58();
+    let addr = core::str::from_utf8(&b58[..n]).map_err(|_| AuthError::Malformed)?;
+    let key = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &sol.key.0);
+    let pairs = domains
+        .iter()
+        .flat_map(|d| domains.iter().map(move |u| (d.as_ref(), u.as_ref())));
+    for (domain, uri) in pairs {
+        let mut text = [0u8; SIWE_MESSAGE_MAX];
+        let len = protocol::siws_message_for(
+            domain,
+            uri,
+            addr,
+            protocol::SLUG,
+            nonce,
+            issued_at,
+            &mut text,
+        )
+        .min(SIWE_MESSAGE_MAX);
+        if key.verify(&text[..len], &sol.signature.0).is_ok() {
+            return Ok(sol.key);
+        }
+    }
+    Err(AuthError::WrongSigner)
+}
+
+/// The save key for a Solana account that is linked to no Ethereum one: its
+/// base58 address, exactly as written. It cannot collide with an Ethereum key
+/// (those start `0x`, and base58 has no `0`), and it never changes — the
+/// property `key_of`'s spelling exists for.
+pub fn solana_key_of(key: &protocol::SolanaKey) -> Option<PlayerKey> {
+    let (b58, n) = key.to_base58();
+    PlayerKey::new(&b58[..n])
+}
+
 /// The key for an address that has already been proved — the one place that
 /// decides the on-disk spelling, so nothing else has to agree with it.
 pub fn key_of(address: &Address) -> Option<PlayerKey> {
@@ -266,6 +317,70 @@ pub fn key_of(address: &Address) -> Option<PlayerKey> {
 mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
+
+    /// A Solana sign-in, signed with a real Ed25519 key over the rebuilt text,
+    /// verifies; another key, another shard and another nonce do not.
+    #[test]
+    fn a_solana_sign_in_verifies_against_the_siws_text_only() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let pair = Ed25519KeyPair::from_seed_unchecked(&[42u8; 32]).unwrap();
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(pair.public_key().as_ref());
+        let key = protocol::SolanaKey(pk);
+        let (b58, n) = key.to_base58();
+        let addr = core::str::from_utf8(&b58[..n]).unwrap();
+        let nonce = [5u8; NONCE_BYTES];
+        let sign = |domain: &str, pair: &Ed25519KeyPair, nonce: &[u8; NONCE_BYTES]| {
+            let mut text = [0u8; SIWE_MESSAGE_MAX];
+            let len = protocol::siws_message_for(
+                domain,
+                domain,
+                addr,
+                protocol::SLUG,
+                nonce,
+                77,
+                &mut text,
+            );
+            let mut sig = [0u8; 64];
+            sig.copy_from_slice(pair.sign(&text[..len]).as_ref());
+            Auth {
+                address: protocol::Address::GUEST,
+                signature: protocol::Signature::NONE,
+                solana: Some(protocol::SolanaProof {
+                    key,
+                    signature: protocol::SolanaSignature(sig),
+                }),
+            }
+        };
+        let good = sign(DOMAIN, &pair, &nonce);
+        assert_eq!(verify_solana_any(&[DOMAIN], &nonce, 77, &good), Ok(key));
+        let other = Ed25519KeyPair::from_seed_unchecked(&[43u8; 32]).unwrap();
+        let mut forged = sign(DOMAIN, &other, &nonce);
+        forged.solana.as_mut().unwrap().key = key;
+        assert_eq!(
+            verify_solana_any(&[DOMAIN], &nonce, 77, &forged),
+            Err(AuthError::WrongSigner)
+        );
+        assert!(
+            verify_solana_any(&[DOMAIN], &[6u8; NONCE_BYTES], 77, &good).is_err(),
+            "another nonce"
+        );
+        assert!(
+            verify_solana_any(&["other.shard"], &nonce, 77, &good).is_err(),
+            "another shard"
+        );
+        // an Ethereum verifier never takes a Solana proof
+        assert_eq!(
+            verify_any(&[DOMAIN], &nonce, 77, &good),
+            Err(AuthError::Guest)
+        );
+        let k = solana_key_of(&key).unwrap();
+        assert_eq!(
+            k.as_bytes(),
+            addr.as_bytes(),
+            "the save key is the base58 address, as written"
+        );
+    }
 
     const DOMAIN: &str = "gates.test";
 
@@ -309,6 +424,7 @@ mod tests {
         Auth {
             address,
             signature: Signature(raw),
+            solana: None,
         }
     }
 
@@ -407,6 +523,7 @@ mod tests {
             let auth = Auth {
                 address: Address(addr),
                 signature: Signature(raw),
+                solana: None,
             };
             let _ = verify(DOMAIN, &[0; NONCE_BYTES], 0, &auth);
         }
@@ -487,6 +604,7 @@ mod tests {
             Auth {
                 address,
                 signature: Signature(raw),
+                solana: None,
             }
         };
         assert!(verify_any(&listed, &nonce, 9, &page("game.test")).is_ok());

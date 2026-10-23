@@ -3018,11 +3018,48 @@ async fn handshake_task(
     // message this server built from the nonce it chose, so the key below is
     // an address somebody holds the private key for and not a string they
     // typed.
-    let key = if auth.address.is_guest() {
-        None
+    //
+    // **A Solana account (v142)** proves its key the same way, over the
+    // Solana form of the same text (`auth::verify_solana_any`), and then elo
+    // says which player it is: linked to an Ethereum account, it IS that
+    // player — the same save, the same copy — and unlinked it is its own,
+    // filed under its base58 address. A shard with no origin asks nobody.
+    // When elo cannot be asked, the join is refused (`REFUSE_LINK`) rather
+    // than filed under a guess: a linked player seated on their Solana key
+    // for the length of an outage would be a second character.
+    let (key, proven) = if auth.solana.is_some() {
+        let sol = match crate::auth::verify_solana_any(&siwe_domains, &nonce, issued_at, &auth) {
+            Ok(sol) => sol,
+            Err(_) => {
+                ShardStats::bump(&stats.refused_auth);
+                spawn_refusal(connection, send, protocol::REFUSE_AUTH);
+                return;
+            }
+        };
+        let (b58, n) = sol.to_base58();
+        let text = core::str::from_utf8(&b58[..n])
+            .unwrap_or_default()
+            .to_string();
+        let cfg = entitle.clone();
+        let link = tokio::task::spawn_blocking(move || crate::entitle::link_of(&cfg, &text))
+            .await
+            .unwrap_or(crate::entitle::Link::Unknown);
+        match link {
+            crate::entitle::Link::To(addr) => (crate::auth::key_of(&addr), addr),
+            crate::entitle::Link::Unlinked => {
+                (crate::auth::solana_key_of(&sol), protocol::Address::GUEST)
+            }
+            crate::entitle::Link::Unknown => {
+                ShardStats::bump(&stats.refused_auth);
+                spawn_refusal(connection, send, protocol::REFUSE_LINK);
+                return;
+            }
+        }
+    } else if auth.address.is_guest() {
+        (None, protocol::Address::GUEST)
     } else {
         match crate::auth::verify_any(&siwe_domains, &nonce, issued_at, &auth) {
-            Ok(key) => Some(key),
+            Ok(key) => (Some(key), auth.address),
             Err(_) => {
                 // Counted, never explained to the caller: which of the four
                 // ways a signature can be wrong is not a stranger's business.
@@ -3056,7 +3093,8 @@ async fn handshake_task(
     if entitle.armed() {
         if let Some(k) = key.as_ref() {
             // The key IS the wallet: `auth::key_of` builds it from
-            // `Address::to_hex`, which is ASCII `0x…` lowercase. Decoded
+            // `Address::to_hex`, which is ASCII `0x…` lowercase (or, for an
+            // unlinked Solana player, `auth::solana_key_of`'s base58). Decoded
             // rather than transmuted, and a key that somehow is not utf8
             // becomes an empty string that `entitle::is_wallet` refuses —
             // which is `Unknown`, which admits.
@@ -3088,9 +3126,11 @@ async fn handshake_task(
         }
     }
     // The proven address rides along for the spectator door: `key` is only
-    // `Some` when `verify` recovered this very address from the signature.
+    // `Some` when `verify` recovered this very address from the signature —
+    // or, for a Solana account, the Ethereum address it is linked to (an
+    // unlinked one has none, and is watched by nobody by address).
     let address = if key.is_some() {
-        auth.address
+        proven
     } else {
         protocol::Address::GUEST
     };
@@ -4680,6 +4720,40 @@ pub async fn client_handshake_as(
     hello: &protocol::Hello,
     sign: impl FnOnce(&str, &[u8; protocol::NONCE_BYTES], u64) -> Option<protocol::Signature>,
 ) -> Result<Joined, String> {
+    // The message is built from the domain **this client dialled**, never
+    // from anything the server said — that is the whole of SIWE's domain
+    // binding, and handing the server the choice would let one shard collect
+    // a signature valid at another. The address is a parameter for the
+    // reason `client_handshake` states: there is no order in which it can be
+    // learned late.
+    client_handshake_with(send, recv, hello, |challenge| {
+        if address.is_guest() {
+            return protocol::Auth::default();
+        }
+        match sign(domain, &challenge.nonce, challenge.issued_at) {
+            Some(signature) => protocol::Auth {
+                address,
+                signature,
+                solana: None,
+            },
+            // The signer refused, is not running, or handed the player a
+            // consent prompt they declined. That is a *guest*, not an error:
+            // a shard that takes guests should still take this one.
+            None => protocol::Auth::default(),
+        }
+    })
+    .await
+}
+
+/// The handshake's frames, with the auth frame built by `auth_for` from the
+/// shard's challenge — [`client_handshake_as`]'s Ethereum proof, or a Solana
+/// account's (v142), which is what a test of that path builds here.
+pub async fn client_handshake_with(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    hello: &protocol::Hello,
+    auth_for: impl FnOnce(&protocol::Challenge) -> protocol::Auth,
+) -> Result<Joined, String> {
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
     let len =
         protocol::encode_hello(hello, &mut buf).map_err(|e| format!("encode hello: {e:?}"))?;
@@ -4704,24 +4778,7 @@ pub async fn client_handshake_as(
     }
     let challenge =
         protocol::decode_challenge(&frame[..n]).map_err(|e| format!("challenge: {e:?}"))?;
-
-    // The message is built from the domain **this client dialled**, never
-    // from anything the server said — that is the whole of SIWE's domain
-    // binding, and handing the server the choice would let one shard collect
-    // a signature valid at another. The address is a parameter for the
-    // reason `client_handshake` states: there is no order in which it can be
-    // learned late.
-    let auth = if address.is_guest() {
-        protocol::Auth::default()
-    } else {
-        match sign(domain, &challenge.nonce, challenge.issued_at) {
-            Some(signature) => protocol::Auth { address, signature },
-            // The signer refused, is not running, or handed the player a
-            // consent prompt they declined. That is a *guest*, not an error:
-            // a shard that takes guests should still take this one.
-            None => protocol::Auth::default(),
-        }
-    };
+    let auth = auth_for(&challenge);
     let len = protocol::encode_auth(&auth, &mut buf).map_err(|e| format!("encode auth: {e:?}"))?;
     write_frame(send, &buf[..len])
         .await

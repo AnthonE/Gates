@@ -770,7 +770,36 @@ impl Session {
         sign: Option<&js_sys::Function>,
         signs_as: Option<&str>,
     ) -> Result<Self, JoinError> {
-        Self::connect_as(server, cert_hash, address, &Join::PLAYER, sign, signs_as).await
+        Self::connect_as(
+            server,
+            cert_hash,
+            net::handshake::Claim::Ethereum(address),
+            &Join::PLAYER,
+            sign,
+            signs_as,
+        )
+        .await
+    }
+
+    /// [`Session::connect`] as a **Solana account** (v142): `sign` is handed
+    /// the Solana form of the sign-in text and answers with its wallet's
+    /// `signMessage` signature (`elo::sign_siws_web`).
+    pub async fn connect_solana(
+        server: &str,
+        cert_hash: Option<&str>,
+        key: protocol::SolanaKey,
+        sign: &js_sys::Function,
+        signs_as: Option<&str>,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(
+            server,
+            cert_hash,
+            net::handshake::Claim::Solana(key),
+            &Join::PLAYER,
+            Some(sign),
+            signs_as,
+        )
+        .await
     }
 
     /// Take a read-only seat watching `target` (v73), anonymously — the
@@ -783,7 +812,7 @@ impl Session {
         Self::connect_as(
             server,
             cert_hash,
-            protocol::Address::GUEST,
+            net::handshake::Claim::Ethereum(protocol::Address::GUEST),
             &Join::Watch { target },
             None,
             None,
@@ -794,7 +823,9 @@ impl Session {
     pub async fn connect_as(
         server: &str,
         cert_hash: Option<&str>,
-        address: protocol::Address,
+        // Who this join claims to be: an Ethereum address (the guest address
+        // is a guest) or, since v142, a Solana account.
+        claim: net::handshake::Claim,
         // What this session declares itself to be (v73) — the desktop twin's
         // parameter, in the same position.
         join: &Join,
@@ -857,9 +888,22 @@ impl Session {
         // desktop path composes, and `net::handshake`'s
         // `the_two_step_path_and_the_composition_agree` holds the two
         // assemblies to producing byte-identical frames.
-        let want = net::handshake::proof_wanted(&reply, server, signs_as, address)?;
-        let signature = match (&want, sign) {
-            (Some(proof), Some(f)) => Some(elo::sign_siwe_web(f, address, proof).await?),
+        let want = net::handshake::proof_wanted_for(&reply, server, signs_as, claim)?;
+        let address = match claim {
+            net::handshake::Claim::Ethereum(a) => a,
+            net::handshake::Claim::Solana(_) => protocol::Address::GUEST,
+        };
+        // A Solana account signs the Solana form of the same text (v142).
+        let solana = match (claim, &want, sign) {
+            (net::handshake::Claim::Solana(key), Some(proof), Some(f)) => {
+                Some((key, elo::sign_siws_web(f, key, proof).await?))
+            }
+            _ => None,
+        };
+        let signature = match (claim, &want, sign) {
+            (net::handshake::Claim::Ethereum(_), Some(proof), Some(f)) => {
+                Some(elo::sign_siwe_web(f, address, proof).await?)
+            }
             // A guest address, or a page that offered no wallet: nothing is
             // signed and nothing is claimed, exactly as a declined prompt or an
             // absent launcher does on the desktop. A shard with `require_auth`
@@ -872,7 +916,7 @@ impl Session {
         // browser's own words are "Connection lost." — true, and no use to
         // somebody who just approved a wallet prompt. Say what most likely
         // happened, and keep the browser's words after it.
-        let signed = signature.is_some();
+        let signed = signature.is_some() || solana.is_some();
         let waited = |e: String| {
             if signed {
                 format!(
@@ -884,7 +928,10 @@ impl Session {
                 e
             }
         };
-        let len = net::handshake::auth_frame(address, signature, &mut msg)?;
+        let len = match solana {
+            Some((key, sig)) => net::handshake::solana_auth_frame(key, sig, &mut msg)?,
+            None => net::handshake::auth_frame(address, signature, &mut msg)?,
+        };
         net::web::write_frame(&writer, &msg[..len])
             .await
             .map_err(waited)?;

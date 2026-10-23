@@ -511,6 +511,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
         let auth = protocol::Auth {
             address,
             signature: wallet_sign(&sk, &proof.message(address)),
+            solana: None,
         };
         assert!(
             server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
@@ -528,6 +529,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
     let auth = protocol::Auth {
         address,
         signature: wallet_sign(&sk, &sibling.message(address)),
+        solana: None,
     };
     assert!(
         server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_err(),
@@ -569,6 +571,7 @@ fn a_signature_over_the_browsers_own_text_verifies_at_the_shard() {
     let auth = protocol::Auth {
         address,
         signature: wallet_sign(&sk, &proof.message(address)),
+        solana: None,
     };
     assert!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth).is_ok(),
@@ -607,6 +610,7 @@ fn the_lowercase_address_is_refused_which_is_why_the_checksum_is_shared() {
     let auth = protocol::Auth {
         address,
         signature: wallet_sign(&sk, std::str::from_utf8(&text[..n]).unwrap()),
+        solana: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
@@ -636,9 +640,147 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
     let auth = protocol::Auth {
         address,
         signature: wallet_sign(&sk, &elsewhere.message(address)),
+        solana: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
         Err(server::auth::AuthError::WrongSigner)
     );
+}
+
+// ── a Solana account (v142) ──────────────────────────────────────────────────
+
+/// Join as a Solana account through the real handshake: a real Ed25519
+/// signature over `protocol::siws_message_for`, bound to `domain`.
+async fn join_solana(
+    handle: &server::net::ShardHandle,
+    domain: &str,
+    seed: u8,
+    forge: bool,
+) -> Result<protocol::Welcome, String> {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let pair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).expect("a seed");
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(pair.public_key().as_ref());
+    let key = protocol::SolanaKey(pk);
+    // a forged join signs with another key under this one's name
+    let signer = Ed25519KeyPair::from_seed_unchecked(&[seed ^ if forge { 0xff } else { 0 }; 32])
+        .expect("a seed");
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        server::net::client_handshake_with(
+            &mut send,
+            &mut recv,
+            &protocol::Hello::this_build(),
+            |c| {
+                let (b58, n) = key.to_base58();
+                let addr = std::str::from_utf8(&b58[..n]).expect("ascii");
+                let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+                let len = protocol::siws_message_for(
+                    domain,
+                    domain,
+                    addr,
+                    protocol::SLUG,
+                    &c.nonce,
+                    c.issued_at,
+                    &mut text,
+                );
+                let mut sig = [0u8; protocol::SOLANA_SIGNATURE_BYTES];
+                sig.copy_from_slice(signer.sign(&text[..len]).as_ref());
+                protocol::Auth {
+                    address: protocol::Address::GUEST,
+                    signature: protocol::Signature::NONE,
+                    solana: Some(protocol::SolanaProof {
+                        key,
+                        signature: protocol::SolanaSignature(sig),
+                    }),
+                }
+            },
+        ),
+    )
+    .await
+    .expect("inside 5 s")
+    .map(|j| j.welcome)
+}
+
+/// **A Solana account joins a shard that refuses guests**, so the admission is
+/// the proof; a signature by another key under its name, or one bound to
+/// another shard, is refused as `REFUSE_AUTH`. A shard with no origin asks
+/// nobody about links, so the account is its own player.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_solana_account_joins_and_a_forged_one_does_not() {
+    let handle = shard(true).await;
+    let welcome = join_solana(&handle, DOMAIN, 31, false)
+        .await
+        .expect("a real Solana signature is admitted");
+    assert_ne!(welcome.player_id, 0);
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
+
+    let forged = join_solana(&handle, DOMAIN, 32, true).await;
+    assert!(forged.is_err(), "a signature by another key was admitted");
+    let elsewhere = join_solana(&handle, "another.shard", 33, false).await;
+    assert!(
+        elsewhere.is_err(),
+        "a proof bound to another shard was admitted"
+    );
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 2);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **The browser's own Solana text verifies at the shard** — the twin of
+/// `a_signature_over_the_browsers_own_text_verifies_at_the_shard`: the page
+/// hands `Proof::solana_message` to the wallet, and the shard's verifier,
+/// unmodified, takes the signature over it for the page's name and refuses it
+/// for a sibling's.
+#[test]
+fn a_solana_signature_over_the_browsers_own_text_verifies_at_the_shard() {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let pair = Ed25519KeyPair::from_seed_unchecked(&[44u8; 32]).unwrap();
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(pair.public_key().as_ref());
+    let key = protocol::SolanaKey(pk);
+    let nonce = [0x44u8; protocol::NONCE_BYTES];
+    let sign = |uri: &str| {
+        let proof = client::net::handshake::Proof {
+            domain: PAGE.to_string(),
+            uri: uri.to_string(),
+            nonce,
+            issued_at: 1_700_000_000,
+        };
+        let mut sig = [0u8; protocol::SOLANA_SIGNATURE_BYTES];
+        sig.copy_from_slice(pair.sign(proof.solana_message(key).as_bytes()).as_ref());
+        protocol::Auth {
+            address: protocol::Address::GUEST,
+            signature: protocol::Signature::NONE,
+            solana: Some(protocol::SolanaProof {
+                key,
+                signature: protocol::SolanaSignature(sig),
+            }),
+        }
+    };
+    let names = [PAGE, DOMAIN];
+    assert_eq!(
+        server::auth::verify_solana_any(&names, &nonce, 1_700_000_000, &sign(DOMAIN)),
+        Ok(key)
+    );
+    assert!(server::auth::verify_solana_any(
+        &names,
+        &nonce,
+        1_700_000_000,
+        &sign("play.elopros.com")
+    )
+    .is_err());
 }

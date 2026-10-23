@@ -52,6 +52,17 @@
 //! construction rather than by a cap (wall 4 with nothing to configure).
 //!
 //! Nothing here logs a signature or an address.
+//!
+//! ## A Solana account signs in too (v142)
+//!
+//! [`Auth`] carries either an Ethereum proof (address + 65-byte signature
+//! over [`siwe_message_for`]) or a [`SolanaProof`]: the account's 32-byte
+//! Ed25519 key and a 64-byte signature over [`siws_message_for`] — the same
+//! statement, nonce, domain and URI, in the "Solana account" form a Solana
+//! wallet's `signMessage` displays. The key is the identity, so a Solana
+//! player's save is filed under its base58 address, unless elo says the
+//! account is linked to an Ethereum one (`server::net`), in which case it is
+//! that player. A tag byte on the wire says which proof follows.
 
 use crate::bits::{BitReader, BitWriter, WireError};
 
@@ -220,6 +231,114 @@ impl core::fmt::Debug for Signature {
     }
 }
 
+/// A Solana account: its 32-byte Ed25519 public key. Rendered as base58,
+/// which is case-sensitive — so unlike [`Address`] there is exactly one
+/// spelling and nothing is lowercased.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct SolanaKey(pub [u8; SOLANA_KEY_BYTES]);
+
+pub const SOLANA_KEY_BYTES: usize = 32;
+/// An Ed25519 signature: R ‖ S.
+pub const SOLANA_SIGNATURE_BYTES: usize = 64;
+/// The longest base58 rendering of 32 bytes.
+pub const SOLANA_ADDRESS_MAX: usize = 44;
+
+const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+impl SolanaKey {
+    /// Base58 (Bitcoin's alphabet, which Solana uses) into a fixed buffer;
+    /// returns the buffer and the length used.
+    pub fn to_base58(&self) -> ([u8; SOLANA_ADDRESS_MAX], usize) {
+        let mut digits = [0u8; SOLANA_ADDRESS_MAX];
+        let mut len = 0;
+        for &b in self.0.iter() {
+            let mut carry = b as u32;
+            for d in digits[..len].iter_mut() {
+                carry += (*d as u32) << 8;
+                *d = (carry % 58) as u8;
+                carry /= 58;
+            }
+            while carry > 0 && len < SOLANA_ADDRESS_MAX {
+                digits[len] = (carry % 58) as u8;
+                len += 1;
+                carry /= 58;
+            }
+        }
+        let zeros = self.0.iter().take_while(|b| **b == 0).count();
+        let mut out = [0u8; SOLANA_ADDRESS_MAX];
+        let mut n = 0;
+        for _ in 0..zeros.min(SOLANA_ADDRESS_MAX) {
+            out[n] = b'1';
+            n += 1;
+        }
+        for i in (0..len).rev() {
+            if n < SOLANA_ADDRESS_MAX {
+                out[n] = B58[digits[i] as usize];
+                n += 1;
+            }
+        }
+        (out, n)
+    }
+
+    /// Parse a base58 address. `None` for anything that is not exactly the
+    /// canonical spelling of 32 bytes.
+    pub fn from_base58(s: &[u8]) -> Option<Self> {
+        if s.is_empty() || s.len() > SOLANA_ADDRESS_MAX {
+            return None;
+        }
+        let mut out = [0u8; SOLANA_KEY_BYTES];
+        for &c in s {
+            let v = B58.iter().position(|x| *x == c)? as u32;
+            let mut carry = v;
+            for b in out.iter_mut().rev() {
+                carry += (*b as u32) * 58;
+                *b = carry as u8;
+                carry >>= 8;
+            }
+            if carry != 0 {
+                return None;
+            }
+        }
+        let key = Self(out);
+        let (again, n) = key.to_base58();
+        (again[..n] == *s).then_some(key)
+    }
+}
+
+/// Prints the base58 address: a public name, like [`Address`]'s.
+impl core::fmt::Debug for SolanaKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (b, n) = self.to_base58();
+        f.write_str(core::str::from_utf8(&b[..n]).unwrap_or("?"))
+    }
+}
+
+/// An Ed25519 signature over the text's bytes, as a Solana wallet's
+/// `signMessage` returns it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SolanaSignature(pub [u8; SOLANA_SIGNATURE_BYTES]);
+
+impl Default for SolanaSignature {
+    fn default() -> Self {
+        Self([0; SOLANA_SIGNATURE_BYTES])
+    }
+}
+
+/// Never prints the bytes — [`Signature`]'s habit.
+impl core::fmt::Debug for SolanaSignature {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SolanaSignature({} bytes)", SOLANA_SIGNATURE_BYTES)
+    }
+}
+
+/// A Solana account's sign-in: its key, and its signature over
+/// [`siws_message_for`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SolanaProof {
+    pub key: SolanaKey,
+    pub signature: SolanaSignature,
+}
+
 /// S→C: sign this. The nonce the server chose for **this connection only**.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Challenge {
@@ -256,6 +375,10 @@ impl core::fmt::Debug for Challenge {
 pub struct Auth {
     pub address: Address,
     pub signature: Signature,
+    /// A Solana account's proof instead of an Ethereum one (v142). When it is
+    /// `Some`, `address` is [`Address::GUEST`] and `signature` is
+    /// [`Signature::NONE`] on the wire, and the shard verifies this.
+    pub solana: Option<SolanaProof>,
 }
 
 /// The exact text that gets signed — **EIP-4361, and the one implementation
@@ -361,6 +484,35 @@ pub fn companion_message(
     w.s("\nVersion: 1\nChain ID: ");
     w.num(CHAIN_ID);
     w.s("\nNonce: ");
+    w.hex(nonce);
+    w.s("\nIssued At: ");
+    w.iso8601(issued_at);
+    w.at.min(SIWE_MESSAGE_MAX)
+}
+
+/// [`siwe_message_for`] for a **Solana** account: the same statement, URI,
+/// nonce and time, in the form Solana wallets display for a sign-in (the
+/// CAIP-122 shape Phantom and Solflare parse) — "your Solana account", the
+/// base58 address as written, and `Chain ID: mainnet`. One builder both sides
+/// call, like the Ethereum one, and pinned by its own golden.
+pub fn siws_message_for(
+    domain: &str,
+    uri_host: &str,
+    address: &str,
+    game: &str,
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    out: &mut [u8; SIWE_MESSAGE_MAX],
+) -> usize {
+    let mut w = TextWriter { out, at: 0 };
+    w.s(domain);
+    w.s(" wants you to sign in with your Solana account:\n");
+    w.s(address);
+    w.s("\n\nProve your identity to play ");
+    w.s(game);
+    w.s(". This signature authorises nothing and moves no funds.\n\nURI: https://");
+    w.s(uri_host);
+    w.s("\nVersion: 1\nChain ID: mainnet\nNonce: ");
     w.hex(nonce);
     w.s("\nIssued At: ");
     w.iso8601(issued_at);
@@ -494,7 +646,19 @@ pub(crate) fn read_challenge(r: &mut BitReader) -> Result<Challenge, WireError> 
     })
 }
 
+/// The tag byte before an auth frame's proof (v142).
+const AUTH_ETHEREUM: u32 = 0;
+const AUTH_SOLANA: u32 = 1;
+
 pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
+    if let Some(sol) = &a.solana {
+        w.write(AUTH_SOLANA, 8)?;
+        for b in sol.key.0.iter().chain(sol.signature.0.iter()) {
+            w.write(*b as u32, 8)?;
+        }
+        return Ok(());
+    }
+    w.write(AUTH_ETHEREUM, 8)?;
     for b in a.address.0.iter() {
         w.write(*b as u32, 8)?;
     }
@@ -505,6 +669,28 @@ pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
 }
 
 pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
+    match r.read(8)? {
+        AUTH_ETHEREUM => {}
+        AUTH_SOLANA => {
+            let mut key = [0u8; SOLANA_KEY_BYTES];
+            for b in key.iter_mut() {
+                *b = r.read(8)? as u8;
+            }
+            let mut signature = [0u8; SOLANA_SIGNATURE_BYTES];
+            for b in signature.iter_mut() {
+                *b = r.read(8)? as u8;
+            }
+            return Ok(Auth {
+                address: Address::GUEST,
+                signature: Signature::NONE,
+                solana: Some(SolanaProof {
+                    key: SolanaKey(key),
+                    signature: SolanaSignature(signature),
+                }),
+            });
+        }
+        _ => return Err(WireError::Malformed),
+    }
     let mut address = [0u8; ADDRESS_BYTES];
     for b in address.iter_mut() {
         *b = r.read(8)? as u8;
@@ -516,6 +702,7 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
     Ok(Auth {
         address: Address(address),
         signature: Signature(signature),
+        solana: None,
     })
 }
 
@@ -706,6 +893,112 @@ mod tests {
             &mut game,
         );
         assert_ne!(buf[..n], game[..g]);
+    }
+
+    /// The address Phantom shows for the BIP-39 test phrase, and its key.
+    const SOL_ADDR: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+
+    #[test]
+    fn base58_round_trips_and_refuses_what_is_not_32_bytes() {
+        let k = SolanaKey::from_base58(SOL_ADDR.as_bytes()).expect("a real address parses");
+        let (b, n) = k.to_base58();
+        assert_eq!(&b[..n], SOL_ADDR.as_bytes());
+        // the System Program: 32 zero bytes, 32 ones
+        let zero = SolanaKey::from_base58(&[b'1'; 32]).expect("all ones is 32 zero bytes");
+        assert_eq!(zero.0, [0u8; 32]);
+        assert_eq!(
+            SolanaKey::from_base58(b"0OIl"),
+            None,
+            "outside the alphabet"
+        );
+        assert_eq!(
+            SolanaKey::from_base58(b"abc"),
+            None,
+            "too short to be 32 bytes"
+        );
+        assert_ne!(
+            SolanaKey::from_base58(SOL_ADDR.to_ascii_lowercase().as_bytes()),
+            Some(k),
+            "a lowercased address is never the same key"
+        );
+        assert_eq!(
+            SolanaKey::from_base58(&[b'z'; 45]),
+            None,
+            "longer than 32 bytes"
+        );
+    }
+
+    /// **The Solana sign-in text, byte for byte** — the twin of the SIWE
+    /// golden above. The browser builds it (`client::net::handshake`) and the
+    /// shard rebuilds it (`server::auth`), so one space of drift is every
+    /// Solana login refused.
+    #[test]
+    fn the_siws_message_is_pinned_byte_for_byte() {
+        let mut nonce = [0u8; NONCE_BYTES];
+        for (i, b) in nonce.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let mut buf = [0u8; SIWE_MESSAGE_MAX];
+        let n = siws_message_for(
+            "elopros.com",
+            "game.elopros.com",
+            SOL_ADDR,
+            "gates",
+            &nonce,
+            1_770_000_000,
+            &mut buf,
+        );
+        assert_eq!(
+            core::str::from_utf8(&buf[..n]).unwrap(),
+            "elopros.com wants you to sign in with your Solana account:\n\
+             HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk\n\n\
+             Prove your identity to play gates. This signature authorises \
+             nothing and moves no funds.\n\n\
+             URI: https://game.elopros.com\nVersion: 1\nChain ID: mainnet\n\
+             Nonce: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n\
+             Issued At: 2026-02-02T02:40:00Z"
+        );
+        // at the domain cap on both lines, with the longest address, it fits
+        let cap = "x".repeat(DOMAIN_MAX);
+        let long = core::str::from_utf8(&[b'z'; SOLANA_ADDRESS_MAX])
+            .unwrap()
+            .to_string();
+        let n = siws_message_for(
+            &cap,
+            &cap,
+            &long,
+            "gates",
+            &[0xff; NONCE_BYTES],
+            u32::MAX as u64,
+            &mut buf,
+        );
+        assert!(
+            n < SIWE_MESSAGE_MAX,
+            "the Solana text at the cap overran: {n}"
+        );
+    }
+
+    #[test]
+    fn a_solana_auth_round_trips_and_an_ethereum_one_is_unchanged() {
+        let key = SolanaKey::from_base58(SOL_ADDR.as_bytes()).unwrap();
+        let sol = Auth {
+            address: Address::GUEST,
+            signature: Signature::NONE,
+            solana: Some(SolanaProof {
+                key,
+                signature: SolanaSignature([7; SOLANA_SIGNATURE_BYTES]),
+            }),
+        };
+        let mut buf = [0u8; 256];
+        let n = crate::encode_auth(&sol, &mut buf).unwrap();
+        assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), sol);
+        let evm = Auth {
+            address: Address::from_hex(PRIV1).unwrap(),
+            signature: Signature([9; SIGNATURE_BYTES]),
+            solana: None,
+        };
+        let n = crate::encode_auth(&evm, &mut buf).unwrap();
+        assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), evm);
     }
 
     /// The four canonical EIP-55 vectors from the spec itself.
