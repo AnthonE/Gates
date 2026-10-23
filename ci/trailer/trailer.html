@@ -353,13 +353,20 @@ function phone(L, x, y, alpha) {
   if (alpha <= 0) return;
   const w = 470, h = 900;
   fg.save(); fg.globalAlpha = clamp(alpha);
-  fg.shadowColor = 'rgba(0,0,0,.7)'; fg.shadowBlur = 60;
-  rrect(fg, x - w / 2, y - h / 2, w, h, 54); fg.fillStyle = '#0d0f0c'; fg.fill(); fg.shadowBlur = 0;
+  // The shadow is drawn, not blurred: swiftshader's cached shadow blur came
+  // back after a few frames as a soft grey disc across the left of the frame.
+  for (let k = 8; k >= 1; k--) { rrect(fg, x - w / 2 - k * 7, y - h / 2 - k * 7 + 18, w + k * 14, h + k * 14, 54 + k * 7); fg.fillStyle = `rgba(0,0,0,${.07})`; fg.fill(); }
+  rrect(fg, x - w / 2, y - h / 2, w, h, 54); fg.fillStyle = '#0d0f0c'; fg.fill();
   fg.strokeStyle = '#3a4234'; fg.lineWidth = 4; fg.stroke();
   const sx = x - w / 2 + 22, sy = y - h / 2 + 22, sw = w - 44, sh = h - 44;
   fg.save(); rrect(fg, sx, sy, sw, sh, 36); fg.clip();
   fg.fillStyle = '#12160f'; fg.fillRect(sx, sy, sw, sh);
-  if (IMG.companion) cover(fg, IMG.companion, sx, sy, sw, sh);
+  if (IMG.companion) {
+    // Scaled once to the screen it fills: a full-size screenshot redrawn scaled every
+    // frame corrupted the grain layer on swiftshader over a run of frames.
+    if (!phone.screen) { const c = document.createElement('canvas'); c.width = sw; c.height = sh; cover(c.getContext('2d'), IMG.companion, 0, 0, sw, sh); phone.screen = c; }
+    fg.drawImage(phone.screen, sx, sy);
+  }
   else {
     // the map: the island from above, the team's dots, the base
     fg.filter = 'brightness(.75) saturate(.8)';
@@ -662,7 +669,9 @@ const CUES = {
 function sceneAt(t) { for (const s of SCENES) if (t < s.t0 + s.d) return s; return SCENES[SCENES.length - 1]; }
 function frame(g) {
   const sc = sceneAt(g);
-  bg.setTransform(1, 0, 0, 1, 0, 0); fg.setTransform(1, 0, 0, 1, 0, 0);
+  // A whole reset, not a setTransform: a clip or shadow left set by one frame
+  // would let clearRect miss and the grain pile up frame on frame.
+  bg.reset(); fg.reset();
   bg.clearRect(0, 0, W, H); fg.clearRect(0, 0, W, H); bg.fillStyle = '#000'; bg.fillRect(0, 0, W, H);
   renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear(true, true, true);
   sc.draw({ t: g - sc.t0, d: sc.d, g });

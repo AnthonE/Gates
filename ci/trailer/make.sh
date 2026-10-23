@@ -142,7 +142,23 @@ if [ "$MODE" = preview ]; then
   ls -la "$HERE"/out/; exit 0
 fi
 
-node "$B/render.mjs" video "$B/silent.mkv"
+# In ten-second parts, each its own browser, kept until the cut changes: a
+# render is half an hour, and a part already drawn is not drawn again when
+# a run is cut short. A changed page or footage index starts the parts over.
+STAMP=$(cat trailer.html "$B/clips/index.json" companion.png | sha256sum | cut -c1-16)
+[ "$(cat "$B/parts/.stamp" 2>/dev/null)" = "$STAMP" ] || { rm -rf "$B/parts"; mkdir -p "$B/parts"; echo "$STAMP" > "$B/parts/.stamp"; }
+TOTAL=$(python3 -c "import json; print(json.load(open('$B/cues.json'))['TOTAL'])")
+N=$(python3 -c "import math; print(math.ceil($TOTAL / 10))")
+: > "$B/parts/list.txt"
+for i in $(seq 0 $((N - 1))); do
+  part="$B/parts/$(printf %02d "$i").mkv"
+  if [ ! -s "$part" ]; then
+    node "$B/render.mjs" video "$B/parts/tmp.mkv" $((i * 10)) $(python3 -c "print(min($TOTAL, ($i + 1) * 10))")
+    mv "$B/parts/tmp.mkv" "$part"
+  fi
+  echo "file '$part'" >> "$B/parts/list.txt"
+done
+ffmpeg -v error -y -f concat -safe 0 -i "$B/parts/list.txt" -c copy "$B/silent.mkv"
 ffmpeg -v error -y -i "$B/silent.mkv" -i "$B/mix.wav" -map 0:v -map 1:a -af "$AF" -ar 48000 \
   -c:v libx264 -preset slow -crf 19 -maxrate 8M -bufsize 16M -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest \
   "$HERE/out/full-auto.mp4"

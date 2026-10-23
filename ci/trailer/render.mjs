@@ -14,7 +14,7 @@ const br = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-u
 const p = await br.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 p.on('console', m => { if (!m.text().includes('WebGLRenderer')) console.log('page:', m.text()); });
 p.on('pageerror', e => console.log('page error:', e.message));
-await p.goto(url);
+await p.goto(url, { timeout: 180000 });   // a cold box compiles the page's shaders slowly
 await p.waitForFunction(() => window.READY || window.FAILED, null, { timeout: 180000 });
 const failed = await p.evaluate(() => window.FAILED);
 if (failed) { console.error('trailer did not load:', failed); process.exit(1); }
