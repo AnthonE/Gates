@@ -463,7 +463,7 @@ pub fn surface(
         c.coarse(seed, haven, x0 + 1, z0 + 1),
     ];
     if q.iter().all(|q| q.gentlest <= SKIN_SLOPE_LO) {
-        return terrain::ground(seed, haven, x, z);
+        return c.ground(seed, haven, x, z);
     }
     let near = tri(
         [q[0].drawn, q[1].drawn, q[2].drawn, q[3].drawn],

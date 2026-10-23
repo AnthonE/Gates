@@ -48,6 +48,7 @@ struct Args {
     clients: usize,
     pieces: usize,
     ticks: u32,
+    slow: usize,
     warmup: u32,
     seed: u64,
     content_dir: String,
@@ -75,6 +76,7 @@ impl Default for Args {
             clients: MAX_PLAYERS,
             pieces: 16_000,
             ticks: 600,
+            slow: 0,
             warmup: 60,
             seed: 20_260_731,
             content_dir: "content".into(),
@@ -96,6 +98,7 @@ fn parse_args() -> Args {
             "--clients" => a.clients = val.parse().unwrap_or(a.clients).min(MAX_PLAYERS),
             "--pieces" => a.pieces = val.parse().unwrap_or(a.pieces).min(MAX_PIECES),
             "--ticks" => a.ticks = val.parse().unwrap_or(a.ticks),
+            "--slow" => a.slow = val.parse().unwrap_or(a.slow),
             "--warmup" => a.warmup = val.parse().unwrap_or(a.warmup),
             "--seed" => a.seed = val.parse().unwrap_or(a.seed),
             "--content" => a.content_dir = val,
@@ -110,7 +113,7 @@ fn parse_args() -> Args {
             "--wallets" => a.wallets = val == "1",
             "--help" | "-h" => {
                 println!(
-                    "profile [--clients N] [--pieces N] [--ticks N] [--warmup N] \
+                    "profile [--clients N] [--pieces N] [--ticks N] [--slow N] [--warmup N] \
                      [--seed N] [--content DIR] [--pitch M] [--spectators N] [--mobs-near 1] \
                      [--wallets 1]"
                 );
@@ -463,10 +466,23 @@ fn main() {
     // slice the core would have built, so this is the same work minus
     // every line of netcode.
     let mut sim = Vec::with_capacity(a.ticks as usize);
+    let mut sim_at = Vec::with_capacity(a.ticks as usize);
     for _ in 0..a.ticks {
+        let at = core.world.tick;
         let t = Instant::now();
         core.world.tick(&[]);
         sim.push(t.elapsed());
+        sim_at.push(at);
+    }
+    // `--slow N`: the N slowest bare sim ticks by number, so a p99 can be
+    // traced to the periodic pass that lands on it.
+    if a.slow > 0 {
+        let mut by: Vec<(Duration, u64)> =
+            sim.iter().copied().zip(sim_at.iter().copied()).collect();
+        by.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
+        for (d, t) in by.iter().take(a.slow) {
+            println!("  slow sim tick {t:>8}  {:8.1} µs", d.as_secs_f64() * 1e6);
+        }
     }
 
     // --- the two whole-world passes, timed apart from the ticks that carry

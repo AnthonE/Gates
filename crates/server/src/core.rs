@@ -107,6 +107,22 @@ fn addr_parts(addr: u32) -> (u8, u8, u8, u8) {
     )
 }
 
+/// A snapshot candidate as one sortable `u64`: ascending order is stale
+/// first, then accumulator high to low (`f32::total_cmp`'s order), then
+/// slot low to high — the ranking the fill loop sends in.
+fn rank_key(slot: usize, accum: f32, stale: bool) -> u64 {
+    // `total_cmp`'s own transform, then the sign flipped so it sorts as
+    // unsigned; inverted for high-to-low.
+    let b = accum.to_bits() as i32;
+    let ordered = (b ^ (((b >> 31) as u32) >> 1) as i32) as u32 ^ 0x8000_0000;
+    ((!stale as u64) << 48) | ((!ordered as u64) << 16) | slot as u64
+}
+
+/// The packed candidate slot back out of a [`rank_key`].
+fn rank_slot(key: u64) -> usize {
+    (key & 0xFFFF) as usize
+}
+
 /// Whether the sim reads this action's subject off the selected hotbar slot
 /// (`combat::held_item`): the charge planted, the gun reloaded, the vessel
 /// filled at the water. These wait for the frames buffered ahead of them
@@ -259,6 +275,10 @@ pub struct ShardCore {
     /// than a local for the boxing above — and it borrow-splits cleanly against
     /// `clients` and `world` because they are all distinct fields of `self`.
     cmd_buf: Box<[Command]>,
+    /// Every candidate's wire record, built once per snapshot tick before
+    /// the per-client encodes, which only read it: a body's record is the
+    /// same for every viewer. Indexed like the fill loop's packed slots.
+    wire_cache: Box<[EntityState]>,
     /// Scratch: baseline copy (borrow-splits the client during encode).
     baseline_buf: [EntityState; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: what actually got encoded, for `record_sent`.
@@ -1009,6 +1029,7 @@ impl ShardCore {
             queued: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
             queued_len: 0,
             cmd_buf: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
+            wire_cache: vec![EntityState::default(); MAX_PLAYERS + MAX_MOBS].into_boxed_slice(),
             baseline_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             sent_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
@@ -3941,6 +3962,7 @@ impl ShardCore {
 
         mark(Phase::Encode);
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
+            self.fill_wire_cache();
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {
                     continue;
@@ -10016,6 +10038,22 @@ impl ShardCore {
         }
     }
 
+    /// Build [`Self::wire_cache`] for this tick's snapshots.
+    fn fill_wire_cache(&mut self) {
+        for w in 0..MAX_PLAYERS {
+            let p = &self.world.players[w];
+            if p.active {
+                self.wire_cache[w] = Self::wire_entity(p, &self.world.gather);
+            }
+        }
+        for slot in 0..MAX_MOBS {
+            let m = &self.world.mobs.m[slot];
+            if m.alive {
+                self.wire_cache[MAX_PLAYERS + slot] = Self::wire_mob(slot, m);
+            }
+        }
+    }
+
     /// Priority-filled snapshot for one client (DESIGN.md §5.5): removals
     /// first, then own entity, then stale-preempted and accumulator-ranked
     /// interest entities until budget or cap. Returns the encoded length,
@@ -10088,27 +10126,30 @@ impl ShardCore {
         // packed — `< MAX_PLAYERS` is a world slot, above it a roster slot
         // — because the alternative is two arrays and a merge, and the
         // merge is the part that would get the ordering wrong.
+        //
+        // Each candidate is one `u64` whose ascending order IS the ranking
+        // (`rank_key`), so the sort compares integers instead of walking a
+        // three-key comparator per pair.
         const CANDIDATES: usize = MAX_PLAYERS + MAX_MOBS;
-        let mut order: [(u16, f32, bool); CANDIDATES] = [(0, 0.0, false); CANDIDATES];
+        let mut order = [0u64; CANDIDATES];
         let mut n_cand = 0usize;
         for w in 0..MAX_PLAYERS {
             if c.interest[w] && self.world.players[w].active {
-                order[n_cand] = (w as u16, c.accum[w], c.unsent[w] >= STALENESS_CEILING - 1);
+                order[n_cand] = rank_key(w, c.accum[w], c.unsent[w] >= STALENESS_CEILING - 1);
                 n_cand += 1;
             }
         }
         for slot in 0..MAX_MOBS {
             if c.m_interest[slot] && self.world.mobs.m[slot].alive {
-                order[n_cand] = (
-                    (MAX_PLAYERS + slot) as u16,
+                order[n_cand] = rank_key(
+                    MAX_PLAYERS + slot,
                     c.m_accum[slot],
                     c.m_unsent[slot] >= STALENESS_CEILING - 1,
                 );
                 n_cand += 1;
             }
         }
-        order[..n_cand]
-            .sort_unstable_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
+        order[..n_cand].sort_unstable();
 
         let mut n_sent = 0usize;
         let own = Self::wire_entity(&self.world.players[c.own_wslot], &self.world.gather);
@@ -10124,13 +10165,9 @@ impl ShardCore {
         }
         let mut sent_mask = [false; MAX_PLAYERS + MAX_MOBS];
         let mut overflow_streak = 0u32;
-        for &(w, _, _) in order[..n_cand].iter() {
-            let w = w as usize;
-            let e = if w < MAX_PLAYERS {
-                Self::wire_entity(&self.world.players[w], &self.world.gather)
-            } else {
-                Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
-            };
+        for &k in order[..n_cand].iter() {
+            let w = rank_slot(k);
+            let e = self.wire_cache[w];
             match enc.add_entity(&e) {
                 Ok(()) => {
                     self.sent_buf[n_sent] = e;
@@ -10170,7 +10207,7 @@ impl ShardCore {
         let mut extra = 0usize;
         let mut next = 0usize;
         for part in 1..SNAPSHOT_PARTS {
-            while next < n_cand && sent_mask[order[next].0 as usize] {
+            while next < n_cand && sent_mask[rank_slot(order[next])] {
                 next += 1;
             }
             if next >= n_cand {
@@ -10189,16 +10226,12 @@ impl ShardCore {
             };
             let mut n_part = 0usize;
             while next < n_cand {
-                let w = order[next].0 as usize;
+                let w = rank_slot(order[next]);
                 if sent_mask[w] {
                     next += 1;
                     continue;
                 }
-                let e = if w < MAX_PLAYERS {
-                    Self::wire_entity(&self.world.players[w], &self.world.gather)
-                } else {
-                    Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
-                };
+                let e = self.wire_cache[w];
                 match more.add_entity(&e) {
                     Ok(()) => {
                         sent_mask[w] = true;
@@ -10265,8 +10298,8 @@ impl ShardCore {
         // skip, and it reaches at most `AOI_RANK_EXIT` entries instead of
         // `MAX_PLAYERS + MAX_MOBS`. Order does not matter: every arm writes
         // only its own slot.
-        for &(w, _, _) in order[..n_cand].iter() {
-            let w = w as usize;
+        for &k in order[..n_cand].iter() {
+            let w = rank_slot(k);
             let was_sent = sent_mask[w];
             if w < MAX_PLAYERS {
                 if was_sent {
@@ -10313,6 +10346,40 @@ mod tests {
 
     const SEED: u64 = 0x5B_F06E;
     const PLAYER: u32 = 7;
+
+    /// `rank_key`'s integer order is the three-key comparator it replaced,
+    /// ties, signs, zeros and infinities included.
+    #[test]
+    fn rank_key_sorts_like_the_comparator() {
+        let accums = [
+            0.0f32,
+            -0.0,
+            1.0,
+            1.0,
+            0.5,
+            1e-30,
+            -1.0,
+            37.25,
+            f32::INFINITY,
+            1e9,
+            3.0,
+        ];
+        let mut tuples = Vec::new();
+        for (i, &a) in accums.iter().enumerate() {
+            for stale in [false, true] {
+                tuples.push(((i * 2 + stale as usize) as u16, a, stale));
+            }
+        }
+        let mut want = tuples.clone();
+        want.sort_unstable_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
+        let mut keys: Vec<u64> = tuples
+            .iter()
+            .map(|&(w, a, s)| rank_key(w as usize, a, s))
+            .collect();
+        keys.sort_unstable();
+        let got: Vec<u16> = keys.iter().map(|&k| rank_slot(k) as u16).collect();
+        assert_eq!(got, want.iter().map(|t| t.0).collect::<Vec<_>>());
+    }
 
     /// The crew vital's stagger (NOW §0up 3): every slot a push can go to
     /// is due exactly once a period, and never on the same tick as another

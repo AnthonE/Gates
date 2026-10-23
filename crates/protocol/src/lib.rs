@@ -1336,7 +1336,18 @@ pub use voice::{
 /// v140 — a deploy refusal admits 27 and 28 (`REFUSE_D_OWN_CAP`, one hand's
 /// share of the containers or turrets; `REFUSE_D_BAG_SPENT`, a bag still
 /// cooling down).
-pub const PROTO_VER: u16 = 140;
+/// v141 — a delta record names its entity by its row in the acked baseline
+/// (`BASELINE_IX_BITS`, 6) instead of its 32-bit id: is_delta leads a record
+/// whenever there is a baseline, then the row and the flags for a delta or
+/// the id and the absolute fields otherwise. A record with no baseline
+/// (zero-state, overflow) is unchanged. About a quarter of every moving
+/// body's record, and nothing a decoder could not already check.
+pub const PROTO_VER: u16 = 141;
+
+/// Bits naming a delta record's baseline row (v141): every baseline is a
+/// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
+const BASELINE_IX_BITS: u32 = 6;
+const _: () = assert!(MAX_SNAPSHOT_ENTITIES <= 1 << BASELINE_IX_BITS);
 
 /// This game's slug in the elo catalog.
 ///
@@ -4840,9 +4851,9 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     }
 
     fn encode_entity(&mut self, e: &EntityState) -> Result<(), WireError> {
-        self.w.write(e.id, 32)?;
         if self.has_baseline {
-            if let Some(b) = self.baseline_ix(e.id).map(|i| self.baseline[i]) {
+            if let Some(i) = self.baseline_ix(e.id) {
+                let b = self.baseline[i];
                 let dx = e.qx as i64 - b.qx as i64;
                 let dy = e.qy as i64 - b.qy as i64;
                 let dz = e.qz as i64 - b.qz as i64;
@@ -4853,10 +4864,12 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
                     && fits(dy, DPOS_Y_BIAS, DPOS_Y_BITS)
                     && fits(dz, DPOS_XZ_BIAS, DPOS_XZ_BITS)
                 {
-                    return self.encode_delta(e, &b, dx, dy, dz);
+                    return self.encode_delta(e, &b, i, dx, dy, dz);
                 }
             }
+            self.w.write_bit(false)?; // is_delta
         }
+        self.w.write(e.id, 32)?;
         self.encode_absolute(e)
     }
 
@@ -4864,11 +4877,11 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         &mut self,
         e: &EntityState,
         b: &EntityState,
+        row: usize,
         dx: i64,
         dy: i64,
         dz: i64,
     ) -> Result<(), WireError> {
-        self.w.write_bit(true)?; // is_delta
         let pos_changed = dx != 0 || dy != 0 || dz != 0;
         let vel_changed = e.qvy != b.qvy;
         let look_changed = e.yaw != b.yaw || e.pitch != b.pitch;
@@ -4877,16 +4890,23 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         // and puts the flame out in the same tick — and a torch that
         // burns out changes `lit` alone, which is one flag either way.
         let hand_changed = e.held != b.held || e.lit != b.lit || e.held_skin != b.held_skin;
-        self.w.write_bit(pos_changed)?;
-        self.w.write_bit(vel_changed)?;
-        self.w.write_bit(look_changed)?;
-        self.w.write_bit(hand_changed)?;
-        self.w.write_bit(e.grounded)?;
-        self.w.write_bit(e.sleeping)?;
-        self.w.write_bit(e.dead)?;
-        self.w.write_bit(e.wounded)?;
-        self.w.write_bit(e.crouched)?;
-        self.w.write_bit(e.seated)?;
+        // is_delta, the baseline row, then the ten flags in one write:
+        // LSB-first, so packing them low bit first is the same bits as
+        // writing each in turn.
+        self.w.write(1 | (row as u32) << 1, 1 + BASELINE_IX_BITS)?;
+        let flags = [
+            pos_changed,
+            vel_changed,
+            look_changed,
+            hand_changed,
+            e.grounded,
+            e.sleeping,
+            e.dead,
+            e.wounded,
+            e.crouched,
+            e.seated,
+        ];
+        self.w.write(pack_bits(&flags), flags.len() as u32)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -4908,22 +4928,18 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         Ok(())
     }
 
+    /// The absolute fields after the id. Where a delta could stand, the
+    /// caller has already written is_delta = 0 ahead of the id; a
+    /// zero-state snapshot and an overflow datagram have no baseline, so
+    /// every record is absolute and the bit says nothing (v135: the bit the
+    /// 8-bit held field needed back to keep the zero-state cap inside the
+    /// budget).
     fn encode_absolute(&mut self, e: &EntityState) -> Result<(), WireError> {
-        // is_delta, only where a delta could stand: a zero-state snapshot
-        // and an overflow datagram have no baseline, so every record is
-        // absolute and the bit says nothing (v135: the bit the 8-bit held
-        // field needed back to keep the zero-state cap inside the budget).
-        if self.has_baseline {
-            self.w.write_bit(false)?;
-        }
         self.w.write(e.qx as u32, POS_XZ_BITS)?;
         self.w.write((e.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
-        self.w.write_bit(e.grounded)?;
-        self.w.write_bit(e.sleeping)?;
-        self.w.write_bit(e.dead)?;
-        self.w.write_bit(e.wounded)?;
-        self.w.write_bit(e.crouched)?;
+        let flags = [e.grounded, e.sleeping, e.dead, e.wounded, e.crouched];
+        self.w.write(pack_bits(&flags), flags.len() as u32)?;
         self.write_vel(e.qvy)?;
         // A sitter is at rest (`check_ranges`), so the bit rides behind the
         // at-rest flag and a moving body's record costs what it always did.
@@ -4969,6 +4985,15 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
             .patch(self.entity_count_at, self.entities, COUNT_BITS)?;
         Ok(self.w.finish())
     }
+}
+
+/// Flags packed first-is-lowest, the order `BitWriter` lays bits down.
+#[inline]
+fn pack_bits(flags: &[bool]) -> u32 {
+    flags
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (i, &f)| acc | (f as u32) << i)
 }
 
 /// Absolute-record range check, up front so a `Range` refusal never needs
@@ -5146,10 +5171,10 @@ fn decode_entity(
     baseline_age: u8,
     baseline: &[EntityState],
 ) -> Result<EntityState, WireError> {
-    let id = r.read(32)?;
     // No baseline, no delta and no bit (`encode_absolute`).
     let is_delta = baseline_age != 0 && r.read_bit()?;
     if !is_delta {
+        let id = r.read(32)?;
         let qx = r.read(POS_XZ_BITS)? as i32;
         let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
         let qz = r.read(POS_XZ_BITS)? as i32;
@@ -5179,11 +5204,10 @@ fn decode_entity(
             held_skin: read_held_skin(r)?,
         });
     }
-    // A delta is read only against a baseline (`is_delta` above).
-    let b = baseline
-        .iter()
-        .find(|b| b.id == id)
-        .ok_or(WireError::Malformed)?;
+    // A delta is read only against a baseline (`is_delta` above), and names
+    // its row in it (v141).
+    let row = r.read(BASELINE_IX_BITS)? as usize;
+    let b = baseline.get(row).ok_or(WireError::Malformed)?;
     let mut e = *b;
     let pos_changed = r.read_bit()?;
     let vel_changed = r.read_bit()?;
@@ -5490,21 +5514,19 @@ mod tests {
         let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
-            // Identical to its baseline record: a found delta writes the id
-            // plus eleven flag bits and nothing else — six until v48 added
-            // `dead` beside `sleeping`, seven until v56 added
-            // `hand_changed` beside `look_changed`, eight until v63 added
-            // `wounded` beside `dead`, nine until v83 added `crouched`, ten
-            // until v130 added `seated`.
+            // Identical to its baseline record: a found delta writes is_delta,
+            // its 6-bit baseline row (the 32-bit id until v141) and ten flag
+            // bits and nothing else.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 11 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 89 (1 is_delta + 17 + 14 + 17 +
-        // 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` + 1 lit), so
-        // a single missed lookup adds 78 bits and this bound catches it.
+        // 64 entities × (1 is_delta + 6 row bits + 10 flags) plus the
+        // header. An at-rest absolute record is 1 is_delta + 32 + 88 (17 +
+        // 14 + 17 + 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` +
+        // 1 lit), so a single missed lookup adds 104 bits and this bound
+        // catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 43).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 17).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \
@@ -5627,13 +5649,13 @@ mod tests {
              flag doing anything at all",
             hands - still
         );
-        // …and the floor itself: an unchanged record is 43 bits, the 32-bit
-        // id and eleven flags (`seated` the eleventh, v130). If it is 50 the
+        // …and the floor itself: an unchanged record is 17 bits, is_delta,
+        // the 6-bit baseline row (v141) and ten flags. If it is 24 the
         // hand is not gated and every still body pays for it on every
         // snapshot. Eight records are whole bytes, so they are measured
         // against none.
         let none = encode(&[]);
-        assert_eq!(still - none, 43, "the unchanged floor moved");
+        assert_eq!(still - none, 17, "the unchanged floor moved");
     }
 
     /// **The encoder refuses an item id the sim cannot mean**, up front,
