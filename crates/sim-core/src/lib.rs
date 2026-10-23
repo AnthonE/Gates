@@ -6,6 +6,7 @@
 //! The clippy walls for this crate live in `clippy.toml` next door.
 
 pub mod assist;
+pub mod attach;
 pub mod backpack;
 pub mod blight;
 pub mod bots;
@@ -13,6 +14,7 @@ pub mod boulder;
 pub mod brain;
 pub mod build;
 pub mod building;
+pub mod bullet;
 pub mod casino;
 #[cfg(test)]
 mod cells_oracle;

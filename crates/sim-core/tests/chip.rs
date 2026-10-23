@@ -144,6 +144,7 @@ fn shooter_combat(structure: u16) -> CombatContent {
         // rather than several seconds. The cadence is not what any
         // assertion here is about.
         rate_ticks: 1,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure,
@@ -164,11 +165,13 @@ fn shooter_combat(structure: u16) -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c.ranged[GUN as usize] = RangedDef {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 1,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure,

@@ -241,7 +241,10 @@ use crate::worldcont::WorldContRec;
 /// (a count, the next id, then each plant), so no older file reads.
 /// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
 /// (+32), and its tail the teas (+18); no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 31;
+/// **32 — weapon attachments** (`attach.rs`): every body's `PlayerSave`
+/// closes with a gun's attachment mask per magazine (+`MAX_MAGS`); no older
+/// file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 32;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -1256,10 +1259,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // file is not a client.
             mag: save.mag,
             mag_round: save.mag_round,
+            mods: save.mods,
             // The gun's cone and trigger settle over a restart, and a bow's
             // draw with them.
             bloom: 0,
             shot_at: 0,
+            shot_due: 0,
             trigger_spent: false,
             draw_on: 0,
             ws_cell,

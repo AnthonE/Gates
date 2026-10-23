@@ -547,6 +547,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -567,6 +568,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -648,6 +650,7 @@ fn gun_world() -> World {
         damage: 20,
         ammo: [RL_ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 4,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -704,6 +707,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
         damage: 30,
         ammo: [WOOD, HV, NO_ITEM, NO_ITEM],
         rate_ticks: 37,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -723,6 +727,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
             damage_pct: 100,
             fire_ticks: [0; 2],
             blast: Default::default(),
+            ..Default::default()
         };
     }
     for (i, item) in [(0, BOW), (1, WOOD), (2, HV)] {
@@ -876,6 +881,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: true,
         range_mm: RANGE_MM,
         structure: 0,
@@ -988,6 +994,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1008,6 +1015,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -1103,6 +1111,7 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
         damage: 30,
         ammo: [FIRE_ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1120,6 +1129,7 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
         damage_pct: 80,
         fire_ticks: [BURN, BURN],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,

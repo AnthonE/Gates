@@ -178,7 +178,9 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// **11** — guns v1: `MAX_MAGS` 8 → 16, eight more magazines, 417 → 449.
 /// **12** — clothing v1: Rust's seven clothing slots, four more worn stacks
 /// (legs, hands, shirt, face), 449 → 481.
-pub const SAVE_FORMAT: u16 = 12;
+/// **13** — weapon attachments: a gun's attachment mask per magazine closes
+/// the record, 481 → 497.
+pub const SAVE_FORMAT: u16 = 13;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
 /// zero padding, so a file written before it reads 0 there and is checked

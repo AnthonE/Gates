@@ -3067,7 +3067,7 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
 #[test]
 fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
     use sim_core::gather::NO_ITEM;
-    use sim_core::limits::{ARROW_STEP_MM, MAX_HITSCAN_SAMPLES, TICK_HZ};
+    use sim_core::limits::{ARROW_STEP_MM, MAX_BULLET_SUBSTEPS, TICK_HZ};
 
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let cc = c.bake_combat().expect("shipped weapons must bake");
@@ -3109,12 +3109,18 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
                 "`{}` round {slot} is the one it names",
                 w.id
             );
-            // And it is a round with no ballistics, which is what makes it
-            // hitscan rather than a projectile nobody baked a speed for.
+            // And it is a round that flies (`sim_core::bullet`): Rust's
+            // rounds have travel time and drop, and every shipped one does.
+            let flies = cc
+                .ammo_def(c.item_index(id).expect("round is an item"))
+                .unwrap_or_else(|| panic!("`{}` round `{id}` carries no ballistics", w.id));
+            // Its fastest tick, out of this barrel, is one the bullet's
+            // sampler traces at a trunk's spacing.
+            let speed = baked.gun.muzzle(flies.speed_mmpt);
+            let taps = speed as usize / ARROW_STEP_MM as usize + 1;
             assert!(
-                cc.ammo_def(c.item_index(id).expect("round is an item"))
-                    .is_none(),
-                "`{}` round `{id}` carries ballistics — it would be a projectile",
+                taps <= MAX_BULLET_SUBSTEPS,
+                "`{}` round `{id}` needs {taps} samples a tick, past {MAX_BULLET_SUBSTEPS}",
                 w.id
             );
         }
@@ -3126,16 +3132,12 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
             );
         }
 
-        // The hitscan sampler wall, on the shipped row rather than only on
-        // the refusal path: a reach sitting exactly on the ceiling would be
-        // traced by one sample per step and nothing would say so.
-        let taps = baked.range_mm as usize / ARROW_STEP_MM as usize + 1;
-        assert!(
-            taps <= MAX_HITSCAN_SAMPLES,
-            "`{}` needs {taps} collision samples for its {} m, past the {MAX_HITSCAN_SAMPLES} \
-             one shot may take",
-            w.id,
-            w.range_m
+        // The exact cadence, to the 256th of a tick (`ranged::cadence`).
+        assert_eq!(
+            baked.rate_sub,
+            (TICK_HZ * 60 * 256 + w.rate_per_min / 2) / w.rate_per_min,
+            "`{}` sub-tick cadence",
+            w.id
         );
 
         // Hits to kill, computed the way the sim computes it — the melee
@@ -3163,26 +3165,36 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
 /// distance the data never admits to.
 #[test]
 fn a_firearm_that_outreaches_the_collision_sampler_is_refused() {
-    refuses_bake(
-        "weapons.toml",
-        "range_m = 150",
-        "range_m = 500",
-        "shoot through cover",
+    // Only an instant round is traced over the whole reach at once, so the
+    // pistol round loses its ballistics first.
+    let mut srcs = sources();
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "weapons.toml").unwrap();
+    let row = "[[ammo]]\nid = \"item.pistol_ammo\"\nspeed_mps = 300\ndrop_mps2 = 10\n";
+    assert!(
+        entry.1.contains(row),
+        "test fixture rot: the pistol round's row"
     );
+    entry.1 = entry
+        .1
+        .replace(row, "")
+        .replacen("range_m = 150", "range_m = 500", 1);
+    let err = build(&srcs)
+        .expect("validates")
+        .bake_combat()
+        .expect_err("a 500 m instant pistol was baked");
+    assert!(err.contains("shoot through cover"), "{err}");
 }
 
-/// A firearm whose round carries `[[ammo]]` ballistics is refused at boot.
-///
-/// The bow's refusal inverted, and the reason is the same one: the pairing
-/// is what tells a projectile from a hitscan, so a round that is both would
-/// leave the question to whichever reader asked it.
+/// A barrel that sends its round out faster than a bullet's sampler can
+/// trace is refused at boot — the round's own wall, through the barrel's
+/// `velocity_pct`. The bolt's 175 % of 5.56 is 656 m/s; 400 % is 1 500.
 #[test]
-fn a_firearm_whose_round_has_ballistics_is_refused() {
-    refuses(
+fn a_barrel_that_outruns_the_bullet_sampler_is_refused() {
+    refuses_bake(
         "weapons.toml",
-        "ammo = [\"item.pistol_ammo\"]",
-        "ammo = [\"item.arrow_wood\", \"item.arrow_hv\", \"item.arrow_bone\", \"item.arrow_fire\"]",
-        "it is a projectile",
+        "velocity_pct = 175",
+        "velocity_pct = 400",
+        "collision sampler",
     );
 }
 
@@ -4241,11 +4253,29 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
 /// Their tree items (2026-10-17, the barbed barricade and floor spikes
 /// 2026-10-18, the boots and the hazmat suit too) and the wooden barricade,
-/// learned there, are the other fifteen.
+/// learned there, are the other fifteen. Their other rounds (2026-10-23) —
+/// HV, incendiary and explosive 5.56, HV and incendiary pistol, the slug and
+/// the incendiary shell — are learned there and here, seven more; and their
+/// weapon attachments, eight.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 42] = [
+    let want: [(&str, u32); 57] = [
+        ("item.gun_flashlight", 15),
+        ("item.muzzle_brake", 30),
+        ("item.muzzle_boost", 30),
+        ("item.holosight", 60),
+        ("item.lasersight", 60),
+        ("item.silencer", 60),
+        ("item.extended_mag", 60),
+        ("item.scope_8x", 120),
+        ("item.rifle_ammo_hv", 120),
+        ("item.rifle_ammo_fire", 120),
+        ("item.rifle_ammo_explosive", 120),
+        ("item.pistol_ammo_hv", 60),
+        ("item.pistol_ammo_fire", 60),
+        ("item.shotgun_slug", 60),
+        ("item.shotgun_fire", 60),
         ("item.assault_rifle", 120),
         ("item.semi_rifle", 120),
         ("item.thompson", 60),
@@ -4828,6 +4858,10 @@ fn no_weapon_outranges_the_interest_band() {
     let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
     let eye_m = sim_core::ranged::ARROW_EYE_MM as f64 / 1000.0;
     let reach = |w: &content::schema::Weapon| {
+        // A bullet is spent at its gun's reach, however level it flies.
+        if w.kind == content::schema::WeaponKind::Firearm {
+            return w.range_m;
+        }
         let flight = w.ammo.iter().flatten().filter_map(|id| {
             let a = c.ammo.iter().find(|a| &a.id == id)?;
             let fall_s = (2.0 * eye_m / f64::from(a.drop_mps2.max(1))).sqrt();

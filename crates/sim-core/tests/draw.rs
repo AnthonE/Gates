@@ -23,6 +23,7 @@ fn bow(draw_ticks: u16) -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: RATE,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -40,6 +41,7 @@ fn bow(draw_ticks: u16) -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }

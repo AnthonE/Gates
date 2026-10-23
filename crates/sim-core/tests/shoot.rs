@@ -102,6 +102,7 @@ fn bow_fixture() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         // 60 m, the real bow's reach. `ranged::draw` divides this by the
         // round's speed for the flight, which at 1333 mm/tick is the 45
@@ -127,6 +128,7 @@ fn bow_fixture() -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }

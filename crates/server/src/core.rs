@@ -131,7 +131,12 @@ fn rank_slot(key: u64) -> usize {
 fn reads_hand(act: &ActionMsg) -> bool {
     matches!(
         act,
-        ActionMsg::Throw { .. } | ActionMsg::Reload | ActionMsg::Unload | ActionMsg::Drink
+        ActionMsg::Throw { .. }
+            | ActionMsg::Reload
+            | ActionMsg::Unload
+            | ActionMsg::Drink
+            | ActionMsg::Attach { .. }
+            | ActionMsg::Detach { .. }
     )
 }
 
@@ -3877,6 +3882,8 @@ impl ShardCore {
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Reload => Command::Reload { id: c.id },
                     ActionMsg::Unload => Command::Unload { id: c.id },
+                    ActionMsg::Attach { slot } => Command::Attach { id: c.id, slot },
+                    ActionMsg::Detach { bit } => Command::Detach { id: c.id, bit },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {
@@ -7546,6 +7553,34 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The attachments on the gun in the owner's hand (`SUB_MODS`), when
+        // the hand or the mask moves: the client kicks, zooms and draws by
+        // them. A hand with no gun is the empty mask.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let p = &self.world.players[wslot];
+            let held = sim_core::combat::held_item(p);
+            let mods = self
+                .world
+                .combat
+                .held_ranged(held)
+                .and_then(|d| p.mods.get(d.mag_slot as usize).copied())
+                .unwrap_or(0);
+            let now = (held, mods);
+            if self.clients[slot].last_mods != Some(now) {
+                match protocol::encode_event_mods(now.0, now.1, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_mods = Some(now);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
             }
         }
 

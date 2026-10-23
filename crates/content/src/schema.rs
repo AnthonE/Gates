@@ -418,6 +418,17 @@ pub struct Ammo {
     /// planted charge (`sim_core::charge::blast`), and leaves no arrow.
     #[serde(default)]
     pub blast: Option<RoundBlast>,
+    /// A firearm round's projectiles per shot, in place of the gun's
+    /// `pellets` (a 12-gauge slug is one). Absent keeps the gun's.
+    #[serde(default)]
+    pub pellets: u32,
+    /// A firearm round's own falloff, in place of the gun's (a slug's
+    /// carries further than buckshot's). Absent, or a `falloff_pct` of 0,
+    /// keeps the gun's.
+    #[serde(default)]
+    pub falloff_m: [u32; 2],
+    #[serde(default)]
+    pub falloff_pct: u32,
 }
 
 /// `[ammo.blast]`: radius in metres (at most one build cell, the charge's
@@ -434,7 +445,7 @@ pub struct RoundBlast {
 /// (`BaseProjectile` and `RecoilProperties`). Every angle is **hundredths
 /// of a degree**; the cone ones are Rust's full apex (`aimCone`,
 /// `hipAimCone`), so Rust's 0.2° reads 20.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GunSpec {
     /// Fires while the trigger is held. Absent: once per pull.
@@ -479,6 +490,64 @@ pub struct GunSpec {
     pub recoil_yaw_cdeg: [i32; 2],
     #[serde(default = "fifty")]
     pub ads_recoil_pct: u32,
+    /// The gun's share of its round's muzzle speed, percent (Rust's
+    /// `projectileVelocityScale`): the bolt rifle sends 5.56 out at 175 %,
+    /// the Custom SMG pistol rounds at 80 %. Absent is the identity.
+    #[serde(default = "hundred")]
+    pub velocity_pct: u32,
+    /// The attachments it takes, by item id (`[[attachment]]` rows).
+    #[serde(default)]
+    pub mods: Vec<String>,
+}
+
+/// Which slot of a gun an attachment takes (Rust's mod slots): one each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModSlot {
+    Sight,
+    Muzzle,
+    Underbarrel,
+    Magazine,
+}
+
+/// A weapon attachment (Rust's weapon mods): the item, the slot it takes,
+/// and what it does — every number a percent of the gun's own, 100 the
+/// identity and the default. The sim reads the shot's numbers; the client
+/// reads the kick, the zoom and the three flags (`protocol::ModRow`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attachment {
+    pub id: String,
+    pub slot: ModSlot,
+    /// The cone through the sights and from the hip.
+    #[serde(default = "hundred")]
+    pub aim_pct: u32,
+    #[serde(default = "hundred")]
+    pub hip_pct: u32,
+    /// The view kick (client).
+    #[serde(default = "hundred")]
+    pub recoil_pct: u32,
+    #[serde(default = "hundred")]
+    pub damage_pct: u32,
+    #[serde(default = "hundred")]
+    pub velocity_pct: u32,
+    /// Shots a minute.
+    #[serde(default = "hundred")]
+    pub rate_pct: u32,
+    #[serde(default = "hundred")]
+    pub magazine_pct: u32,
+    /// How far the sights narrow the view, percent of the field of view
+    /// (client): a holosight's 1.5×, a scope's 8×. 0 keeps the iron sights.
+    #[serde(default)]
+    pub zoom_pct: u32,
+    /// A silencer: heard as a bow is, no flash.
+    #[serde(default)]
+    pub quiet: bool,
+    /// A laser sight's dot, and a flashlight's beam (client).
+    #[serde(default)]
+    pub laser: bool,
+    #[serde(default)]
+    pub light: bool,
 }
 
 fn fifty() -> u32 {

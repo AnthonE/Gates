@@ -31,6 +31,7 @@ fn world_with_fire_arrows() -> Box<World> {
         damage: 40,
         ammo: [FIRE_ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 38,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -48,6 +49,7 @@ fn world_with_fire_arrows() -> Box<World> {
         damage_pct: 80,
         fire_ticks: [BURN, BURN],
         blast: Default::default(),
+        ..Default::default()
     };
     w.combat = c;
     w.tick(&[Command::Join { id: 1 }]);

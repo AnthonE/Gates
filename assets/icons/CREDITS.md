@@ -24,6 +24,14 @@ holds one — replaces it with a render of the game's own 3D model. A
 render is ours and owes nothing; the silhouette credit stays listed for
 every item either way, because the painted ones are derived works of it.
 
+**The weapon attachments' silhouettes are ours** (holosight, 8x zoom
+scope, silencer, muzzle brake, muzzle boost, weapon lasersight, weapon
+flashlight, extended magazine): drawn as plain shapes in
+`ci/icons/masks/` and painted like the rest, so they owe nothing. The
+ammunition kinds beside the base rounds (HV, incendiary, explosive, the
+slug, the incendiary and handmade shells) are recoloured renders of the
+game's own models, ours as well.
+
 ## What maps to what
 
 | file | source icon |

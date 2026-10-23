@@ -182,7 +182,9 @@ impl Tracers {
         speed_mmpt: u16,
         drop_mmpt2: u16,
     ) -> bool {
-        if protocol::shot_is_instant(speed_mmpt) {
+        // A gunshot of either kind is `fx::gun`'s to draw: a bullet's streak
+        // is a tracer round's, not a shaft, and its low field is not a drop.
+        if protocol::shot_is_gun(speed_mmpt, drop_mmpt2) {
             return false;
         }
         let Some(ix) = self.free() else {
@@ -283,7 +285,7 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         // `claim` is red (`tests/tracer.rs`). That split is deliberate: an
         // optimization at a call site and a law in a function a test can
         // call are different things, and this file had only the first.
-        if protocol::shot_is_instant(speed_mmpt) {
+        if protocol::shot_is_gun(speed_mmpt, drop_mmpt2) {
             continue;
         }
         // Where the bow was. The local player's own shot comes off the

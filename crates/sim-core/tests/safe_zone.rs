@@ -55,6 +55,7 @@ fn in_town(lx: f32, lz: f32) -> (Box<World>, usize) {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 4,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,

@@ -2563,6 +2563,9 @@ pub fn animate(
     gf: Option<Res<super::gunfeel::GunFeel>>,
     // The bandage being wrapped on (`ui::wrap`), started by the click.
     bite: Option<Res<super::verbs::Bite>>,
+    // The sights' zoom off the gun's attachments (`mods`): a holosight's,
+    // a scope's.
+    mods: Option<Res<super::mods::ModView>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
@@ -2795,7 +2798,7 @@ pub fn animate(
         let bolt = feed
             .shots()
             .iter()
-            .any(|sh| Some(sh.0) == me && !protocol::shot_is_instant(sh.3));
+            .any(|sh| Some(sh.0) == me && !protocol::shot_is_gun(sh.3, sh.4));
         if gun || bolt {
             m.loose = if m.loose > 0.45 {
                 (m.loose + 0.4).min(1.0)
@@ -2815,7 +2818,12 @@ pub fn animate(
             .as_deref()
             .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_AIM != 0);
     m.ads += (f32::from(u8::from(sights)) - m.ads) * (1.0 - (-VIEWMODEL_RAISE_RATE * dt).exp());
-    zoom.0 = (DRAW_ZOOM * m.raise * (0.7 + 0.3 * pull)).max(ADS_ZOOM * m.ads);
+    let ads_zoom = mods
+        .as_deref()
+        .map(|v| v.zoom)
+        .filter(|&z| z > 0.0)
+        .unwrap_or(ADS_ZOOM);
+    zoom.0 = (DRAW_ZOOM * m.raise * (0.7 + 0.3 * pull)).max(ads_zoom * m.ads);
     let raise = m.raise;
     let kick = bump(1.0 - m.loose, 0.25);
     let (kick_off, climb) = if shoots {

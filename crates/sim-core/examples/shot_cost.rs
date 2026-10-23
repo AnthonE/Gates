@@ -125,6 +125,7 @@ fn main() {
         damage: 1,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 12,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,

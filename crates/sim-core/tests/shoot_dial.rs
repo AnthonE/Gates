@@ -32,6 +32,7 @@ fn world() -> Box<World> {
         damage: 40,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 30,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -49,6 +50,7 @@ fn world() -> Box<World> {
         damage_pct: 100,
         fire_ticks: [0, 0],
         blast: Default::default(),
+        ..Default::default()
     };
     w.combat = c;
     // The fixture's lock, moved out of the town (no weapon draws in the

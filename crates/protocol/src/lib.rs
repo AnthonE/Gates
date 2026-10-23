@@ -62,11 +62,10 @@ pub use auth::{
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
-pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{
-    decode_event, encode_event_agent, encode_event_assist, encode_event_auth,
-    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync, encode_event_bags,
-    encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
+    bullet_drop, bullet_reach_mm, decode_event, encode_event_agent, encode_event_assist,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_bags, encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_dead, encode_event_death, encode_event_death_mark,
@@ -87,13 +86,15 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vessel,
     encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
-    shot_is_instant, EventMsg, GunRow, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow,
-    WireBag, WireGItem, WireToss, BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH,
-    COIN_ELO, COIN_JUNK, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH,
-    SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    shot_is_bullet, shot_is_gun, shot_is_instant, shot_is_quiet, EventMsg, GunRow, InvSlot,
+    ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
+    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
+    VEND_BATCH,
 };
+pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{encode_event_achievement, Achieved};
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -104,7 +105,8 @@ pub use event::{
     UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
-    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
+    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, encode_event_mods, WireLodged,
+    LODGED_SYNC_BATCH,
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
@@ -1349,7 +1351,18 @@ pub use voice::{
 /// tag) and 1 for a `SolanaProof` (32-byte Ed25519 key + 64-byte signature
 /// over `siws_message_for`). `REFUSE_LINK` (11) says the shard could not read
 /// whether that Solana account is linked to an Ethereum one.
-pub const PROTO_VER: u16 = 142;
+/// v143 — bullets fly (`sim_core::bullet`): a firearm's `SUB_SHOT` carries
+/// its round's speed in the first `u16` as an arrow's does, and in the
+/// second `world::SHOT_BULLET`, the reach (2 m units) and the drop
+/// (`shot_is_bullet`, `bullet_reach_mm`, `bullet_drop`), and a silenced
+/// gun's `world::SHOT_QUIET` (`shot_is_quiet`), where an arrow's second
+/// `u16` is its drop alone; actions 43 and 44 put an attachment on the gun
+/// in hand and take one off (`ActionMsg::Attach`, `ActionMsg::Detach`);
+/// `SUB_MODS` tells a client the attachments on the gun in its hand; a
+/// catalog row carries an attachment's `ModRow` after its gun handling; a catalog `GunRow` carries the exact
+/// cadence (`rate_sub`), the spread (`moving`, the bloom, `pellet`) and the
+/// first round's muzzle speed and drop after `ads_recoil_pct`.
+pub const PROTO_VER: u16 = 143;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -2280,6 +2293,15 @@ const ACT_LATTICE: u32 = 40;
 const ACT_PLANT: u32 = 41;
 /// Tend plant `plant` (wire v135, `Command::Tend`): `farm::TEND_*`.
 const ACT_TEND: u32 = 42;
+/// Put the attachment in an inventory slot on the gun in hand (wire v143,
+/// `Command::Attach`).
+const ACT_ATTACH: u32 = 43;
+/// Take an attachment off the gun in hand by its bit (wire v143,
+/// `Command::Detach`).
+const ACT_DETACH: u32 = 44;
+/// Width of `ActionMsg::Detach`'s bit: one of `MAX_MODS`.
+const MOD_BIT_BITS: u32 = 3;
+const _: () = assert!(sim_core::limits::MAX_MODS <= 1 << MOD_BIT_BITS);
 /// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
 const PLANT_SPOT_BITS: u32 = 3;
 const TEND_ACT_BITS: u32 = 2;
@@ -2322,7 +2344,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_TEND;
+const ACT_MAX: u32 = ACT_DETACH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2754,6 +2776,13 @@ pub enum ActionMsg {
     /// Empty the held weapon's magazine into the pack (`Command::Unload`).
     /// No payload, `Reload`'s reasoning.
     Unload,
+    /// Put the attachment in inventory slot `slot` on the gun in hand
+    /// (wire v143, `Command::Attach`). The slot is shape-checked here and
+    /// the rest is the sim's verdict.
+    Attach { slot: u8 },
+    /// Take attachment `bit` off the gun in hand (wire v143,
+    /// `Command::Detach`).
+    Detach { bit: u8 },
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -2995,6 +3024,30 @@ pub fn encode_action_unload(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_UNLOAD, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
+/// Put an attachment on the gun in hand — see `ActionMsg::Attach`.
+pub fn encode_action_attach(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_ATTACH, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+/// Take an attachment off the gun in hand — see `ActionMsg::Detach`.
+pub fn encode_action_detach(bit: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if bit as usize >= sim_core::limits::MAX_MODS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DETACH, ACTION_SUB_BITS)?;
+    w.write(bit as u32, MOD_BIT_BITS)?;
     Ok(w.finish())
 }
 
@@ -4127,6 +4180,20 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_DRINK => ActionMsg::Drink,
         ACT_RELOAD => ActionMsg::Reload,
         ACT_UNLOAD => ActionMsg::Unload,
+        ACT_ATTACH => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Attach { slot }
+        }
+        ACT_DETACH => {
+            let bit = r.read(MOD_BIT_BITS)? as u8;
+            if bit as usize >= sim_core::limits::MAX_MODS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Detach { bit }
+        }
         ACT_FASTTRACK => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             let recipe = r.read(8)? as u16;
@@ -6060,11 +6127,11 @@ mod tests {
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
-        // plant and tend (v135) 41 and 42.
-        assert_eq!(ACT_MAX, ACT_TEND);
+        // plant and tend (v135) 41 and 42, the attachments (v143) 43 and 44.
+        assert_eq!(ACT_MAX, ACT_DETACH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            21,
+            19,
             "the spare action codes moved — say so where the count is written"
         );
     }

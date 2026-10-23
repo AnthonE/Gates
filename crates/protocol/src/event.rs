@@ -65,11 +65,11 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// walk fills it. 33 bits a node, 32 of them in 136 B.
 pub const NODE_STAGE_BATCH: usize = 32;
 
-/// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 447 bits with a gun's handling, v131's damage, v135's fifth oven
-/// arch and v137's pour, and six of them would pass `MAX_EVENT_MSG_BYTES`
-/// (the assert at `CATALOG_ROW_MAX_BITS`).
-pub const CATALOG_BATCH: usize = 5;
+/// Item names one catalog message carries. Four since v143: a worst-case
+/// row is 557 bits with a gun's handling, v131's damage, v135's fifth oven
+/// arch, v137's pour and v143's spread and round, and five of them would
+/// pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+pub const CATALOG_BATCH: usize = 4;
 
 /// Skin rows one skin-catalog message carries. A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 1 + 64 + 5 + 24 × 8 = 352 bits since a painted
@@ -660,7 +660,10 @@ const SUB_PLANT_SYNC: u32 = 108;
 /// player near them said out loud, or a line translated into their
 /// language. See [`Caption`].
 const SUB_CAPTION: u32 = 109;
-const SUB_MAX: u32 = SUB_CAPTION;
+/// The attachments on the gun in your hand (wire v143, `attach.rs`): the
+/// weapon and its mask, sent when either changes. See `EventMsg::Mods`.
+const SUB_MODS: u32 = 110;
+const SUB_MAX: u32 = SUB_MODS;
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -1373,6 +1376,46 @@ pub struct ItemRow {
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
     pub gun: Option<GunRow>,
+    /// What an attachment is (v143, `combat::ModDef` and the client's half
+    /// of the content row). `None` on all but attachments.
+    pub attach: Option<ModRow>,
+}
+
+/// A weapon attachment, as the client needs it: its bit of a gun's mask and
+/// the slot it takes, the cone shares (the crosshair), the kick's share,
+/// how far the sights narrow the view, and the three things it shows — a
+/// silencer's quiet, a laser's dot, a flashlight's beam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModRow {
+    pub bit: u8,
+    pub group: u8,
+    pub aim_pct: u16,
+    pub hip_pct: u16,
+    pub recoil_pct: u16,
+    pub zoom_pct: u8,
+    pub quiet: bool,
+    pub laser: bool,
+    pub light: bool,
+}
+
+/// The widths of [`ModRow`] on the wire.
+const MOD_BIT_W: u32 = 3;
+const MOD_GROUP_W: u32 = 2;
+const MOD_PCT_W: u32 = 9;
+const MOD_ZOOM_W: u32 = 7;
+const MOD_ROW_BITS: usize = (MOD_BIT_W + MOD_GROUP_W + 3 * MOD_PCT_W + MOD_ZOOM_W + 3) as usize;
+const _: () = assert!(sim_core::limits::MAX_MODS <= 1 << MOD_BIT_W);
+
+impl ModRow {
+    /// Fits its widths: what `content::validate` holds an attachment to.
+    fn coherent(&self) -> bool {
+        (self.bit as usize) < sim_core::limits::MAX_MODS
+            && self.group <= sim_core::combat::MOD_MAGAZINE
+            && [self.aim_pct, self.hip_pct, self.recoil_pct]
+                .iter()
+                .all(|&p| p < 1 << MOD_PCT_W)
+            && self.zoom_pct < 1 << MOD_ZOOM_W
+    }
 }
 
 /// A firearm's handling, as the client needs it (`sim_core::combat::Gun`):
@@ -1392,6 +1435,26 @@ pub struct GunRow {
     pub recoil_pitch: [u16; 2],
     pub recoil_yaw: [i16; 2],
     pub ads_recoil_pct: u8,
+    /// The exact cadence, 256ths of a tick (v143, `RangedDef::rate_sub`);
+    /// 0 keeps `rate_ticks`.
+    pub rate_sub: u16,
+    /// The cone added on the move, and the bloom: added per shot, its cap,
+    /// how long it holds and how long it bleeds (v143, `combat::Gun`) —
+    /// what the crosshair spreads by.
+    pub moving: u16,
+    pub per_shot: u16,
+    pub max: u16,
+    pub recover_ticks: u16,
+    pub delay_ticks: u16,
+    /// A shotgun's pellets' own spread about the shot's line (v143).
+    pub pellet: u16,
+    /// The first round's muzzle speed out of this barrel, mm/tick, and its
+    /// drop, mm/tick² (v143): what your own tracer flies at. 0 is instant.
+    pub speed_mmpt: u16,
+    pub drop_mmpt2: u8,
+    /// The attachments it takes (v143, `combat::Gun::mods`): one bit per
+    /// attachment row, so the item card offers only what fits.
+    pub mods: u8,
 }
 
 /// The widths of [`GunRow`] on the wire: a gun row is these and a presence
@@ -1400,9 +1463,24 @@ const GUN_PELLET_BITS: u32 = 5;
 const GUN_CONE_BITS: u32 = 13;
 const GUN_RECOIL_BITS: u32 = 12;
 const GUN_RELOAD_BITS: u32 = 11;
-const GUN_ROW_BITS: usize =
-    (8 + GUN_RELOAD_BITS + 1 + GUN_PELLET_BITS + 2 * GUN_CONE_BITS + 4 * GUN_RECOIL_BITS + 7)
-        as usize;
+/// A bloom's hold and bleed, ticks: 1 023 is 34 s, past `validate`'s minute
+/// rounded to ticks only by a content typo.
+const GUN_BLOOM_TICK_BITS: u32 = 10;
+const GUN_DROP_BITS: u32 = sim_core::world::SHOT_DROP_BITS;
+const GUN_ROW_BITS: usize = (8
+    + GUN_RELOAD_BITS
+    + 1
+    + GUN_PELLET_BITS
+    + 2 * GUN_CONE_BITS
+    + 4 * GUN_RECOIL_BITS
+    + 7
+    + 16
+    + 4 * GUN_CONE_BITS
+    + 2 * GUN_BLOOM_TICK_BITS
+    + GUN_CONE_BITS
+    + 16
+    + GUN_DROP_BITS
+    + 8) as usize;
 const _: () = assert!(sim_core::limits::MAX_PELLETS < 1 << GUN_PELLET_BITS);
 
 impl GunRow {
@@ -1423,6 +1501,12 @@ impl GunRow {
             && self.ads_recoil_pct <= 100
             && self.rate_ticks > 0
             && self.reload_ticks < 1 << GUN_RELOAD_BITS
+            && [self.moving, self.per_shot, self.max, self.pellet]
+                .iter()
+                .all(|&c| c < 1 << GUN_CONE_BITS)
+            && self.recover_ticks < 1 << GUN_BLOOM_TICK_BITS
+            && self.delay_ticks < 1 << GUN_BLOOM_TICK_BITS
+            && u32::from(self.drop_mmpt2) < 1 << GUN_DROP_BITS
     }
 }
 
@@ -1446,7 +1530,9 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + ITEM_CLASS_BITS as usize
     + 16
     + 1
-    + GUN_ROW_BITS;
+    + GUN_ROW_BITS
+    + 1
+    + MOD_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
 // what took `CATALOG_BATCH` from 8 to 7: eight rows had filled the cap to
 // the byte. A column added to the row must shrink the batch first.
@@ -1477,6 +1563,7 @@ impl ItemRow {
         class: CLASS_OTHER,
         damage: 0,
         gun: None,
+        attach: None,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -1520,6 +1607,7 @@ impl ItemRow {
             && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
             && self.class <= CLASS_MAX
             && self.gun.is_none_or(|g| g.coherent())
+            && self.attach.is_none_or(|m| m.coherent())
     }
 }
 
@@ -2315,6 +2403,10 @@ pub enum EventMsg {
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
+    /// The attachments on the gun in your hand (wire v143): the weapon and
+    /// one bit per attachment row (`sim_core::combat::CombatContent::mods`),
+    /// so the client kicks, zooms and draws the gun it is holding.
+    Mods { weapon: u16, mods: u8 },
     /// A fire burning on the ground (wire v94): its point in body quanta,
     /// `Impact`'s, and the low 32 bits of the tick it goes out.
     Fire {
@@ -3147,6 +3239,30 @@ pub fn encode_event_catalog(
                 )?;
             }
             w.write(g.ads_recoil_pct as u32, 7)?;
+            // v143: the cadence's remainder, the spread, the round.
+            w.write(g.rate_sub as u32, 16)?;
+            for c in [g.moving, g.per_shot, g.max] {
+                w.write(c as u32, GUN_CONE_BITS)?;
+            }
+            w.write(g.recover_ticks as u32, GUN_BLOOM_TICK_BITS)?;
+            w.write(g.delay_ticks as u32, GUN_BLOOM_TICK_BITS)?;
+            w.write(g.pellet as u32, GUN_CONE_BITS)?;
+            w.write(g.speed_mmpt as u32, 16)?;
+            w.write(g.drop_mmpt2 as u32, GUN_DROP_BITS)?;
+            w.write(g.mods as u32, 8)?;
+        }
+        // An attachment (v143), behind a presence bit.
+        w.write_bit(row.attach.is_some())?;
+        if let Some(m) = row.attach {
+            w.write(m.bit as u32, MOD_BIT_W)?;
+            w.write(m.group as u32, MOD_GROUP_W)?;
+            for p in [m.aim_pct, m.hip_pct, m.recoil_pct] {
+                w.write(p as u32, MOD_PCT_W)?;
+            }
+            w.write(m.zoom_pct as u32, MOD_ZOOM_W)?;
+            w.write_bit(m.quiet)?;
+            w.write_bit(m.laser)?;
+            w.write_bit(m.light)?;
         }
     }
     Ok((w.finish(), count))
@@ -4210,6 +4326,37 @@ pub fn shot_is_instant(speed_mmpt: u16) -> bool {
     speed_mmpt == 0
 }
 
+/// Did this shot fly as a **bullet** — a firearm round with travel time and
+/// drop (`sim_core::bullet`) — rather than as an arrow? The second `u16`
+/// then carries `world::SHOT_BULLET`, the reach and the drop
+/// (`world::shot_bullet_c`), where an arrow's is its drop alone.
+pub fn shot_is_bullet(speed_mmpt: u16, low: u16) -> bool {
+    !shot_is_instant(speed_mmpt) && u32::from(low) & sim_core::world::SHOT_BULLET != 0
+}
+
+/// A gunshot of either kind — instant or a bullet — as opposed to an arrow:
+/// what the mixer picks the gunshot cue by and the arrow tracer skips.
+pub fn shot_is_gun(speed_mmpt: u16, low: u16) -> bool {
+    shot_is_instant(speed_mmpt) || shot_is_bullet(speed_mmpt, low)
+}
+
+/// A bullet's drop, mm/tick², out of its shot's second `u16`.
+pub fn bullet_drop(low: u16) -> u16 {
+    low & ((1 << sim_core::world::SHOT_DROP_BITS) - 1)
+}
+
+/// A bullet's reach, millimetres, out of its shot's second `u16`.
+pub fn bullet_reach_mm(low: u16) -> u32 {
+    use sim_core::world::{SHOT_DROP_BITS, SHOT_REACH_BITS, SHOT_REACH_UNIT_MM};
+    ((u32::from(low) >> SHOT_DROP_BITS) & ((1 << SHOT_REACH_BITS) - 1)) * SHOT_REACH_UNIT_MM
+}
+
+/// Was this bullet fired from a silenced gun (`world::SHOT_QUIET`)? Heard
+/// at a bow's radius and drawn with no flash.
+pub fn shot_is_quiet(speed_mmpt: u16, low: u16) -> bool {
+    shot_is_bullet(speed_mmpt, low) && u32::from(low) & sim_core::world::SHOT_QUIET != 0
+}
+
 /// Where an arrow stopped: a point in the entity lane's quanta and what
 /// kind of surface it met (`SUB_IMPACT`).
 ///
@@ -4502,6 +4649,14 @@ pub fn encode_event_report(
     w.write(x as u32, REPORT_XZ_BITS)?;
     w.write(yb as u32, REPORT_Y_BITS)?;
     w.write(z as u32, REPORT_XZ_BITS)?;
+    Ok(w.finish())
+}
+
+/// The attachments on the gun in your hand — see `EventMsg::Mods`.
+pub fn encode_event_mods(weapon: u16, mods: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_MODS)?;
+    w.write(weapon as u32, 16)?;
+    w.write(mods as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -6715,6 +6870,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                         let y0 = sx(r.read(GUN_RECOIL_BITS)?);
                         let y1 = sx(r.read(GUN_RECOIL_BITS)?);
                         let ads_recoil_pct = r.read(7)? as u8;
+                        let rate_sub = r.read(16)? as u16;
+                        let moving = r.read(GUN_CONE_BITS)? as u16;
+                        let per_shot = r.read(GUN_CONE_BITS)? as u16;
+                        let max = r.read(GUN_CONE_BITS)? as u16;
+                        let recover_ticks = r.read(GUN_BLOOM_TICK_BITS)? as u16;
+                        let delay_ticks = r.read(GUN_BLOOM_TICK_BITS)? as u16;
+                        let pellet = r.read(GUN_CONE_BITS)? as u16;
+                        let speed_mmpt = r.read(16)? as u16;
+                        let drop_mmpt2 = r.read(GUN_DROP_BITS)? as u8;
+                        let mods = r.read(8)? as u8;
                         Some(GunRow {
                             rate_ticks,
                             reload_ticks,
@@ -6725,6 +6890,37 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                             recoil_pitch: [p0, p1],
                             recoil_yaw: [y0, y1],
                             ads_recoil_pct,
+                            rate_sub,
+                            moving,
+                            per_shot,
+                            max,
+                            recover_ticks,
+                            delay_ticks,
+                            pellet,
+                            speed_mmpt,
+                            drop_mmpt2,
+                            mods,
+                        })
+                    } else {
+                        None
+                    },
+                    attach: if r.read_bit()? {
+                        let bit = r.read(MOD_BIT_W)? as u8;
+                        let group = r.read(MOD_GROUP_W)? as u8;
+                        let aim_pct = r.read(MOD_PCT_W)? as u16;
+                        let hip_pct = r.read(MOD_PCT_W)? as u16;
+                        let recoil_pct = r.read(MOD_PCT_W)? as u16;
+                        let zoom_pct = r.read(MOD_ZOOM_W)? as u8;
+                        Some(ModRow {
+                            bit,
+                            group,
+                            aim_pct,
+                            hip_pct,
+                            recoil_pct,
+                            zoom_pct,
+                            quiet: r.read_bit()?,
+                            laser: r.read_bit()?,
+                            light: r.read_bit()?,
                         })
                     } else {
                         None
@@ -7440,6 +7636,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_AMMO => EventMsg::Ammo {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
+        },
+        SUB_MODS => EventMsg::Mods {
+            weapon: r.read(16)? as u16,
+            mods: r.read(8)? as u8,
         },
         SUB_REPORT => {
             let kind = r.read(REPORT_BITS)? as u8;
@@ -9144,6 +9344,7 @@ mod tests {
                 // The damage (v131) at the width's corner, distinct per row.
                 damage: u16::MAX - 5 * i as u16,
                 gun: None,
+                attach: None,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -10882,6 +11083,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/building.rs"),
         },
         Module {
+            file: "bullet.rs",
+            src: include_str!("../../sim-core/src/bullet.rs"),
+        },
+        Module {
             file: "sock.rs",
             src: include_str!("../../sim-core/src/sock.rs"),
         },
@@ -11980,6 +12185,12 @@ mod wire_domains {
             "GUN_CONE_BITS",
             "GUN_RECOIL_BITS",
             "GUN_RELOAD_BITS",
+            // v143: a bloom's hold and bleed in ticks (`validate` caps both
+            // at a minute; `GunRow::coherent` refuses past the width) and a
+            // bullet's drop, `world::SHOT_DROP_BITS` — `bake_ranged` refuses
+            // a firearm round that drops past it.
+            "GUN_BLOOM_TICK_BITS",
+            "GUN_DROP_BITS",
         ];
 
         let mut widths = Vec::new();

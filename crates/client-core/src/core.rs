@@ -1991,6 +1991,9 @@ pub struct ClientCore {
     /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
     /// v94): the weapon it was said for, and the round.
     bow_ammo: (u16, u16),
+    /// The gun in hand and its attachment mask, as the shard last said
+    /// (`EventMsg::Mods`).
+    gun_mods: (u16, u8),
     /// The fires heard of (`Fire`, wire v94), oldest first; the burnt-out
     /// ones go when the next is heard.
     fires: [Fire; FIRES],
@@ -2733,6 +2736,7 @@ impl ClientCore {
             mag: (0, 0),
             mag_item: NO_ITEM,
             bow_ammo: (NO_ITEM, NO_ITEM),
+            gun_mods: (NO_ITEM, 0),
             fires: [Fire::default(); FIRES],
             fire_len: 0,
             gather_refusal_head: 0,
@@ -3616,6 +3620,10 @@ impl ClientCore {
             EventMsg::Ammo { weapon, round } => {
                 // A level the HUD reads every frame (`bow_round`); no flag.
                 self.bow_ammo = (weapon, round);
+            }
+            EventMsg::Mods { weapon, mods } => {
+                // A level, `Ammo`'s: read every frame (`held_mods`).
+                self.gun_mods = (weapon, mods);
             }
             EventMsg::Fire { qx, qy, qz, until } => {
                 // One fire a point: a join or a resync restates the ones
@@ -5181,8 +5189,37 @@ impl ClientCore {
         self.mag
     }
 
-    /// The arrow the bow in hand looses, if the sim has said one for it —
-    /// `None` for any other hand, and for a bow with no arrow it can fire.
+    /// The attachments on the gun in hand (`EventMsg::Mods`), one bit per
+    /// attachment row; 0 for any other hand.
+    pub fn held_mods(&self) -> u8 {
+        let (weapon, mods) = self.gun_mods;
+        if weapon == self.held_item() {
+            mods
+        } else {
+            0
+        }
+    }
+
+    /// The attachment bit `item` is, if the gun in hand takes it and is not
+    /// already wearing it: what the item card offers to attach.
+    pub fn attachable(&self, item: u16) -> Option<u8> {
+        let bit = self.catalog.row(item as usize).attach?.bit;
+        let gun = self.catalog.row(self.held_item() as usize).gun?;
+        (gun.mods & (1 << bit) != 0 && self.held_mods() & (1 << bit) == 0).then_some(bit)
+    }
+
+    /// The catalog's attachments whose bits are in `mask`, with their item
+    /// index: what a gun wearing that mask has on it.
+    pub fn mod_rows(&self, mask: u8) -> impl Iterator<Item = (u16, protocol::ModRow)> + '_ {
+        (0..self.catalog.count as usize).filter_map(move |i| {
+            let m = self.catalog.row(i).attach?;
+            (mask & (1 << m.bit) != 0).then_some((i as u16, m))
+        })
+    }
+
+    /// The arrow the bow in hand looses, or the round the gun in hand is
+    /// loaded with, if the sim has said one for it (`EV_AMMO`) — `None` for
+    /// any other hand, and for a bow with no arrow it can fire.
     pub fn bow_round(&self) -> Option<u16> {
         let (weapon, round) = self.bow_ammo;
         (weapon == self.held_item() && round != NO_ITEM).then_some(round)
@@ -5434,6 +5471,19 @@ impl ClientCore {
     /// would animate a swing in every one of those cases.
     pub fn buttons(&self) -> u8 {
         self.input.buttons
+    }
+
+    /// The aim cone's stance penalty this client's frame carries, percent of
+    /// a gun's `moving` term (`ranged::stance_pct`, off the same facts the
+    /// sim reads): the crosshair spreads by it.
+    pub fn stance_pct(&self) -> u16 {
+        sim_core::ranged::stance_of(
+            self.predict.body.grounded,
+            self.input.move_x,
+            self.input.move_z,
+            self.crouched(),
+            self.input.buttons,
+        )
     }
 
     /// Is the body this client looks through crouched? The same predicate

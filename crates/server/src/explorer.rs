@@ -9149,7 +9149,7 @@ mod tests {
     #[test]
     fn item_bits_hold_ids_across_the_word_boundary() {
         let ids = [0u16, 127, 128, MAX_ITEM_DEFS as u16 - 1];
-        assert_eq!(MAX_ITEM_DEFS, 160);
+        assert_eq!(MAX_ITEM_DEFS, 192);
         let mut all = ItemBits::default();
         assert!(!all.any());
         for &id in &ids {

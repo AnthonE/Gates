@@ -950,11 +950,22 @@ const FLOOR_MELEE_PCT: u32 = 80;
 /// not floored.)
 const FLOOR_BOW_PCT: u32 = 50;
 /// Melee at equal gear against the strafer, ~100 ms round trip: measured
-/// 10/12. (The rusher at 100 ms is reported, not floored: a body with no
-/// lag at all walking into a lagged one wins most first blows, as it
+/// 10/12 once, which was the sample talking — over eight seeds a setup it
+/// is 28/48 (58 %) at both a 3.0 m/s walk and Rust's 2.8 (2026-10-23), the
+/// rock's short reach losing the long approaches and the spear winning
+/// most. Floored at half, the bow floor's rule: it wins the lagged fight at
+/// least as often as it loses it. Two seeds a setup put a 60 % floor on a
+/// coin flip. (The rusher at 100 ms is reported, not floored: a body with
+/// no lag at all walking into a lagged one wins most first blows, as it
 /// would against a person.)
-const FLOOR_LAG_PCT: u32 = 60;
+const FLOOR_LAG_PCT: u32 = 50;
+/// Seeds a lag-floor and an aimbot setup are fought over: enough bouts that
+/// the gate measures the agent rather than the draw.
+const LAG_SEEDS: u32 = 8;
 /// Ceilings. The aimbot wins at least this share at equal melee gear...
+/// (over eight seeds a setup: 36/48 at Rust's 2.8 m/s walk, 35/48 at 3.0,
+/// 2026-10-23 — the two-seed sample it was held to before read either side
+/// of the line by the draw).
 const AIMBOT_MIN_PCT: u32 = 75;
 /// ...and the agent's arrows loosed from 25 m or further land no more than
 /// this share on a strafing archer. The agent is held where it stands 30 m
@@ -995,7 +1006,7 @@ fn the_arena_holds_its_floor_and_its_ceiling() {
     }
     for (mine, theirs) in melee {
         for dist in DISTANCES {
-            for seed in 0..2 {
+            for seed in 0..LAG_SEEDS {
                 let mut s = Setup::new(Seat::Strafer, mine, theirs, dist, seed);
                 s.latency = Latency::RTT_100MS;
                 setups.push(("lag floor", s));

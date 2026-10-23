@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 196] = [
+pub const STEMS: [&str; 212] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -227,6 +227,22 @@ pub const STEMS: [&str; 196] = [
     "python_revolver",
     "rocket_launcher",
     "5_56_rifle_ammo",
+    "hv_5_56_rifle_ammo",
+    "incendiary_5_56_ammo",
+    "explosive_5_56_ammo",
+    "hv_pistol_round",
+    "incendiary_pistol_round",
+    "12_gauge_slug",
+    "incendiary_shell",
+    "handmade_shell",
+    "holosight",
+    "8x_zoom_scope",
+    "silencer",
+    "muzzle_brake",
+    "muzzle_boost",
+    "weapon_lasersight",
+    "weapon_flashlight",
+    "extended_magazine",
     "12_gauge_buckshot",
     "rocket",
     "timed_explosive_charge",

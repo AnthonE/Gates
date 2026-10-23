@@ -1777,6 +1777,7 @@ fn bow_fixture() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1797,6 +1798,7 @@ fn bow_fixture() -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }
@@ -2025,6 +2027,7 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         damage: 100,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 1,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,

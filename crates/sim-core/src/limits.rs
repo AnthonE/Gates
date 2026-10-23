@@ -364,11 +364,12 @@ const _: () = assert!(
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
 /// Item definitions the sim preallocates for (CONTENT.md §2). The content
-/// bake refuses a set past this. 160 leaves farming v2's rows headroom
-/// (127 filled the old 7-bit held field); the wire's held field is 8 bits
-/// since v135, so anything up to 255 fits beside its empty-hand code
-/// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
-pub const MAX_ITEM_DEFS: usize = 160;
+/// bake refuses a set past this. 192 since Rust's other rounds and the
+/// weapon attachments filled 160 (127 filled the old 7-bit held field); the
+/// wire's held field is 8 bits since v135, so anything up to 255 fits
+/// beside its empty-hand code (`protocol::HELD_NONE`). Every per-item table
+/// in `World` grows with it.
+pub const MAX_ITEM_DEFS: usize = 192;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -1325,6 +1326,40 @@ pub const MAX_ARROWS: usize = 128;
 /// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy and in the
 /// same place — before the ammo leaves the quiver.
 pub const MAX_ARROWS_PER_OWNER: usize = 4;
+
+/// Weapon attachments the content may declare (`combat::ModDef`): one bit
+/// each of a gun's attachment mask (`Player::mods`), so a `u8` holds them.
+pub const MAX_MODS: usize = 8;
+
+/// Bullets in flight across the whole shard (`bullet.rs`). A firearm's
+/// round flies like Rust's — travel time and drop — so it is a sim entity
+/// for the fraction of a second it is in the air. Sized off the per-owner
+/// share below: `MAX_PLAYERS × MAX_BULLETS_PER_OWNER` fits, so the store is
+/// never the reason a shot is refused while every owner keeps to its share.
+/// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy for its
+/// reason — never steal a live round to make room.
+pub const MAX_BULLETS: usize = 2048;
+
+/// Bullets one shooter may have in flight at once. A shotgun volley is up to
+/// `MAX_PELLETS` and an automatic holds three or four (a rifle round lives
+/// ~14 ticks and the cadence is four), so 20 is a full volley plus a burst.
+/// `bake_ranged` refuses a gun whose pellets × rounds-in-the-air at full
+/// cadence would pass it, so with shipped content this never binds.
+/// Overflow policy: **refuse the shot**, before the round is spent.
+pub const MAX_BULLETS_PER_OWNER: usize = 20;
+const _: () = assert!(MAX_PLAYERS * MAX_BULLETS_PER_OWNER <= MAX_BULLETS);
+const _: () = assert!(MAX_PELLETS <= MAX_BULLETS_PER_OWNER);
+
+/// Collision samples one bullet may take in one tick, `ARROW_STEP_MM` apart:
+/// 27.2 m a tick, 816 m/s. The arrow's `MAX_ARROW_SUBSTEPS` for a round ten
+/// times faster, and a **content wall** the same way — `bake_ammo` refuses a
+/// firearm round faster than this rather than ship one that tunnels.
+pub const MAX_BULLET_SUBSTEPS: usize = 160;
+
+/// Ticks a bullet may fly before it is dropped, whatever its reach: three
+/// seconds. A round's `range_m` ends it long before this; the cap exists so
+/// a round fired straight up cannot hold a slot.
+pub const MAX_BULLET_LIFE_TICKS: u16 = 90;
 
 /// Stopped arrows not yet lying on the ground (`spent.rs`): the ones in a
 /// body, for at most the lodge, and the ones stopped this tick. Four full

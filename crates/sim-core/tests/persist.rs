@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 63] = [
+    pub const RE_DERIVED: [&str; 65] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // A casino seat (`seat.rs`): a corpse stands up, and so does a new
@@ -855,10 +855,14 @@ mod carried_through_death {
         // `a_death_empties_the_cylinder` holds both halves.
         "mag",
         "mag_round",
+        // The attachments on those guns go into the bag as items, as the
+        // rounds do (`a_death_sheds_the_attachments_into_the_bag`).
+        "mods",
         // A gun's cone and trigger (guns v1): the barrel settles and the
         // finger comes up; nothing about them outlives the hand.
         "bloom",
         "shot_at",
+        "shot_due",
         "trigger_spent",
         // …and a bow's draw is the arm's, not the person's.
         "draw_on",

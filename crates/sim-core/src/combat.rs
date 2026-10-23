@@ -87,7 +87,7 @@
 
 use crate::collide::Part;
 use crate::gather::NO_ITEM;
-use crate::limits::{MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS};
+use crate::limits::{MAX_ITEM_DEFS, MAX_MODS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS};
 use crate::world::{EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT};
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
@@ -221,6 +221,13 @@ pub struct RangedDef {
     /// melee cadence: `SWING_INTERVAL_TICKS` is one shared number and a
     /// 30/min bow is not a 47/min club.
     pub rate_ticks: u16,
+    /// A firearm's exact cadence, in 256ths of a tick (`rate_per_min` read
+    /// to the sub-tick): a 343/min rifle is 5.25 ticks, which `rate_ticks`
+    /// floors to 5 and so fires 360. Held, the trigger carries the
+    /// remainder from shot to shot (`ranged::cadence`), so a burst averages
+    /// the gun's own rate as Rust's does. 0 on a bow and on fixtures, which
+    /// keep `rate_ticks`.
+    pub rate_sub: u32,
     /// **Whether the shot resolves on the tick the trigger is pulled.**
     /// `false` is a bow: the launch stands an `Arrow` up and the flight
     /// resolves it over the following ticks. `true` is a firearm: there is
@@ -401,6 +408,11 @@ pub struct Gun {
     pub recoil_yaw: [i16; 2],
     /// Through the sights the kick is this percent of the hip's.
     pub ads_recoil_pct: u8,
+    /// The share of its round's muzzle speed a bullet leaves this barrel
+    /// at, percent (Rust's `projectileVelocityScale`).
+    pub velocity_pct: u16,
+    /// Which attachments it takes, one bit per `CombatContent::mods` row.
+    pub mods: u8,
 }
 
 impl Gun {
@@ -422,6 +434,8 @@ impl Gun {
         recoil_pitch: [0, 0],
         recoil_yaw: [0, 0],
         ads_recoil_pct: 100,
+        velocity_pct: 100,
+        mods: 0,
     };
 
     /// The cone a shot leaves through, hundredths of a degree of apex.
@@ -437,15 +451,13 @@ impl Gun {
 
     /// `damage` after falloff at `dist_mm` from the muzzle.
     pub fn fall_off(&self, damage: u16, dist_mm: u32) -> u16 {
-        let [a, b] = self.falloff_mm;
-        if b <= a || dist_mm <= a {
-            return damage;
-        }
-        let span = u64::from(b - a);
-        let past = u64::from(dist_mm.min(b) - a);
-        let lost = u64::from(100 - self.falloff_pct.min(100));
-        let pct = 100 * span - lost * past;
-        ((u64::from(damage) * pct / (100 * span)) as u16).max(1)
+        fall_off(self.falloff_mm, self.falloff_pct, damage, dist_mm)
+    }
+
+    /// The muzzle speed, mm/tick, a round baked at `speed` leaves this
+    /// barrel at.
+    pub fn muzzle(&self, speed: u16) -> u16 {
+        (u32::from(speed) * u32::from(self.velocity_pct) / 100).clamp(1, 0xFFFF) as u16
     }
 
     /// Bloom left `since` ticks after the last shot.
@@ -460,6 +472,21 @@ impl Gun {
         let shed = (since - delay) * u64::from(self.max.max(1)) / u64::from(self.recover_ticks);
         bloom.saturating_sub(shed.min(u64::from(u16::MAX)) as u16)
     }
+}
+
+/// `damage` after a gun's falloff (`Gun::falloff_mm`, `Gun::falloff_pct`)
+/// at `dist_mm` from the muzzle — free of `Gun` so a bullet that copied the
+/// two numbers at the trigger can read them in flight.
+pub fn fall_off(falloff_mm: [u32; 2], falloff_pct: u16, damage: u16, dist_mm: u32) -> u16 {
+    let [a, b] = falloff_mm;
+    if b <= a || dist_mm <= a {
+        return damage;
+    }
+    let span = u64::from(b - a);
+    let past = u64::from(dist_mm.min(b) - a);
+    let lost = u64::from(100 - falloff_pct.min(100));
+    let pct = 100 * span - lost * past;
+    ((u64::from(damage) * pct / (100 * span)) as u16).max(1)
 }
 
 impl Default for Gun {
@@ -493,6 +520,7 @@ impl Default for RangedDef {
             damage: 0,
             ammo: [NO_ITEM; MAX_WEAPON_AMMO],
             rate_ticks: 0,
+            rate_sub: 0,
             hitscan: false,
             range_mm: 0,
             structure: 0,
@@ -532,6 +560,14 @@ pub struct AmmoDef {
     /// What the round does where it lands, if it explodes (a rocket). A
     /// round that blows up leaves no arrow behind (`ranged::land`).
     pub blast: RoundBlast,
+    /// Projectiles a firearm shot of this round puts out, overriding the
+    /// gun's (`Gun::pellets`): a 12-gauge slug is one. 0 keeps the gun's.
+    pub pellets: u8,
+    /// Its own falloff, overriding the gun's (a slug carries further than
+    /// buckshot): `Gun::falloff_mm` and `falloff_pct`'s meaning, used when
+    /// `falloff_pct` is not 0.
+    pub falloff_mm: [u32; 2],
+    pub falloff_pct: u16,
 }
 
 /// An exploding round's blast (`charge::Blast`): radius in centimetres,
@@ -645,6 +681,8 @@ pub struct CombatContent {
     /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
     /// pocket has a row here; the bow that fires them does not.
     pub ammo: [AmmoDef; MAX_ITEM_DEFS],
+    /// The weapon attachments, by bit of a gun's mask (`Player::mods`).
+    pub mods: [ModDef; MAX_MODS],
     /// Worn protection, indexed the same way — the row of the item, not of
     /// the body wearing it. Every entry inert until the bake installs
     /// `content/armor.toml`, which is what it did for the first time on
@@ -738,6 +776,7 @@ impl CombatContent {
             damage: 0,
             ammo: [NO_ITEM; MAX_WEAPON_AMMO],
             rate_ticks: 0,
+            rate_sub: 0,
             hitscan: false,
             range_mm: 0,
             structure: 0,
@@ -764,12 +803,16 @@ impl CombatContent {
             damage_pct: 100,
             fire_ticks: [0; 2],
             blast: RoundBlast::NONE,
+            pellets: 0,
+            falloff_mm: [0, 0],
+            falloff_pct: 0,
         }; MAX_ITEM_DEFS],
         armor: [ArmorDef {
             reduction_pct: 0,
             slot: WEAR_NONE,
             fills: 0,
         }; MAX_ITEM_DEFS],
+        mods: [ModDef::NONE; MAX_MODS],
         player_hp: 0,
         // 100, not 0 — see the field. An inert recovery rule must destroy
         // every arrow, because the opposite failure (a content set with no
@@ -896,6 +939,7 @@ impl CombatContent {
             damage: 25,
             ammo: [7, NO_ITEM, NO_ITEM, NO_ITEM],
             rate_ticks: 8,
+            rate_sub: 0,
             hitscan: true,
             range_mm: 20_000,
             structure: 0,
@@ -1084,6 +1128,100 @@ impl CombatContent {
             return None;
         }
         Some(self.ammo[item as usize]).filter(|a| a.speed_mmpt > 0)
+    }
+
+    /// Which bit of a gun's attachment mask `item` is, if it is one.
+    pub fn mod_bit(&self, item: u16) -> Option<u8> {
+        if item == NO_ITEM {
+            return None;
+        }
+        self.mods
+            .iter()
+            .position(|m| m.item == item)
+            .map(|b| b as u8)
+    }
+
+    /// `def` with the attachments in `mods` on it — those the gun takes
+    /// (`Gun::mods`): Rust's weapon mods, each a share of the cone, the
+    /// damage, the muzzle speed, the cadence and the magazine.
+    pub fn modded(&self, mut def: RangedDef, mods: u8) -> RangedDef {
+        let on = mods & def.gun.mods;
+        let pct = |v: u16, p: u16| (u32::from(v) * u32::from(p) / 100).min(0xFFFF) as u16;
+        for (bit, m) in self.mods.iter().enumerate() {
+            if on & (1 << bit) == 0 {
+                continue;
+            }
+            def.gun.aim = pct(def.gun.aim, m.aim_pct);
+            def.gun.hip = pct(def.gun.hip, m.hip_pct);
+            def.damage = pct(def.damage, m.damage_pct).max(1);
+            def.gun.velocity_pct = pct(def.gun.velocity_pct, m.velocity_pct).max(1);
+            if m.rate_pct != 100 && m.rate_pct > 0 {
+                let rate = u32::from(m.rate_pct);
+                def.rate_sub = def.rate_sub * 100 / rate;
+                def.rate_ticks = (u32::from(def.rate_ticks) * 100 / rate).max(1) as u16;
+            }
+            if def.magazine > 0 {
+                def.magazine = pct(def.magazine, m.magazine_pct).max(1);
+            }
+        }
+        def
+    }
+
+    /// Whether the attachments in `mods` silence this gun (Rust's silencer:
+    /// heard at 40 m, not 100, and no flash).
+    pub fn quiet(&self, def: &RangedDef, mods: u8) -> bool {
+        let on = mods & def.gun.mods;
+        self.mods
+            .iter()
+            .enumerate()
+            .any(|(bit, m)| on & (1 << bit) != 0 && m.quiet)
+    }
+}
+
+/// A gun's attachment slots (Rust's mod slots): it holds one of each.
+pub const MOD_SIGHT: u8 = 0;
+pub const MOD_MUZZLE: u8 = 1;
+pub const MOD_UNDER: u8 = 2;
+pub const MOD_MAGAZINE: u8 = 3;
+
+/// One weapon attachment (`content/weapons.toml`'s `[[attachment]]`, Rust's
+/// weapon mods): the item it is, the slot it takes, and what it does to the
+/// gun, each a percent with 100 the identity. What a scope does to the view,
+/// a laser to the dot and a muzzle brake to the kick is the client's
+/// (`protocol::ModRow`); the sim reads only what decides a shot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModDef {
+    /// `NO_ITEM` on an unused row.
+    pub item: u16,
+    /// `MOD_SIGHT`, `MOD_MUZZLE`, `MOD_UNDER` or `MOD_MAGAZINE`.
+    pub group: u8,
+    pub aim_pct: u16,
+    pub hip_pct: u16,
+    pub damage_pct: u16,
+    pub velocity_pct: u16,
+    pub rate_pct: u16,
+    pub magazine_pct: u16,
+    /// A silencer: the shot is heard as a bow's is (`world::SHOT_QUIET`).
+    pub quiet: bool,
+}
+
+impl ModDef {
+    pub const NONE: ModDef = ModDef {
+        item: NO_ITEM,
+        group: MOD_SIGHT,
+        aim_pct: 100,
+        hip_pct: 100,
+        damage_pct: 100,
+        velocity_pct: 100,
+        rate_pct: 100,
+        magazine_pct: 100,
+        quiet: false,
+    };
+}
+
+impl Default for ModDef {
+    fn default() -> Self {
+        Self::NONE
     }
 }
 

@@ -490,6 +490,7 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
         damage: 60,
         ammo: [ROCKET, NO_ITEM16, NO_ITEM16, NO_ITEM16],
         rate_ticks: 180,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 0,
         structure: 1,
@@ -511,6 +512,7 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
             damage: 275,
             structure: 125,
         },
+        ..Default::default()
     };
     let before = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     // Eight metres out on the wall's low side, facing it (+X), the rocket

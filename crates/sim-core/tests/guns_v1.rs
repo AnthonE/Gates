@@ -36,6 +36,7 @@ fn fixture(gun: Gun, damage: u16) -> CombatContent {
         damage,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 4,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 100_000,
         structure: 0,
@@ -327,6 +328,7 @@ fn bearing_salted(tick: u64, secret: u64, cc: &CombatContent) -> u32 {
         &mut events,
         &mut kills,
         &mut chips,
+        &mut sim_core::bullet::Bullets::new(),
         &mut quarry,
     );
     let shot = events.entries().iter().find(|e| e.code == EV_SHOT);

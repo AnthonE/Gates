@@ -65,6 +65,7 @@ fn armed() -> Box<World> {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: RATE_TICKS,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -82,6 +83,7 @@ fn armed() -> Box<World> {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -800,4 +802,75 @@ fn a_shot_wears_the_gun_and_a_broken_gun_refuses() {
         }),
         "a broken gun said nothing"
     );
+}
+
+/// **R on a full magazine changes the round**, Rust's ammo pick: with a
+/// second kind of round the gun lists in the pack, the full magazine is
+/// emptied back into the pack and filled with it, and `EV_AMMO` names the
+/// new kind. With only one kind it is simply full (`REFUSE_RL_FULL`, above).
+#[test]
+fn r_on_a_full_magazine_loads_the_next_kind_of_round() {
+    const HV: u16 = 9;
+    let mut w = armed();
+    w.combat.ranged[GUN as usize].ammo = [ROUND, HV, NO_ITEM, NO_ITEM];
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.gather.stack_max[HV as usize] = 128;
+    w.players[0].inv[3] = ItemStack {
+        item: HV,
+        count: PACK,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(
+        w.players[0].mag_round[0], ROUND,
+        "the list's first loads first"
+    );
+    settle(&mut w);
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(
+        (w.players[0].mag[0], w.players[0].mag_round[0]),
+        (MAG, HV),
+        "a full magazine took the next kind"
+    );
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        PACK as u32,
+        "the old kind came back"
+    );
+    assert_eq!(inv_count(&w.players[0].inv, HV), (PACK - MAG) as u32);
+    let ammo = first(&w, sim_core::world::EV_AMMO);
+    assert_eq!(ammo.b & 0xFFFF, u32::from(HV), "the new kind is said");
+    // And round again, back to the first.
+    settle(&mut w);
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(w.players[0].mag_round[0], ROUND);
+}
+
+/// **The attachments go into the bag with the gun**, Rust's mods riding the
+/// rifle into the corpse: each comes off its gun as its item, and the body
+/// keeps none.
+#[test]
+fn a_death_sheds_the_attachments_into_the_bag() {
+    const SCOPE: u16 = 20;
+    let mut w = armed();
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    w.gather.stack_max[GUN as usize] = 1;
+    w.gather.stack_max[SCOPE as usize] = 1;
+    w.combat.mods[1] = sim_core::combat::ModDef {
+        item: SCOPE,
+        ..sim_core::combat::ModDef::NONE
+    };
+    w.players[0].mods[0] = 0b10;
+    starve(&mut w);
+    assert_eq!(w.players[0].mods, [0; MAX_MAGS], "a corpse wears nothing");
+    let bagged: u32 = w
+        .backpacks
+        .entries()
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .filter(|s| s.item == SCOPE)
+        .map(|s| s.count as u32)
+        .sum();
+    assert_eq!(bagged, 1, "the scope is in the bag");
 }

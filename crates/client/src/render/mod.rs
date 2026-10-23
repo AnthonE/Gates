@@ -128,6 +128,7 @@ pub mod fresnel;
 pub mod farm_ghost;
 pub mod ghost;
 pub mod gunfeel;
+pub mod mods;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
@@ -764,6 +765,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
             .init_resource::<gunfeel::GunFeel>()
+            .init_resource::<mods::ModView>()
             .init_resource::<lodged::Lodged>()
             .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
@@ -1368,6 +1370,7 @@ impl Plugin for GatesRenderPlugin {
                 hud::setup.after(rig::setup),
                 // Beside the HUD, and like it absent from a plate run.
                 spectate::setup,
+                mods::setup,
                 arc_hud::setup,
             )
                 .run_if(move || !plate),
@@ -2078,7 +2081,8 @@ impl Plugin for GatesRenderPlugin {
         // sees it on the frame it was fired.
         .add_systems(
             Update,
-            gunfeel::predict
+            (mods::view, gunfeel::predict, mods::draw)
+                .chain()
                 .after(input::gather)
                 .before(input::place_eye)
                 .run_if(world_running),

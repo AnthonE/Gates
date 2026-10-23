@@ -486,6 +486,9 @@ pub struct ClientNetState {
     /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
     /// drip sends it when the sim's copy moves and never otherwise.
     pub last_skins: Option<sim_core::skin::SkinSet>,
+    /// The gun in hand and its attachment mask, as last sent (`SUB_MODS`):
+    /// a change of either is restated, and a resync forgets it.
+    pub last_mods: Option<(u16, u8)>,
     /// Which player slots' tags (`EventMsg::Tag`) this client is owed: bit
     /// `i` is slot `i`. All set on a fresh connection, so a late joiner
     /// learns everyone already here; cleared one per tick as each is sent.
@@ -636,6 +639,7 @@ impl ClientNetState {
             last_dials: [None; sim_core::limits::MAX_MECHS],
             last_glyphs: None,
             last_skins: None,
+            last_mods: None,
             tags_owed: TAGS_ALL,
             agents_owed: TAGS_ALL,
             worn_owed: TAGS_ALL,
@@ -677,6 +681,7 @@ impl ClientNetState {
         self.last_dials = [None; sim_core::limits::MAX_MECHS];
         self.last_glyphs = None;
         self.last_skins = None;
+        self.last_mods = None;
         self.tags_owed = TAGS_ALL;
         self.agents_owed = TAGS_ALL;
         self.worn_owed = TAGS_ALL;

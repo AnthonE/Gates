@@ -729,6 +729,22 @@ pub fn bake_catalog(
                 recoil_pitch: g.recoil_pitch,
                 recoil_yaw: g.recoil_yaw,
                 ads_recoil_pct: g.ads_recoil_pct,
+                rate_sub: u16::try_from(ranged.rate_sub)
+                    .map_err(|_| format!("catalog: `{}` cadence overflows the wire", item.id))?,
+                moving: g.moving,
+                per_shot: g.per_shot,
+                max: g.max,
+                recover_ticks: g.recover_ticks,
+                delay_ticks: g.delay_ticks,
+                pellet: g.pellet,
+                speed_mmpt: combat
+                    .ammo_def(ranged.ammo[0])
+                    .filter(|a| a.speed_mmpt > 0)
+                    .map_or(0, |a| g.muzzle(a.speed_mmpt)),
+                drop_mmpt2: combat
+                    .ammo_def(ranged.ammo[0])
+                    .map_or(0, |a| a.drop_mmpt2.min(63) as u8),
+                mods: g.mods,
             })
         } else {
             None
@@ -774,6 +790,24 @@ pub fn bake_catalog(
                     .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
                     .unwrap_or(0),
                 gun,
+                // An attachment (v143): its bit and slot off the sim's
+                // table, the view's half (kick, zoom, laser, light) off the
+                // content row, which the sim never reads.
+                attach: combat.mod_bit(idx as u16).and_then(|bit| {
+                    let m = combat.mods[bit as usize];
+                    let a = content.attachments.get(bit as usize)?;
+                    Some(protocol::ModRow {
+                        bit,
+                        group: m.group,
+                        aim_pct: m.aim_pct,
+                        hip_pct: m.hip_pct,
+                        recoil_pct: a.recoil_pct as u16,
+                        zoom_pct: a.zoom_pct as u8,
+                        quiet: m.quiet,
+                        laser: a.laser,
+                        light: a.light,
+                    })
+                }),
             },
         )
         .map_err(|_| {

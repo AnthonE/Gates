@@ -79,7 +79,7 @@ use crate::world::Player;
 /// 401 → 409, and the feet's stack (Rust's boots) 409 → 417. Four more worn
 /// stacks at `SAVE_FORMAT` 12 (clothing v1: legs, hands, shirt, face).
 pub const PLAYER_SAVE_BYTES: usize =
-    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4;
+    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4 + MAX_MAGS;
 
 /// The fixed head of the record: body, meters, heal, counters, the
 /// blueprint mask, the torch's remainder, and the crawl with its two
@@ -277,6 +277,9 @@ pub struct PlayerSave {
     /// save's reason (`worldsave.rs`, format 12).
     pub mag: [u16; MAX_MAGS],
     pub mag_round: [u16; MAX_MAGS],
+    /// The attachments on each gun (`Player::mods`, store format 13): a
+    /// scope you log off with is on the rifle you log in with.
+    pub mods: [u8; MAX_MAGS],
 }
 
 impl Default for PlayerSave {
@@ -337,6 +340,7 @@ impl PlayerSave {
         glyphs: 0,
         mag: [0; MAX_MAGS],
         mag_round: [NO_ITEM; MAX_MAGS],
+        mods: [0; MAX_MAGS],
     };
 
     /// The record for a player as they stand. A pure read — the server
@@ -370,6 +374,7 @@ impl PlayerSave {
             light_acc: p.light_acc,
             mag: p.mag,
             mag_round: p.mag_round,
+            mods: p.mods,
         }
     }
 
@@ -423,6 +428,8 @@ impl PlayerSave {
             out[at + 2..at + 4].copy_from_slice(&round.wrapping_add(1).to_le_bytes());
             at += 4;
         }
+        out[at..at + MAX_MAGS].copy_from_slice(&self.mods);
+        at += MAX_MAGS;
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
     }
 
@@ -532,11 +539,15 @@ impl PlayerSave {
             *round = u16_at(at + 2).wrapping_sub(1);
             at += 4;
         }
+        let mut mods = [0u8; MAX_MAGS];
+        mods.copy_from_slice(&src[at..at + MAX_MAGS]);
+        at += MAX_MAGS;
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
 
         Ok(Self {
             mag,
             mag_round,
+            mods,
             body,
             dead,
             inv,
@@ -628,7 +639,9 @@ mod tests {
             // encoding are pinned.
             mag: [0; MAX_MAGS],
             mag_round: [NO_ITEM; MAX_MAGS],
+            mods: [0; MAX_MAGS],
         };
+        s.mods[3] = 0b1010_0101;
         s.mag[2] = 6;
         s.mag_round[2] = 0x2122;
         s.mag_round[5] = 0x3132;

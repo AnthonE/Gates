@@ -791,6 +791,109 @@ inputs = [
     { item = "item.gunpowder", count = 10 },
 ]
 
+# Rust's other rounds: HV four times the round's powder, incendiary its
+# sulfur on top, explosive 5.56 theirs exactly (20 powder, 10 frags, 10
+# sulfur for two, the third bench). The handmade shell needs no bench and
+# no blueprint, as theirs.
+[[recipe]]
+id = "recipe.rifle_ammo_hv"
+output = "item.rifle_ammo_hv"
+blueprint = true
+count = 3
+station = "workbench3"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 20 },
+]
+
+[[recipe]]
+id = "recipe.rifle_ammo_fire"
+output = "item.rifle_ammo_fire"
+blueprint = true
+count = 3
+station = "workbench3"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 5 },
+    { item = "item.sulfur", count = 5 },
+]
+
+[[recipe]]
+id = "recipe.rifle_ammo_explosive"
+output = "item.rifle_ammo_explosive"
+blueprint = true
+count = 2
+station = "workbench3"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 20 },
+    { item = "item.sulfur", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.pistol_ammo_hv"
+output = "item.pistol_ammo_hv"
+blueprint = true
+count = 4
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 20 },
+]
+
+[[recipe]]
+id = "recipe.pistol_ammo_fire"
+output = "item.pistol_ammo_fire"
+blueprint = true
+count = 4
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 5 },
+    { item = "item.sulfur", count = 5 },
+]
+
+[[recipe]]
+id = "recipe.shotgun_slug"
+output = "item.shotgun_slug"
+blueprint = true
+count = 2
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 5 },
+    { item = "item.gunpowder", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.shotgun_fire"
+output = "item.shotgun_fire"
+blueprint = true
+count = 2
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 5 },
+    { item = "item.gunpowder", count = 10 },
+    { item = "item.sulfur", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.handmade_shell"
+output = "item.handmade_shell"
+count = 2
+station = "none"
+seconds = 5
+inputs = [
+    { item = "item.stone", count = 5 },
+    { item = "item.gunpowder", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.rocket"
 output = "item.rocket"
@@ -1300,4 +1403,104 @@ seconds = 5
 inputs = [
     { item = "item.berries", count = 3 },
     { item = "item.mushrooms", count = 2 },
+]
+
+
+# --- weapon attachments (2026-10-23) ---------------------------------------
+#
+# Rust's, with their high-quality metal at ten fragments a piece (the
+# recycler's rate, as the guns above) and their tech trash ours.
+[[recipe]]
+id = "recipe.gun_flashlight"
+output = "item.gun_flashlight"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+    { item = "item.cloth", count = 5 },
+]
+
+[[recipe]]
+id = "recipe.muzzle_brake"
+output = "item.muzzle_brake"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.muzzle_boost"
+output = "item.muzzle_boost"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.holosight"
+output = "item.holosight"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 120 },
+    { item = "item.tech_trash", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.silencer"
+output = "item.silencer"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.lasersight"
+output = "item.lasersight"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+    { item = "item.tech_trash", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.extended_mag"
+output = "item.extended_mag"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.scope_8x"
+output = "item.scope_8x"
+blueprint = true
+count = 1
+station = "workbench3"
+seconds = 45
+inputs = [
+    { item = "item.metal_frags", count = 500 },
+    { item = "item.tech_trash", count = 2 },
 ]
