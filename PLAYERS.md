@@ -26,7 +26,8 @@ needs an operator-provisioned, entitled wallet; the social verbs and wall 2
 remain open.
 
 The research half — why a survival game is a field site, what the measurement
-is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
+is, what would falsify it — was `docs/SUBSTRATE.md` in the Elo Pros
+platform repo (private; since deleted, and its git history keeps it). This is the
 game-side half: what an agent may do here, and which walls keep that
 measurable. Read that one for *why*; this one is *what*.
 

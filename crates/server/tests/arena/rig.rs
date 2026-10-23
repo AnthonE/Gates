@@ -941,6 +941,23 @@ pub struct Setup {
     pub ambush: bool,
     /// The agent is held where it stands ([`Arena::pin`]).
     pub pinned: bool,
+    /// A bred brain for the agent's fights (`--tactics`), or none: the sum.
+    pub tactics: Option<sim_core::genome::Genome>,
+    /// A hand-set brain that always makes this choice
+    /// (`agent::combat::TACTIC_*`), over `tactics`.
+    pub always: Option<u8>,
+}
+
+/// A tactics net that always makes `choice`: every weight zero but that
+/// output's bias.
+pub fn always(choice: u8) -> sim_core::genome::Net {
+    use server::agent::combat::{tactics_shape, TACTICS_HIDDEN, TACTICS_IN};
+    let mut net = sim_core::genome::Net {
+        shape: tactics_shape(),
+        w: [0.0; sim_core::genome::MAX_WEIGHTS],
+    };
+    net.w[(TACTICS_IN + 1) * TACTICS_HIDDEN + usize::from(choice) * (TACTICS_HIDDEN + 1)] = 1.0;
+    net
 }
 
 impl Setup {
@@ -959,6 +976,8 @@ impl Setup {
             trace: false,
             ambush: false,
             pinned: false,
+            tactics: None,
+            always: None,
         }
     }
 }
@@ -1029,9 +1048,13 @@ pub fn bout(s: Setup) -> (Arena, Record) {
     let opts = SurvivorOpts {
         skill,
         temperament: s.temperament,
+        tactics: s.tactics,
         ..SurvivorOpts::default()
     };
     let mut a = Arena::seated(opts, mind, false, me, arena_ground(), true);
+    if let Some(choice) = s.always {
+        a.bot.set_tactics(Some(always(choice)));
+    }
     a.latency = s.latency;
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
     a.stage(me, |p| {
@@ -1335,4 +1358,187 @@ pub fn table(title: &str, setups: &[Setup], records: &[Record]) -> Vec<(String, 
         println!("{}", row(l, t));
     }
     rows
+}
+
+/// How one pack fight went for the agent ([`pack_bout`]). The arena reads
+/// a few of these; `examples/zoo.rs` reads them all.
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(dead_code)]
+pub struct PackRecord {
+    /// The agent went down (wounded or dead).
+    pub downed: bool,
+    pub wolves_dead: u32,
+    pub pack: u32,
+    /// The agent's hp lost, as a share of its max (1 when downed).
+    pub hp_lost: f32,
+    /// The pack's hp lost, as a share of its whole.
+    pub pack_lost: f32,
+    pub ticks: u32,
+    pub heap_ops: usize,
+    pub max_turn: u16,
+    pub turn_cap: u16,
+}
+
+/// The first free pack with at least three slots: not a guard, the same
+/// pack. Its first `n` slots.
+pub fn free_pack(n: usize) -> Vec<usize> {
+    use sim_core::limits::MAX_MOBS;
+    use sim_core::mob::{guard_site_of, kind_of, pack_of, MOB_WOLF};
+    let wolves: Vec<usize> = (0..MAX_MOBS)
+        .filter(|&s| kind_of(s) == MOB_WOLF && guard_site_of(s).is_none())
+        .collect();
+    for &s in &wolves {
+        let Some(p) = pack_of(s) else { continue };
+        let mates: Vec<usize> = wolves
+            .iter()
+            .copied()
+            .filter(|&o| pack_of(o) == Some(p))
+            .collect();
+        if mates.len() >= 3 {
+            return mates.into_iter().take(n).collect();
+        }
+    }
+    panic!("the roster has no free pack of three");
+}
+
+/// Where a pack comes from and how long it gets ([`pack_bout`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Pack {
+    /// Wolves, one to three.
+    pub n: usize,
+    /// How far off they are put, and at what world bearing from the agent.
+    pub dist_m: f32,
+    pub bearing: u16,
+    /// Ticks before the fight is called.
+    pub limit: u32,
+    /// A tactics brain that always makes this choice ([`always`]), in place
+    /// of whatever `opts.tactics` holds.
+    pub always: Option<u8>,
+}
+
+/// A wolf pack's fight from the agent's side. The agent (body `me`, these
+/// options, `arm` in hand and `ammo` in its pack) stands about in the arena
+/// clearing; the roster is cleared, and the first free pack's first
+/// `pack.n` wolves are put `pack.dist_m` off, side by side two metres
+/// apart, inside their notice radius. The island plays at the medium fel
+/// tier with `nets` installed (empty: the rule table drives them), and the
+/// fight runs until the agent is down, the pack is dead, or `pack.limit`
+/// ticks pass.
+pub fn pack_bout(
+    opts: SurvivorOpts,
+    me: u32,
+    arm: sim_core::gather::ItemStack,
+    ammo: Option<sim_core::gather::ItemStack>,
+    pack: Pack,
+    nets: sim_core::brain::Nets,
+) -> (Arena, PackRecord) {
+    use sim_core::mob::MOB_WOLF;
+    let Pack {
+        n,
+        dist_m,
+        bearing,
+        limit,
+        always: choice,
+    } = pack;
+    let turn_cap = opts.skill.max_turn();
+    let mind = Mind::inline(Sentry, MindConfig::default()).unwrap();
+    let mut a = Arena::seated(opts, mind, true, me, arena_ground(), false);
+    if let Some(c) = choice {
+        a.bot.set_tactics(Some(always(c)));
+    }
+    let medium = a.shard.world.mob.tiers[1];
+    a.shard.world.mob.tiers[0] = medium;
+    *a.shard.world.nets = nets;
+    // The roster enrols on the first armed tick; then it is cleared, and
+    // nothing hatches until the pack is placed by hand.
+    a.step();
+    for m in a.shard.world.mobs.m.iter_mut() {
+        m.alive = false;
+        m.homed = false;
+    }
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    a.stage(me, |p| {
+        for s in p.inv.iter_mut() {
+            *s = Default::default();
+        }
+        p.inv[0] = arm;
+        if let Some(s) = ammo {
+            p.inv[HOTBAR_SLOTS + 3] = s;
+        }
+        p.hp = p.hp_max;
+    });
+    a.step();
+
+    let at = a.player(me).body;
+    let (fx, fz) = sim_core::yaw_dir(bearing);
+    let (cx, cz) = (
+        at.qx as f32 * POS_XZ_Q + fx * dist_m,
+        at.qz as f32 * POS_XZ_Q + fz * dist_m,
+    );
+    let hp = a.shard.world.mob_now().def(MOB_WOLF).hp;
+    let slots = free_pack(n);
+    for (k, &s) in slots.iter().enumerate() {
+        let side = k as f32 * 2.0 - (slots.len() - 1) as f32;
+        let body = Body::at(SEED, &a.haven, cx - fz * side, cz + fx * side);
+        let m = &mut a.shard.world.mobs.m[s];
+        m.homed = true;
+        m.alive = true;
+        m.hp = hp;
+        m.body = body;
+        m.home_qx = body.qx;
+        m.home_qz = body.qz;
+        m.respawn_at = u64::MAX;
+        m.state = sim_core::brain::AiState::Idle;
+        m.state_until = 0;
+        m.target = sim_core::brain::NO_TARGET;
+        m.roused_until = 0;
+        m.calm_until = 0;
+        m.tries = 0;
+        m.awake = false;
+        m.pick = 0;
+        m.pressed_at = 0;
+        m.path.clear();
+    }
+
+    let mut ticks = 0;
+    while ticks < limit {
+        let p = a.player(me);
+        if p.wounded || p.dead {
+            break;
+        }
+        if slots.iter().all(|&s| !a.shard.world.mobs.m[s].alive) {
+            break;
+        }
+        a.step();
+        ticks += 1;
+    }
+    let p = a.player(me);
+    let downed = p.wounded || p.dead;
+    let hp_lost = if downed {
+        1.0
+    } else {
+        1.0 - p.hp as f32 / p.hp_max.max(1) as f32
+    };
+    let (mut dead, mut lost) = (0, 0u32);
+    for &s in &slots {
+        let m = &a.shard.world.mobs.m[s];
+        if !m.alive {
+            dead += 1;
+            lost += hp as u32;
+        } else {
+            lost += hp.saturating_sub(m.hp) as u32;
+        }
+    }
+    let r = PackRecord {
+        downed,
+        wolves_dead: dead,
+        pack: slots.len() as u32,
+        hp_lost,
+        pack_lost: lost as f32 / (hp as u32 * slots.len() as u32).max(1) as f32,
+        ticks,
+        heap_ops: a.heap_ops,
+        max_turn: a.max_turn,
+        turn_cap,
+    };
+    (a, r)
 }

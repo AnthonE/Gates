@@ -2,9 +2,9 @@
 //! honest state each of them is in.
 //!
 //! **These three exist because the platform has them** (operator, 2026-08-09:
-//! *"we have NEWS thats part of the community on the scry-works launcher …
+//! *"we have NEWS thats part of the community on the [Elo Pros] launcher …
 //! we do have an item store and workshop. that again is part of the
-//! scry-works setup"*). The first cut of the shell left all three off the nav
+//! [Elo Pros] setup"*). The first cut of the shell left all three off the nav
 //! on the grounds that nothing was behind them, which was wrong about the
 //! product rather than wrong about the rule: `settings.rs`'s policy is that a
 //! category with nothing behind it *says so*, and the way to honour it here
@@ -46,7 +46,7 @@ pub enum Section {
     Store,
     Workshop,
     /// A Claude-minded buddy that plays beside you, run by the platform
-    /// (scry-forge `meter/buddy.py`, `ops/buddy/runner.py`).
+    /// (the platform's `meter/buddy.py`, and `ops/buddy/runner.py`).
     Buddies,
     /// The companion page, Gates' Rust+ (`server::companion`): your team,
     /// team chat and raid alerts from a phone.

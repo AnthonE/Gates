@@ -78,9 +78,10 @@ agent rather than a person:
   say a number. What makes it payable is an EIP-191 signature over the exact
   text the report prints, and whoever pays recomputes that text from the
   report's own fields rather than trusting the copy in it
-  (`scryward/docs/SIGN-IN.md` §0 step 4). A signature proves consent, not
-  scarcity — a wallet is free to make, which is why a report is worth
-  something when it is FIXED and not when it is filed.
+  (`docs/SIGN-IN.md` §0 step 4 in `AnthonE/elo-pros-launcher`). A
+  signature proves consent, not scarcity — a wallet is free to make, which
+  is why a report is worth something when it is FIXED and not when it is
+  filed.
 
 `crates/client/src/report.rs` is what the document is and why; `NOW.md` §0rep
 is what is still missing around it.
@@ -173,17 +174,19 @@ lands clean, and they are judged one at a time.
    content hash pinned into the WAL header. Gate: `test_content`.
 8. What we sell is `BUSINESS.md` — product, not an engineering wall.
    Tickers are bare: ELO, JUNK, ORBS — never a `$` prefix. Gate:
-   `ci/elo_manifest.py`, over `scry.json` and **only** over `scry.json`.
+   `ci/elo_manifest.py`, over the store manifest and **only** over it.
    ⚠ This wall named a `ci/gates.sh` docs check and **there has never been
    one**, so the rule was ungated everywhere. It is now gated at the one
    place it costs money: an update's text becomes a public post on elo's
    feed and elo refuses a `$`-prefixed ticker outright, so a `$` there is
    not a style slip — it is a store row that silently stops moving.
    Elsewhere in the corpus this is still a rule a reader enforces.
-9. Our store row is a file in this repo. `scry.json` says what this game
-   is; `scry.sig.json` signs its exact bytes; elo reads the pair off this
-   repo's default branch and applies what changed — no commit to elo, no
-   key of theirs, no webhook. **Re-sign whenever you edit it**
+9. Our store row is a file in this repo. The manifest says what this game
+   is and the `.sig.json` beside it signs its exact bytes: `elo.json` /
+   `elo.sig.json`, or the older-named pair committed today, which elo still
+   reads until a re-sign moves it (`ci/elo_manifest.py`'s header). elo reads
+   the pair off this repo's default branch and applies what changed — no
+   commit to elo, no key of theirs, no webhook. **Re-sign whenever you edit it**
    (`./ci/elo_manifest.py --sign`): an unsigned edit applies nothing, and
    from elo's side that looks like a row that just stopped moving. Gate:
    `ci/elo_manifest.py --self-test`. The standard is

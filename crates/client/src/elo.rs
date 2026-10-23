@@ -2,10 +2,10 @@
 //! process and no crate added to the tree.
 //!
 //! `elo_overlay.rs` beside this file is **vendored byte-for-byte** from
-//! `sdk/rust/elo_overlay.rs` in **`AnthonE/scry-forge`** (first vendored
-//! 2026-08-05; this line said `AnthonE/scry` until 2026-08-14, see below). It is
-//! `std`-only by design, so vendoring costs nothing and adds no dependency —
-//! which is the whole reason that file was written the way it was.
+//! `sdk/rust/elo_overlay.rs` in **the Elo Pros platform repo** (private; first
+//! vendored 2026-08-05; this line named the wrong repo until 2026-08-14, see
+//! below). It is `std`-only by design, so vendoring costs nothing and adds no
+//! dependency — which is the whole reason that file was written the way it was.
 //!
 //! The pin is [`VENDORED_SHA256`], not a commit id: a hash identifies the
 //! bytes we actually have, and a commit id in a comment goes stale the moment
@@ -34,14 +34,15 @@
 //!
 //! ```text
 //! sha256sum crates/client/src/elo_overlay.rs
-//! # must appear in sdk/SHA256SUMS in AnthonE/scry-forge — if it does not,
+//! # must appear in sdk/SHA256SUMS in the platform repo — if it does not,
 //! # upstream has moved: re-vendor, re-pin, and run the client's tests.
 //! ```
 //!
-//! ⚠ **Run that check against `AnthonE/scry-forge`, and against nothing else.**
+//! ⚠ **Run that check against the platform repo, and against nothing else.**
 //! There are two repos holding an `sdk/` and they are not the same file.
-//! `scry-forge` is where the SDK is edited and where the launcher is built;
-//! **`AnthonE/scryward` is the public mirror of the open half and it lags.**
+//! The platform repo is where the SDK is edited and where the launcher is
+//! built; **`AnthonE/elo-pros-launcher` is the public mirror of the open half
+//! and it lags.**
 //! On 2026-08-14 the mirror still published `3a81c70…` while the source had
 //! moved to `3df3d41a…`, so checking the pin against the mirror returned a
 //! clean match over a copy two days stale — a **false green**, which is worse
@@ -75,10 +76,9 @@
 //! Re-vendored 2026-08-29 (`3df3d41a…` → `934a2b5d…`), and this is the one the
 //! two warnings above were written for: **not luck this time — every login was
 //! failing.** Upstream's rename (`elo-broker` 575a273b, 2026-08-21) moved the
-//! DOOR, all four spellings of it: `SCRY_LAUNCHER_SOCKET` →
-//! `ELO_LAUNCHER_SOCKET`, `$XDG_RUNTIME_DIR/scry/launcher.sock` → `…/elo/…`,
-//! `~/.cache/scry/launcher/` → `~/.cache/elo/launcher/`, and the Windows pipe
-//! `\\.\pipe\scry-launcher-<user>` → `elo-launcher-<user>`. So a client on
+//! DOOR, all four spellings of it, onto the `elo` name: `ELO_LAUNCHER_SOCKET`,
+//! `$XDG_RUNTIME_DIR/elo/launcher.sock`, `~/.cache/elo/launcher/`, and the
+//! Windows pipe `\\.\pipe\elo-launcher-<user>`. So a client on
 //! the old copy finds no launcher on a machine that is running one — which the
 //! vendored file's own `default_socket` doc calls *"the worst shape of bug
 //! here"*, because the game reports the ordinary "playing anonymously" and
@@ -127,7 +127,7 @@
 // `elo_overlay.rs` carries seven `cfg(unix)`/`cfg(windows)` pairs with no
 // third arm (`findings/web-build-20260909.md` §10.4) — a Unix socket on one
 // side, a named pipe on the other, and nothing a page could be. It is
-// vendored byte-for-byte from `AnthonE/scry-forge` and `CLAUDE.md` §vendored
+// vendored byte-for-byte from the platform repo and `CLAUDE.md` §vendored
 // forbids patching it here, because a patch applied in this repo fixes Gates
 // and leaves every other game on the broken copy.
 //
@@ -164,9 +164,9 @@ pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 pub use protocol::SLUG;
 
 /// sha256 of the vendored `elo_overlay.rs`, byte-for-byte as it ships in
-/// `AnthonE/scry-forge` (the source — **not** the `AnthonE/scryward` mirror,
-/// which lags). Regenerate ONLY when re-vendoring an upstream change:
-/// `sha256sum crates/client/src/elo_overlay.rs`.
+/// the Elo Pros platform repo (the source — **not** the
+/// `AnthonE/elo-pros-launcher` mirror, which lags). Regenerate ONLY when
+/// re-vendoring an upstream change: `sha256sum crates/client/src/elo_overlay.rs`.
 pub const VENDORED_SHA256: &str =
     "a5bb9bfb72221ecdfe536a7c795e6a929d1debaf82da512a10500acfac3f6035";
 
@@ -360,7 +360,7 @@ mod tests {
             sha256_hex(bytes),
             VENDORED_SHA256,
             "crates/client/src/elo_overlay.rs has been edited. It is VENDORED from \
-             AnthonE/scry-forge sdk/rust/elo_overlay.rs — fix it there and re-vendor, or \
+             the platform repo's sdk/rust/elo_overlay.rs — fix it there and re-vendor, or \
              every other game keeps the broken version. If this IS a re-vendor, \
              update elo::VENDORED_SHA256 in the same commit."
         );
@@ -372,7 +372,7 @@ mod tests {
     /// whether upstream MOVED, and the socket constants are the shape of drift
     /// that survives every other check: they still compile, they still type,
     /// they simply stop pointing at anything. On 2026-08-29 all four had moved
-    /// (`scry` → `elo`, upstream 2026-08-21) and every login had been refused
+    /// (onto the `elo` name, upstream 2026-08-21) and every login had been refused
     /// for eight days — no API changed, so nothing could be red.
     ///
     /// This does **not** claim the launcher listens here; nothing in this repo
@@ -606,7 +606,7 @@ pub fn take_refusal() -> Option<String> {
 /// `signer` is a JS function the page supplies: `(text: string) => Promise<
 /// string>`, resolving to a `0x…` 65-byte signature — which is exactly the
 /// shape of the platform's own `Deck.wallet.sign(message, address)`
-/// (`watchtower/js/deck-shim.js` in `AnthonE/scry-forge`), so a page on
+/// (`watchtower/js/deck-shim.js` in the platform repo), so a page on
 /// elopros.com passes the wallet object it already has.
 ///
 /// ⚠ **An error here is an error, never a silent guest join**, and that is a

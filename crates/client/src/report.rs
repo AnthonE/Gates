@@ -87,7 +87,7 @@
 //! ## Where it goes
 //!
 //! The player presses Enter and it is sent to the platform's intake
-//! ([`INTAKE_PATH`], `meter/bugs.py` in `AnthonE/scry-forge`) with the frame
+//! ([`INTAKE_PATH`], the platform's `meter/bugs.py`) with the frame
 //! they were looking at. The desktop also keeps the `.md`/`.json` pair
 //! beside the screenshots; a tab has no disk, so there the send is the
 //! report.
@@ -140,7 +140,7 @@ pub const BODY_MAX: usize = 4_000;
 pub const BODY_LINES_MAX: usize = 80;
 
 /// Where a report is POSTed, on the platform origin
-/// (`ui::names::PLATFORM_ORIGIN`). `meter/bugs.py` in `AnthonE/scry-forge`.
+/// (`ui::names::PLATFORM_ORIGIN`). The platform's `meter/bugs.py`.
 pub const INTAKE_PATH: &str = "/api/bugs";
 
 /// The game slug the intake files this under.
@@ -1012,7 +1012,8 @@ impl Report {
                      Whoever pays recovers the signer and **recomputes the message from \
                      what the report already says** — the kind, the fingerprint and \
                      `reported`'s date — rather than trusting the copy above; that is \
-                     `scryward/docs/SIGN-IN.md` §0 step 4's rule and it is not optional. \
+                     the rule in `docs/SIGN-IN.md` §0 step 4 (AnthonE/elo-pros-launcher), \
+                     and it is not optional. \
                      The address is lowercased inside the bytes because a checksummed one \
                      is different bytes and verifies differently.\n\n\
                      **The signature proves consent, not scarcity** — a wallet is free to \
@@ -1136,7 +1137,7 @@ impl Report {
     ///
     /// ⚠ The `report` family does not exist in the launcher yet — the shipping
     /// set is `play` / `review` / `vow` / `hive` / `braid` / `store`
-    /// (`scry-broker`'s `signer.rs`). An unknown family is refused with a
+    /// (`elo-broker`'s `signer.rs`). An unknown family is refused with a
     /// reason rather than mis-signed, which is the correct failure and is why
     /// this can be written before the other side is.
     pub fn sign_text(&self, wallet: &str, day: &str) -> String {

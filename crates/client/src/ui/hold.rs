@@ -779,13 +779,15 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.45,
         0.90,
     ),
-    HeldModelDef::upright("water_jug", "models/held/waterskin.glb", 0.310, 0.45, 1.20),
+    // The skin's model at its authored size, the most a held model may be
+    // drawn: still a size up on the skin's 0.9.
+    HeldModelDef::upright("water_jug", "models/held/waterskin.glb", 0.310, 0.45, 1.0),
     HeldModelDef::upright(
         "full_water_jug",
         "models/held/full_waterskin.glb",
         0.320,
         0.45,
-        1.20,
+        1.0,
     ),
     // Handfuls, armfuls, folded things and clothes rest on the open palm;
     // a garment turned to show its front rather than its edge.

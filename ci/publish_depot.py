@@ -32,7 +32,7 @@ refuse. This script is the ORDER, the refusals, and the checks between.
    What survives is the seam. A depot published before that change sits at
    `<build>/depot.json` with no platform segment and **stays there forever** —
    its url is baked into its own document, the digest covers the document, and
-   that digest is sealed in `ScryNotary`. Writing a keyed directory beside it
+   that digest is sealed in the notary contract. Writing a keyed directory beside it
    would leave two documents claiming one build, and the origin prefers the
    keyed one, so the notarized depot would quietly stop being served. That is
    a decision, not a default, so it refuses.
@@ -78,8 +78,8 @@ TARGETS = depot_mod.TARGETS
 
 DEFAULT_HOST = "morr"
 DEFAULT_DEPOTS = "/data/apps/scry-data/depots"
-DEFAULT_API = "https://elopros.com/api"   # scry.moreright.xyz retired 2026-08-20 (410)
-NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # ScryNotary, chain 4663
+DEFAULT_API = "https://elopros.com/api"   # the former host retired 2026-08-20 (410)
+NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # the notary contract, chain 4663
 NOTARY_CHAIN = 4663
 # Where the public shard says which wire it speaks (`server/src/status.rs`, `proto`).
 STATUS_URL = "https://game.elopros.com/gates/status.json"
@@ -128,7 +128,7 @@ def refuse_legacy_collision(host: str, depots: str, build: str, platform: str) -
     What it still guards is the seam. A depot published BEFORE the change sits
     at `<build>/depot.json` with no platform segment, and it stays there
     forever: its url is baked into its own document, the digest covers the
-    document, and that digest is sealed in ScryNotary, so moving it would
+    document, and that digest is sealed in the notary contract, so moving it would
     orphan the number on chain. Writing `<build>/<platform>/` beside a legacy
     `<build>/depot.json` is therefore safe for the bytes but ambiguous for a
     reader — two documents claiming one build. The origin prefers the keyed one
@@ -278,18 +278,18 @@ def _cast_send(digest: str, label: str, memo: str) -> str:
 
     The keyed urls are never printed: the credential is in the url PATH, and
     this origin publishes its RPC url from ten surfaces — which is the whole
-    reason `SCRY_RH_RPC` (public, keyless) and `SCRY_RH_RPC_POOL` (keyed,
+    reason `SCRY_RH_RPC` (public, keyless) and `ELO_RH_RPC_POOL` (keyed,
     private) are two different knobs.
     """
     return (
         "set -a; . /data/apps/secrets/keys.env; set +a; "
-        # ⚠ The knob is `ELO_RH_RPC_POOL` since the SCRY→ELO migration; it was
-        # `SCRY_RH_RPC_POOL` before. Reading only the old name is not a
+        # ⚠ The knob is `ELO_RH_RPC_POOL` since the platform's rename, and its
+        # former name is still read. Reading only one name is not a
         # misconfiguration that announces itself — every endpoint in an EMPTY
         # list is unreachable, so it fails as "no reachable endpoint" and reads
         # like a dead provider. Both names, current one first.
         'POOL="${ELO_RH_RPC_POOL:-$SCRY_RH_RPC_POOL}"; '
-        'if [ -z "$POOL" ]; then echo "neither ELO_RH_RPC_POOL nor SCRY_RH_RPC_POOL is set in keys.env" >&2; exit 1; fi; '
+        'if [ -z "$POOL" ]; then echo "ELO_RH_RPC_POOL is not set in keys.env" >&2; exit 1; fi; '
         'RPC=""; '
         'for u in $(printf %s "$POOL" | tr "," " "); do '
         '  if ~/.foundry/bin/cast chain-id --rpc-url "$u" >/dev/null 2>&1; then RPC="$u"; break; fi; '
@@ -310,9 +310,9 @@ def notarize(host: str, depots: str, build: str, digest: str, label: str,
     """
     print(f"== notarize · {digest} as {label!r}")
     if len(label) > 128 or not label:
-        sys.exit("publish: ScryNotary wants a label of 1..128 chars")
+        sys.exit("publish: the notary wants a label of 1..128 chars")
     if len(memo) > 512:
-        sys.exit("publish: ScryNotary wants a memo of <= 512 chars")
+        sys.exit("publish: the notary wants a memo of <= 512 chars")
     if dry:
         print("   (dry-run: no transaction sent)")
         return
@@ -359,8 +359,10 @@ def main() -> int:
     ap.add_argument("--no-build", action="store_true", help="package what is compiled")
     ap.add_argument("--dry-run", action="store_true", help="every check, no writes")
     ap.add_argument("--notarize", action="store_true", help="seal the digest on chain")
-    ap.add_argument("--elo", "--scry", dest="elo", default=None,
-                    help="path to an `elo` binary (formerly `scry`) for --notarize")
+    ap.add_argument("--elo", dest="elo", default=None,
+                    help="path to an `elo` binary for --notarize")
+    # The flag's former spelling, still taken and no longer advertised.
+    ap.add_argument("--scry", dest="elo", help=argparse.SUPPRESS)
     ap.add_argument("--host", default=DEFAULT_HOST, help="origin box (ssh alias)")
     ap.add_argument("--local", action="store_true",
                     help="the origin is THIS box — run the steps here, no ssh")

@@ -1,7 +1,7 @@
 //! **Does this player own a copy?** — the licence's teeth, and the only
 //! thing in this repo that asks another host a question about a person.
 //!
-//! A copy of Gates is an ERC-721 (`ScryGameTicket`, one deployment per
+//! A copy of Gates is an ERC-721 (`EloGameTicket`, one deployment per
 //! title) and holding any token of it is the licence. elo's origin answers
 //! two questions about that, both of them one `balanceOf` underneath:
 //!

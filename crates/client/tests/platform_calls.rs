@@ -40,7 +40,7 @@
 //! rather than in EXEMPT because nothing about it needs exempting.
 //!
 //! Two exclusions, both by name and both loud:
-//! - `src/elo_overlay.rs` is VENDORED from `AnthonE/scry-forge` and unpatchable
+//! - `src/elo_overlay.rs` is VENDORED from the platform repo and unpatchable
 //!   here (`CLAUDE.md` §vendored). It is `cfg`'d off wasm at its `mod`
 //!   declaration in `elo.rs`, not in the file, so a scan of the file alone
 //!   cannot see its guard.
@@ -106,7 +106,7 @@ const BARE: &[(&str, &str)] = &[
 const EXEMPT: &[(&str, &str)] = &[
     (
         "src/elo_overlay.rs",
-        "vendored from AnthonE/scry-forge and unpatchable here (CLAUDE.md §vendored). \
+        "vendored from the platform repo and unpatchable here (CLAUDE.md §vendored). \
          Its guard is the `#[cfg(not(target_arch = \"wasm32\"))]` on the `#[path] mod` \
          in elo.rs, which a scan of this file cannot see.",
     ),

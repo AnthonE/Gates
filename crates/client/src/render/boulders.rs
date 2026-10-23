@@ -1,13 +1,20 @@
 //! The rock formations (`sim_core::boulder`), drawn.
 //!
-//! Each block the sim collides against is drawn as a **fractured rock**: a
-//! box with rounded edges, subdivided, its faces pushed in and out in steps
-//! so they break into planes, its sides grooved along horizontal strata, and
-//! moss in patches on its top — the reference game's granite outcrops, not
-//! domes. It wears the ground's own splat material, so a boulder is the same
-//! granite as the cliff it stands under (`ground_splat.wgsl`'s rock face),
-//! darkened through the macro channel (`UV_1.x`) the way weathered rock is.
-//! Loose stones lie around every seated block's foot.
+//! Each block the sim collides against is drawn as one of the **rock
+//! pieces** ([`PIECE_GLB`]): a sculpted outcrop from Meshy, the way the
+//! reference game draws a handful of authored rock meshes everywhere rather
+//! than shaping each one by hand. Only the piece's shape is read: it is
+//! stretched into the block's box ([`pick_piece`] takes the piece the box
+//! stretches least) and drawn in the ground's own splat material, so a
+//! boulder is the same granite as the cliff it stands under
+//! (`ground_splat.wgsl`'s rock face), darkened through the macro channel
+//! (`UV_1.x`) in its cracks and at its foot, with moss in patches on what
+//! faces up. Loose stones lie around every seated block's foot.
+//!
+//! Until the pieces load, or if they cannot, a block is drawn as a
+//! **fractured rock** ([`rock_block`]): a box with rounded edges, its faces
+//! pushed in and out in steps so they break into planes and its sides
+//! grooved along strata. The cliffs' crags and the rock landmarks still are.
 //!
 //! The mesh stands inside the collision box, never out of it: its rounding,
 //! taper, chisel and fracture all cut in (until 2026-10-17 a facet stood up
@@ -32,6 +39,7 @@ use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::boulder::{self, BLOCK_SPIRE, BOULDER_CELL_M, ON_GROUND};
 use sim_core::terrain;
+use std::sync::Arc;
 
 use super::ground_splat::{ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD, ATTRIBUTE_ZONE};
 use super::terrain_mesh::{Ring, UV_PER_M};
@@ -83,6 +91,41 @@ const SEG_V_M: f32 = 0.9;
 /// drawn out to [`ROCK_RING`].
 const ROUND_SEGS: usize = 1;
 
+/// The rock pieces, each standing on its base at the origin, centred in X/Z,
+/// at its own proportions (`assets/models/MANIFEST.md`). Geometry only.
+pub const PIECE_GLB: [&str; PIECES] = [
+    "models/prop/rock/block_a.glb",
+    "models/prop/rock/block_b.glb",
+    "models/prop/rock/block_c.glb",
+    "models/prop/rock/block_d.glb",
+    "models/prop/rock/block_e.glb",
+    "models/prop/rock/block_f.glb",
+];
+/// The same pieces remeshed low, drawn past [`PIECE_NEAR_CELLS`]: ~950
+/// blocks stand in the ring, and the full pieces everywhere would be most of
+/// the frame's triangles.
+pub const PIECE_FAR_GLB: [&str; PIECES] = [
+    "models/prop/rock/block_a_far.glb",
+    "models/prop/rock/block_b_far.glb",
+    "models/prop/rock/block_c_far.glb",
+    "models/prop/rock/block_d_far.glb",
+    "models/prop/rock/block_e_far.glb",
+    "models/prop/rock/block_f_far.glb",
+];
+pub const PIECES: usize = 6;
+/// Formation cells either side of the eye's drawn with the full pieces
+/// (~220 m); a cell crossing it is rebuilt with the other set.
+pub const PIECE_NEAR_CELLS: i32 = 3;
+/// How much a piece's hash may outweigh a better fit, in log-stretch: two
+/// neighbours of the same shape do not always take the same piece.
+const PIECE_SHUFFLE: f32 = 0.35;
+/// The value multiplier's swing between a crack and a ridge, either way.
+const PIECE_HOLLOW_DARK: f32 = 0.3;
+/// Two faces of a piece meeting at a vertex are shaded as one surface while
+/// their normals are within this cosine (~32°); past it the fracture shows
+/// as an edge. Smoothed across every angle the pieces read as dough.
+const PIECE_CREASE: f32 = 0.85;
+
 /// The Verdigris' spires: black glass with green veins
 /// (`assets/models/MANIFEST.md`), each fitted to a unit box standing on its
 /// base at the origin, so a block's box is its scale. Two tall shards and two
@@ -105,16 +148,94 @@ pub const SPIRE_SINK_M: f32 = 0.3;
 #[derive(Resource, Default)]
 pub struct RockRing {
     seed: Option<u64>,
-    built: HashMap<(i32, i32), Option<Entity>>,
+    /// Each cell's formation entity, and whether it was built near.
+    built: HashMap<(i32, i32), (Option<Entity>, bool)>,
     /// Formations being meshed on `AsyncComputeTaskPool`, keyed as `built`.
     /// A mesh is a millisecond on average and several on a big formation,
     /// two a frame, so it is not built on the frame ([`stream`]).
     meshing: HashMap<(i32, i32), Task<Meshed>>,
     spires: Option<SpireModels>,
+    pieces: Option<PieceModels>,
 }
 
-/// A formation and its mesh, as a task hands them back.
-type Meshed = (boulder::Formation, Option<Mesh>);
+/// The rock pieces, near and far, loaded on first use and kept across worlds.
+struct PieceModels {
+    near: [Handle<Mesh>; PIECES],
+    far: [Handle<Mesh>; PIECES],
+    /// Read off the loaded meshes once every one has landed.
+    /// Shared with the meshing tasks.
+    ready: Option<Arc<[Vec<Piece>; 2]>>,
+    /// A file failed: the procedural rock stands in for good.
+    failed: bool,
+}
+
+impl PieceModels {
+    fn load(server: &AssetServer) -> Self {
+        let mesh = |path: &'static str| {
+            server.load(
+                GltfAssetLabel::Primitive {
+                    mesh: 0,
+                    primitive: 0,
+                }
+                .from_asset(path),
+            )
+        };
+        PieceModels {
+            near: PIECE_GLB.map(mesh),
+            far: PIECE_FAR_GLB.map(mesh),
+            ready: None,
+            failed: false,
+        }
+    }
+
+    /// The pieces, near then far: `Some(None)` to draw the procedural rock,
+    /// `None` while a file is still loading.
+    fn get(
+        &mut self,
+        server: &AssetServer,
+        meshes: &Assets<Mesh>,
+    ) -> Option<Option<Arc<[Vec<Piece>; 2]>>> {
+        if self.ready.is_none() && !self.failed {
+            let all = self.near.iter().chain(&self.far);
+            if all.clone().any(|h| {
+                matches!(
+                    server.get_load_state(h),
+                    Some(bevy::asset::LoadState::Failed(_))
+                )
+            }) {
+                warn!("rock pieces failed to load: drawing the procedural rock");
+                self.failed = true;
+            } else if all.clone().all(|h| meshes.contains(h)) {
+                let read = |hs: &[Handle<Mesh>; PIECES]| -> Option<Vec<Piece>> {
+                    hs.iter()
+                        .map(|h| meshes.get(h).and_then(Piece::read))
+                        .collect()
+                };
+                match (read(&self.near), read(&self.far)) {
+                    (Some(n), Some(mut f)) => {
+                        // Picked by the near piece's proportions, so a rock
+                        // keeps its piece as it crosses the near ring.
+                        for (f, n) in f.iter_mut().zip(&n) {
+                            f.size = n.size;
+                        }
+                        self.ready = Some(Arc::new([n, f]));
+                    }
+                    _ => {
+                        warn!("a rock piece has no positions: drawing the procedural rock");
+                        self.failed = true;
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
+        Some(self.ready.clone())
+    }
+}
+
+/// A formation and its mesh, as a task hands them back,
+/// and whether it was meshed with the near pieces.
+type Meshed = (boulder::Formation, Option<Mesh>, bool);
 
 /// The spire models' one primitive and one material each, loaded on first
 /// use and kept across worlds.
@@ -185,8 +306,16 @@ pub fn stream(
     let spires = rocks
         .spires
         .get_or_insert_with(|| SpireModels::load(&server));
+    // Wait for the pieces rather than draw every rock twice.
+    let Some(pieces) = rocks
+        .pieces
+        .get_or_insert_with(|| PieceModels::load(&server))
+        .get(&server, &meshes)
+    else {
+        return;
+    };
     if rocks.seed != Some(world.seed) {
-        for (_, e) in rocks.built.drain() {
+        for (_, (e, _)) in rocks.built.drain() {
             if let Some(e) = e {
                 commands.entity(e).despawn();
             }
@@ -198,7 +327,7 @@ pub fn stream(
     let cx = (eye.pos.x / BOULDER_CELL_M).floor() as i32;
     let cz = (eye.pos.z / BOULDER_CELL_M).floor() as i32;
     let near = |x: i32, z: i32| (x - cx).abs() <= ROCK_RING + 1 && (z - cz).abs() <= ROCK_RING + 1;
-    rocks.built.retain(|&(x, z), e| {
+    rocks.built.retain(|&(x, z), (e, _)| {
         let keep = near(x, z);
         if !keep {
             if let Some(e) = e {
@@ -222,7 +351,7 @@ pub fn stream(
         let Some(mut task) = rocks.meshing.remove(&key) else {
             break;
         };
-        let Some((f, mesh)) = block_on(future::poll_once(&mut task)) else {
+        let Some((f, mesh, near)) = block_on(future::poll_once(&mut task)) else {
             // Finished but not ready: put it back, since dropping it would
             // cancel the work and the cell would be asked for again.
             rocks.meshing.insert(key, task);
@@ -242,7 +371,9 @@ pub fn stream(
                 spire_transform(world.seed, &world.haven, b),
             ));
         }
-        rocks.built.insert(key, Some(cell.id()));
+        if let Some((Some(old), _)) = rocks.built.insert(key, (Some(cell.id()), near)) {
+            commands.entity(old).despawn();
+        }
     }
 
     let mut budget = BUILDS_PER_FRAME * super::stream_boost();
@@ -255,18 +386,30 @@ pub fn stream(
                     continue;
                 }
                 let key = (cx + dx, cz + dz);
-                if rocks.built.contains_key(&key) || rocks.meshing.contains_key(&key) {
+                if rocks.meshing.contains_key(&key) {
                     continue;
+                }
+                let near = pieces.is_some() && r <= PIECE_NEAR_CELLS;
+                match rocks.built.get(&key).copied() {
+                    Some((_, n)) if n == near => continue,
+                    Some((None, _)) => {
+                        rocks.built.insert(key, (None, near));
+                        continue;
+                    }
+                    // Crossed the near ring: rebuilt with the other pieces.
+                    // The old one stands until the new one lands.
+                    Some((Some(_), _)) | None => {}
                 }
                 let f = boulder::formation(world.seed, &world.haven, key.0, key.1);
                 if f.n == 0 {
-                    rocks.built.insert(key, None);
+                    rocks.built.insert(key, (None, near));
                     continue;
                 }
-                let (seed, haven) = (world.seed, world.haven);
+                let (seed, haven, pieces) = (world.seed, world.haven, pieces.clone());
                 let task = pool.spawn(async move {
-                    let mesh = formation_mesh(seed, &haven, &f, live.as_ref());
-                    (f, mesh)
+                    let set = pieces.as_ref().map(|p| p[usize::from(!near)].as_slice());
+                    let mesh = formation_mesh(seed, &haven, &f, live.as_ref(), set);
+                    (f, mesh, near)
                 });
                 rocks.meshing.insert(key, task);
                 budget -= 1;
@@ -857,11 +1000,13 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
 
 /// Every block of a formation, and the loose stones round it, as one mesh:
 /// `None` when the formation is all spires, which are models of their own.
+/// Each block is one of `pieces`, or the procedural rock without them.
 pub fn formation_mesh(
     seed: u64,
     haven: &terrain::Haven,
     f: &boulder::Formation,
     now: Option<&sim_core::blight::Now>,
+    pieces: Option<&[Piece]>,
 ) -> Option<Mesh> {
     let mut soup = RockSoup::default();
     let mut lat = terrain::Lattice::new();
@@ -873,17 +1018,248 @@ pub fn formation_mesh(
             && h0 < terrain::TREELINE_H
             && super::blight::live_fel_memo(now, &mut lat, seed, b.x, b.z, h0) < 0.3;
         let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
-        if b.on == ON_GROUND {
-            rock_block(&mut soup, &r);
-            talus(&mut soup, seed, &r);
-        } else {
+        if b.on != ON_GROUND {
             // Drawn reaching into the block under it, so the seam between
             // the two is a crease and never a gap.
             r.y0 -= STACK_SINK_M;
-            rock_block(&mut soup, &r);
+        }
+        match pieces {
+            Some(p) => piece_block(&mut soup, &r, p),
+            None => rock_block(&mut soup, &r),
+        }
+        if b.on == ON_GROUND {
+            talus(&mut soup, seed, &r);
         }
     }
     (!soup.is_empty()).then(|| soup.mesh(seed, haven))
+}
+
+/// One rock piece's geometry, read once off its loaded mesh.
+#[derive(Clone, Debug)]
+pub struct Piece {
+    /// Positions in its own box: x and z −1..1 across the footprint, pulled
+    /// in off the corners the sim's footprint cuts ([`boulder::CHAMFER`]);
+    /// y 0..1 from its base to its top.
+    pos: Vec<Vec3>,
+    idx: Vec<u32>,
+    /// Its own proportions, width, height and depth, at any scale.
+    size: Vec3,
+    /// How hollow the surface is at each vertex: + in a crack, − on a ridge,
+    /// about ±1 at the most.
+    hollow: Vec<f32>,
+    /// The triangles round each vertex: vertex `v`'s are
+    /// `ring[ring_at[v]..ring_at[v + 1]]`.
+    ring: Vec<u32>,
+    ring_at: Vec<u32>,
+}
+
+impl Piece {
+    /// `None` for a mesh with no positions or no triangles.
+    pub fn read(mesh: &Mesh) -> Option<Piece> {
+        use bevy::mesh::VertexAttributeValues as V;
+        let Some(V::Float32x3(raw)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+            return None;
+        };
+        let raw: Vec<Vec3> = raw.iter().map(|p| Vec3::from_array(*p)).collect();
+        let idx: Vec<u32> = match mesh.indices() {
+            Some(i) => i.iter().map(|k| k as u32).collect(),
+            None => (0..raw.len() as u32).collect(),
+        };
+        if idx.len() < 3 {
+            return None;
+        }
+        let (lo, hi) = raw.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| {
+            (lo.min(*p), hi.max(*p))
+        });
+        let size = (hi - lo).max(Vec3::splat(1e-4));
+        // A crack is a vertex its neighbours stand out in front of, measured
+        // in the piece's own proportions: the mean of its neighbours off its
+        // tangent plane, over the length of its edges.
+        let mut nrm = vec![Vec3::ZERO; raw.len()];
+        let mut mean = vec![Vec3::ZERO; raw.len()];
+        let mut edge = vec![0.0f32; raw.len()];
+        let mut deg = vec![0.0f32; raw.len()];
+        for t in idx.chunks_exact(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|k| k as usize);
+            let n = (raw[b] - raw[a]).cross(raw[c] - raw[a]);
+            for (v, o1, o2) in [(a, b, c), (b, c, a), (c, a, b)] {
+                nrm[v] += n;
+                mean[v] += raw[o1] + raw[o2];
+                edge[v] += raw[o1].distance(raw[v]) + raw[o2].distance(raw[v]);
+                deg[v] += 2.0;
+            }
+        }
+        let hollow = (0..raw.len())
+            .map(|v| {
+                if deg[v] == 0.0 {
+                    return 0.0;
+                }
+                let off = mean[v] / deg[v] - raw[v];
+                let len = (edge[v] / deg[v]).max(1e-6);
+                (off.dot(nrm[v].normalize_or_zero()) / len * 4.0).clamp(-1.0, 1.0)
+            })
+            .collect();
+        let mid = (lo + hi) * 0.5;
+        let mut pos: Vec<Vec3> = raw
+            .iter()
+            .map(|p| {
+                Vec3::new(
+                    (p.x - mid.x) / (0.5 * size.x),
+                    (p.y - lo.y) / size.y,
+                    (p.z - mid.z) / (0.5 * size.z),
+                )
+            })
+            .collect();
+        // Inside the sim's footprint, whose corners are cut.
+        let corner = pos
+            .iter()
+            .map(|p| p.x.abs() + p.z.abs())
+            .fold(0.0, f32::max);
+        let k = ((2.0 - boulder::CHAMFER) / corner).min(1.0);
+        for p in &mut pos {
+            p.x *= k;
+            p.z *= k;
+        }
+        let mut ring_at = vec![0u32; pos.len() + 1];
+        for &v in &idx {
+            ring_at[v as usize + 1] += 1;
+        }
+        for v in 0..pos.len() {
+            ring_at[v + 1] += ring_at[v];
+        }
+        let mut ring = vec![0u32; idx.len()];
+        let mut fill = ring_at.clone();
+        for (k, &v) in idx.iter().enumerate() {
+            ring[fill[v as usize] as usize] = (k / 3) as u32;
+            fill[v as usize] += 1;
+        }
+        Some(Piece {
+            pos,
+            idx,
+            size,
+            hollow,
+            ring,
+            ring_at,
+        })
+    }
+}
+
+/// Which of `pieces` a rock wears, and whether turned a quarter: the one its
+/// box stretches least, in plan first, with a hash so neighbours of the same
+/// shape differ.
+pub fn pick_piece(r: &RockShape, pieces: &[Piece]) -> (usize, bool) {
+    let hgt = (r.y1 - r.y0).max(0.3);
+    let mut best = (f32::INFINITY, 0, false);
+    for (k, p) in pieces.iter().enumerate() {
+        for quarter in [false, true] {
+            let (pw, pd) = if quarter {
+                (p.size.z, p.size.x)
+            } else {
+                (p.size.x, p.size.z)
+            };
+            let (sx, sz, sy) = (2.0 * r.hx / pw, 2.0 * r.hz / pd, hgt / p.size.y);
+            let score = (sx / sz).ln().abs()
+                + 0.5 * (sy / (sx * sz).sqrt()).ln().abs()
+                + PIECE_SHUFFLE * h01(r.key ^ 0x9e3c, k as u32);
+            if score < best.0 {
+                best = (score, k, quarter);
+            }
+        }
+    }
+    (best.1, best.2)
+}
+
+/// Draw one rock into `soup` as a piece stretched into its box: its base at
+/// `y0`, its top on the box's tilted top, turned as [`pick_piece`] says and
+/// a half more by hash. Its normals are its own, smoothed over the shape it
+/// was stretched into up to its creases.
+pub fn piece_block(soup: &mut RockSoup, r: &RockShape, pieces: &[Piece]) {
+    let (k, quarter) = pick_piece(r, pieces);
+    let p = &pieces[k];
+    let half = h01(r.key, 0x4a1f) < 0.5;
+    let world: Vec<Vec3> = p
+        .pos
+        .iter()
+        .map(|u| {
+            // Turns only, never a mirror: a mirror would wind it inside out.
+            let (mut x, mut z) = if quarter { (-u.z, u.x) } else { (u.x, u.z) };
+            if half {
+                (x, z) = (-x, -z);
+            }
+            let (lx, lz) = (x * r.hx, z * r.hz);
+            let top = r.y1 + r.tx * lx + r.tz * lz;
+            let (wx, wz) = r.world(lx, lz);
+            Vec3::new(wx, r.y0 + u.y * (top - r.y0), wz)
+        })
+        .collect();
+    // Each face's normal, area-weighted, in the shape it was stretched into.
+    let face: Vec<Vec3> = p
+        .idx
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|k| k as usize);
+            (world[b] - world[a]).cross(world[c] - world[a])
+        })
+        .collect();
+    // A vertex is drawn once per surface meeting at it ([`PIECE_CREASE`]):
+    // the faces round it go to the first group they lie within the crease
+    // of, and each corner of each face takes its group's vertex.
+    let mut corner = vec![0u32; p.idx.len()];
+    let mut groups: Vec<(Vec3, Vec3, u32)> = Vec::new();
+    for (v, w) in world.iter().enumerate() {
+        groups.clear();
+        for &t in &p.ring[p.ring_at[v] as usize..p.ring_at[v + 1] as usize] {
+            let f = face[t as usize];
+            let fu = f.normalize_or_zero();
+            match groups.iter_mut().find(|g| g.0.dot(fu) >= PIECE_CREASE) {
+                Some(g) => g.1 += f,
+                None => groups.push((fu, f, 0)),
+            }
+        }
+        for g in groups.iter_mut() {
+            g.2 = soup.pos.len() as u32;
+            let n = g.1.normalize_or_zero();
+            soup_vertex(soup, r, p, v, *w, n);
+        }
+        for &t in &p.ring[p.ring_at[v] as usize..p.ring_at[v + 1] as usize] {
+            let fu = face[t as usize].normalize_or_zero();
+            let g = groups
+                .iter()
+                .find(|g| g.0.dot(fu) >= PIECE_CREASE)
+                .map_or(groups[0].2, |g| g.2);
+            let t = t as usize;
+            for k in 0..3 {
+                if p.idx[3 * t + k] as usize == v {
+                    corner[3 * t + k] = g;
+                }
+            }
+        }
+    }
+    for t in corner.chunks_exact(3) {
+        soup.face(t[0], t[1], t[2]);
+    }
+}
+
+/// One drawn vertex of a piece: moss on what faces up, darker in its cracks
+/// and at its foot.
+fn soup_vertex(soup: &mut RockSoup, r: &RockShape, p: &Piece, v: usize, w: Vec3, n: Vec3) {
+    let moss = if r.moss > 0.0 {
+        // As `rock_block`'s: patches on what faces up.
+        let m = ((n.y - 0.6) / 0.3).clamp(0.0, 1.0);
+        let patch = (noise3(w * 0.22, r.key ^ 0x3c) * 1.8 - 0.5).clamp(0.0, 1.0);
+        m * m * (3.0 - 2.0 * m) * patch * 0.85 * r.moss.min(1.0)
+    } else {
+        0.0
+    };
+    let up = ((w.y - r.y0) / (r.y1 - r.y0).max(0.3)).clamp(0.0, 1.0);
+    // Darker in the cracks and lighter on the ridges, and a broad mottle so
+    // no two faces of one rock are one flat grey.
+    let mottle = 0.85 + 0.3 * noise3(w * (1.0 / 3.5), r.key ^ 0x9e);
+    let value = r.value
+        * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up)
+        * (1.0 - PIECE_HOLLOW_DARK * p.hollow[v])
+        * mottle;
+    soup.vertex(w, n, moss, value);
 }
 
 #[cfg(test)]
@@ -956,5 +1332,119 @@ mod tests {
             bad, 0,
             "{bad} of 400 rocks have triangles facing in, or holes"
         );
+    }
+
+    /// A shipped piece as `ci/rock_piece.py` writes it: positions and u32
+    /// indices, tightly packed.
+    fn shipped(path: &str) -> Mesh {
+        let raw = std::fs::read(format!("../../assets/{path}")).expect(path);
+        let jl = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+        let js: serde_json::Value = serde_json::from_slice(&raw[20..20 + jl]).unwrap();
+        let bin = &raw[20 + jl + 8..];
+        let view = |acc: usize| {
+            let a = &js["accessors"][acc];
+            let v = &js["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+            let at = v["byteOffset"].as_u64().unwrap_or(0) as usize;
+            let n = v["byteLength"].as_u64().unwrap() as usize;
+            bin[at..at + n]
+                .chunks_exact(4)
+                .map(|b| [b[0], b[1], b[2], b[3]])
+                .collect::<Vec<_>>()
+        };
+        let prim = &js["meshes"][0]["primitives"][0];
+        let pos: Vec<[f32; 3]> = view(prim["attributes"]["POSITION"].as_u64().unwrap() as usize)
+            .chunks_exact(3)
+            .map(|c| [0, 1, 2].map(|k| f32::from_le_bytes(c[k])))
+            .collect();
+        let idx = view(prim["indices"].as_u64().unwrap() as usize)
+            .into_iter()
+            .map(u32::from_le_bytes)
+            .collect();
+        Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::MAIN_WORLD,
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_indices(Indices::U32(idx))
+    }
+
+    /// Every shipped piece, near and far, is closed and faces out once it is
+    /// stretched into a block: a hole or a flipped triangle in a delivery is
+    /// sky through the rock, which is what `ci/rock_piece.py` caps.
+    #[test]
+    fn every_shipped_piece_is_sealed() {
+        for path in PIECE_GLB.iter().chain(&PIECE_FAR_GLB) {
+            let piece = Piece::read(&shipped(path)).expect(path);
+            let r = RockShape {
+                x: 3.0,
+                z: -4.0,
+                hx: 4.0,
+                hz: 3.0,
+                dir: (0.6, 0.8),
+                y0: 0.0,
+                y1: 4.0,
+                tx: 0.2,
+                tz: -0.1,
+                key: 11,
+                moss: 1.0,
+                chisel: 0.0,
+                min_seg: 2,
+                value: ROCK_VALUE,
+                underside: true,
+            };
+            let mut soup = RockSoup::default();
+            piece_block(&mut soup, &r, std::slice::from_ref(&piece));
+            // A flipped triangle leaves its edges with no reverse too, so
+            // this is both. (A pinch, where two sheets of a crack touch
+            // along an edge, is walked twice each way, and closed.)
+            let (_, open) = winding(&soup);
+            assert_eq!(open, 0, "{path}: {open} edges with no reverse");
+        }
+    }
+
+    /// A piece stretched into a block stands inside the box the sim
+    /// collides — its corners cut, its top tilted — on every turn, so no
+    /// drawn rock is rock a body walks into.
+    #[test]
+    fn a_piece_stands_inside_its_block() {
+        // A piece filling its own box, past the cut corners and off-centre,
+        // as a delivery would be.
+        let mut cube = Mesh::from(Cuboid::new(3.0, 2.0, 1.6));
+        cube.translate_by(Vec3::new(5.0, 1.0, -2.0));
+        let piece = Piece::read(&cube).expect("piece");
+        for k in 0..200u32 {
+            let h = |c: u32| h01(k, c);
+            let b = boulder::Block {
+                x: 30.0 * h(1),
+                z: 30.0 * h(2),
+                hx: 0.8 + 10.0 * h(3),
+                hz: 0.8 + 10.0 * h(4),
+                // Under its top's lowest corner, as `boulder::seat` buries it.
+                y0: -12.0,
+                y1: 4.0 + 6.0 * h(5),
+                tx: (h(6) - 0.5) * boulder::TILT_MAX * 2.0,
+                tz: (h(7) - 0.5) * boulder::TILT_MAX * 2.0,
+                yaw: (h(8) * 65535.0) as u16,
+                shape: (h(9) * 255.0) as u8,
+                on: ON_GROUND,
+                kind: 0,
+            };
+            let r = RockShape::of(7, &b, 1.0);
+            let mut soup = RockSoup::default();
+            piece_block(&mut soup, &r, std::slice::from_ref(&piece));
+            for p in &soup.pos {
+                let (x, y, z) = (p[0], p[1], p[2]);
+                let s = boulder::surface(&b, x, z, 0.01);
+                let Some((top, _, bottom)) = s else {
+                    panic!("block {k}: ({x}, {z}) is off the footprint of {b:?}");
+                };
+                assert!(
+                    y <= top + 0.01 && y >= bottom - 0.01,
+                    "block {k}: y {y} outside {bottom}..{top}"
+                );
+            }
+            let (twice, open) = winding(&soup);
+            assert_eq!((twice, open), (0, 0), "block {k}: the box drawn inside out");
+        }
     }
 }

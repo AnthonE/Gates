@@ -26,11 +26,12 @@ of that seam and the launcher needs no knowledge of this game whatsoever.
 ## Three things this deliberately does NOT do
 
 **It does not compute the depot digest.** The digest is the bytes32 that gets
-notarized on chain, and `scrylauncher.depot.digest()` is its one implementation
-— a second one here would be exactly the bug elo's invariant 3 is about, with
-the added charm that the two would only disagree on some file nobody thought to
-test. If an `elo` binary is on PATH this script shells out to `elo digest` (or `scry digest`, the same binary's former name);
-otherwise it prints the command and stops short of guessing.
+notarized on chain, and the launcher's (`elo-depot`'s `digest()`) is its one
+implementation — a second one here would be exactly the bug elo's invariant 3
+is about, with the added charm that the two would only disagree on some file
+nobody thought to test. If an `elo` binary is on PATH this script shells out
+to `elo digest` (or the same binary under its former name); otherwise it
+prints the command and stops short of guessing.
 
 **It does not publish.** Publishing is an operator act (`CLAUDE.md`): a build
 goes live when the origin's `published.json` names it, and that file is written
@@ -89,7 +90,7 @@ PLATFORM = "linux-x86_64"
 DEPOT_VERSION = 1
 
 # ── the platforms this packager can produce ──────────────────────────────────
-# **The tag is the launcher's vocabulary, not ours.** `scry-depot`'s `PLATFORMS`
+# **The tag is the launcher's vocabulary, not ours.** `elo-depot`'s `PLATFORMS`
 # is the list a manifest is validated against and Windows is spelled
 # `win-x86_64` there — `windows-x86_64` is not a near-miss, it is refused as
 # `unknown platform` and the row never renders. The tag is also the key in
@@ -150,8 +151,8 @@ TARGETS = {
 # depots published BEFORE it keep the old two-segment url forever. The origin
 # still serves that shape; a published depot's location is part of what was
 # sealed on chain, so it can never be moved.
-# ⚠ THE HOST MOVED. `scry.moreright.xyz` was retired 2026-08-20 and now answers
-# 410 Gone; the platform is `elopros.com`. A depot packaged with the old root
+# ⚠ THE HOST MOVED. The platform's former host was retired 2026-08-20 and now
+# answers 410 Gone; the platform is `elopros.com`. A depot packaged with the old root
 # names its files on a dead host, which is exactly what happened to
 # 0.5.0-gce57499e6 — it installed nowhere until this line was fixed. Only the
 # PLATFORM host moved: `game.moreright.xyz` is the public shard and is live.
@@ -168,7 +169,7 @@ DEFAULT_ROOT = ("https://elopros.com/api/launcher/depot"
 # `{servers}` is why the intro screen was empty over a live shard: the list was
 # published and the url was set, and nothing on the argv could carry it, so the
 # in-game browser only ever knew the loopback default. It needs a launcher
-# holding scry-depot's `ARG_VARS` with "servers" in it — an older one refuses
+# holding elo-depot's `ARG_VARS` with "servers" in it — an older one refuses
 # the whole launch rather than passing a literal `{servers}` through, which is
 # the right failure but a loud one, so this line and that one ship together.
 LAUNCH_ARGS = ["--server", "{server}", "--identity", "{wallet}",
@@ -559,7 +560,7 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
     # could have caught it — which is why the rule has to be structural rather
     # than a check. `.gitignore` is already the single author of what is not
     # ours to ship; reading it here means the packager cannot disagree with it.
-    # elo's `deploy/publish_scryward.py` makes the same choice for the same
+    # elo's `deploy/publish_elo_pros_launcher.py` makes the same choice for the same
     # reason, and states it as the trap it has paid for seven times.
     #
     # It also has teeth beyond size: the candidates are *unvetted* licence
@@ -837,7 +838,7 @@ def self_test() -> int:
        "an asset is never marked executable")
 
     # ── the platform table ───────────────────────────────────────────────────
-    # These tags are not ours to spell. `scry-depot`'s PLATFORMS is what a
+    # These tags are not ours to spell. `elo-depot`'s PLATFORMS is what a
     # manifest is validated against and what `platform_tag()` computes on the
     # player's machine, so a tag that is merely *plausible* — `windows-x86_64`,
     # `win64` — is refused as `unknown platform` and the row never renders.
@@ -985,9 +986,9 @@ def main() -> int:
     # The digest is elo's to compute, not ours. One implementation, and this
     # is not it (elo CLAUDE.md invariant 3).
     print()
-    # `scry` is the same binary under its former name. The rename landed in
+    # The same binary also answers to its former name. The rename landed in
     # this repo before it landed in the launcher, so a box that installed the
-    # CLI last week has `scry` on PATH and nothing else — and the failure mode
+    # CLI before then has only that name on PATH — and the failure mode
     # if we only looked for `elo` is a printed instruction to run a command
     # that is not installed, which reads as "notarize it by hand" and is
     # silently wrong. Prefer the new name; take the old one.
@@ -997,7 +998,7 @@ def main() -> int:
         print(f"   digest {digest}" if digest else
               f"   `{cli} digest` produced nothing — run it by hand")
     else:
-        print(f"   digest: run `elo digest {index}` (no `elo` or `scry` on PATH here).")
+        print(f"   digest: run `elo digest {index}` (no `elo` binary on PATH here).")
         print("   This script does NOT compute it — one implementation, and it lives "
               "in the launcher.")
 
@@ -1014,7 +1015,7 @@ def main() -> int:
           f"d=json.loads(p.read_text()) if p.exists() else {{}};"
           f"d['{a.platform}']='{build}';"
           f"p.write_text(json.dumps(d))\"   # on <origin>")
-    print("   ...and notarize the digest with ScryNotary on 4663.")
+    print("   ...and notarize the digest with the notary contract on 4663.")
     print("   Until published.json names it, the manifest's native row stays a slot.")
     return 0
 

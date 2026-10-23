@@ -2465,6 +2465,11 @@ pub struct Mind {
 }
 
 impl Mind {
+    /// Its next decision may go at `now` (`Survivor::set_clock`).
+    pub fn set_clock(&mut self, now: Instant) {
+        self.next_allowed = now;
+    }
+
     /// Decisions on a dedicated worker thread: the shape for any source
     /// that blocks or allocates (Jev's HTTP, an external agent's pipes).
     pub fn new(source: impl DecisionSource, cfg: MindConfig) -> Result<Self, String> {

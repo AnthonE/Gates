@@ -102,8 +102,8 @@ echo "== gate: anomaly verdict (ci/anomaly_verdict.py --self-test)"
 $NICE python3 ci/anomaly_verdict.py --self-test || fail "anomaly verdict"
 
 # The third seam onto elo, and the only one where this repo is the AUTHOR
-# rather than the source of a build. `scry.json` is our store row and our
-# community feed; `scry.sig.json` signs its exact bytes, and elo applies the
+# rather than the source of a build. The manifest is our store row and our
+# community feed; the `.sig.json` beside it signs its exact bytes, and elo applies the
 # pair or neither. The failure this catches is the ordinary one — edit the
 # manifest, forget to re-sign — which elo refuses silently as far as we can
 # see from here: the row simply stops moving. Local properties only (the

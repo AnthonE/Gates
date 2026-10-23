@@ -1186,3 +1186,114 @@ fn trace() {
     let (a, r) = rig::bout(s);
     println!("{r:?}\n{}", a.explain());
 }
+
+/// **A bred brain makes the wolf calls, only those, and stays a person**
+/// (`--tactics`, `agent::combat::set_tactics`). Against a pack, one that
+/// always runs never draws blood where the sum does, and one that wants a
+/// hand its belt has not got fights with the hand it has. Against a person
+/// it is never asked: a brain that always runs plays a rusher, and the
+/// gate's own aimbot bouts, to the same world hash as the sum, so every
+/// ceiling the sum is held to holds. Every frame stays inside its hands'
+/// turn and off the heap.
+#[test]
+fn a_bred_brain_makes_the_wolf_calls_and_stays_human() {
+    use server::agent::combat::{TACTIC_MELEE, TACTIC_RUN};
+    use server::explorer::SurvivorOpts;
+    // People: the brain changes nothing.
+    let with = |seat, gear, dist, choice, seed| {
+        let mut s = Setup::new(seat, gear, gear, dist, seed);
+        s.always = choice;
+        s
+    };
+    let mut people = Vec::new();
+    for seed in 0..4 {
+        people.push(with(Seat::Rusher, Gear::SPEAR, 8.0, Some(TACTIC_RUN), seed));
+        people.push(with(Seat::Rusher, Gear::SPEAR, 8.0, None, seed));
+    }
+    for gear in [Gear::ROCK, Gear::SPEAR] {
+        for dist in DISTANCES {
+            people.push(with(Seat::Aimbot, gear, dist, Some(TACTIC_RUN), 0));
+            people.push(with(Seat::Aimbot, gear, dist, None, 0));
+        }
+    }
+    let records = sweep(&people);
+    for (pair, r) in people.chunks(2).zip(records.chunks(2)) {
+        let what = format!(
+            "{} seed {}: {:?} v {:?}",
+            label(&pair[0]),
+            pair[0].seed,
+            r[0],
+            r[1]
+        );
+        assert_eq!(
+            r[0].hash, r[1].hash,
+            "the brain was asked about a person: {what}"
+        );
+        for r in r {
+            assert_eq!(r.heap_ops, 0, "the agent's frames touched the heap: {what}");
+            assert!(r.max_turn <= r.turn_cap, "turned past its hands: {what}");
+        }
+    }
+
+    // Wolves: the brain decides.
+    let content = content();
+    let gear = |id: &str, ammo: Option<(&str, u16)>| {
+        (
+            stack(&content, id),
+            ammo.map(|(r, n)| {
+                let mut s = stack(&content, r);
+                s.count = n;
+                s
+            }),
+        )
+    };
+    let spear = gear("item.spear_wood", None);
+    let bow = gear("item.bow", Some(("item.arrow_wood", 40)));
+    let mut packs = Vec::new();
+    for seed in 0..4u32 {
+        packs.push(("runs", spear, Some(TACTIC_RUN), seed));
+        packs.push(("the sum", spear, None, seed));
+        packs.push(("no such hand", bow, Some(TACTIC_MELEE), seed));
+    }
+    let records: Vec<PackRecord> = std::thread::scope(|scope| {
+        let runs: Vec<_> = packs
+            .iter()
+            .map(|&(_, (arm, ammo), always, seed)| {
+                scope.spawn(move || {
+                    let opts = SurvivorOpts {
+                        temperament: Temperament::Opportunist,
+                        ..SurvivorOpts::default()
+                    };
+                    let pack = Pack {
+                        n: 2,
+                        dist_m: 20.0,
+                        bearing: (seed * 16_384) as u16,
+                        limit: 60 * TICK_HZ,
+                        always,
+                    };
+                    let nets = sim_core::brain::Nets::default();
+                    pack_bout(opts, ID + 2 * seed, arm, ammo, pack, nets).1
+                })
+            })
+            .collect();
+        runs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut sum_drew = 0.0;
+    for ((gate, _, _, seed), r) in packs.iter().zip(&records) {
+        let what = format!("{gate} seed {seed}: {r:?}");
+        assert_eq!(r.heap_ops, 0, "the agent's frames touched the heap: {what}");
+        assert!(r.max_turn <= r.turn_cap, "turned past its hands: {what}");
+        match *gate {
+            "runs" => assert!(
+                r.wolves_dead == 0 && r.pack_lost == 0.0,
+                "a body told to run from wolves fought them: {what}"
+            ),
+            "the sum" => sum_drew += r.pack_lost,
+            _ => assert!(r.pack_lost > 0.0, "a bow told to swing never shot: {what}"),
+        }
+    }
+    assert!(
+        sum_drew > 0.0,
+        "the sum never fought the pack back, so 'runs' proves nothing"
+    );
+}

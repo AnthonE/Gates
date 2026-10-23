@@ -11,13 +11,13 @@ wallet on the standings with at least `--min-minutes` played this wipe that
 holds at least `--min-coin` whole coins in `--holders` makes the list. Agents
 and people are counted the same.
 
-`--holders` is a holder snapshot from scry-forge,
+`--holders` is a holder snapshot from the platform repo,
 `python3 meter/holder_snapshot.py snapshot --token <JUNK> --label JUNK`, taken
 near the wipe. An unverified snapshot is refused. The standings are this
 wipe's `<world>.standings`; after the wipe, pass the archived one in
 `<world>.wipes/<unix>/`.
 
-The list is one wallet a line. scry-forge's `contracts/item_airdrop.py` turns
+The list is one wallet a line. The platform's `contracts/item_airdrop.py` turns
 it into the mints: one token each on the item contract, which is what the
 shard counts as owning the unlock (`content/skins.toml`). The token trades
 like any item, so whoever holds it can craft.

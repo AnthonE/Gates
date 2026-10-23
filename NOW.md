@@ -846,7 +846,7 @@ The arc is `DESIGN.md` §11 (M0 landed → M1 → M2 → M3 → M4); `ALPHA.md` 
 1. **Anti-ESP occlusion culling**, server-side (none in `crates/server/src/interest.rs` or `sim-core`): the grid
    is a pure function of the seed — bake at worldgen, look up in the tick. After M2.
 2. **`elo_overlay.rs`'s drift check is built** (`ci/elo_drift.sh`, nightly job `elo-drift`) and dark until
-   the operator adds the `SCRY_FORGE_TOKEN` secret (read access to `AnthonE/scry-forge`).
+   the operator adds the `SCRY_FORGE_TOKEN` secret (read access to the private platform repo).
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall catches jumps the playtest.
 
@@ -898,11 +898,13 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
 
 ## 0rn · The rename's six loose ends *(operator, mostly)*
 
-1. **(operator, wallet)** Re-sign `scry.json` at seq 6 (key on morr): `_next`
-   answers 410, `_version` names `ci/scry_manifest.py` (now `ci/elo_manifest.py`).
-   Hands off the signed bytes; names follow `/api/library/GAME-REPO.md` on the day.
-3. **(operator)** Coins are being redeployed; `/api/onchain`'s SCRY/OBOL/MYRRH is
-   the outgoing set. Never type a new-coin number here — it's `scry-forge`'s copy.
+1. **(operator, wallet)** Move the store manifest to `elo.json` / `elo.sig.json`
+   and re-sign it (key on morr; the steps are in `ci/elo_manifest.py`'s header).
+   The committed pair still carries the platform's former name, its `_next` link
+   answers 410, and its `_version` names the script's old filename. Hands off the
+   signed bytes; names follow `/api/library/GAME-REPO.md` on the day.
+3. **(operator)** Coins are being redeployed; `/api/onchain`'s retired coins are
+   the outgoing set. Never type a new-coin number here — it's the platform's copy.
 4. The launcher should accept `elo-shardlist-v1` (`ci/shardlist.py`) before the
    next publish.
 
@@ -912,7 +914,7 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
    no page serves it.
 2. No intake, on purpose (the client opens no socket); an endpoint is its own slice.
 3. The launcher lacks a `report` signing family, so `report.rs::sign_text` is
-   refused. Add it upstream (`scry-forge`), re-vendor; unblocks (4).
+   refused. Add it upstream (the platform repo), re-vendor; unblocks (4).
 4. **Operator:** how much a report pays against a PR's 100,000, and on merge or
    earlier (`DECISIONS.md` §open "bug reports v0"); the rail is built.
 
@@ -933,7 +935,7 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
 2. Does the msvc GitHub release zip need the VC++ redist? `release.yml`'s notes
    say nothing for Windows.
 3. Not ours: elo's launcher manifest on morr says the Windows row bundles nothing
-   (three DLLs ship); fix it on morr — no `scry.json` re-sign can.
+   (three DLLs ship); fix it on morr — no store-manifest re-sign can.
 
 ## 0rl · The release path — two operator acts, and a tester's question *(platform lane)*
 
@@ -946,7 +948,7 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
 
 ## 0ab · The store seam — what only an operator can finish *(platform lane)*
 
-⚠ `scry.moreright.xyz` anywhere in prose is dead (410); the platform is `elopros.com`.
+⚠ The platform's former host answers 410 wherever prose names it; use `elopros.com`.
 
 1. **Operator, every release: publish** — live once the origin's `published.json`
    names the build and its digest is notarized (`elo digest` can't run here).
@@ -959,18 +961,19 @@ Standing rule: anything a playtest breaks jumps this queue; anything a wall catc
 
 ## 0ad · The ticket door waits on a deployed contract and a spoken sweep *(platform lane)*
 
-1. **When `ScryGameTicket:GATES` is deployed**, drive the door (`tickets.py`) with
-   one wallet that owns a copy and one that doesn't; until then all are `entitled: true`.
+1. **`EloGameTicket:GATES` is deployed** and `/api/ticket/gates` names it: drive the
+   door (`tickets.py`) with one wallet that owns a copy and one that doesn't; until
+   `entitle_origin` is set in `shard-public.toml`, all are `entitled: true`.
 2. **Operator: speak the sweep interval** — `DEFAULT_SWEEP_SECS = 120` is how long
    a sold copy keeps playing (`DECISIONS.md` §open "ticket door v0", PROPOSED).
 
 ## 0sl · The shard list reaches the game — two operator acts, in order
 
-1. **Ship the launcher** with `servers` in `ARG_VARS` (`scry-forge`, `launcher-rs`)
+1. **Ship the launcher** with `servers` in `ARG_VARS` (the platform's `launcher-rs`)
    first — an older launcher refuses a depot that uses `{servers}`.
 2. **Then re-publish the depot** with `--servers {servers}` (`python3 ci/depot.py`,
    elo `docs/client/LAUNCHER.md` §8): fills the empty in-game browser and drops the
-   dead `scry.moreright.xyz`. Meanwhile: `--servers <url>`.
+   dead former host. Meanwhile: `--servers <url>`.
 
 ## 0s · The front door — the two acts that are not ours *(client lane)*
 
@@ -1010,7 +1013,7 @@ is a browser's only path — never drop that layer (struck §0wt).
   held only in the desktop launcher has no web door.
 - Nothing gates that `wtransport rev = a11e6a8e…` holds the #317 fix; the pin is permanent.
 - **Operator:** publish with `ci/publish_web.sh` (served by
-  `scry-forge/deploy/nginx/elopros.com.conf`).
+  the platform's `deploy/nginx/elopros.com.conf`).
 - **Operator:** Cloudflare doesn't cache the 8.6 MB module; a cache rule needs a
   purge-on-publish beside it, and no box has the credential.
 - After a handshake change run `slow-signer.mjs` beside `smoke.mjs`. The harness
@@ -1034,8 +1037,7 @@ is a browser's only path — never drop that layer (struck §0wt).
   merge gate is policy); add a same-named no-op for paths `gates.yml` filters out.
 - **(operator, once)** Settle `gates-pr` on the next accepted PR: public transfer,
   row appended elo-side.
-- **(operator, GitHub)** The About homepage still points at dead `scry.moreright.xyz`.
-- `scry.json` has no `jobs` key, so this repo posts no board lane (rows stay house-side).
+- The store manifest has no `jobs` key, so this repo posts no board lane (rows stay house-side).
 
 ---
 

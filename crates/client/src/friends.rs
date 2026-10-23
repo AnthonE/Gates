@@ -3,9 +3,10 @@
 //! accepts, declines, cancels, removes, blocks or unblocks one, or invites a
 //! friend into the game.
 //!
-//! The platform owns the list (`docs/client/FRIENDS.md` in
-//! `AnthonE/scry-forge`, `meter/friends.py`): `GET /api/friends/{wallet}` is
-//! public, and every change is prepare → sign → act. Presence comes from the
+//! The platform owns the list (`docs/FRIENDS.md` in
+//! `AnthonE/elo-pros-launcher`; its `meter/friends.py`):
+//! `GET /api/friends/{wallet}` is public, and every change is prepare → sign →
+//! act. Presence comes from the
 //! shards' own rosters, never from what a client says, so it lags by about a
 //! minute and a half.
 //!

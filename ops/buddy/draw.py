@@ -3,7 +3,7 @@
 
 Original pixel art, CC0 (ours). 32x32 drawn here, scaled 8x with nearest
 neighbour to 256x256: a square 8-bit RGB PNG, which is what the platform's
-face rule takes (scry-forge meter/faces.py: 64-512 px, at most 256 KiB).
+face rule takes (`meter/faces.py`: 64-512 px, at most 256 KiB).
 
     python3 ops/buddy/draw.py            # rewrites doctor-wood.png beside it
 """

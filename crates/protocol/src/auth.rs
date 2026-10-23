@@ -282,7 +282,7 @@ pub struct Auth {
 /// The verb that works is `prove`, where the LAUNCHER writes every word so a
 /// game cannot smuggle a sentence into a signature. That makes this function a
 /// **recomputation of somebody else's format**: it must equal
-/// `scry_broker::protocol::prove_message` byte for byte or nothing verifies.
+/// `elo_broker::protocol::prove_message` byte for byte or nothing verifies.
 /// Four of its fields are theirs and are not ours to prefer — the statement,
 /// `https://` (not a custom scheme), chain 4663, and an ISO-8601 `Issued At`.
 ///
@@ -368,7 +368,7 @@ pub fn companion_message(
 }
 
 /// The chain the launcher names in a proof. **Theirs, not ours**
-/// (`scry_broker::protocol::CHAIN_ID`) — we recompute their message, so a
+/// (`elo_broker::protocol::CHAIN_ID`) — we recompute their message, so a
 /// number we preferred here would simply fail to verify.
 pub const CHAIN_ID: u64 = 4663;
 
@@ -438,7 +438,7 @@ impl TextWriter<'_> {
     ///
     /// Reimplemented rather than pulled in: this crate takes no dependency for
     /// four lines of arithmetic, and the algorithm is Howard Hinnant's
-    /// `civil_from_days`, the same one `scry_broker::protocol` uses. The pinned
+    /// `civil_from_days`, the same one `elo_broker::protocol` uses. The pinned
     /// golden below is what actually holds the two together — an agreement
     /// between two crates in two repos is a claim, and only a test is evidence.
     fn iso8601(&mut self, unix_secs: u64) {
@@ -588,7 +588,7 @@ mod tests {
         );
         let text = core::str::from_utf8(&buf[..n]).expect("the message is utf-8");
         // **This is elo's format, transcribed.** It must equal what
-        // `scry_broker::protocol::prove_message` writes for the same inputs;
+        // `elo_broker::protocol::prove_message` writes for the same inputs;
         // the launcher signs THAT, and a shard that recomputes anything else
         // rejects every honest login. Changing a byte here is changing what
         // the launcher does, not what we prefer.

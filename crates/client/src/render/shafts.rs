@@ -128,6 +128,18 @@ pub const SHAFT_MIN_T: f32 = 1e-3;
 /// (`quality::SHADOW_M_LADDER`) leave no room beside the fog layer's height.
 pub const SHAFT_MIN_REACH_M: f32 = 30.0;
 
+/// The most optical depth a hill at the sight line may lose at the frame's
+/// side edge to the volume's view-depth march ([`split`]): under a tenth of
+/// the weather's 3, so the edge reads at most a third more of it.
+pub const SHAFT_EDGE_LOSS: f32 = 0.29;
+
+/// `cos θ` at the frame's side edge: 16:9 at the rig's field of view.
+fn edge_along() -> f32 {
+    ((super::rig::FOV_DEG.to_radians() * 0.5).tan() * 16.0 / 9.0)
+        .atan()
+        .cos()
+}
+
 /// This frame's split, written by `rig::day_night` (the one owner of the
 /// fog) and read by the sky fog (`deck::drive`). `volume == 0` is off: the
 /// flat fogs carry the whole weather, exactly as before this file existed.
@@ -207,6 +219,17 @@ pub fn split(fog: f32, rain: f32, share: f32, reach: f32) -> Shafts {
     }
     let seen = 3.0 / sigma;
     let inside = (reach / seen).min(1.0);
+    // Bevy marches view depth, so a ray toward the frame's side edge carries
+    // `cos θ` of the volume and the flat fog does not make it up. Capped
+    // where that would cost a hill at the sight line more than
+    // [`SHAFT_EDGE_LOSS`] of its 3 optical depths: a bright sun against a
+    // dim fill (the desert's) asks for more volume than the edge can lose.
+    let across = reach.min(seen) * (1.0 - edge_along());
+    let volume = if across > 0.0 {
+        volume.min(SHAFT_EDGE_LOSS / across)
+    } else {
+        volume
+    };
     Shafts {
         flat: fog - volume * inside,
         volume,

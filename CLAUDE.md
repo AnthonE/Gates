@@ -121,8 +121,8 @@ python3 ci/deploy_kind.py                            # what this branch takes to
 - Pushing a branch is fine. Never force-push `main`.
 - Assets are CC0 or CC-BY (credited in the manifest). No NC or SA, because
   the game is sold. Never copy Rust's (Facepunch's) own art.
-- `crates/client/src/elo_overlay.rs` is vendored from `AnthonE/scry-forge`
-  and a test pins its hash. Fix it upstream and re-copy.
+- `crates/client/src/elo_overlay.rs` is vendored from the Elo Pros
+  platform repo (private) and a test pins its hash. Fix it upstream and re-copy.
 - The old JavaScript client (`web/`) stays deleted. The browser build is the
   Rust client compiled to wasm.
 - The autonomous loop lives outside the repo (`/mnt/hive-data/gates-loop`,

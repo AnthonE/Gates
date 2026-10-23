@@ -36,6 +36,15 @@
 //! defensive one only answers attacks, an opportunist also starts a fight
 //! it has a clear edge in, and a kill-on-sight one starts any it is not
 //! losing. Everything it knows of other bodies comes from [`Tracks`].
+//!
+//! **A bred brain may make the call instead** ([`Combat::set_tactics`],
+//! `jev-bot --tactics ga1:…`): a small net (`sim_core::genome`) bred in the
+//! arena (`examples/zoo.rs --agent`) that reads the same sum and the same
+//! tracks and says fight, fight close, fight at range, or run, where the
+//! sum's `losing` and the range's hand used to. It decides nothing else:
+//! a passive body still always runs, an unarmed one runs, the safe zone is
+//! still never fought, and the eyes and hands are the human ones they
+//! were. With no brain set, nothing here changes.
 
 use super::hands::part_height;
 use super::intent::{yaw_toward, Intent, Look};
@@ -250,6 +259,44 @@ pub const WEAVE_SETTLE_TICKS: u32 = 7;
 pub const WEAVE_FIRE_TICKS: u32 = 16;
 /// A swung weapon closing inside this is backed away from while shooting.
 pub const KITE_M: f32 = 8.0;
+
+/// A bred brain's choices for a fight ([`Combat::set_tactics`]): fight with
+/// the hand the range calls for (the hand-written choice), fight close,
+/// fight at range, or run.
+pub const TACTIC_FIGHT: u8 = 0;
+pub const TACTIC_MELEE: u8 = 1;
+pub const TACTIC_RANGED: u8 = 2;
+pub const TACTIC_RUN: u8 = 3;
+pub const TACTICS: usize = 4;
+/// What it reads ([`tactics_features`]) and how wide it thinks.
+pub const TACTICS_IN: usize = 24;
+pub const TACTICS_HIDDEN: usize = 16;
+/// The text a bred tactics genome starts with: shape 24-16-4 reading
+/// [`tactics_features`]. A change to either is a new prefix.
+pub const TACTICS_PREFIX: &[u8; 4] = b"ga1:";
+/// A choice holds this long before the brain is asked again: half a
+/// second, so it cannot flicker between a charge and a retreat.
+pub const TACTIC_HOLD_TICKS: u32 = 15;
+
+/// The bred brain every agent fights wolves with unless told otherwise
+/// (`jev-bot --tactics`): `examples/zoo.rs --agent --seed 2`, four
+/// mutations kept in 100 generations. On 192 fights no stage of breeding
+/// saw (`--held-from 3001`), against the rule-table wolf it went down in 5%
+/// of fights to the sum's 9% and lost 31% of its hp to the sum's 49%;
+/// against the bred wolf it won 34% to 25%. Against people it is never
+/// asked ([`Combat::tactic`]).
+pub const DEFAULT_TACTICS: &str = "ga1:_kg9waqK-QGQkHgY";
+
+pub fn default_tactics() -> sim_core::genome::Genome {
+    sim_core::genome::Genome::decode(TACTICS_PREFIX, DEFAULT_TACTICS.as_bytes())
+        .expect("DEFAULT_TACTICS is a ga1: genome")
+}
+
+/// The tactics brain's shape.
+pub fn tactics_shape() -> sim_core::genome::Shape {
+    sim_core::genome::Shape::new(TACTICS_IN, TACTICS_HIDDEN, TACTICS)
+        .expect("the tactics net is inside genome.rs's caps")
+}
 /// A body aiming something that shoots at me from within this is dodged,
 /// for this long at a stretch, and then not again for this long unless it
 /// shoots: two bodies each dodging the other's aim would otherwise dance
@@ -584,6 +631,10 @@ pub struct Combat {
     /// Since when a shot at a weaving player has been ready but for the
     /// moment in its weave.
     held_shot: Option<u32>,
+    /// A bred brain making the fight-or-run call ([`Combat::set_tactics`]).
+    tactics: Option<Box<sim_core::genome::Net>>,
+    /// Its last choice: the choice, since when, and against which body.
+    tactic: Option<(u8, u32, u32)>,
     rng: Pcg32,
     pub stats: CombatStats,
 }
@@ -709,8 +760,64 @@ impl Combat {
             drawer: None,
             glance: None,
             held_shot: None,
+            tactics: None,
+            tactic: None,
             rng: Pcg32::new(0, 0),
             stats: CombatStats::default(),
+        }
+    }
+
+    /// Let a bred brain make the fight-or-run call and choose the hand
+    /// against wolves ([`tactics_shape`]); `None` puts the sum back.
+    pub fn set_tactics(&mut self, net: Option<sim_core::genome::Net>) {
+        self.tactics = net.map(Box::new);
+        self.tactic = None;
+    }
+
+    /// The bred brain's choice against `t`, held [`TACTIC_HOLD_TICKS`];
+    /// `None` with no brain set.
+    #[allow(clippy::too_many_arguments)]
+    fn tactic(
+        &mut self,
+        t: &Track,
+        odds: &Odds,
+        kit: &Kit,
+        others: u32,
+        me: [f32; 3],
+        d: f32,
+        tick: u32,
+    ) -> Option<u8> {
+        // Wolves only: the brain is bred and judged against packs and the
+        // arena's stand-in players (`examples/zoo.rs --agent`), and held out
+        // it beat the sum against packs and lost to it against people, two
+        // runs of two. Against a person, or prey it never met, the sum makes
+        // the call, so every ceiling the arena holds the sum to still holds.
+        if t.species != Species::Wolf {
+            return None;
+        }
+        let net = self.tactics.as_ref()?;
+        if let Some((c, since, id)) = self.tactic {
+            if id == t.id && tick.wrapping_sub(since) < TACTIC_HOLD_TICKS {
+                return Some(c);
+            }
+        }
+        let struck = self
+            .hurt
+            .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS);
+        let c = net.choose(&tactics_features(t, odds, kit, others, me, d, struck, tick));
+        self.tactic = Some((c, tick, t.id));
+        Some(c)
+    }
+
+    /// The hand the bred brain chose for this foe, when it chose one the
+    /// belt can use; a dry gun is still never chosen in someone's face.
+    fn chosen_arm(&self, foe: u32, kit: &Kit, d: f32) -> Option<Arm> {
+        match self.tactic.filter(|&(_, _, id)| id == foe)?.0 {
+            TACTIC_MELEE if kit.melee.is_some() => Some(Arm::Melee),
+            TACTIC_RANGED if kit.ranged.is_some() && !(kit.loaded == Some(0) && d < KITE_M) => {
+                Some(Arm::Ranged)
+            }
+            _ => None,
         }
     }
 
@@ -723,6 +830,7 @@ impl Combat {
     /// A new body, or one that went down: nothing it was fighting or
     /// running from is in front of it now.
     pub fn forget(&mut self) {
+        self.tactic = None;
         self.mode = Mode::Idle;
         self.retreat = None;
         self.foe = None;
@@ -1308,14 +1416,20 @@ impl Combat {
             return Assess::Calm;
         };
         let me = pos(body);
-        let odds = odds(&t, kit, crowd(tracks, id, me, tick));
+        let others = crowd(tracks, id, me, tick);
+        let odds = odds(&t, kit, others);
         let d = flat(me, t.pos);
         // Shot at from past a charge with nothing to shoot back: cover. At
         // home the walls are the cover, and the fight is stood unless it is
         // all but lost.
         let out_shot = odds.ranged && d > CHARGE_M && kit.ranged.is_none();
         let stand = kit.home_ground && u32::from(kit.hp) * 3 > u32::from(kit.hp_max);
-        if !stand && (self.temperament == Temperament::Passive || odds.losing || out_shot) {
+        // Staying is dying: the sum's word, or a bred brain's.
+        let run = match self.tactic(&t, &odds, kit, others, me, d, tick) {
+            Some(c) => c == TACTIC_RUN,
+            None => odds.losing,
+        };
+        if !stand && (self.temperament == Temperament::Passive || run || out_shot) {
             self.flee_from(&t, odds.ranged, me, tick);
             return self.back_away(core, body, tracks, route, tick, true);
         }
@@ -1539,9 +1653,14 @@ impl Combat {
         if t.species == Species::Player && (in_zone(kit, me) || in_zone(kit, t.pos)) {
             return self.over(Some(away), End::Parted);
         }
-        let odds = odds(&t, kit, crowd(tracks, foe.id, me, tick));
+        let others = crowd(tracks, foe.id, me, tick);
+        let odds = odds(&t, kit, others);
         let unarmed = kit.melee.is_none() && kit.ranged.is_none();
-        if unarmed || odds.losing || (odds.ranged && d > CHARGE_M && kit.ranged.is_none()) {
+        let run = match self.tactic(&t, &odds, kit, others, me, d, tick) {
+            Some(c) => c == TACTIC_RUN,
+            None => odds.losing,
+        };
+        if unarmed || run || (odds.ranged && d > CHARGE_M && kit.ranged.is_none()) {
             self.flee_from(&t, odds.ranged, me, tick);
             return self.back_away(core, body, tracks, route, tick, true);
         }
@@ -1558,7 +1677,12 @@ impl Combat {
         // pig runs as fast as I do (and a wolf faster), so a chase on foot
         // never closes and ends as an unreachable foe.
         let running = t.species != Species::Player && opening(&t, me, d);
-        let intent = match self.arm_for(kit, d, running) {
+        let mut arm = self.arm_for(kit, d, running);
+        if let Some(chosen) = self.chosen_arm(t.id, kit, d) {
+            arm = chosen;
+            self.arm = chosen;
+        }
+        let intent = match arm {
             Arm::Melee => {
                 self.draw = None;
                 self.melee(core, body, here, route, &t, &odds, kit, tick)
@@ -2658,6 +2782,79 @@ fn crowd(tracks: &Tracks, foe: u32, me: [f32; 3], tick: u32) -> u32 {
         .recent(tick, 2 * TICK_HZ)
         .filter(|t| t.id != foe && t.species != Species::Pig && flat(me, t.pos) <= CROWD_M)
         .count() as u32
+}
+
+/// What a bred tactics brain reads of a fight: [`TACTICS_IN`] numbers of
+/// about unit size, all of them things the sum and the eyes already had.
+///
+/// | # | input |
+/// |---|---|
+/// | 0 | distance, tens of metres, at most 4 |
+/// | 1, 2 | my hp share, theirs (from my hit markers; wounded is nearly none) |
+/// | 3, 4 | blows each way to a kill, per 10, at most 2 |
+/// | 5, 6 | reach each way, per 5 m, at most 4 |
+/// | 7 | their cadence, per 2 s, at most 2 |
+/// | 8, 9 | they are armed, they shoot |
+/// | 10, 11 | the sum's verdicts: an edge, losing |
+/// | 12, 13, 14 | a player, a wolf, a pig |
+/// | 15 | others near, per 3 |
+/// | 16, 17 | I can swing, I can shoot now (a bow with rounds, not dry) |
+/// | 18 | on my home ground |
+/// | 19 | I was struck just now |
+/// | 20 | they are aiming at me |
+/// | 21 | they swung just now |
+/// | 22 | they are closing on me |
+/// | 23 | they are down (wounded) |
+#[allow(clippy::too_many_arguments)]
+pub fn tactics_features(
+    t: &Track,
+    odds: &Odds,
+    kit: &Kit,
+    others: u32,
+    me: [f32; 3],
+    d: f32,
+    struck: bool,
+    tick: u32,
+) -> [f32; TACTICS_IN] {
+    let bit = |b: bool| if b { 1.0 } else { 0.0 };
+    let hp0 = match t.species {
+        Species::Player => u32::from(kit.hp_max.max(1)),
+        Species::Wolf => u32::from(kit.book.wolf().hp.max(1)),
+        Species::Pig => u32::from(kit.book.pig().hp.max(1)),
+    };
+    let blows = |n: u32| (n.min(20) as f32 / 10.0).min(2.0);
+    let mut x = [0.0f32; TACTICS_IN];
+    x[0] = (d / 10.0).min(4.0);
+    x[1] = f32::from(kit.hp) / f32::from(kit.hp_max.max(1));
+    x[2] = if t.wounded {
+        0.05
+    } else {
+        1.0 - (t.dealt.min(hp0) as f32 / hp0 as f32)
+    };
+    x[3] = blows(odds.mine);
+    x[4] = blows(odds.theirs);
+    x[5] = (odds.my_reach / 5.0).min(4.0);
+    x[6] = (odds.their_reach / 5.0).min(4.0);
+    x[7] = (odds.their_cadence.min(2 * TICK_HZ) as f32 / TICK_HZ as f32).min(2.0);
+    x[8] = bit(odds.armed);
+    x[9] = bit(odds.ranged);
+    x[10] = bit(odds.edge);
+    x[11] = bit(odds.losing);
+    x[12] = bit(t.species == Species::Player);
+    x[13] = bit(t.species == Species::Wolf);
+    x[14] = bit(t.species == Species::Pig);
+    x[15] = others.min(6) as f32 / 3.0;
+    x[16] = bit(kit.melee.is_some());
+    x[17] = bit(kit.ranged.is_some() && kit.rounds > 0 && kit.loaded != Some(0));
+    x[18] = bit(kit.home_ground);
+    x[19] = bit(struck);
+    x[20] = bit(t.aiming_at_me);
+    x[21] = bit(t
+        .last_swing
+        .is_some_and(|at| tick.wrapping_sub(at) < ALARM_TICKS));
+    x[22] = bit(closing(t, me, d));
+    x[23] = bit(t.wounded);
+    x
 }
 
 /// The sum, on the wiki's numbers: blows to kill each way, reaches, and

@@ -801,6 +801,9 @@ pub struct SurvivorOpts {
     /// Its doors wait for code locks instead of taking key locks with the
     /// doors: others come in by its code. Always so in a society.
     pub code_doors: bool,
+    /// A bred brain for the fight-or-run call (`jev-bot --tactics ga1:…`,
+    /// `agent::combat::set_tactics`); `None` keeps the sum's.
+    pub tactics: Option<sim_core::genome::Genome>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1236,6 +1239,14 @@ impl Survivor {
         self.known_haven = Some((seed, haven));
     }
 
+    /// Put its clocks on `now`, for a driver that keeps its own (the
+    /// lockstep island): `welcome` and the mind read the wall clock, which
+    /// a synthetic clock started earlier would trail.
+    pub fn set_clock(&mut self, now: Instant) {
+        self.seen_at = now;
+        self.mind.set_clock(now);
+    }
+
     pub fn with(mind: Mind, opts: SurvivorOpts) -> Self {
         Self {
             mind,
@@ -1252,7 +1263,13 @@ impl Survivor {
             hands: Hands::new(opts.skill),
             route: Route::new(),
             frontier: Frontier::new(),
-            combat: Combat::new(opts.temperament),
+            combat: {
+                let mut c = Combat::new(opts.temperament);
+                c.set_tactics(opts.tactics.map(|g| {
+                    sim_core::genome::Net::build(crate::agent::combat::tactics_shape(), &g)
+                }));
+                c
+            },
             loadout: Loadout::new(),
             dose: None,
             medic: false,
@@ -1448,6 +1465,13 @@ impl Survivor {
     /// The fight reflex.
     pub fn combat(&self) -> &Combat {
         &self.combat
+    }
+
+    /// Give its fights a bred brain, or take it away
+    /// (`Combat::set_tactics`): what `SurvivorOpts::tactics` does at birth,
+    /// for a net that no genome describes (a test's hand-set one).
+    pub fn set_tactics(&mut self, net: Option<sim_core::genome::Net>) {
+        self.combat.set_tactics(net);
     }
 
     /// Its bags, and what waking and recovering have come to.
@@ -8362,6 +8386,16 @@ pub fn observe(
                 if name.as_str() == crate::mind::SATCHEL_ITEM && !memory.raids {
                     continue;
                 }
+                // A tool already carried, and not worn out, is not made twice.
+                let tool = rank(def.output, &name) == 0;
+                if tool
+                    && core
+                        .inv
+                        .iter()
+                        .any(|st| st.count > 0 && st.item == def.output && st.cond > 0)
+                {
+                    continue;
+                }
                 let n = s.craftable_len as usize;
                 if rank(def.output, &name) == pass
                     && n < SUMMARY_CRAFTS
@@ -9933,6 +9967,44 @@ mod tests {
         let summary = bot.summary(&view, 1).unwrap();
         assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
         assert!(summary.offers(Goal::Craft(Name::new(b"Stone Hatchet").unwrap())));
+    }
+
+    /// Issue #387: a tool already in the pack is not offered again; a worn
+    /// out one is.
+    #[test]
+    fn a_tool_already_carried_is_not_offered_again() {
+        let (mut bot, view, _) = fixture();
+        let hatchet = Goal::Craft(Name::new(b"Stone Hatchet").unwrap());
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 3;
+        core.recipes_have = 3;
+        core.recipes.recipes[2] = sim_core::craft::RecipeDef {
+            output: 9,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_NONE,
+            blueprint: false,
+            unlock: 0,
+            n_inputs: 1,
+            inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
+        };
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
+        let core = bot.core.as_mut().unwrap();
+        core.inv[8] = ItemStack {
+            item: 9,
+            count: 1,
+            cond: 5_000,
+            skin: 0,
+        };
+        assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
+        bot.core.as_mut().unwrap().inv[8].cond = 0;
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
     }
 
     #[test]

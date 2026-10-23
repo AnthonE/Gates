@@ -16,13 +16,14 @@
 //! **Nothing is said to have gone until the relay says so.** A sent line is
 //! drawn when the relay's OK lands, never when it was typed.
 
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use protocol::Address;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::friends::{hex, Friends};
 use crate::hive::{self, Frame, Rooms, Voice};
