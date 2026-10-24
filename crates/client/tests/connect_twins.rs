@@ -100,7 +100,11 @@ fn names_after(block: &str, needle: &str) -> Vec<String> {
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
-        if !name.is_empty() {
+        // A CamelCase name is a type (`Claim`, `Claim::Solana(..)`), never a
+        // step; steps are snake_case calls and the ceilings SCREAMING_CASE.
+        let is_type = name.starts_with(|c: char| c.is_ascii_uppercase())
+            && name.chars().any(|c| c.is_ascii_lowercase());
+        if !name.is_empty() && !is_type {
             out.push(name);
         }
         rest = &rest[at + needle.len()..];
@@ -169,6 +173,22 @@ fn both_twins_drive_the_same_handshake_in_the_same_order() {
          before dialling: {b:?}"
     );
     b.remove(1);
+    // v142: a page may sign in with a Solana account, which the desktop's
+    // launcher wallet never is. `proof_wanted` is `proof_wanted_for` with an
+    // Ethereum claim, so the two are one rule; `solana_auth_frame` is the
+    // auth frame's other assembly, and it must be offered right beside it.
+    for x in b.iter_mut() {
+        if x == "proof_wanted_for" {
+            *x = "proof_wanted".to_string();
+        }
+    }
+    let sol = b.iter().position(|x| x == "solana_auth_frame");
+    assert!(
+        sol.is_some_and(|i| b.get(i + 1).is_some_and(|x| x == "auth_frame")),
+        "the browser connect no longer assembles a Solana account's auth frame beside the \
+         Ethereum one: {b:?}"
+    );
+    b.retain(|x| x != "solana_auth_frame");
     assert_eq!(
         a,
         // v73: the hello says what the session is (`hello_as`), and a
