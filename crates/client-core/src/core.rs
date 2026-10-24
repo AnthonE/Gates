@@ -165,8 +165,9 @@ pub const CRUMBLE_RING: usize = 16;
 /// is the one worth hearing.
 pub const HOWL_RING: usize = 8;
 
-/// Town sentry lock-ons held between two frames (`EventMsg::SentryLock`):
-/// (the gun's roster id, the player it locked on to). Four guns; drop-oldest.
+/// Sentry and turret lock-ons held between two frames
+/// (`EventMsg::SentryLock`): (the gun's roster id, the player it locked on
+/// to). Drop-oldest: a lock is a beep and a lamp, and the newest matters.
 pub const LOCK_RING: usize = 8;
 
 /// Other bodies' hands heard between two frames (`EventMsg::Heard`, wire

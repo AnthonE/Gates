@@ -119,7 +119,7 @@ fn a_late_catalog_replaces_the_pouch_with_the_shared_held_model() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Camp Fire",
             protocol::ItemRow {
                 cond_max: 0,
                 armor_pct: 0,
@@ -134,7 +134,9 @@ fn a_late_catalog_replaces_the_pouch_with_the_shared_held_model() {
     feed.applied2 = 0;
     app.update();
     let ring = app.world().resource::<StructRing>();
-    let model = ring.gitems[&1].model.expect("torch has a generated model");
+    let model = ring.gitems[&1]
+        .model
+        .expect("the camp fire has a generated model");
     let entity = ring.gitems[&1].entity;
     let (mesh, _) = app
         .world()
@@ -149,7 +151,7 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
     let mut app = app();
     let i = crate::ui::hold::HELD_MODELS
         .iter()
-        .position(|m| m.key == "torch")
+        .position(|m| m.key == "camp_fire")
         .unwrap();
     let (handle, _) = app
         .world()
@@ -166,7 +168,7 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Camp Fire",
             protocol::ItemRow {
                 cond_max: 0,
                 armor_pct: 0,
@@ -207,8 +209,9 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
     );
 }
 
-/// A landed arrow is drawn as a shaft standing in the ground where it
-/// fell, not as the pouch every other unmodelled item gets.
+/// A landed arrow stands in the ground where it fell, head buried — in its
+/// own model once that has loaded (`arrow_as_model`) and the stand-in shaft
+/// until then — never as the pouch or lying flat like other items.
 #[test]
 fn a_landed_arrow_stands_in_the_ground() {
     let mut app = app();
@@ -228,21 +231,30 @@ fn a_landed_arrow_stands_in_the_ground() {
     sync(&mut app, &[item(1), item(2)]);
     let ring = app.world().resource::<StructRing>();
     let kit = ring.kit.as_ref().unwrap();
+    let row = crate::ui::hold::HELD_MODELS
+        .iter()
+        .position(|m| m.key == "wooden_arrow")
+        .unwrap();
+    let models = app.world().resource::<super::super::viewmodel::Models>();
+    let (model_mesh, _) = models.row(row);
     for id in [1, 2] {
         let e = ring.gitems[&id].entity;
-        assert_eq!(
-            app.world().get::<Mesh3d>(e).unwrap().0,
-            kit.arrow_mesh,
-            "stack {id} drew the pouch"
-        );
+        let mesh = &app.world().get::<Mesh3d>(e).unwrap().0;
         let t = app.world().get::<Transform>(e).unwrap();
-        let axis = t.rotation * Vec3::Y;
+        // The head and the way back up the shaft, in whichever frame drew it.
+        let (head, axis) = if *mesh == kit.arrow_mesh {
+            let axis = t.rotation * Vec3::Y;
+            (t.translation - axis * ARROW_LEN_M * 0.5, axis)
+        } else {
+            assert_eq!(*mesh, model_mesh, "stack {id} drew neither arrow");
+            let len = crate::ui::hold::HELD_MODELS[row].height_m;
+            (t.transform_point(Vec3::Y * len), -(t.rotation * Vec3::Y))
+        };
         let lean = axis.y.clamp(-1.0, 1.0).acos();
         assert!(
             (ARROW_LEAN[0] - 1e-3..=ARROW_LEAN[1] + 1e-3).contains(&lean),
             "stack {id} leans {lean} rad"
         );
-        let head = t.translation - axis * ARROW_LEN_M * 0.5;
         let surface = item(id).qy as f32 * POS_Y_Q;
         assert!(
             head.y < surface - 0.05,
@@ -263,6 +275,26 @@ fn a_landed_arrow_stands_in_the_ground() {
     assert_ne!(a, b, "two arrows do not stand in ranks");
 }
 
+/// An arrow's own model stands where the stand-in shaft did: its head
+/// (+Y, `len` from the nock at the origin) at the shaft's head, so a stuck
+/// arrow is in the wall and a planted one in the dirt exactly as deep.
+#[test]
+fn an_arrow_model_keeps_the_shafts_head_where_it_was() {
+    let len = 0.86;
+    for shaft in [
+        stuck_transform(Vec3::new(4.0, 2.0, -3.0), [90, -20, 30]),
+        planted_transform(Vec3::new(4.0, 2.0, -3.0), 7),
+    ] {
+        let back = shaft.rotation * Vec3::Y;
+        let head = shaft.translation - back * ARROW_LEN_M * 0.5;
+        let model = arrow_as_model(shaft, ARROW_LEN_M, len);
+        let tip = model.transform_point(Vec3::Y * len);
+        let nock = model.transform_point(Vec3::ZERO);
+        assert!((tip - head).length() < 1e-4, "head {head} drawn at {tip}");
+        assert!((nock - (head + back * len)).length() < 1e-4, "nock {nock}");
+    }
+}
+
 /// A dropped skinned stack keeps its look (v102): drawn plain while the
 /// skin catalog does not know the skin, and redrawn in its tint when a
 /// catalog batch lands (`APPLIED2_SKINS`) — the shared model's material,
@@ -277,7 +309,7 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Camp Fire",
             protocol::ItemRow {
                 stack_max: 1,
                 ..protocol::ItemRow::EMPTY
@@ -293,7 +325,9 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
     );
     let base = {
         let ring = app.world().resource::<StructRing>();
-        let model = ring.gitems[&1].model.expect("torch has a generated model");
+        let model = ring.gitems[&1]
+            .model
+            .expect("the camp fire has a generated model");
         assert_eq!(ring.gitems[&1].skin, 0, "an unknown skin is drawn plain");
         let base = app
             .world()

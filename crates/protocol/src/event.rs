@@ -4399,12 +4399,16 @@ pub fn encode_event_hostile(until: u32, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
-/// Width of a sentry's index among the town's guns.
-const SENTRY_BITS: u32 = 2;
-const _: () = assert!(sim_core::sentry::SENTRIES <= 1 << SENTRY_BITS);
+/// Width of a gun's index among the town's sentries and then the players'
+/// turrets (v143; the sentries alone were 2 bits, so a turret's lock never
+/// left the shard).
+const SENTRY_BITS: u32 = 7;
+const LOCK_GUNS: usize = sim_core::sentry::SENTRIES + sim_core::limits::MAX_TURRETS;
+const _: () = assert!(LOCK_GUNS <= 1 << SENTRY_BITS);
 
-/// A town sentry locked on to a player (wire v92): the gun travels as its
-/// index among the sentries, never as a free roster id.
+/// A town sentry or a player's turret locked on to a player (wire v92,
+/// turrets v143): the gun travels as its index among the sentries, then
+/// the turrets, never as a free roster id.
 pub fn encode_event_sentry_lock(
     sentry: u32,
     target: u32,
@@ -4413,11 +4417,15 @@ pub fn encode_event_sentry_lock(
     let Some(slot) = sim_core::mob::slot_of_id(sentry) else {
         return Err(WireError::Range);
     };
-    if !sim_core::sentry::is_sentry_slot(slot) {
+    let k = if sim_core::sentry::is_sentry_slot(slot) {
+        slot - sim_core::sentry::SENTRY_SLOT0
+    } else if sim_core::turret::is_turret_slot(slot) {
+        sim_core::sentry::SENTRIES + slot - sim_core::turret::TURRET_SLOT0
+    } else {
         return Err(WireError::Range);
-    }
+    };
     let mut w = begin(buf, SUB_SENTRY_LOCK)?;
-    w.write((slot - sim_core::sentry::SENTRY_SLOT0) as u32, SENTRY_BITS)?;
+    w.write(k as u32, SENTRY_BITS)?;
     w.write(target, 32)?;
     Ok(w.finish())
 }
@@ -7414,11 +7422,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_HOSTILE => EventMsg::Hostile { until: r.read(32)? },
         SUB_SENTRY_LOCK => {
             let k = r.read(SENTRY_BITS)? as usize;
-            if k >= sim_core::sentry::SENTRIES {
+            let slot = if k < sim_core::sentry::SENTRIES {
+                sim_core::sentry::SENTRY_SLOT0 + k
+            } else if k < LOCK_GUNS {
+                sim_core::turret::TURRET_SLOT0 + k - sim_core::sentry::SENTRIES
+            } else {
                 return Err(WireError::Malformed);
-            }
+            };
             EventMsg::SentryLock {
-                sentry: sim_core::mob::mob_id(sim_core::sentry::SENTRY_SLOT0 + k),
+                sentry: sim_core::mob::mob_id(slot),
                 target: r.read(32)?,
             }
         }
@@ -11840,9 +11852,10 @@ mod wire_domains {
             // list, bounded by `DEED_MAX`, which a const-assert beside the
             // width guards, and both ends refuse past it.
             "DEED_BITS",
-            // A town sentry's index among the guns (v92): bounded by
-            // `sentry::SENTRIES`, which a const-assert beside the width
-            // guards, and the decoder refuses past it.
+            // A gun's index among the town's sentries then the turrets (v92,
+            // v143): bounded by `SENTRIES + MAX_TURRETS`, which a
+            // const-assert beside the width guards, and the decoder refuses
+            // past it.
             "SENTRY_BITS",
             // A bag's look (v84): `1 + species` over the count `MOB_KINDS`,
             // then the body (v110), which a const-assert beside the width

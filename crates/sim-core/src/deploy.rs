@@ -9744,8 +9744,16 @@ mod tests {
     #[test]
     fn a_full_turret_table_gives_a_dry_entry_up_to_a_loaded_turret() {
         use crate::limits::MAX_TURRETS;
-        use crate::turret::{reconcile, Turret};
+        use crate::turret::{reconcile, Turret, TurretDef, TurretGun};
         const AMMO: u16 = 13;
+        const GUN: u16 = 14;
+        let mut def = TurretDef::INERT;
+        def.guns[0] = TurretGun {
+            item: GUN,
+            def: crate::sentry::SentryDef::INERT,
+            ammo: AMMO,
+        };
+        def.n = 1;
         let dc = turret_fixture();
         let mut deploys = Deploys::new();
         for k in 0..=MAX_TURRETS as u16 {
@@ -9756,13 +9764,13 @@ mod tests {
         let held = |table: &[Turret; MAX_TURRETS], cx: u16| {
             table.iter().any(|t| t.live && t.cx == cx && t.cz == 100)
         };
-        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
         let last_cx = 100 + MAX_TURRETS as u16;
         assert!(held(&table, 100) && !held(&table, last_cx), "first come");
         // A dry one stays out while every entry is dry...
-        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
         assert!(!held(&table, last_cx));
-        // ...and loaded, it takes the first dry entry.
+        // ...and loaded — a gun and its round — it takes the first dry entry.
         let b = deploys
             .box_index(box_key(last_cx, 100, 0, LOC_PLANE))
             .unwrap();
@@ -9776,11 +9784,21 @@ mod tests {
                 skin: 0,
             },
         );
-        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        deploys.set_box_slot(
+            b,
+            1,
+            ItemStack {
+                item: GUN,
+                count: 1,
+                cond: 0,
+                skin: 0,
+            },
+        );
+        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
         assert!(held(&table, last_cx), "a loaded turret got no entry");
         assert!(!held(&table, 100), "the first dry one gave its entry up");
         // A loaded one keeps it.
-        reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
         assert!(held(&table, last_cx) && !held(&table, 100));
     }
 }

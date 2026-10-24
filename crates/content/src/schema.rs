@@ -1218,22 +1218,23 @@ pub struct Sentry {
     pub spread_cm_per_10m: u32,
 }
 
-/// A player auto turret's gun (`deployables.toml` `[turret]`,
-/// `sim-core/src/turret.rs`): the sentry's numbers, and the round it spends
-/// out of its own box. Optional — without it a placed turret never fires.
+/// A player auto turret (`deployables.toml` `[turret]`,
+/// `sim-core/src/turret.rs`): how it looks, and the guns it fires. Each gun
+/// fires at its own `weapons.toml` row's numbers (`bake_turret`): its damage
+/// scaled by `damage_pct` (a shotgun's pellets landing as one round), its
+/// magazine as a burst, its rate, its reload between bursts, its first round.
+/// Optional — without it a placed turret never fires.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TurretGun {
+pub struct TurretSpec {
     pub range_m: u32,
-    pub damage: u32,
-    pub burst: u32,
-    pub rate_ms: u32,
-    pub burst_gap_ms: u32,
     pub lock_ms: u32,
     pub lose_ms: u32,
     pub spread_cm_per_10m: u32,
-    /// The item it fires, one a round, out of its box.
-    pub ammo: String,
+    /// Per cent of a gun's own damage a turret deals with it.
+    pub damage_pct: u32,
+    /// The guns a turret fires: `firearm` rows, by item id.
+    pub guns: Vec<String>,
 }
 
 /// One fel tier (`mobs.toml` `[[fel_tier]]`, `ARC.md` §2): how far every

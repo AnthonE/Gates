@@ -253,8 +253,10 @@ pub fn paint(
                 continue;
             }
         };
-        // A held canvas row (the bat): its tint-free mesh and the row's own
-        // material with the picture as its colour, registered once.
+        // A held canvas row (the bat): its tint-free generated mesh and that
+        // mesh's own material with the picture as its colour, registered
+        // once. Not the row's material: the row draws a file whose normal and
+        // roughness maps are laid out for its own UVs, not the canvas's.
         let name = core::str::from_utf8(core.catalog.name(row.covers as usize)).unwrap_or("");
         let stem = crate::ui::icons::stem(name);
         if let Some(r) = crate::ui::hold::HELD_MODELS
@@ -270,8 +272,8 @@ pub fn paint(
                         h
                     }),
                 };
-                let base = models.row(r).1;
-                if let (Some(mesh), Some(base)) = (mesh, materials.get(&base).cloned()) {
+                if let Some(mesh) = mesh {
+                    let base = super::heldgen::material(&stem);
                     let mat = materials.add(painted(&base, img.clone()));
                     models.paint(r, row.catalog, mesh, mat);
                 }

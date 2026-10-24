@@ -663,3 +663,34 @@ fn every_skin_model_fits_its_row() {
         );
     }
 }
+
+/// A painted bat draws the generated lathe (`heldgen::canvas_mesh`, whose
+/// UVs are the paint's contract) while the plain bat draws its file, so the
+/// canvas has to stand where the row's file does: its height, its foot, and
+/// material at the grip.
+#[test]
+fn the_bats_paint_canvas_still_fits_its_row() {
+    let m = HELD_MODELS
+        .iter()
+        .find(|m| m.key == "bat")
+        .expect("a bat row");
+    let canvas = heldgen::canvas_mesh("bat").expect("the bat is a canvas");
+    let (pos, idx) = mesh_tris(&canvas);
+    let (lo, hi) = pos
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
+    let err = (hi - lo - m.height_m).abs() / m.height_m;
+    assert!(
+        err < 0.02 && lo.abs() < 0.01,
+        "the bat's canvas stands {lo:.3}..{hi:.3} and its row is {:.3} tall from 0",
+        m.height_m
+    );
+    let grip = m.height_m * m.grip_frac;
+    let band = FIST_HALF_M / m.scale;
+    let (xlo, xhi, zlo, zhi) =
+        slab_extent(&pos, &idx, grip - band, grip + band).expect("canvas at the grip");
+    assert!(
+        xlo <= 0.0 && xhi >= 0.0 && zlo <= 0.0 && zhi >= 0.0,
+        "the bat's canvas is off the fist at the grip: x [{xlo:+.3}, {xhi:+.3}] z [{zlo:+.3}, {zhi:+.3}]"
+    );
+}
