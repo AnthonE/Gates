@@ -242,9 +242,9 @@ placement = "window"
 matter = "wood"
 hp = 200
 
-# A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box of
-# rounds with a gun on top that shoots anybody in reach who is not its owner
-# or the crew of the claim it stands in. Rust's turret hp; unpowered, since
+# A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box
+# with a gun on top — the one you put in it, `[turret]` below — that shoots
+# anybody in reach who is not its owner or the crew of the claim it stands in. Rust's turret hp; unpowered, since
 # nothing here carries power.
 [[deployable]]
 id = "item.autoturret"
@@ -263,16 +263,26 @@ placement = "any"
 matter = "metal"
 hp = 500
 
-# The turret's gun. Range is the reference's 30 m; the rest is the revolver it
-# is built from — its 20 a round, eight to a burst at its 150 a minute, and
-# its 3.4 s reload between bursts. The 1 s beep before it opens up is ours.
+# The turret. As in Rust it fires the gun you put in its box — the first of
+# `guns` it holds — at that gun's own `weapons.toml` numbers (its magazine a
+# burst, its rate, its reload between bursts, its round out of the same box),
+# for `damage_pct` of the gun's damage: a revolver turret's 21 a round is the
+# 20 the built-in gun dealt. Range is the reference's 30 m; the 1 s beep
+# before it opens up is ours.
 [turret]
 range_m = 30
-damage = 20
-burst = 8
-rate_ms = 400
-burst_gap_ms = 3400
 lock_ms = 1000
 lose_ms = 3000
 spread_cm_per_10m = 15
-ammo = "item.pistol_ammo"
+damage_pct = 60
+guns = [
+  "item.revolver",
+  "item.semi_pistol",
+  "item.python",
+  "item.thompson",
+  "item.custom_smg",
+  "item.semi_rifle",
+  "item.assault_rifle",
+  "item.bolt_rifle",
+  "item.pump_shotgun",
+]

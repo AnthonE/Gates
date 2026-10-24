@@ -3483,3 +3483,28 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
     }
     assert!(sim_core::deploy::is_edge_loc(LOC_EDGE_ZLO));
 }
+
+/// A player turret's lock-on (v143) round-trips as a town sentry's does,
+/// at both ends of the turret range, and an animal's slot is refused.
+#[test]
+fn a_turret_lock_round_trips_and_an_animal_is_refused() {
+    let mut buf = [0u8; 64];
+    let last = sim_core::turret::TURRET_SLOT0 + sim_core::limits::MAX_TURRETS - 1;
+    for slot in [
+        sim_core::sentry::SENTRY_SLOT0,
+        sim_core::turret::TURRET_SLOT0,
+        last,
+    ] {
+        let id = sim_core::mob::mob_id(slot);
+        let len = protocol::encode_event_sentry_lock(id, 7, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::SentryLock {
+                sentry: id,
+                target: 7
+            },
+            "slot {slot}"
+        );
+    }
+    assert!(protocol::encode_event_sentry_lock(sim_core::mob::mob_id(0), 7, &mut buf).is_err());
+}

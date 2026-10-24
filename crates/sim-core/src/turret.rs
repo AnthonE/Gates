@@ -1,7 +1,17 @@
 //! A player's auto turret (`NOW.md` §0aa 1): Rust's `AutoTurret`, unpowered
-//! (there is no electricity here). A deployable with a box of rounds and a
-//! gun on top that shoots anybody in reach and in sight who is not **its
-//! owner or its owner's crew where it stands**.
+//! (there is no electricity here). A deployable with a box and a gun on top
+//! that shoots anybody in reach and in sight who is not **its owner or its
+//! owner's crew where it stands**.
+//!
+//! ## Its gun is the one in its box
+//!
+//! As in Rust, the turret fires the gun it is given: the **first gun in its
+//! box** (slot order) that `[turret]` `guns` names, at that gun's own
+//! numbers ([`TurretGun`]), spending that gun's round out of the same box.
+//! No gun, or no round for it, and it holds fire. The box is already saved,
+//! so this needs no save field; the gun it is firing rides the wire as its
+//! record's held item ([`Turret::carried`]), which is what the client
+//! mounts on it.
 //!
 //! ## What it reuses
 //!
@@ -57,7 +67,10 @@ use crate::collide::ColIndex;
 use crate::deploy::{box_key, DeployContent, Deploys, ARCH_TURRET};
 use crate::gather::ItemStack;
 use crate::heli::Round;
-use crate::limits::{MAX_PLAYERS, MAX_TURRETS, TURRET_INTERFERENCE, TURRET_INTERFERENCE_M};
+use crate::limits::{
+    BOX_SLOTS, MAX_PLAYERS, MAX_TURRETS, MAX_TURRET_GUNS, TURRET_INTERFERENCE,
+    TURRET_INTERFERENCE_M,
+};
 use crate::mob::Mob;
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav;
@@ -88,23 +101,46 @@ pub fn spares(pieces: &Pieces, deploys: &Deploys, owner: u32, x: f32, z: f32, id
     id == owner || crate::claim::shares_crew(pieces, deploys, x, z, owner, id)
 }
 
-/// The baked `[turret]` table: the gun, and the round it spends out of its
-/// own box.
+/// One gun a turret can carry: the item, its numbers on a turret, and the
+/// round it spends out of the turret's box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurretGun {
+    pub item: u16,
+    pub def: SentryDef,
+    pub ammo: u16,
+}
+
+impl TurretGun {
+    pub const NONE: Self = Self {
+        item: 0,
+        def: SentryDef::INERT,
+        ammo: 0,
+    };
+}
+
+/// The baked `[turret]` table: every gun a turret fires, the first `n` of
+/// [`Self::guns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TurretDef {
-    pub gun: SentryDef,
-    pub ammo: u16,
+    pub guns: [TurretGun; MAX_TURRET_GUNS],
+    pub n: u8,
 }
 
 impl TurretDef {
     pub const INERT: Self = Self {
-        gun: SentryDef::INERT,
-        ammo: 0,
+        guns: [TurretGun::NONE; MAX_TURRET_GUNS],
+        n: 0,
     };
 
     #[inline]
     pub fn armed(&self) -> bool {
-        self.gun.armed() && self.ammo != 0
+        self.n > 0
+    }
+
+    /// The guns that are live, in table order.
+    #[inline]
+    pub fn live(&self) -> &[TurretGun] {
+        &self.guns[..self.n as usize]
     }
 }
 
@@ -118,12 +154,15 @@ pub struct Turret {
     pub loc: u8,
     pub owner: u32,
     pub gun: Sentry,
+    /// The gun item it is firing ([`gun_in`]), for the wire to mount on it;
+    /// `None` with no gun in its box.
+    pub carried: Option<u16>,
 }
 
 impl Turret {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 34] {
-        let mut b = [0u8; 34];
+    pub fn hash_bytes(&self) -> [u8; 37] {
+        let mut b = [0u8; 37];
         b[0] = self.live as u8;
         b[1..3].copy_from_slice(&self.cx.to_le_bytes());
         b[3..5].copy_from_slice(&self.cz.to_le_bytes());
@@ -131,6 +170,8 @@ impl Turret {
         b[6] = self.loc;
         b[7..11].copy_from_slice(&self.owner.to_le_bytes());
         b[11..34].copy_from_slice(&self.gun.hash_bytes());
+        b[34] = self.carried.is_some() as u8;
+        b[35..37].copy_from_slice(&self.carried.unwrap_or(0).to_le_bytes());
         b
     }
 
@@ -153,7 +194,7 @@ impl Turret {
 pub fn reconcile(
     dc: &DeployContent,
     deploys: &Deploys,
-    ammo: u16,
+    def: &TurretDef,
     table: &mut [Turret; MAX_TURRETS],
     slots: &mut [Mob],
 ) {
@@ -181,14 +222,14 @@ pub fn reconcile(
                     let mut dry = [false; MAX_TURRETS];
                     for (d, t) in dry.iter_mut().zip(table.iter()) {
                         *d = t.live
-                            && rounds(deploys, box_key(t.cx, t.cz, t.level, t.loc), ammo) == 0;
+                            && loaded(def, deploys, box_key(t.cx, t.cz, t.level, t.loc)).is_none();
                     }
                     dry
                 });
                 let Some(j) = dry.iter().position(|&d| d) else {
                     return;
                 };
-                if rounds(deploys, box_key(d.cx, d.cz, d.level, d.loc), ammo) == 0 {
+                if loaded(def, deploys, box_key(d.cx, d.cz, d.level, d.loc)).is_none() {
                     continue;
                 }
                 dry[j] = false;
@@ -204,6 +245,7 @@ pub fn reconcile(
             loc: d.loc,
             owner: d.owner,
             gun: Sentry::default(),
+            carried: None,
         };
         // It starts facing the way it was placed.
         slots[k].yaw = (d.pose.yaw as u16) << 8;
@@ -212,7 +254,7 @@ pub fn reconcile(
 
 /// One tick of every player turret. A round that landed on somebody is
 /// written to `rounds` for `World::tick` to land (`sentry::step`'s split);
-/// each round fired, hit or miss, spends one of `def.ammo` from the box.
+/// each round fired, hit or miss, spends one of its gun's round from the box.
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
@@ -239,10 +281,10 @@ pub fn step(
     }
     let cols: &ColIndex = pieces.cols();
     if tick.is_multiple_of(LOOK_TICKS) {
-        reconcile(dc, deploys, def.ammo, table, slots);
+        reconcile(dc, deploys, def, table, slots);
     }
-    // Each entry's record and box, and whether that box holds a round: a
-    // dry gun neither shoots nor jams the guns around it.
+    // Each entry's record and box, the gun in that box, and whether it has a
+    // round for it: a dry gun neither shoots nor jams the guns around it.
     let mut recs = [None; MAX_TURRETS];
     let mut boxes = [None; MAX_TURRETS];
     let mut hot = [false; MAX_TURRETS];
@@ -251,7 +293,10 @@ pub fn step(
         if t.live {
             recs[k] = deploys.find(t.cx, t.cz, t.level, t.loc).copied();
             boxes[k] = deploys.box_index(box_key(t.cx, t.cz, t.level, t.loc));
-            hot[k] = recs[k].is_some() && rounds_in(deploys, boxes[k], def.ammo) > 0;
+            let g = gun_in(def, deploys, boxes[k]);
+            table[k].carried = g.map(|g| def.guns[g].item);
+            hot[k] = recs[k].is_some()
+                && g.is_some_and(|g| rounds_in(deploys, boxes[k], def.guns[g].ammo) > 0);
         }
     }
     for k in 0..MAX_TURRETS {
@@ -282,12 +327,17 @@ pub fn step(
         );
         let bi = boxes[k];
         let s = &mut table[k].gun;
-        // A dry gun lets its target go and looks at nobody; so does one
-        // jammed by the turrets around it (module doc).
-        if rounds_in(deploys, bi, def.ammo) == 0 || jammed(&recs, &hot, k, (x, z)) {
+        // No gun, or a dry one, lets its target go and looks at nobody; so
+        // does one jammed by the turrets around it (module doc).
+        let Some(g) = gun_in(def, deploys, bi).filter(|_| hot[k]) else {
+            s.drop_target();
+            continue;
+        };
+        if jammed(&recs, &hot, k, (x, z)) {
             s.drop_target();
             continue;
         }
+        let g = &def.guns[g];
         // Looks are spread over the cadence by index, so the turrets do not
         // all walk their sight lines on one tick.
         if (tick + k as u64).is_multiple_of(LOOK_TICKS) {
@@ -307,7 +357,7 @@ pub fn step(
                 seed,
                 haven,
                 tick,
-                &def.gun,
+                &g.def,
                 cols,
                 occ,
                 s,
@@ -332,7 +382,7 @@ pub fn step(
             seed,
             haven,
             tick,
-            &def.gun,
+            &g.def,
             cols,
             occ,
             s,
@@ -344,7 +394,7 @@ pub fn step(
         );
         if s.next_shot != before {
             if let Some(i) = bi {
-                spend_one(deploys, i, def.ammo);
+                spend_one(deploys, i, g.ammo);
             }
         }
     }
@@ -375,10 +425,28 @@ fn jammed(
         >= TURRET_INTERFERENCE
 }
 
+/// The first gun in box `bi` a turret fires, as its index in `def.guns`.
+pub fn gun_in(def: &TurretDef, deploys: &Deploys, bi: Option<usize>) -> Option<usize> {
+    let i = bi?;
+    (0..BOX_SLOTS).find_map(|s| {
+        let st = deploys.box_slot(i, s);
+        if st.count == 0 {
+            return None;
+        }
+        def.live().iter().position(|g| g.item == st.item)
+    })
+}
+
+/// The gun in the box at `key`, if the box also holds a round for it.
+fn loaded(def: &TurretDef, deploys: &Deploys, key: u32) -> Option<usize> {
+    let bi = deploys.box_index(key);
+    gun_in(def, deploys, bi).filter(|&g| rounds_in(deploys, bi, def.guns[g].ammo) > 0)
+}
+
 /// Rounds of `ammo` in box `bi`.
 fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     bi.map_or(0u32, |i| {
-        (0..crate::limits::BOX_SLOTS)
+        (0..BOX_SLOTS)
             .map(|s| deploys.box_slot(i, s))
             .filter(|s| s.count > 0 && s.item == ammo)
             .map(|s| s.count as u32)
@@ -386,14 +454,9 @@ fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     })
 }
 
-/// Rounds of `ammo` in the box at `key`.
-fn rounds(deploys: &Deploys, key: u32, ammo: u16) -> u32 {
-    rounds_in(deploys, deploys.box_index(key), ammo)
-}
-
 /// Take one `item` out of box `i`, from the first stack holding it.
 fn spend_one(deploys: &mut Deploys, i: usize, item: u16) {
-    for s in 0..crate::limits::BOX_SLOTS {
+    for s in 0..BOX_SLOTS {
         let mut st = deploys.box_slot(i, s);
         if st.count > 0 && st.item == item {
             st.count -= 1;

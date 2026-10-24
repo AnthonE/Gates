@@ -1349,7 +1349,11 @@ pub use voice::{
 /// tag) and 1 for a `SolanaProof` (32-byte Ed25519 key + 64-byte signature
 /// over `siws_message_for`). `REFUSE_LINK` (11) says the shard could not read
 /// whether that Solana account is linked to an Ethereum one.
-pub const PROTO_VER: u16 = 142;
+/// v143 — `SUB_SENTRY_LOCK` names a player's turret too: the gun's index is
+/// 7 bits over the town's sentries then the turrets (was 2, sentries only,
+/// so a turret's lock-on beep never left the shard). A turret's record also
+/// carries the gun in its box as its `held` item, in the field it already had.
+pub const PROTO_VER: u16 = 143;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
