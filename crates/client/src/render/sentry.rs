@@ -131,11 +131,13 @@ pub struct SentryAssets {
     alarm: Handle<StandardMaterial>,
 }
 
-/// The drawn turrets, by sentry index, and how long each lamp stays red.
+/// The drawn turrets, by sentry index, how long each lamp stays red, and
+/// the held row each player turret's cradle carries this frame.
 #[derive(Resource)]
 pub struct Drawn {
     live: [Option<Entity>; GUNS],
     alarm: [f32; GUNS],
+    carried: [Option<usize>; GUNS],
 }
 
 // By hand: an array past 32 has no derived `Default`.
@@ -144,6 +146,7 @@ impl Default for Drawn {
         Self {
             live: [None; GUNS],
             alarm: [0.0; GUNS],
+            carried: [None; GUNS],
         }
     }
 }
@@ -242,10 +245,9 @@ pub fn stream(
         }
     }
     let mut rs = client_core::interp::RemoteState::default();
-    // The held row each player turret is carrying this frame, for its cradle.
-    let mut carried = [None; GUNS];
     for k in 0..GUNS {
         drawn.alarm[k] = (drawn.alarm[k] - dt).max(0.0);
+        drawn.carried[k] = None;
         let id = mob::mob_id(gun_slot(k));
         // A town sentry stands on its pedestal and draws big for the street
         // below; a player's turret stands on its own box at true size.
@@ -263,7 +265,7 @@ pub fn stream(
         let pos = Vec3::new(rs.x, rs.y, rs.z);
         let aim = Quat::from_rotation_y(rs.yaw * (std::f32::consts::TAU / 65536.0));
         if !town {
-            carried[k] = rs.held.and_then(|item| {
+            drawn.carried[k] = rs.held.and_then(|item| {
                 crate::ui::hold::held_model(
                     &core.catalog,
                     sim_core::gather::ItemStack {
@@ -343,7 +345,7 @@ pub fn stream(
             if head.0 == id {
                 t.rotation = aim;
                 if !town {
-                    let muzzle = carried[k]
+                    let muzzle = drawn.carried[k]
                         .map_or(MUZZLE, |i| gun_mount(&crate::ui::hold::HELD_MODELS[i]).1);
                     if head.1 != muzzle {
                         head.1 = muzzle;
@@ -354,7 +356,7 @@ pub fn stream(
     }
     // Each cradle draws its turret's gun once that gun's model has loaded.
     for (mut gun, mut mesh, mut mat, mut t, mut vis) in guns.iter_mut() {
-        let row = carried[gun.0].filter(|&i| {
+        let row = drawn.carried[gun.0].filter(|&i| {
             models.as_deref().is_some_and(|m| {
                 let (mh, mt) = m.row(i);
                 meshes.contains(mh.id()) && materials.contains(mt.id())

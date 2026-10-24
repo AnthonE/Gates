@@ -448,7 +448,11 @@ const SUBJECTS: &[Subject] = &[
     ),
     kit("planter_box", [0.0, 0.0, 0.0]),
     kit("camp_fire", [0.0, 0.0, 0.0]),
-    s("auto_turret", "models/held/auto_turret.glb", [30.0, 0.0, 0.0]),
+    s(
+        "auto_turret",
+        "models/held/auto_turret.glb",
+        [30.0, 0.0, 0.0],
+    ),
     kit("metal_window_bars", [90.0, 0.0, 0.0]),
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
