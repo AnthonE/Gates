@@ -3984,6 +3984,7 @@ fn deploy_look(
             count: 1,
             cond: 0,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         },
     );
     if let Some((mesh, mat)) = row.and_then(|i| models.skinned(i, rec.skin)) {
