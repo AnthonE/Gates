@@ -5,19 +5,10 @@ name: gates
 # — the gate either runs for real or does not run at all (never a
 # skip-pass; see ci/gates.sh header).
 on:
+  # Every PR runs this workflow, because `gates` is a required check on main
+  # and a check that never starts never passes. The `changes` job below holds
+  # the old path filter: a docs-only PR goes green without compiling a thing.
   pull_request:
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - "content/**"
-      - "ci/**"
-      # Read by tests: `refusals.rs` scans the page, and the ground and
-      # water tests hold the shaders' bindings and constants.
-      - "crates/client-web/web/**"
-      - "assets/shaders/**"
-      - "assets/textures/**"
-      - ".github/workflows/gates.yml"
   push:
     # `next-wipe` is gated like main: it is the other branch that merges.
     branches: [main, next-wipe]
@@ -44,12 +35,39 @@ permissions:
   contents: read
 
 jobs:
+  # Did this PR touch anything a gate reads? The same list as the push
+  # filter above. Push and dispatch runs are filtered already: always yes.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE" HEAD | grep -qE \
+            '\.rs$|(^|/)Cargo\.toml$|^Cargo\.lock$|^content/|^ci/|^crates/client-web/web/|^assets/shaders/|^assets/textures/|^\.github/workflows/gates\.yml$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "nothing a gate reads changed"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # The gates in three parts side by side (`GATES_PART`, ci/gates.sh): one
   # job ran them in a line for 60 minutes (run 39892561035), 29 of them the
   # native suite and 21 the renderer tier. Each part restores and, on main,
   # saves its own cache, since each compiles a different target/.
   part:
     name: gates · ${{ matrix.part }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -139,22 +157,28 @@ jobs:
   # PR's green run for the merge commit when the two trees are the same
   # tree, rather than waiting on main's own run of the identical files.
   gates:
-    needs: part
+    needs: [changes, part]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: every part green
         run: |
+          if [ "${{ needs.changes.outputs.code }}" = false ]; then
+            echo "no gate reads what this PR changed"; exit 0
+          fi
           [ "${{ needs.part.result }}" = success ] \
             || { echo "a part of the gates is ${{ needs.part.result }}"; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: needs.changes.outputs.code == 'true'
       - name: the tree it tested
+        if: needs.changes.outputs.code == 'true'
         id: tree
         run: |
           t=$(git rev-parse 'HEAD^{tree}')
           echo "$t" > tree.txt
           echo "tree=$t" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: needs.changes.outputs.code == 'true'
         with:
           name: gates-tree-${{ steps.tree.outputs.tree }}
           path: tree.txt

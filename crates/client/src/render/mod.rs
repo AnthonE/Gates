@@ -1757,6 +1757,11 @@ impl Plugin for GatesRenderPlugin {
                 .before(quality::reband_trees)
                 .run_if(world_running),
         )
+        // Bevy 0.18.1 renumbers its `VisibilityRange` table whenever one
+        // range changes; this re-extracts every ranged mesh with it, so no
+        // tree, bush or pole reads another's range for a frame
+        // (`tree::restamp_ranges`). `Last`: after every writer this frame.
+        .add_systems(Last, tree::restamp_ranges)
         // WebGL2's tree LOD, by hand: it cannot bind the table
         // `VisibilityRange` dithers by, so no tree part carries one there and
         // this swaps the near pair for the hull by distance (`tree::band`).
