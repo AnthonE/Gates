@@ -377,6 +377,30 @@ with open(os.path.join(out, "index.json"), "w") as f:
     json.dump([{"file": "../../rent.json", "caption": "x"}], f)
 check("a path out of the folder is never published", runner.clips_of("a000000002") == [])
 
+# ── other bodies' journals (`jev-bot --journal`) ─────────────────────────────
+J = os.path.join(TMP, "village", "millers")
+os.makedirs(J, exist_ok=True)
+A, B = "0x" + "a1" * 20, "0x" + "b2" * 20
+now = time.time()
+with open(os.path.join(J, "journal.jsonl"), "w") as f:
+    for k in range(8):
+        f.write(json.dumps({"t": now - 100 + k, "goal": f"g{k}", "reason": "r", "wallet": A.upper().replace("0X", "0x"),
+                            "say": "base is north, code 1234" if k == 7 else None,
+                            "to": "team" if k == 7 else None}) + "\n")
+    f.write(json.dumps({"t": now - 5000, "goal": "old", "wallet": B}) + "\n")
+    f.write("{ torn\n")
+    f.write(json.dumps({"t": now - 1, "goal": "nobody", "wallet": "not-a-wallet"}) + "\n")
+o = runner.others([os.path.join(TMP, "village", "*", "journal.jsonl")], now)
+check("another body's journal is published by its wallet, the last few rows, in order",
+      list(o) == [A] and [r["goal"] for r in o[A]["live"]] == ["g3", "g4", "g5", "g6", "g7"])
+check("…its team line shows it spoke and never what",
+      o[A]["live"][-1]["say"] is None and o[A]["live"][-1]["to"] == "team"
+      and "1234" not in json.dumps(o))
+check("…and a body that has gone quiet, a torn line or a row with no wallet is left out",
+      B not in o and len(o) == 1)
+check("no journal matched is an empty map, never an error",
+      runner.others([os.path.join(TMP, "nowhere", "*.jsonl")], now) == {})
+
 print()
 if FAILED:
     print(f"{len(FAILED)} failed")

@@ -209,6 +209,7 @@ fn accept_invite(
     info!("discord: joining {addr} from an invite");
     connecting.addr = addr.to_string();
     connecting.rx = None;
+    connecting.watch = false;
     next.set(Screen::Connecting);
 }
 
