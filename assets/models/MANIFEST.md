@@ -1826,6 +1826,9 @@ Exceptions to the cube fit:
   `--turn=z90,y90` for the crossbow (front at +X). Then `stand_grip.py` with
   a window on the barrel/stock only (0.70–0.95 and 0.05–0.60): the guns' usual
   0.40–0.95 on a 26 cm revolver takes in the trigger guard and reads a 38° tilt.
+- **torch** is stood through its head (`stand_grip.py --shaft 0.10 0.99`):
+  the flame rides the axis above the fist, and a window on the stick alone
+  left the crown 16 mm off it (`tests/hand_light.rs`).
 - **stone spear** was rolled twice. The first image was a close-up of the
   head with no shaft; the second asked for it upright in a 9:16 frame,
   "the WHOLE spear in frame", and reconstructed straight (0.7° tilt).
