@@ -188,6 +188,8 @@ pub fn spawn_status(addr: SocketAddr, stats: Arc<ShardStats>) -> std::io::Result
 ///   wipe owes each wallet, which the platform's cashier reads and pays.
 ///   The shard still holds no keys: it says who earned what, and the
 ///   operator names which shards the cashier believes.
+/// - `GET /checkins/<week>.json` (`online::checkins_path`) — every wallet
+///   that stood in the town's safe zone that week, for the stake rewards.
 pub fn spawn_status_with(
     addr: SocketAddr,
     stats: Arc<ShardStats>,
@@ -210,6 +212,15 @@ pub const PAYOUT_JSON_CAP: u64 = 256 * 1024;
 /// `/payout/<wipe>.json` → the wipe, or `None` for any other path.
 fn payout_wipe(path: &str) -> Option<u32> {
     let n = path.strip_prefix("/payout/")?.strip_suffix(".json")?;
+    if n.is_empty() || n.len() > 10 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    n.parse().ok()
+}
+
+/// `/checkins/<week>.json` → the week, or `None` for any other path.
+fn checkins_week(path: &str) -> Option<u64> {
+    let n = path.strip_prefix("/checkins/")?.strip_suffix(".json")?;
     if n.is_empty() || n.len() > 10 || !n.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -328,6 +339,24 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
     };
     if method != "GET" {
         return Ok(()); // this endpoint speaks GET and nothing else
+    }
+    if let Some(week) = checkins_week(path) {
+        let body = base.and_then(|b| {
+            read_capped(
+                &crate::online::checkins_path(b, week),
+                crate::online::CHECKINS_JSON_CAP,
+            )
+        });
+        let Some(body) = body else {
+            return stream.write_all(NOT_FOUND);
+        };
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Cache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        return stream.write_all(body.as_bytes());
     }
     if let Some(wipe) = payout_wipe(path) {
         let body = base.and_then(|b| {
