@@ -244,8 +244,9 @@ hp = 200
 
 # A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box
 # with a gun on top — the one you put in it, `[turret]` below — that shoots
-# anybody in reach who is not its owner or the crew of the claim it stands in. Rust's turret hp; unpowered, since
-# nothing here carries power.
+# anybody in reach who is not on its own authorize list (its placer, until
+# someone with building privilege there joins or clears it). Rust's turret hp;
+# unpowered, since nothing here carries power.
 [[deployable]]
 id = "item.autoturret"
 archetype = "turret"

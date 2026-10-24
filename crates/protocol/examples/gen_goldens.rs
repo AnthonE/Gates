@@ -312,6 +312,9 @@ fn main() {
     write_fixture(goldens::FIXTURES[191], &buf[..len]);
     let len = protocol::encode_action_detach(goldens::action_detach(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[192], &buf[..len]);
+    // The turret's own list (v146).
+    let len = protocol::encode_event_turret(&goldens::event_turret(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[193], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

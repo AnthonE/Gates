@@ -1080,7 +1080,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "construction"
-description = "Shoots strangers on sight. Load it with pistol rounds; your crew it spares."
+description = "Shoots anyone not on its list. Give it a gun and rounds; authorize your crew on it."
 
 # The compound shop (`sim-core/src/shop.rs`): Rust's vending machine, priced in
 # junk. Its owner and their crew stock it and set its offers; anyone buys.

@@ -1,7 +1,7 @@
 //! A player's auto turret (`NOW.md` §0aa 1): Rust's `AutoTurret`, unpowered
 //! (there is no electricity here). A deployable with a box and a gun on top
-//! that shoots anybody in reach and in sight who is not **its owner or its
-//! owner's crew where it stands**.
+//! that shoots anybody in reach and in sight who is not **on its own
+//! authorize list**.
 //!
 //! ## Its gun is the one in its box
 //!
@@ -22,27 +22,26 @@
 //! is where the gun points. So the wire, the client's turret mesh, the
 //! tracer and the lock-on beep all exist already.
 //!
-//! ## Who it spares, and why that is not its own list
+//! ## Who it spares: its own list
 //!
-//! The reference hangs a third authorisation list on the turret
-//! (`roster.rs`'s header). A list is state a save has to carry, and a new
-//! saved list is a world-format change, which is a wipe. So v0 asks the
-//! question building already answers: its owner, and whoever is on every
-//! crew its owner is on, of the hearths whose claim covers it
-//! (`claim::crew_cover`). Not "on every crew here": a stranger's hearth
-//! 16–18 m off the base's edge reaches the spot too, and that rule turned the
-//! base's turrets on its own crew. A turret outside its owner's claims spares
-//! its owner alone.
+//! Rust's model: the turret carries its own authorize list
+//! ([`TurretRec::auth`], a `roster::Roster`), and spares exactly who is on
+//! it. Placing it puts its placer on; nobody else is on until they say so.
+//! A cupboard's crew is not on it: a crewmate is shot until they authorize.
 //!
-//! **So a hand's turrets answer to the crews that hand is on**, and so do
-//! its vending machine and its key locks (`deploy::key_crew_passes`). The
-//! owner leaving a crew or clearing it withdraws them from that crew, and so
-//! does a hearth placed fresh over the base, crewed by its placer alone
-//! until the others rejoin; rejoining gives them back. That is Rust's
-//! model, where each turret and lock carries its own authorisation and a
-//! cupboard's list never spoke for it. The old rule asked only who was on
-//! the crew here, whoever the owner was, so one member's clear handed the
-//! clearer every other member's guns.
+//! **Who may change the list** is the turret's building privilege,
+//! [`spares`]: its owner and whoever is on every crew its owner is on, of
+//! the hearths whose claim covers it (`claim::shares_crew`). That is what
+//! opening its box already asked (`World`'s `CONT_BOX` path), and what Rust
+//! asks: building privilege where it stands. So a crewmate may put
+//! themselves on ([`auth_op`]), and a stranger may not; anybody may take
+//! themselves off, and a clear empties it, owner and all (Rust's
+//! `ClearList`).
+//!
+//! A turret whose list is still its owner alone keeps no record: the store
+//! ([`TurretRecs`]) holds only the turrets somebody changed, keyed by box
+//! address like the vending machine's offers, and dropped with the turret
+//! in `Deploys::remove_at`.
 //!
 //! ## The table is derived, not kept
 //!
@@ -68,8 +67,8 @@ use crate::deploy::{box_key, DeployContent, Deploys, ARCH_TURRET};
 use crate::gather::ItemStack;
 use crate::heli::Round;
 use crate::limits::{
-    BOX_SLOTS, MAX_PLAYERS, MAX_TURRETS, MAX_TURRET_GUNS, TURRET_INTERFERENCE,
-    TURRET_INTERFERENCE_M,
+    BOX_SLOTS, MAX_PLAYERS, MAX_TURRETS, MAX_TURRET_GUNS, MAX_TURRET_RECS, TURRET_AUTH_CAP,
+    TURRET_INTERFERENCE, TURRET_INTERFERENCE_M,
 };
 use crate::mob::Mob;
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
@@ -94,9 +93,11 @@ pub const GUN_M: f32 = 0.9;
 
 /// **Who a player's machine answers to**: its owner, and whoever is on
 /// every crew its owner is on, of the hearths whose claim covers `(x, z)`
-/// (`claim::shares_crew`). Outside its owner's claims, the owner alone. The
-/// turret spares exactly these; the vending machine (`shop.rs`) lets exactly
-/// these stock it and set its offers.
+/// (`claim::shares_crew`). Outside its owner's claims, the owner alone.
+/// These may open a turret, put themselves on its list and clear it
+/// ([`auth_op`]); the vending machine (`shop.rs`) lets exactly these stock
+/// it and set its offers. Whom the turret spares is its own list
+/// ([`TurretRecs::authorized`]).
 pub fn spares(pieces: &Pieces, deploys: &Deploys, owner: u32, x: f32, z: f32, id: u32) -> bool {
     id == owner || crate::claim::shares_crew(pieces, deploys, x, z, owner, id)
 }
@@ -141,6 +142,202 @@ impl TurretDef {
     #[inline]
     pub fn live(&self) -> &[TurretGun] {
         &self.guns[..self.n as usize]
+    }
+}
+
+/// A turret's authorize list (`limits::TURRET_AUTH_CAP`).
+pub type TurretAuth = crate::roster::Roster<TURRET_AUTH_CAP>;
+
+/// What one turret keeps beyond its box, keyed by its packed box address
+/// (`deploy::box_key`). Saved (world format 34).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TurretRec {
+    pub key: u32,
+    /// Whom it spares.
+    pub auth: TurretAuth,
+}
+
+/// Bytes of one [`TurretRec`] in `state_hash` and the world save: the key,
+/// the list's count and its whole array.
+pub const TURRET_REC_BYTES: usize = 4 + 1 + TURRET_AUTH_CAP * 4;
+
+impl TurretRec {
+    /// The record a turret owned by `owner` has without one: its owner alone
+    /// on the list. The store never holds this shape ([`TurretRecs`]).
+    pub fn fresh(key: u32, owner: u32) -> Self {
+        Self {
+            key,
+            auth: TurretAuth::of(owner),
+        }
+    }
+
+    /// Every field, little-endian: the key, the count, the whole list.
+    pub fn hash_bytes(&self) -> [u8; TURRET_REC_BYTES] {
+        let mut b = [0u8; TURRET_REC_BYTES];
+        b[0..4].copy_from_slice(&self.key.to_le_bytes());
+        b[4] = self.auth.len() as u8;
+        for (k, id) in self.auth.raw().iter().enumerate() {
+            b[5 + k * 4..9 + k * 4].copy_from_slice(&id.to_le_bytes());
+        }
+        b
+    }
+}
+
+/// Every turret's record that differs from [`TurretRec::fresh`]: a dense
+/// list, swap-removed, boxed like the shops.
+pub struct TurretRecs {
+    entries: Box<[TurretRec; MAX_TURRET_RECS]>,
+    len: usize,
+}
+
+impl Default for TurretRecs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TurretRecs {
+    pub fn new() -> Self {
+        Self {
+            entries: crate::boxed_array(TurretRec::default()),
+            len: 0,
+        }
+    }
+
+    pub fn entries(&self) -> &[TurretRec] {
+        &self.entries[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn index_of(&self, key: u32) -> Option<usize> {
+        if key == 0 {
+            return None;
+        }
+        self.entries().iter().position(|r| r.key == key)
+    }
+
+    /// The turret at `key`'s record, owned by `owner`: its own, or
+    /// [`TurretRec::fresh`].
+    pub fn get(&self, key: u32, owner: u32) -> TurretRec {
+        self.index_of(key)
+            .map_or(TurretRec::fresh(key, owner), |i| self.entries[i])
+    }
+
+    /// Whether the turret at `key`, owned by `owner`, spares `id`.
+    pub fn authorized(&self, key: u32, owner: u32, id: u32) -> bool {
+        match self.index_of(key) {
+            Some(i) => self.entries[i].auth.contains(id),
+            None => id == owner,
+        }
+    }
+
+    /// Store `rec`, dropping it instead when it is back to fresh. False when
+    /// it needs a record and the store is full.
+    fn put(&mut self, rec: TurretRec, owner: u32) -> bool {
+        let fresh = rec == TurretRec::fresh(rec.key, owner);
+        match self.index_of(rec.key) {
+            Some(_) if fresh => {
+                self.drop_key(rec.key);
+                true
+            }
+            Some(i) => {
+                self.entries[i] = rec;
+                true
+            }
+            None if fresh => true,
+            None if self.len == MAX_TURRET_RECS => false,
+            None => {
+                self.entries[self.len] = rec;
+                self.len += 1;
+                true
+            }
+        }
+    }
+
+    /// Forget a turret's record (it is gone). A key with none is a no-op.
+    pub(crate) fn drop_key(&mut self, key: u32) {
+        if let Some(i) = self.index_of(key) {
+            self.len -= 1;
+            self.entries[i] = self.entries[self.len];
+            self.entries[self.len] = TurretRec::default();
+        }
+    }
+
+    /// Every listed id through `f` (`World::remap_player_ids`).
+    pub(crate) fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for r in self.entries[..self.len].iter_mut() {
+            r.auth.map_ids(f);
+        }
+    }
+
+    /// Replace every record from a decoded world save. Boot-only.
+    pub(crate) fn restore(&mut self, recs: &[TurretRec]) {
+        self.len = recs.len().min(MAX_TURRET_RECS);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        for r in self.entries[self.len..].iter_mut() {
+            *r = TurretRec::default();
+        }
+    }
+}
+
+/// Apply one turret list op (`deploy::op_is_turret`) from `p` at turret `i`
+/// (an index into the box store, already found to be a turret the presser
+/// reaches). Putting yourself on and clearing take the turret's building
+/// privilege ([`spares`]); taking yourself off takes nothing, the crew
+/// leave's rule, so a refusal never tells a stranger whether they were on.
+/// Refusals are `EV_DEPLOY_REFUSED`; the list itself reaches the client in
+/// its turret view while the box is open.
+pub fn auth_op(
+    pieces: &Pieces,
+    deploys: &mut Deploys,
+    i: usize,
+    p: &Player,
+    op: u8,
+    events: &mut EventQueue,
+) {
+    use crate::deploy::{
+        ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR, ACCESS_OP_TURRET_DEAUTH, REFUSE_D_AUTH_FULL,
+        REFUSE_D_FULL, REFUSE_D_KIND, REFUSE_D_OWNER,
+    };
+    use crate::roster::Added;
+    use crate::world::EV_DEPLOY_REFUSED;
+    let Some(b) = deploys.boxes().get(i).copied() else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+        return;
+    };
+    let key = box_key(b.cx, b.cz, b.level, b.loc);
+    let (x, z) = b.xz();
+    let privileged = spares(pieces, deploys, b.owner, x, z, p.id);
+    let mut rec = deploys.turret_recs().get(key, b.owner);
+    match op {
+        ACCESS_OP_TURRET_AUTH | ACCESS_OP_TURRET_CLEAR if !privileged => {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+            return;
+        }
+        ACCESS_OP_TURRET_AUTH => {
+            if rec.auth.add(p.id) == Added::Full {
+                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
+                return;
+            }
+        }
+        ACCESS_OP_TURRET_DEAUTH => {
+            rec.auth.remove(p.id);
+        }
+        ACCESS_OP_TURRET_CLEAR => rec.auth.clear(),
+        _ => {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+            return;
+        }
+    }
+    if !deploys.turret_recs_mut().put(rec, b.owner) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
     }
 }
 
@@ -341,17 +538,17 @@ pub fn step(
         // Looks are spread over the cadence by index, so the turrets do not
         // all walk their sight lines on one tick.
         if (tick + k as u64).is_multiple_of(LOOK_TICKS) {
-            let (owner, dref) = (t.owner, &*deploys);
-            // [`spares`], with the walk taken once for every player asked.
-            let crew = crate::claim::crew_cover(pieces, dref, x, z, owner);
+            // Its own list, read once for every player asked.
+            let rec = deploys
+                .turret_recs()
+                .get(box_key(t.cx, t.cz, t.level, t.loc), t.owner);
             let wanted = |p: &Player| {
                 p.active
                     && !p.dead
                     && !p.sleeping
                     && p.hp > 0
                     && !crate::combat::protected(p)
-                    && p.id != owner
-                    && !crew.holds(dref, p.id)
+                    && !rec.auth.contains(p.id)
             };
             sentry::look(
                 seed,

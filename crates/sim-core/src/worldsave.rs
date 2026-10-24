@@ -247,7 +247,10 @@ use crate::worldcont::WorldContRec;
 /// is twelve bytes (+4: what the item remembers — a gun's attachments,
 /// rounds and round), and `PlayerSave` drops the per-body magazines that
 /// data replaced; no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 33;
+/// **34 — the turret's own list** (`turret::TurretRecs`): a count and the
+/// records of every turret whose list is not its owner alone, after the
+/// plants; no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 34;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -446,7 +449,9 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + 2
     + crate::limits::MAX_SHOPS * SHOP_BYTES
     + 6
-    + crate::limits::MAX_PLANTS * crate::farm::PLANT_BYTES;
+    + crate::limits::MAX_PLANTS * crate::farm::PLANT_BYTES
+    + 2
+    + crate::limits::MAX_TURRET_RECS * crate::turret::TURRET_REC_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
 /// (wall 3) — the reason crosses to a server that can print, and nothing
@@ -954,6 +959,11 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         let mut b = [0u8; crate::farm::PLANT_BYTES];
         crate::farm::pack(p, &mut b);
         o.bytes(&b);
+    }
+    // The turrets' lists (format 34): a count, then each record's bytes.
+    o.u16(w.deploys.turret_recs().len() as u16);
+    for t in w.deploys.turret_recs().entries() {
+        o.bytes(&t.hash_bytes());
     }
 
     if o.at > o.buf.len() {
@@ -2101,6 +2111,37 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         plants[k] = p;
     }
 
+    // --- the turrets' lists (format 34) -------------------------------------
+    // Each must name a turret in this file, once, with a list that is not
+    // its owner alone (that turret keeps no record).
+    let mut turrets = [crate::turret::TurretRec::default(); crate::limits::MAX_TURRET_RECS];
+    let n_turrets = r.count(crate::limits::MAX_TURRET_RECS)?;
+    for k in 0..n_turrets {
+        let key = r.u32()?;
+        let len = r.u8()?;
+        let mut ids = [0u32; crate::limits::TURRET_AUTH_CAP];
+        for id in ids.iter_mut() {
+            *id = r.u32()?;
+        }
+        let auth = crate::roster::Roster::restore(&ids, len).ok_or(WorldSaveError::CountOverCap)?;
+        let owner = boxes[..n_boxes]
+            .iter()
+            .zip(ovens[..n_boxes].iter())
+            .find(|(b, ov)| {
+                ov.arch == crate::deploy::ARCH_TURRET
+                    && crate::deploy::box_key(b.cx, b.cz, b.level, b.loc) == key
+            })
+            .map(|(b, _)| b.owner);
+        let rec = crate::turret::TurretRec { key, auth };
+        if key == 0
+            || owner.is_none_or(|o| rec == crate::turret::TurretRec::fresh(key, o))
+            || turrets[..k].iter().any(|t| t.key == key)
+        {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        turrets[k] = rec;
+    }
+
     // --- commit -----------------------------------------------------------
     // Nothing above this line touched `w`. Every refusal returns with the
     // world exactly as the caller had it, which is what lets a shard report
@@ -2134,6 +2175,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &locks[..n_locks],
     );
     w.deploys.restore_shops(&shops[..n_shops]);
+    w.deploys.restore_turrets(&turrets[..n_turrets]);
     w.farm.restore(&plants[..n_plants], next_plant);
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
@@ -2278,7 +2320,8 @@ mod tests {
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
             + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
-            + 6 + 4_096 * 58; // plants (format 30): a count and the next id, then each plant
+            + 6 + 4_096 * 58 // plants (format 30): a count and the next id, then each plant
+            + 2 + 512 * 45; // turret lists (format 34): a count, then key + count + ten ids
                               // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                               // 56 -> 62 at format 10: a tenth count, plus the
                               // spent store's `u32` eviction counter beside the
@@ -2415,8 +2458,9 @@ mod tests {
         // 5_501_026 at format 32: the skin, two bytes on 4,096 deploys.
         // 5_671_218 at format 33: every stack in every store twelve bytes
         // (item data), and the per-body magazines it replaced gone.
+        // 5_694_260 at format 34: the turrets' lists, 2 + 512 × 45.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_671_218,
+            WORLD_SAVE_MAX_BYTES, 5_694_260,
             "the world save ceiling moved"
         );
     }

@@ -7173,6 +7173,27 @@ impl ShardCore {
         view
     }
 
+    /// Auto turret `i` (an index into the box store) as player `viewer` is
+    /// shown it (`SUB_TURRET`): its list, and whether `viewer` has its
+    /// building privilege (`turret::spares`).
+    pub fn turret_view(&self, i: usize, viewer: u32) -> protocol::TurretView {
+        let deploys = &self.world.deploys;
+        let Some(b) = deploys.boxes().get(i) else {
+            return protocol::TurretView::default();
+        };
+        let key = sim_core::deploy::box_key(b.cx, b.cz, b.level, b.loc);
+        let (x, z) = b.xz();
+        let rec = deploys.turret_recs().get(key, b.owner);
+        let mut view = protocol::TurretView {
+            key,
+            may_edit: sim_core::turret::spares(&self.world.pieces, deploys, b.owner, x, z, viewer),
+            n: rec.auth.len() as u8,
+            ..Default::default()
+        };
+        view.auth[..rec.auth.len()].copy_from_slice(rec.auth.members());
+        view
+    }
+
     /// Hearth `hi`'s stock ack into `ev_buf`: each row's item, what the
     /// hearth holds and what a day charges (wire v89) — the sweep's own
     /// arithmetic over the claim cache the tick just refreshed (upkeep v2's
@@ -9266,6 +9287,24 @@ impl ShardCore {
                     // A vending machine's offers and stock (`shop.rs`), owed
                     // to whoever has it open: on the open, and again whenever
                     // what the shop panel shows moves.
+                    // An auto turret's list, the same way (`turret.rs`).
+                    if kind == CONT_BOX && self.world.deploys.turret_index(handle).is_some() {
+                        let viewer = self.world.players[self.clients[slot].own_wslot].id;
+                        let view = self.turret_view(i, viewer);
+                        if self.clients[slot].last_turret != Some(view) {
+                            match protocol::encode_event_turret(&view, &mut self.ev_buf) {
+                                Ok(len) => {
+                                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                        ShardStats::bump(&stats.ev_sent);
+                                        self.clients[slot].last_turret = Some(view);
+                                    } else {
+                                        return;
+                                    }
+                                }
+                                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                            }
+                        }
+                    }
                     if kind == CONT_BOX && self.world.deploys.vending_index(handle).is_some() {
                         let viewer = self.world.players[self.clients[slot].own_wslot].id;
                         let view = self.shop_view(i, viewer);

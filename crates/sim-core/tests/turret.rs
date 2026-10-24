@@ -418,3 +418,96 @@ fn only_the_hands_a_turret_spares_move_its_rounds() {
     assert_eq!(r.map(|r| r.0), Some(EV_MOVED), "its owner was refused");
     assert_eq!(rounds_left(&w, key), 0);
 }
+
+fn access(id: u32, key: u32, op: u8) -> Command {
+    let (cx, cz, level, loc) = sim_core::deploy::box_addr(key);
+    Command::Access {
+        id,
+        cx,
+        cz,
+        level,
+        loc,
+        op,
+        code: 0,
+    }
+}
+
+/// Who the turret hurt in `ticks`: (owner hits, stranger hits).
+fn hurt_in(w: &mut World, ticks: usize) -> (u32, u32) {
+    let (mut owner, mut stranger) = (0, 0);
+    for _ in 0..ticks {
+        w.tick(&[]);
+        for e in w.events.entries() {
+            match e.code {
+                EV_HURT if e.a == OWNER => owner += 1,
+                EV_HURT if e.a == STRANGER => stranger += 1,
+                _ => {}
+            }
+        }
+    }
+    (owner, stranger)
+}
+
+/// **The turret spares its own list, Rust's model.** A stranger may not
+/// put themselves on it; its owner's clear empties it, owner and all, so it
+/// shoots its owner; the owner putting themselves back on is spared again;
+/// and the list rides a save.
+#[test]
+fn a_turret_spares_its_own_list_and_only_its_privileged_may_join_it() {
+    use sim_core::deploy::{
+        ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR, ACCESS_OP_TURRET_DEAUTH, REFUSE_D_OWNER,
+    };
+    use sim_core::world::EV_DEPLOY_REFUSED;
+    let (mut w, key) = turret_world(128);
+    // Both in arm's reach of it, the stranger in its line too.
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    w.players[s].body = Body::at(SEED, &w.haven, x + 1.5, z);
+
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_AUTH)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER && e.b == REFUSE_D_OWNER),
+        "a stranger put themselves on the turret's list"
+    );
+    // Taking yourself off a list you are not on is nothing, and says nothing.
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_DEAUTH)]);
+    assert!(w.deploys.turret_recs().is_empty(), "a no-op kept a record");
+    assert!(!w.deploys.turret_recs().authorized(key, OWNER, STRANGER));
+    let (owner_hits, stranger_hits) = hurt_in(&mut w, 300);
+    assert_eq!(owner_hits, 0, "it shot the owner on its list");
+    assert!(stranger_hits > 0, "it spared a stranger off its list");
+
+    // The clear: nobody is on it, and it shoots its owner too.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_CLEAR)]);
+    assert_eq!(w.deploys.turret_recs().get(key, OWNER).auth.len(), 0);
+    let mut blob = vec![0; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = sim_core::worldsave::encode(&w, &mut blob).unwrap();
+    let mut back = World::new(SEED);
+    back.gather = w.gather;
+    back.build = w.build;
+    back.deploy = w.deploy;
+    back.combat = w.combat;
+    back.turret_def = w.turret_def;
+    sim_core::worldsave::decode_into(&mut back, &blob[..n]).unwrap();
+    assert_eq!(
+        back.deploys.turret_recs().entries(),
+        w.deploys.turret_recs().entries(),
+        "the cleared list did not ride the save"
+    );
+    // Its owner's privilege puts them back on, and the record goes: the
+    // list is its owner alone again.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_AUTH)]);
+    assert!(w.deploys.turret_recs().is_empty());
+    assert!(w.deploys.turret_recs().authorized(key, OWNER, OWNER));
+
+    // Cleared again, it turns on its owner.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_CLEAR)]);
+    let (owner_hits, _) = hurt_in(&mut w, 400);
+    assert!(owner_hits > 0, "a cleared turret still spared its owner");
+}

@@ -126,6 +126,7 @@ pub use event::{
     encode_event_team, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_MAX,
     TEAM_POS_MAX_M,
 };
+pub use event::{encode_event_turret, TurretView};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1370,7 +1371,11 @@ pub use voice::{
 /// player's turret too (the gun's index is 7 bits over the town's sentries
 /// then the turrets, was 2), and a turret's record carries the gun in its
 /// box as its `held` item.
-pub const PROTO_VER: u16 = 145;
+/// v146 — the turret's own list: access ops 9–11 put yourself on an auto
+/// turret's authorize list, take yourself off and clear it
+/// (`ACCESS_OP_TURRET_*`), and `SUB_TURRET` (110) tells whoever has its box
+/// open the list and whether they may change it (`TurretView`).
+pub const PROTO_VER: u16 = 146;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

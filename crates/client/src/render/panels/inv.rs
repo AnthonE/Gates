@@ -739,6 +739,9 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         } else {
             take_all_button(col);
         }
+        if let Some(key) = super::turret::open_turret(core) {
+            super::turret::auth_block(col, core, key);
+        }
     });
 }
 

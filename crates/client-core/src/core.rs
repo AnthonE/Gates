@@ -1276,6 +1276,14 @@ impl ClientCore {
         &self.team
     }
 
+    /// Auto turret `key` as the shard last told this client
+    /// (`EventMsg::Turret`, v146): its list and whether this client may
+    /// change it, told on the open and while it stays open. `None` unless it
+    /// is the last turret told; like a shop's, it can be stale once shut.
+    pub fn turret_view(&self, key: u32) -> Option<&protocol::TurretView> {
+        (key != 0 && self.turret.key == key).then_some(&self.turret)
+    }
+
     /// Vending machine `key`'s offers and stock as the shard last told this
     /// client (`EventMsg::Shop`, v118) — it is told when it opens one
     /// (`encode_action_container(CONT_BOX, key)`) and again while it stays
@@ -1825,6 +1833,12 @@ pub struct ClientCore {
     /// Bumped on every `Shop` and `ShopResult`, so a renderer redraws only
     /// when one moved.
     pub shop_gen: u32,
+    /// The last auto turret this client was told about (`EventMsg::Turret`,
+    /// v146): told when it opens one and again while it stays open whenever
+    /// the list or its edit right change. Read with [`Self::turret_view`].
+    turret: protocol::TurretView,
+    /// Bumped on every `Turret`, so a renderer redraws only when it moved.
+    pub turret_gen: u32,
     /// THE GATE's casino as told (`EventMsg::Wheel*`, `Slots`, v123).
     pub casino: CasinoView,
     /// Bumped on every casino answer and spin, so a panel redraws only when
@@ -2508,6 +2522,8 @@ impl ClientCore {
             shops: [protocol::ShopView::default(); SHOP_VIEWS],
             shop_told: [0; SHOP_VIEWS],
             shop_gen: 0,
+            turret: protocol::TurretView::default(),
+            turret_gen: 0,
             shop_result: None,
             shop_result_seq: 0,
             casino: CasinoView::default(),
@@ -3243,6 +3259,10 @@ impl ClientCore {
             EventMsg::Team(view) => {
                 self.team = view;
                 self.team_gen = self.team_gen.wrapping_add(1);
+            }
+            EventMsg::Turret(view) => {
+                self.turret = view;
+                self.turret_gen = self.turret_gen.wrapping_add(1);
             }
             EventMsg::Shop(view) => {
                 self.shop_gen = self.shop_gen.wrapping_add(1);

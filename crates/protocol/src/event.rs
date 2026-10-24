@@ -662,7 +662,11 @@ const SUB_PLANT_SYNC: u32 = 108;
 /// player near them said out loud, or a line translated into their
 /// language. See [`Caption`].
 const SUB_CAPTION: u32 = 109;
-const SUB_MAX: u32 = SUB_CAPTION;
+/// An auto turret as its viewer sees it (wire v146, `sim_core::turret`):
+/// owed to whoever has its box open, on the open and whenever it moves.
+/// See [`TurretView`].
+const SUB_TURRET: u32 = 110;
+const SUB_MAX: u32 = SUB_TURRET;
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -2544,6 +2548,8 @@ pub enum EventMsg {
     /// A vending machine's offers as the receiver sees them (v118) — see
     /// [`ShopView`].
     Shop(ShopView),
+    /// An auto turret as the receiver sees it (v146) — see [`TurretView`].
+    Turret(TurretView),
     /// The receiver's shop press at machine `key` (v118): `op` and `row` as
     /// sent, `times` lots for a buy, and `code` a `sim_core::shop::REFUSE_SH_*`
     /// or 0 when it went through.
@@ -6421,6 +6427,52 @@ impl ShopView {
     }
 }
 
+/// An auto turret (`sim_core::deploy::ARCH_TURRET`) as the receiver sees it
+/// (v146): its box key, whether the receiver has its building privilege
+/// (`turret::spares`: may put themselves on and clear it), and its authorize
+/// list in the order it was added to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TurretView {
+    pub key: u32,
+    pub may_edit: bool,
+    pub n: u8,
+    pub auth: [u32; sim_core::limits::TURRET_AUTH_CAP],
+}
+
+impl TurretView {
+    /// The listed ids.
+    pub fn listed(&self) -> &[u32] {
+        &self.auth[..(self.n as usize).min(self.auth.len())]
+    }
+
+    /// The shape both ends hold a view to: a real key, a count in range and
+    /// a zeroed tail.
+    pub fn valid(&self) -> bool {
+        self.key != 0
+            && (self.n as usize) <= self.auth.len()
+            && self.auth[self.n as usize..].iter().all(|&id| id == 0)
+    }
+}
+
+/// Bits of [`TurretView::n`].
+const TURRET_AUTH_BITS: u32 = 4;
+const _: () = assert!(sim_core::limits::TURRET_AUTH_CAP < 1 << TURRET_AUTH_BITS);
+
+/// An auto turret to its viewer — see [`EventMsg::Turret`].
+pub fn encode_event_turret(view: &TurretView, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !view.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TURRET)?;
+    w.write(view.key, 32)?;
+    w.write_bit(view.may_edit)?;
+    w.write(view.n as u32, TURRET_AUTH_BITS)?;
+    for &id in view.listed() {
+        w.write(id, 32)?;
+    }
+    Ok(w.finish())
+}
+
 /// A vending machine's offers to its viewer — see [`EventMsg::Shop`].
 pub fn encode_event_shop(view: &ShopView, buf: &mut [u8]) -> Result<usize, WireError> {
     if !view.valid() {
@@ -8156,6 +8208,24 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::Shop(view)
+        }
+        SUB_TURRET => {
+            let mut view = TurretView {
+                key: r.read(32)?,
+                may_edit: r.read_bit()?,
+                n: r.read(TURRET_AUTH_BITS)? as u8,
+                ..Default::default()
+            };
+            if view.n as usize > view.auth.len() {
+                return Err(WireError::Malformed);
+            }
+            for k in 0..view.n as usize {
+                view.auth[k] = r.read(32)?;
+            }
+            if !view.valid() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Turret(view)
         }
         SUB_SHOP_RESULT => {
             let key = r.read(32)?;
@@ -11677,7 +11747,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 9,
             bits: ACCESS_OP_BITS,
-            live_max: 8,
+            live_max: 11,
         },
         Domain {
             what: "bag-removal reason",
@@ -12038,6 +12108,9 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A turret view's list length (v146), bounded by
+            // `TURRET_AUTH_CAP`, const-asserted beside the width.
+            "TURRET_AUTH_BITS",
             // What a `SUB_DRANK` says (v137, the water pass): the wire's own
             // three kinds — a mouthful, a fill, a pour — and the decoder
             // refuses the fourth. Not a sim-core enumeration.

@@ -717,6 +717,18 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 
+/// Players one auto turret's authorize list holds (`turret::TurretRec`),
+/// the lock's `LOCK_AUTH_CAP`. Overflow policy: **refuse** the add with
+/// `REFUSE_D_AUTH_FULL`, never evict (`roster.rs`).
+pub const TURRET_AUTH_CAP: usize = 10;
+
+/// Turrets with a record of their own (`turret::TurretRecs`): one whose list
+/// is still its owner alone keeps none, so this counts the turrets somebody
+/// has authorized on, deauthorized from or cleared. Overflow policy:
+/// **refuse** the op that would create one with `REFUSE_D_FULL`.
+pub const MAX_TURRET_RECS: usize = 512;
+const _: () = assert!(MAX_TURRET_RECS <= MAX_BOXES);
+
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
 /// refuses a build table needing more. Structural cap, not a knob.

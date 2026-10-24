@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 193] = [
+pub const FIXTURES: [&str; 194] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -347,6 +347,8 @@ pub const FIXTURES: [&str; 193] = [
     // Weapon attachments (v144): the two verbs at their widths' last values.
     "action_attach.bin",
     "action_detach.bin",
+    // The turret's own list (v146): editable, three listed.
+    "event_turret.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2286,6 +2288,19 @@ pub fn action_shop() -> (u32, sim_core::shop::ShopAct) {
             price: 0x1234,
         },
     )
+}
+
+/// A turret's view (v146): editable, three listed ids that differ in every
+/// byte, so a dropped or reordered id moves the fixture.
+pub fn event_turret() -> crate::TurretView {
+    let mut v = crate::TurretView {
+        key: 0x0A0B_0C0D,
+        may_edit: true,
+        n: 3,
+        ..Default::default()
+    };
+    v.auth[..3].copy_from_slice(&[0x0102_0304, 0x1122_3344, 0xA1B2_C3D4]);
+    v
 }
 
 /// A machine's view (v118): editable, two live rows apart (0 and 4) with

@@ -7090,7 +7090,31 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
+                    if deploy::op_is_turret(op) {
+                        // An auto turret's list (`turret::auth_op`): worked
+                        // where its box is opened, under the box's reach.
+                        match self
+                            .deploys
+                            .turret_index(deploy::box_key(cx, cz, level, loc))
+                        {
+                            Some(i) if self.box_reachable(i, slot) => crate::turret::auth_op(
+                                &self.pieces,
+                                &mut self.deploys,
+                                i,
+                                &self.players[slot],
+                                op,
+                                &mut self.events,
+                            ),
+                            Some(_) => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0)
+                            }
+                            None => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_KIND, 0)
+                            }
+                        }
+                    } else if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
                     } else if deploy::op_is_crew(op) {
@@ -10254,6 +10278,11 @@ impl World {
         // The vending machines' offers (`shop.rs`), on the arrow idiom: no
         // length prefix, so a world without a shop hashes as it did.
         for r in self.deploys.shops().entries() {
+            h.update(&r.hash_bytes());
+        }
+        // The turrets' lists, the same idiom: a world where every turret
+        // still spares its owner alone hashes as it did.
+        for r in self.deploys.turret_recs().entries() {
             h.update(&r.hash_bytes());
         }
         // The casino's held stakes and running spins (`casino.rs`), on the

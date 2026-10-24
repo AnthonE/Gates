@@ -167,8 +167,9 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or on every
-/// crew its owner is on where it stands (`turret::spares`).
+/// rounds a gun on top spends on anybody not on its own authorize list
+/// (`turret::TurretRecs`). Only its building privilege opens it
+/// (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
@@ -279,9 +280,10 @@ const _: () = {
 /// width bump there costs every C→S message a bit; the op is four bits
 /// inside this one payload instead.
 ///
-/// **One op space, two stores, and that is the point.** 0..=5 run against
+/// **One op space, three stores, and that is the point.** 0..=5 run against
 /// the code lock at a door (`lock.rs`); 6..=8 run against the hearth's
-/// crew (`crew_op`). They share a space because they are one question —
+/// crew (`crew_op`); 9..=11 against an auto turret's list
+/// (`turret::auth_op`). They share a space because they are one question —
 /// *who may do this here* — and the answer is a `Roster` either way; and
 /// they share a *wire field*, so a second space would mean a second width
 /// for the domain gate to bound and a second chance to get it wrong.
@@ -301,9 +303,15 @@ pub const ACCESS_OP_CREW_JOIN: u8 = 6;
 pub const ACCESS_OP_CREW_LEAVE: u8 = 7;
 /// Clear it back to the clearer alone.
 pub const ACCESS_OP_CREW_CLEAR: u8 = 8;
+/// Put yourself on the auto turret's list at the address (`turret.rs`).
+pub const ACCESS_OP_TURRET_AUTH: u8 = 9;
+/// Take yourself off it.
+pub const ACCESS_OP_TURRET_DEAUTH: u8 = 10;
+/// Empty it, owner and all (Rust's `ClearList`).
+pub const ACCESS_OP_TURRET_CLEAR: u8 = 11;
 /// The highest op above, named rather than counted — the wire refuses
 /// past it and the sim refuses past it, in that order.
-pub const ACCESS_OP_MAX: u8 = ACCESS_OP_CREW_CLEAR;
+pub const ACCESS_OP_MAX: u8 = ACCESS_OP_TURRET_CLEAR;
 /// Whether an op addresses the hearth's crew rather than a door's lock.
 /// The one place the split is written down, so the wire's range check and
 /// the dispatcher cannot disagree about which half an op belongs to.
@@ -312,6 +320,10 @@ pub fn op_is_crew(op: u8) -> bool {
         op,
         ACCESS_OP_CREW_JOIN | ACCESS_OP_CREW_LEAVE | ACCESS_OP_CREW_CLEAR
     )
+}
+/// Whether an op addresses an auto turret's list (`turret::auth_op`).
+pub fn op_is_turret(op: u8) -> bool {
+    (ACCESS_OP_TURRET_AUTH..=ACCESS_OP_TURRET_CLEAR).contains(&op)
 }
 
 /// Does a deployable of this archetype hold items — that is, does
@@ -1214,6 +1226,9 @@ pub struct Deploys {
     /// address like a lock is keyed by its door's. Dropped with the machine
     /// in [`Deploys::remove_at`].
     shops: crate::shop::Shops,
+    /// The auto turrets' authorize lists (`turret.rs`), keyed and dropped
+    /// like `shops`; a turret whose list is its owner alone has none.
+    turrets: crate::turret::TurretRecs,
     /// The privilege volumes, cached per hearth — the shape the upkeep
     /// sweep's coverage questions read (`claim::ClaimCache`, whose doc
     /// carries the determinism and bounds arguments whole). Derived state
@@ -1245,6 +1260,7 @@ impl Deploys {
             boxes: Box::new(BoxStore::new()),
             locks: Locks::new(),
             shops: crate::shop::Shops::new(),
+            turrets: crate::turret::TurretRecs::new(),
             claim: crate::claim::ClaimCache::new(),
             hearth_gen: 0,
             grief: [GriefRec::default(); MAX_GRIEF_PER_TICK],
@@ -1366,8 +1382,8 @@ impl Deploys {
 
     /// Every player id this store files a thing under, through `f`: each
     /// deployable's owner (a bag's is whose bag it is), each cupboard's owner
-    /// and crew, each box's owner, each lock's owner, auth and guests
-    /// (`World::remap_player_ids`).
+    /// and crew, each box's owner, each lock's owner, auth and guests, each
+    /// turret's list (`World::remap_player_ids`).
     pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
         for d in self.entries[..self.len].iter_mut() {
             d.owner = f(d.owner);
@@ -1384,6 +1400,7 @@ impl Deploys {
             l.auth.map_ids(f);
             l.guests.map_ids(f);
         }
+        self.turrets.map_ids(f);
     }
 
     /// Where hearth `h` stands: its deploy record's centre, or its cell's
@@ -1510,6 +1527,19 @@ impl Deploys {
         self.shops.restore(recs);
     }
 
+    pub fn turret_recs(&self) -> &crate::turret::TurretRecs {
+        &self.turrets
+    }
+
+    pub(crate) fn turret_recs_mut(&mut self) -> &mut crate::turret::TurretRecs {
+        &mut self.turrets
+    }
+
+    /// Replace the turrets' lists from a decoded world save. Boot-only.
+    pub(crate) fn restore_turrets(&mut self, recs: &[crate::turret::TurretRec]) {
+        self.turrets.restore(recs);
+    }
+
     /// Write the two mirror bits of `entries[i]` from the lock store's
     /// verdict. `World::rebuild_doors` is the only caller and the doc
     /// there is the argument; it exists as a method because `entries` is
@@ -1626,6 +1656,12 @@ impl Deploys {
     pub fn vending_index(&self, key: u32) -> Option<usize> {
         self.box_index(key)
             .filter(|&i| self.boxes.ovens[i].arch == ARCH_VENDING)
+    }
+
+    /// [`Self::vending_index`] for an auto turret.
+    pub fn turret_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].arch == ARCH_TURRET)
     }
 
     /// Resolve a packed box address to an index into `boxes()`, or `None`
@@ -1802,6 +1838,9 @@ impl Deploys {
             // A vending machine's offers go with it (raid, decay, pickup):
             // the next machine at this address starts with none.
             self.shops
+                .drop_key(box_key(rec.cx, rec.cz, rec.level, rec.loc));
+            // And a turret's list: the next one placed here starts fresh.
+            self.turrets
                 .drop_key(box_key(rec.cx, rec.cz, rec.level, rec.loc));
             if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level, rec.loc)) {
                 let bx = self.boxes.entries[b];
