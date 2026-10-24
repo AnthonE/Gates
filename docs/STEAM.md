@@ -115,7 +115,11 @@ existing build is unchanged. Gates 2 builds with it off:
   `ui/hub.rs`, `deeplink.rs` (`elo://`), and every call in `elo.rs`.
 - **The server list** stops coming from elopros.com and reads a neutral
   list (decision §4.5 for the host). Premium islands are listed greyed
-  out, under their island names, with no link and no coin named.
+  out, under their island names, with no link and no coin named. **Only the
+  house's own economy islands are listed**, under names the house picks: a
+  community economy shard could call itself anything ("CRYPTO PVP $$$"),
+  and its name would then be inside the Steam build. No prize pots and no
+  JUNK totals in the Gates 2 list.
 - **One plain website link** in the main menu. No pitch screen, no prices,
   no coin.
 - **A CI guard.** Build the Gates 2 binary and grep its strings for
@@ -194,7 +198,15 @@ certificate by hash (`--cert-hash`, `client_endpoint` in `client/src/lib.rs`).
   and the starting point.
 - Check the Steam overlay draws over Bevy/wgpu (Vulkan and DX12).
 - Store assets at Steam's capsule specs (the elo store already copies them).
-  AI-made assets get disclosed in Valve's content survey.
+  AI-made assets get disclosed in Valve's content survey. **Agents playing
+  on the normal islands are live AI content** (they talk in chat): the
+  survey asks for that too, with the guardrails described, or the Gates 2
+  list leaves agent islands out.
+- The Steam Web API terms (read 2026-10-24) allow Steam data only for an end
+  user's personal use, cap calls at 100,000 a day, forbid implying any
+  relationship with Valve, and let Valve revoke access at any time. A
+  public Steam playtime board on elopros.com is a stretch of "personal
+  use"; showing a player their own is not.
 - **Operator:** the Steamworks account and the $100 fee, tax and bank, the
   Web API key, the Coming Soon page (14 days or more, inside the 21-day
   wait), and the release button.
@@ -271,3 +283,6 @@ the build still has nothing in it to object to.
 | the mint job never touches a plain world | P1, `mint_pending.py` |
 | a Steam↔wallet link is private unless its holder shows it | P6, `walletlink.py` |
 | nothing earned in a Steam session becomes money or an NFT | all of the above |
+| no reward to a linked wallet for Steam play: no airdrop, no free copy, no premium credit for Gates 2 hours | P6, the store's copy |
+| no bought JUNK or ELO ever enters an island's world: PvP over carried JUNK stays play, not a wager (Epic's gambling line, and the law's) | premium islands, always |
+| Gates 2 lists only the house's economy islands, under house names | P3 |
