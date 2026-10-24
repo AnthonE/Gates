@@ -245,19 +245,18 @@ impl Content {
         Ok(gc)
     }
 
-    /// Rank of `id` among all recipe ids, sorted — the wire-side recipe
-    /// index (same canonical mapping as `item_index`).
+    /// Rank of `id` among all recipes — the wire-side recipe index:
+    /// **blueprint recipes first**, then the rest, each run sorted by id.
+    /// A player's blueprint mask (`Player::known`) is a bit per recipe
+    /// index and only a blueprint recipe is ever asked of it, so ranking
+    /// them first is what lets the table outgrow the mask
+    /// (`limits::KNOWN_MASK_BITS`) while every blueprint still has its bit.
     pub fn recipe_index(&self, id: &str) -> Option<u16> {
-        let mut rank = 0u16;
-        let mut found = false;
-        for r in &self.recipes {
-            if r.id.as_str() < id {
-                rank += 1;
-            } else if r.id == id {
-                found = true;
-            }
+        fn key(r: &crate::schema::Recipe) -> (bool, &str) {
+            (!r.blueprint, r.id.as_str())
         }
-        found.then_some(rank)
+        let mine = key(self.recipes.iter().find(|r| r.id == id)?);
+        Some(self.recipes.iter().filter(|r| key(r) < mine).count() as u16)
     }
 
     /// The craft table. Refuses sets the sim's fixed capacities — or the
@@ -273,6 +272,13 @@ impl Content {
         cc.recipe_count = self.recipes.len() as u16;
         for r in &self.recipes {
             let idx = self.recipe_index(&r.id).expect("own id resolves") as usize;
+            if r.blueprint && idx >= sim_core::limits::KNOWN_MASK_BITS {
+                return Err(format!(
+                    "bake: blueprint recipe `{}` ranks {idx}, past the {}-bit blueprint mask",
+                    r.id,
+                    sim_core::limits::KNOWN_MASK_BITS
+                ));
+            }
             if r.seconds == 0 || r.seconds > u16::MAX as u32 {
                 return Err(format!(
                     "bake: `{}` seconds {} outside 1..=65535",
@@ -1959,6 +1965,16 @@ impl Content {
                     self.recipe_index(&parent.id).expect("own id resolves")
                 }
             };
+            // The mask the sim sets and asks is a bit per recipe index:
+            // a row past it could be researched and never learned.
+            let past = |r: u16| r != NO_RECIPE && r as usize >= sim_core::limits::KNOWN_MASK_BITS;
+            if past(recipe) || past(requires) {
+                return Err(format!(
+                    "bake: research row `{}` names a recipe past the {}-bit blueprint mask",
+                    r.item,
+                    sim_core::limits::KNOWN_MASK_BITS
+                ));
+            }
             rc.rows[i] = ResearchRow {
                 item,
                 recipe,

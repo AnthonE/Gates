@@ -1382,7 +1382,10 @@ pub use voice::{
 /// turret slot given what it is not for: its first takes a gun, the next six
 /// that gun's rounds), and `TurretView` closes with the gun in its weapon
 /// slot, that gun's round and the rounds its ammo slots hold.
-pub const PROTO_VER: u16 = 148;
+/// v149 — up to 192 recipes (`MAX_RECIPES`, was 128): a recipe index and
+/// the drip's total still cross in 8 bits, and blueprint recipes rank first
+/// so the 128-bit blueprint mask still covers every one.
+pub const PROTO_VER: u16 = 149;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
