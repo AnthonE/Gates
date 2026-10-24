@@ -35,10 +35,12 @@ The design docs live in `docs/` (`docs/README.md` indexes them). A bare
    crate names to run their tests too (`ci/quick.sh sim-core protocol`).
 3. Commit with a short message. Push your branch.
 
-CI runs `ci/gates.sh fast` on the PR and on main: everything except the wasm
-parity probe and the web builds, which run nightly (or by hand: run the
-`gates` workflow from the Actions tab). Don't run `gates.sh` locally; it's
-hours.
+The full gates (`ci/gates.sh fast`, ~35 min) run when we ship, not on every
+push: `ci/release.sh` dispatches them on main and waits. A PR runs only the
+seconds-long `deploy kind` check. To gate a branch early:
+`gh workflow run gates --ref <branch>` (`-f tier=all` adds the wasm parity
+probe and the web builds; nightly runs everything). Don't run `gates.sh`
+locally; it's hours.
 
 ## Don't
 
