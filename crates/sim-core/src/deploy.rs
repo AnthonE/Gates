@@ -9905,7 +9905,7 @@ mod tests {
             .unwrap();
         deploys.set_box_slot(
             b,
-            0,
+            1,
             ItemStack {
                 item: AMMO,
                 count: 5,
@@ -9916,7 +9916,7 @@ mod tests {
         );
         deploys.set_box_slot(
             b,
-            1,
+            0,
             ItemStack {
                 item: GUN,
                 count: 1,

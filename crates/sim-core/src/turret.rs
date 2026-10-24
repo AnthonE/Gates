@@ -5,10 +5,12 @@
 //!
 //! ## Its gun is the one in its box
 //!
-//! As in Rust, the turret fires the gun it is given: the **first gun in its
-//! box** (slot order) that `[turret]` `guns` names, at that gun's own
-//! numbers ([`TurretGun`]), spending that gun's round out of the same box.
-//! No gun, or no round for it, and it holds fire. The box is already saved,
+//! As in Rust, the turret fires the gun it is given: the gun in its box's
+//! **weapon slot** ([`WEAPON_SLOT`]) when `[turret]` `guns` names it, at that
+//! gun's own numbers ([`TurretGun`]), spending that gun's round out of its
+//! six **ammo slots** ([`AMMO_SLOTS`]) — Rust's turret panel, one gun and
+//! six stacks. Each slot takes only what it is for ([`slot_takes`]). No gun,
+//! or no round for it, and it holds fire. The box is already saved,
 //! so this needs no save field; the gun it is firing rides the wire as its
 //! record's held item ([`Turret::carried`]), which is what the client
 //! mounts on it.
@@ -100,6 +102,25 @@ pub const fn is_turret_slot(slot: usize) -> bool {
 
 /// The gun's height over the turret's base, metres.
 pub const GUN_M: f32 = 0.9;
+
+/// Its box's one gun slot.
+pub const WEAPON_SLOT: usize = 0;
+/// The six slots its rounds go in. The box's other five stay empty.
+pub const AMMO_SLOTS: core::ops::Range<usize> = 1..7;
+const _: () = assert!(AMMO_SLOTS.end <= BOX_SLOTS);
+
+/// May `item` go into `slot` of a turret's box: the weapon slot takes a gun
+/// `[turret]` names, an ammo slot a round one of them fires, and the rest
+/// nothing (`inventory::REFUSE_M_TURRET`).
+pub fn slot_takes(def: &TurretDef, slot: usize, item: u16) -> bool {
+    if slot == WEAPON_SLOT {
+        def.live().iter().any(|g| g.item == item)
+    } else if AMMO_SLOTS.contains(&slot) {
+        def.live().iter().any(|g| g.ammo == item)
+    } else {
+        false
+    }
+}
 
 /// **Who a player's machine answers to**: its owner, and whoever is on
 /// every crew its owner is on, of the hearths whose claim covers `(x, z)`
@@ -648,16 +669,14 @@ fn jammed(
         >= TURRET_INTERFERENCE
 }
 
-/// The first gun in box `bi` a turret fires, as its index in `def.guns`.
+/// The gun in box `bi`'s weapon slot, as its index in `def.guns`, when the
+/// turret fires it.
 pub fn gun_in(def: &TurretDef, deploys: &Deploys, bi: Option<usize>) -> Option<usize> {
-    let i = bi?;
-    (0..BOX_SLOTS).find_map(|s| {
-        let st = deploys.box_slot(i, s);
-        if st.count == 0 {
-            return None;
-        }
-        def.live().iter().position(|g| g.item == st.item)
-    })
+    let st = deploys.box_slot(bi?, WEAPON_SLOT);
+    if st.count == 0 {
+        return None;
+    }
+    def.live().iter().position(|g| g.item == st.item)
 }
 
 /// The gun in the box at `key`, if the box also holds a round for it.
@@ -666,10 +685,10 @@ fn loaded(def: &TurretDef, deploys: &Deploys, key: u32) -> Option<usize> {
     gun_in(def, deploys, bi).filter(|&g| rounds_in(deploys, bi, def.guns[g].ammo) > 0)
 }
 
-/// Rounds of `ammo` in box `bi`.
-fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
+/// Rounds of `ammo` in box `bi`'s ammo slots.
+pub fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     bi.map_or(0u32, |i| {
-        (0..BOX_SLOTS)
+        AMMO_SLOTS
             .map(|s| deploys.box_slot(i, s))
             .filter(|s| s.count > 0 && s.item == ammo)
             .map(|s| s.count as u32)
@@ -677,9 +696,9 @@ fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     })
 }
 
-/// Take one `item` out of box `i`, from the first stack holding it.
+/// Take one `item` out of box `i`'s ammo slots, from the first holding it.
 fn spend_one(deploys: &mut Deploys, i: usize, item: u16) {
-    for s in 0..BOX_SLOTS {
+    for s in AMMO_SLOTS {
         let mut st = deploys.box_slot(i, s);
         if st.count > 0 && st.item == item {
             st.count -= 1;

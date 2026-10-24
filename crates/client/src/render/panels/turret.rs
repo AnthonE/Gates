@@ -12,7 +12,13 @@ use sim_core::deploy::{
     box_key, ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR,
     ACCESS_OP_TURRET_DEAUTH, ACCESS_OP_TURRET_PEACEKEEPER, ARCH_TURRET,
 };
-use sim_core::inventory::CONT_BOX;
+use sim_core::gather::ItemStack;
+use sim_core::inventory::{is_own, CONT_BOX, CONT_SELF, CONT_WEAR};
+use sim_core::limits::INV_SLOTS;
+use sim_core::turret::{AMMO_SLOTS, WEAPON_SLOT};
+
+use crate::ui::craft::item_label;
+use crate::ui::slots::{move_args, Grab, Quick};
 
 use super::{font, font_bold, Panel, Ui, CELL_BG, CELL_HOVER, TEXT, TEXT_DIM};
 
@@ -32,6 +38,83 @@ pub fn open_turret(core: &ClientCore) -> Option<u32> {
             && core.deploy_defs.defs[d.row as usize].arch == ARCH_TURRET)
             .then_some(key)
     })
+}
+
+/// What the gun has to fire: its round and how many, or what is missing.
+pub fn readout(col: &mut ChildSpawnerCommands, core: &ClientCore, key: u32) {
+    let line = match core.turret_view(key) {
+        None => "…".to_string(),
+        Some(v) if v.gun == 0 => "NO WEAPON: put a gun in WEAPON".to_string(),
+        Some(v) if v.rounds == 0 => format!(
+            "NO AMMO: {} for the {}",
+            item_label(&core.catalog, v.ammo).to_uppercase(),
+            item_label(&core.catalog, v.gun).to_uppercase()
+        ),
+        Some(v) => format!(
+            "{} · {} ROUNDS",
+            item_label(&core.catalog, v.ammo).to_uppercase(),
+            v.rounds
+        ),
+    };
+    col.spawn((Text::new(line), font_bold(12.0), TextColor(TEXT)));
+}
+
+/// A right-click into the open turret: a gun to the weapon slot, anything
+/// else to the ammo slots, topping up its own stack first. Out of it, the
+/// pack's ordinary rule.
+pub fn quick_move(
+    handle: u32,
+    from_kind: u8,
+    from_slot: usize,
+    catalog: &protocol::ItemCatalog,
+    inv: &[ItemStack; INV_SLOTS],
+    cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
+) -> Quick {
+    if !is_own(from_kind) {
+        return crate::ui::slots::quick_move(
+            CONT_BOX, handle, from_kind, from_slot, catalog, inv, cont, worn,
+        );
+    }
+    let src = match from_kind {
+        CONT_SELF => inv.get(from_slot),
+        CONT_WEAR => worn.get(from_slot),
+        _ => None,
+    }
+    .copied()
+    .unwrap_or_default();
+    if src.count == 0 {
+        return Quick::Refused("there is nothing in that slot");
+    }
+    let band = if catalog.row(src.item as usize).gun.is_some() {
+        WEAPON_SLOT..WEAPON_SLOT + 1
+    } else {
+        AMMO_SLOTS
+    };
+    let cap = catalog.stack_max(src.item as usize);
+    let mut empty = None;
+    let mut pick = None;
+    for s in band {
+        let there = cont[s];
+        if there.count == 0 {
+            empty = empty.or(Some(s));
+        } else if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
+            let room = cap.saturating_sub(there.count);
+            if room > 0 {
+                pick = Some((s, Grab::Fit(room)));
+                break;
+            }
+        }
+    }
+    let Some((to_slot, grab)) = pick.or(empty.map(|s| (s, Grab::All))) else {
+        return Quick::Refused("the turret has no room for that");
+    };
+    match move_args(
+        handle, from_kind, from_slot, CONT_BOX, to_slot, grab, inv, cont, worn,
+    ) {
+        Some(args) => Quick::Send(args),
+        None => Quick::Refused("that move cannot be addressed from here"),
+    }
 }
 
 /// The list block: who it spares, then the buttons this viewer may press.

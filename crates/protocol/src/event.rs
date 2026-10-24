@@ -6439,6 +6439,11 @@ pub struct TurretView {
     pub peacekeeper: bool,
     pub n: u8,
     pub auth: [u32; sim_core::limits::TURRET_AUTH_CAP],
+    /// (v148) The gun in its weapon slot it fires, 0 for none; the round
+    /// that gun spends, 0 for none; and how many of it the ammo slots hold.
+    pub gun: u16,
+    pub ammo: u16,
+    pub rounds: u16,
 }
 
 impl TurretView {
@@ -6453,6 +6458,9 @@ impl TurretView {
         self.key != 0
             && (self.n as usize) <= self.auth.len()
             && self.auth[self.n as usize..].iter().all(|&id| id == 0)
+            && (self.gun as usize) < MAX_ITEM_DEFS
+            && (self.ammo as usize) < MAX_ITEM_DEFS
+            && (self.gun != 0 || (self.ammo == 0 && self.rounds == 0))
     }
 }
 
@@ -6473,6 +6481,9 @@ pub fn encode_event_turret(view: &TurretView, buf: &mut [u8]) -> Result<usize, W
     for &id in view.listed() {
         w.write(id, 32)?;
     }
+    w.write(view.gun as u32, 16)?;
+    w.write(view.ammo as u32, 16)?;
+    w.write(view.rounds as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -8226,6 +8237,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             for k in 0..view.n as usize {
                 view.auth[k] = r.read(32)?;
             }
+            view.gun = r.read(16)? as u16;
+            view.ammo = r.read(16)? as u16;
+            view.rounds = r.read(16)? as u16;
             if !view.valid() {
                 return Err(WireError::Malformed);
             }
@@ -11449,7 +11463,9 @@ mod wire_domains {
             //
             // 13 -> 14 at wire v102: `REFUSE_M_GIVE`, a give with no room
             // in the receiver's pack.
-            live_max: 14,
+            // 14 -> 15 at wire v148: `REFUSE_M_TURRET`, the turret panel's
+            // slots.
+            live_max: 15,
         },
         Domain {
             what: "wear slot",

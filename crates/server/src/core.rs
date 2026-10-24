@@ -7192,6 +7192,14 @@ impl ShardCore {
             ..Default::default()
         };
         view.auth[..rec.auth.len()].copy_from_slice(rec.auth.members());
+        let def = &self.world.turret_def;
+        if let Some(g) = sim_core::turret::gun_in(def, deploys, Some(i)) {
+            let g = def.guns[g];
+            view.gun = g.item;
+            view.ammo = g.ammo;
+            view.rounds =
+                sim_core::turret::rounds_in(deploys, Some(i), g.ammo).min(u16::MAX as u32) as u16;
+        }
         view
     }
 

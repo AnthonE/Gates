@@ -4027,6 +4027,18 @@ impl World {
                 return;
             }
         }
+        // A turret's box is its panel (`turret::slot_takes`): one gun and
+        // six stacks of rounds, each slot what it is for.
+        let turret = ground == inventory::CONT_BOX && self.deploys.turret_index(cont).is_some();
+        if turret
+            && to_kind == inventory::CONT_BOX
+            && src.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, to_slot as usize, src.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
+        }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
         // A wear slot takes the piece that goes in it and nothing else
         // (`CanWearItem`, `combat::wearable_in`). Asked here for the same
@@ -4143,6 +4155,17 @@ impl World {
                     .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
                 return;
             }
+        }
+        // And its swap: the stack a turret slot gives back must fit there.
+        if turret
+            && plan == inventory::MovePlan::Swap
+            && from_kind == inventory::CONT_BOX
+            && dst.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, from_slot as usize, dst.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
         }
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
         // What a research table's slot may hold (`research::table_accepts`)

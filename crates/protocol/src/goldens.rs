@@ -2302,6 +2302,9 @@ pub fn event_turret() -> crate::TurretView {
         ..Default::default()
     };
     v.auth[..3].copy_from_slice(&[0x0102_0304, 0x1122_3344, 0xA1B2_C3D4]);
+    v.gun = 0x0055;
+    v.ammo = 0x0066;
+    v.rounds = 0x0300;
     v
 }
 

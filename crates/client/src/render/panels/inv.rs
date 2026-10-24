@@ -160,6 +160,8 @@ pub fn build_screen(
                         table_grid(row, ui, core, icons);
                     } else if let Some((arch, l)) = open_fire(core) {
                         fire_grid(row, core, icons, arch, l);
+                    } else if let Some(key) = super::turret::open_turret(core) {
+                        turret_grid(row, core, icons, key);
                     } else if looting(core.cont_kind) {
                         container_grid(row, core, icons);
                     } else {
@@ -739,9 +741,81 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         } else {
             take_all_button(col);
         }
-        if let Some(key) = super::turret::open_turret(core) {
-            super::turret::auth_block(col, core, key);
+    });
+}
+
+/// An auto turret, in the container's seat: Rust's turret panel — its one
+/// weapon slot and six ammo slots, what the gun has to fire, then its list
+/// and mode (`panels::turret`). The cells are `cell()`, unchanged, at the
+/// sim's own slot numbers (`turret::WEAPON_SLOT`, `turret::AMMO_SLOTS`), so
+/// dragging just works; the sim refuses what a slot is not for.
+fn turret_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, key: u32) {
+    use sim_core::turret::{AMMO_SLOTS, WEAPON_SLOT};
+    let name = container_name(
+        CONT_BOX,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        &core.catalog,
+    );
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(6.0),
+            ..default()
+        },
+        BackgroundColor(super::REGION_BG),
+    ))
+    .with_children(|col| {
+        section(col, &name);
+        col.spawn((Text::new("WEAPON"), font_bold(11.0), TextColor(TEXT_DIM)));
+        grid(
+            col,
+            core,
+            icons,
+            CONT_BOX,
+            WEAPON_SLOT,
+            WEAPON_SLOT + 1,
+            1,
+            NO_SEL,
+        );
+        col.spawn((Text::new("AMMO"), font_bold(11.0), TextColor(TEXT_DIM)));
+        grid(
+            col,
+            core,
+            icons,
+            CONT_BOX,
+            AMMO_SLOTS.start,
+            AMMO_SLOTS.end,
+            AMMO_SLOTS.len(),
+            NO_SEL,
+        );
+        // A box filled before the panel can hold stacks past its slots.
+        // They are drawn so they can be taken out; nothing goes back.
+        if core.cont[AMMO_SLOTS.end..sim_core::limits::BOX_SLOTS]
+            .iter()
+            .any(|s| s.count > 0)
+        {
+            col.spawn((
+                Text::new("TAKE THESE OUT"),
+                font_bold(11.0),
+                TextColor(TEXT_DIM),
+            ));
+            grid(
+                col,
+                core,
+                icons,
+                CONT_BOX,
+                AMMO_SLOTS.end,
+                sim_core::limits::BOX_SLOTS,
+                AMMO_SLOTS.len(),
+                NO_SEL,
+            );
         }
+        super::turret::readout(col, core, key);
+        super::turret::auth_block(col, core, key);
     });
 }
 
@@ -2454,6 +2528,16 @@ fn quick(
             core.cont_handle,
             arch,
             l,
+            kind,
+            slot,
+            &core.catalog,
+            &core.inv,
+            &core.cont,
+            &core.worn,
+        )
+    } else if super::turret::open_turret(core).is_some() {
+        super::turret::quick_move(
+            core.cont_handle,
             kind,
             slot,
             &core.catalog,

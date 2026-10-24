@@ -1378,7 +1378,11 @@ pub use voice::{
 /// v147 — peacekeeper: access ops 12 and 13 set an auto turret to keep the
 /// peace or attack all (`ACCESS_OP_TURRET_PEACEKEEPER`, `_ATTACK_ALL`), and
 /// `TurretView` carries the mode after `may_edit`.
-pub const PROTO_VER: u16 = 147;
+/// v148 — the turret panel: a move refusal admits 15 (`REFUSE_M_TURRET`, a
+/// turret slot given what it is not for: its first takes a gun, the next six
+/// that gun's rounds), and `TurretView` closes with the gun in its weapon
+/// slot, that gun's round and the rounds its ammo slots hold.
+pub const PROTO_VER: u16 = 148;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

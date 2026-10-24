@@ -57,13 +57,13 @@ fn buildable_cell(w: &World) -> (u16, u16) {
 }
 
 /// A world with the owner's turret placed and the stranger standing 9 m
-/// from it; `rounds` pistol rounds in its box's first slot and a [`GUN`] in
-/// its second. Returns the world and the turret's box key.
+/// from it; a [`GUN`] in its weapon slot and `rounds` pistol rounds in its
+/// first ammo slot. Returns the world and the turret's box key.
 fn turret_world(rounds: u16) -> (World, u32) {
     turret_world_with(rounds, Some(GUN))
 }
 
-/// [`turret_world`] with `gun` (or none) in the box's second slot.
+/// [`turret_world`] with `gun` (or none) in the weapon slot.
 fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     let mut w = World::new(SEED);
     w.gather = GatherContent::probe_fixture();
@@ -146,7 +146,7 @@ fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     if rounds > 0 {
         w.deploys.set_box_slot(
             i,
-            0,
+            1,
             ItemStack {
                 item: ROUND,
                 count: rounds,
@@ -159,7 +159,7 @@ fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     if let Some(item) = gun {
         w.deploys.set_box_slot(
             i,
-            1,
+            0,
             ItemStack {
                 item,
                 count: 1,
@@ -344,7 +344,7 @@ fn a_stranger_cannot_unload_a_turret_and_its_owner_can() {
         id,
         cont: key,
         from_kind: CONT_BOX,
-        from_slot: 0,
+        from_slot: 1,
         to_kind: CONT_SELF,
         to_slot: 10,
         count: 64,
@@ -409,12 +409,12 @@ fn only_the_hands_a_turret_spares_move_its_rounds() {
             .next()
     };
     let refused = Some((EV_DEPLOY_REFUSED, REFUSE_D_OWNER));
-    assert_eq!(mv(&mut w, STRANGER, CONT_BOX, 0, CONT_SELF, 6, 64), refused);
+    assert_eq!(mv(&mut w, STRANGER, CONT_BOX, 1, CONT_SELF, 6, 64), refused);
     assert_eq!(mv(&mut w, STRANGER, CONT_SELF, 5, CONT_BOX, 1, 10), refused);
     assert_eq!(rounds_left(&w, key), 64, "a stranger moved its rounds");
     assert_eq!(w.players[s].inv[5].count, 10);
     // Its owner still loads and unloads it.
-    let r = mv(&mut w, OWNER, CONT_BOX, 0, CONT_SELF, 6, 64);
+    let r = mv(&mut w, OWNER, CONT_BOX, 1, CONT_SELF, 6, 64);
     assert_eq!(r.map(|r| r.0), Some(EV_MOVED), "its owner was refused");
     assert_eq!(rounds_left(&w, key), 0);
 }
@@ -551,4 +551,57 @@ fn a_peacekeeper_turret_shoots_only_the_hostile() {
     // Back to attack all, and the record goes: owner alone, attacking all.
     w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_ATTACK_ALL)]);
     assert!(w.deploys.turret_recs().is_empty());
+}
+
+/// **The turret panel's slots** (Rust's): its first takes a gun it fires
+/// and nothing else, the next six that gun's rounds, the rest nothing; a
+/// gun anywhere but the weapon slot is not fired.
+#[test]
+fn a_turrets_slots_take_what_they_are_for() {
+    use sim_core::inventory::{CONT_BOX, CONT_SELF, REFUSE_M_TURRET};
+    use sim_core::world::{EV_MOVED, EV_MOVE_REFUSED};
+    let (mut w, key) = turret_world_with(0, None);
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    let stack = |item, count| ItemStack {
+        item,
+        count,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[o].inv[5] = stack(ROUND, 20);
+    w.players[o].inv[6] = stack(GUN, 1);
+    let put = |w: &mut World, from_slot: u8, to_slot| {
+        let count = w.players[o].inv[from_slot as usize].count;
+        w.tick(&[Command::Move {
+            id: OWNER,
+            cont: key,
+            from_kind: CONT_SELF,
+            from_slot,
+            to_kind: CONT_BOX,
+            to_slot,
+            count,
+        }]);
+        w.events
+            .entries()
+            .iter()
+            .filter(|e| (e.code == EV_MOVED || e.code == EV_MOVE_REFUSED) && e.a == OWNER)
+            .map(|e| (e.code, e.b))
+            .next()
+    };
+    let refused = Some((EV_MOVE_REFUSED, REFUSE_M_TURRET));
+    assert_eq!(put(&mut w, 5, 0), refused, "rounds went in the weapon slot");
+    assert_eq!(put(&mut w, 6, 3), refused, "a gun went in an ammo slot");
+    assert_eq!(
+        put(&mut w, 5, 9),
+        refused,
+        "rounds went past the ammo slots"
+    );
+    assert_eq!(put(&mut w, 6, 0).map(|r| r.0), Some(EV_MOVED));
+    assert_eq!(put(&mut w, 5, 4).map(|r| r.0), Some(EV_MOVED));
+    let shots = turret_shots(&mut w, 300);
+    assert!(shots > 0, "a gun in its slot with rounds never fired");
 }
