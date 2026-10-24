@@ -37,93 +37,6 @@ use bevy::prelude::*;
 
 use super::props::Soup;
 
-/// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
-/// half-extent, `tint` a mean-1 colour over whatever photograph the material
-/// carries (`props::tint1`).
-pub(super) fn boxed(s: &mut Soup, c: Vec3, h: Vec3, tint: [f32; 3]) {
-    let v = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
-    // Per-face value break-up, small: the photograph carries the variation and
-    // a second source of it is the patchwork `blob_mesh` used to be.
-    let faces = [
-        (
-            [
-                v(-1., -1., 1.),
-                v(1., -1., 1.),
-                v(1., 1., 1.),
-                v(-1., 1., 1.),
-            ],
-            1.00,
-        ),
-        (
-            [
-                v(1., -1., -1.),
-                v(-1., -1., -1.),
-                v(-1., 1., -1.),
-                v(1., 1., -1.),
-            ],
-            0.93,
-        ),
-        (
-            [
-                v(1., -1., 1.),
-                v(1., -1., -1.),
-                v(1., 1., -1.),
-                v(1., 1., 1.),
-            ],
-            0.97,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(-1., -1., 1.),
-                v(-1., 1., 1.),
-                v(-1., 1., -1.),
-            ],
-            0.95,
-        ),
-        (
-            [
-                v(-1., 1., 1.),
-                v(1., 1., 1.),
-                v(1., 1., -1.),
-                v(-1., 1., -1.),
-            ],
-            1.02,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(1., -1., -1.),
-                v(1., -1., 1.),
-                v(-1., -1., 1.),
-            ],
-            0.90,
-        ),
-    ];
-    for (q, shade) in faces {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    }
-}
-
-/// Emit a hexahedron from eight corners: `back` then `front`, each wound
-/// counter-clockwise seen from outside its own face. A box cannot taper and a
-/// blade must, so this is the shape the axe bit needs and `boxed` cannot make.
-pub(super) fn hexa(s: &mut Soup, back: [Vec3; 4], front: [Vec3; 4], tint: [f32; 3]) {
-    let quad = |s: &mut Soup, q: [Vec3; 4], shade: f32| {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    };
-    quad(s, front, 1.00);
-    quad(s, [back[3], back[2], back[1], back[0]], 0.90);
-    quad(s, [back[0], back[1], front[1], front[0]], 0.97);
-    quad(s, [back[1], back[2], front[2], front[1]], 1.03);
-    quad(s, [back[2], back[3], front[3], front[2]], 0.95);
-    quad(s, [back[3], back[0], front[0], front[3]], 0.99);
-}
-
 /// Revolve a profile around +Y. Radial zero closes a cap; a return along
 /// the inner radius leaves an actual bore instead of a painted muzzle.
 fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
@@ -294,36 +207,6 @@ fn bat_mesh() -> Mesh {
         let k = grain * handled;
         [WOOD[0] * k, WOOD[1] * k, WOOD[2] * k, 1.0]
     })
-}
-
-/// A block running up +Y from `y0` to `y1`, its cross-section `(half-width,
-/// bottom, top)` at each end: a stock tapers, and `boxed` cannot.
-fn beam(s: &mut Soup, y0: f32, y1: f32, a: (f32, f32, f32), b: (f32, f32, f32), tint: [f32; 3]) {
-    let ring = |y: f32, (hx, lo, hi): (f32, f32, f32)| {
-        [
-            Vec3::new(-hx, y, lo),
-            Vec3::new(-hx, y, hi),
-            Vec3::new(hx, y, hi),
-            Vec3::new(hx, y, lo),
-        ]
-    };
-    hexa(s, ring(y0, a), ring(y1, b), tint);
-}
-
-/// A bar from `a` to `b` on no particular axis, tapering from half-extents
-/// `ha` to `hb` — across the bar horizontally, then up it. A limb, a string.
-fn taper(s: &mut Soup, a: Vec3, b: Vec3, ha: Vec2, hb: Vec2, tint: [f32; 3]) {
-    let d = (b - a).normalize();
-    // `(u, v, d)` right-handed, which is the winding `hexa` wants.
-    let u = d
-        .cross(if d.z.abs() < 0.9 { Vec3::Z } else { Vec3::X })
-        .normalize();
-    let v = d.cross(u);
-    let ring = |c: Vec3, h: Vec2| {
-        let (u, v) = (u * h.x, v * h.y);
-        [c + u - v, c + u + v, c - u + v, c - u - v]
-    };
-    hexa(s, ring(a, ha), ring(b, hb), tint);
 }
 
 /// An arrow `len` long up +Y, nock at the origin and point at the far end:
