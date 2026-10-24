@@ -1378,8 +1378,9 @@ mod tests {
         // the feet's stack (Rust's boots).
         // 489 → 521 at SAVE_FORMAT 11: sixteen magazines, not eight (guns v1).
         // 521 → 553 at SAVE_FORMAT 12: four more worn stacks (clothing v1).
-        // 553 → 569 at SAVE_FORMAT 13: an attachment mask a magazine.
-        assert_eq!(SAVE_RECORD_BYTES, 569);
+        // 553 → 637 at SAVE_FORMAT 13: item data on every stack, the
+        // per-body magazines gone.
+        assert_eq!(SAVE_RECORD_BYTES, 637);
         let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

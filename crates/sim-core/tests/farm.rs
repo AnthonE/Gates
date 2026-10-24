@@ -467,11 +467,7 @@ fn night_and_a_roof_hold_a_plant_and_it_drinks_nothing() {
     assert_eq!(w.farm.entries()[0].grown, 0, "it grew under a roof");
     assert_eq!(tank(&w, host), 0, "it drank under a roof");
     let i = w.deploys.box_index(host).unwrap();
-    assert_eq!(
-        w.deploys.box_slot(i, 0).data,
-        FULL,
-        "the skin was poured"
-    );
+    assert_eq!(w.deploys.box_slot(i, 0).data, FULL, "the skin was poured");
 }
 
 /// **The farm keeps the clock everyone sees**: an admin `/time`
@@ -538,11 +534,7 @@ fn a_dry_planter_holds_and_a_skin_is_poured_only_for_a_thirsty_plant() {
     load_skin(&mut w, host);
     idle(&mut w, 60);
     let i = w.deploys.box_index(host).unwrap();
-    assert_eq!(
-        w.deploys.box_slot(i, 0).data,
-        FULL,
-        "an idle planter drank"
-    );
+    assert_eq!(w.deploys.box_slot(i, 0).data, FULL, "an idle planter drank");
     assert_eq!(tank(&w, host), 0);
     plant(&mut w, host, 2);
     idle(&mut w, OVEN_PERIOD_TICKS * 2);
@@ -2134,10 +2126,7 @@ fn a_dry_ground_plant_holds_until_rain_or_a_skin_waters_it() {
 
     // A skin: poured whole, the plant takes what it holds.
     assert_eq!(pour(&mut w, a), None);
-    assert_eq!(
-        w.players[0].inv[HAND].data, DRY,
-        "the skin did not empty"
-    );
+    assert_eq!(w.players[0].inv[HAND].data, DRY, "the skin did not empty");
     assert_eq!(plant_of(&w, a).water, w.cook.farm.ground_cap_wu);
     assert_eq!(pour(&mut w, a), Some(REFUSE_D_PLANT_WATER), "a full plant");
     assert_eq!(
@@ -2336,11 +2325,7 @@ fn a_catcher_fills_an_empty_skin_for_exactly_a_skins_worth() {
 
     set_tank(&mut w, c, skin + 500);
     idle(&mut w, 2 * OVEN_PERIOD_TICKS);
-    assert_eq!(
-        slot0(&w, c).data,
-        FULL,
-        "a skin's worth filled nothing"
-    );
+    assert_eq!(slot0(&w, c).data, FULL, "a skin's worth filled nothing");
     assert_eq!(slot0(&w, c).count, 1);
     assert_eq!(tank(&w, c), 500, "a fill cost other than one skin");
     // And a full skin is left alone.

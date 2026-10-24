@@ -1254,7 +1254,11 @@ mod tests {
         p.inv[2] = ItemStack {
             item: 3,
             count: 1,
-            data: Water { ml: 500, salt: false }.data(),
+            data: Water {
+                ml: 500,
+                salt: false,
+            }
+            .data(),
             ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
@@ -1263,9 +1267,19 @@ mod tests {
         assert!(consume(&sc, 2, &mut p, &mut q, 100));
         assert_eq!((p.water, p.inv[2].data, p.inv[2].count), (50, 0, 1));
         assert!(!consume(&sc, 2, &mut p, &mut q, 100), "an empty vessel");
-        p.inv[2].data = Water { ml: 500, salt: true }.data();
-        assert!(!consume(&sc, 2, &mut p, &mut q, 100), "the sea is boiled first");
-        assert_eq!(Water::of(Water { ml: 0, salt: true }.data()), Water::default());
+        p.inv[2].data = Water {
+            ml: 500,
+            salt: true,
+        }
+        .data();
+        assert!(
+            !consume(&sc, 2, &mut p, &mut q, 100),
+            "the sea is boiled first"
+        );
+        assert_eq!(
+            Water::of(Water { ml: 0, salt: true }.data()),
+            Water::default()
+        );
     }
 
     /// Refilling a meter does not bank the partial minute of damage.

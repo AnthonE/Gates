@@ -2438,20 +2438,38 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!("survival: vessel `{}` is not an item", v.item));
         };
         if it.stack != 1 {
-            return Err(format!("survival: vessel `{}` stacks; its water is its own", v.item));
+            return Err(format!(
+                "survival: vessel `{}` stacks; its water is its own",
+                v.item
+            ));
         }
         if v.ml == 0 || v.ml > u32::from(sim_core::survival::WATER_ML_MAX) {
-            return Err(format!("survival: vessel `{}` ml {} out of 1..=32767", v.item, v.ml));
+            return Err(format!(
+                "survival: vessel `{}` ml {} out of 1..=32767",
+                v.item, v.ml
+            ));
         }
         if v.sip_ml == 0 || v.sip_ml > v.ml {
-            return Err(format!("survival: vessel `{}` sip_ml {} out of 1..=ml", v.item, v.sip_ml));
+            return Err(format!(
+                "survival: vessel `{}` sip_ml {} out of 1..=ml",
+                v.item, v.sip_ml
+            ));
         }
     }
     if item_of(&fm.water).is_none() {
         return Err(format!("farm: water `{}` is not an item", fm.water));
     }
-    if !c.balance.survival.vessels.iter().any(|v| v.item == fm.water) {
-        return Err(format!("farm: water `{}` is not a survival vessel", fm.water));
+    if !c
+        .balance
+        .survival
+        .vessels
+        .iter()
+        .any(|v| v.item == fm.water)
+    {
+        return Err(format!(
+            "farm: water `{}` is not a survival vessel",
+            fm.water
+        ));
     }
     if fm.clone_y_per == 0 {
         return Err("farm: clone_y_per must be above 0".to_string());

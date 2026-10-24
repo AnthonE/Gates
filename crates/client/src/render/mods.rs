@@ -365,13 +365,14 @@ pub fn remote_setup(
     }
 }
 
-/// Where a laser from `at` along `dir` meets the ground, within
-/// [`LASER_RANGE_M`], or `None` when it runs out first.
-pub fn laser_end(seed: u64, at: Vec3, dir: Vec3) -> Option<Vec3> {
+/// Where a laser from `at` along `dir` meets the ground (`ground(x, z)`,
+/// the island's `terrain::ground`), within [`LASER_RANGE_M`], or `None`
+/// when it runs out first.
+pub fn laser_end(at: Vec3, dir: Vec3, ground: impl Fn(f32, f32) -> f32) -> Option<Vec3> {
     let n = (LASER_RANGE_M / LASER_STEP_M) as usize;
     (1..=n)
         .map(|k| at + dir * (k as f32 * LASER_STEP_M))
-        .find(|p| p.y <= sim_core::terrain::height(seed, p.x, p.z))
+        .find(|p| p.y <= ground(p.x, p.z))
 }
 
 /// Other players' lasers and flashlights, Rust's: everyone sees a lit
@@ -381,6 +382,7 @@ pub fn laser_end(seed: u64, at: Vec3, dir: Vec3) -> Option<Vec3> {
 #[allow(clippy::type_complexity)]
 pub fn remote(
     net: Option<NonSend<Net>>,
+    world: Res<super::WorldId>,
     bodies: Res<Bodies>,
     cam: Query<&GlobalTransform, With<EyeCam>>,
     mut lights: Query<(
@@ -412,10 +414,9 @@ pub fn remote(
     // (distance², muzzle, barrel, laser, light), nearest first.
     let mut lit: [(f32, Vec3, Vec3, bool, bool); REMOTE_LASERS] =
         [(f32::MAX, Vec3::ZERO, Vec3::Z, false, false); REMOTE_LASERS];
-    let mut seed = 0;
+    let ground = |x: f32, z: f32| sim_core::terrain::ground(world.seed, &world.haven, x, z);
     if let Some(n) = net.as_deref() {
         let core = &n.session.core;
-        seed = core.seed();
         for (_, at, dir, mask) in bodies.beams() {
             let v = sum(core.mod_rows(mask).map(|(_, m)| m));
             if !v.laser && !v.light {
@@ -461,7 +462,7 @@ pub fn remote(
     for (RemoteLaser(i), mut tf, mut gt, mut vis) in &mut lasers {
         let e = beams().nth(*i);
         if let Some(&(_, at, dir, _, _)) = e {
-            let end = laser_end(seed, at, dir).unwrap_or(at + dir * LASER_RANGE_M);
+            let end = laser_end(at, dir, ground).unwrap_or(at + dir * LASER_RANGE_M);
             let len = at.distance(end);
             set(
                 &mut tf,
@@ -479,7 +480,7 @@ pub fn remote(
     for (RemoteDot(i), mut tf, mut gt, mut vis) in &mut dots {
         let hit = beams()
             .nth(*i)
-            .and_then(|&(_, at, dir, _, _)| laser_end(seed, at, dir));
+            .and_then(|&(_, at, dir, _, _)| laser_end(at, dir, ground));
         if let Some(p) = hit {
             set(
                 &mut tf,
@@ -539,12 +540,11 @@ mod tests {
     /// at the sky runs out.
     #[test]
     fn a_laser_finds_the_ground_or_runs_out() {
-        let seed = 7;
-        let (x, z) = (1800.0, 1800.0);
-        let at = Vec3::new(x, sim_core::terrain::height(seed, x, z) + 1.5, z);
-        let down = laser_end(seed, at, Vec3::new(0.3, -1.0, 0.0).normalize());
+        let ground = |x: f32, z: f32| 10.0 + 0.1 * x - 0.05 * z;
+        let at = Vec3::new(4.0, ground(4.0, 2.0) + 1.5, 2.0);
+        let down = laser_end(at, Vec3::new(0.3, -1.0, 0.0).normalize(), ground);
         assert!(down.is_some_and(|p| p.distance(at) < 3.0));
-        assert_eq!(laser_end(seed, at, Vec3::Y), None);
+        assert_eq!(laser_end(at, Vec3::Y, ground), None);
     }
 
     /// The scope's picture is see-through in the middle, black at the corner,

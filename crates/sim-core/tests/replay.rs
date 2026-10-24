@@ -573,7 +573,9 @@ const TICKS: u64 = 900;
 /// **Moved → `0xD39C_A9F3_3B60_CDE2` at bullets and attachments**
 /// (2026-10-23, wipe): the fixture gun's rounds fly, and `state_hash` reads
 /// the rounds in flight and every gun's attachments.
-const GOLDEN_FINAL_HASH: u64 = 0xD39C_A9F3_3B60_CDE2;
+/// **Moved → `0x749F_8C17_A776_9F59` at item data** (2026-10-24, wipe): every stack
+/// hashes twelve bytes, a gun's magazine is its own.
+const GOLDEN_FINAL_HASH: u64 = 0x749F_8C17_A776_9F59;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -705,7 +707,8 @@ const GOLDEN_FINAL_HASH: u64 = 0xD39C_A9F3_3B60_CDE2;
 /// the final hash.
 /// **Moved → `0xDA37_9171_8DEE_3E80` at bullets and attachments** (2026-10-23,
 /// wipe), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xDA37_9171_8DEE_3E80;
+/// **Moved → `0x3102_AD7D_3CB4_FC60` at item data** (2026-10-24, wipe), with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x3102_AD7D_3CB4_FC60;
 
 /// Fold a stamped trace into one number.
 ///

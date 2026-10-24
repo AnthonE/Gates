@@ -175,7 +175,10 @@ fn a_vessel_fills_with_the_sea_and_pours_out_on_a_fire() {
     w.tick(&[Command::Drink { id: 1 }]);
     assert_eq!(
         Water::of(w.players[0].inv[0].data),
-        Water { ml: 1000, salt: true },
+        Water {
+            ml: 1000,
+            salt: true
+        },
         "dipped in the sea, it holds a litre of salt"
     );
 

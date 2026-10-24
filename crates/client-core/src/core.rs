@@ -1393,11 +1393,6 @@ impl ClientCore {
         &self.haven
     }
 
-    /// The island's seed, for a read that needs no occupants.
-    pub fn seed(&self) -> u64 {
-        self.predict.seed()
-    }
-
     /// The island this client stands on, as the seed plus the same four
     /// borrows the predictor hands `movement::step` — including **the very
     /// `SlotCache` the predictor just filled**.

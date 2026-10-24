@@ -2023,7 +2023,10 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         // events in a tick against a 256 cap, and the assert below said so
         // in those words. The client counts its own shots instead
         // (`ranged::hitscan` carries the whole finding).
-        p.set_gun(|g| g.loaded = u16::MAX);
+        p.set_gun(|g| {
+            g.loaded = sim_core::combat::GUN_LOADED_MAX;
+            g.round = ARROW;
+        });
     }
     let mut c = CombatContent::EMPTY;
     c.player_hp = 100;
@@ -2038,11 +2041,11 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         head_pct: 200,
         limb_pct: 50,
         // A magazine that cannot run out inside forty ticks, so the storm
-        // storms. `u16::MAX` and not zero: a hitscan row with no magazine
-        // is a shape `content/validate.rs` refuses at boot, and a load
-        // fixture that could not ship is one that stops measuring the
+        // storms. The gun's data's ceiling and not zero: a hitscan row with
+        // no magazine is a shape `content/validate.rs` refuses at boot, and
+        // a load fixture that could not ship is one that stops measuring the
         // thing that ships. `mag_slot` 0 — this fixture bakes no other.
-        magazine: u16::MAX,
+        magazine: sim_core::combat::GUN_LOADED_MAX,
         reload_ticks: 1,
         mag_slot: 0,
         draw_ticks: 0,
@@ -2167,7 +2170,7 @@ fn the_event_lane_holds_at_population() {
 /// `NOW.md` §0mag, and the judge's ranked fix 2 of pass -19. The fixture
 /// above deletes the per-shot `EV_RELOAD` because at a hundred bodies it
 /// doubled the lane to 256/256 (`ranged.rs` carries that finding, and
-/// `storm_core`'s `p.set_gun(|g| g.loaded = u16::MAX` is the line it left behind). What
+/// `storm_core`'s `p.set_gun(|g| g.loaded = GUN_LOADED_MAX` is the line it left behind). What
 /// replaced it is the same order of magnitude from the other side —
 /// `EV_RELOAD_REFUSED` is one own-fact event per client per press, and a
 /// press is one action per client per tick, which is the server's own
