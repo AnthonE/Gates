@@ -10855,6 +10855,34 @@ mod tests {
         assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
     }
 
+    /// A turn built from a real view of the island, with a home, a station
+    /// and a full pack, matches the published schema
+    /// (`schema/agent-turn-1.schema.json`) as the empty one does.
+    #[test]
+    fn a_turn_from_a_real_view_matches_the_published_schema() {
+        let (mut bot, view, _) = fixture();
+        bot.memory.home = HomeSense {
+            state: HomeState::Built,
+            unreachable: true,
+            ..HomeSense::default()
+        };
+        bot.memory.stations = Stations {
+            bench: Some([0.0, 0.0]),
+            tier: 1,
+            ..Stations::NONE
+        };
+        bot.core.as_mut().unwrap().inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        let turn = crate::external::External::observation(1, &bot.summary(&view, 1).unwrap());
+        let errs = crate::external::turn_schema::errors(&turn);
+        assert!(errs.is_empty(), "{errs:#?}\n{turn:#}");
+    }
+
     #[test]
     fn the_observation_is_a_pure_function_of_received_state() {
         let (bot, mut view, _) = fixture();

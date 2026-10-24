@@ -146,6 +146,18 @@ const fn side(stem: &'static str, glb: &'static str, roll: f32) -> Subject {
     }
 }
 
+/// A gun-shaped model stood barrel-up (`ui::hold`'s guns), framed as the
+/// guns' own pictures are: [`GUN_TURN`], [`GUN_ROLL`].
+const fn gun(stem: &'static str, glb: &'static str) -> Subject {
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn: GUN_TURN,
+        roll: GUN_ROLL,
+        girth: 1.0,
+    }
+}
+
 /// A long prop from the kit, on the diagonal.
 const fn kit_long(stem: &'static str, roll: f32) -> Subject {
     Subject {
@@ -209,7 +221,7 @@ const SUBJECTS: &[Subject] = &[
     // The hearth is the tool cupboard, and the render is the cupboard.
     s("hearth", "models/deploy/hearth.glb", [0.0, 0.0, 0.0]),
     // The tools and weapons with models, on the diagonal.
-    long("bat", Src::Gen("bat"), 1.0),
+    long("bat", Src::Glb("models/held/bat.glb"), 1.0),
     long(
         "stone_hatchet",
         Src::Glb("models/held/stone_hatchet.glb"),
@@ -315,21 +327,43 @@ const SUBJECTS: &[Subject] = &[
     ),
     // The prop kit: long things on the diagonal…
     kit_long("hunting_bow", -45.0),
-    kit_long("crossbow", -45.0),
-    kit_long("torch", -45.0),
-    kit_long("stone_spear", -45.0),
-    kit_long("wooden_arrow", -45.0),
-    kit_long("bone_arrow", -45.0),
-    kit_long("metal_arrow", -45.0),
-    kit_long("high_velocity_arrow", -45.0),
-    kit_long("fire_arrow", -45.0),
-    kit_long("metal_blade", -45.0),
-    kit_long("medical_syringe", -45.0),
-    kit_long("electric_fuse", -45.0),
-    kit_long("metal_pipe", -45.0),
-    kit_long("metal_spring", -30.0),
+    gun("crossbow", "models/held/crossbow.glb"),
+    long("torch", Src::Glb("models/held/torch.glb"), 1.0),
+    long("stone_spear", Src::Glb("models/held/stone_spear.glb"), 2.4),
+    long(
+        "wooden_arrow",
+        Src::Glb("models/held/wooden_arrow.glb"),
+        1.0,
+    ),
+    long("bone_arrow", Src::Glb("models/held/bone_arrow.glb"), 1.0),
+    long("metal_arrow", Src::Glb("models/held/metal_arrow.glb"), 1.0),
+    long(
+        "high_velocity_arrow",
+        Src::Glb("models/held/high_velocity_arrow.glb"),
+        1.0,
+    ),
+    long("fire_arrow", Src::Glb("models/held/fire_arrow.glb"), 1.0),
+    long("metal_blade", Src::Glb("models/held/metal_blade.glb"), 1.0),
+    long(
+        "medical_syringe",
+        Src::Glb("models/held/medical_syringe.glb"),
+        1.0,
+    ),
+    long(
+        "electric_fuse",
+        Src::Glb("models/held/electric_fuse.glb"),
+        1.0,
+    ),
+    long("metal_pipe", Src::Glb("models/held/metal_pipe.glb"), 1.0),
+    Subject {
+        stem: "metal_spring",
+        src: Src::Glb("models/held/metal_spring.glb"),
+        turn: [0.0, 0.0, 0.0],
+        roll: -30.0,
+        girth: 1.0,
+    },
     // …guns and plates side on, nudged up at the muzzle…
-    kit_long("revolver", 18.0),
+    gun("revolver", "models/held/revolver.glb"),
     side(
         "semi_automatic_body",
         "models/held/semi_automatic_body.glb",
@@ -337,34 +371,88 @@ const SUBJECTS: &[Subject] = &[
     ),
     side("smg_body", "models/held/smg_body.glb", 18.0),
     side("rifle_body", "models/held/rifle_body.glb", 18.0),
-    kit_long("blueprint", 20.0),
+    Subject {
+        stem: "blueprint",
+        src: Src::Glb("models/held/blueprint.glb"),
+        turn: [0.0, 0.0, 0.0],
+        roll: 20.0,
+        girth: 1.0,
+    },
     // …and the rest as they would sit on a table.
-    kit("gears", [30.0, 0.0, 0.0]),
-    kit("rope", [0.0, 0.0, 0.0]),
-    kit("empty_propane_tank", [0.0, 0.0, 0.0]),
-    kit("sewing_kit", [0.0, 0.0, 0.0]),
-    kit("sheet_metal", [0.0, 0.0, 0.0]),
-    kit("road_signs", [30.0, 0.0, 0.0]),
-    kit("tech_trash", [30.0, 30.0, 0.0]),
+    s("gears", "models/held/gears.glb", [30.0, 0.0, 0.0]),
+    s("rope", "models/held/rope.glb", [0.0, 0.0, 0.0]),
+    s(
+        "empty_propane_tank",
+        "models/held/empty_propane_tank.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("sewing_kit", "models/held/sewing_kit.glb", [0.0, 0.0, 0.0]),
+    s(
+        "sheet_metal",
+        "models/held/sheet_metal.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("road_signs", "models/held/road_signs.glb", [30.0, 0.0, 0.0]),
+    s(
+        "tech_trash",
+        "models/held/tech_trash.glb",
+        [30.0, 30.0, 0.0],
+    ),
     s("key_lock", "models/held/key_lock.glb", [30.0, 0.0, 0.0]),
     s("code_lock", "models/held/code_lock.glb", [30.0, 0.0, 0.0]),
-    kit("pistol_round", [30.0, 0.0, 0.0]),
-    kit("corn_seed", [0.0, 0.0, 0.0]),
-    kit("hemp_seed", [0.0, 0.0, 0.0]),
-    kit("potato_seed", [0.0, 0.0, 0.0]),
-    kit("pumpkin_seed", [0.0, 0.0, 0.0]),
-    kit("berry_seed", [0.0, 0.0, 0.0]),
+    s(
+        "pistol_round",
+        "models/held/pistol_round.glb",
+        [30.0, 0.0, 0.0],
+    ),
+    s("corn_seed", "models/held/corn_seed.glb", [0.0, 0.0, 0.0]),
+    s("hemp_seed", "models/held/hemp_seed.glb", [0.0, 0.0, 0.0]),
+    s(
+        "potato_seed",
+        "models/held/potato_seed.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "pumpkin_seed",
+        "models/held/pumpkin_seed.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("berry_seed", "models/held/berry_seed.glb", [0.0, 0.0, 0.0]),
     kit("potato", [0.0, 0.0, 0.0]),
     kit("pumpkin", [0.0, 0.0, 0.0]),
     // The garments stand up in the hand; laid back for the camera.
-    kit("burlap_tunic", [30.0, -20.0, 0.0]),
-    kit("burlap_hood", [30.0, 0.0, 0.0]),
-    kit("hide_poncho", [30.0, -20.0, 0.0]),
-    kit("bone_helmet", [30.0, 0.0, 0.0]),
-    kit("roadsign_vest", [30.0, -20.0, 0.0]),
+    s(
+        "burlap_tunic",
+        "models/held/burlap_tunic.glb",
+        [30.0, -20.0, 0.0],
+    ),
+    s(
+        "burlap_hood",
+        "models/held/burlap_hood.glb",
+        [30.0, 0.0, 0.0],
+    ),
+    s(
+        "hide_poncho",
+        "models/held/hide_poncho.glb",
+        [30.0, -20.0, 0.0],
+    ),
+    s(
+        "bone_helmet",
+        "models/held/bone_helmet.glb",
+        [30.0, 0.0, 0.0],
+    ),
+    s(
+        "roadsign_vest",
+        "models/held/roadsign_vest.glb",
+        [30.0, -20.0, 0.0],
+    ),
     kit("planter_box", [0.0, 0.0, 0.0]),
     kit("camp_fire", [0.0, 0.0, 0.0]),
-    kit("auto_turret", [30.0, 0.0, 0.0]),
+    s(
+        "auto_turret",
+        "models/held/auto_turret.glb",
+        [30.0, 0.0, 0.0],
+    ),
     kit("metal_window_bars", [90.0, 0.0, 0.0]),
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
@@ -545,8 +633,7 @@ fn skin_queue(only: &[&String]) -> Vec<Subject> {
                 return None;
             }
             let row = HELD_MODELS.iter().find(|r| r.key == m.key)?;
-            // A gun skin is a Meshy gun, whatever its item's icon was shot
-            // from (the revolver's is the prop kit's).
+            // A gun skin is a Meshy gun, framed as the guns' pictures are.
             let base = SUBJECTS.iter().find(|s| s.stem == m.key);
             let (turn, roll, girth) = match base {
                 _ if row.stroke == Stroke::Shot => (GUN_TURN, GUN_ROLL, 1.0),

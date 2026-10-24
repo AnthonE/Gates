@@ -1827,3 +1827,216 @@ moss, no lichen, no grass, no plants, no people, no other objects, no text."*
 They fill 63 % (`block_a`) to 83 % (`block_b`) of their own boxes, so a body
 stops short of the drawn rock in places, most around `block_a` and `block_d`;
 a re-roll of those two is the first lever.
+
+## The stump, three hand tools, the garments and the kit's parts — Meshy, 2026-10-24
+
+Twenty-three things that drew code primitives: the felled pine's stump
+(`props::stump_mesh`), the torch, revolver and crossbow (`render::heldgen`),
+the stone spear (it borrowed the wooden spear's file) and eighteen prop-kit
+rows (`render::heldkit`, `WANTED.md` §12.1–12.3). The hand, the ground and the
+icon all draw the file. Same terms as §held batch 1: Meshy paid plan, no
+`NOTICE` entry, no proper noun in any prompt (below, in full).
+
+`meshy_gen.py --tris 3000` (the stump `--multiview --tris 1500`) →
+`import_meshy.py` to a cube of the `WANTED.md` box's longest side → `ktx_pack.py`
+at 512 (the stump 1024; the five seed heaps 256, about 0.3 MB each, since
+they are rarely seen and the browser downloads every held file at boot).
+Exceptions to the cube fit:
+
+- **revolver** and **crossbow** are stood barrel-up, top to +Z, as guns v1:
+  `1 L 1 --turn=z-90,y-90` for the revolver (muzzle at −X) and
+  `--turn=z90,y90` for the crossbow (front at +X). Then `stand_grip.py` with
+  a window on the barrel/stock only (0.70–0.95 and 0.05–0.60): the guns' usual
+  0.40–0.95 on a 26 cm revolver takes in the trigger guard and reads a 38° tilt.
+- **torch** is stood through its head (`stand_grip.py --shaft 0.10 0.99`):
+  the flame rides the axis above the fist, and a window on the stick alone
+  left the crown 16 mm off it (`tests/hand_light.rs`).
+- **stone spear** was rolled twice. The first image was a close-up of the
+  head with no shaft; the second asked for it upright in a 9:16 frame,
+  "the WHOLE spear in frame", and reconstructed straight (0.7° tilt).
+- **stump** is `--fit-axes 0.64 0.40 0.64`: the generator made it 0.77 as tall
+  as wide and the code taper it replaces is 0.53. It stands on y = 0, so
+  `STUMP_LIFT_M` is gone. **sheet metal** is `--fit-axes 0.36 0.05 0.28`: at the
+  row's width the three-sheet stack came back 10 cm tall.
+- Known flaws, kept: the small gear stands at right angles to the big one,
+  and the sheet-metal plates float a few millimetres apart.
+
+**591 credits for the 24 rolls** (balance 1,598 → 1,007, measured), run
+three at a time, so the per-file figures in the sidecars overlap.
+
+| file | item | tris | size (m) | image | mesh |
+|---|---|---|---|---|---|
+| `prop/stump.glb` | felled pine's stump | 1,520 | 0.64 × 0.40 × 0.64 | `01a16cfa-b117-73c3-9b45-4fa4fe5dd69c` (3 views) | `01a16cfb-7d20-7756-bc01-2775390f361c` |
+| `held/torch.glb` | Torch | 3,264 | 0.08 × 0.46 × 0.06 | `01a16cfa-b305-7331-84dd-ed329f98257d` | `01a16cfb-2fcb-7389-8679-f85eee22a1d3` |
+| `held/revolver.glb` | Revolver | 2,955 | 0.05 × 0.26 × 0.16 | `01a16cfa-b354-75bc-9bf0-80910acbf2cd` | `01a16cfb-59ab-77ce-978d-03a0c77c392f` |
+| `held/crossbow.glb` | Crossbow | 2,877 | 0.66 × 0.66 × 0.13 | `01a16cfb-e340-741c-9366-8ae2f0220546` | `01a16cfc-5f4a-7144-905e-e95a141d9f9e` |
+| `held/stone_spear.glb` | Stone Spear | 3,045 | 0.14 × 1.80 × 0.06 | `01a16d00-e60f-77ef-88dc-958227bef285` | `01a16d01-61da-7111-b6e9-ef4ea707b1e3` |
+| `held/empty_propane_tank.glb` | Empty Propane Tank | 3,235 | 0.22 × 0.37 × 0.21 | `01a16cfd-0ba7-74fb-afed-50016758ef0c` | `01a16cfd-8648-71b7-bf03-5ec9fba19a8a` |
+| `held/tech_trash.glb` | Tech Trash | 2,779 | 0.24 × 0.05 × 0.16 | `01a16cfd-0e2b-770a-89bc-c13708908e35` | `01a16cfd-8a6b-74b6-ab9b-f62f92059381` |
+| `held/burlap_tunic.glb` | Burlap Tunic | 3,340 | 0.28 × 0.48 × 0.24 | `01a16cfe-439f-7187-9293-44ec4d043ee5` | `01a16cfe-bddd-7797-8203-fae9171c4ee8` |
+| `held/burlap_hood.glb` | Burlap Hood | 3,126 | 0.23 × 0.26 × 0.17 | `01a16cfe-5af0-77ae-b03b-940ec35af047` | `01a16cfe-d5d1-7411-8d12-689a310409b7` |
+| `held/hide_poncho.glb` | Hide Poncho | 2,655 | 0.41 × 0.52 × 0.29 | `01a16cfe-5e31-7418-89c9-84d63b36c30d` | `01a16cfe-da91-751d-93d4-295364d9a17b` |
+| `held/bone_helmet.glb` | Bone Helmet | 3,209 | 0.35 × 0.27 × 0.45 | `01a16cff-44c1-74f9-97d3-e6380e6432eb` | `01a16cff-bf12-7045-bc62-9eb7aa1edb41` |
+| `held/roadsign_vest.glb` | Roadsign Vest | 3,320 | 0.34 × 0.45 × 0.22 | `01a16cff-82f0-7741-820e-7f3908a7d243` | `01a16cff-fd70-73e4-b9bd-cdab2a5026d7` |
+| `held/gears.glb` | Gears | 3,236 | 0.34 × 0.32 × 0.19 | `01a16cff-88f9-744c-92c5-0b0ea019327f` | `01a16d00-2d7f-77ef-8584-94456a88480e` |
+| `held/rope.glb` | Rope | 3,346 | 0.25 × 0.09 × 0.20 | `01a16d00-6b9a-758a-b476-e61484d82543` | `01a16d01-0dd5-70be-aaae-c2b05f7bb1dd` |
+| `held/road_signs.glb` | Road Signs | 3,296 | 0.35 × 0.32 × 0.02 | `01a16d00-ab8f-755d-ac5f-a0c4e026b5a5` | `01a16d01-4dfe-70bc-bed5-eaf7b25a5bd1` |
+| `held/sewing_kit.glb` | Sewing Kit | 2,496 | 0.20 × 0.12 × 0.21 | `01a16d00-d9a9-779f-8f2f-bd5bb5b6644d` | `01a16d01-7d8c-7000-80c6-2a54c40d5143` |
+| `held/blueprint.glb` | Blueprint | 3,089 | 0.41 × 0.15 × 0.14 | `01a16d01-e155-7318-8e78-8add16ef649a` | `01a16d02-8327-70c6-8584-7f7780f69f12` |
+| `held/sheet_metal.glb` | Sheet Metal | 3,134 | 0.36 × 0.05 × 0.28 | `01a16d02-247d-72d1-a77b-e54435cfe859` | `01a16d02-9eec-714a-a39e-0f410cd447de` |
+| `held/corn_seed.glb` | Corn Seed | 3,074 | 0.14 × 0.03 × 0.14 | `01a16d02-54a3-71e3-a4c0-06c5636a5021` | `01a16d02-d0e9-709f-a519-6e165cb49115` |
+| `held/hemp_seed.glb` | Hemp Seed | 2,713 | 0.11 × 0.03 × 0.11 | `01a16d03-2fc8-72fe-88cd-dd6c95b033d6` | `01a16d03-d1a1-747b-8228-09c2ca7854fd` |
+| `held/potato_seed.glb` | Potato Seed | 3,238 | 0.13 × 0.06 × 0.13 | `01a16d03-771a-7759-a9e0-b6a3147973de` | `01a16d04-19ba-772a-88b4-b520dca48c0e` |
+| `held/pumpkin_seed.glb` | Pumpkin Seed | 3,182 | 0.12 × 0.02 × 0.12 | `01a16d03-f50e-77a9-bc6f-7b83df4b407d` | `01a16d04-9b7a-72c7-a744-edac093015a2` |
+| `held/berry_seed.glb` | Berry Seed | 2,851 | 0.07 × 0.01 × 0.07 | `01a16d05-1d73-7585-ad08-cdf92b2a43d6` | `01a16d05-99d2-751d-97cb-023906d865e2` |
+
+> **stump** — "A single freshly cut pine tree stump on a plain white background, three-quarter view from slightly above. A short stump 64 centimetres across at its base and 34 centimetres tall, slightly tapered, roots just starting to flare at the base, thick rough grey-brown pine bark around the sides, and a flat fresh saw-cut top face of pale cream wood showing growth rings, a few radial cracks and beads of resin. The cut face is much lighter than the bark. Real, photographed in soft daylight. Exactly one stump. No axe, no saw, no grass, no moss. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Rough deeply furrowed grey-brown pine bark, flat pale cream fresh-cut wood face with growth rings and radial cracks, resin beads, no moss, no green"
+>
+> **torch** — "A single handmade torch standing upright on a plain white background, three-quarter view. A straight rough wooden stick 46 centimetres long and 3 centimetres thick, its top 12 centimetres wrapped thickly in strips of dirty cloth rag soaked dark with oil and tar and bound with twine, the rag charred black at the very top. Unlit: no flame, no smoke, no glow. Weathered. Real, photographed in soft daylight. Exactly one torch. No wall bracket. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Rough grey-brown weathered wood stick, dirty oil-soaked cloth rag wrapping with dark tar stains, charred black top, twine binding, matte, no flame, no glow"
+>
+> **revolver** — "A single crude homemade six-shot revolver lying on its side on a plain white background, seen exactly from the side, muzzle pointing right. Built from scrap: a short thick steel pipe barrel, a rough six-chamber cylinder, a hammer bent from steel rod, a frame of bolted steel plate, a grip of two wooden slabs wrapped in black cloth tape. 26 centimetres long, 13 centimetres tall and 4 centimetres wide. Worn: scratched dull grey steel, rust at the bolts, grime. Real, photographed in soft daylight. Exactly one revolver. No holster, no bullets, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Scratched dull grey steel, rust at the bolts and seams, worn wooden grip wrapped in black cloth tape, grime, no text, no logos"
+>
+> **crossbow** — "A single crude homemade crossbow lying on a plain white background, seen from the side and slightly above, front pointing right. A rough wooden stock 65 centimetres long with a simple trigger underneath, a bow of bent flat steel leaf spring 55 centimetres wide bolted across the front end, a taut string drawn back to a catch, rope and wire bindings. Worn and scratched. Real, photographed in soft daylight. Exactly one crossbow. No bolt loaded, no arrows, no scope, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Rough weathered wooden stock, dull grey steel leaf spring with rust, frayed taut string, rope and wire bindings, no text, no logos"
+>
+> **stone_spear** — "A single primitive stone-tipped spear standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE spear is in frame from the butt at the bottom to the tip at the top, with white space above and below: a long straight rough wooden shaft 180 centimetres long and only 3 centimetres thick, a leaf-shaped knapped grey flint point 15 centimetres long lashed into a split end with sinew and leather cord. Weathered wood, flint with chipped flake scars. Real, photographed in soft daylight. Exactly one spear. No second spear, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered grey-brown wooden shaft, knapped grey flint point with flake scars, pale sinew and brown leather lashing, matte"
+>
+> **empty_propane_tank** — "A single small empty propane gas cylinder standing upright on a plain white background, three-quarter view. A steel cylinder 37 centimetres tall and 20 centimetres across with rounded ends, a protective steel collar ring with cut-out handholds around a brass valve on top, a welded foot ring at the base. Dented, faded white paint chipped to grey steel, rust streaks running down from the collar, grime. Real, photographed in soft daylight. Exactly one cylinder. No hose, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Faded chipped white paint over grey steel, rust streaks, dents, grime, tarnished brass valve, no text, no logos, no warning labels"
+>
+> **tech_trash** — "A single broken electronic circuit board lying flat on a plain white background, three-quarter view from above. A dark green printed circuit board 24 centimetres long and 16 centimetres wide, crowded with black chips, cylindrical capacitors, a small aluminium heat sink and a few connectors standing up to 4 centimetres tall, one corner snapped off and scorched black, some pins bent. Dusty. Real, photographed in soft daylight. Exactly one board. No cables, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dusty dark green circuit board with copper traces, black chips, silver and blue capacitors, aluminium heat sink, scorched black corner, no text, no logos"
+>
+> **burlap_tunic** — "A single crude sleeveless tunic sewn from burlap sacks, standing upright on its own as if worn by an invisible person, front three-quarter view, on a plain white background. Coarse brown jute sackcloth, a rough neck hole, wide arm holes, crude thick stitching up the sides, a frayed uneven hem, dirty and stained. 48 centimetres wide, 45 centimetres tall, flattened, hollow and empty. Real, photographed in soft daylight. Exactly one tunic. No mannequin, no body, no person, no hanger, no ground, no hands, no text, no letters, no labels, no scale bar."  ·  texture: "Coarse brown jute burlap sackcloth with visible weave, thick rough stitching, frayed edges, dirt and stains, no text, no letters, no print"
+>
+> **burlap_hood** — "A single burlap sack hood on a plain white background, three-quarter view. A coarse brown jute sack shaped into a hood that covers a whole head, two ragged eye holes cut in the front, gathered and tied at the neck with twine, the loose sack corners sticking up at the top. 26 centimetres wide, 25 centimetres tall and 26 centimetres deep, hollow and holding its shape. Dirty, stained, frayed. Real, photographed in soft daylight. Exactly one hood. No head. No mannequin, no body, no person, no hanger, no ground, no hands, no text, no letters, no labels, no scale bar."  ·  texture: "Coarse brown jute burlap sackcloth with visible weave, frayed cut eye holes, twine tie, dirt and stains, no text, no letters, no print"
+>
+> **hide_poncho** — "A single crude poncho of rough animal hide standing upright as if worn by an invisible person, front three-quarter view, on a plain white background. Brown tanned hide with patches of shaggy fur left on around the edges, a cut neck hole, laced together at the shoulders with leather thong, uneven natural edges. 52 centimetres wide, 40 centimetres tall, flattened, hollow and empty. Real, photographed in soft daylight. Exactly one poncho. No mannequin, no body, no person, no hanger, no ground, no hands, no text, no letters, no labels, no scale bar."  ·  texture: "Rough brown tanned hide with creases, shaggy brown fur at the edges, leather thong lacing, worn, matte, no print"
+>
+> **bone_helmet** — "A single primitive helmet built from an animal skull and bone plates on a plain white background, three-quarter view. The upper skull of a large horned animal forms the dome, with two short curved horns, flat bone plates lashed around the sides, a leather chin strap. 45 centimetres wide across the horns, 30 centimetres tall and 28 centimetres deep, hollow underneath. Weathered off-white bone, dark brown leather. Real, photographed in soft daylight. Exactly one helmet. No head. No mannequin, no body, no person, no hanger, no ground, no hands, no text, no letters, no labels, no scale bar."  ·  texture: "Weathered off-white and yellowed bone with cracks and grime, dark brown worn leather straps, matte"
+>
+> **roadsign_vest** — "A single crude armour vest made from flattened metal road signs, standing upright as if worn by an invisible person, front three-quarter view, on a plain white background. Front and back plates cut from bent sheet-metal road signs with faded yellow, red and white paint, bolted together over leather shoulder straps and side straps, rough cut edges, rivets, dents and scrapes, rust where the paint is gone. 32 centimetres wide, 45 centimetres tall, hollow and empty. Real, photographed in soft daylight. Exactly one vest. No mannequin, no body, no person, no hanger. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Faded yellow, red and white painted sheet metal, chipped and scraped to bare grey metal, rust, rivets, dark brown leather straps, no text, no letters, no numbers, no symbols"
+>
+> **gears** — "Two cast steel gears standing upright on their edges side by side, meshed together, front three-quarter view, on a plain white background. One large gear 26 centimetres across with four spokes and one small gear 12 centimetres across, each 3 centimetres thick with machined teeth and a round centre hole. Dull dark grey steel, oily, a little rust in the teeth. Real, photographed in soft daylight. Exactly two gears. No shaft, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dull dark grey cast steel, oily sheen, machined teeth, a little rust in the gaps, no paint"
+>
+> **rope** — "A single coil of rough hemp rope lying flat on a plain white background, three-quarter view from above. Thick twisted three-strand rope 2 centimetres thick wound into a neat round coil 25 centimetres across and 14 centimetres tall, one loose end hanging over the side with a frayed tip. Pale straw-brown fibres, slightly dirty. Real, photographed in soft daylight. Exactly one coil. No hook. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Twisted pale straw-brown hemp rope fibres, slightly dirty, frayed tip, matte"
+>
+> **road_signs** — "Two bent metal road-sign plates stacked together and leaning upright, front three-quarter view, on a plain white background. Flat sheet-metal plates 35 centimetres wide and 26 centimetres tall, one a faded yellow diamond-shaped warning sign and one a faded red rectangle, both bent at one corner, with bolt holes, scratches, chipped paint and rust spots, 3 centimetres thick together. Real, photographed in soft daylight. Exactly two plates. No post. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Faded yellow and faded red painted sheet metal, chipped to bare grey metal, scratches, rust spots, bolt holes, no text, no letters, no numbers, no symbols"
+>
+> **sewing_kit** — "A small sewing kit on a plain white background, three-quarter view: two old wooden thread spools lying side by side, one wound with off-white thread and one with brown thread, and one long steel sewing needle lying across them with a loose thread end. The group 21 centimetres wide, 17 centimetres deep and 11 centimetres tall. Worn wood. Real, photographed in soft daylight. Exactly two spools and one needle. No box, no scissors, no cloth. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Worn pale wooden spools, off-white and brown cotton thread, polished steel needle, matte"
+>
+> **blueprint** — "A single rolled-up sheet of blueprint paper lying horizontally on a plain white background, three-quarter view. A tight paper roll 41 centimetres long and 10 centimetres across, muted dusty blue paper with faint pale technical line drawings on the outer edge, tied around the middle with thin string, the inner end curling slightly. Creased, slightly dog-eared. Real, photographed in soft daylight. Exactly one roll. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Muted dusty blue paper with faint pale line drawings, creases, dog-eared edges, thin off-white string, matte, not bright blue, no text, no letters, no numbers"
+>
+> **sheet_metal** — "Three sheets of galvanised steel stacked flat on a plain white background, three-quarter view from above. Thin rectangular plates 36 centimetres long and 28 centimetres wide, the stack 4 centimetres tall, slightly offset from each other, one corner of the top sheet bent up. Grey spangled zinc coating, scratches, white oxide stains, a few rust spots on the edges. Real, photographed in soft daylight. Exactly one stack. No tools. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Grey spangled galvanised steel, scratches, white oxide stains, rust spots on the edges, no paint"
+>
+> **corn_seed** — "A single small heap of dried corn kernels on a plain white background, three-quarter view from above. About thirty loose golden-yellow dent corn kernels piled together, the heap 13 centimetres across and 3 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No cob, no husk, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dry golden-yellow dent corn kernels with pale tips, matte"
+>
+> **hemp_seed** — "A single small heap of hemp seeds on a plain white background, three-quarter view from above. Many small round grey-brown seeds with faint mottled markings piled together, the heap 10 centimetres across and 2 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No leaves, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Small grey-brown hemp seeds with faint darker mottling, dry, matte"
+>
+> **potato_seed** — "A single small heap of cut seed potato pieces on a plain white background, three-quarter view from above. Seven or eight small chunks of brown-skinned potato, each with an eye and a short pale sprout, the cut faces dried pale, the heap 12 centimetres across and 3 centimetres tall. Dusty with soil. Real, photographed in soft daylight. Exactly one heap. No whole potatoes, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dusty brown potato skin, dried pale cut faces, short pale sprouts, a little soil, matte"
+>
+> **pumpkin_seed** — "A single small heap of pumpkin seeds on a plain white background, three-quarter view from above. About twenty flat oval cream-white pumpkin seeds with pale rims piled together, the heap 11 centimetres across and 3 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No pumpkin, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dry flat cream-white pumpkin seeds with pale rims, matte"
+>
+> **berry_seed** — "A single small heap of tiny berry seeds on a plain white background, three-quarter view from above. Many tiny dark red-brown seeds piled together, the heap 7 centimetres across and 1.5 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No berries, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Tiny dark red-brown dry seeds, matte"
+
+## The arrows and the exact parts — Meshy, 2026-10-24
+
+The eleven rows `WANTED.md` §12.3 routed to Blender, sent to Meshy instead
+(operator: *"just use meshy instead of blender no reason not too"*): five
+arrows and six thin or exact parts that the prop kit built. Same terms and
+pipeline as the batch above. Long things were rolled upright in a 9:16
+frame, the spear's lesson, and every one held on its first roll: the
+arrows' 9 mm shafts and fletching reconstructed straight. Imported to a
+cube of the kit row's height, so each keeps the row's height, except the
+pistol round (0.078 → 0.087). Stood with `stand_grip.py` on the shaft
+(arrows 0.20–0.80; the high-velocity arrow fitted at grip 0.30, because its
+shaft has too few vertices at 0.40 for the slide and it is straight to
+0.07°), the blade 0.05–0.95, the pipe 0.10–0.90, the fuse 0.25–0.75 and the
+syringe 0.05–0.95.
+
+The arrows are also what the world draws now. An arrow stuck where it hit,
+planted where it fell or lodged in a body draws its item's own model once
+it has loaded (`structures::arrow_as_model`, `lodged::draw`), with its head
+where the stand-in shaft's was. The shaft stays as the fallback. The streak
+in flight (`tracer.rs`) stays a deliberately unlit tracer.
+
+**264 credits for the 11** (balance 1,007 → 743, measured).
+
+| file | item | tris | size (m) | image | mesh |
+|---|---|---|---|---|---|
+| `held/wooden_arrow.glb` | Wooden Arrow | 2,807 | 0.06 × 0.79 × 0.06 | `01a16e96-d582-706a-8919-9f04ba08426f` | `01a16e97-281a-7079-bd04-beff49297925` |
+| `held/bone_arrow.glb` | Bone Arrow | 2,815 | 0.09 × 0.83 × 0.08 | `01a16e96-d57d-75af-98c5-36befff7089d` | `01a16e97-2bbf-7651-9050-4014d1b06669` |
+| `held/metal_arrow.glb` | Metal Arrow | 3,148 | 0.08 × 0.86 × 0.08 | `01a16e96-d57e-76ab-a618-3106c51ae63d` | `01a16e97-2b6b-7679-af10-9f0d8a0a70f3` |
+| `held/high_velocity_arrow.glb` | High Velocity Arrow | 2,189 | 0.07 × 0.86 × 0.06 | `01a16e97-b035-73b2-898e-27da01ae377f` | `01a16e98-2cb0-7489-8ce6-3528a09975f2` |
+| `held/fire_arrow.glb` | Fire Arrow | 2,703 | 0.08 × 0.79 × 0.09 | `01a16e97-d782-7783-b1a6-bd724f037c8b` | `01a16e98-5510-73e2-a36d-ed3425f74e43` |
+| `held/metal_blade.glb` | Metal Blade | 2,839 | 0.06 × 0.42 × 0.03 | `01a16e98-0416-7391-a188-1ae4eeee8c65` | `01a16e98-8516-7197-afab-be0a8baa0e3f` |
+| `held/metal_pipe.glb` | Metal Pipe | 3,290 | 0.06 × 0.43 × 0.06 | `01a16e98-bab9-74a3-9cad-221f0df1465c` | `01a16e99-1018-712b-9fe7-e0cc31ddec85` |
+| `held/metal_spring.glb` | Metal Spring | 3,330 | 0.11 × 0.26 × 0.11 | `01a16e98-e1de-71a5-af69-99f5d771c359` | `01a16e99-3930-7608-a6e2-f46af8ef0210` |
+| `held/electric_fuse.glb` | Electric Fuse | 3,247 | 0.07 × 0.16 × 0.04 | `01a16e99-1667-7310-9587-7d02e2f40710` | `01a16e99-75e9-7347-bf17-7ba5001032a5` |
+| `held/medical_syringe.glb` | Medical Syringe | 3,214 | 0.06 × 0.28 × 0.06 | `01a16e99-a082-7768-9cee-89c000daf853` | `01a16e9a-236d-7057-a248-0f91ca9abf15` |
+| `held/pistol_round.glb` | Pistol Round | 3,082 | 0.09 × 0.09 × 0.03 | `01a16e99-c8a2-7779-b503-e783a4d9ce0a` | `01a16e9a-4776-73f8-ae0d-793295c22b32` |
+
+> **wooden_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and its tip simply whittled to a sharp fire-hardened point, blackened by fire. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, fire-blackened sharpened wooden point, matte"
+>
+> **bone_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a flat carved off-white bone arrowhead 6 centimetres long lashed to the tip with sinew. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, off-white carved bone head, pale sinew lashing, matte"
+>
+> **metal_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a flat barbed steel broadhead 7 centimetres long fixed to the tip. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, dull grey forged steel broadhead with a little rust, matte"
+>
+> **high_velocity_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a slim needle-like steel bodkin point 6 centimetres long fixed to the tip. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, slim dull grey steel needle point, matte"
+>
+> **fire_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a short bundle of dark oil-soaked cloth rag tied around the shaft just below a small point, unlit. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall, no flame, no smoke, no glow. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, dark oil-soaked cloth rag bundle, tar stains, no flame, no glow"
+>
+> **metal_blade** — "A single crude knife blade ground from scrap steel standing straight upright on a plain white background, point at the top, seen from the side. A straight single-edged blade 30 centimetres long and 6 centimetres wide, with visible file and grinding marks and a bright honed edge, and its 12 centimetre tang at the bottom wrapped tightly in dirty cloth strips. 42 centimetres long in all, 3 millimetres thick. Rusty patches. Real, photographed in soft daylight. Exactly one blade. No handle guard, no sheath, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Scratched dull grey scrap steel with file marks and rust patches, bright honed edge, dirty grey cloth wrapping, no text"
+>
+> **metal_pipe** — "A single length of rusty steel pipe standing straight upright on a plain white background, three-quarter view. A round steel pipe 43 centimetres long and 6 centimetres across, a threaded coupling screwed onto the top end, the bottom end cut rough. Rust-brown and dark grey, flaking, dirty. Real, photographed in soft daylight. Exactly one pipe. No valve, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Rust-brown flaking steel pipe with dark grey patches, worn threads on the coupling, dirty, no paint, no text"
+>
+> **metal_spring** — "A single heavy steel coil spring standing upright on a plain white background, three-quarter view. A thick round steel wire coiled into eight even turns, 26 centimetres tall and 11 centimetres across, flat ground ends. Dark oily steel with rust in the gaps between the coils. Real, photographed in soft daylight. Exactly one spring. No car parts, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dark oily steel coil with an oily sheen, orange-brown rust between the coils, matte rust, no paint"
+>
+> **electric_fuse** — "A single large industrial cartridge fuse standing upright on a plain white background, three-quarter view. A white ceramic cylinder 10 centimetres long and 4 centimetres across with a small glass window, two brass end caps with flat blade contacts sticking out of each end, 16 centimetres long in all. Scuffed, dusty. Real, photographed in soft daylight. Exactly one fuse. No holder, no wires. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Off-white glazed ceramic body, small glass window, tarnished brass end caps and blades, dust and scuffs, no text, no letters, no numbers"
+>
+> **medical_syringe** — "A single large glass medical syringe standing straight upright on a plain white background, needle at the top, seen from the side. A clear glass barrel with printed graduation lines 15 centimetres long and 3 centimetres across, half full of dark red fluid, a steel finger flange and a scuffed steel plunger at the bottom, a thin steel needle 6 centimetres long at the top. 28 centimetres long in all. Real, photographed in soft daylight. Exactly one syringe. No cap, no packaging, no stand. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Clear glass barrel with faint white graduation lines, dark red fluid, scuffed brushed steel plunger and flange, thin steel needle, no text, no numbers"
+>
+> **pistol_round** — "A single small group of three revolver cartridges standing upright side by side on a plain white background, three-quarter view. Each a short brass case with a rounded copper bullet, 4 centimetres tall and 1 centimetre across, the three together 4 centimetres wide. Slightly tarnished. Real, photographed in soft daylight. Exactly three cartridges. No box, no gun, no loose bullets. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Tarnished brass cartridge cases, rounded copper bullets, small scratches, no text, no headstamp"
+
+## The bat and the auto turret — Meshy, 2026-10-24
+
+**The bat** (`held/bat.glb`) replaces the generated lathe (`render::heldgen`)
+as the spawn tool's look: a varnished hardwood bat, rolled upright in a 9:16
+frame. Its handle came back 1.8 cm across, and the fist closes on 3.4 cm
+(`VIEWMODEL_SEAT`), so it is `--fit-axes 0.0906 0.840 0.0888`: x1.85 in
+girth, which puts 3.4 cm at the grip, the barrel at 8.7 cm (the lathe's was
+8.8) and keeps the row's 0.840 m. Packed at **1024**, not the held items'
+512: it is in the hand from the first second of every life. The lathe stays
+as the canvas a painted bat skin draws on (`render/canvas.rs`); a painted
+bat now wears the lathe's own material, not the file's
+(`render/paint.rs`).
+
+**The auto turret** is one roll, cut in two with `ci/cut_glb.py` at the top
+of its box (0.47 m), so the two halves match:
+
+- `deploy/turret_base.glb` — the box. The model is `--turn=y90` (its
+  cradle's clamps faced −X) and scaled x0.722 so the box fills the
+  deployable's 0.7 m footprint (`DEPLOY_VOL[18]`), then compacted and
+  re-fitted inside 0.7 × 0.6 × 0.7. It also stands under the town's
+  sentries, as the last one did.
+- `deploy/turret_head.glb` — the post, the empty gun cradle and the sensor
+  box, which turns to the turret's aim (`render/sentry.rs`
+  `TURRET_HEAD_GLB`). Its origin is the post's axis at the sim's gun
+  height, `turret::GUN_M` = 0.9 m over the base. The gun in the turret's
+  box is drawn in the cradle as that gun's held model (`sentry::gun_mount`).
+- `held/auto_turret.glb` — the whole model at 512: the held token, the
+  dropped item and the icon.
+
+A cut leaves the whole model's vertices behind (`cut_glb.py` drops
+triangles only), so both halves were compacted to the vertices they use
+before their bounds were measured.
+
+**2 rolls, 48 credits** (balance 743 → 695, measured).
+
+| file | tris | size (m) | image | mesh |
+|---|---|---|---|---|
+| `held/bat.glb` | 3,272 | 0.09 × 0.84 × 0.09 | `01a16eb8-970b-7196-bdf9-6f69e1539971` | `01a16eb9-11c8-760a-86da-6d0365afcd1a` |
+| `deploy/turret_base.glb` | 3,436 | 0.65 × 0.48 × 0.70 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+| `deploy/turret_head.glb` | 2,460 | 0.51 × 0.63 × 0.66 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+| `held/auto_turret.glb` | 5,845 | 0.65 × 1.08 × 0.77 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+
+> **bat** — "A single hand-made hardwood baseball bat standing straight upright on a plain white background, knob at the bottom and barrel at the top, seen from the side. The WHOLE bat is in frame with white space above and below: 84 centimetres long, a slim round handle 3.4 centimetres thick over its lower third with a flared knob 5 centimetres across at the very bottom, swelling smoothly into a thick round barrel 9 centimetres across with a rounded end. Honey-amber varnished hardwood with visible long grain, the varnish worn through and darkened by hands on the handle, dents, scuffs and a few chips on the barrel. Real, photographed in soft daylight. Exactly one bat. No grip tape text, no logo, no brand, no ball, no glove, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Honey-amber varnished hardwood with long straight grain, handle worn and darkened by hands, dents, scuffs and small chips on the barrel, glossy varnish, no text, no logo"
+>
+> **auto_turret** — "A single automatic sentry gun mount with NO gun fitted, on a plain white background, three-quarter view. A squat armoured steel base box 70 centimetres wide, 70 centimetres deep and 55 centimetres tall with bolted plates, cable runs and an access hatch; a short round steel post rising from the centre of its top; on the post a rotating head: an empty U-shaped steel gun cradle with two clamps opening forward, and a small sensor box with a round dark lens fixed to one side of the cradle. 1.1 metres tall in all. Worn olive and grey paint chipped to bare steel, rust streaks, grime. Real, photographed in soft daylight. Exactly one turret. No gun, no barrel, no weapon, no ammo belt, no tripod legs, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Worn olive drab and grey painted steel chipped to bare metal, rust streaks, grime, bolts, black rubber cables, dark glass lens, no text, no logos"

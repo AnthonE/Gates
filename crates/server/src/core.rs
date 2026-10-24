@@ -6399,11 +6399,12 @@ impl ShardCore {
                     }
                 }
                 EV_SENTRY_LOCK => {
-                    // A town sentry's lock-on beep, to the clients that have
-                    // the gun in interest — the target always among them,
-                    // since it stands in the town under the gun. Not a
-                    // whole-population fan-in (`BODY_BROADCAST_ARMS`): four
-                    // guns lock at most once a look each.
+                    // A town sentry's or a player turret's lock-on beep, to
+                    // the clients that have the gun in interest — the target
+                    // always among them, since it stands within the gun's
+                    // reach. Not a whole-population fan-in
+                    // (`BODY_BROADCAST_ARMS`): each gun locks at most once a
+                    // look.
                     match protocol::encode_event_sentry_lock(ev.a, ev.b, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -10057,7 +10058,8 @@ impl ShardCore {
             // A pig has no hotbar, so the hand is empty — and `held` would
             // be *wrong* rather than merely meaningless if it were ever
             // filled: it is an index into the item catalog and a mob has no
-            // inventory to index it from.
+            // inventory to index it from. The one exception is a player's
+            // turret, whose gun is filled in by `fill_wire_cache`.
             held: None,
             // An animal's flame is the Verdigris in it: turned
             // (`Mob::turned`), it burns as the top tier's does.
@@ -10079,7 +10081,13 @@ impl ShardCore {
         for slot in 0..MAX_MOBS {
             let m = &self.world.mobs.m[slot];
             if m.alive {
-                self.wire_cache[MAX_PLAYERS + slot] = Self::wire_mob(slot, m);
+                let mut e = Self::wire_mob(slot, m);
+                // A turret carries the gun in its box (`turret::gun_in`),
+                // which the client mounts on it.
+                if sim_core::turret::is_turret_slot(slot) {
+                    e.held = self.world.turrets[slot - sim_core::turret::TURRET_SLOT0].carried;
+                }
+                self.wire_cache[MAX_PLAYERS + slot] = e;
             }
         }
     }

@@ -279,7 +279,7 @@ pub fn shots(
                 sentries
                     .iter()
                     .find(|(h, _)| h.0 == shooter)
-                    .map(|(_, gt)| *gt)
+                    .map(|(h, gt)| gt.transform_point(h.1))
             })
             .flatten();
         let muzzle = if own {
@@ -288,9 +288,9 @@ pub fn shots(
         } else if let Some(gt) = heli {
             // The attack helicopter's chin gun.
             gt.transform_point(super::super::heli::MUZZLE)
-        } else if let Some(gt) = sentry {
-            // A town sentry's barrel.
-            gt.transform_point(super::super::sentry::MUZZLE)
+        } else if let Some(m) = sentry {
+            // A town sentry's barrel, or the gun in a player turret's cradle.
+            m
         } else if let Some(m) = drawn.muzzle(shooter) {
             // A shouldered long gun's own barrel (`bodies::aim_long_guns`).
             m

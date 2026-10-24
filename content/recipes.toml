@@ -602,8 +602,9 @@ inputs = [
     { item = "item.gears", count = 2 },
 ]
 
-# The auto turret is a revolver on a mount: the gun, its gears and a steel
-# housing (`deployables.toml` `[turret]`).
+# The auto turret is a mount, its gears, a steel housing and the electronics
+# that aim it. The gun is yours to put in it, as in Rust (`deployables.toml`
+# `[turret]`).
 [[recipe]]
 id = "recipe.autoturret"
 output = "item.autoturret"
@@ -612,9 +613,9 @@ count = 1
 station = "workbench2"
 seconds = 60
 inputs = [
-    { item = "item.revolver", count = 1 },
     { item = "item.metal_frags", count = 300 },
     { item = "item.gears", count = 4 },
+    { item = "item.tech_trash", count = 2 },
 ]
 
 # The compound shop: a wooden cabinet with a steel front, at the first bench,

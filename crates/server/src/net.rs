@@ -866,7 +866,7 @@ pub struct SimTables {
     /// THE GATE's sentries (`sentry.rs`), armed by the boot alone like the
     /// heli.
     pub sentry: sim_core::sentry::SentryDef,
-    /// A player auto turret's gun (`deployables.toml` `[turret]`).
+    /// A player auto turret's guns (`deployables.toml` `[turret]`).
     pub turret: sim_core::turret::TurretDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,

@@ -1038,6 +1038,14 @@ fn play_panel(body: &mut ChildSpawnerCommands, v: &View, pick: Option<usize>) {
             b.spawn(ui::strong("PLAY", 30.0, ui::go_ink(ready)));
             b.spawn(ui::strong(sub, 11.0, ui::go_ink(ready).with_alpha(0.72)));
         });
+        // Watch an agent on the picked shard from a spectator's seat: no
+        // wallet, no body, and nothing it does reaches the island.
+        if ready {
+            p.spawn((ui::button(PANEL_W - 42.0, false), PickButton(Pick::Watch)))
+                .with_children(|b| {
+                    b.spawn(ui::strong("WATCH AN AGENT", 13.0, ui::TITLE));
+                });
+        }
         p.spawn((StatusLine, ui::label(menu.status.clone(), 13.0, ui::DIM)));
     });
 }
@@ -1822,6 +1830,8 @@ pub enum Pick {
     Row(usize),
     /// PLAY: join the picked row.
     Go,
+    /// WATCH AN AGENT: a spectator's seat on the picked row.
+    Watch,
     Nav(Nav),
     /// Hand a launcher-backed section to the launcher.
     Open(Section),
@@ -1896,6 +1906,7 @@ pub fn take_pick(
                 Ok(addr) => {
                     connecting.addr = addr;
                     connecting.rx = None;
+                    connecting.watch = false;
                     next.set(Screen::Connecting);
                 }
                 Err(why) => {
@@ -1980,14 +1991,16 @@ pub fn take_pick(
             // row opened a drawer and the drawer had JOIN.
             connecting.addr = row.addr.clone();
             connecting.rx = None;
+            connecting.watch = false;
             next.set(Screen::Connecting);
         }
-        Pick::Go => {
+        Pick::Go | Pick::Watch => {
             let Some(i) = picked_row(&menu, &browse, &friends) else {
                 return;
             };
             connecting.addr = menu.rows[i].addr.clone();
             connecting.rx = None;
+            connecting.watch = pick == Pick::Watch;
             next.set(Screen::Connecting);
         }
     }
@@ -2014,7 +2027,11 @@ pub fn begin_connect(
     pin: Option<Res<super::screen::Pin>>,
     mut connecting: NonSendMut<Connecting>,
 ) {
+    // A watcher claims no address and signs nothing (`Session::watch`), so
+    // a signed-in player watching is anonymous too.
+    let watch = connecting.watch;
     connecting.address = match who.0.address() {
+        _ if watch => protocol::Address::GUEST,
         None => protocol::Address::GUEST,
         Some(a) => protocol::Address::from_hex(a.as_bytes()).unwrap_or_else(|| {
             // A malformed `--identity` already failed at the command line
@@ -2029,6 +2046,9 @@ pub fn begin_connect(
     let address = connecting.address;
     let hash = pin.filter(|p| p.addr == addr).map(|p| p.hash.clone());
     connecting.waited_s = 0.0;
+    if watch {
+        info!("gates: watching an agent on {addr}");
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     rt.0.spawn(async move {
         // **The pin only for the address it was given with.** A `--server`
@@ -2037,6 +2057,9 @@ pub fn begin_connect(
         // list later is not that address and gets no pin; the address
         // decides the rest — loopback permissive, everything else validated.
         let result = match crate::client_endpoint(&addr, hash.as_deref()) {
+            Ok(endpoint) if watch => {
+                crate::Session::watch(&endpoint, &addr, protocol::Address::GUEST).await
+            }
             Ok(endpoint) => {
                 crate::Session::connect(&endpoint, &addr, address, crate::elo::sign_siwe).await
             }
@@ -2054,7 +2077,7 @@ pub fn begin_connect(
 pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>, who: Res<Who>) {
     // A wallet player may have to approve the sign-in somewhere else: in the
     // launcher, or in the browser tab it paired with.
-    let hint = if who.0.address().is_some() {
+    let hint = if who.0.address().is_some() && !connecting.watch {
         "Signing in: approve it in your launcher or your paired browser tab. Esc goes back"
     } else {
         "Esc goes back"
@@ -2174,6 +2197,7 @@ pub fn poll_connect(
                 ),
                 None => format!("{}: {why}", crate::ui::streamer::server(&connecting.addr)),
             };
+            info!("gates: back to the menu - {}", menu.status);
             next.set(Screen::Menu);
         }
     }

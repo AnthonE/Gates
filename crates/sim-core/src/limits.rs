@@ -698,6 +698,11 @@ pub const MAX_HEARTHS: usize = 512;
 /// until wire v121, which a few bases on a full shard used up.
 pub const MAX_TURRETS: usize = 64;
 
+/// Guns a turret can carry (`deployables.toml` `[turret]` `guns`): the
+/// baked table is a fixed array this long, and a set naming more refuses to
+/// bake. Overflow policy: **refuse** at boot.
+pub const MAX_TURRET_GUNS: usize = 16;
+
 /// Rust's turret interference (2023): at most this many turrets within
 /// [`TURRET_INTERFERENCE_M`] of each other shoot; the rest stand idle with
 /// their guns up, first come first served in table order (`turret::step`).

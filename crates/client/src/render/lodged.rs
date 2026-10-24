@@ -35,10 +35,12 @@ const RADIUS_M: f32 = 0.012;
 const IN_M: f32 = 0.12;
 const COLOR: Color = Color::srgb(0.71, 0.58, 0.40);
 
-/// The pool.
+/// The pool, and the stand-in shaft each entity draws until its arrow's
+/// own model has loaded.
 #[derive(Resource, Default)]
 pub struct Lodged {
     entities: Vec<Entity>,
+    shaft: (Handle<Mesh>, Handle<StandardMaterial>),
 }
 
 /// Spawn the pool, hidden.
@@ -54,6 +56,7 @@ pub fn setup(
         perceptual_roughness: 0.8,
         ..default()
     });
+    pool.shaft = (mesh.clone(), material.clone());
     pool.entities = (0..LODGED_DRAWN)
         .map(|_| {
             commands
@@ -82,16 +85,29 @@ pub fn lodged_transform(root: &Transform, off: [i16; 3], dir: [i8; 3], height: f
     Transform::from_translation(at - flew * (LEN_M * 0.5 - IN_M)).with_rotation(rotation)
 }
 
-/// Stand every arrow the server says is in a drawn body in it.
-#[allow(clippy::type_complexity)]
+/// Stand every arrow the server says is in a drawn body in it, in its own
+/// model (`ui::hold`'s arrow rows) once that has loaded.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn draw(
     pool: Res<Lodged>,
     net: NonSend<Net>,
+    models: Option<Res<super::viewmodel::Models>>,
+    meshes: Res<Assets<Mesh>>,
+    materials: Res<Assets<StandardMaterial>>,
     bodies: Query<(&Body, &Transform, Option<&BodyAnim>), Without<Animal>>,
     animals: Query<(&Animal, &Transform), Without<Body>>,
-    mut q: Query<(&mut Transform, &mut Visibility), (Without<Body>, Without<Animal>)>,
+    mut q: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &mut Mesh3d,
+            &mut MeshMaterial3d<StandardMaterial>,
+        ),
+        (Without<Body>, Without<Animal>),
+    >,
 ) {
-    let lodged = net.session.core.lodged();
+    let core = &net.session.core;
+    let lodged = core.lodged();
     let mut shown = 0usize;
     for rec in lodged {
         if shown == pool.entities.len() {
@@ -123,17 +139,44 @@ pub fn draw(
         let Some((root, height)) = root else {
             continue;
         };
-        let Ok((mut tf, mut vis)) = q.get_mut(pool.entities[shown]) else {
+        let Ok((mut tf, mut vis, mut mesh, mut mat)) = q.get_mut(pool.entities[shown]) else {
             continue;
         };
-        *tf = lodged_transform(root, rec.off, rec.dir, height);
+        let shaft = lodged_transform(root, rec.off, rec.dir, height);
+        let row = models.as_deref().and_then(|m| {
+            let stack = sim_core::gather::ItemStack {
+                item: rec.item,
+                count: 1,
+                cond: 0,
+                skin: 0,
+                ..sim_core::gather::ItemStack::EMPTY
+            };
+            let i = crate::ui::hold::held_model(&core.catalog, stack)?;
+            let (mh, mt) = m.row(i);
+            (meshes.contains(mh.id()) && materials.contains(mt.id())).then_some((i, mh, mt))
+        });
+        let (want_mesh, want_mat, at) = match row {
+            Some((i, mh, mt)) => {
+                let len = crate::ui::hold::HELD_MODELS[i].height_m;
+                let at = super::structures::arrow_as_model(shaft, LEN_M, len);
+                (mh, mt, at)
+            }
+            None => (pool.shaft.0.clone(), pool.shaft.1.clone(), shaft),
+        };
+        if mesh.0 != want_mesh {
+            mesh.0 = want_mesh;
+        }
+        if mat.0 != want_mat {
+            mat.0 = want_mat;
+        }
+        *tf = at;
         if *vis != Visibility::Visible {
             *vis = Visibility::Visible;
         }
         shown += 1;
     }
     for &e in &pool.entities[shown..] {
-        if let Ok((_, mut vis)) = q.get_mut(e) {
+        if let Ok((_, mut vis, ..)) = q.get_mut(e) {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;
             }

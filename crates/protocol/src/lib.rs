@@ -1366,7 +1366,11 @@ pub use voice::{
 /// (`ItemStack::data`: a gun's attachments, rounds and round); a snapshot's
 /// hand closes with the held gun's attachments and its light behind
 /// another (`EntityState::held_mods`, `beam`); `MAX_EVENT_MSG_BYTES` 448.
-pub const PROTO_VER: u16 = 144;
+/// v145 — main's v143, carried to the wipe: `SUB_SENTRY_LOCK` names a
+/// player's turret too (the gun's index is 7 bits over the town's sentries
+/// then the turrets, was 2), and a turret's record carries the gun in its
+/// box as its `held` item.
+pub const PROTO_VER: u16 = 145;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

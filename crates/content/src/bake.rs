@@ -2943,24 +2943,55 @@ impl Content {
             u16::try_from((ms as u64 * TICK_HZ as u64 / 1000).max(1))
                 .map_err(|_| format!("bake: turret {ms} ms overflows the sim"))
         };
-        let ammo = self
-            .item_index(&t.ammo)
-            .ok_or_else(|| format!("bake: turret ammo `{}` names no item", t.ammo))?;
-        Ok(sim_core::turret::TurretDef {
-            gun: sim_core::sentry::SentryDef {
-                range_mm: t.range_m * 1000,
-                damage: u16::try_from(t.damage)
-                    .map_err(|_| format!("bake: turret damage {} overflows", t.damage))?,
-                burst: u8::try_from(t.burst)
-                    .map_err(|_| format!("bake: turret burst {} overflows", t.burst))?,
-                rate_ticks: ms_ticks(t.rate_ms)?,
-                gap_ticks: ms_ticks(t.burst_gap_ms)?,
-                lock_ticks: ms_ticks(t.lock_ms)?,
-                lose_ticks: ms_ticks(t.lose_ms)?,
-                spread_pm: t.spread_cm_per_10m as u16,
-            },
-            ammo,
-        })
+        if t.guns.len() > sim_core::limits::MAX_TURRET_GUNS {
+            return Err(format!(
+                "bake: turret names {} guns, past MAX_TURRET_GUNS {}",
+                t.guns.len(),
+                sim_core::limits::MAX_TURRET_GUNS
+            ));
+        }
+        let mut def = sim_core::turret::TurretDef::INERT;
+        for (k, id) in t.guns.iter().enumerate() {
+            let w = self
+                .weapons
+                .iter()
+                .find(|w| &w.id == id)
+                .filter(|w| w.kind == WeaponKind::Firearm)
+                .ok_or_else(|| format!("bake: turret gun `{id}` is no firearm row"))?;
+            let (Some(magazine), Some(reload_ms), Some(ammo)) = (
+                w.magazine,
+                w.reload_ms,
+                w.ammo.as_ref().and_then(|a| a.first()),
+            ) else {
+                return Err(format!(
+                    "bake: turret gun `{id}` has no magazine, reload or round"
+                ));
+            };
+            let pellets = w.gun.as_ref().map_or(1, |g| g.pellets);
+            let damage = w.damage * pellets * t.damage_pct / 100;
+            def.guns[k] = sim_core::turret::TurretGun {
+                item: self
+                    .item_index(id)
+                    .ok_or_else(|| format!("bake: turret gun `{id}` names no item"))?,
+                def: sim_core::sentry::SentryDef {
+                    range_mm: t.range_m * 1000,
+                    damage: u16::try_from(damage)
+                        .map_err(|_| format!("bake: turret `{id}` damage {damage} overflows"))?,
+                    burst: u8::try_from(magazine)
+                        .map_err(|_| format!("bake: turret `{id}` burst {magazine} overflows"))?,
+                    rate_ticks: ms_ticks(60_000 / w.rate_per_min.max(1))?,
+                    gap_ticks: ms_ticks(reload_ms)?,
+                    lock_ticks: ms_ticks(t.lock_ms)?,
+                    lose_ticks: ms_ticks(t.lose_ms)?,
+                    spread_pm: t.spread_cm_per_10m as u16,
+                },
+                ammo: self
+                    .item_index(ammo)
+                    .ok_or_else(|| format!("bake: turret `{id}` round `{ammo}` names no item"))?,
+            };
+            def.n = k as u8 + 1;
+        }
+        Ok(def)
     }
 
     /// The bred brains the species rows carry (`genome`, `genome_tier`),

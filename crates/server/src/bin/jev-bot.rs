@@ -572,7 +572,7 @@ fn new_key(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn run(options: Options) -> Result<(), String> {
+async fn run(mut options: Options) -> Result<(), String> {
     if let Some(path) = &options.new_key {
         return new_key(path);
     }
@@ -647,7 +647,27 @@ async fn run(options: Options) -> Result<(), String> {
         }
     }
     let mut minds = Vec::with_capacity(options.bots);
-    for _ in 0..options.bots {
+    let journal = options.mind.journal.clone();
+    for i in 0..options.bots {
+        // Each body keeps its own journal (`--journal`), whose rows name the
+        // wallet it plays as: a fleet's are its own keys (`--agent-keys`),
+        // made here on first start rather than at the door a moment later.
+        if let Some(file) = &journal {
+            let name = bot_name(&options.agent_name, i, options.bots)?;
+            options.mind.journal = Some(server::distill::journal_path(
+                file,
+                name.as_str(),
+                options.bots,
+            ));
+            let own = match &options.agent_keys {
+                Some(dir) => Some(bot_key(dir, name.as_str())?),
+                None => None,
+            };
+            options.mind.wallet = own.as_ref().or(key.as_ref()).map(|k| {
+                let hex = k.address().to_hex();
+                String::from_utf8_lossy(&hex).into_owned()
+            });
+        }
         minds.push(options.mind.build_with_speech(speech.take())?);
     }
     out!(

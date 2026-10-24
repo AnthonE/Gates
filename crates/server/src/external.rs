@@ -757,4 +757,137 @@ mod tests {
         assert!(gone.decide(&s).is_err());
         assert!(External::spawn("/nonexistent/agent", &[], Duration::from_secs(1)).is_err());
     }
+
+    /// The turn a mind is sent matches the schema published beside this
+    /// crate (`schema/agent-turn-1.schema.json`), key for key: a key added,
+    /// dropped or renamed fails here until the schema says so, which is what
+    /// keeps the file outside agents read honest.
+    #[test]
+    fn the_turn_matches_its_published_schema() {
+        assert_eq!(
+            turn_schema::schema()["properties"]["protocol"]["const"],
+            EXTERNAL_PROTOCOL
+        );
+        let mut alive = summary();
+        (alive.hp, alive.hp_max) = (80, 100);
+        (alive.food, alive.food_max) = (50, 100);
+        (alive.water, alive.water_max) = (40, 100);
+        for s in [summary(), alive] {
+            let errs = turn_schema::errors(&External::observation(9, &s));
+            assert!(errs.is_empty(), "{errs:#?}");
+        }
+
+        // …and the check refuses a drift, so a pass above means something.
+        let mut drifted = External::observation(9, &alive);
+        drifted["observation"]["mood"] = json!("fine");
+        drifted["observation"]["health"] = json!("full");
+        drifted.as_object_mut().unwrap().remove("places");
+        let e = turn_schema::errors(&drifted);
+        for want in ["mood", "health", "places"] {
+            assert!(
+                e.iter().any(|m| m.contains(want)),
+                "{want} not caught: {e:?}"
+            );
+        }
+    }
+}
+
+/// The turn's published schema (`schema/agent-turn-1.schema.json`) as a test
+/// can hold a request to it: every way one turn differs from the file, empty
+/// when it matches. Shared by this file's test and the explorer's, which
+/// builds its turn from a real view of the island.
+#[cfg(test)]
+pub(crate) mod turn_schema {
+    use serde_json::Value;
+
+    pub(crate) fn schema() -> Value {
+        serde_json::from_str(include_str!("../schema/agent-turn-1.schema.json")).unwrap()
+    }
+
+    pub(crate) fn errors(turn: &Value) -> Vec<String> {
+        let schema = schema();
+        let mut errs = Vec::new();
+        schema_check(&schema, &schema, turn, "$", &mut errs);
+        errs
+    }
+
+    /// The part of JSON Schema the turn's schema uses: `$ref` into `$defs`,
+    /// `anyOf`, `type`, `const`, `enum`, `properties`, `required`,
+    /// `additionalProperties: false` and `items`.
+    fn schema_check(root: &Value, s: &Value, v: &Value, at: &str, errs: &mut Vec<String>) {
+        if let Some(r) = s["$ref"].as_str() {
+            let def = &root["$defs"][r.trim_start_matches("#/$defs/")];
+            assert!(def.is_object(), "{at}: {r} names no definition");
+            return schema_check(root, def, v, at, errs);
+        }
+        if let Some(any) = s["anyOf"].as_array() {
+            let fits = |alt: &Value| {
+                let mut e = Vec::new();
+                schema_check(root, alt, v, at, &mut e);
+                e.is_empty()
+            };
+            if !any.iter().any(fits) {
+                errs.push(format!("{at}: {v} matches none of its alternatives"));
+            }
+            return;
+        }
+        if let Some(c) = s.get("const") {
+            if v != c {
+                errs.push(format!("{at}: {v} is not {c}"));
+            }
+        }
+        if let Some(e) = s["enum"].as_array() {
+            if !e.contains(v) {
+                errs.push(format!("{at}: {v} is not one of {e:?}"));
+            }
+        }
+        let kind = match v {
+            Value::Null => "null",
+            Value::Bool(_) => "boolean",
+            Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+            Value::Number(_) => "number",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Object(_) => "object",
+        };
+        let types: Vec<&str> = match &s["type"] {
+            Value::String(t) => vec![t.as_str()],
+            Value::Array(ts) => ts.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        if !types.is_empty()
+            && !types
+                .iter()
+                .any(|t| *t == kind || (*t == "number" && kind == "integer"))
+        {
+            errs.push(format!("{at}: is {kind}, the schema says {types:?}"));
+            return;
+        }
+        if let Value::Object(o) = v {
+            for req in s["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                if !o.contains_key(req) {
+                    errs.push(format!("{at}: missing {req}"));
+                }
+            }
+            for (k, x) in o {
+                match s["properties"].get(k) {
+                    Some(ps) => schema_check(root, ps, x, &format!("{at}.{k}"), errs),
+                    None if s["additionalProperties"] == Value::Bool(false) => {
+                        errs.push(format!("{at}.{k} is not in the schema"));
+                    }
+                    None => {}
+                }
+            }
+        }
+        if let (Value::Array(a), Some(item)) = (v, s.get("items")) {
+            for (i, x) in a.iter().enumerate() {
+                schema_check(root, item, x, &format!("{at}[{i}]"), errs);
+            }
+        }
+    }
 }

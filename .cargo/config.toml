@@ -1,7 +1,8 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 157 kB — fixed-capacity by design (wall 4), and
-# (139 kB until bullets put a cadence remainder on every player and the
+# `World` is 158 kB — fixed-capacity by design (wall 4), and
+# (157 kB until main's turret, carrying the gun in its box, merged in;
+# 139 kB until bullets put a cadence remainder on every player and the
 # round store's two boxes on the world, Rust's other rounds took the
 # per-item tables from 160 rows to 192, and item data put four bytes on
 # every stack a player carries, in place of the per-body magazines;

@@ -10,7 +10,7 @@ use sim_core::limits::BOX_SLOTS;
 use sim_core::mob;
 use sim_core::movement::Body;
 use sim_core::sentry::SentryDef;
-use sim_core::turret::{is_turret_slot, TurretDef};
+use sim_core::turret::{is_turret_slot, TurretDef, TurretGun};
 use sim_core::world::{Command, World, EV_HURT, EV_SENTRY_LOCK, EV_SHOT};
 
 const SEED: u64 = 0x0FEE_0FEE;
@@ -18,6 +18,11 @@ const OWNER: u32 = 3;
 const STRANGER: u32 = 4;
 const TURRET_ITEM: u16 = 40;
 const ROUND: u16 = 41;
+/// The gun a test turret is given, which fires [`ROUND`]s.
+const GUN: u16 = 42;
+/// A second gun and its own round, for the swap.
+const RIFLE: u16 = 43;
+const RIFLE_ROUND: u16 = 44;
 
 fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
@@ -52,9 +57,14 @@ fn buildable_cell(w: &World) -> (u16, u16) {
 }
 
 /// A world with the owner's turret placed and the stranger standing 9 m
-/// from it; `rounds` pistol rounds in its box. Returns the world, the
-/// turret's box key and the two players' slots.
+/// from it; `rounds` pistol rounds in its box's first slot and a [`GUN`] in
+/// its second. Returns the world and the turret's box key.
 fn turret_world(rounds: u16) -> (World, u32) {
+    turret_world_with(rounds, Some(GUN))
+}
+
+/// [`turret_world`] with `gun` (or none) in the box's second slot.
+fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     let mut w = World::new(SEED);
     w.gather = GatherContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
@@ -62,7 +72,10 @@ fn turret_world(rounds: u16) -> (World, u32) {
     w.combat = CombatContent::probe_fixture();
     w.gather.stack_max[TURRET_ITEM as usize] = 1;
     w.gather.stack_max[ROUND as usize] = 128;
-    w.gather.item_count = w.gather.item_count.max(ROUND + 1);
+    w.gather.stack_max[GUN as usize] = 1;
+    w.gather.stack_max[RIFLE as usize] = 1;
+    w.gather.stack_max[RIFLE_ROUND as usize] = 128;
+    w.gather.item_count = w.gather.item_count.max(RIFLE_ROUND + 1);
     let row = w.deploy.def_count;
     w.deploy.defs[row as usize] = DeployDef {
         arch: ARCH_TURRET,
@@ -74,19 +87,28 @@ fn turret_world(rounds: u16) -> (World, u32) {
         costs: [(0, 0); 4],
     };
     w.deploy.def_count += 1;
-    w.turret_def = TurretDef {
-        gun: SentryDef {
-            range_mm: 30_000,
-            damage: 20,
-            burst: 8,
-            rate_ticks: 12,
-            gap_ticks: 100,
-            lock_ticks: 30,
-            lose_ticks: 90,
-            spread_pm: 0,
-        },
+    let def = |damage| SentryDef {
+        range_mm: 30_000,
+        damage,
+        burst: 8,
+        rate_ticks: 12,
+        gap_ticks: 100,
+        lock_ticks: 30,
+        lose_ticks: 90,
+        spread_pm: 0,
+    };
+    w.turret_def = TurretDef::INERT;
+    w.turret_def.guns[0] = TurretGun {
+        item: GUN,
+        def: def(20),
         ammo: ROUND,
     };
+    w.turret_def.guns[1] = TurretGun {
+        item: RIFLE,
+        def: def(50),
+        ammo: RIFLE_ROUND,
+    };
+    w.turret_def.n = 2;
 
     let (cx, cz) = buildable_cell(&w);
     let (x, z) = cell_center(cx, cz);
@@ -134,7 +156,85 @@ fn turret_world(rounds: u16) -> (World, u32) {
             },
         );
     }
+    if let Some(item) = gun {
+        w.deploys.set_box_slot(
+            i,
+            1,
+            ItemStack {
+                item,
+                count: 1,
+                cond: 0,
+                skin: 0,
+                ..ItemStack::EMPTY
+            },
+        );
+    }
     (w, key)
+}
+
+fn count_of(w: &World, key: u32, item: u16) -> u32 {
+    let i = w.deploys.box_index(key).unwrap();
+    (0..BOX_SLOTS)
+        .map(|s| w.deploys.box_slot(i, s))
+        .filter(|s| s.item == item)
+        .map(|s| s.count as u32)
+        .sum()
+}
+
+fn turret_shots(w: &mut World, ticks: usize) -> u32 {
+    let mut shots = 0;
+    for _ in 0..ticks {
+        w.tick(&[]);
+        shots += w
+            .events
+            .entries()
+            .iter()
+            .filter(|e| e.code == EV_SHOT && is_turret(e.a))
+            .count() as u32;
+    }
+    shots
+}
+
+/// As in Rust, a turret with rounds and no gun has nothing to fire them
+/// from.
+#[test]
+fn a_turret_with_no_gun_holds_fire() {
+    let (mut w, key) = turret_world_with(64, None);
+    assert_eq!(turret_shots(&mut w, 300), 0, "a turret with no gun fired");
+    assert_eq!(count_of(&w, key, ROUND), 64);
+    assert!(w.turrets.iter().all(|t| t.carried.is_none()));
+}
+
+/// **It fires the gun it is given, and that gun's round**: a rifle in the
+/// box spends rifle rounds and leaves the pistol rounds beside it alone,
+/// and the gun rides the table for the wire to mount.
+#[test]
+fn a_turret_fires_the_gun_in_its_box_with_that_guns_round() {
+    let (mut w, key) = turret_world_with(64, Some(RIFLE));
+    let i = w.deploys.box_index(key).unwrap();
+    w.deploys.set_box_slot(
+        i,
+        2,
+        ItemStack {
+            item: RIFLE_ROUND,
+            count: 64,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        },
+    );
+    let shots = turret_shots(&mut w, 300);
+    assert!(shots > 0, "the rifle turret never fired");
+    assert_eq!(count_of(&w, key, RIFLE_ROUND), 64 - shots);
+    assert_eq!(
+        count_of(&w, key, ROUND),
+        64,
+        "it spent the wrong gun's round"
+    );
+    assert!(
+        w.turrets.iter().any(|t| t.live && t.carried == Some(RIFLE)),
+        "the table does not say which gun it carries"
+    );
 }
 
 fn rounds_left(w: &World, key: u32) -> u32 {
