@@ -1,12 +1,13 @@
 //! Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 //! rows.
 //!
-//! **Why generated rather than sourced.** The revolver, torch and crossbow
-//! were built here until their `.glb`s landed (2026-10-24, `MANIFEST.md`);
-//! the bat stays, because its painted skins draw on this mesh
-//! ([`canvas_mesh`]). When a real asset lands, the row in `HELD_MODELS`
-//! flips from `Gen` to `Glb` and this module loses a match arm; nothing else
-//! moves.
+//! **Why generated rather than sourced.** The revolver, torch, crossbow and
+//! bat were built here until their `.glb`s landed (2026-10-24,
+//! `MANIFEST.md`). The bat's lathe stays: it is the canvas a painted bat
+//! skin draws on ([`canvas_mesh`]), whose UVs are a public contract
+//! (`render/canvas.rs`), while the plain bat draws its file. When a real
+//! asset lands, the row in `HELD_MODELS` flips from `Gen` to `Glb`;
+//! nothing else moves.
 //!
 //! **The authoring convention is the glb one**, deliberately: +Y up, foot at
 //! y = 0, so `HeldModelDef::grip_m` and the quarter-turn in
