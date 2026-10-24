@@ -101,10 +101,10 @@ use sim_core::world::{
     EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
     EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MAX, EV_MOVED,
     EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_PLANT,
-    EV_PLANT_GONE, EV_WIRE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
+    EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
     EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
+    EV_VITALS, EV_WEAK_MARK, EV_WIRE, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
     PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE,
     TRUST_VERB_MAX,
 };
@@ -4546,7 +4546,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 74] = [
+    const COVERED: [(&str, u8); 75] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
@@ -6759,11 +6759,19 @@ fn wire_names_from_then_to_then_its_ports() {
     let e = only(&w, EV_WIRE);
     assert_eq!(e.a, from, "EV_WIRE.a is the part the wire LEAVES");
     assert_eq!(e.b, to, "EV_WIRE.b is the part it REACHES");
-    assert_eq!(e.c, 1 << 16 | 2 << 8, "EV_WIRE.c is set << 16 | out << 8 | inp");
+    assert_eq!(
+        e.c,
+        1 << 16 | 2 << 8,
+        "EV_WIRE.c is set << 16 | out << 8 | inp"
+    );
     w.tick(&[Command::Unwire {
         id: BUILDER,
         key: from,
     }]);
     let e = only(&w, EV_WIRE);
-    assert_eq!((e.a, e.b, e.c), (from, 0, 0), "taken up: the part, then zeros");
+    assert_eq!(
+        (e.a, e.b, e.c),
+        (from, 0, 0),
+        "taken up: the part, then zeros"
+    );
 }
