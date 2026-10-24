@@ -235,6 +235,30 @@ fn the_torch_sits_under_the_campfire_and_lights_the_night() {
     );
 }
 
+/// A `.glb` row's vertex positions, in the model's own frame:
+/// `held_assets.rs`' reader, positions only.
+fn glb_positions(rel: &str) -> Vec<[f32; 3]> {
+    let path = std::path::Path::new("../../assets").join(rel);
+    let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let jlen = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
+    let g: serde_json::Value = serde_json::from_slice(&raw[20..20 + jlen]).expect("GLB JSON");
+    let bin = &raw[20 + jlen + 8..];
+    let a = &g["accessors"][g["meshes"][0]["primitives"][0]["attributes"]["POSITION"]
+        .as_u64()
+        .expect("POSITION") as usize];
+    let bv = &g["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+    let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+        + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let stride = bv["byteStride"].as_u64().unwrap_or(12) as usize;
+    let f = |o: usize| f32::from_le_bytes(bin[o..o + 4].try_into().unwrap());
+    (0..a["count"].as_u64().unwrap() as usize)
+        .map(|i| {
+            let o = base + i * stride;
+            [f(o), f(o + 4), f(o + 8)]
+        })
+        .collect()
+}
+
 /// The geometry half: the emitter sits above the crown of the mesh it comes
 /// out of, measured off the mesh rather than off the table.
 ///
@@ -254,19 +278,17 @@ fn the_flame_sits_above_the_head_it_comes_out_of() {
              up out of the head",
             m.key
         );
-        let HeldSrc::Gen(name) = m.src else {
-            // A `.glb` row would be measured off the file, `held_assets.rs`'
-            // way. None exists, and the day one does this arm is the work.
-            panic!(
-                "{} declares a light and is not a generated row — this gate \
-                 measures the mesh and only knows how to build one",
-                m.key
-            );
-        };
-        let mesh = heldgen::mesh(name);
-        let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        else {
-            panic!("{name} has no Float32x3 POSITION");
+        let pos = match m.src {
+            HeldSrc::Gen(name) => {
+                let mesh = heldgen::mesh(name);
+                let Some(VertexAttributeValues::Float32x3(pos)) =
+                    mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                else {
+                    panic!("{name} has no Float32x3 POSITION");
+                };
+                pos.clone()
+            }
+            HeldSrc::Glb(rel) => glb_positions(rel),
         };
         let crown = pos.iter().fold(f32::MIN, |a, p| a.max(p[1])) * m.scale;
         let flame = m.flame_m();

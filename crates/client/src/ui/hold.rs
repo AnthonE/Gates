@@ -534,8 +534,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     // chop every other row draws swept this point across the frame and
     // landed it below the horizon, which is the wrong verb for a spear.
     HeldModelDef::thrust("wooden_spear", "models/held/wooden_spear.glb", 1.800, 0.35),
-    // No model of its own yet: the wooden shaft it is made from.
-    HeldModelDef::thrust("stone_spear", "models/held/wooden_spear.glb", 1.800, 0.35),
+    HeldModelDef::thrust("stone_spear", "models/held/stone_spear.glb", 1.800, 0.35),
     // A bow is held at the riser, dead centre between the limbs — and held
     // UPRIGHT, which is what a bow looks like in a hand and what laying it
     // flat never did. Drawn at 0.8: a viewmodel's scale cheat, so the top
@@ -555,13 +554,12 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.50,
         0.80,
     ),
-    // The generated rows — `render::heldgen` owns the geometry, this
-    // table owns where the hand goes, same split as the glb rows.
-    // A torch stays upright: its whole read is the head above the fist.
+    // A torch stays upright: its whole read is the head above the fist, and
+    // the flame rides the model's crown (`flame_m`).
     HeldModelDef {
         key: "torch",
-        src: HeldSrc::Gen("torch"),
-        height_m: 0.455,
+        src: HeldSrc::Glb("models/held/torch.glb"),
+        height_m: 0.460,
         grip_frac: 0.35,
         scale: 1.0,
         lay: 0.0,
@@ -572,35 +570,27 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
     // forward, and gripped low, at the handle.
-    HeldModelDef {
-        key: "revolver",
-        src: HeldSrc::Gen("revolver"),
-        height_m: 0.261,
-        grip_frac: 0.19,
-        scale: 1.0,
-        lay: core::f32::consts::FRAC_PI_2,
-        pose_yaw: -0.65,
-        stroke: Stroke::Shot,
-        light: None,
-        grip_roll: None,
-    },
+    HeldModelDef::gun(
+        "revolver",
+        "models/held/revolver.glb",
+        0.264,
+        0.19,
+        1.0,
+        -0.65,
+    ),
     // A crossbow is laid forward the revolver's way and held at the wrist of
     // the stock, just behind the trigger, with the butt reaching back out of
     // the bottom of the frame. Turned IN rather than out: at +0.35 it points
     // down the view with the prod across the horizon (judged on
     // `ci/posesheet.py`'s projection against the revolver's -0.65).
-    HeldModelDef {
-        key: "crossbow",
-        src: HeldSrc::Gen("crossbow"),
-        height_m: 0.655,
-        grip_frac: 0.36,
-        scale: 0.8,
-        lay: core::f32::consts::FRAC_PI_2,
-        pose_yaw: 0.35,
-        stroke: Stroke::Shot,
-        light: None,
-        grip_roll: None,
-    },
+    HeldModelDef::gun(
+        "crossbow",
+        "models/held/crossbow.glb",
+        0.658,
+        0.36,
+        0.8,
+        0.35,
+    ),
     // The deployables, palmed level. `height_m` restates each FILE's +Y
     // extent (the gate measures it); the grip fraction puts the palm near the
     // TOP of the shown object — carried by an upper edge, hanging below the
@@ -733,12 +723,24 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     // were judged on `iconbake --hand`, against the medkit's.
     //
     // Things with a haft, a roll or a body to close on are palmed upright.
-    HeldModelDef::kit("gears", 0.263, 0.45, 0.70),
-    HeldModelDef::kit("rope", 0.142, 0.50, 0.70),
+    HeldModelDef::upright("gears", "models/held/gears.glb", 0.315, 0.45, 0.70),
+    HeldModelDef::upright("rope", "models/held/rope.glb", 0.095, 0.50, 0.70),
     HeldModelDef::upright("leather", "models/held/leather.glb", 0.110, 0.50, 0.70),
-    HeldModelDef::kit("road_signs", 0.260, 0.40, 0.60),
-    HeldModelDef::kit("sewing_kit", 0.114, 0.50, 1.00),
-    HeldModelDef::kit("blueprint", 0.100, 0.50, 0.80),
+    HeldModelDef::upright(
+        "road_signs",
+        "models/held/road_signs.glb",
+        0.322,
+        0.40,
+        0.60,
+    ),
+    HeldModelDef::upright(
+        "sewing_kit",
+        "models/held/sewing_kit.glb",
+        0.119,
+        0.50,
+        1.00,
+    ),
+    HeldModelDef::upright("blueprint", "models/held/blueprint.glb", 0.150, 0.50, 0.80),
     HeldModelDef::upright(
         "semi_automatic_body",
         "models/held/semi_automatic_body.glb",
@@ -825,15 +827,45 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.15,
         0.90,
     ),
-    HeldModelDef::kit_borne("sheet_metal", 0.042, 0.30, 0.60),
-    HeldModelDef::kit_borne("tech_trash", 0.042, 0.30, 0.80),
-    HeldModelDef::kit_borne("corn_seed", 0.030, 0.30, 1.00),
-    HeldModelDef::kit_borne("hemp_seed", 0.022, 0.30, 1.00),
-    // Farming v2's second wave: three seed heaps from the kit, and the
-    // potato and the pumpkin (Meshy; the pumpkin is the vine's fruit too).
-    HeldModelDef::kit_borne("potato_seed", 0.031, 0.30, 1.00),
-    HeldModelDef::kit_borne("pumpkin_seed", 0.029, 0.30, 1.00),
-    HeldModelDef::kit_borne("berry_seed", 0.0155, 0.30, 1.00),
+    HeldModelDef::borne(
+        "sheet_metal",
+        "models/held/sheet_metal.glb",
+        0.050,
+        0.30,
+        0.60,
+    ),
+    HeldModelDef::borne(
+        "tech_trash",
+        "models/held/tech_trash.glb",
+        0.048,
+        0.30,
+        0.80,
+    ),
+    HeldModelDef::borne("corn_seed", "models/held/corn_seed.glb", 0.030, 0.30, 1.00),
+    HeldModelDef::borne("hemp_seed", "models/held/hemp_seed.glb", 0.032, 0.30, 1.00),
+    // Farming v2's second wave: three seed heaps, and the potato and the
+    // pumpkin (Meshy; the pumpkin is the vine's fruit too).
+    HeldModelDef::borne(
+        "potato_seed",
+        "models/held/potato_seed.glb",
+        0.063,
+        0.30,
+        1.00,
+    ),
+    HeldModelDef::borne(
+        "pumpkin_seed",
+        "models/held/pumpkin_seed.glb",
+        0.023,
+        0.30,
+        1.00,
+    ),
+    HeldModelDef::borne(
+        "berry_seed",
+        "models/held/berry_seed.glb",
+        0.013,
+        0.30,
+        1.00,
+    ),
     HeldModelDef::borne("potato", "models/held/potato.glb", 0.063, 0.30, 1.00),
     HeldModelDef::borne("pumpkin", "models/held/pumpkin.glb", 0.301, 0.30, 0.80),
     HeldModelDef::borne("wood", "models/held/wood.glb", 0.267, 0.15, 0.50).yawed(-0.9),
@@ -846,12 +878,51 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.10,
         0.60,
     ),
-    HeldModelDef::kit_borne("empty_propane_tank", 0.366, 0.10, 0.55),
-    HeldModelDef::kit_borne("burlap_tunic", 0.452, 0.12, 0.45).yawed(GARMENT_YAW),
-    HeldModelDef::kit_borne("burlap_hood", 0.250, 0.12, 0.55),
-    HeldModelDef::kit_borne("hide_poncho", 0.400, 0.12, 0.45).yawed(GARMENT_YAW),
-    HeldModelDef::kit_borne("bone_helmet", 0.303, 0.12, 0.50),
-    HeldModelDef::kit_borne("roadsign_vest", 0.450, 0.12, 0.50).yawed(GARMENT_YAW),
+    HeldModelDef::borne(
+        "empty_propane_tank",
+        "models/held/empty_propane_tank.glb",
+        0.370,
+        0.10,
+        0.55,
+    ),
+    HeldModelDef::borne(
+        "burlap_tunic",
+        "models/held/burlap_tunic.glb",
+        0.480,
+        0.12,
+        0.45,
+    )
+    .yawed(GARMENT_YAW),
+    HeldModelDef::borne(
+        "burlap_hood",
+        "models/held/burlap_hood.glb",
+        0.260,
+        0.12,
+        0.55,
+    ),
+    HeldModelDef::borne(
+        "hide_poncho",
+        "models/held/hide_poncho.glb",
+        0.520,
+        0.12,
+        0.45,
+    )
+    .yawed(GARMENT_YAW),
+    HeldModelDef::borne(
+        "bone_helmet",
+        "models/held/bone_helmet.glb",
+        0.273,
+        0.12,
+        0.50,
+    ),
+    HeldModelDef::borne(
+        "roadsign_vest",
+        "models/held/roadsign_vest.glb",
+        0.450,
+        0.12,
+        0.50,
+    )
+    .yawed(GARMENT_YAW),
     // The deployables: a blueprint in your own hand (`render::sheet`), a
     // token of the thing in another's and on the ground. The barricade, the
     // planter and the catcher have the world's model; the fire pit's world

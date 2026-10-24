@@ -119,7 +119,7 @@ fn a_late_catalog_replaces_the_pouch_with_the_shared_held_model() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Metal Pipe",
             protocol::ItemRow {
                 cond_max: 0,
                 armor_pct: 0,
@@ -134,7 +134,9 @@ fn a_late_catalog_replaces_the_pouch_with_the_shared_held_model() {
     feed.applied2 = 0;
     app.update();
     let ring = app.world().resource::<StructRing>();
-    let model = ring.gitems[&1].model.expect("torch has a generated model");
+    let model = ring.gitems[&1]
+        .model
+        .expect("the metal pipe has a generated model");
     let entity = ring.gitems[&1].entity;
     let (mesh, _) = app
         .world()
@@ -149,7 +151,7 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
     let mut app = app();
     let i = crate::ui::hold::HELD_MODELS
         .iter()
-        .position(|m| m.key == "torch")
+        .position(|m| m.key == "metal_pipe")
         .unwrap();
     let (handle, _) = app
         .world()
@@ -166,7 +168,7 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Metal Pipe",
             protocol::ItemRow {
                 cond_max: 0,
                 armor_pct: 0,
@@ -277,7 +279,7 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
         .catalog
         .set(
             16,
-            b"Torch",
+            b"Metal Pipe",
             protocol::ItemRow {
                 stack_max: 1,
                 ..protocol::ItemRow::EMPTY
@@ -293,7 +295,9 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
     );
     let base = {
         let ring = app.world().resource::<StructRing>();
-        let model = ring.gitems[&1].model.expect("torch has a generated model");
+        let model = ring.gitems[&1]
+            .model
+            .expect("the metal pipe has a generated model");
         assert_eq!(ring.gitems[&1].skin, 0, "an unknown skin is drawn plain");
         let base = app
             .world()

@@ -30,7 +30,7 @@ use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::props::{
     apply_fell, assets, fall, fell_bearing, fell_rotation, FellPart, Fellable, PropAssets, Topple,
-    FELL_FALL_S, STUMP_LIFT_M,
+    FELL_FALL_S,
 };
 use client::render::textures::{MapSet, PropMaps};
 use client::render::tree::CONIFER_POOL;
@@ -143,21 +143,9 @@ fn part(app: &mut App, a: &PropAssets, part: FellPart) -> Entity {
         Mesh3d(mesh),
         MeshMaterial3d(a.bark_material(KEY).clone()),
         Transform {
-            // The stump sits `STUMP_LIFT_M` above the slot's ground because
-            // its mesh is centred on its own axis while the slot's `y` is the
-            // surface — and the lift scales with the instance, exactly as
-            // `spawn_slot` writes it. Every other part is authored with its
-            // base at y = 0 and needs no lift.
-            translation: Vec3::new(
-                3.0,
-                GROUND_Y
-                    + if matches!(part, FellPart::Stump) {
-                        STUMP_LIFT_M * SCALE
-                    } else {
-                        0.0
-                    },
-                -7.0,
-            ),
+            // Every part, the stump included, is authored with its base at
+            // y = 0, so all of them stand on the slot's ground.
+            translation: Vec3::new(3.0, GROUND_Y, -7.0),
             rotation: Quat::from_rotation_y(YAW),
             scale: Vec3::splat(SCALE),
         },
@@ -340,19 +328,12 @@ fn the_stump_appears_with_the_cut_and_hides_on_respawn() {
         "a respawned slot has no stump"
     );
 
-    // **The lift, which no longer has a swap to prove it.** While felling was
-    // a mesh swap, `apply_fell` raised the trunk entity by `STUMP_LIFT_M` and
-    // this gate asserted the arithmetic on the way through. Nothing swaps now
-    // — `spawn_slot` places a stump entity already lifted — so the constant
-    // would have gone uncovered, and the first cut of this file "kept" it with
-    // `assert!(STUMP_LIFT_M > 0.0)`. Clippy refused that as an assertion with
-    // a constant value, and it was right for a better reason than it knew: an
-    // assertion that cannot fail is not coverage. This is the real one.
+    // The stump stands on the slot's ground: its mesh, the model's and the
+    // generated taper's alike, is authored with its base at y = 0.
     let y = app.world().get::<Transform>(stump).unwrap().translation.y;
     assert!(
-        (y - (GROUND_Y + STUMP_LIFT_M * SCALE)).abs() < 1e-5,
-        "a stump stands half its own height above the slot's ground, scaled \
-         with the instance — got {y}"
+        (y - GROUND_Y).abs() < 1e-5,
+        "a stump stands on the slot's ground — got {y}"
     );
     // And it does not move when the tree comes down on top of it.
     run(&mut app, &|k| k == KEY);
