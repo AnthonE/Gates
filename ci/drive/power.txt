@@ -30,12 +30,15 @@ sleep 3
 shot 03-turret-panel
 key Escape
 sleep 4
-# a solar panel to the right, on the ground (a key in the frame the panel
-# closes is lost at lavapipe's frame rate)
+# a solar panel on the foundation's near right, beside the turret (a key in
+# the frame the panel closes is lost at lavapipe's frame rate)
 key 4
 sleep 3
 move 300 0
+sleep 2
+move 0 100
 sleep 3
+shot 04-solar-ghost
 click 1
 sleep 3
 shot 04-solar
@@ -45,6 +48,8 @@ sleep 3
 click 1
 sleep 2
 shot 05-wire-picked
+move 0 -100
+sleep 2
 move -300 0
 sleep 2
 click 1
