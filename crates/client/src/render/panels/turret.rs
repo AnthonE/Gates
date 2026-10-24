@@ -1,8 +1,8 @@
 //! The auto turret's own controls, under its box on the inventory page
 //! (`sim_core::turret`): who is on its list, and the three list buttons —
 //! AUTHORIZE (put yourself on), DEAUTHORIZE (take yourself off) and CLEAR
-//! LIST (empty it, owner and all) — and its mode, PEACEKEEPER (only the
-//! hostile) or ATTACK ALL. Each sends `ACT_ACCESS` with its
+//! LIST (empty it, owner and all) — and its PEACEKEEPER toggle (on: only
+//! the hostile; off: attack all). Each sends `ACT_ACCESS` with its
 //! `ACCESS_OP_TURRET_*` at the turret's address; the sim's verdict comes
 //! back as the turret view (`EventMsg::Turret`) or a deploy refusal.
 
@@ -128,7 +128,9 @@ pub fn quick_move(
     }
 }
 
-/// The list block: who it spares, then the buttons this viewer may press.
+/// The list block: who it spares on one line, then the mode and the buttons
+/// this viewer may press on another — short enough to clear the vitals on a
+/// 720p screen with the list full.
 pub fn auth_block(col: &mut ChildSpawnerCommands, core: &ClientCore, key: u32) {
     let Some(view) = core.turret_view(key) else {
         col.spawn((Text::new("AUTHORIZED · …"), font(12.0), TextColor(TEXT_DIM)));
@@ -136,48 +138,50 @@ pub fn auth_block(col: &mut ChildSpawnerCommands, core: &ClientCore, key: u32) {
     };
     let me = core.player_id;
     let on = view.listed().contains(&me);
+    let names = if view.n == 0 {
+        "nobody: it shoots everyone".to_string()
+    } else {
+        view.listed()
+            .iter()
+            .map(|&id| {
+                let name = crate::ui::names::shown(core, id);
+                if id == me {
+                    format!("{name} (you)")
+                } else {
+                    name
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     col.spawn((
-        Text::new(format!(
-            "AUTHORIZED · {}{}",
-            view.n,
-            if on { " · YOU ARE ON IT" } else { "" }
-        )),
-        font_bold(12.0),
-        TextColor(TEXT),
-    ));
-    if view.n == 0 {
-        col.spawn((
-            Text::new("nobody: it shoots everyone"),
-            font(12.0),
-            TextColor(TEXT_DIM),
-        ));
-    }
-    for &id in view.listed() {
-        col.spawn((
-            Text::new(crate::ui::names::shown(core, id)),
-            font(12.0),
-            TextColor(TEXT_DIM),
-        ));
-    }
-    col.spawn((
-        Text::new(if view.peacekeeper {
-            "MODE · PEACEKEEPER: only the hostile"
-        } else {
-            "MODE · ATTACK ALL: anyone off the list"
-        }),
+        Text::new(format!("AUTHORIZED · {names}")),
         font_bold(12.0),
         TextColor(TEXT),
     ));
     col.spawn(Node {
         flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
         column_gap: Val::Px(6.0),
         ..default()
     })
     .with_children(|row| {
-        if view.may_edit && view.peacekeeper {
-            button(row, "ATTACK ALL", ACCESS_OP_TURRET_ATTACK_ALL);
-        } else if view.may_edit {
-            button(row, "PEACEKEEPER", ACCESS_OP_TURRET_PEACEKEEPER);
+        // Rust's one checkbox: peacekeeper shoots only the hostile, off it
+        // shoots anyone off the list.
+        let mode = if view.peacekeeper {
+            "PEACEKEEPER: ON"
+        } else {
+            "PEACEKEEPER: OFF"
+        };
+        if view.may_edit {
+            let op = if view.peacekeeper {
+                ACCESS_OP_TURRET_ATTACK_ALL
+            } else {
+                ACCESS_OP_TURRET_PEACEKEEPER
+            };
+            button(row, mode, op);
+        } else {
+            row.spawn((Text::new(mode), font_bold(12.0), TextColor(TEXT_DIM)));
         }
         if view.may_edit && !on {
             button(row, "AUTHORIZE", ACCESS_OP_TURRET_AUTH);

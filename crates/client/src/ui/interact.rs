@@ -529,6 +529,9 @@ impl Pick {
             // boxes, `DOORS.md` §9.8). `E` stays the open — whether it
             // succeeds against a locked lid is the sim's verdict, never
             // this line's.
+            Verb::Box if self.arch == sim_core::deploy::ARCH_TURRET => {
+                format!("[E] OPEN AUTO TURRET{}", self.lock_hint())
+            }
             Verb::Box => format!("[E] OPEN BOX{}", self.lock_hint()),
             // The crew keys ride the hearth's prompt because there is
             // nowhere else a player would look for them, and `L` is
