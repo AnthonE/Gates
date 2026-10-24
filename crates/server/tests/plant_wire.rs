@@ -152,12 +152,14 @@ fn a_planted_seed_reaches_a_near_client_and_a_joiner() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[SEED_SLOT as usize] = ItemStack {
         item: SEED_ITEM,
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),

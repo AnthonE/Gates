@@ -122,12 +122,14 @@ fn raid_world() -> (World, u16, u16) {
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: SATCHEL,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: RAIDER,
@@ -490,6 +492,7 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
         damage: 60,
         ammo: [ROCKET, NO_ITEM16, NO_ITEM16, NO_ITEM16],
         rate_ticks: 180,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 0,
         structure: 1,
@@ -511,6 +514,7 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
             damage: 275,
             structure: 125,
         },
+        ..Default::default()
     };
     let before = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     // Eight metres out on the wall's low side, facing it (+X), the rocket
@@ -523,12 +527,14 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[3] = ItemStack {
         item: ROCKET,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let _ = x;
     // Level, at eye height: the wall stands three metres over its floor.

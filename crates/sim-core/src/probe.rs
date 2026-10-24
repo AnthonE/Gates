@@ -831,6 +831,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                 count: crate::deploy::BAG_CAP as u16,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         let mut rng = Pcg32::new(seq_seed, 13);
@@ -1002,17 +1003,26 @@ const GUN_ROUNDS: u16 = 8;
 /// them would delete it to buy nothing.
 fn arm_guns(world: &mut World) {
     for p in world.players.iter_mut().take(3) {
+        // Re-stamped every tick, so the gun keeps what is in its magazine
+        // (`GunState`, in its data): a fresh stack would be an empty gun
+        // each tick, and the bots would never fire.
+        let kept = p.inv[GUN_SLOT];
         p.inv[GUN_SLOT] = ItemStack {
             item: GUN_ITEM,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: if kept.item == GUN_ITEM && kept.count > 0 {
+                kept.data
+            } else {
+                0
+            },
+            ..ItemStack::EMPTY
         };
         p.inv[ROUND_SLOT] = ItemStack {
             item: ROUND_ITEM,
             count: GUN_ROUNDS,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
 }
@@ -1120,6 +1130,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
         }
@@ -1331,6 +1342,7 @@ pub fn assist_probe_world(seed: u64) -> World {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.players[2].wounded = true;
@@ -1412,6 +1424,7 @@ pub fn rotation_probe_world() -> World {
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for (row, level, loc) in [
         (0, 0, LOC_PLANE),

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 191] = [
+const GOLDEN: [&[u8]; 193] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -254,6 +254,8 @@ const GOLDEN: [&[u8]; 191] = [
     include_bytes!("golden/action_tend.bin"),
     include_bytes!("golden/event_vessel.bin"),
     include_bytes!("golden/event_caption.bin"),
+    include_bytes!("golden/action_attach.bin"),
+    include_bytes!("golden/action_detach.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -569,8 +571,11 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 189);
     // Captions (v138).
     g!(seen, golden_event, 190);
+    // Weapon attachments (v144).
+    g!(seen, golden_action, 191);
+    g!(seen, golden_action, 192);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 191, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 193, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1031,6 +1036,24 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap()
+        }
+        "action_attach.bin" => {
+            let slot = protocol::goldens::action_attach();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Attach { slot },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_attach(slot, &mut buf).unwrap()
+        }
+        "action_detach.bin" => {
+            let bit = protocol::goldens::action_detach();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Detach { bit },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_detach(bit, &mut buf).unwrap()
         }
         "action_unload.bin" => {
             assert_eq!(

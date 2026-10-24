@@ -123,6 +123,7 @@ fn stage(w: &mut World, haven: &sim_core::terrain::Haven, shore: (f32, f32)) {
         count: 90,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[1].body = sim_core::movement::Body::at(SEED, haven, shore.0, shore.1);
     w.players[3].food = 0;

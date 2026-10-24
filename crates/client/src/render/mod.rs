@@ -128,6 +128,7 @@ pub mod fresnel;
 pub mod farm_ghost;
 pub mod ghost;
 pub mod gunfeel;
+pub mod mods;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
@@ -764,6 +765,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
             .init_resource::<gunfeel::GunFeel>()
+            .init_resource::<mods::ModView>()
             .init_resource::<lodged::Lodged>()
             .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
@@ -1368,6 +1370,8 @@ impl Plugin for GatesRenderPlugin {
                 hud::setup.after(rig::setup),
                 // Beside the HUD, and like it absent from a plate run.
                 spectate::setup,
+                mods::setup,
+                mods::remote_setup,
                 arc_hud::setup,
             )
                 .run_if(move || !plate),
@@ -1532,7 +1536,8 @@ impl Plugin for GatesRenderPlugin {
         // reads the gun's place.
         .add_systems(
             PostUpdate,
-            bodies::aim_long_guns
+            (bodies::aim_long_guns, mods::remote)
+                .chain()
                 .after(bevy::transform::TransformSystems::Propagate)
                 .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
                 .run_if(world_running),
@@ -1752,6 +1757,11 @@ impl Plugin for GatesRenderPlugin {
                 .before(quality::reband_trees)
                 .run_if(world_running),
         )
+        // Bevy 0.18.1 renumbers its `VisibilityRange` table whenever one
+        // range changes; this re-extracts every ranged mesh with it, so no
+        // tree, bush or pole reads another's range for a frame
+        // (`tree::restamp_ranges`). `Last`: after every writer this frame.
+        .add_systems(Last, tree::restamp_ranges)
         // WebGL2's tree LOD, by hand: it cannot bind the table
         // `VisibilityRange` dithers by, so no tree part carries one there and
         // this swaps the near pair for the hull by distance (`tree::band`).
@@ -2078,7 +2088,8 @@ impl Plugin for GatesRenderPlugin {
         // sees it on the frame it was fired.
         .add_systems(
             Update,
-            gunfeel::predict
+            (mods::view, gunfeel::predict, mods::draw)
+                .chain()
                 .after(input::gather)
                 .before(input::place_eye)
                 .run_if(world_running),

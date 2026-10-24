@@ -2865,11 +2865,15 @@ pub fn update(
     // own belt cell where its count would be (below).
     let (loaded, ceiling) = core.mag();
 
-    // The readout over the belt, now the bow's alone: the arrow it looses
-    // is a choice (`R`), and the cell has no room to name it.
+    // The readout over the belt: the round a bow looses or a gun is loaded
+    // with is a choice (`R`; on a gun, `R` on a full magazine), and the cell
+    // has no room to name it.
     if let Ok(mut text) = ammo.single_mut() {
         let want = if ceiling != 0 {
-            String::new()
+            // A gun's count is in its cell; the line names what it fires.
+            core.bow_round().map_or(String::new(), |round| {
+                crate::ui::craft::item_label(&core.catalog, round).to_uppercase()
+            })
         } else if let Some(round) = core.bow_round() {
             // A bow's readout is the arrow it looses and how many of it
             // the pack holds — `R` picks the next kind (Rust's ammo pick).
@@ -3312,6 +3316,9 @@ pub fn feedback(
     mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
     mut surge: ResMut<Surge>,
+    gf: Option<Res<super::gunfeel::GunFeel>>,
+    cams: Query<&Projection, With<super::rig::EyeCam>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let core = &net.session.core;
     // The sim refuses ground the world keeps for itself with the occupied
@@ -3612,7 +3619,17 @@ pub fn feedback(
 
     let hot = toast.hit_left > 0.0;
     let want = mark_colour(hot, toast.hit_part);
-    let push = hit_push_px(toast.hit_left, toast.hit_part, toast.hit_kill);
+    // A gun in the hand spreads the ticks with its cone, Rust's crosshair;
+    // a hit throws them out further on top.
+    let fov = cams.single().ok().and_then(|p| match p {
+        Projection::Perspective(p) => Some(p.fov),
+        _ => None,
+    });
+    let spread = match (gf.as_deref(), fov, windows.single().ok()) {
+        (Some(g), Some(fov), Some(w)) => super::gunfeel::spread_px(g.cone_cdeg, fov, w.height()),
+        _ => 0.0,
+    };
+    let push = hit_push_px(toast.hit_left, toast.hit_part, toast.hit_kill) + spread;
     for (mark, mut bg, mut node) in marks.iter_mut() {
         if bg.0 != want {
             bg.0 = want;

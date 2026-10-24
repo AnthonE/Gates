@@ -387,18 +387,21 @@ fn world() -> (World, u16, u16) {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FURNACE_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: BAG_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: PLAYER,

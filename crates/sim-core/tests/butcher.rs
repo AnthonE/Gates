@@ -55,6 +55,7 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.dev_spawn = Some(w.spawn_pos(1));
@@ -71,6 +72,7 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
         count: 1,
         cond: if tool == KNIFE { KNIFE_COND } else { 0 },
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let b = w.players[0].body;
     let at = Body::at(
@@ -85,12 +87,14 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     items[1] = ItemStack {
         item: FAT,
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let tick = w.tick;
     let id = w
@@ -235,6 +239,7 @@ fn a_carcass_takes_nothing_and_a_cut_pays_only_its_own_rows() {
         count: 1000,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mv = |w: &mut World, from_kind, from_slot, to_kind, to_slot, count| {
         w.tick(&[Command::Move {
@@ -283,6 +288,7 @@ fn a_carcass_takes_nothing_and_a_cut_pays_only_its_own_rows() {
             count: 1000,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     w.backpacks.set_slot(
@@ -293,6 +299,7 @@ fn a_carcass_takes_nothing_and_a_cut_pays_only_its_own_rows() {
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     let mut seq = 0;

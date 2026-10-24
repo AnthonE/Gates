@@ -263,7 +263,21 @@ fn info_card(
         paper,
     );
     let desc = String::from_utf8_lossy(core.item_descs.get(stack.item as usize)).into_owned();
-    let stats = info::stats(row, stack, loaded);
+    let mut stats = info::stats(row, stack, loaded);
+    // The gun in hand's attachments, a line a slot (Rust's mod slots).
+    let mut fitted = [None; 4];
+    if in_hand && row.gun.is_some() {
+        for (item, m) in core.mod_rows(core.held_mods()) {
+            if let Some(slot) = fitted.get_mut(m.group as usize) {
+                *slot = Some(m.bit);
+                stats.push(info::Stat {
+                    label: info::MOD_SLOT_NAMES[m.group as usize],
+                    value: crate::ui::craft::item_label(&core.catalog, item),
+                    frac: None,
+                });
+            }
+        }
+    }
     let acts = info::actions(
         row,
         stack,
@@ -273,6 +287,8 @@ fn info_card(
             paper,
             loaded_in_hand: loaded.is_some_and(|n| n > 0),
             room: split_slot(&core.inv).is_some(),
+            attachable: kind == CONT_SELF && core.attachable(stack.item).is_some(),
+            fitted,
         },
     );
     col.spawn((
@@ -586,6 +602,17 @@ pub fn info_clicks(
                     Err(e) => ui.say(e.to_string()),
                 },
                 Err(e) => ui.say(format!("the unload would not encode ({e:?})")),
+            }
+        }
+        info::Act::Attach => send_attach(&mut ui, &net, slot),
+        info::Act::Detach(bit) => {
+            let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+            match protocol::encode_action_detach(bit, &mut buf) {
+                Ok(len) => match net.session.send_action(&buf[..len]) {
+                    Ok(()) => ui.say("attachment off"),
+                    Err(e) => ui.say(e.to_string()),
+                },
+                Err(e) => ui.say(format!("the detach would not encode ({e:?})")),
             }
         }
         info::Act::Split => {
@@ -2377,6 +2404,18 @@ pub fn drag_pointer(
 /// card's first action, so the card never offers a verb the gesture would
 /// not do. Every branch of the decision is `ui::slots::quick_move`'s (and
 /// the fire's and the table's own); this sends what it is handed.
+/// Put the attachment in pack slot `slot` on the gun in hand.
+fn send_attach(ui: &mut Ui, net: &super::super::Net, slot: usize) {
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_attach(slot as u8, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say("attached"),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the attach would not encode ({e:?})")),
+    }
+}
+
 fn quick(
     ui: &mut Ui,
     net: &super::super::Net,
@@ -2388,6 +2427,12 @@ fn quick(
 ) {
     let core = &net.session.core;
     let stack = cell_stack(core, kind, slot);
+    // An attachment the gun in hand takes goes on it, with no container
+    // open to move it into (Rust's drag onto the gun's mod slot).
+    if kind == CONT_SELF && !looting(core.cont_kind) && core.attachable(stack.item).is_some() {
+        send_attach(ui, net, slot);
+        return;
+    }
     // A material right-clicked with the hearth open goes into it, the
     // way a right-click moves a stack into an open box.
     if let Some(at) = hearth_at.filter(|_| kind == CONT_SELF) {

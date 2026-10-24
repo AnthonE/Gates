@@ -37,10 +37,11 @@ use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
-    MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ, WEAR_SLOTS,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_BULLETS_PER_OWNER,
+    MAX_BULLET_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES,
+    MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
+    MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
+    MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ, WEAR_SLOTS,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -742,6 +743,29 @@ impl Content {
         for a in &self.armors {
             self.bake_armor(a, &mut cc)?;
         }
+        // The attachments, a bit each in declared order (`validate` holds
+        // them to `MAX_MODS` and their numbers to `u16`).
+        for (bit, a) in self.attachments.iter().enumerate() {
+            let item = self
+                .item_index(&a.id)
+                .ok_or_else(|| format!("bake: attachment `{}` arms no item", a.id))?;
+            cc.mods[bit] = sim_core::combat::ModDef {
+                item,
+                group: match a.slot {
+                    crate::schema::ModSlot::Sight => sim_core::combat::MOD_SIGHT,
+                    crate::schema::ModSlot::Muzzle => sim_core::combat::MOD_MUZZLE,
+                    crate::schema::ModSlot::Underbarrel => sim_core::combat::MOD_UNDER,
+                    crate::schema::ModSlot::Magazine => sim_core::combat::MOD_MAGAZINE,
+                },
+                aim_pct: a.aim_pct as u16,
+                hip_pct: a.hip_pct as u16,
+                damage_pct: a.damage_pct as u16,
+                velocity_pct: a.velocity_pct as u16,
+                rate_pct: a.rate_pct as u16,
+                magazine_pct: a.magazine_pct as u16,
+                quiet: a.quiet,
+            };
+        }
         // The dense magazine index, handed out in `self.weapons` order.
         // A counter rather than a scan of `cc.ranged`, because `cc.ranged`
         // is keyed by *item* and its order is the sorted-rank mapping's,
@@ -947,10 +971,80 @@ impl Content {
         // because it is silent — it never errors and can never hit anything.
         // A bow carries none: its arrow flies until something stops it.
         let hitscan = w.kind == WeaponKind::Firearm;
+        // A firearm's cadence to the 256th of a tick, so 343/min fires 343
+        // rather than the 360 that whole ticks floor it to (`ranged::cadence`).
+        let rate_sub = if hitscan {
+            (TICK_HZ * 60 * 256 + w.rate_per_min / 2) / w.rate_per_min
+        } else {
+            0
+        };
         if hitscan && w.range_m == 0 {
             return Err(format!("bake: ranged weapon `{}` has no reach", w.id));
         }
-        if hitscan {
+        for &round in ammo.iter().take_while(|&&r| r != NO_ITEM) {
+            let flies = cc.ammo[round as usize];
+            if flies.speed_mmpt == 0 {
+                continue;
+            }
+            if !hitscan {
+                // The arrow's sampler, which `bake_ammo` no longer applies
+                // because a bullet has a wider one.
+                let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
+                if u32::from(flies.speed_mmpt) > ceiling {
+                    return Err(format!(
+                        "bake: bow `{}` looses a round at {} mm/tick, past the {ceiling} mm/tick \
+                         the arrow's collision sampler can trace ({ARROW_STEP_MM} mm x \
+                         {MAX_ARROW_SUBSTEPS} samples)",
+                        w.id, flies.speed_mmpt
+                    ));
+                }
+                if u32::from(flies.drop_mmpt2) >= sim_core::world::SHOT_BULLET {
+                    return Err(format!("bake: bow `{}` round drop reads as a bullet", w.id));
+                }
+                continue;
+            }
+            // The barrel's share of the round's speed, held to the bullet's
+            // sampler as `bake_ammo` holds the round itself.
+            let scale = w.gun.as_ref().map_or(100, |g| g.velocity_pct);
+            let speed = u32::from(flies.speed_mmpt) * scale / 100;
+            let ceiling = ARROW_STEP_MM as u32 * MAX_BULLET_SUBSTEPS as u32;
+            if speed == 0 || speed > ceiling || speed > u32::from(u16::MAX) {
+                return Err(format!(
+                    "bake: firearm `{}` sends a round out at {speed} mm/tick, outside 1..={ceiling} \
+                     the bullet's collision sampler can trace",
+                    w.id
+                ));
+            }
+            // A bullet's drop rides six bits of `EV_SHOT` (`world::shot_bullet_c`).
+            if u32::from(flies.drop_mmpt2) >= 1 << sim_core::world::SHOT_DROP_BITS {
+                return Err(format!(
+                    "bake: firearm `{}` round drops {} mm/tick², past the wire's {}",
+                    w.id,
+                    flies.drop_mmpt2,
+                    (1 << sim_core::world::SHOT_DROP_BITS) - 1
+                ));
+            }
+            // Its share of the bullet store: pellets times the volleys in the
+            // air at once at full cadence.
+            let pellets = match flies.pellets {
+                0 => w.gun.as_ref().map_or(1, |g| g.pellets.max(1)) as usize,
+                n => usize::from(n),
+            };
+            let life = sim_core::bullet::life_ticks(w.range_m * 1000, speed as u16) as usize;
+            let in_air = pellets * life.div_ceil(rate_ticks.max(1) as usize);
+            if in_air > MAX_BULLETS_PER_OWNER {
+                return Err(format!(
+                    "bake: firearm `{}` keeps {in_air} bullets in the air at full cadence, past \
+                     the {MAX_BULLETS_PER_OWNER} one shooter may",
+                    w.id
+                ));
+            }
+        }
+        let instant = ammo
+            .iter()
+            .take_while(|&&r| r != NO_ITEM)
+            .any(|&r| cc.ammo[r as usize].speed_mmpt == 0);
+        if hitscan && instant {
             // The hitscan sampler wall. `ranged::hitscan` walks the reach at
             // `ARROW_STEP_MM`, and a gun that needs more taps than
             // `MAX_HITSCAN_SAMPLES` cannot be traced at the spacing a trunk
@@ -1029,6 +1123,7 @@ impl Content {
             damage,
             ammo,
             rate_ticks,
+            rate_sub,
             hitscan,
             // Reach in millimetres. Flight time is no longer derived here
             // because it is no longer the weapon's to derive: with the
@@ -1070,7 +1165,7 @@ impl Content {
             // The draw (`reference/PROJECTILES.md` §6), validated to a bow
             // and to a nonzero, `u16` tick count (`validate.rs`).
             draw_ticks,
-            gun: match w.gun {
+            gun: match &w.gun {
                 None => sim_core::combat::Gun::NONE,
                 // Bounded by `validate`: every angle and count fits its
                 // field, the falloff's ends are ordered, the percents are.
@@ -1092,6 +1187,12 @@ impl Content {
                         recoil_pitch: g.recoil_pitch_cdeg.map(|v| v as u16),
                         recoil_yaw: g.recoil_yaw_cdeg.map(|v| v as i16),
                         ads_recoil_pct: g.ads_recoil_pct as u8,
+                        velocity_pct: g.velocity_pct as u16,
+                        mods: g
+                            .mods
+                            .iter()
+                            .filter_map(|m| self.attachments.iter().position(|a| &a.id == m))
+                            .fold(0u8, |mask, bit| mask | 1 << bit),
                     }
                 }
             },
@@ -1121,11 +1222,13 @@ impl Content {
                 a.id
             ));
         }
-        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
+        // The bullet's sampler here (`MAX_BULLET_SUBSTEPS`); a bow's rounds
+        // are held to the arrow's tighter one where the bow is baked.
+        let ceiling = ARROW_STEP_MM as u32 * MAX_BULLET_SUBSTEPS as u32;
         if speed_mmpt > ceiling {
             return Err(format!(
                 "bake: ammo `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
-                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
+                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_BULLET_SUBSTEPS} \
                  samples); it would pass through a wall between two taps",
                 a.id, a.speed_mps
             ));
@@ -1157,6 +1260,10 @@ impl Content {
                     structure: b.structure as u16,
                 }
             }),
+            // Bounded by `validate` to `MAX_PELLETS` and to 1 000 m.
+            pellets: a.pellets as u8,
+            falloff_mm: a.falloff_m.map(|m| m * 1000),
+            falloff_pct: a.falloff_pct as u16,
         };
         Ok(())
     }
@@ -1287,6 +1394,7 @@ impl Content {
                     count,
                     cond,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
@@ -1334,12 +1442,11 @@ impl Content {
                     .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
             };
             sc.vessels[k] = sim_core::survival::Vessel {
-                empty: idx(&v.empty)?,
-                fresh: idx(&v.fresh)?,
-                salt: match &v.salt {
-                    Some(id) => idx(id)?,
-                    None => sim_core::gather::NO_ITEM,
-                },
+                item: idx(&v.item)?,
+                ml: u16f(v.ml, "vessel ml")?,
+                sip_ml: u16f(v.sip_ml, "vessel sip_ml")?,
+                water_per_l: u16f(v.water_per_l, "vessel water_per_l")?,
+                salt: v.salt,
             };
         }
         sc.vessel_count = s.vessels.len() as u8;
@@ -1564,13 +1671,10 @@ impl Content {
             sc.revive[idx] = con.revive;
         }
         for v in sc.vessels() {
-            if sc.consumable[v.fresh as usize].water == 0 {
-                return Err("bake: a survival vessel's fresh item holds no water".to_string());
-            }
-            if v.salt != sim_core::gather::NO_ITEM && sc.consumable[v.salt as usize].is_food() {
-                // Salt water is boiled, never drunk from the vessel: a row
-                // here would be the sea with no price.
-                return Err("bake: a survival vessel's salt item is a consumable".to_string());
+            if sc.consumable[v.item as usize].is_food() {
+                // A vessel is drunk from by its water, a sip at a time: a
+                // consumable row on it would eat the vessel.
+                return Err("bake: a survival vessel is also a consumable".to_string());
             }
         }
         Ok(sc)
@@ -1670,8 +1774,15 @@ impl Content {
             v.checked_mul(TICK_HZ)
                 .ok_or_else(|| format!("bake: farm {what} {v} overflows a u32 of ticks"))
         };
-        fc.water_full = item(&f.water, "water")?;
-        fc.water_empty = item(&f.emptied, "emptied")?;
+        fc.water_vessel = item(&f.water, "water")?;
+        fc.water_ml = self
+            .balance
+            .survival
+            .vessels
+            .iter()
+            .find(|v| v.item == f.water)
+            .and_then(|v| u16::try_from(v.ml).ok())
+            .ok_or_else(|| format!("bake: farm water `{}` is not a vessel", f.water))?;
         fc.skin_wu = ticks(f.skin_water, "skin_water")?;
         fc.planter_cap_wu = ticks(f.planter_water, "planter_water")?;
         fc.rain_wu_s = ticks(f.rain_water, "rain_water")?;
@@ -1907,6 +2018,7 @@ impl Content {
                 cond: u16::try_from(item.condition_max)
                     .map_err(|_| format!("bake: [backpack] `{}` condition overflows", d.item))?,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         for item in &self.items {
@@ -2909,7 +3021,7 @@ impl Content {
                     .map_err(|_| format!("bake: mob `{}` {what} {v} overflows the sim", m.id))
             };
             // A percentage of the axis, floored: 50% is 63, which is
-            // 1.4882 m/s out of `WALK_SPEED`. Floored rather than rounded
+            // 1.389 m/s out of `WALK_SPEED`. Floored rather than rounded
             // because the axis is the ceiling on speed and a content
             // number should never buy more than it asked for.
             let axis = |pct: u32| -> u8 { ((pct.min(100) * 127) / 100) as u8 };
@@ -3002,6 +3114,7 @@ impl Content {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
@@ -3018,6 +3131,7 @@ impl Content {
                             format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
                         })?,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
             mc.defs[which] = def;
@@ -3060,6 +3174,7 @@ impl Content {
                     cond: u16::try_from(self.item(&d.item).map(|it| it.condition_max).unwrap_or(0))
                         .map_err(|_| format!("bake: [guard] `{}` condition overflows", d.item))?,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
         }

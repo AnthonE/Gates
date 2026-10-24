@@ -185,7 +185,7 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         };
         // A shotgun's hit is its whole shell: the pellets land as one blow
         // (`ranged::hitscan`).
-        let blow = w.damage * w.gun.map_or(1, |g| g.pellets);
+        let blow = w.damage * w.gun.as_ref().map_or(1, |g| g.pellets);
         let base = hits_to_kill(hp, blow, 0);
         in_band(base, band, &format!("ttk `{}`", w.id))?;
         // Burning, it hits harder — and must still sit in its band.

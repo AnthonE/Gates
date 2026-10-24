@@ -136,6 +136,10 @@ pub struct RemoteState {
     /// The skin the held item wears (skins v0), 0 for its own look. Newer
     /// sample, `held`'s reason: a look is an identity, not a quantity.
     pub held_skin: u16,
+    /// The held gun's attachments and its light key (v144), `held`'s
+    /// newer-sample rule.
+    pub held_mods: u8,
+    pub beam: bool,
     /// Off the ground: jumping, or falling off something (`movement.rs`
     /// `Body::grounded`, on the wire since v1 and read by nothing until the
     /// renderer drew the jump). Newer sample, `sleeping`'s reason; stored as
@@ -188,6 +192,8 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.held = s.e.held;
     out.lit = s.e.lit;
     out.held_skin = s.e.held_skin;
+    out.held_mods = s.e.held_mods;
+    out.beam = s.e.beam;
     out.airborne = !s.e.grounded;
     out.crouched = s.e.crouched;
     out.seated = s.e.seated;
@@ -441,6 +447,8 @@ impl Interp {
                 out.held = s1.e.held;
                 out.lit = s1.e.lit;
                 out.held_skin = s1.e.held_skin;
+                out.held_mods = s1.e.held_mods;
+                out.beam = s1.e.beam;
                 out.airborne = !s1.e.grounded;
                 out.crouched = s1.e.crouched;
                 out.seated = s1.e.seated;
@@ -480,6 +488,8 @@ mod tests {
             held: None,
             lit: false,
             held_skin: 0,
+            held_mods: 0,
+            beam: false,
         }
     }
 

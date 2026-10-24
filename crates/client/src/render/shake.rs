@@ -320,8 +320,8 @@ pub fn apply(
             shake.add(SHOT_TRAUMA * if heavy { 1.0 } else { 0.35 });
         }
         // A bow's own loose, off the broadcast.
-        for &(shooter, _, _, speed, _, _) in feed.shots() {
-            if shooter == core.player_id && !protocol::shot_is_instant(speed) {
+        for &(shooter, _, _, speed, low, _) in feed.shots() {
+            if shooter == core.player_id && !protocol::shot_is_gun(speed, low) {
                 shake.kick(Vec3::new(BOW_KICK_RAD, 0.0, 0.0));
             }
         }

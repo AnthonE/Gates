@@ -123,6 +123,7 @@ fn a_shard_restart_remembers_a_player() {
             count: 128,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         core.world.players[slot].hp = 37;
         core.tick_bare(&stats, |_, _, _| true);
@@ -272,6 +273,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
         count: 128,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // Session one: join keyed, carry something, log off. The disconnect's
@@ -382,6 +384,7 @@ fn a_raided_sleeper_on_a_full_shard(
         count: 128,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
     core.tick_bare(stats, |_, _, _| true);
@@ -508,6 +511,7 @@ fn a_returned_victim_restored_later_gets_the_newer_store_record() {
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w].inv[0] = found;
     let newer = (0..2 * MAX)
@@ -805,6 +809,7 @@ fn an_unsettled_wallets_body_is_held_for_its_gear_and_its_hostility() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // In that order, so the hostile body is the longest asleep.
     for s in 0..4 {
@@ -929,6 +934,7 @@ fn an_evicted_players_id_survives_throwaway_churn_and_a_refused_return() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let tick = core.world.tick;
     let bag = core
@@ -1124,6 +1130,7 @@ fn two_keys_never_share_a_save() {
                 count: (i as u16 + 1) * 10,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             let put = store.put(k, 1_700_000_000, save).expect("filed");
             assert!(!put.evicted);
@@ -1139,7 +1146,8 @@ fn two_keys_never_share_a_save() {
             item: 1,
             count: 10,
             cond: 0,
-            skin: 0
+            skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -1148,7 +1156,8 @@ fn two_keys_never_share_a_save() {
             item: 2,
             count: 20,
             cond: 0,
-            skin: 0
+            skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     sweep(&path);
@@ -1406,6 +1415,7 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
             count: 1,
             cond,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s
     };
@@ -1508,6 +1518,7 @@ fn a_wipe_archives_the_world_and_keeps_only_what_players_know() {
             count: 500,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut poor = rich;
         poor.known = 0;

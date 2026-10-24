@@ -109,6 +109,7 @@ fn a_wallet_that_crafts_earns_and_hears_it() {
             count: 20,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(core.wants_action(slot));
         core.push_action(

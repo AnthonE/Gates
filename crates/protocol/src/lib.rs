@@ -62,11 +62,10 @@ pub use auth::{
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
-pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{
-    decode_event, encode_event_agent, encode_event_assist, encode_event_auth,
-    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync, encode_event_bags,
-    encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
+    bullet_drop, bullet_reach_mm, decode_event, encode_event_agent, encode_event_assist,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_bags, encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_dead, encode_event_death, encode_event_death_mark,
@@ -87,13 +86,15 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vessel,
     encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
-    shot_is_instant, EventMsg, GunRow, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow,
-    WireBag, WireGItem, WireToss, BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH,
-    COIN_ELO, COIN_JUNK, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH,
-    SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    shot_is_bullet, shot_is_gun, shot_is_instant, shot_is_quiet, EventMsg, GunRow, InvSlot,
+    ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
+    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
+    VEND_BATCH,
 };
+pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{encode_event_achievement, Achieved};
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -1351,7 +1352,21 @@ pub use voice::{
 /// whether that Solana account is linked to an Ethereum one.
 /// v143 — placed things keep their skin: the placed-deployable record ends
 /// with a bit and, when set, the 16-bit skin catalog id it was placed from.
-pub const PROTO_VER: u16 = 143;
+/// v144 — bullets fly (`sim_core::bullet`): a firearm's `SUB_SHOT` carries
+/// its round's speed in the first `u16` as an arrow's does, and in the
+/// second `world::SHOT_BULLET`, the reach (2 m units) and the drop
+/// (`shot_is_bullet`, `bullet_reach_mm`, `bullet_drop`), and a silenced
+/// gun's `world::SHOT_QUIET` (`shot_is_quiet`), where an arrow's second
+/// `u16` is its drop alone; actions 43 and 44 put an attachment on the gun
+/// in hand and take one off (`ActionMsg::Attach`, `ActionMsg::Detach`);
+/// a catalog row carries an attachment's `ModRow` after its gun handling; a catalog `GunRow` carries the exact
+/// cadence (`rate_sub`), the spread (`moving`, the bloom, `pellet`) and the
+/// first round's muzzle speed and drop after `ads_recoil_pct`; a stack in
+/// `SUB_INV` and `SUB_CONT_SYNC` closes with its data behind a presence bit
+/// (`ItemStack::data`: a gun's attachments, rounds and round); a snapshot's
+/// hand closes with the held gun's attachments and its light behind
+/// another (`EntityState::held_mods`, `beam`); `MAX_EVENT_MSG_BYTES` 448.
+pub const PROTO_VER: u16 = 144;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -2282,6 +2297,15 @@ const ACT_LATTICE: u32 = 40;
 const ACT_PLANT: u32 = 41;
 /// Tend plant `plant` (wire v135, `Command::Tend`): `farm::TEND_*`.
 const ACT_TEND: u32 = 42;
+/// Put the attachment in an inventory slot on the gun in hand (wire v144,
+/// `Command::Attach`).
+const ACT_ATTACH: u32 = 43;
+/// Take an attachment off the gun in hand by its bit (wire v144,
+/// `Command::Detach`).
+const ACT_DETACH: u32 = 44;
+/// Width of `ActionMsg::Detach`'s bit: one of `MAX_MODS`.
+const MOD_BIT_BITS: u32 = 3;
+const _: () = assert!(sim_core::limits::MAX_MODS <= 1 << MOD_BIT_BITS);
 /// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
 const PLANT_SPOT_BITS: u32 = 3;
 const TEND_ACT_BITS: u32 = 2;
@@ -2324,7 +2348,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_TEND;
+const ACT_MAX: u32 = ACT_DETACH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2756,6 +2780,13 @@ pub enum ActionMsg {
     /// Empty the held weapon's magazine into the pack (`Command::Unload`).
     /// No payload, `Reload`'s reasoning.
     Unload,
+    /// Put the attachment in inventory slot `slot` on the gun in hand
+    /// (wire v144, `Command::Attach`). The slot is shape-checked here and
+    /// the rest is the sim's verdict.
+    Attach { slot: u8 },
+    /// Take attachment `bit` off the gun in hand (wire v144,
+    /// `Command::Detach`).
+    Detach { bit: u8 },
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -2997,6 +3028,30 @@ pub fn encode_action_unload(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_UNLOAD, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
+/// Put an attachment on the gun in hand — see `ActionMsg::Attach`.
+pub fn encode_action_attach(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_ATTACH, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+/// Take an attachment off the gun in hand — see `ActionMsg::Detach`.
+pub fn encode_action_detach(bit: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if bit as usize >= sim_core::limits::MAX_MODS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_DETACH, ACTION_SUB_BITS)?;
+    w.write(bit as u32, MOD_BIT_BITS)?;
     Ok(w.finish())
 }
 
@@ -4129,6 +4184,20 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_DRINK => ActionMsg::Drink,
         ACT_RELOAD => ActionMsg::Reload,
         ACT_UNLOAD => ActionMsg::Unload,
+        ACT_ATTACH => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Attach { slot }
+        }
+        ACT_DETACH => {
+            let bit = r.read(MOD_BIT_BITS)? as u8;
+            if bit as usize >= sim_core::limits::MAX_MODS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Detach { bit }
+        }
         ACT_FASTTRACK => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             let recipe = r.read(8)? as u16;
@@ -4620,6 +4689,15 @@ pub struct EntityState {
     /// seventeen only where someone paid for it. Meaningless with an empty
     /// hand, and sent as 0 then.
     pub held_skin: u16,
+    /// The attachments on the held gun (v144, `combat::GunState::mods`):
+    /// a bit per catalog `ModRow`, so a scope, a silencer, a laser or a
+    /// light is drawn on someone else's rifle. Behind a presence bit like
+    /// the skin: an unmodded hand pays one bit.
+    pub held_mods: u8,
+    /// The gun's light key is down (`BTN_LIGHT`), with attachments on it:
+    /// its lasersight's dot and its flashlight's beam show, to everyone, as
+    /// Rust's do. Only with `held_mods`, so one hand has one encoding.
+    pub beam: bool,
 }
 
 impl EntityState {
@@ -4647,6 +4725,8 @@ impl EntityState {
         held: None,
         lit: false,
         held_skin: 0,
+        held_mods: 0,
+        beam: false,
     };
 }
 
@@ -4911,7 +4991,11 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         // every case that matters — a hotbar switch changes what is held
         // and puts the flame out in the same tick — and a torch that
         // burns out changes `lit` alone, which is one flag either way.
-        let hand_changed = e.held != b.held || e.lit != b.lit || e.held_skin != b.held_skin;
+        let hand_changed = e.held != b.held
+            || e.lit != b.lit
+            || e.held_skin != b.held_skin
+            || e.held_mods != b.held_mods
+            || e.beam != b.beam;
         // is_delta, the baseline row, then the ten flags in one write:
         // LSB-first, so packing them low bit first is the same bits as
         // writing each in turn.
@@ -4981,9 +5065,21 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w
             .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
         self.w.write_bit(e.lit)?;
-        self.w.write_bit(e.held_skin != 0)?;
-        if e.held_skin != 0 {
-            self.w.write(e.held_skin as u32, 16)?;
+        // One bit for "anything more" (v144), so the plain hand nearly
+        // every body carries costs what it did before attachments: the
+        // worst-case keyframe sits a byte under the datagram budget.
+        let extras = e.held_skin != 0 || e.held_mods != 0;
+        self.w.write_bit(extras)?;
+        if extras {
+            self.w.write_bit(e.held_skin != 0)?;
+            if e.held_skin != 0 {
+                self.w.write(e.held_skin as u32, 16)?;
+            }
+            self.w.write_bit(e.held_mods != 0)?;
+            if e.held_mods != 0 {
+                self.w.write(e.held_mods as u32, 8)?;
+                self.w.write_bit(e.beam)?;
+            }
         }
         Ok(())
     }
@@ -5041,6 +5137,10 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     }
     // A sitter is at rest: the absolute record carries `seated` only then.
     if e.seated && e.qvy != 0 {
+        return Err(WireError::Range);
+    }
+    // A beam rides the attachments; with none it has no spelling.
+    if e.beam && e.held_mods == 0 {
         return Err(WireError::Range);
     }
     Ok(())
@@ -5207,7 +5307,7 @@ fn decode_entity(
         let crouched = r.read_bit()?;
         let qvy = read_vel(r)?;
         let seated = if qvy == 0 { r.read_bit()? } else { false };
-        return Ok(EntityState {
+        let mut e = EntityState {
             id,
             qx,
             qy,
@@ -5223,8 +5323,12 @@ fn decode_entity(
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
             lit: r.read_bit()?,
-            held_skin: read_held_skin(r)?,
-        });
+            held_skin: 0,
+            held_mods: 0,
+            beam: false,
+        };
+        (e.held_skin, e.held_mods, e.beam) = read_hand_extras(r)?;
+        return Ok(e);
     }
     // A delta is read only against a baseline (`is_delta` above), and names
     // its row in it (v141).
@@ -5260,9 +5364,36 @@ fn decode_entity(
     if hand_changed {
         e.held = read_held(r)?;
         e.lit = r.read_bit()?;
-        e.held_skin = read_held_skin(r)?;
+        (e.held_skin, e.held_mods, e.beam) = read_hand_extras(r)?;
     }
     Ok(e)
+}
+
+/// The hand's extras (v144): one bit, then the skin and the held gun's
+/// attachments (with its light) each behind their own. "More" with neither
+/// is a second spelling of a plain hand and is refused.
+fn read_hand_extras(r: &mut BitReader) -> Result<(u16, u8, bool), WireError> {
+    if !r.read_bit()? {
+        return Ok((0, 0, false));
+    }
+    let skin = read_held_skin(r)?;
+    let (mods, beam) = read_held_mods(r)?;
+    if skin == 0 && mods == 0 {
+        return Err(WireError::Malformed);
+    }
+    Ok((skin, mods, beam))
+}
+
+/// The held gun's attachments and its light: a presence bit, then the mask
+/// and the beam. A present 0 is a second spelling of "none" and is refused.
+fn read_held_mods(r: &mut BitReader) -> Result<(u8, bool), WireError> {
+    if !r.read_bit()? {
+        return Ok((0, false));
+    }
+    match r.read(8)? as u8 {
+        0 => Err(WireError::Malformed),
+        m => Ok((m, r.read_bit()?)),
+    }
 }
 
 /// The held item's skin: a presence bit, then the id. A present 0 is a
@@ -5346,6 +5477,8 @@ mod tests {
             held: None,
             lit: false,
             held_skin: 0,
+            held_mods: 0,
+            beam: false,
         }
     }
 
@@ -6051,6 +6184,66 @@ mod tests {
         assert_eq!(read_held_skin(&mut r), Err(WireError::Malformed));
     }
 
+    /// A scoped, lit rifle crosses both snapshot paths with a skin beside
+    /// it and without one; the beam alone, or "more" with nothing after it,
+    /// has no spelling.
+    #[test]
+    fn a_modded_hand_crosses_and_a_bare_beam_does_not() {
+        let hdr = SnapshotHeader {
+            tick: 7,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let mut base: Vec<EntityState> = (1..=3).map(ent).collect();
+        base[0].held = Some(41);
+        base[0].held_mods = 0b1000_0010;
+        base[0].beam = true;
+        base[1].held = Some(6);
+        base[1].held_skin = 0x0A61;
+        base[1].held_mods = 0b1;
+        let mut buf = [0u8; 512];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        for e in &base {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &[]).unwrap();
+        assert_eq!(got.entities(), &base[..], "absolute path carries the mods");
+        let mut next = base.clone();
+        next[0].beam = false;
+        next[1].held_mods = 0;
+        next[2].held = Some(9);
+        next[2].held_mods = 0b100;
+        let hdr = SnapshotHeader {
+            baseline_age: 1,
+            ..hdr
+        };
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &base).unwrap();
+        for e in &next {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &base).unwrap();
+        assert_eq!(got.entities(), &next[..], "delta path carries the mods");
+
+        let mut bare = ent(1);
+        bare.beam = true;
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        assert_eq!(enc.add_entity(&bare), Err(WireError::Range));
+
+        let mut buf = [0u8; 8];
+        let mut w = BitWriter::new(&mut buf);
+        w.write_bit(true).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        let n = w.finish();
+        let mut r = BitReader::new(&buf[..n]);
+        assert_eq!(read_hand_extras(&mut r), Err(WireError::Malformed));
+    }
+
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
@@ -6062,11 +6255,11 @@ mod tests {
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
-        // plant and tend (v135) 41 and 42.
-        assert_eq!(ACT_MAX, ACT_TEND);
+        // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44.
+        assert_eq!(ACT_MAX, ACT_DETACH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            21,
+            19,
             "the spare action codes moved — say so where the count is written"
         );
     }

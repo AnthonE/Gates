@@ -131,7 +131,12 @@ fn rank_slot(key: u64) -> usize {
 fn reads_hand(act: &ActionMsg) -> bool {
     matches!(
         act,
-        ActionMsg::Throw { .. } | ActionMsg::Reload | ActionMsg::Unload | ActionMsg::Drink
+        ActionMsg::Throw { .. }
+            | ActionMsg::Reload
+            | ActionMsg::Unload
+            | ActionMsg::Drink
+            | ActionMsg::Attach { .. }
+            | ActionMsg::Detach { .. }
     )
 }
 
@@ -1472,10 +1477,14 @@ impl ShardCore {
             } else {
                 String::new()
             };
+            let safe = Self::world_slot_of(&self.world, self.clients[slot].id)
+                .map(|w| &self.world.players[w])
+                .is_some_and(|p| p.safe && !p.dead && !p.sleeping);
             roster.push(crate::online::Who {
                 wallet: key.to_ascii_lowercase(),
                 name,
                 agent: self.standings_agent[slot],
+                safe,
             });
         }
         self.online.publish(roster);
@@ -3877,6 +3886,8 @@ impl ShardCore {
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Reload => Command::Reload { id: c.id },
                     ActionMsg::Unload => Command::Unload { id: c.id },
+                    ActionMsg::Attach { slot } => Command::Attach { id: c.id, slot },
+                    ActionMsg::Detach { bit } => Command::Detach { id: c.id, bit },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {
@@ -9964,6 +9975,21 @@ impl ShardCore {
             } else {
                 p.inv[p.frame.sel as usize].skin
             },
+            // The attachments on the held gun (v144), under the same rule,
+            // and its light while the key is down: a laser's dot and a
+            // flashlight's beam are seen by everyone.
+            held_mods: Self::held_mods_of(p),
+            beam: Self::held_mods_of(p) != 0 && p.frame.buttons & sim_core::input::BTN_LIGHT != 0,
+        }
+    }
+
+    /// The attachments on the gun in this body's hand, 0 for a dropped,
+    /// empty or unarmed hand.
+    fn held_mods_of(p: &sim_core::world::Player) -> u8 {
+        if p.wounded || Self::held_of(p).is_none() {
+            0
+        } else {
+            sim_core::combat::held_gun(p).mods
         }
     }
 
@@ -10037,6 +10063,8 @@ impl ShardCore {
             // (`Mob::turned`), it burns as the top tier's does.
             lit: m.turned,
             held_skin: 0,
+            held_mods: 0,
+            beam: false,
         }
     }
 
@@ -10811,6 +10839,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         };
         let junk = |core: &ShardCore, id: u32| {
@@ -10987,6 +11016,7 @@ mod tests {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[0] = stack(0, 6);
         p.inv[1] = stack(1, 2);
@@ -11076,6 +11106,7 @@ mod tests {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[0] = stack(0, 6);
         p.inv[1] = stack(1, 2);
@@ -11223,6 +11254,7 @@ mod tests {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         core.push_action(0, craft);
         core.tick_bare(&stats, |_, _, _| true);
@@ -11257,6 +11289,7 @@ mod tests {
             count: 30,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // The giver's look at the taker's chest (`tests/give.rs`'s aim).
         let a = core.world.players[g].body;
@@ -11459,6 +11492,7 @@ mod tests {
             count: 60,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         for _ in 0..90 {
             if core.wants_action(0) {
@@ -11512,6 +11546,7 @@ mod tests {
             count: 20,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         for (row, loc) in [(0, LOC_PLANE), (row, STAIR_LOCS[0])] {
             core.push_action(
@@ -11588,6 +11623,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; INV_SLOTS];
         let w = &mut core.world;
         w.backpacks

@@ -1689,9 +1689,11 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     if stack.count == 0 {
         return None;
     }
-    let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
-    let s = stem(name);
-    HELD_MODELS.iter().position(|m| m.key == s)
+    let (look, plain) = crate::ui::icons::looks(catalog, stack)?;
+    HELD_MODELS
+        .iter()
+        .position(|m| m.key == look)
+        .or_else(|| HELD_MODELS.iter().position(|m| m.key == plain))
 }
 
 /// The draw of the stack in hand — `(draw_ticks, nock_ticks)` off the
@@ -1810,6 +1812,7 @@ pub fn held_model_of(catalog: &ItemCatalog, held: Option<u16>) -> Option<usize> 
             count: 1,
             cond: 1,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     )
 }
@@ -1867,6 +1870,7 @@ mod tests {
             count: 1,
             cond: 5_000,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = |s: ItemStack| [s, ItemStack::default()];
 
@@ -1890,6 +1894,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(
             lit_model_in_hand(&c, &inv(rock), 0, true),
@@ -2039,6 +2044,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 
@@ -2182,6 +2188,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Plan
@@ -2194,6 +2201,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Hammer
@@ -2206,6 +2214,7 @@ mod tests {
                     count: 5,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2225,6 +2234,7 @@ mod tests {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2245,6 +2255,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2260,12 +2271,14 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
             ItemStack {
                 item: 0,
                 count: 9,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         ];
         assert_eq!(held_in_hand(&c, &inv, 0), Held::Hammer);
@@ -2289,6 +2302,7 @@ mod tests {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2301,6 +2315,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Some(0)
@@ -2325,6 +2340,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2339,6 +2355,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2358,6 +2375,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Some(
@@ -2375,6 +2393,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }],
                 0
             ),
@@ -2414,6 +2433,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = [stack(0), stack(1), stack(2), stack(3)];
         assert!(sights_in_hand(&c, &inv, 0), "a revolver");
@@ -2439,6 +2459,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = [stack(0), stack(1)];
         assert_eq!(draw_in_hand(&c, &inv, 0), Some((30, 60)));

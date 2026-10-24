@@ -146,6 +146,7 @@ fn lay_base(core: &mut ShardCore, cx0: u16, cz0: u16, n: usize) -> Vec<(u16, u16
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let before = core.world.pieces.len();
         sim_core::build::place(
@@ -407,6 +408,7 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let late = (CX - 1, CZ);
     assert!(core.wants_action(1), "hand should be open");
@@ -521,6 +523,7 @@ fn a_removal_reaches_who_was_walked_the_piece_and_not_a_far_client() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     sim_core::deploy::place_deploy(
         SEED,

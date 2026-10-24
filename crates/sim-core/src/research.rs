@@ -279,6 +279,7 @@ pub fn blueprint_of(rc: &ResearchContent, target: u16) -> ItemStack {
         count: 1,
         cond: target.saturating_add(1),
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 
@@ -641,6 +642,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(
             blueprint_target(&rc, blank),
@@ -652,6 +654,7 @@ mod tests {
             count: 1,
             cond: 5,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(blueprint_target(&rc, other), None, "only paper is paper");
         assert_eq!(
@@ -671,6 +674,7 @@ mod tests {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(table_accepts(&rc, 0, one(4, 1)), "one researchable unit");
         assert!(!table_accepts(&rc, 0, one(4, 2)), "never two");

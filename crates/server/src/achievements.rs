@@ -2311,6 +2311,7 @@ mod tests {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 

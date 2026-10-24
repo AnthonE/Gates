@@ -125,6 +125,7 @@ fn main() {
         damage: 1,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 12,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -176,12 +177,14 @@ fn main() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[7] = ItemStack {
             item: ROUND,
             count: u16::MAX,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.frame = InputFrame {
             seq: 1,
@@ -204,8 +207,8 @@ fn main() {
         // `Player::mag` an empty one dry-clicks, and this probe read
         // 0.00 ms for every mode because nobody fired at all.
         for p in players.iter_mut() {
-            p.mag[0] = 8;
-            p.mag_round[0] = ROUND;
+            p.set_gun(|g| g.loaded = 8);
+            p.set_gun(|g| g.round = ROUND);
         }
         let start = std::time::Instant::now();
         ranged::hitscan(

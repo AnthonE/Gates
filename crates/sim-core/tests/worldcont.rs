@@ -740,6 +740,7 @@ fn a_crate_gives_loot_and_takes_none() {
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let before = w.world_conts.entries()[0].items;
     put_back(&mut w, cx, cz, 5, free as u8, 7);
@@ -781,7 +782,8 @@ fn a_crate_gives_loot_and_takes_none() {
             item: 1,
             count: 7,
             cond: 0,
-            skin: 0
+            skin: 0,
+            ..ItemStack::EMPTY
         },
         "the player's stack was swapped into the crate"
     );

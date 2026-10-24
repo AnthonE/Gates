@@ -416,12 +416,14 @@ fn test_alloc_zero() {
         count: 60_000,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     world.players[0].inv[21] = ItemStack {
         item: 1,
         count: 60_000,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The duel: bots 3 and 4, armed in the hand they hold. Deliberately
     // not bot 1 — the builder must keep its stock and its own cell, and a
@@ -436,6 +438,7 @@ fn test_alloc_zero() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     // Bot 1's own build cell, so place and upgrade always have reach.
@@ -500,6 +503,7 @@ fn test_alloc_zero() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     world.tick(&[Command::PlaceDeploy {
         id: 6,
@@ -562,12 +566,14 @@ fn test_alloc_zero() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     world.players[FARMER].inv[4] = ItemStack {
         item: world.cook.farm.crops[0].seed,
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     world.tick(&[Command::PlaceDeploy {
         id: FARMER as u32 + 1,
@@ -587,10 +593,14 @@ fn test_alloc_zero() {
         planter_i,
         0,
         ItemStack {
-            item: world.cook.farm.water_full,
+            item: world.cook.farm.water_vessel,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: sim_core::survival::Water {
+                ml: world.cook.farm.water_ml,
+                salt: false,
+            }
+            .data(),
+            ..ItemStack::EMPTY
         },
     );
     world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz + 1.0);
@@ -626,6 +636,7 @@ fn test_alloc_zero() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let first = spots
         .by_ref()
@@ -655,10 +666,9 @@ fn test_alloc_zero() {
         catcher,
         0,
         ItemStack {
-            item: world.cook.farm.water_empty,
+            item: world.cook.farm.water_vessel,
             count: 1,
-            cond: 0,
-            skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     let centre = |(cx, cz, ox, oz): (u16, u16, i8, i8)| {
@@ -674,6 +684,7 @@ fn test_alloc_zero() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz + 1.0);
     let soft_q = (
@@ -681,10 +692,14 @@ fn test_alloc_zero() {
         sim_core::movement::quant_xz(soft.1),
     );
     let skin = ItemStack {
-        item: world.cook.farm.water_full,
+        item: world.cook.farm.water_vessel,
         count: 1,
-        cond: 0,
-        skin: 0,
+        data: sim_core::survival::Water {
+            ml: world.cook.farm.water_ml,
+            salt: false,
+        }
+        .data(),
+        ..ItemStack::EMPTY
     };
 
     let mut assisted_world = sim_core::probe::assist_probe_world(42);
@@ -771,6 +786,7 @@ fn test_alloc_zero() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // Bot 6 is the starving body: both meters emptied as the window opens,
     // deliberately not a bot the duel, the raid or the build script uses.
@@ -1007,7 +1023,7 @@ fn test_alloc_zero() {
         if world.farm.ground_count() > ground_before {
             sown += 1;
         }
-        if world.players[FARMER].inv[0].item == world.cook.farm.water_empty {
+        if world.players[FARMER].inv[0].data == 0 {
             poured += 1;
         }
         let pieces_now = world.pieces.len();
@@ -1284,10 +1300,10 @@ fn test_alloc_zero() {
     let filled = world
         .deploys
         .box_index(catcher_key)
-        .map(|i| world.deploys.boxes()[i].items[0].item);
+        .map(|i| world.deploys.boxes()[i].items[0].data);
     assert_eq!(
         filled,
-        Some(world.cook.farm.water_full),
+        Some(u32::from(world.cook.farm.water_ml)),
         "the catcher pass did not fill its skin inside the counted window"
     );
     assert_eq!(

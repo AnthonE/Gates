@@ -61,6 +61,8 @@ fn ent(id: u32) -> EntityState {
         held: None,
         lit: false,
         held_skin: 0,
+        held_mods: 0,
+        beam: false,
     }
 }
 

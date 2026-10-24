@@ -49,9 +49,34 @@ pub fn icon_stem(
     if stack.count == 0 {
         return None;
     }
+    let (look, plain) = looks(catalog, stack)?;
+    STEMS
+        .iter()
+        .copied()
+        .find(|k| *k == look)
+        .or_else(|| STEMS.iter().copied().find(|k| *k == plain))
+}
+
+/// The stem a stack is drawn by, and its item's plain one: a vessel with
+/// water in it (`sim_core::survival::Water`, its data) is drawn full —
+/// `full_waterskin`, or `salt_waterskin` with the sea in it — where that
+/// picture or model exists, else as itself. `None` for an empty slot.
+pub fn looks(
+    catalog: &protocol::ItemCatalog,
+    stack: sim_core::gather::ItemStack,
+) -> Option<(String, String)> {
+    if stack.count == 0 {
+        return None;
+    }
     let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
-    let s = stem(name);
-    STEMS.iter().copied().find(|k| *k == s)
+    let plain = stem(name);
+    let w = sim_core::survival::Water::of(stack.data);
+    let look = if catalog.row(stack.item as usize).pour && w.ml > 0 {
+        format!("{}_{plain}", if w.salt { "salt" } else { "full" })
+    } else {
+        plain.clone()
+    };
+    Some((look, plain))
 }
 
 /// Every stem `assets/icons/` ships.
@@ -65,7 +90,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 196] = [
+pub const STEMS: [&str; 212] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -227,6 +252,22 @@ pub const STEMS: [&str; 196] = [
     "python_revolver",
     "rocket_launcher",
     "5_56_rifle_ammo",
+    "hv_5_56_rifle_ammo",
+    "incendiary_5_56_ammo",
+    "explosive_5_56_ammo",
+    "hv_pistol_round",
+    "incendiary_pistol_round",
+    "12_gauge_slug",
+    "incendiary_shell",
+    "handmade_shell",
+    "holosight",
+    "8x_zoom_scope",
+    "silencer",
+    "muzzle_brake",
+    "muzzle_boost",
+    "weapon_lasersight",
+    "weapon_flashlight",
+    "extended_magazine",
     "12_gauge_buckshot",
     "rocket",
     "timed_explosive_charge",
@@ -361,6 +402,7 @@ mod tests {
                     count,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 },
             )
         };
@@ -382,6 +424,7 @@ mod tests {
                     count: 3,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 }
             ),
             None
@@ -396,6 +439,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 }
             ),
             None
@@ -412,6 +456,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         };
         assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
         assert_eq!(

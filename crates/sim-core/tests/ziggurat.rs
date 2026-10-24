@@ -498,6 +498,7 @@ fn a_bag_dropped_in_a_card_doorway_is_not_sealed_in_its_leaf() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].food = 0;
     w.players[0].water = 0;

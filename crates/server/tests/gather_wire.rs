@@ -489,6 +489,7 @@ fn a_bow_draw_is_heard_once_by_the_neighbour() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
 
     let mut seen: Vec<(usize, protocol::EventMsg)> = Vec::new();

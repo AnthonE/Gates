@@ -253,6 +253,6 @@ fn every_bearing_a_player_can_reach_prints_three_digits() {
             "yaw {yaw} printed {s:?}"
         );
         // 1 px of mouse at a time, all the way round and past the wrap.
-        yaw = client::look::yaw_after(yaw, 1.0, MOUSE_RAD_PER_PX * 4.0);
+        yaw = client::look::yaw_after(yaw, 1.0, MOUSE_RAD_PER_PX * 10.0);
     }
 }

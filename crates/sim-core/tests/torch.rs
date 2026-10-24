@@ -49,6 +49,7 @@ fn lit_world() -> World {
         count: 1,
         cond: 400,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }

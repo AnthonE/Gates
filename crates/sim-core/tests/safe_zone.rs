@@ -55,6 +55,7 @@ fn in_town(lx: f32, lz: f32) -> (Box<World>, usize) {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 4,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -85,12 +86,14 @@ fn in_town(lx: f32, lz: f32) -> (Box<World>, usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[slot].inv[1] = ItemStack {
         item: ROUND,
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[]);
     (w, slot)
@@ -388,6 +391,7 @@ fn another_players_bag_in_the_zone_cannot_be_looted() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let looter_at = |lz: f32| {
         let (x, z) = kit::to_world(&t.placed(), 0.0, lz);
@@ -447,6 +451,7 @@ fn a_bag_in_the_zone_takes_nothing_even_from_its_owner() {
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     let tick = w.tick;

@@ -189,7 +189,7 @@ pub fn hash(c: &Content) -> u64 {
         // The magazine and its reload reach `RangedDef` too.
         h.u(w.magazine.unwrap_or(0));
         h.u(w.reload_ms.unwrap_or(0));
-        match w.gun {
+        match &w.gun {
             None => h.u(0),
             Some(g) => {
                 h.u(1);
@@ -212,8 +212,17 @@ pub fn hash(c: &Content) -> u64 {
                     g.recoil_yaw_cdeg[0] as u32,
                     g.recoil_yaw_cdeg[1] as u32,
                     g.ads_recoil_pct,
+                    g.velocity_pct,
                 ] {
                     h.u(v);
+                }
+                // The attachments it takes reach `Gun::mods`; their order
+                // is the list's and means nothing, so sorted.
+                let mut mods: Vec<&String> = g.mods.iter().collect();
+                mods.sort();
+                h.u(mods.len() as u32);
+                for m in mods {
+                    h.s(m);
                 }
             }
         }
@@ -232,6 +241,10 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.damage_pct);
         h.u(a.fire_s[0]);
         h.u(a.fire_s[1]);
+        h.u(a.pellets);
+        h.u(a.falloff_m[0]);
+        h.u(a.falloff_m[1]);
+        h.u(a.falloff_pct);
         match a.blast {
             None => h.u(0),
             Some(b) => {
@@ -240,6 +253,29 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(b.damage);
                 h.u(b.structure);
             }
+        }
+    }
+
+    // The attachments, in declared order — that order is each one's bit
+    // (`CombatContent::mods`), so it is state, not presentation.
+    h.s("attachments");
+    for a in &c.attachments {
+        h.s(&a.id);
+        for v in [
+            a.slot as u32,
+            a.aim_pct,
+            a.hip_pct,
+            a.recoil_pct,
+            a.damage_pct,
+            a.velocity_pct,
+            a.rate_pct,
+            a.magazine_pct,
+            a.zoom_pct,
+            u32::from(a.quiet),
+            u32::from(a.laser),
+            u32::from(a.light),
+        ] {
+            h.u(v);
         }
     }
 
@@ -497,7 +533,6 @@ pub fn hash(c: &Content) -> u64 {
     let fm = &c.farm;
     h.s("farm");
     h.s(&fm.water);
-    h.s(&fm.emptied);
     h.u(fm.skin_water);
     h.u(fm.planter_water);
     h.u(fm.rain_water);
@@ -588,9 +623,11 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.drink_water_salt.map_or(u32::MAX, |w| w));
     h.u(sv.vessels.len() as u32);
     for v in &sv.vessels {
-        h.s(&v.empty);
-        h.s(&v.fresh);
-        h.s(v.salt.as_deref().unwrap_or(""));
+        h.s(&v.item);
+        h.u(v.ml);
+        h.u(v.sip_ml);
+        h.u(v.water_per_l);
+        h.u(v.salt as u32);
     }
     h.u(sv.bleed_pct);
     h.u(sv.bleed_hp_per_min);

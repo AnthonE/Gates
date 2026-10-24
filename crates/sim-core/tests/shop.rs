@@ -57,6 +57,7 @@ fn stack(item: u16, count: u16) -> ItemStack {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 

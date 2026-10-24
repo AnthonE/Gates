@@ -239,12 +239,14 @@ fn stage(w: &mut World) -> (u32, usize) {
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[o].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: OWNER,
@@ -287,6 +289,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
                 count: STACK,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
     }
@@ -301,6 +304,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
             count: STACK,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; INV_SLOTS];
         // Carcasses' bags, not the flooders' own: every flooder stands on
         // one spot, so `Loot` takes whichever bag is lowest in the store, and

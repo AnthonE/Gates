@@ -225,18 +225,21 @@ fn deployables_ride_the_wire() {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 1,
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: 2,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // Foundation + hearth at the spawn cell: both broadcast; the hearth
@@ -292,6 +295,7 @@ fn deployables_ride_the_wire() {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -386,6 +390,7 @@ fn deployables_ride_the_wire() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -452,6 +457,7 @@ fn deployables_ride_the_wire() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -529,12 +535,14 @@ fn the_crew_in_their_claim_hear_the_stock_unasked() {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -626,6 +634,7 @@ fn the_crew_in_their_claim_hear_the_stock_unasked() {
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -705,18 +714,21 @@ fn doors_toggle_across_the_wire() {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 4,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: 7,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     for a in [
@@ -1290,6 +1302,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         sim_core::build::place(
             SEED,
@@ -1360,6 +1373,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
                 count: 10,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             act(
                 &mut core,
@@ -1517,6 +1531,7 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let hour = if k < DOOMED { 0 } else { HOURS };
         sim_core::build::place(
@@ -1698,6 +1713,7 @@ fn a_decay_storm_leaves_every_deploy_walk_standing() {
                 count: 10,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             let before = w.deploys.len();
             sim_core::deploy::place_deploy(
@@ -1840,12 +1856,14 @@ fn a_far_resync_keeps_your_own_hearth_and_not_a_strangers() {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for a in [
         ActionMsg::Place {
@@ -1940,6 +1958,7 @@ fn a_late_joiner_sees_a_fire_burning() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -1969,6 +1988,7 @@ fn a_late_joiner_sees_a_fire_burning() {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     act(
@@ -2035,6 +2055,7 @@ fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     act(
         &mut core,
@@ -2064,6 +2085,7 @@ fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     let strike = ActionMsg::Use {
@@ -2184,12 +2206,14 @@ fn a_posed_door_swings_across_the_wire() {
         count: 200,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 4,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // A square foundation turned off the grid, its middle three metres off.

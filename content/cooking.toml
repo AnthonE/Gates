@@ -64,10 +64,12 @@ seconds = 15
 # purifier, without its separate deployable — a vessel of sea water on the
 # grill comes off drinkable. The time is the price, and the wood that burns
 # while it boils: the reference purifies 4:1 over a few minutes, and a skin
-# here is half a minute. A jug holds lake water only.
+# here is half a minute. A jug holds lake water only. The row pays its input
+# back: a waterskin of sea water comes off fresh, in place, and a fresh or an
+# empty one does not cook (`oven::step`).
 [[cook]]
-input = "item.waterskin_salt"
-output = "item.waterskin_full"
+input = "item.waterskin"
+output = "item.waterskin"
 station = "fire"
 seconds = 30
 
@@ -363,8 +365,7 @@ seconds = 5
 # weigh 10, G, Y and H 6) when it outweighs its own. A clone (cut at
 # sapling to mature) is the crop's seed carrying the plant's genes.
 [farm]
-water = "item.waterskin_full"
-emptied = "item.waterskin"
+water = "item.waterskin"
 skin_water = 3600
 planter_water = 7200
 rain_water = 6
@@ -388,8 +389,8 @@ ground_water = 1800
 ground_rain = 3
 soil = { meadow = 550, forest = 450 }
 # The water catcher: a barrel of `catcher_water` plant-seconds that banks
-# `catcher_rain` a second in full rain, fills an empty waterskin in its slot
-# for exactly `skin_water`, and every 5 s pours `catcher_flow` a second into
+# `catcher_rain` a second in full rain, tops up a waterskin in its slot at
+# `skin_water` the full skin, and every 5 s pours `catcher_flow` a second into
 # each planter and growing ground plant within `catcher_reach_cm` of it.
 catcher_water = 10800
 catcher_rain = 20

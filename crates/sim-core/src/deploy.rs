@@ -4831,6 +4831,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         p
@@ -5727,6 +5728,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         take_stock(&dc, &gc, &mut deploys, &mut p, (CX, CZ, 0), 0, &mut ev);
@@ -9858,6 +9860,7 @@ mod tests {
                 count: 5,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
         reconcile(&dc, &deploys, AMMO, &mut table, &mut slots);

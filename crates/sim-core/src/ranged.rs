@@ -120,14 +120,13 @@
 //! a slab presents.
 
 use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
-use crate::combat::{held_item, CombatContent};
+use crate::combat::{held_gun, held_item, set_held_gun, CombatContent, GunState};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
 use crate::input::{BTN_AIM, BTN_PRIMARY, BTN_SPRINT};
 use crate::limits::{
     ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROWS_PER_OWNER, MAX_ARROW_LIFE_TICKS,
-    MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PELLETS,
-    MAX_PLAYERS,
+    MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_PELLETS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -146,8 +145,8 @@ use crate::yaw_lut::yaw_dir;
 // The mechanic a body-part ladder needs to be legible. `rate_ticks` alone
 // makes a firefight an unbroken stream of identical clicks, and the
 // difference between a leg and a chest is then only a slightly longer
-// stream; with a magazine, missing has a price. The magazine is per weapon
-// row (`RangedDef::mag_slot`, whose doc states the cost of that choice) and
+// stream; with a magazine, missing has a price. The magazine is the gun's
+// own, in its stack's data (`combat::GunState`), and
 // the wait is paid on `Player::next_swing`, the field gather, melee and
 // both ranged paths already share — so a reload stops a swing and a swing
 // stops a reload, with no second clock to keep in step.
@@ -241,19 +240,21 @@ pub fn reload(
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     };
+    // An extended magazine holds more (`attach.rs`).
+    let mut g = held_gun(p);
+    let def = cc.modded(def, g.mods);
     // A bow: `R` picks the next kind of arrow it carries (Rust holds `R`
     // for a wheel of the kinds you carry; one press a kind is the same
     // choice). A bow spends straight out of the quiver, so there is no
     // cylinder to fill — `magazine == 0` is read as exactly that.
-    if def.magazine == 0 && !def.hitscan && (def.mag_slot as usize) < MAX_MAGS {
+    if def.magazine == 0 && !def.hitscan {
         return switch_round(tick, cc, events, p, &def);
     }
-    if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
+    if def.magazine == 0 {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     }
-    let slot = def.mag_slot as usize;
-    let loaded = p.mag[slot];
+    let loaded = g.loaded;
     let pair = mag_pair(loaded, def.magazine);
     // Mid-cadence, mid-swing or mid-reload — one field, one sentence.
     // Checked before the full test so that spamming the key during a
@@ -262,7 +263,14 @@ pub fn reload(
         refuse(events, REFUSE_RL_BUSY, pair);
         return false;
     }
-    if loaded >= def.magazine {
+    // **R on a full magazine changes the ammo**, Rust's ammo pick: the next
+    // kind along the gun's list the pack carries — HV, incendiary, a slug —
+    // is loaded in place of what is in it, which goes back to the pack. With
+    // one kind carried the magazine is simply full, and says so.
+    let next_kind = (loaded >= def.magazine)
+        .then(|| next_carried(p, &def, g.round))
+        .flatten();
+    if loaded >= def.magazine && next_kind.is_none() {
         refuse(events, REFUSE_RL_FULL, pair);
         return false;
     }
@@ -277,9 +285,11 @@ pub fn reload(
     // `StartReload`, which refunds the partial magazine and loads the new
     // round. Mixing is still never done: the old kind leaves before the new
     // one goes in.
-    let held_kind = p.mag_round[slot] != NO_ITEM && loaded > 0;
-    let round = if held_kind && inv_count(&p.inv, p.mag_round[slot]) > 0 {
-        p.mag_round[slot]
+    let held_kind = g.round != NO_ITEM && loaded > 0;
+    let round = if let Some(r) = next_kind {
+        r
+    } else if held_kind && inv_count(&p.inv, g.round) > 0 {
+        g.round
     } else {
         let Some(r) = def
             .ammo
@@ -294,7 +304,7 @@ pub fn reload(
         r
     };
     // A switch empties the magazine first, so it wants a full one's worth.
-    let switching = held_kind && round != p.mag_round[slot];
+    let switching = held_kind && round != g.round;
     let kept = if switching { 0 } else { loaded };
     let want = def.magazine - kept;
     // `u32` down to `u16`: `inv_count` totals a whole inventory and
@@ -314,26 +324,51 @@ pub fn reload(
     // refund; what still does not fit spills at the shooter's feet.
     inv_take(&mut p.inv, round, got as u32);
     if switching {
-        refund(gc, p, slot, spill);
+        refund(gc, p, &mut g, spill);
     }
-    p.mag[slot] = kept + got;
-    p.mag_round[slot] = round;
+    let was = g.round;
+    g.loaded = kept + got;
+    g.round = round;
+    set_held_gun(p, g);
     // The beat you are helpless for, on the shared cadence field.
     p.next_swing = tick + def.reload_ticks.max(1) as u64;
     events.push(
         EV_RELOAD,
         p.id,
-        mag_pair(p.mag[slot], def.magazine),
+        mag_pair(g.loaded, def.magazine),
         got as u32,
     );
+    // A new kind in the magazine is said, the bow's `EV_AMMO`, so the
+    // readout names the round the gun now fires.
+    if was != round {
+        events.push(EV_AMMO, p.id, u32::from(item) << 16 | u32::from(round), 0);
+    }
     true
 }
 
 /// Empty magazine `slot` into the pack: what fits joins it, the rest goes
 /// to `spill` for the caller to drop at the shooter's feet (`inv_add`'s
 /// round-ceiling rule, `World::shed`'s reasoning for `cond_max_of`).
-fn refund(gc: &GatherContent, p: &mut Player, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
-    let (n, round) = (p.mag[slot], p.mag_round[slot]);
+/// The next round along `def`'s list after `current` that the pack carries,
+/// wrapping, other than `current` itself.
+fn next_carried(p: &Player, def: &crate::combat::RangedDef, current: u16) -> Option<u16> {
+    let list = def.ammo.iter().copied().take_while(|&a| a != NO_ITEM);
+    let n = list.clone().count();
+    let at = list.clone().position(|a| a == current).unwrap_or(n);
+    (1..=n)
+        .map(|k| def.ammo[(at + k) % n.max(1)])
+        .find(|&r| r != current && inv_count(&p.inv, r) > 0)
+}
+
+/// Empty `g`'s magazine into `p`'s pack (the rest to `spill`). The caller
+/// writes `g` back to the gun's stack.
+fn refund(
+    gc: &GatherContent,
+    p: &mut Player,
+    g: &mut GunState,
+    spill: &mut [ItemStack; INV_SLOTS],
+) {
+    let (n, round) = (g.loaded, g.round);
     if n > 0 && round != NO_ITEM {
         inv_add_spilling(
             &mut p.inv,
@@ -344,8 +379,8 @@ fn refund(gc: &GatherContent, p: &mut Player, slot: usize, spill: &mut [ItemStac
             gc.cond_max_of(round),
         );
     }
-    p.mag[slot] = 0;
-    p.mag_round[slot] = NO_ITEM;
+    g.loaded = 0;
+    g.round = NO_ITEM;
 }
 
 /// Empty the held weapon's magazine back into the pack (`NOW.md` §0mag 2,
@@ -369,24 +404,23 @@ pub fn unload(
     let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
         events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
     };
-    let Some(def) = cc
-        .held_ranged(item)
-        .filter(|d| d.magazine > 0 && (d.mag_slot as usize) < MAX_MAGS)
-    else {
+    let Some(def) = cc.held_ranged(item).filter(|d| d.magazine > 0) else {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     };
-    let slot = def.mag_slot as usize;
-    let pair = mag_pair(p.mag[slot], def.magazine);
+    let mut g = held_gun(p);
+    let def = cc.modded(def, g.mods);
+    let pair = mag_pair(g.loaded, def.magazine);
     if tick < p.next_swing {
         refuse(events, REFUSE_RL_BUSY, pair);
         return false;
     }
-    if p.mag[slot] == 0 || p.mag_round[slot] == NO_ITEM {
+    if g.loaded == 0 || g.round == NO_ITEM {
         refuse(events, REFUSE_RL_UNLOADED, pair);
         return false;
     }
-    refund(gc, p, slot, spill);
+    refund(gc, p, &mut g, spill);
+    set_held_gun(p, g);
     events.push(EV_RELOAD, p.id, mag_pair(0, def.magazine), 0);
     true
 }
@@ -659,12 +693,16 @@ pub struct Quarry<'a> {
 impl Quarry<'_> {
     /// The nearest living animal the segment `o + s·t` (millimetres)
     /// enters, as `melee::mob_cast` answers it for a swing.
-    fn first(&self, o: (f32, f32, f32), s: (f32, f32, f32)) -> Option<crate::melee::MobHit> {
+    pub(crate) fn first(
+        &self,
+        o: (f32, f32, f32),
+        s: (f32, f32, f32),
+    ) -> Option<crate::melee::MobHit> {
         let ray = crate::melee::Ray { o, s, len_mm: 0.0 };
         crate::melee::mob_cast(self.mc, self.mobs, &ray)
     }
 
-    fn push(&mut self, hit: MobShot) {
+    pub(crate) fn push(&mut self, hit: MobShot) {
         if self.n < self.hits.len() {
             self.hits[self.n] = hit;
             self.n += 1;
@@ -762,14 +800,14 @@ impl Lit {
         nb: 0,
     };
 
-    fn push(&mut self, f: Ignite) {
+    pub(crate) fn push(&mut self, f: Ignite) {
         if self.n < MAX_ARROWS {
             self.e[self.n] = f;
             self.n += 1;
         }
     }
 
-    fn boom(&mut self, b: Boom) {
+    pub(crate) fn boom(&mut self, b: Boom) {
         if self.nb < MAX_ARROWS {
             self.booms[self.nb] = b;
             self.nb += 1;
@@ -783,7 +821,7 @@ const CH_FIRE_LIFE: u32 = 118;
 /// How long a fire lit by slot `slot` on `tick` burns, between the round's
 /// shortest and longest — `spent::breaks`' stateless draw, so a replay rolls
 /// the same fire.
-fn fire_ticks(seed: u64, tick: u64, slot: usize, [lo, hi]: [u16; 2]) -> u16 {
+pub(crate) fn fire_ticks(seed: u64, tick: u64, slot: usize, [lo, hi]: [u16; 2]) -> u16 {
     let span = u64::from(hi.saturating_sub(lo)) + 1;
     let h = crate::rng::cell_hash(seed, slot as i32, tick as i32, CH_FIRE_LIFE);
     lo + (((h >> 32) * span) >> 32) as u16
@@ -853,6 +891,12 @@ impl Arrows {
         self.lit.n = 0;
     }
 
+    /// Where a bullet's fire and blast rounds go (`bullet::step`): the same
+    /// two queues an arrow's land in, drained by `World` the same way.
+    pub fn lit_mut(&mut self) -> &mut Lit {
+        &mut self.lit
+    }
+
     /// The exploding rounds that came down since [`Arrows::clear_booms`].
     pub fn booms(&self) -> &[Boom] {
         &self.lit.booms[..self.lit.nb]
@@ -900,8 +944,8 @@ fn carried_rounds<'a>(
         .filter(move |&a| inv_count(&p.inv, a) > 0 && cc.ammo_def(a).is_some())
 }
 
-/// The round a bow will loose: the one picked (`Player::mag_round` in the
-/// bow's slot) while it is still carried, else the first carried in the
+/// The round a bow will loose: the one picked (`GunState::round` on the
+/// bow) while it is still carried, else the first carried in the
 /// weapon's list — and the pick follows, announced (`EV_AMMO`) when it
 /// moves, so the readout is never stale. `None` when none is carried.
 fn keep_round(
@@ -910,19 +954,16 @@ fn keep_round(
     p: &mut Player,
     def: &crate::combat::RangedDef,
 ) -> Option<u16> {
-    let slot = def.mag_slot as usize;
-    if slot >= MAX_MAGS {
-        // A slotless bow (test fixtures, an unarmed row): the list's first.
-        return carried_rounds(cc, p, def).next();
-    }
-    let picked = p.mag_round[slot];
+    let mut g = held_gun(p);
+    let picked = g.round;
     if picked != NO_ITEM && carried_rounds(cc, p, def).any(|r| r == picked) {
         return Some(picked);
     }
     let next = carried_rounds(cc, p, def).next();
     let now = next.unwrap_or(NO_ITEM);
     if now != picked {
-        p.mag_round[slot] = now;
+        g.round = now;
+        set_held_gun(p, g);
         events.push(
             EV_AMMO,
             p.id,
@@ -944,7 +985,6 @@ fn switch_round(
     p: &mut Player,
     def: &crate::combat::RangedDef,
 ) -> bool {
-    let slot = def.mag_slot as usize;
     let current = keep_round(cc, events, p, def).unwrap_or(NO_ITEM);
     let mut after = false;
     let mut next = None;
@@ -960,7 +1000,9 @@ fn switch_round(
         events.push(EV_AMMO, p.id, held | u32::from(current), 0);
         return false;
     };
-    p.mag_round[slot] = next;
+    let mut g = held_gun(p);
+    g.round = next;
+    set_held_gun(p, g);
     let rearm = if def.draw_ticks > 0 {
         1 + u64::from(def.draw_ticks)
     } else {
@@ -2468,8 +2510,13 @@ pub fn hitscan(
     kills: &mut [Kill; MAX_ARROWS],
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
+    // A fixture's rounds carry no ballistics, so nothing is launched into
+    // this store; a fixture that wants flight calls `hitscan_hunting` with
+    // its own and steps it (`bullet::step`).
+    let mut spare = crate::bullet::Bullets::new();
     hitscan_in(
-        seed, seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
+        seed, seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips,
+        &mut spare, None,
     )
 }
 
@@ -2500,6 +2547,7 @@ pub fn hitscan_hunting(
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
     chips: &mut [Chip; MAX_ARROWS],
+    bullets: &mut crate::bullet::Bullets,
     quarry: &mut Quarry,
 ) -> (usize, usize) {
     hitscan_in(
@@ -2516,6 +2564,7 @@ pub fn hitscan_hunting(
         events,
         kills,
         chips,
+        bullets,
         Some(quarry),
     )
 }
@@ -2535,6 +2584,7 @@ fn hitscan_in(
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
     chips: &mut [Chip; MAX_ARROWS],
+    bullets: &mut crate::bullet::Bullets,
     mut quarry: Option<&mut Quarry>,
 ) -> (usize, usize) {
     let mut n_kills = 0usize;
@@ -2569,6 +2619,10 @@ fn hitscan_in(
         if !def.hitscan {
             continue;
         }
+        // The gun as its attachments make it (`attach.rs`).
+        let gs = held_gun(p);
+        let quiet = cc.quiet(&def, gs.mods);
+        let def = cc.modded(def, gs.mods);
         let gun = def.gun;
         // The trigger. Released, it re-arms a semi-automatic; held, an
         // automatic fires at its cadence and a semi-automatic only once.
@@ -2598,12 +2652,11 @@ fn hitscan_in(
         // magazineless hitscan row, and an unguarded index into
         // `Player::mag` with `NO_MAG` is the aliasing the constant exists
         // to prevent.
-        let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
-            .then_some(def.mag_slot as usize);
+        let mag = def.magazine > 0;
         let round = match mag {
-            Some(slot) if p.mag[slot] > 0 => Some(p.mag_round[slot]),
-            Some(_) => None,
-            None => def
+            true if gs.loaded > 0 => Some(gs.round),
+            true => None,
+            false => def
                 .ammo
                 .iter()
                 .copied()
@@ -2624,7 +2677,9 @@ fn hitscan_in(
         // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
         // not be re-attempted every tick. It is also what bounds the dry
         // click below to one event per `rate_ticks` per player.
-        players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
+        let (next, due) = cadence(tick, players[i].shot_due, &def);
+        players[i].next_swing = next;
+        players[i].shot_due = due;
         players[i].trigger_spent = gun.semi;
         // A broken gun fires nothing (`NOW.md` §0dur 2): the broken tool's
         // sentence, bounded by the cadence just paid.
@@ -2643,8 +2698,8 @@ fn hitscan_in(
             // refusal and not a silence: without it the gun going quiet is
             // indistinguishable from the client having dropped the input,
             // and the player is owed the sentence that says *press reload*.
-            if let Some(slot) = mag {
-                let pair = mag_pair(players[i].mag[slot], magazine);
+            if mag {
+                let pair = mag_pair(gs.loaded, magazine);
                 events.push(
                     EV_RELOAD_REFUSED,
                     id,
@@ -2654,12 +2709,31 @@ fn hitscan_in(
             }
             continue;
         };
+        // **A round with ballistics flies** (`bullet.rs`): one bullet per
+        // pellet, refused whole — before the round is spent — when the store
+        // or the shooter's share of it has no room for the volley.
+        let flight = cc.ammo_def(round).filter(|a| a.speed_mmpt > 0);
+        // A round may name its own count (a slug is one projectile).
+        let pellets = match flight.map_or(0, |a| a.pellets) {
+            0 => gun.pellets,
+            n => n,
+        };
+        let pellets = (pellets as usize).clamp(1, MAX_PELLETS);
+        if flight.is_some() && !bullets.room_for(id, pellets) {
+            continue;
+        }
         match mag {
             // One round out of the magazine. No event for the spend: the
             // client counts its own shots off `EV_SHOT` (`ClientCore`), and
             // a fill and a dry click both restate the pair, which heals it.
-            Some(slot) => players[i].mag[slot] -= 1,
-            None => {
+            true => set_held_gun(
+                &mut players[i],
+                GunState {
+                    loaded: gs.loaded - 1,
+                    ..gs
+                },
+            ),
+            false => {
                 inv_take(&mut players[i].inv, round, 1);
             }
         }
@@ -2681,7 +2755,6 @@ fn hitscan_in(
         // at seventy.
         let aim = aim_dir(frame.yaw, frame.pitch, frame.pitch_fine);
         let reach = def.range_mm as f32;
-        let pellets = (gun.pellets as usize).clamp(1, MAX_PELLETS);
         let spread = cone
             + if pellets > 1 {
                 u32::from(gun.pellet)
@@ -2703,6 +2776,62 @@ fn hitscan_in(
         } else {
             crate::rng::sip24(secret, seed ^ CH_CONE, tick, i as u64)
         };
+        if let Some(ammo) = flight {
+            // The round's share of the gun's damage (Rust's HV and fire
+            // rounds), then one bullet per pellet down its own cone draw.
+            let damage =
+                (u32::from(def.damage) * u32::from(ammo.damage_pct) / 100).clamp(1, 0xFFFF) as u16;
+            let speed = gun.muzzle(ammo.speed_mmpt);
+            let life = crate::bullet::life_ticks(def.range_mm, speed);
+            let (falloff_mm, falloff_pct) = if ammo.falloff_pct > 0 {
+                (ammo.falloff_mm, ammo.falloff_pct)
+            } else {
+                (gun.falloff_mm, gun.falloff_pct)
+            };
+            let mut first = aim;
+            for k in 0..pellets {
+                let d = cone_dir(aim, spread, crate::rng::splitmix64(key ^ k as u64));
+                if k == 0 {
+                    first = d;
+                }
+                let (vx, vy, vz) = crate::bullet::velocity(d, speed);
+                bullets.launch(crate::bullet::Bullet {
+                    qx: o.0 as i32,
+                    qy: o.1 as i32,
+                    qz: o.2 as i32,
+                    vx,
+                    vy,
+                    vz,
+                    drop: ammo.drop_mmpt2,
+                    owner: id,
+                    item,
+                    round,
+                    damage,
+                    structure: def.structure,
+                    head_pct: def.head_pct,
+                    limb_pct: def.limb_pct,
+                    falloff_mm,
+                    falloff_pct,
+                    back: favour[i],
+                    volley: tick as u32,
+                    reach: def.range_mm,
+                    flown: 0,
+                    life,
+                    lead: k == 0,
+                });
+            }
+            // The report: the first pellet's line, the round's speed and
+            // drop, and its reach — what a client needs to fly the tracer
+            // (`world::shot_bullet_c`).
+            let (wy, wp, wf) = wire_angles(first);
+            events.push(
+                EV_SHOT,
+                id,
+                u32::from(wf as u8) << 24 | u32::from(wy) << 8 | u32::from(wp),
+                crate::world::shot_bullet_c(speed, ammo.drop_mmpt2, def.range_mm, quiet),
+            );
+            continue;
+        }
         let ctx = Shot {
             seed,
             haven,
@@ -3039,25 +3168,51 @@ impl Shot<'_> {
     }
 }
 
+/// The tick a gun may fire again after firing on `tick`, and the exact
+/// moment behind it in 256ths of a tick (`Player::shot_due`). A firearm
+/// with a sub-tick rate carries the remainder when the trigger was held —
+/// it fired on the very tick its last shot allowed — so a 5.25-tick rifle
+/// fires on 0, 6, 11, 16, 21 and averages its rate; a shot taken later
+/// starts the count afresh. Everything else keeps whole ticks.
+pub fn cadence(tick: u64, due: u64, def: &crate::combat::RangedDef) -> (u64, u64) {
+    if def.rate_sub == 0 {
+        return (tick + u64::from(def.rate_ticks.max(1)), 0);
+    }
+    let start = if due.div_ceil(256) == tick {
+        due
+    } else {
+        tick * 256
+    };
+    let due = start + u64::from(def.rate_sub);
+    (due.div_ceil(256).max(tick + 1), due)
+}
+
 /// Rust's stance penalty, in percent of the gun's `moving` term: nothing
 /// standing or crouched still, the whole of it on the move, half of it for
 /// a crouch-walk, and three times it in the air (Rust refuses a jump shot
 /// outright; here it is merely hopeless). Read off the frame's intent, so
 /// both ends of the wire compute it from facts they share.
 pub fn stance_pct(p: &Player) -> u16 {
-    if !p.body.grounded {
+    stance_of(
+        p.body.grounded,
+        p.frame.move_x,
+        p.frame.move_z,
+        p.crouched(),
+        p.frame.buttons,
+    )
+}
+
+/// [`stance_pct`] off the facts themselves, for a client predicting its own
+/// cone (the crosshair's spread) from the frame it is sending.
+pub fn stance_of(grounded: bool, move_x: i8, move_z: i8, crouched: bool, buttons: u8) -> u16 {
+    if !grounded {
         return 300;
     }
-    let m = p
-        .frame
-        .move_x
-        .unsigned_abs()
-        .max(p.frame.move_z.unsigned_abs());
-    if m < 16 {
+    if move_x.unsigned_abs().max(move_z.unsigned_abs()) < 16 {
         return 0;
     }
-    let full = if p.crouched() { 50 } else { 100 };
-    let sprint = p.frame.buttons & BTN_SPRINT != 0 && p.frame.buttons & BTN_AIM == 0;
+    let full = if crouched { 50 } else { 100 };
+    let sprint = buttons & BTN_SPRINT != 0 && buttons & BTN_AIM == 0;
     if sprint {
         full * 3 / 2
     } else {

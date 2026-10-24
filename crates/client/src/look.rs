@@ -43,8 +43,11 @@
 
 use sim_core::yaw_dir;
 
-/// Radians per pixel of mouse travel (`DECISIONS.md` §open, client cosmetics).
-pub const MOUSE_RAD_PER_PX: f32 = 0.0022;
+/// Radians per count of mouse travel at sensitivity 1.0: 0.056°, the same
+/// turn per count as Rust's and CS2's default sensitivity (~20 cm per 360° on
+/// an 800 DPI mouse). It was 0.0022 (~9 cm), over twice as fast as any
+/// shooter ships; `settings::SENS_MAX` still reaches that.
+pub const MOUSE_RAD_PER_PX: f32 = 0.00098;
 
 /// How close to straight up or down the view may get, radians from level.
 /// The browser's `PITCH_LIMIT`; a pitch that reaches the pole makes the yaw

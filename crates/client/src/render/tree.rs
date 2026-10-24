@@ -2171,6 +2171,39 @@ pub fn cap_swap(
     }
 }
 
+/// Re-stamp every [`VisibilityRange`] the frame any one of them changed or
+/// went away.
+///
+/// **A workaround for Bevy 0.18.1, and the 1–2 frame forest flicker.** The
+/// render world's range table (`bevy_render::view::RenderVisibilityRanges`)
+/// is cleared and rebuilt, deduplicated in query order, whenever any range
+/// is added, changed or removed — every chunk the prop rings stream in or
+/// out, and every [`cap_swap`] step. But a mesh's index into that table is
+/// only re-read when the mesh itself is re-extracted
+/// (`extract_meshes_for_gpu_building`'s change filter), so every unchanged
+/// tree, bush and pole kept its old index into the renumbered table and read
+/// some other part's range: near trees and bushes vanished, hulls and cards
+/// stood in, and the next renumbering put them back. Marking every range
+/// changed puts all of them through that filter on the frame the table is
+/// rebuilt. The CPU-building path (WebGL2) re-extracts every frame and does
+/// not need it; it costs nothing there but the walk.
+///
+/// A write here is stamped with this run's tick, so the next run does not
+/// see its own writes as a change.
+pub fn restamp_ranges(
+    mut ranges: Query<&mut VisibilityRange>,
+    mut removed: RemovedComponents<VisibilityRange>,
+) {
+    let gone = !removed.is_empty();
+    removed.clear();
+    if !gone && !ranges.iter_mut().any(|r| r.is_changed()) {
+        return;
+    }
+    for mut r in ranges.iter_mut() {
+        r.set_changed();
+    }
+}
+
 /// How far under the cap ([`cap_at`]) the trees in reach must fall before
 /// [`cap_swap`] lets the bands all the way back out to the tier.
 const CAP_SLACK: usize = 8;

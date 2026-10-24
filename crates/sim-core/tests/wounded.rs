@@ -78,6 +78,7 @@ fn duel_world() -> World {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
@@ -195,6 +196,7 @@ fn arm_victim(w: &mut World) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -342,6 +344,7 @@ fn recovery_item(w: &mut World, slot: usize, count: u16) {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -451,6 +454,7 @@ fn recovery_ignores_empty_and_invalid_belt_stacks() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(w.survival.belt_recovery_slot(&w.players[1]), None);
     recovery_item(&mut w, 2, 1);
@@ -591,6 +595,7 @@ fn a_downed_body_crawls_at_a_third_of_the_walk_and_swings_at_nothing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let start = w.players[1].body;
     let ticks = 30;
@@ -681,9 +686,10 @@ fn a_downed_body_cannot_fire_a_gun() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
-        w.players[1].mag[0] = MAG;
-        w.players[1].mag_round[0] = ROUND;
+        w.players[1].set_gun(|g| g.loaded = MAG);
+        w.players[1].set_gun(|g| g.round = ROUND);
         // Facing the attacker, trigger down, for well past the cadence.
         let pitch = aim_at(&w, 1, 0);
         let mut shots = 0;
@@ -709,7 +715,7 @@ fn a_downed_body_cannot_fire_a_gun() {
                 .filter(|e| e.code == EV_SHOT && e.a == VICTIM)
                 .count() as u32;
         }
-        (shots, w.players[1].mag[0])
+        (shots, w.players[1].gun().loaded)
     };
     let (standing, left) = shots_by_victim(false);
     assert!(standing > 1, "fixture: a standing body fires ({standing})");

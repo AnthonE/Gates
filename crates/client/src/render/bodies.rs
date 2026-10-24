@@ -132,6 +132,12 @@ struct Live {
     /// Where a shouldered long gun's muzzle was last drawn, world space,
     /// for the shot's flash (`fx::gun`). `None` for anything else.
     muzzle: Option<Vec3>,
+    /// The way that gun's barrel points, beside [`Live::muzzle`].
+    barrel: Option<Vec3>,
+    /// The held gun's attachments, and its light key down (wire v144):
+    /// a laser's dot and a flashlight's beam (`mods::remote`).
+    mods: u8,
+    beam: bool,
     /// Which `HELD_MODELS` row the hand and the flame are currently
     /// showing, `sleeping`'s reason exactly — written on a TRANSITION.
     /// Assigning `Mesh3d` unconditionally marks it changed 60 times a
@@ -213,6 +219,15 @@ impl Bodies {
     /// if it shoulders one (`aim_long_guns`).
     pub fn muzzle(&self, id: u32) -> Option<Vec3> {
         self.live.get(&id)?.muzzle
+    }
+
+    /// Every shouldered gun with its light key down: the body, its muzzle,
+    /// the way its barrel points, and its attachments.
+    pub fn beams(&self) -> impl Iterator<Item = (u32, Vec3, Vec3, u8)> + '_ {
+        self.live.iter().filter_map(|(&id, l)| {
+            let (at, dir) = l.muzzle.zip(l.barrel)?;
+            l.beam.then_some((id, at, dir, l.mods))
+        })
     }
 }
 
@@ -516,6 +531,9 @@ pub fn stream(
                         bone: None,
                         off_bone: None,
                         muzzle: None,
+                        barrel: None,
+                        mods: 0,
+                        beam: false,
                     },
                 );
             }
@@ -698,6 +716,7 @@ pub fn aim_long_guns(
 ) {
     for live in store.live.values_mut() {
         live.muzzle = None;
+        live.barrel = None;
         let Ok((anim, mut spine)) = bodies.get_mut(live.entity) else {
             continue;
         };
@@ -745,6 +764,7 @@ pub fn aim_long_guns(
             scale,
         });
         live.muzzle = Some(at + turn * (scale * Vec3::Y * def.height_m));
+        live.barrel = Some(turn * Vec3::Y);
     }
 }
 
@@ -830,6 +850,8 @@ fn update_hand(
     // The held item's skin (skins v0), under the hand's own rule: a hand
     // that draws nothing wears nothing.
     let skin = if want.is_some() { rs.held_skin } else { 0 };
+    live.mods = if want.is_some() { rs.held_mods } else { 0 };
+    live.beam = live.mods != 0 && rs.beam;
     if live.held != want || live.held_skin != skin {
         let mut e = commands.entity(live.hand);
         match want {

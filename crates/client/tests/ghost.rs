@@ -653,6 +653,7 @@ fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     p
@@ -884,6 +885,7 @@ fn a_bad_row_is_red_on_both_sides() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     rig.agree_no(
         &mut p,

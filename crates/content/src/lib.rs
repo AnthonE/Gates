@@ -77,6 +77,10 @@ struct WeaponsFile {
     /// has no row here, which is the check that actually matters.
     #[serde(default)]
     ammo: Vec<Ammo>,
+    /// The weapon attachments (`schema::Attachment`), at most
+    /// `limits::MAX_MODS`, in the order their bits take.
+    #[serde(default)]
+    attachment: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -195,6 +199,8 @@ pub struct Content {
     /// Rounds, with the ballistics that belong to them rather than to the
     /// weapon that fires them (`reference/PROJECTILES.md` §9.3).
     pub ammo: Vec<Ammo>,
+    /// Weapon attachments (Rust's weapon mods), bit order.
+    pub attachments: Vec<Attachment>,
     pub armors: Vec<Armor>,
     pub consumables: Vec<Consumable>,
     pub deployables: Vec<Deployable>,
@@ -323,6 +329,7 @@ impl Content {
             pieces: building.piece,
             weapons: weapons.weapon,
             ammo: weapons.ammo,
+            attachments: weapons.attachment,
             armors: armor.armor,
             consumables: consumables.consumable,
             deployables: deployables.deployable,

@@ -270,18 +270,25 @@ drink_water_salt = 15
 bleed_pct = 20
 bleed_hp_per_min = 20
 
-# The water vessels: H with an empty one in hand at water fills it — fresh
-# where there is any, the sea's salt where the vessel holds it — the left
-# mouse drinks a fresh one, the right mouse pours either out (`World::pour`:
-# it puts out fires and waters what grows, and salt water empties a tank).
+# The water vessels, Rust's water bottle and jug: each holds up to `ml` of
+# water in its own data, fresh, or the sea's salt where `salt` lets it. H
+# with one in hand at water fills it to the brim; eating from it drinks a
+# `sip_ml` sip worth `water_per_l` of the meter a litre (a full skin is the
+# 100 it always was, in four mouthfuls); the right mouse pours it out
+# (`World::pour`: it puts out fires and waters what grows, and salt water
+# empties a tank).
 [[survival.vessels]]
-empty = "item.waterskin"
-fresh = "item.waterskin_full"
-salt = "item.waterskin_salt"
+item = "item.waterskin"
+ml = 1000
+sip_ml = 250
+water_per_l = 100
+salt = true
 
 [[survival.vessels]]
-empty = "item.water_jug"
-fresh = "item.water_jug_full"
+item = "item.water_jug"
+ml = 2000
+sip_ml = 500
+water_per_l = 100
 
 # Wet, cold and heat (weather v0, climate v0, `sim_core::exposure`) — the
 # reference's exposure: rain soaks you unless something is overhead (their

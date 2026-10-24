@@ -162,6 +162,16 @@ PAINT = {
     "fire_arrow": dict(c=FLAME),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),
+    # Weapon attachments (2026-10-23): our own silhouettes
+    # (`ci/icons/masks/`), no game-icons source.
+    "holosight": dict(c=DARK_STEEL, metal=True, holes="#5a1f1f"),
+    "8x_zoom_scope": dict(c=("#3c4046", "#16181b"), metal=True),
+    "silencer": dict(c=("#4a4e54", "#1d2024"), metal=True),
+    "muzzle_brake": dict(c=DARK_STEEL, metal=True),
+    "muzzle_boost": dict(c=("#c9a24a", "#6d531c"), metal=True),
+    "weapon_lasersight": dict(c=("#3b3f45", "#17191c"), metal=True, holes="#ff4030"),
+    "weapon_flashlight": dict(c=("#4d5258", "#1e2125"), metal=True),
+    "extended_magazine": dict(c=("#5a5e64", "#24272b"), metal=True),
     "pistol_round": dict(c=("#f3d27a", "#a47a1e"), metal=True),
     "satchel_charge": dict(c=("#e85a44", "#9a2a1c")),
     "metal_door": dict(c=DARK_STEEL, metal=True),

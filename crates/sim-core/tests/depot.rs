@@ -222,12 +222,14 @@ fn construction_and_ground_deploys_refuse_the_reserved_yard_without_payment() {
             count: 100,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[1] = ItemStack {
             item: 5,
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let before = p.inv;
         let mut pieces = Pieces::new();
@@ -322,9 +324,10 @@ fn warehouse_cover_stops_a_bullet_but_its_doorway_allows_the_hit() {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
-            players[0].mag[0] = 1;
-            players[0].mag_round[0] = 7;
+            players[0].set_gun(|g| g.loaded = 1);
+            players[0].set_gun(|g| g.round = 7);
             players[0].frame = InputFrame {
                 buttons: BTN_PRIMARY,
                 yaw: (site.phase.wrapping_sub(64) as u16) << 8,
@@ -346,7 +349,7 @@ fn warehouse_cover_stops_a_bullet_but_its_doorway_allows_the_hit() {
                 &mut [Kill::default(); MAX_ARROWS],
                 &mut [Chip::default(); MAX_ARROWS],
             );
-            assert_eq!(players[0].mag[0], 0, "both cases must fire a round");
+            assert_eq!(players[0].gun().loaded, 0, "both cases must fire a round");
             if covered {
                 assert_eq!(players[1].hp, 100, "seed {seed}: wall let the shot through");
                 let impact = events

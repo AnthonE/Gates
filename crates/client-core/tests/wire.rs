@@ -105,6 +105,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
                 count: 40,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         },
         InvSlot {
@@ -114,6 +115,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
                 count: 3,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         },
     ];
@@ -134,6 +136,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -143,6 +146,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -168,6 +172,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "a diff must not disturb the slots it did not name"
     );
@@ -182,6 +187,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             count: 99,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     }];
     let len = encode_event_cont_sync(CONT_BOX, BOX ^ 1, false, &foreign, &mut buf).unwrap();
@@ -198,6 +204,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "a foreign diff reached this panel's slots"
     );

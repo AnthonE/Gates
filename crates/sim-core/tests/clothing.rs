@@ -24,6 +24,7 @@ fn one(item: u16) -> ItemStack {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 
@@ -126,6 +127,7 @@ fn drinking_a_tea_pours_it_in_and_a_second_replaces_it() {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mut ev = EventQueue::default();
     assert!(survival::consume(&sc, 0, &mut p, &mut ev, 100));
