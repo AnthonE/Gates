@@ -27,12 +27,14 @@
 //! convention, because the failure it prevents is silent — a world-readable
 //! key works perfectly until somebody else uses it.
 //!
-//! **What it signs is two texts it composes itself, and nothing else.**
+//! **What it signs is three texts it composes itself, and nothing else.**
 //! [`AgentKey::sign_siwe`] builds the shard's login through
 //! `protocol::siwe_message` — the function the shard rebuilds the same bytes
 //! with — from the domain the agent dialled, the shard's nonce and its
-//! `Issued At`. [`AgentKey::sign_face`] builds the platform's `profile` text
-//! (its display name and picture, `jev-bot --set-face`) from typed fields.
+//! `Issued At`. [`AgentKey::sign_companion_hex`] builds the companion page's
+//! sign-in (`protocol::companion_message`) the same way, which no shard takes
+//! as a game login. [`AgentKey::sign_face`] builds the platform's `profile`
+//! text (its display name and picture, `jev-bot --set-face`) from typed fields.
 //! No caller hands this key a sentence to sign, so no caller can smuggle one
 //! into a signature.
 
@@ -333,8 +335,8 @@ impl AgentKey {
 
     /// `personal_sign`: keccak over the EIP-191 envelope, recoverable ECDSA,
     /// `v` as 27/28. Private: the only texts this key signs are the ones
-    /// [`AgentKey::sign_siwe`] and [`AgentKey::sign_face`] composed (module
-    /// header).
+    /// [`AgentKey::sign_siwe`], [`AgentKey::sign_companion_hex`] and
+    /// [`AgentKey::sign_face`] composed (module header).
     fn sign_personal(&self, message: &[u8]) -> Signature {
         let mut k = Keccak::v256();
         k.update(b"\x19Ethereum Signed Message:\n");

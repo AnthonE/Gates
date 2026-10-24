@@ -214,6 +214,199 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
         self.inner.take_note()
     }
+
+    /// An MCP mind's standing plan rides through the recording (it was
+    /// dropped here until 2026-10-24, so `--record` cost a harness its plans).
+    fn take_plan(&mut self) -> Option<crate::mind::Plan> {
+        self.inner.take_plan()
+    }
+}
+
+/// [`DecisionSource`] that keeps the body's journal (`--journal FILE`; each
+/// body of a fleet keeps its own, [`journal_path`]):
+/// one JSON line per answered decision, in the shape the house's runner reads
+/// for the bodies it hosts (`ops/buddy/runner.py`): when, the goal, the
+/// reason, a line it said and to whom, what answered, what plays it and its
+/// wallet. A status, not a dataset (that is `--record`): nothing of what it
+/// saw. Appended and flushed per row, and kept small: past
+/// [`JOURNAL_MAX_BYTES`] the file moves to `<FILE>.1` (one older copy) and a
+/// new one starts. A journal that cannot be written stops, and the bot plays on.
+pub struct Journal<S> {
+    inner: S,
+    out: Option<std::fs::File>,
+    path: PathBuf,
+    rows: u64,
+    harness: Option<String>,
+    model: Option<String>,
+    wallet: Option<String>,
+}
+
+impl<S: DecisionSource> Journal<S> {
+    /// Appends to `path` (made, with its folder, if missing), so a restart
+    /// carries on the same file.
+    pub fn open(
+        inner: S,
+        path: &Path,
+        harness: Option<&str>,
+        model: Option<&str>,
+        wallet: Option<&str>,
+    ) -> Result<Self, String> {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("--journal {}: {e}", dir.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("--journal {}: {e}", path.display()))?;
+        eprintln!("journal: what it does, to {}", path.display());
+        Ok(Self {
+            inner,
+            out: Some(file),
+            path: path.to_owned(),
+            rows: 0,
+            harness: harness.map(str::to_owned),
+            model: model.map(str::to_owned),
+            wallet: wallet.map(str::to_owned),
+        })
+    }
+
+    /// Past [`JOURNAL_MAX_BYTES`], `<FILE>` becomes `<FILE>.1` and a new one
+    /// starts: a body deciding once a second all day stays a few megabytes.
+    fn rotate_if_big(&mut self) {
+        let big = self
+            .out
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .is_some_and(|m| m.len() > JOURNAL_MAX_BYTES);
+        if !big {
+            return;
+        }
+        let mut old = self.path.clone().into_os_string();
+        old.push(".1");
+        self.out = std::fs::rename(&self.path, &old)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+            })
+            .map_err(|e| {
+                eprintln!(
+                    "journal: {} could not rotate ({e}); journal stopped",
+                    self.path.display()
+                )
+            })
+            .ok();
+    }
+}
+
+/// How big a journal grows before it rotates (`Journal`).
+pub const JOURNAL_MAX_BYTES: u64 = 4 << 20;
+
+/// Where body `index` of `bots` keeps its journal: `FILE` itself for one
+/// body, `<stem>-<name>.<ext>` beside it for each of a fleet's
+/// (`journal-Miller-3.jsonl`), so no two bodies share a file.
+pub fn journal_path(file: &Path, name: &str, bots: usize) -> PathBuf {
+    if bots <= 1 {
+        return file.to_owned();
+    }
+    let stem = file
+        .file_stem()
+        .map_or_else(|| "journal".into(), |s| s.to_string_lossy().into_owned());
+    let ext = file.extension().map(|e| e.to_string_lossy().into_owned());
+    let leaf = match ext {
+        Some(e) => format!("{stem}-{name}.{e}"),
+        None => format!("{stem}-{name}"),
+    };
+    file.with_file_name(leaf)
+}
+
+/// One journal line: what [`Journal`] writes.
+pub fn journal_row(
+    choice: &Choice,
+    source: SourceKind,
+    harness: Option<&str>,
+    model: Option<&str>,
+    wallet: Option<&str>,
+) -> Value {
+    let (said, to) = match &choice.say {
+        Say::Line(l) => (Some(l), Some("local")),
+        Say::Team(l) => (Some(l), Some("team")),
+        Say::Global(l) => (Some(l), Some("global")),
+        Say::Quiet | Say::Refused => (None, None),
+    };
+    let said = said.map(|l| {
+        l.iter()
+            .map(|c| String::from_utf8_lossy(c.as_bytes()).into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64());
+    json!({
+        "t": (t * 1000.0).round() / 1000.0,
+        "goal": choice.goal.label().as_str(),
+        "reason": choice.reason.as_str(),
+        "say": said,
+        "to": to,
+        "answered_by": source.label(),
+        "harness": harness,
+        "model": model,
+        "wallet": wallet,
+    })
+}
+
+impl<S: DecisionSource> DecisionSource for Journal<S> {
+    fn kind(&self) -> SourceKind {
+        self.inner.kind()
+    }
+
+    fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let answer = self.inner.decide_fresh(summary, fresher);
+        if let (Ok(choice), Some(out)) = (&answer, self.out.as_mut()) {
+            let line = journal_row(
+                choice,
+                self.inner.kind(),
+                self.harness.as_deref(),
+                self.model.as_deref(),
+                self.wallet.as_deref(),
+            );
+            // One write per row: a reader tailing the file never sees half.
+            let mut line = line.to_string();
+            line.push('\n');
+            if out.write_all(line.as_bytes()).is_err() {
+                eprintln!(
+                    "journal: {} could not be written; journal stopped",
+                    self.path.display()
+                );
+                self.out = None;
+            }
+            self.rows += 1;
+            if self.rows.is_multiple_of(256) {
+                self.rotate_if_big();
+            }
+        }
+        answer
+    }
+
+    fn take_note(&mut self) -> Option<crate::bugs::Note> {
+        self.inner.take_note()
+    }
+
+    fn take_plan(&mut self) -> Option<crate::mind::Plan> {
+        self.inner.take_plan()
+    }
 }
 
 #[derive(Clone)]
@@ -476,7 +669,7 @@ impl DecisionSource for Student {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mind::{Name, Scripted};
+    use crate::mind::{Lines, Name, Scripted};
 
     fn get(f: &[(String, f32)], k: &str) -> Option<f32> {
         f.iter().find(|(key, _)| key == k).map(|(_, v)| *v)
@@ -537,6 +730,77 @@ mod tests {
         );
         let r = row(&sum, &choice, SourceKind::Scripted, 1, None, None);
         assert!(r["harness"].is_null() && r["model"].is_null());
+    }
+
+    /// The journal keeps one line per answer, appended across restarts, in
+    /// the runner's shape: the goal, the reason, a line said and to whom,
+    /// what answered and the body's wallet; nothing of what it saw.
+    #[test]
+    fn the_journal_appends_what_it_does_and_says_in_the_runners_shape() {
+        let dir = std::env::temp_dir().join(format!("journal-{}", std::process::id()));
+        let path = dir.join("rook.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut sum = Summary::EMPTY;
+        sum.offer(Goal::Explore);
+        let wallet = Some("0x00000000000000000000000000000000000000aa");
+        for _ in 0..2 {
+            let mut j = Journal::open(Scripted::default(), &path, Some("h/1"), Some("m-1"), wallet)
+                .unwrap();
+            assert_eq!(j.decide(&sum).unwrap().goal, Goal::Explore);
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let rows: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2, "appended, never truncated: {text}");
+        let r = &rows[1];
+        assert_eq!(r["goal"], "explore");
+        assert_eq!(
+            (r["answered_by"].as_str(), r["wallet"].as_str()),
+            (Some("Scripted"), wallet)
+        );
+        assert_eq!(
+            (r["harness"].as_str(), r["model"].as_str()),
+            (Some("h/1"), Some("m-1"))
+        );
+        assert!(r["say"].is_null() && r["to"].is_null() && r["t"].as_f64().unwrap() > 0.0);
+        assert!(
+            r.get("obs").is_none() && r.get("options").is_none(),
+            "a status, not a dataset"
+        );
+        let mut said = Scripted::default().decide(&sum).unwrap();
+        said.say = Say::Team(Lines::split("on my way").unwrap());
+        let r = journal_row(&said, SourceKind::External, None, None, None);
+        assert_eq!(
+            (r["say"].as_str(), r["to"].as_str()),
+            (Some("on my way"), Some("team"))
+        );
+
+        // Past its cap it rotates to FILE.1 and starts again, so it stays small.
+        std::fs::write(&path, vec![b'x'; JOURNAL_MAX_BYTES as usize + 1]).unwrap();
+        let mut j = Journal::open(Scripted::default(), &path, None, None, wallet).unwrap();
+        for _ in 0..256 {
+            j.decide(&sum).unwrap();
+        }
+        let mut old = path.clone().into_os_string();
+        old.push(".1");
+        assert!(std::fs::metadata(&old).unwrap().len() > JOURNAL_MAX_BYTES);
+        assert!(std::fs::metadata(&path).unwrap().len() < JOURNAL_MAX_BYTES / 4);
+        j.decide(&sum).unwrap();
+        assert!(
+            std::fs::read_to_string(&path).unwrap().lines().count() == 1,
+            "it writes to the new file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // One body keeps FILE; each of a fleet's keeps its own beside it.
+        let f = Path::new("/var/lib/v/journal.jsonl");
+        assert_eq!(journal_path(f, "Rook", 1), f);
+        assert_eq!(
+            journal_path(f, "Miller-3", 12),
+            Path::new("/var/lib/v/journal-Miller-3.jsonl")
+        );
     }
 
     /// Bias-only weights: `gather_wood` over `explore`, `craft:*` over both.

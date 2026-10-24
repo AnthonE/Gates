@@ -42,6 +42,11 @@ BUDDY_STATE:
     public/rent.json         what each agent spent, whether it runs, what it
                              is doing: game.elopros.com/gates/rent.json
 
+It also publishes what the house's other bodies are doing (`others`, keyed by
+wallet): the villages and teammates keep their own journals
+(`jev-bot --journal`, `ops/gates-village@.service`), read here by glob, so the
+platform's agent floor shows them as it shows these.
+
 Environment (defaults in brackets):
 
     BUDDY_FEED_URL        [https://elopros.com/api/buddy/agents]
@@ -55,6 +60,10 @@ Environment (defaults in brackets):
     BUDDY_STATUS_URL      [https://game.elopros.com/gates/status.json] where
                           the shard says how many are on and its cap
     BUDDY_THINK_MS [4000]   BUDDY_MAX_HOUR [400]   BUDDY_MAX_DAY [3000]
+    BUDDY_OTHER_JOURNALS  [/var/lib/gates-village/*/journal*.jsonl
+                           /var/lib/gates-teammate/*/journal*.jsonl] space-
+                          separated globs of other bodies' journals (a
+                          village's bodies keep one each, journal-<name>.jsonl)
     JEV_BOT               [/home/master/gates-jev/jev-bot]
     CLAUDE_AGENT          [/home/master/gates-jev/claude_agent.py]
     CLAUDE_MODEL          [claude-haiku-5-5]
@@ -108,6 +117,10 @@ CLIPS_MIN_USD = 0.05   # what a pool needs left for a clip's picking call
 START_MIN_USD = 0.02   # less than this left is not worth a login
 RESTART_S = 60         # an agent that exited waits this long to come back
 FRIEND_FRESH_S = 90    # a buddy that decided this recently is with its friend
+OTHERS_FRESH_S = 900   # another body that has not decided this long is off
+OTHER_JOURNALS = os.environ.get(
+    "BUDDY_OTHER_JOURNALS",
+    "/var/lib/gates-village/*/journal*.jsonl /var/lib/gates-teammate/*/journal*.jsonl").split()
 FETCH_MAX = 1 << 20
 LIVE_N = 5
 ID = re.compile(r"^[0-9a-f]{10}$|^pot-[a-z0-9-]{1,24}$")
@@ -224,13 +237,37 @@ class Ledger:
         return usd / calls if calls >= 20 else None
 
 
-def tail(p, n=LIVE_N):
+def public_row(r):
+    """A journal line as rent.json shows it. rent.json is public; team chat
+    carries lock codes and the base's whereabouts, so a team line shows that
+    it was said and never what."""
+    return {"t": r.get("t"), "goal": r.get("goal"), "reason": r.get("reason"),
+            "say": None if r.get("to") == "team" else r.get("say"), "to": r.get("to")}
+
+
+def others(globs, now, n=LIVE_N):
+    """{wallet: {"live": [...]}} for every other body whose journal one of
+    `globs` matches (each row names its wallet, so one file or many), the
+    last `n` rows each, and none that has gone quiet."""
+    import glob  # noqa: PLC0415
+    out = {}
+    for pattern in globs:
+        for p in sorted(glob.glob(pattern)):
+            for r in tail(p, n=64 * n, nbytes=1 << 16):
+                w = str(r.get("wallet") or "").lower()
+                if WALLET.match(w) and isinstance(r.get("t"), (int, float)):
+                    out.setdefault(w, []).append(r)
+    return {w: {"live": [public_row(r) for r in sorted(rows, key=lambda r: r["t"])[-n:]]}
+            for w, rows in out.items() if now - max(r["t"] for r in rows) < OTHERS_FRESH_S}
+
+
+def tail(p, n=LIVE_N, nbytes=16384):
     """The last `n` JSON lines of a file, without reading it all."""
     try:
         with open(p, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
-            f.seek(max(0, size - 16384))
+            f.seek(max(0, size - nbytes))
             lines = f.read().splitlines()[-n:]
     except OSError:
         return []
@@ -539,15 +576,11 @@ def main():
                 "address": address(i),
                 "friend_on": bool(agents[i].get("friend")) and i in running and now - last_t < FRIEND_FRESH_S,
                 "mind_seen": int(seen) if seen else None,
-                # rent.json is public; team chat carries lock codes and the
-                # base's whereabouts, so a team line shows that it was said
-                # and never what.
-                "live": [{"t": r.get("t"), "goal": r.get("goal"), "reason": r.get("reason"),
-                          "say": None if r.get("to") == "team" else r.get("say"), "to": r.get("to")}
-                         for r in rows],
+                "live": [public_row(r) for r in rows],
                 "recaps": recap.recent(path("recaps", i + ".jsonl")),
                 "clips": clips_of(i),
             }
+        state["others"] = others(OTHER_JOURNALS, now)
         write_atomic(path("public", "rent.json"), json.dumps(state, separators=(",", ":")))
         # Sleep a tick, or less when a harness calls for its body (but never
         # less than WAKE_GAP_S, so a busy harness cannot spin the feed).
