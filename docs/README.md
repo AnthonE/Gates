@@ -22,6 +22,7 @@ that means the file here.
 | [`PLAYERS.md`](PLAYERS.md) | the agent player (`jev-bot`): a player's inputs and a player's view, nothing more |
 | [`WORLD.md`](WORLD.md) | the fiction. §11 is a secret shared with Before Colony and never said in game |
 | [`BUSINESS.md`](BUSINESS.md) | what we sell. Read it only when building the store, the entry price or the bank |
+| [`STEAM.md`](STEAM.md) | Gates 2, the Steam edition: no economy, cross-play on plain islands, solo and LAN, the funnel to the store |
 
 ## Snapshots and history
 
