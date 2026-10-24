@@ -118,6 +118,7 @@ fn world() -> (World, u16, u16) {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     for cx in [a + 1, a + 2] {
@@ -415,6 +416,7 @@ fn an_own_claim_puts_nothing_down_through_a_wall() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: PLAYER,

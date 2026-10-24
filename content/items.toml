@@ -379,11 +379,11 @@ slot = "hand"
 class = "construction"
 description = "A free-standing wooden barrier to fight behind."
 
-# The water vessels, empty, fresh and salt: H at water with the empty one in
-# hand fills it — fresh at a lake, salt at the sea — drinking the fresh one
-# gives the empty one back, a salt one boils fresh on a camp fire
-# (`cooking.toml`), and the right mouse pours either out (balance.toml
-# `[[survival.vessels]]`, `survival::drink`, `World::pour`).
+# The water vessels: each holds its water in its own data, up to its
+# `[[survival.vessels]]` ml (balance.toml) — H at water fills it, fresh at a
+# lake, salt at the sea; eating drinks a sip; a salt one boils fresh on a
+# camp fire (`cooking.toml`); the right mouse pours it out
+# (`survival::drink`, `World::pour`).
 [[item]]
 id = "item.waterskin"
 name = "Waterskin"
@@ -392,17 +392,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
-description = "Empty. Fill it at fresh water to carry a drink with you."
-
-[[item]]
-id = "item.waterskin_full"
-name = "Full Waterskin"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Fresh water to drink, or to water a planter."
+description = "Holds a litre. Fill it at water, drink it a sip at a time."
 
 [[item]]
 id = "item.fire_pit"
@@ -1645,16 +1635,6 @@ description = "Catches rain. Fills a waterskin and waters planters within 3 m."
 
 # --- the water pass's vessels ---------------------------------------------
 
-[[item]]
-id = "item.waterskin_salt"
-name = "Salt Waterskin"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Sea water. Boil it on a camp fire to drink it, or pour it on a fire."
-
 # The jug: twice a skin of lake water, for a base's planters and a long walk
 # inland. Fresh only — sea water is boiled in a skin.
 [[item]]
@@ -1665,17 +1645,8 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
-description = "Empty. Holds two skins of fresh water — fill it at a lake."
+description = "Holds two litres of fresh water. Fill it at a lake."
 
-[[item]]
-id = "item.water_jug_full"
-name = "Full Water Jug"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Fresh water: a long drink, or a fire put out."
 # --- clothing v1: Rust's seven clothing slots --------------------------------
 # Rust's cloth and hide pieces for the slots armor v0 never had: the legs,
 # the hands, the shirt under the body piece and the face under the hat. Names,

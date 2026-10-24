@@ -117,18 +117,21 @@ fn fire_world() -> (World, u32, u16, u16) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FUEL,
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: RAW,
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -165,6 +168,7 @@ fn load(w: &mut World, key: u32, slot: usize, item: u16, count: u16) {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
 }
@@ -446,6 +450,7 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     let mv = |w: &mut World, from_slot: u8, to_slot: u8, count: u16| {
@@ -492,6 +497,7 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "the charcoal is takeable"
     );
@@ -515,6 +521,7 @@ fn a_removal_moves_both_halves() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -676,18 +683,21 @@ fn recycler_world() -> (World, u32, u16, u16) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: SALVAGE,
         count: 8,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: FUEL,
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -897,6 +907,7 @@ fn the_last_unit_pays_into_the_slot_it_frees() {
             count: 2,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "and came out into the slot it vacated — the old check could not \
          see that room and held here forever"
@@ -1074,6 +1085,7 @@ fn each_fire_slot_takes_only_its_own() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         mv(&mut w, CONT_BOX, 3, CONT_SELF, 12, 1),
@@ -1097,15 +1109,21 @@ fn each_fire_slot_takes_only_its_own() {
 fn a_pour_does_not_douse_a_fire_through_a_wall() {
     use sim_core::build::LOC_EDGE_XLO;
     use sim_core::input::{InputFrame, BTN_AIM};
-    use sim_core::survival::{SurvivalContent, Vessel};
-    let (empty, fresh, salt) = (20u16, 21u16, 22u16);
+    use sim_core::survival::{SurvivalContent, Vessel, Water};
+    let skin = 20u16;
     let mut w = World::new(SEED);
     w.gather = GatherContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
     w.deploy = DeployContent::probe_fixture();
     w.cook = CookContent::probe_fixture();
     w.survival = SurvivalContent::probe_fixture();
-    w.survival.vessels[0] = Vessel { empty, fresh, salt };
+    w.survival.vessels[0] = Vessel {
+        item: skin,
+        ml: 1000,
+        sip_ml: 250,
+        water_per_l: 100,
+        salt: true,
+    };
     w.survival.vessel_count = 1;
     // A foundation, and the fire on the ground east of it, behind a wall
     // on the foundation's east edge (the fire cell's west edge).
@@ -1120,6 +1138,7 @@ fn a_pour_does_not_douse_a_fire_through_a_wall() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // `BuildContent::probe_fixture`: row 0 the foundation, row 1 a wall,
     // both paid in item 0.
@@ -1128,6 +1147,7 @@ fn a_pour_does_not_douse_a_fire_through_a_wall() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for (row, at, loc) in [(0u16, fx, LOC_PLANE), (1, cx, LOC_EDGE_XLO)] {
         let before = w.pieces.len();
@@ -1172,10 +1192,14 @@ fn a_pour_does_not_douse_a_fire_through_a_wall() {
             w.tick(&[]);
         }
         w.players[0].inv[5] = ItemStack {
-            item: fresh,
+            item: skin,
+            data: Water {
+                ml: 1000,
+                salt: false,
+            }
+            .data(),
             count: 1,
-            cond: 0,
-            skin: 0,
+            ..ItemStack::EMPTY
         };
         seq += 1;
         w.tick(&[Command::Input {
@@ -1189,7 +1213,7 @@ fn a_pour_does_not_douse_a_fire_through_a_wall() {
             },
             favour: 0,
         }]);
-        assert_eq!(w.players[0].inv[5].item, empty, "setup: the vessel poured");
+        assert_eq!(w.players[0].inv[5].data, 0, "setup: the vessel poured");
     };
 
     // On the foundation, the fire 2.5 m off: in the splash, out of sight.

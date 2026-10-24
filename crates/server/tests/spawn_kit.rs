@@ -116,6 +116,7 @@ fn a_fresh_spawn_and_a_respawn_both_hold_a_rock_and_a_torch() {
         count: 300,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     die(&mut w);

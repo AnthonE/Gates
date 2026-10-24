@@ -572,7 +572,8 @@ fn a_dry_revolver_is_loaded_fired_and_topped_up() {
     let (mut a, pig) = hunt("item.revolver", "item.pistol_ammo", 24, 20.0);
     let gun = content().item_index("item.revolver").unwrap();
     let def = a.shard.world.combat.held_ranged(gun).unwrap();
-    let mag = |a: &Arena| a.player(ID).mag[usize::from(def.mag_slot)];
+    let gun_slot = 1;
+    let mag = |a: &Arena| sim_core::combat::GunState::of(a.player(ID).inv[gun_slot].data).loaded;
     assert_eq!(mag(&a), 0, "the revolver comes dry");
     // The server's own count: loaded (accepted, not just asked for)
     // before the first shot.
@@ -798,7 +799,6 @@ fn a_gunner_never_seen_is_run_from_and_found() {
     });
     let item = content.item_index("item.revolver").unwrap();
     let gun = a.shard.world.combat.held_ranged(item).unwrap();
-    let slot = usize::from(gun.mag_slot);
     let revolver = stack(&content, "item.revolver");
     let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
     let (fx, fz) = sim_core::yaw_dir(facing);
@@ -811,8 +811,12 @@ fn a_gunner_never_seen_is_run_from_and_found() {
     a.stage(RUSHER, |p| {
         p.body = behind;
         p.inv[0] = revolver;
-        p.mag[slot] = gun.magazine;
-        p.mag_round[slot] = gun.ammo[0];
+        p.inv[0].data = sim_core::combat::GunState {
+            loaded: gun.magazine,
+            round: gun.ammo[0],
+            mods: 0,
+        }
+        .data();
     });
     a.step();
     assert!(
@@ -826,7 +830,9 @@ fn a_gunner_never_seen_is_run_from_and_found() {
     let (mut fired, mut moved, mut found) = (None, None, None);
     for _ in 0..8 * TICK_HZ {
         a.step();
-        if fired.is_none() && a.player(RUSHER).mag[slot] < gun.magazine {
+        if fired.is_none()
+            && sim_core::combat::GunState::of(a.player(RUSHER).inv[0].data).loaded < gun.magazine
+        {
             fired = Some(a.tick);
         }
         if moved.is_none() && a.bot.combat().engaged() {

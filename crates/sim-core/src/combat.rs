@@ -1231,6 +1231,67 @@ impl Default for CombatContent {
     }
 }
 
+/// A gun's own state, kept in its stack's data (`ItemStack::data`) so it
+/// is *this* rifle's: the attachments on it (a bit per
+/// `CombatContent::mods` row), the rounds in its magazine, and the kind of
+/// round they are — or, on a bow, the arrow it is set to loose. Looted,
+/// boxed or dropped, the gun keeps all three, as Rust's does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GunState {
+    pub mods: u8,
+    pub loaded: u16,
+    /// `NO_ITEM` for none.
+    pub round: u16,
+}
+
+impl GunState {
+    /// The empty, bare gun: no attachments, no rounds, no round picked.
+    pub const NONE: Self = Self {
+        mods: 0,
+        loaded: 0,
+        round: NO_ITEM,
+    };
+
+    /// Out of a stack's data: the attachments in the low byte, the rounds
+    /// in the next, the round's item + 1 in the high half (0 for none), so
+    /// a fresh gun's data of 0 is [`Self::NONE`].
+    pub fn of(data: u32) -> Self {
+        Self {
+            mods: data as u8,
+            loaded: ((data >> 8) & 0xFF) as u16,
+            round: ((data >> 16) as u16).wrapping_sub(1),
+        }
+    }
+
+    pub fn data(self) -> u32 {
+        u32::from(self.mods)
+            | u32::from(self.loaded.min(GUN_LOADED_MAX)) << 8
+            | u32::from(self.round.wrapping_add(1)) << 16
+    }
+}
+
+/// The most rounds a magazine's byte holds (`content::validate` keeps every
+/// magazine, extended, under it).
+pub const GUN_LOADED_MAX: u16 = 255;
+
+/// The state of the gun in `p`'s hand ([`GunState::NONE`] for an empty one).
+pub fn held_gun(p: &Player) -> GunState {
+    let s = p.inv[p.frame.sel as usize];
+    if s.count > 0 {
+        GunState::of(s.data)
+    } else {
+        GunState::NONE
+    }
+}
+
+/// Write the gun in `p`'s hand's state back to its stack.
+pub fn set_held_gun(p: &mut Player, g: GunState) {
+    let s = &mut p.inv[p.frame.sel as usize];
+    if s.count > 0 {
+        s.data = g.data();
+    }
+}
+
 /// The item in a player's selected hotbar slot, or `NO_ITEM` for an empty
 /// hand — the same read `gather::swing` makes, kept in one place.
 #[inline]
@@ -1984,12 +2045,14 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[2] = ItemStack {
             item: 7,
             count: 5,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(held_item(&p), 3);
         p.frame.sel = 2;
@@ -2031,6 +2094,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         let mut ev = EventQueue::default();
@@ -2071,6 +2135,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         let def = cc.held_melee(0).unwrap();

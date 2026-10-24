@@ -49,9 +49,34 @@ pub fn icon_stem(
     if stack.count == 0 {
         return None;
     }
+    let (look, plain) = looks(catalog, stack)?;
+    STEMS
+        .iter()
+        .copied()
+        .find(|k| *k == look)
+        .or_else(|| STEMS.iter().copied().find(|k| *k == plain))
+}
+
+/// The stem a stack is drawn by, and its item's plain one: a vessel with
+/// water in it (`sim_core::survival::Water`, its data) is drawn full —
+/// `full_waterskin`, or `salt_waterskin` with the sea in it — where that
+/// picture or model exists, else as itself. `None` for an empty slot.
+pub fn looks(
+    catalog: &protocol::ItemCatalog,
+    stack: sim_core::gather::ItemStack,
+) -> Option<(String, String)> {
+    if stack.count == 0 {
+        return None;
+    }
     let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
-    let s = stem(name);
-    STEMS.iter().copied().find(|k| *k == s)
+    let plain = stem(name);
+    let w = sim_core::survival::Water::of(stack.data);
+    let look = if catalog.row(stack.item as usize).pour && w.ml > 0 {
+        format!("{}_{plain}", if w.salt { "salt" } else { "full" })
+    } else {
+        plain.clone()
+    };
+    Some((look, plain))
 }
 
 /// Every stem `assets/icons/` ships.
@@ -377,6 +402,7 @@ mod tests {
                     count,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 },
             )
         };
@@ -398,6 +424,7 @@ mod tests {
                     count: 3,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 }
             ),
             None
@@ -412,6 +439,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 }
             ),
             None
@@ -428,6 +456,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         };
         assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
         assert_eq!(

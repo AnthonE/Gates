@@ -15,8 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_MAGS, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
-    WEAR_SLOTS,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
 };
 use crate::loot::LootContent;
 use crate::melee;
@@ -1374,34 +1373,6 @@ pub struct Player {
     /// The lag-comp favour the swing was taken under, spent when the strike
     /// tick itself brings none (a starved tick).
     pub strike_favour: u8,
-    /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
-    /// inventory slot and **not** by item index.
-    ///
-    /// Keyed by the weapon row, so nothing has to move it: a gun that
-    /// travels from the hotbar to a box to the ground and back keeps its
-    /// count, because the count was never attached to where the gun was.
-    /// That is the whole reason it is not a field on `ItemStack` — the
-    /// stated cost is in `RangedDef::mag_slot`, and `tests/reload.rs`
-    /// gates it.
-    ///
-    /// Zero on a fresh body, so a spawned revolver starts empty and the
-    /// first thing a player does with a gun is load it.
-    pub mag: [u16; MAX_MAGS],
-    /// Which round is in each magazine, `NO_ITEM` when empty — parallel to
-    /// [`Player::mag`].
-    ///
-    /// A weapon lists up to `MAX_WEAPON_AMMO` rounds in preference order,
-    /// so "six loaded" is not a fact until you say six of *what*: the
-    /// magazine has to remember, or a reload that topped up a partly-full
-    /// cylinder with a different round would fire the wrong damage and an
-    /// unload would return the wrong item to the pack. `ranged::reload`
-    /// refuses to mix — a magazine holding one kind tops up with that kind
-    /// or not at all.
-    pub mag_round: [u16; MAX_MAGS],
-    /// The attachments on each gun, keyed by weapon row as the magazine is
-    /// (`attach.rs`): one bit per `CombatContent::mods` row. Hashed and
-    /// saved with the magazine; a death sheds them into the bag as items.
-    pub mods: [u8; MAX_MAGS],
     /// The gun's aim-cone penalty, hundredths of a degree (`combat::Gun`):
     /// what sustained fire has added, as of [`Player::shot_at`]. Neither
     /// hashed nor saved — a restart lets the barrel settle.
@@ -1670,6 +1641,18 @@ pub struct Player {
 }
 
 impl Player {
+    /// The state of the gun in hand (`combat::held_gun`).
+    pub fn gun(&self) -> crate::combat::GunState {
+        crate::combat::held_gun(self)
+    }
+
+    /// Change the state of the gun in hand; nothing for an empty hand.
+    pub fn set_gun(&mut self, f: impl FnOnce(&mut crate::combat::GunState)) {
+        let mut g = self.gun();
+        f(&mut g);
+        crate::combat::set_held_gun(self, g);
+    }
+
     /// Crouched, as every rule that cares reads it (v83): the frame holds
     /// `BTN_CROUCH`, the body stands on something, and it is alive, awake
     /// and not downed. Derived, never stored — `frame` and `body` are
@@ -1716,12 +1699,9 @@ impl Default for Player {
             strike_at: 0,
             strike_sel: 0,
             strike_favour: 0,
-            mag: [0; MAX_MAGS],
             // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
             // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
             // array would say every empty magazine holds one.
-            mag_round: [NO_ITEM; MAX_MAGS],
-            mods: [0; MAX_MAGS],
             bloom: 0,
             shot_at: 0,
             shot_due: 0,
@@ -4281,6 +4261,7 @@ impl World {
                     count: 1,
                     cond: gc.cond_max_of(round),
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
                 ground.drop_one(bc, at, stack, tick, dir);
             },
@@ -5416,71 +5397,9 @@ impl World {
         // reason `backpack.rs`'s header names the others.
         let mut shed = [ItemStack::default(); INV_SLOTS];
         shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
-        // **And the loaded rounds go with them** (`NOW.md` §0mag item 1).
-        // Until 2026-08-30 they did not: `mag`/`mag_round` are cleared by
-        // the `..Player::default()` above, so up to a magazine's worth was
-        // destroyed per death and the killer looted an empty revolver
-        // while the shot that emptied it had already been paid for. That
-        // is the armor argument one level down — a corpse that keeps its
-        // plates is a body nobody fights for, and a corpse that eats its
-        // ammunition is a body nobody reloads before.
-        //
-        // **No content lookup is needed and that is the whole trick.**
-        // `mag_round[slot]` already names the item and `mag[slot]` already
-        // counts it, so this does not need `self.combat` and does not need
-        // a reverse map from `mag_slot` to a weapon row — there is no such
-        // map in the tree, and adding one to shed ammunition would have
-        // been the expensive way to answer a question the pair of arrays
-        // answers by construction. The `NO_ITEM` guard is the same one
-        // `reload` uses: `hitscan` deliberately leaves `mag_round` naming
-        // the spent kind after the last round, so `loaded == 0` is the
-        // only honest emptiness test and the round check is belt-and-braces
-        // against a save that arrived with a count and no kind.
-        //
-        // `cond_max_of` and not zero, and not the source stack's own
-        // condition. The source stack's is unrecoverable — `reload`'s
-        // `inv_take` discards it, by the same content rule V7 that makes
-        // the question moot: a round stacks past 1 (the shipped one stacks
-        // 128) so it carries no condition and `cond_max_of` is 0 for every
-        // one of them. It is written as the ceiling rather than as 0
-        // because a hypothetical round that *did* carry condition should
-        // arrive as ammunition arrives, not as scrap.
-        //
-        // Bounded by `inv_add`, which tops up matching stacks before it
-        // fills empties and returns what fit; a remainder past the 28 free
-        // slots is destroyed, which is the stated overflow policy and the
-        // same one `inv_add`'s other bare callers carry. The shipped set
-        // cannot reach it — `the_shed_magazines_fit_the_bag_they_shed_into`
-        // measures the worst case at one slot against 28 — and a content
-        // set that could is one where eight firearms each carry a magazine
-        // deeper than four full stacks of its own round.
-        for (loaded, round) in body.mag.iter().zip(body.mag_round.iter()) {
-            if *loaded == 0 || *round == NO_ITEM {
-                continue;
-            }
-            gather::inv_add(
-                &mut shed,
-                *round,
-                *loaded,
-                self.gather.stack_max_of(*round),
-                self.gather.cond_max_of(*round),
-            );
-        }
-        // **And the attachments**, Rust's mods riding the gun into the
-        // corpse: each comes off as its item, so the killer loots the scope.
-        for mask in body.mods {
-            for (bit, m) in self.combat.mods.iter().enumerate() {
-                if mask & (1 << bit) != 0 && m.item != NO_ITEM {
-                    gather::inv_add(
-                        &mut shed,
-                        m.item,
-                        1,
-                        self.gather.stack_max_of(m.item),
-                        self.gather.cond_max_of(m.item),
-                    );
-                }
-            }
-        }
+        // The guns go with the rest of the pack, loaded and wearing their
+        // attachments: both are the gun's own (`combat::GunState`), so the
+        // killer loots this rifle as it was fired.
         self.drain_spill(slot, &mut shed);
     }
 
@@ -5834,9 +5753,6 @@ impl World {
                     // debited from the pack at the reload, so a record
                     // that forgot them would make logging off a way to
                     // lose a loaded cylinder.
-                    mag: s.mag,
-                    mag_round: s.mag_round,
-                    mods: s.mods,
                     // The gun's cone and trigger settle over a restart.
                     bloom: 0,
                     shot_at: 0,
@@ -7919,13 +7835,14 @@ impl World {
         let p = &self.players[i];
         let sel = p.frame.sel as usize;
         let held = p.inv.get(sel).copied().unwrap_or_default();
-        let Some((v, salt)) = self
+        let Some((_, water)) = self
             .survival
-            .vessel_full(held.item)
-            .filter(|_| held.count == 1)
+            .vessel_water(&held)
+            .filter(|(_, w)| held.count == 1 && w.ml > 0)
         else {
             return false;
         };
+        let salt = water.salt;
         let (fx, fz) = crate::yaw_lut::yaw_dir(p.frame.yaw);
         let x = p.body.qx as f32 * POS_XZ_Q + fx * POUR_AHEAD_M;
         let z = p.body.qz as f32 * POS_XZ_Q + fz * POUR_AHEAD_M;
@@ -7991,11 +7908,11 @@ impl World {
             ovens,
             (x, z),
             r,
-            salt,
+            (self.cook.farm.wu_of(water.ml), salt),
             sees_box,
             sees_ground,
         );
-        self.players[i].inv[sel].item = v.empty;
+        self.players[i].inv[sel].data = 0;
         let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
         self.events.push(
             EV_DRANK,
@@ -9140,6 +9057,7 @@ impl World {
                     count: 1,
                     cond: self.gather.cond_max_of(item),
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
                 self.ground_items
                     .drop_one(&self.backpack, at, stack, tick, [0; 3]);
@@ -9932,22 +9850,6 @@ impl World {
             // the buffer above: it decides what the next ticks hit.
             h.update(&p.strike_at.to_le_bytes());
             h.update(&[p.strike_sel, p.strike_favour]);
-            // The magazine, in its own update rather than widening the
-            // buffer above — and hashed at all because it decides whether
-            // a gun fires. Sim state outside the hash is the shape this
-            // repo pays for twice over: two shards could disagree about a
-            // loaded cylinder with `test_replay` green, and a save that
-            // dropped it would restore a world that hashes the same and
-            // plays differently. Both halves: `mag_round` is what the next
-            // shot spends, so a magazine holding the wrong round is a
-            // divergence even at an identical count.
-            for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
-                h.update(&loaded.to_le_bytes());
-                h.update(&round.to_le_bytes());
-            }
-            // The attachments decide the shot (cone, damage, cadence), so
-            // they are the magazine's kind of state: hashed and saved.
-            h.update(&p.mods);
             // `bloom`, `shot_at` and `trigger_spent` are not hashed and not
             // saved, `hostile`'s rule: a gun's cone settles in a few tenths
             // of a second and a restart lets it, and what they change (where
@@ -10607,13 +10509,13 @@ impl World {
                 // tick would call two stacks equal right up until one of
                 // them vanished, which is the trap `refill_at` names one
                 // store down.
-                let mut buf = [0u8; 32];
+                let mut buf = [0u8; 24 + ItemStack::BYTES];
                 buf[0..4].copy_from_slice(&g.id.to_le_bytes());
                 buf[4..8].copy_from_slice(&g.qx.to_le_bytes());
                 buf[8..12].copy_from_slice(&g.qy.to_le_bytes());
                 buf[12..16].copy_from_slice(&g.qz.to_le_bytes());
-                buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
-                buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
+                buf[16..16 + ItemStack::BYTES].copy_from_slice(&stack_bytes(&g.stack));
+                buf[16 + ItemStack::BYTES..].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
                 // A stuck arrow's angle, only when it has one, so a store
                 // of things lying on the ground folds what it always did.
@@ -10695,17 +10597,9 @@ impl World {
     }
 }
 
-/// One stack as `state_hash` folds it: item, count, condition and skin,
-/// little-endian. The one encoding every store's loop shares, so a field
-/// added to `ItemStack` is added to the digest once rather than at six
-/// hand-copied buffers that can disagree.
-fn stack_bytes(s: &ItemStack) -> [u8; 8] {
-    let mut b = [0u8; 8];
-    b[0..2].copy_from_slice(&s.item.to_le_bytes());
-    b[2..4].copy_from_slice(&s.count.to_le_bytes());
-    b[4..6].copy_from_slice(&s.cond.to_le_bytes());
-    b[6..8].copy_from_slice(&s.skin.to_le_bytes());
-    b
+/// One stack as `state_hash` folds it (`ItemStack::to_le`).
+fn stack_bytes(s: &ItemStack) -> [u8; ItemStack::BYTES] {
+    s.to_le()
 }
 
 /// [`World::secret_seed`]'s channel of the salt (`rng::salted`), apart from
@@ -10909,6 +10803,7 @@ mod tests {
             count: 1,
             cond,
             skin: 0,
+            ..ItemStack::EMPTY
         };
 
         // 1. The player inventory loop.

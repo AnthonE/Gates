@@ -1371,6 +1371,7 @@ impl Plugin for GatesRenderPlugin {
                 // Beside the HUD, and like it absent from a plate run.
                 spectate::setup,
                 mods::setup,
+                mods::remote_setup,
                 arc_hud::setup,
             )
                 .run_if(move || !plate),
@@ -1535,7 +1536,8 @@ impl Plugin for GatesRenderPlugin {
         // reads the gun's place.
         .add_systems(
             PostUpdate,
-            bodies::aim_long_guns
+            (bodies::aim_long_guns, mods::remote)
+                .chain()
                 .after(bevy::transform::TransformSystems::Propagate)
                 .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
                 .run_if(world_running),

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 194] = [
+const GOLDEN: [&[u8]; 193] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -254,7 +254,6 @@ const GOLDEN: [&[u8]; 194] = [
     include_bytes!("golden/action_tend.bin"),
     include_bytes!("golden/event_vessel.bin"),
     include_bytes!("golden/event_caption.bin"),
-    include_bytes!("golden/event_mods.bin"),
     include_bytes!("golden/action_attach.bin"),
     include_bytes!("golden/action_detach.bin"),
 ];
@@ -573,11 +572,10 @@ fn test_protocol_golden() {
     // Captions (v138).
     g!(seen, golden_event, 190);
     // Weapon attachments (v143).
-    g!(seen, golden_event, 191);
+    g!(seen, golden_action, 191);
     g!(seen, golden_action, 192);
-    g!(seen, golden_action, 193);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 194, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 193, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2658,15 +2656,6 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_fire(qx, qy, qz, until, &mut buf).unwrap()
-        }
-        "event_mods.bin" => {
-            let (weapon, mods) = protocol::goldens::event_mods();
-            assert_eq!(
-                decode_event(fixture).unwrap(),
-                EventMsg::Mods { weapon, mods },
-                "{name}: decode mismatch"
-            );
-            protocol::encode_event_mods(weapon, mods, &mut buf).unwrap()
         }
         "event_ammo.bin" => {
             let (weapon, round) = protocol::goldens::event_ammo();

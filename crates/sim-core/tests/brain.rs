@@ -237,6 +237,7 @@ fn a_lit_torch_keeps_a_wolf_from_biting() {
             count: 1,
             cond: 400,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let full = w.players[0].hp;
         let mut circled = false;
@@ -280,6 +281,7 @@ fn a_wolf_sees_a_torch_at_night_that_it_cannot_see_the_body_of() {
             count: 1,
             cond: 400,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         hold(&mut w, buttons, MOB_THINK_TICKS as u32 + 1, |_| {});
         w.mobs.m[a].roused_until > 0
@@ -465,6 +467,7 @@ fn strike(w: &mut World, slot: usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = 0;
     let tick = w.tick;
@@ -808,6 +811,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
         count: 1,
         cond: 400,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let full = w.players[0].hp;
     hold(&mut w, BTN_LIGHT, 300, |_| {});

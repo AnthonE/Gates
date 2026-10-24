@@ -267,6 +267,7 @@ fn bitten(at: (f32, f32), fel_bite: u16, ward: u16) -> (World, usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let slot = w
         .mobs

@@ -558,6 +558,7 @@ impl Harness {
             count: 1,
             cond: catalog.cond_max(spear as usize),
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         };
         let plan = content.item_index("item.building_plan").unwrap();
         let hammer = content.item_index("item.hammer").unwrap();
@@ -4090,6 +4091,7 @@ fn a_survivor_feeds_an_open_work() {
         count: 50.min(input.need as u16).max(1),
         cond: catalog.cond_max(input.item as usize),
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     h.stage(move |p| {
         p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);

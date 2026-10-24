@@ -81,6 +81,7 @@ fn founded(cx: u16, cz: u16) -> Pieces {
         count: 99,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mut ev = EventQueue::default();
     place(
@@ -267,6 +268,7 @@ fn a_plate_stays_walkable_end_to_end() {
             count: 99,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut ev = EventQueue::default();
         place(

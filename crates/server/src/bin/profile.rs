@@ -307,6 +307,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                     count: units.saturating_mul(4).max(4),
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
             cmds.push(Command::Place {

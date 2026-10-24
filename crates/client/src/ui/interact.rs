@@ -374,6 +374,7 @@ impl Pick {
                         count: self.count,
                         cond: self.cond,
                         skin: 0,
+                        ..sim_core::gather::ItemStack::EMPTY
                     },
                 )
             })
@@ -636,6 +637,7 @@ impl Pick {
                         count: self.count.max(1),
                         cond: self.cond,
                         skin: 0,
+                        ..sim_core::gather::ItemStack::EMPTY
                     },
                 ) {
                     Some(g) => crate::ui::research::clone_label(catalog, self.item, g),
@@ -3093,6 +3095,7 @@ mod assist_tests {
                 count: 40,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
         assert_eq!(

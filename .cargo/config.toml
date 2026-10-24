@@ -1,10 +1,10 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 149 kB — fixed-capacity by design (wall 4), and
+# `World` is 157 kB — fixed-capacity by design (wall 4), and
 # (139 kB until bullets put a cadence remainder on every player and the
 # round store's two boxes on the world, Rust's other rounds took the
-# per-item tables from 160 rows to 192, and attachments put a mask per gun
-# on every player;
+# per-item tables from 160 rows to 192, and item data put four bytes on
+# every stack a player carries, in place of the per-body magazines;
 # 139 kB on main as well: merging the exploit sweep in — a bow's draw
 # tick on every player, the live charges on the heap — moved it under a kB;
 # on main, 133 kB until clothing v1 put the teas on every player and the

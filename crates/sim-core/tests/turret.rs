@@ -104,6 +104,7 @@ fn turret_world(rounds: u16) -> (World, u32) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[o].frame.sel = 3;
     w.tick(&[Command::PlaceDeploy {
@@ -129,6 +130,7 @@ fn turret_world(rounds: u16) -> (World, u32) {
                 count: rounds,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
     }
@@ -287,6 +289,7 @@ fn only_the_hands_a_turret_spares_move_its_rounds() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mv = |w: &mut World, id, from_kind, from_slot, to_kind, to_slot, count| {
         w.tick(&[Command::Move {

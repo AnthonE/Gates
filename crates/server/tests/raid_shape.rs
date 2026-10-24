@@ -313,6 +313,7 @@ fn replay(seating: Seating) -> Run {
             count: w.gather.stack_max_of(item),
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         w.players[slot].inv[0] = stack(satchel);
         w.players[slot].inv[1] = stack(box_item);
@@ -594,12 +595,14 @@ fn a_raider_alone_on_its_own_plot_still_completes_a_raid() {
         count: w.gather.stack_max_of(satchel),
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: wood,
         count: w.gather.stack_max_of(wood),
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // Seated once, from the body, and never re-seated. The body is never

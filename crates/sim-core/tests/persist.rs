@@ -71,12 +71,14 @@ fn a_played_character() -> (Box<World>, PlayerSave) {
         count: 37,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: 2,
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.hp = 41;
     p.food = 300;
@@ -104,6 +106,7 @@ fn a_saved_character_comes_back_as_themselves() {
             count: 37,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -113,6 +116,7 @@ fn a_saved_character_comes_back_as_themselves() {
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(p.hp, 41, "you log off hurt, you log in hurt");
@@ -121,25 +125,31 @@ fn a_saved_character_comes_back_as_themselves() {
     assert_eq!(p.food_acc, 12_345, "a zeroed accumulator is free food");
 }
 
-/// A loaded cylinder survives a log-off (`NOW.md` §0mag item 1, store
-/// format 9). The rounds were debited from the pack at the reload, so a
+/// A loaded cylinder survives a log-off (store format 9; in the gun's own
+/// stack data since format 13). The rounds were debited from the pack at the reload, so a
 /// restore that came back empty would make closing the game cost a reload.
 #[test]
 fn a_loaded_magazine_comes_back_loaded() {
     let mut w = armed_still();
     w.tick(&[Command::Join { id: ID }]);
-    w.players[0].mag[1] = 5;
-    w.players[0].mag_round[1] = 9;
+    // The rounds are in the gun (`GunState`), so there is a gun in hand.
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 1,
+        ..ItemStack::EMPTY
+    };
+    w.players[0].set_gun(|g| g.loaded = 5);
+    w.players[0].set_gun(|g| g.round = 9);
     let save = w.save_of(ID).expect("the player is in the world");
     let mut w2 = armed_still();
     w2.tick(&[Command::JoinAs { id: REJOIN, save }]);
     let p = w2.players[0];
-    assert_eq!(p.mag[1], 5, "the cylinder came back empty");
+    assert_eq!(p.gun().loaded, 5, "the cylinder came back empty");
     assert_eq!(
-        p.mag_round[1], 9,
+        p.gun().round,
+        9,
         "the cylinder came back holding another round"
     );
-    assert_eq!(p.mag[0], 0);
 }
 
 /// The survival clock resumes mid-span rather than restarting it.
@@ -279,6 +289,7 @@ fn a_craft_queue_survives_and_rearms_against_the_new_clock() {
         count: 90,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Craft {
         id: ID,
@@ -356,6 +367,7 @@ fn a_body_that_logged_off_dead_wakes_on_a_beach() {
         count: 9,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // A real death by a real cause — the survival clock, whose fixture spans
     // are seconds so a whole death fits in a test — and then the screen is
@@ -415,7 +427,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
                 item: 8,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "kit slot 0"
@@ -427,7 +440,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
                 item: 9,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "kit slot 1"
@@ -471,6 +485,7 @@ fn a_dead_save_wakes_holding_the_spawn_kit() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // A real death by a real cause, screen left unanswered — the same
@@ -502,13 +517,15 @@ fn a_dead_save_wakes_holding_the_spawn_kit() {
                 item: 8,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             },
             ItemStack {
                 item: 9,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "a body that logged off dead woke naked — this door skipped the kit"
@@ -650,6 +667,7 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
         count: 8,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let hash = w.state_hash();
     let mut stale = PlayerSave::EMPTY;
@@ -660,6 +678,7 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     stale.jobs[0] = CraftJob {
         recipe: 0,
@@ -678,6 +697,7 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
             count: 8,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "a restore overwrote a live body"
     );
@@ -703,6 +723,7 @@ fn every_inventory_slot_survives_the_trip() {
             count: i as u16 + 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     let want = w.players[0].inv;
@@ -794,7 +815,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 65] = [
+    pub const RE_DERIVED: [&str; 62] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // A casino seat (`seat.rs`): a corpse stands up, and so does a new
@@ -835,29 +856,6 @@ mod carried_through_death {
         "strike_at",
         "strike_sel",
         "strike_favour",
-        // **A corpse's cylinder does not follow it to the beach.** `worn`'s
-        // argument one step on: the gun itself is on the other list by
-        // being inside `inv`, so it goes to the death bag, and a magazine
-        // that stayed with the *player* would mean a killer looted an
-        // empty revolver while the dead player respawned holding its
-        // rounds. `..Player::default()` is what clears it, and it is
-        // correct by construction — `Player::default` writes
-        // `[NO_ITEM; MAX_MAGS]` into `mag_round`, so an emptied magazine
-        // remembers no round rather than naming item 0.
-        //
-        // **And the rounds are no longer destroyed on the way** — that
-        // cost stood here until 2026-08-30 and read "up to a magazine's
-        // worth per death". `die` now sheds `mag`/`mag_round` into the
-        // same `shed` buffer as `worn`, as an ordinary `ItemStack` built
-        // from the pair the arrays already hold, so the field stays on
-        // this list (the *player* keeps nothing) while the ammunition
-        // reaches the killer. `tests/reload.rs`'s
-        // `a_death_empties_the_cylinder` holds both halves.
-        "mag",
-        "mag_round",
-        // The attachments on those guns go into the bag as items, as the
-        // rounds do (`a_death_sheds_the_attachments_into_the_bag`).
-        "mods",
         // A gun's cone and trigger (guns v1): the barrel settles and the
         // finger comes up; nothing about them outlives the hand.
         "bloom",
@@ -1109,6 +1107,7 @@ fn a_saved_tool_comes_back_worn() {
         count: 1,
         cond: 4_150,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let save = PlayerSave::of(&w.players[0]);
 
@@ -1139,6 +1138,7 @@ fn a_saved_tool_comes_back_worn() {
             count: 1,
             cond: 4_150,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "a saved tool must come back exactly as worn as it left"
     );
@@ -1163,6 +1163,7 @@ fn an_eaten_empty_slot_still_saves_and_loads() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(
         sim_core::survival::consume(&sc, 0, &mut p, &mut ev, 100),

@@ -186,6 +186,7 @@ fn table_world() -> Table {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -213,12 +214,14 @@ fn stock(w: &mut World) {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -680,6 +683,7 @@ fn only_paper_with_a_target_can_be_read() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     study(&mut t.w, PLAYER, 5);
     assert_eq!(refusal(&t.w, EV_RESEARCH_REFUSED), Some(REFUSE_R_ITEM));
@@ -822,6 +826,7 @@ fn bench_world() -> Table {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (cx, cz) = (t.cx, t.cz);
     t.w.tick(&[Command::PlaceDeploy {
@@ -900,6 +905,7 @@ fn the_tree_refuses_with_reasons_and_takes_nothing() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     ask_unlock(w, NODE_RECIPE);
     assert_eq!(refusal(w, EV_RESEARCH_REFUSED), Some(REFUSE_R_COST));
@@ -981,6 +987,7 @@ fn a_higher_bench_unlocks_a_lower_tier_node() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (cx, cz) = (t.cx, t.cz);
     t.w.tick(&[Command::PlaceDeploy {
@@ -1022,6 +1029,7 @@ fn the_table_researches_a_sample_with_no_questions_about_parents() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(!knows(t.w.players[0].known, GATED_RECIPE));
     research(&mut t);

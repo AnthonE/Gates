@@ -236,6 +236,7 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
             count: 200,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     // **The two weapons live in HOTBAR slots and their ammo does not.**
@@ -250,24 +251,28 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[SLOT_GUN] = ItemStack {
         item: GUN,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[6] = ItemStack {
         item: ARROW,
         count: 200,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[7] = ItemStack {
         item: ROUND,
         count: 200,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The magazine, loaded (reload v1). A gun with an empty cylinder does
     // not fire, so without this the `shoot_until` helpers below run their
@@ -276,8 +281,12 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
     // test, because what these two suites are about is where a bullet
     // lands on a wall, and a reload verb in the middle of that would be a
     // second thing they could fail for.
-    w.players[0].mag[0] = 8;
-    w.players[0].mag_round[0] = ROUND;
+    w.players[0].inv[SLOT_GUN].data = sim_core::combat::GunState {
+        loaded: 8,
+        round: ROUND,
+        mods: 0,
+    }
+    .data();
     (cx, cz)
 }
 
@@ -737,6 +746,7 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // Stand on the foundation the bench is bolted to, before it is put
     // down: a hand puts nothing down through a wall (`World::deploy_seen`),

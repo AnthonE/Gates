@@ -143,20 +143,22 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, rounds: u1
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: ROUND,
         count: rounds,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // **And the magazine, loaded (reload v1).** The pack is no longer
     // where a hitscan shot spends from — it is where a reload draws from —
     // so a shooter armed only with rounds in the pocket now dry-clicks
     // forever. Loading here keeps the helper's promise ("holding a LOADED
     // revolver") true against the new mechanic rather than the old one.
-    p.mag[0] = MAG.min(rounds);
-    p.mag_round[0] = ROUND;
+    p.set_gun(|g| g.loaded = MAG.min(rounds));
+    p.set_gun(|g| g.round = ROUND);
     p.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,
@@ -327,7 +329,7 @@ fn five_shots_kill_and_the_kill_names_the_gun() {
     // and five leave the cylinder. The pack is asserted too, because a gun
     // that debited both would spend two rounds for one shot and neither
     // assertion alone would see it.
-    assert_eq!(players[0].mag[0], 1, "six loaded, five spent");
+    assert_eq!(players[0].gun().loaded, 1, "six loaded, five spent");
     assert_eq!(
         players[0].inv[7].count, 6,
         "and the pocket is untouched — a reload is what moves rounds into it"
@@ -349,7 +351,7 @@ fn an_empty_chamber_fires_nothing_and_costs_nothing() {
     // longer empties the gun — that is the whole of what a magazine is —
     // so this clears both: the cylinder stops the shot, and the pack is
     // cleared too so `nothing was taken` below still means something.
-    players[0].mag[0] = 0;
+    players[0].set_gun(|g| g.loaded = 0);
     players[0].inv[7] = ItemStack::default();
 
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
@@ -448,7 +450,7 @@ fn a_wall_stops_the_shot_and_the_body_behind_it_lives() {
                 "the wall is what stopped it, and the surface byte must say so"
             );
         }
-        assert_eq!(players[0].mag[0], 5, "the {what} shot spent a round");
+        assert_eq!(players[0].gun().loaded, 5, "the {what} shot spent a round");
     }
 }
 
@@ -465,7 +467,7 @@ fn a_shot_spends_one_round_at_the_weapons_own_cadence() {
     // the round has to leave the cylinder, and it has to NOT leave the
     // pocket, because a gun that debited both would spend two rounds for
     // one shot and no single assertion would see it.
-    assert_eq!(players[0].mag[0], 5, "one shot, one round");
+    assert_eq!(players[0].gun().loaded, 5, "one shot, one round");
     assert_eq!(
         players[0].inv[7].count, 6,
         "and the pack is untouched — a magazine is what stands between them"
@@ -480,10 +482,18 @@ fn a_shot_spends_one_round_at_the_weapons_own_cadence() {
     for t in 1..12u64 {
         pull(t, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
     }
-    assert_eq!(players[0].mag[0], 5, "the cadence held the second shot");
+    assert_eq!(
+        players[0].gun().loaded,
+        5,
+        "the cadence held the second shot"
+    );
     assert_eq!(players[1].hp, 80);
     pull(12, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
-    assert_eq!(players[0].mag[0], 4, "and released it on the twelfth tick");
+    assert_eq!(
+        players[0].gun().loaded,
+        4,
+        "and released it on the twelfth tick"
+    );
     assert_eq!(players[1].hp, 60);
 }
 

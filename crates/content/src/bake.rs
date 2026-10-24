@@ -1394,6 +1394,7 @@ impl Content {
                     count,
                     cond,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
@@ -1441,12 +1442,11 @@ impl Content {
                     .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
             };
             sc.vessels[k] = sim_core::survival::Vessel {
-                empty: idx(&v.empty)?,
-                fresh: idx(&v.fresh)?,
-                salt: match &v.salt {
-                    Some(id) => idx(id)?,
-                    None => sim_core::gather::NO_ITEM,
-                },
+                item: idx(&v.item)?,
+                ml: u16f(v.ml, "vessel ml")?,
+                sip_ml: u16f(v.sip_ml, "vessel sip_ml")?,
+                water_per_l: u16f(v.water_per_l, "vessel water_per_l")?,
+                salt: v.salt,
             };
         }
         sc.vessel_count = s.vessels.len() as u8;
@@ -1671,13 +1671,10 @@ impl Content {
             sc.revive[idx] = con.revive;
         }
         for v in sc.vessels() {
-            if sc.consumable[v.fresh as usize].water == 0 {
-                return Err("bake: a survival vessel's fresh item holds no water".to_string());
-            }
-            if v.salt != sim_core::gather::NO_ITEM && sc.consumable[v.salt as usize].is_food() {
-                // Salt water is boiled, never drunk from the vessel: a row
-                // here would be the sea with no price.
-                return Err("bake: a survival vessel's salt item is a consumable".to_string());
+            if sc.consumable[v.item as usize].is_food() {
+                // A vessel is drunk from by its water, a sip at a time: a
+                // consumable row on it would eat the vessel.
+                return Err("bake: a survival vessel is also a consumable".to_string());
             }
         }
         Ok(sc)
@@ -1777,8 +1774,15 @@ impl Content {
             v.checked_mul(TICK_HZ)
                 .ok_or_else(|| format!("bake: farm {what} {v} overflows a u32 of ticks"))
         };
-        fc.water_full = item(&f.water, "water")?;
-        fc.water_empty = item(&f.emptied, "emptied")?;
+        fc.water_vessel = item(&f.water, "water")?;
+        fc.water_ml = self
+            .balance
+            .survival
+            .vessels
+            .iter()
+            .find(|v| v.item == f.water)
+            .and_then(|v| u16::try_from(v.ml).ok())
+            .ok_or_else(|| format!("bake: farm water `{}` is not a vessel", f.water))?;
         fc.skin_wu = ticks(f.skin_water, "skin_water")?;
         fc.planter_cap_wu = ticks(f.planter_water, "planter_water")?;
         fc.rain_wu_s = ticks(f.rain_water, "rain_water")?;
@@ -2014,6 +2018,7 @@ impl Content {
                 cond: u16::try_from(item.condition_max)
                     .map_err(|_| format!("bake: [backpack] `{}` condition overflows", d.item))?,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         for item in &self.items {
@@ -3109,6 +3114,7 @@ impl Content {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
@@ -3125,6 +3131,7 @@ impl Content {
                             format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
                         })?,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
             mc.defs[which] = def;
@@ -3167,6 +3174,7 @@ impl Content {
                     cond: u16::try_from(self.item(&d.item).map(|it| it.condition_max).unwrap_or(0))
                         .map_err(|_| format!("bake: [guard] `{}` condition overflows", d.item))?,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
         }

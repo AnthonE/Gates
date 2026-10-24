@@ -416,24 +416,38 @@ fn restock(inv: &mut [ItemStack], shooter: bool) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[1] = ItemStack {
         item: if shooter { ROUND } else { BLADE },
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[2] = ItemStack {
         item: KEEPSAKE,
         count: KEEPSAKE_COUNT,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[3] = ItemStack {
         item: KEEPSAKE2,
         count: KEEPSAKE2_COUNT,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
+    };
+    // A second unit in its own slot: a corpse's bag copies the pack slot
+    // for slot, so it is one more `EV_GATHER` on the loot. It stands in for
+    // the stack the shed magazine used to add — the rounds stay in the gun
+    // since item data (`GunState`), and without it the worst tick fell from
+    // ~100 refusals to 5, under this file's overflow claim.
+    inv[4] = ItemStack {
+        item: KEEPSAKE2,
+        count: KEEPSAKE2_COUNT,
+        ..ItemStack::EMPTY
     };
 }
 

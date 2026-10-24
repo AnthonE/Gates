@@ -1647,6 +1647,7 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
     inv[1] = sim_core::gather::ItemStack {
@@ -1654,6 +1655,7 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     assert_eq!(
         bc.lifetime_ticks(&inv),
@@ -3887,16 +3889,6 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         if have.contains(c.fuel.item.as_str()) {
             grew |= have.insert(c.fuel.byproduct.as_str());
         }
-        // The drink verb fills a vessel you hold at water: fresh at a lake,
-        // salt at the sea when the vessel holds it.
-        for v in &c.balance.survival.vessels {
-            if have.contains(v.empty.as_str()) {
-                grew |= have.insert(v.fresh.as_str());
-                if let Some(salt) = &v.salt {
-                    grew |= have.insert(salt.as_str());
-                }
-            }
-        }
         for k in &c.cooks {
             if have.contains(k.input.as_str()) {
                 grew |= have.insert(k.output.as_str());
@@ -5400,12 +5392,10 @@ fn the_shipped_farm_bakes_to_its_numbers() {
         "the water catcher is no catcher deployable"
     );
     let cc = c.bake_cooking().expect("cooking bakes");
-    for skin in [fc.water_empty, fc.water_full] {
-        assert_eq!(
-            cc.roles(sim_core::deploy::ARCH_CATCHER, skin),
-            sim_core::oven::ROLE_FUEL
-        );
-    }
+    assert_eq!(
+        cc.roles(sim_core::deploy::ARCH_CATCHER, fc.water_vessel),
+        sim_core::oven::ROLE_FUEL
+    );
 }
 
 /// A catcher's barrel holds at least a skin, and its reach is a hand's walk.
@@ -5470,15 +5460,15 @@ fn a_farm_soil_off_the_biomes_or_a_ground_too_small_to_water_is_refused() {
 fn a_farm_skin_that_stacks_or_pours_into_itself_is_refused() {
     refuses(
         "cooking.toml",
-        "emptied = \"item.waterskin\"",
-        "emptied = \"item.waterskin_full\"",
-        "would leave the skin full",
+        "water = \"item.waterskin\"",
+        "water = \"item.wood\"",
+        "not a survival vessel",
     );
     refuses(
         "items.toml",
-        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 1",
-        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 5",
-        "not 1",
+        "id = \"item.waterskin\"\nname = \"Waterskin\"\nstack = 1",
+        "id = \"item.waterskin\"\nname = \"Waterskin\"\nstack = 5",
+        "its water is its own",
     );
     refuses(
         "cooking.toml",

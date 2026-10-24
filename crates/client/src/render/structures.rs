@@ -3393,6 +3393,7 @@ fn sync_loot(
                     count: g.count,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 },
             ),
         };

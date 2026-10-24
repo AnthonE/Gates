@@ -86,6 +86,7 @@ fn one(item: u16) -> ItemStack {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 
@@ -330,6 +331,7 @@ fn a_forged_worn_stack_is_a_no_op() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(combat::worn_pct(&cc, &p), 0);
     p.worn[1] = ItemStack {
@@ -337,6 +339,7 @@ fn a_forged_worn_stack_is_a_no_op() {
         count: 0,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         combat::worn_pct(&cc, &p),
@@ -607,6 +610,7 @@ fn a_full_pack_does_not_destroy_the_plates() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.players[1].worn[0] = one(HEADWRAP);
@@ -668,6 +672,7 @@ fn a_body_saves_and_reloads_what_it_is_wearing() {
         count: 1,
         cond: 0x1234,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.worn[1] = one(PLATE);
     let save = PlayerSave::of(&p);

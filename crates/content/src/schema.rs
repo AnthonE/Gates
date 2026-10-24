@@ -958,9 +958,9 @@ pub struct Fuel {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FarmSection {
-    /// A full waterskin, and what it is left as once poured.
+    /// The waterskin planters and catchers take (a `[[survival.vessels]]`
+    /// row): `skin_water` is what one holds full.
     pub water: String,
-    pub emptied: String,
     /// One skin's water, a planter's tank, and what full rain banks in an
     /// open planter per second.
     pub skin_water: u32,
@@ -1617,10 +1617,9 @@ pub struct Survival {
     /// lake's mouthful; zero refuses the sea to the mouth.
     #[serde(default)]
     pub drink_water_salt: Option<u32>,
-    /// The water vessels (`survival::drink`, `World::pour`): holding an
-    /// `empty` one at water, the drink verb fills it into `fresh` (or `salt`,
-    /// at the sea, when the vessel names one) instead; drinking `fresh` (a
-    /// consumable) hands `empty` back.
+    /// The water vessels (`survival::drink`, `World::pour`): one with room,
+    /// held at water, the drink verb fills to the brim (with the sea's salt
+    /// water only when `salt`); eating from it drinks a sip.
     #[serde(default)]
     pub vessels: Vec<VesselDef>,
     /// Bleeding (Rust's metabolism `bleeding`): the share of the hp a hit
@@ -1637,10 +1636,16 @@ pub struct Survival {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VesselDef {
-    pub empty: String,
-    pub fresh: String,
+    pub item: String,
+    /// What it holds full, ml.
+    pub ml: u32,
+    /// One drink, ml.
+    pub sip_ml: u32,
+    /// The water meter a litre is worth.
+    pub water_per_l: u32,
+    /// It may be filled at the sea.
     #[serde(default)]
-    pub salt: Option<String>,
+    pub salt: bool,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,

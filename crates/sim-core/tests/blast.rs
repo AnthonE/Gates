@@ -122,12 +122,14 @@ fn raid_world() -> (World, u16, u16) {
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: SATCHEL,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: RAIDER,
@@ -525,12 +527,14 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[3] = ItemStack {
         item: ROCKET,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let _ = x;
     // Level, at eye height: the wall stands three metres over its floor.

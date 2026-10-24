@@ -207,8 +207,8 @@ pub fn plant_in_sight(
     }
 }
 
-/// Whether a stack is a full waterskin: at a planter, the full skin is the
-/// only fuel (`CookContent::roles`, `ROLE_FUEL` is `water_full` alone).
+/// Whether a stack is the planter's waterskin (`CookContent::roles`,
+/// `ROLE_FUEL` is `water_vessel` alone); its water is the server's to read.
 pub fn is_water(roles_at_planter: Option<u8>) -> bool {
     roles_at_planter.is_some_and(|r| r & sim_core::oven::ROLE_FUEL != 0)
 }

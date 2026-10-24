@@ -241,9 +241,10 @@ use crate::worldcont::WorldContRec;
 /// (a count, the next id, then each plant), so no older file reads.
 /// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
 /// (+32), and its tail the teas (+18); no older file reads.
-/// **32 — weapon attachments** (`attach.rs`): every body's `PlayerSave`
-/// closes with a gun's attachment mask per magazine (+`MAX_MAGS`); no older
-/// file reads.
+/// **32 — item data** (`ItemStack::data`): every stack, in every store,
+/// is twelve bytes (+4: what the item remembers — a gun's attachments,
+/// rounds and round), and `PlayerSave` drops the per-body magazines that
+/// data replaced; no older file reads.
 pub const WORLD_SAVE_FORMAT: u16 = 32;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
@@ -421,7 +422,7 @@ const SLOT_LIFE_BYTES: usize = 23;
 pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8 + 3;
 
 /// One stored `ItemStack`: item, count, condition, skin (format 16).
-pub const STACK_BYTES: usize = 8;
+pub const STACK_BYTES: usize = ItemStack::BYTES;
 
 pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_PLAYERS * PLAYER_BYTES
@@ -607,10 +608,7 @@ impl<'a> W<'a> {
         self.at = end;
     }
     fn stack(&mut self, s: &ItemStack) {
-        self.u16(s.item);
-        self.u16(s.count);
-        self.u16(s.cond);
-        self.u16(s.skin);
+        self.bytes(&s.to_le());
     }
 }
 
@@ -1027,27 +1025,18 @@ impl<'a> R<'a> {
     /// empty slot the sim would have produced, and a difference nothing can
     /// see is wall 5's failure mode.
     fn stack(&mut self, max_item: usize) -> Result<ItemStack, WorldSaveError> {
-        let item = self.u16()?;
-        let count = self.u16()?;
-        let cond = self.u16()?;
-        let skin = self.u16()?;
-        // The canonical-empty rule, all four fields (formats 7 and 16): a
-        // slot emptied by a path that forgot to zero `cond` or `skin`
-        // hashes differently from the same empty slot the sim produced — a
-        // difference nothing can see, which is wall 5's failure mode.
-        if item as usize >= max_item
-            || (count == 0 && item != 0)
-            || (count == 0 && cond != 0)
-            || (count == 0 && skin != 0)
-        {
+        let mut b = [0u8; ItemStack::BYTES];
+        for x in b.iter_mut() {
+            *x = self.u8()?;
+        }
+        let s = ItemStack::from_le(&b);
+        // The canonical-empty rule (`ItemStack::canonical`): a slot emptied
+        // by a path that forgot a field hashes differently from the same
+        // empty slot the sim produced — wall 5's failure mode.
+        if s.item as usize >= max_item || !s.canonical() {
             return Err(WorldSaveError::BadItemStack);
         }
-        Ok(ItemStack {
-            item,
-            count,
-            cond,
-            skin,
-        })
+        Ok(s)
     }
 }
 
@@ -1257,9 +1246,6 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             strike_favour: 0,
             // Unvalidated beyond the widths, `PlayerSave`'s reason: a save
             // file is not a client.
-            mag: save.mag,
-            mag_round: save.mag_round,
-            mods: save.mods,
             // The gun's cone and trigger settle over a restart, and a bow's
             // draw with them.
             bloom: 0,
@@ -1949,6 +1935,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let count = r.u16()?;
         let cond = r.u16()?;
         let skin = r.u16()?;
+        let data = r.u32()?;
         let expires = r.u64()?;
         let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
@@ -1975,6 +1962,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 count,
                 cond,
                 skin,
+                data,
             },
             expires,
             dir,
@@ -2202,6 +2190,7 @@ mod tests {
             count: 0,
             cond: 9,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // A second, legal stack so the bag is not empty-by-construction.
         bag.items[1] = ItemStack {
@@ -2209,6 +2198,7 @@ mod tests {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         w.backpacks.restore(&[bag], 2);
 
@@ -2253,9 +2243,11 @@ mod tests {
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
         // 547 → 597 at format 31: four more worn stacks in `PlayerSave`
         // (+32), the teas in the tail (+18) (clothing v1). 597 → 613 at
-        // format 32: an attachment mask a magazine in `PlayerSave`.
+        // format 32: … 613 → 681 the same format, as it landed: every stack
+        // twelve bytes (item data, +4 × 37) and the per-body magazines gone
+        // (−64 with the masks).
         assert_eq!(
-            PLAYER_BYTES, 613,
+            PLAYER_BYTES, 681,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2266,18 +2258,18 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 613                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, the attachments at 32)
+            + 100 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 32)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 2_048 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
+            + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (32) + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
-            + 256 * 268                     // bags: 28 + 30 eight-byte stacks
-            + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
+            + 256 * 388                     // bags: 28 + 30 twelve-byte stacks (32)
+            + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (32) (256 at roadside junk)
             + 1_200 * 25                    // charges (every seat's share: 100 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
-            + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
+            + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 32; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
             + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
@@ -2301,15 +2293,15 @@ mod tests {
         assert_eq!(crate::mech::MECH_BYTES, 16);
         // 1516 -> 1520 at format 25: the blight's salt.
         assert_eq!(HEAD_BYTES, 1_520);
-        // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
-        assert_eq!(GROUND_ITEM_BYTES, 35);
+        // 4 id + 12 position + 12 stack + 8 deadline + 3 stuck direction.
+        assert_eq!(GROUND_ITEM_BYTES, 39);
         // Three millimetre coordinates, the round, the ready deadline, the
         // host and its life.
         assert_eq!(SPENT_BYTES, 43);
         // A world container is 261: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
-        assert_eq!(WORLD_CONT_BYTES, 261);
+        assert_eq!(WORLD_CONT_BYTES, 381);
         // A lock is 106: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
         // counts + 10 auth ids (format 17, the crew's cap) + 8 guest ids at
         // four bytes each + 1 miss counter + 8 + 8 for the two tick
@@ -2415,10 +2407,10 @@ mod tests {
         // caps in one merge: the live charges' from 64 to every seat's share
         // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
         // hand's share was capped (1,024 × 143) — counts, so old saves load.
-        // 5_494_434 at format 32: an attachment mask a magazine, 16 bytes on
-        // 100 bodies.
+        // 5_663_026 at format 32: every stack in every store twelve bytes
+        // (item data), and the per-body magazines it replaced gone.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_494_434,
+            WORLD_SAVE_MAX_BYTES, 5_663_026,
             "the world save ceiling moved"
         );
     }

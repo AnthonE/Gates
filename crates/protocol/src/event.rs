@@ -46,9 +46,11 @@ use sim_core::sock::Sock;
 /// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
 /// 29 header bits and seven rows of 320, held by the assert at
 /// `CATALOG_ROW_MAX_BITS` and `catalog_batches_walk_the_table_within_cap`)
-/// with headroom; the client-side framer refuses past it.
+/// with headroom; the client-side framer refuses past it. 448 since v143:
+/// a box of thirty loaded guns is 30 × 102 bits once a stack carries its
+/// data.
 /// Registered in DECISIONS.md §open.
-pub const MAX_EVENT_MSG_BYTES: usize = 320;
+pub const MAX_EVENT_MSG_BYTES: usize = 448;
 
 /// Harvested cells one sync message carries (join sync is drip-fed, one
 /// message per client per tick — server core). Overflow policy: the next
@@ -660,10 +662,7 @@ const SUB_PLANT_SYNC: u32 = 108;
 /// player near them said out loud, or a line translated into their
 /// language. See [`Caption`].
 const SUB_CAPTION: u32 = 109;
-/// The attachments on the gun in your hand (wire v143, `attach.rs`): the
-/// weapon and its mask, sent when either changes. See `EventMsg::Mods`.
-const SUB_MODS: u32 = 110;
-const SUB_MAX: u32 = SUB_MODS;
+const SUB_MAX: u32 = SUB_CAPTION;
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -2403,10 +2402,6 @@ pub enum EventMsg {
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
-    /// The attachments on the gun in your hand (wire v143): the weapon and
-    /// one bit per attachment row (`sim_core::combat::CombatContent::mods`),
-    /// so the client kicks, zooms and draws the gun it is holding.
-    Mods { weapon: u16, mods: u8 },
     /// A fire burning on the ground (wire v94): its point in body quanta,
     /// `Impact`'s, and the low 32 bits of the tick it goes out.
     Fire {
@@ -2941,6 +2936,39 @@ pub fn encode_event_reload_refused(
 
 /// `slots` must be non-empty and within `INV_SLOTS` rows/indices — an
 /// empty update is a server bug, not a message.
+/// One stack in an inventory or a box (v143): item, count, condition and
+/// skin, then its data (`ItemStack::data`) behind a presence bit, so a
+/// stack that remembers nothing pays one bit for the field.
+fn write_stack(w: &mut BitWriter, s: &ItemStack) -> Result<(), WireError> {
+    w.write(s.item as u32, 16)?;
+    w.write(s.count as u32, 16)?;
+    w.write(s.cond as u32, 16)?;
+    w.write(s.skin as u32, 16)?;
+    w.write_bit(s.data != 0)?;
+    if s.data != 0 {
+        w.write(s.data, 32)?;
+    }
+    Ok(())
+}
+
+fn read_stack(r: &mut BitReader) -> Result<ItemStack, WireError> {
+    let mut s = ItemStack {
+        item: r.read(16)? as u16,
+        count: r.read(16)? as u16,
+        cond: r.read(16)? as u16,
+        skin: r.read(16)? as u16,
+        ..ItemStack::EMPTY
+    };
+    if r.read_bit()? {
+        s.data = r.read(32)?;
+        // Set says there is data, and zero is the absence of it.
+        if s.data == 0 {
+            return Err(WireError::Malformed);
+        }
+    }
+    Ok(s)
+}
+
 pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, WireError> {
     if slots.is_empty() || slots.len() > INV_SLOTS {
         return Err(WireError::Cap);
@@ -2952,10 +2980,7 @@ pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, Wire
             return Err(WireError::Range);
         }
         w.write(s.slot as u32, INV_SLOT_BITS)?;
-        w.write(s.stack.item as u32, 16)?;
-        w.write(s.stack.count as u32, 16)?;
-        w.write(s.stack.cond as u32, 16)?;
-        w.write(s.stack.skin as u32, 16)?;
+        write_stack(&mut w, &s.stack)?;
     }
     Ok(w.finish())
 }
@@ -4652,14 +4677,6 @@ pub fn encode_event_report(
     Ok(w.finish())
 }
 
-/// The attachments on the gun in your hand — see `EventMsg::Mods`.
-pub fn encode_event_mods(weapon: u16, mods: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    let mut w = begin(buf, SUB_MODS)?;
-    w.write(weapon as u32, 16)?;
-    w.write(mods as u32, 8)?;
-    Ok(w.finish())
-}
-
 /// Which arrow your bow looses — see `EventMsg::Ammo`.
 pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_AMMO)?;
@@ -5702,10 +5719,7 @@ pub fn encode_event_cont_sync(
             return Err(WireError::Range);
         }
         w.write(s.slot as u32, INV_SLOT_BITS)?;
-        w.write(s.stack.item as u32, 16)?;
-        w.write(s.stack.count as u32, 16)?;
-        w.write(s.stack.cond as u32, 16)?;
-        w.write(s.stack.skin as u32, 16)?;
+        write_stack(&mut w, &s.stack)?;
     }
     Ok(w.finish())
 }
@@ -6638,12 +6652,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 *s = InvSlot {
                     slot,
-                    stack: ItemStack {
-                        item: r.read(16)? as u16,
-                        count: r.read(16)? as u16,
-                        cond: r.read(16)? as u16,
-                        skin: r.read(16)? as u16,
-                    },
+                    stack: read_stack(&mut r)?,
                 };
             }
             EventMsg::Inv {
@@ -7637,10 +7646,6 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
         },
-        SUB_MODS => EventMsg::Mods {
-            weapon: r.read(16)? as u16,
-            mods: r.read(8)? as u8,
-        },
         SUB_REPORT => {
             let kind = r.read(REPORT_BITS)? as u8;
             if kind > REPORT_MAX {
@@ -8613,12 +8618,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 *s = InvSlot {
                     slot,
-                    stack: ItemStack {
-                        item: r.read(16)? as u16,
-                        count: r.read(16)? as u16,
-                        cond: r.read(16)? as u16,
-                        skin: r.read(16)? as u16,
-                    },
+                    stack: read_stack(&mut r)?,
                 };
             }
             EventMsg::ContSync {
@@ -8728,6 +8728,7 @@ mod tests {
                 // And a skin (skins v0), for the same reason: a round trip
                 // against the input reads 0 where a dropped write loses it.
                 skin: 0x0A0B,
+                ..ItemStack::EMPTY
             },
         };
         let len = encode_event_inv(&[worn], &mut buf).unwrap();
@@ -8771,6 +8772,7 @@ mod tests {
                     count: 100 + i as u16,
                     cond: 200 + i as u16,
                     skin: 300 + i as u16,
+                    ..ItemStack::EMPTY
                 },
             };
         }
@@ -10486,6 +10488,7 @@ mod tests {
                     count: 4,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -10495,6 +10498,7 @@ mod tests {
                     count: 60,
                     cond: 7_500,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ];
@@ -10528,6 +10532,7 @@ mod tests {
                 count: 1,
                 cond: 42,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         }];
         let len = encode_event_cont_sync(CONT_BAG, 7, true, &wide, &mut buf).unwrap();
@@ -10591,6 +10596,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         }];
         assert_eq!(
@@ -10656,6 +10662,7 @@ mod tests {
                     count: u16::MAX,
                     cond: u16::MAX,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             };
         }

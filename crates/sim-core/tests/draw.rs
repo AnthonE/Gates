@@ -59,12 +59,14 @@ fn archer() -> Player {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p
 }

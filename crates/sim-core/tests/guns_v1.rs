@@ -79,9 +79,10 @@ fn range(d: f32) -> Box<[Player; MAX_PLAYERS]> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
-    s.mag[0] = 30;
-    s.mag_round[0] = ROUND;
+    s.set_gun(|g| g.loaded = 30);
+    s.set_gun(|g| g.round = ROUND);
     s.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,

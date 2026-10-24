@@ -320,6 +320,7 @@ mod tests {
             count: 1,
             cond: core.catalog.cond_max(item as usize),
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 
@@ -376,6 +377,7 @@ mod tests {
                 count: 10,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         core.inv[10] = stack(&core, spear);

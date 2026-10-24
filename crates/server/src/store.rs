@@ -178,8 +178,8 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// **11** — guns v1: `MAX_MAGS` 8 → 16, eight more magazines, 417 → 449.
 /// **12** — clothing v1: Rust's seven clothing slots, four more worn stacks
 /// (legs, hands, shirt, face), 449 → 481.
-/// **13** — weapon attachments: a gun's attachment mask per magazine closes
-/// the record, 481 → 497.
+/// **13** — item data: every stack twelve bytes (`ItemStack::data`, a gun's
+/// own magazine and attachments), and the per-body magazines gone, 481 → 565.
 pub const SAVE_FORMAT: u16 = 13;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
@@ -1190,6 +1190,7 @@ mod tests {
             count: n,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s.known = (1u128 << bits) - 1;
         s
@@ -1204,6 +1205,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         assert_eq!(worth(&kit), 0, "a bat and a torch are a spawn kit");
@@ -1214,6 +1216,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(worth(&dressed), 1);
         // Tiers, not counts: one blueprint is worth as much as thirty.

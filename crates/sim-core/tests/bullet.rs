@@ -101,9 +101,10 @@ fn range(d: f32, drop_m: f32) -> Box<[Player; MAX_PLAYERS]> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
-    s.mag[0] = 30;
-    s.mag_round[0] = ROUND;
+    s.set_gun(|g| g.loaded = 30);
+    s.set_gun(|g| g.round = ROUND);
     s.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,
@@ -371,7 +372,7 @@ fn a_full_share_refuses_the_shot_before_the_round_is_spent() {
         &mut bullets,
         &mut quarry,
     );
-    assert_eq!(ps[0].mag[0], 30, "the round stayed in the magazine");
+    assert_eq!(ps[0].gun().loaded, 30, "the round stayed in the magazine");
     assert!(events.entries().iter().all(|e| e.code != EV_SHOT));
 }
 

@@ -9236,6 +9236,7 @@ mod tests {
             count: 1,
             cond: 100,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         for cz in 40..216 {
             for cx in 40..216 {
@@ -9756,6 +9757,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         core.inv[7] = ItemStack {
@@ -9763,6 +9765,7 @@ mod tests {
             count: 30,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let hatchet = Name::new(b"Stone Hatchet").unwrap();
         let summary = bot.summary(&view, 1).unwrap();
@@ -9791,6 +9794,7 @@ mod tests {
                     count: 1,
                     cond: 100,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             }],
             &mut buf,
@@ -9864,6 +9868,7 @@ mod tests {
             count: 30,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // A smelt of fifty units is in the queue ahead.
         core.jobs[0] = (1, 50);
@@ -9963,6 +9968,7 @@ mod tests {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
@@ -9993,6 +9999,7 @@ mod tests {
             count: 30,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
         let core = bot.core.as_mut().unwrap();
@@ -10001,6 +10008,7 @@ mod tests {
             count: 1,
             cond: 5_000,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
         bot.core.as_mut().unwrap().inv[8].cond = 0;
@@ -10032,6 +10040,7 @@ mod tests {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let rules = Rules::shipped().unwrap();
         bot.book.learn(&rules, &bot.core.as_ref().unwrap().catalog);
@@ -10047,6 +10056,7 @@ mod tests {
             count: 1,
             cond: 100,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
         // Worn out, making another is the repair.
@@ -10180,12 +10190,14 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         core.inv[1] = ItemStack {
             item: 7,
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert!(summary.offers(Goal::Eat), "untried items may be food");
@@ -10595,12 +10607,14 @@ mod tests {
             count: 100,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         });
         core.inv[4] = ItemStack {
             item: 3,
             count: 1,
             cond: 100,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert!(
@@ -10619,6 +10633,7 @@ mod tests {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(room_for(core, bot.memory.yields[Kind::Wood as usize]));
         assert!(bot.summary(&view, 1).unwrap().offers(Goal::GatherWood));
@@ -10827,6 +10842,7 @@ mod tests {
             count: 30,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         bot.memory.stations = Stations {
             bench: Some([0.0, 0.0]),

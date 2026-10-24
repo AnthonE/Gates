@@ -79,12 +79,14 @@ fn world() -> Box<World> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[P].inv[7] = ItemStack {
         item: ARROW,
         count: 8,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }

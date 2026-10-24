@@ -319,6 +319,7 @@ async fn test_bots_raid_over_the_wire() {
         count: gather.stack_max_of(i),
         cond: gather.cond_max_of(i),
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     assert!(kit.set(KIT_CHARGE, stack(satchel)), "charge slot");
     assert!(kit.set(KIT_CONTAINER, stack(box_item)), "container slot");
@@ -1062,6 +1063,7 @@ async fn test_bots_reload_over_the_wire() {
         count: gather.stack_max_of(i),
         cond: gather.cond_max_of(i),
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     let mut kit = sim_core::inventory::SpawnKit::EMPTY;
     for slot in 0..sim_core::limits::HOTBAR_SLOTS {

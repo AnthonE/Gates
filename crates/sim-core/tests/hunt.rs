@@ -101,16 +101,18 @@ fn range_with(weapon: u16) -> (World, usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     if weapon == GUN {
-        p.mag[0] = 8;
-        p.mag_round[0] = ROUND;
+        p.set_gun(|g| g.loaded = 8);
+        p.set_gun(|g| g.round = ROUND);
     } else {
         p.inv[7] = ItemStack {
             item: ARROW,
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     (w, pig)

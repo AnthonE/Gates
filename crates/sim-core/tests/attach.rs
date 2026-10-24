@@ -128,13 +128,13 @@ fn one_attachment_a_slot_and_the_old_one_back_to_the_pack() {
     let c = content();
     let mut p = armed();
     assert!(attach(&c, &mut p, 10), "the holosight goes on");
-    assert_eq!(p.mods[2], 0b0001);
+    assert_eq!(p.gun().mods, 0b0001);
     assert_eq!(inv_count(&p.inv, HOLO), 0, "it left the pack");
     assert!(attach(&c, &mut p, 11), "the scope goes on in its place");
-    assert_eq!(p.mods[2], 0b0010, "one sight at a time");
+    assert_eq!(p.gun().mods, 0b0010, "one sight at a time");
     assert_eq!(inv_count(&p.inv, HOLO), 1, "the holosight came back");
     assert!(attach(&c, &mut p, 12), "a muzzle is another slot");
-    assert_eq!(p.mods[2], 0b0110);
+    assert_eq!(p.gun().mods, 0b0110);
     // A gun that does not take the boost refuses it, and nothing moves.
     assert!(!attach(&c, &mut p, 14));
     assert_eq!(inv_count(&p.inv, BOOST), 1);
@@ -175,8 +175,8 @@ fn an_extended_magazine_coming_off_returns_the_rounds_past_the_ceiling() {
     let c = content();
     let mut p = armed();
     assert!(attach(&c, &mut p, 13));
-    p.mag[2] = 37;
-    p.mag_round[2] = ROUND;
+    p.set_gun(|g| g.loaded = 37);
+    p.set_gun(|g| g.round = ROUND);
     let mut spill = [ItemStack::default(); INV_SLOTS];
     let mut ev = EventQueue::default();
     assert!(sim_core::attach::detach(
@@ -187,8 +187,8 @@ fn an_extended_magazine_coming_off_returns_the_rounds_past_the_ceiling() {
         3,
         &mut spill
     ));
-    assert_eq!(p.mods[2], 0);
-    assert_eq!(p.mag[2], 30);
+    assert_eq!(p.gun().mods, 0);
+    assert_eq!(p.gun().loaded, 30);
     assert_eq!(inv_count(&p.inv, ROUND), 7, "seven rounds came back");
     assert_eq!(inv_count(&p.inv, EXT_MAG), 1, "and the magazine itself");
     let pair = ev

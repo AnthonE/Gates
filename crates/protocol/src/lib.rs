@@ -105,8 +105,7 @@ pub use event::{
     UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
-    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, encode_event_mods, WireLodged,
-    LODGED_SYNC_BATCH,
+    encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
@@ -1358,10 +1357,13 @@ pub use voice::{
 /// gun's `world::SHOT_QUIET` (`shot_is_quiet`), where an arrow's second
 /// `u16` is its drop alone; actions 43 and 44 put an attachment on the gun
 /// in hand and take one off (`ActionMsg::Attach`, `ActionMsg::Detach`);
-/// `SUB_MODS` tells a client the attachments on the gun in its hand; a
-/// catalog row carries an attachment's `ModRow` after its gun handling; a catalog `GunRow` carries the exact
+/// a catalog row carries an attachment's `ModRow` after its gun handling; a catalog `GunRow` carries the exact
 /// cadence (`rate_sub`), the spread (`moving`, the bloom, `pellet`) and the
-/// first round's muzzle speed and drop after `ads_recoil_pct`.
+/// first round's muzzle speed and drop after `ads_recoil_pct`; a stack in
+/// `SUB_INV` and `SUB_CONT_SYNC` closes with its data behind a presence bit
+/// (`ItemStack::data`: a gun's attachments, rounds and round); a snapshot's
+/// hand closes with the held gun's attachments and its light behind
+/// another (`EntityState::held_mods`, `beam`); `MAX_EVENT_MSG_BYTES` 448.
 pub const PROTO_VER: u16 = 143;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
@@ -4685,6 +4687,15 @@ pub struct EntityState {
     /// seventeen only where someone paid for it. Meaningless with an empty
     /// hand, and sent as 0 then.
     pub held_skin: u16,
+    /// The attachments on the held gun (v143, `combat::GunState::mods`):
+    /// a bit per catalog `ModRow`, so a scope, a silencer, a laser or a
+    /// light is drawn on someone else's rifle. Behind a presence bit like
+    /// the skin: an unmodded hand pays one bit.
+    pub held_mods: u8,
+    /// The gun's light key is down (`BTN_LIGHT`), with attachments on it:
+    /// its lasersight's dot and its flashlight's beam show, to everyone, as
+    /// Rust's do. Only with `held_mods`, so one hand has one encoding.
+    pub beam: bool,
 }
 
 impl EntityState {
@@ -4712,6 +4723,8 @@ impl EntityState {
         held: None,
         lit: false,
         held_skin: 0,
+        held_mods: 0,
+        beam: false,
     };
 }
 
@@ -4976,7 +4989,11 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         // every case that matters — a hotbar switch changes what is held
         // and puts the flame out in the same tick — and a torch that
         // burns out changes `lit` alone, which is one flag either way.
-        let hand_changed = e.held != b.held || e.lit != b.lit || e.held_skin != b.held_skin;
+        let hand_changed = e.held != b.held
+            || e.lit != b.lit
+            || e.held_skin != b.held_skin
+            || e.held_mods != b.held_mods
+            || e.beam != b.beam;
         // is_delta, the baseline row, then the ten flags in one write:
         // LSB-first, so packing them low bit first is the same bits as
         // writing each in turn.
@@ -5046,9 +5063,21 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w
             .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
         self.w.write_bit(e.lit)?;
-        self.w.write_bit(e.held_skin != 0)?;
-        if e.held_skin != 0 {
-            self.w.write(e.held_skin as u32, 16)?;
+        // One bit for "anything more" (v143), so the plain hand nearly
+        // every body carries costs what it did before attachments: the
+        // worst-case keyframe sits a byte under the datagram budget.
+        let extras = e.held_skin != 0 || e.held_mods != 0;
+        self.w.write_bit(extras)?;
+        if extras {
+            self.w.write_bit(e.held_skin != 0)?;
+            if e.held_skin != 0 {
+                self.w.write(e.held_skin as u32, 16)?;
+            }
+            self.w.write_bit(e.held_mods != 0)?;
+            if e.held_mods != 0 {
+                self.w.write(e.held_mods as u32, 8)?;
+                self.w.write_bit(e.beam)?;
+            }
         }
         Ok(())
     }
@@ -5106,6 +5135,10 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     }
     // A sitter is at rest: the absolute record carries `seated` only then.
     if e.seated && e.qvy != 0 {
+        return Err(WireError::Range);
+    }
+    // A beam rides the attachments; with none it has no spelling.
+    if e.beam && e.held_mods == 0 {
         return Err(WireError::Range);
     }
     Ok(())
@@ -5272,7 +5305,7 @@ fn decode_entity(
         let crouched = r.read_bit()?;
         let qvy = read_vel(r)?;
         let seated = if qvy == 0 { r.read_bit()? } else { false };
-        return Ok(EntityState {
+        let mut e = EntityState {
             id,
             qx,
             qy,
@@ -5288,8 +5321,12 @@ fn decode_entity(
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
             lit: r.read_bit()?,
-            held_skin: read_held_skin(r)?,
-        });
+            held_skin: 0,
+            held_mods: 0,
+            beam: false,
+        };
+        (e.held_skin, e.held_mods, e.beam) = read_hand_extras(r)?;
+        return Ok(e);
     }
     // A delta is read only against a baseline (`is_delta` above), and names
     // its row in it (v141).
@@ -5325,9 +5362,36 @@ fn decode_entity(
     if hand_changed {
         e.held = read_held(r)?;
         e.lit = r.read_bit()?;
-        e.held_skin = read_held_skin(r)?;
+        (e.held_skin, e.held_mods, e.beam) = read_hand_extras(r)?;
     }
     Ok(e)
+}
+
+/// The hand's extras (v143): one bit, then the skin and the held gun's
+/// attachments (with its light) each behind their own. "More" with neither
+/// is a second spelling of a plain hand and is refused.
+fn read_hand_extras(r: &mut BitReader) -> Result<(u16, u8, bool), WireError> {
+    if !r.read_bit()? {
+        return Ok((0, 0, false));
+    }
+    let skin = read_held_skin(r)?;
+    let (mods, beam) = read_held_mods(r)?;
+    if skin == 0 && mods == 0 {
+        return Err(WireError::Malformed);
+    }
+    Ok((skin, mods, beam))
+}
+
+/// The held gun's attachments and its light: a presence bit, then the mask
+/// and the beam. A present 0 is a second spelling of "none" and is refused.
+fn read_held_mods(r: &mut BitReader) -> Result<(u8, bool), WireError> {
+    if !r.read_bit()? {
+        return Ok((0, false));
+    }
+    match r.read(8)? as u8 {
+        0 => Err(WireError::Malformed),
+        m => Ok((m, r.read_bit()?)),
+    }
 }
 
 /// The held item's skin: a presence bit, then the id. A present 0 is a
@@ -5411,6 +5475,8 @@ mod tests {
             held: None,
             lit: false,
             held_skin: 0,
+            held_mods: 0,
+            beam: false,
         }
     }
 
@@ -6114,6 +6180,66 @@ mod tests {
         let mut r = BitReader::new(&buf[..n]);
         assert_eq!(read_held_skin(&mut r), Ok(0x0A61));
         assert_eq!(read_held_skin(&mut r), Err(WireError::Malformed));
+    }
+
+    /// A scoped, lit rifle crosses both snapshot paths with a skin beside
+    /// it and without one; the beam alone, or "more" with nothing after it,
+    /// has no spelling.
+    #[test]
+    fn a_modded_hand_crosses_and_a_bare_beam_does_not() {
+        let hdr = SnapshotHeader {
+            tick: 7,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let mut base: Vec<EntityState> = (1..=3).map(ent).collect();
+        base[0].held = Some(41);
+        base[0].held_mods = 0b1000_0010;
+        base[0].beam = true;
+        base[1].held = Some(6);
+        base[1].held_skin = 0x0A61;
+        base[1].held_mods = 0b1;
+        let mut buf = [0u8; 512];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        for e in &base {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &[]).unwrap();
+        assert_eq!(got.entities(), &base[..], "absolute path carries the mods");
+        let mut next = base.clone();
+        next[0].beam = false;
+        next[1].held_mods = 0;
+        next[2].held = Some(9);
+        next[2].held_mods = 0b100;
+        let hdr = SnapshotHeader {
+            baseline_age: 1,
+            ..hdr
+        };
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &base).unwrap();
+        for e in &next {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &base).unwrap();
+        assert_eq!(got.entities(), &next[..], "delta path carries the mods");
+
+        let mut bare = ent(1);
+        bare.beam = true;
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        assert_eq!(enc.add_entity(&bare), Err(WireError::Range));
+
+        let mut buf = [0u8; 8];
+        let mut w = BitWriter::new(&mut buf);
+        w.write_bit(true).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        let n = w.finish();
+        let mut r = BitReader::new(&buf[..n]);
+        assert_eq!(read_hand_extras(&mut r), Err(WireError::Malformed));
     }
 
     #[test]

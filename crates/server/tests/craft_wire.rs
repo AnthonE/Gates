@@ -125,6 +125,7 @@ fn craft_rides_the_wire() {
         count: 20,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
 
     // Craft 2 of recipe 0 (3 × item0 per unit, 2 ticks each).

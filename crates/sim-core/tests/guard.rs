@@ -543,6 +543,7 @@ fn a_guard_carcass_holds_its_tier_on_top_of_the_wolfs() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let guard = (0..MAX_MOBS)
         .find(|&s| mob::guard_site_of(s).is_some() && w.mobs.m[s].alive)

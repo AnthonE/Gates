@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 194] = [
+pub const FIXTURES: [&str; 193] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -344,9 +344,7 @@ pub const FIXTURES: [&str; 194] = [
     "event_vessel.bin",
     // Captions (v138): a translated transcript's second piece.
     "event_caption.bin",
-    // Weapon attachments (v143): a gun's mask, and the two verbs at their
-    // widths' last values.
-    "event_mods.bin",
+    // Weapon attachments (v143): the two verbs at their widths' last values.
     "action_attach.bin",
     "action_detach.bin",
 ];
@@ -651,6 +649,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 40,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -663,6 +662,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     // wrote the halves in the wrong order moves bytes.
                     cond: 4_321,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -672,6 +672,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 77,
                     cond: 9_876,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],
@@ -742,6 +743,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         held: None,
         lit: false,
         held_skin: 0,
+        held_mods: 0,
+        beam: false,
     }
 }
 
@@ -1201,6 +1204,7 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
                     0 => 1 + rng.next_bounded(900) as u16,
                     _ => 0,
                 },
+                ..ItemStack::EMPTY
             },
         };
     }
@@ -2472,12 +2476,6 @@ pub fn event_ammo() -> (u16, u16) {
     (3, 260)
 }
 
-/// The rifle in row 3 (v143) wearing the top and bottom attachments, the
-/// halves distinct so a swapped byte shows.
-pub fn event_mods() -> (u16, u8) {
-    (0x0103, 0b1000_0001)
-}
-
 /// The attach verb (v143) on the pack's last slot.
 pub fn action_attach() -> u8 {
     (sim_core::limits::INV_SLOTS - 1) as u8
@@ -3113,6 +3111,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 64,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3122,6 +3121,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 2,
                     cond: 12_345,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3131,6 +3131,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 11,
                     cond: 40_000,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],
@@ -3232,6 +3233,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     count: 1,
                     cond: 9_100,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3241,6 +3243,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     count: 1,
                     cond: 10_000,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],

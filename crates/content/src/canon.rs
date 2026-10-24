@@ -533,7 +533,6 @@ pub fn hash(c: &Content) -> u64 {
     let fm = &c.farm;
     h.s("farm");
     h.s(&fm.water);
-    h.s(&fm.emptied);
     h.u(fm.skin_water);
     h.u(fm.planter_water);
     h.u(fm.rain_water);
@@ -624,9 +623,11 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.drink_water_salt.map_or(u32::MAX, |w| w));
     h.u(sv.vessels.len() as u32);
     for v in &sv.vessels {
-        h.s(&v.empty);
-        h.s(&v.fresh);
-        h.s(v.salt.as_deref().unwrap_or(""));
+        h.s(&v.item);
+        h.u(v.ml);
+        h.u(v.sip_ml);
+        h.u(v.water_per_l);
+        h.u(v.salt as u32);
     }
     h.u(sv.bleed_pct);
     h.u(sv.bleed_hp_per_min);

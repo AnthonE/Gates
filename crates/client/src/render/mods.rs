@@ -14,6 +14,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use protocol::ModRow;
 
+use super::bodies::Bodies;
 use super::rig::EyeCam;
 use super::Net;
 
@@ -291,6 +292,208 @@ pub fn draw(
     }
 }
 
+/// How many other players' gun lights and lasers are drawn at once, the
+/// nearest first: each light is a spot the renderer pays for.
+pub const REMOTE_LIGHTS: usize = 4;
+pub const REMOTE_LASERS: usize = 8;
+
+/// How far a laser reaches and the march it finds the ground by, metres.
+pub const LASER_RANGE_M: f32 = 50.0;
+const LASER_STEP_M: f32 = 1.0;
+/// The beam's thickness and the dot's radius, metres.
+const LASER_WIDTH_M: f32 = 0.006;
+const LASER_DOT_M: f32 = 0.035;
+
+/// One of the pool of other players' gun lights ([`remote`]).
+#[derive(Component)]
+pub struct RemoteLight(pub usize);
+
+/// One of the pool of other players' laser beams, and its dot.
+#[derive(Component)]
+pub struct RemoteLaser(pub usize);
+
+#[derive(Component)]
+pub struct RemoteDot(pub usize);
+
+/// Spawn the pools, all off.
+pub fn remote_setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for i in 0..REMOTE_LIGHTS {
+        commands.spawn((
+            SpotLight {
+                intensity: 0.0,
+                range: LIGHT_RANGE_M,
+                outer_angle: LIGHT_OUTER_RAD,
+                inner_angle: LIGHT_INNER_RAD,
+                color: Color::srgb(1.0, 0.95, 0.85),
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::default(),
+            RemoteLight(i),
+        ));
+    }
+    let red = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.1, 0.06, 0.55),
+        emissive: LinearRgba::rgb(6.0, 0.3, 0.2),
+        unlit: true,
+        alpha_mode: AlphaMode::Add,
+        ..default()
+    });
+    let beam = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let dot = meshes.add(Sphere::new(1.0));
+    for i in 0..REMOTE_LASERS {
+        commands.spawn((
+            Mesh3d(beam.clone()),
+            MeshMaterial3d(red.clone()),
+            Transform::default(),
+            Visibility::Hidden,
+            bevy::light::NotShadowCaster,
+            RemoteLaser(i),
+        ));
+        commands.spawn((
+            Mesh3d(dot.clone()),
+            MeshMaterial3d(red.clone()),
+            Transform::default(),
+            Visibility::Hidden,
+            bevy::light::NotShadowCaster,
+            RemoteDot(i),
+        ));
+    }
+}
+
+/// Where a laser from `at` along `dir` meets the ground, within
+/// [`LASER_RANGE_M`], or `None` when it runs out first.
+pub fn laser_end(seed: u64, at: Vec3, dir: Vec3) -> Option<Vec3> {
+    let n = (LASER_RANGE_M / LASER_STEP_M) as usize;
+    (1..=n)
+        .map(|k| at + dir * (k as f32 * LASER_STEP_M))
+        .find(|p| p.y <= sim_core::terrain::height(seed, p.x, p.z))
+}
+
+/// Other players' lasers and flashlights, Rust's: everyone sees a lit
+/// gun's beam and a laser's dot. The nearest few are drawn, from the
+/// muzzle `bodies::aim_long_guns` laid this frame, with which attachment
+/// is which read off the catalog's rows (`ClientCore::mod_rows`).
+#[allow(clippy::type_complexity)]
+pub fn remote(
+    net: Option<NonSend<Net>>,
+    bodies: Res<Bodies>,
+    cam: Query<&GlobalTransform, With<EyeCam>>,
+    mut lights: Query<(
+        &RemoteLight,
+        &mut SpotLight,
+        &mut Transform,
+        &mut GlobalTransform,
+    )>,
+    mut lasers: Query<
+        (
+            &RemoteLaser,
+            &mut Transform,
+            &mut GlobalTransform,
+            &mut Visibility,
+        ),
+        (Without<RemoteLight>, Without<RemoteDot>),
+    >,
+    mut dots: Query<
+        (
+            &RemoteDot,
+            &mut Transform,
+            &mut GlobalTransform,
+            &mut Visibility,
+        ),
+        (Without<RemoteLight>, Without<RemoteLaser>),
+    >,
+) {
+    let eye = cam.single().map_or(Vec3::ZERO, |g| g.translation());
+    // (distance², muzzle, barrel, laser, light), nearest first.
+    let mut lit: [(f32, Vec3, Vec3, bool, bool); REMOTE_LASERS] =
+        [(f32::MAX, Vec3::ZERO, Vec3::Z, false, false); REMOTE_LASERS];
+    let mut seed = 0;
+    if let Some(n) = net.as_deref() {
+        let core = &n.session.core;
+        seed = core.seed();
+        for (_, at, dir, mask) in bodies.beams() {
+            let v = sum(core.mod_rows(mask).map(|(_, m)| m));
+            if !v.laser && !v.light {
+                continue;
+            }
+            let d2 = at.distance_squared(eye);
+            if let Some(worst) = lit
+                .iter_mut()
+                .filter(|e| e.0 > d2)
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+            {
+                *worst = (d2, at, dir, v.laser, v.light);
+            }
+        }
+    }
+    lit.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let show = |on: bool| {
+        if on {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        }
+    };
+    let set = |tf: &mut Transform, gt: &mut GlobalTransform, t: Transform| {
+        *tf = t;
+        *gt = GlobalTransform::from(t);
+    };
+    for (RemoteLight(i), mut spot, mut tf, mut gt) in &mut lights {
+        let e = lit.iter().filter(|e| e.4 && e.0 < f32::MAX).nth(*i);
+        let want = if e.is_some() { LIGHT_LUMENS } else { 0.0 };
+        if spot.intensity != want {
+            spot.intensity = want;
+        }
+        if let Some(&(_, at, dir, _, _)) = e {
+            set(
+                &mut tf,
+                &mut gt,
+                Transform::from_translation(at).looking_to(dir, Vec3::Y),
+            );
+        }
+    }
+    let beams = || lit.iter().filter(|e| e.3 && e.0 < f32::MAX);
+    for (RemoteLaser(i), mut tf, mut gt, mut vis) in &mut lasers {
+        let e = beams().nth(*i);
+        if let Some(&(_, at, dir, _, _)) = e {
+            let end = laser_end(seed, at, dir).unwrap_or(at + dir * LASER_RANGE_M);
+            let len = at.distance(end);
+            set(
+                &mut tf,
+                &mut gt,
+                Transform::from_translation((at + end) * 0.5)
+                    .looking_to(dir, Vec3::Y)
+                    .with_scale(Vec3::new(LASER_WIDTH_M, LASER_WIDTH_M, len)),
+            );
+        }
+        let want = show(e.is_some());
+        if *vis != want {
+            *vis = want;
+        }
+    }
+    for (RemoteDot(i), mut tf, mut gt, mut vis) in &mut dots {
+        let hit = beams()
+            .nth(*i)
+            .and_then(|&(_, at, dir, _, _)| laser_end(seed, at, dir));
+        if let Some(p) = hit {
+            set(
+                &mut tf,
+                &mut gt,
+                Transform::from_translation(p).with_scale(Vec3::splat(LASER_DOT_M)),
+            );
+        }
+        let want = show(hit.is_some());
+        if *vis != want {
+            *vis = want;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +533,18 @@ mod tests {
         assert!((v.zoom - 0.4).abs() < 1e-6);
         assert!(v.laser && !v.light && !v.quiet);
         assert_eq!(sum(std::iter::empty()), ModView::default());
+    }
+
+    /// A laser pointed down meets the ground inside its reach; one pointed
+    /// at the sky runs out.
+    #[test]
+    fn a_laser_finds_the_ground_or_runs_out() {
+        let seed = 7;
+        let (x, z) = (1800.0, 1800.0);
+        let at = Vec3::new(x, sim_core::terrain::height(seed, x, z) + 1.5, z);
+        let down = laser_end(seed, at, Vec3::new(0.3, -1.0, 0.0).normalize());
+        assert!(down.is_some_and(|p| p.distance(at) < 3.0));
+        assert_eq!(laser_end(seed, at, Vec3::Y), None);
     }
 
     /// The scope's picture is see-through in the middle, black at the corner,

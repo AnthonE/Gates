@@ -21,11 +21,10 @@
 //! `tests/gun.rs` owns where a bullet lands; this owns whether there was
 //! one to fire.
 
-use sim_core::combat::{CombatContent, RangedDef, NO_MAG};
+use sim_core::combat::{CombatContent, GunState, RangedDef, NO_MAG};
 use sim_core::craft::inv_count;
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::MAX_MAGS;
 use sim_core::ranged::{
     mag_ceiling, mag_loaded, mag_pair, REFUSE_RL_BUSY, REFUSE_RL_DRY, REFUSE_RL_EMPTY,
     REFUSE_RL_FULL, REFUSE_RL_HAND, REFUSE_RL_MAX, REFUSE_RL_UNLOADED,
@@ -96,7 +95,7 @@ fn armed() -> Box<World> {
         gun: Default::default(),
     };
     w.combat = c;
-    // The survival clock, so `a_death_empties_the_cylinder` has a door to
+    // The survival clock, so `a_death_bags_the_gun_loaded_and_scoped` has a door to
     // kill through that is not a hand-written `hp = 0`. Its fixture spans
     // are seconds, so a body starves inside a test's tick budget.
     w.survival = sim_core::survival::SurvivalContent::probe_fixture();
@@ -107,18 +106,21 @@ fn armed() -> Box<World> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: ROUND,
         count: PACK,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: BOW,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }
@@ -162,8 +164,8 @@ fn first(w: &World, code: u8) -> sim_core::world::SimEvent {
 fn a_reload_moves_rounds_from_the_pack_and_a_shot_spends_them() {
     let mut w = armed();
     w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], MAG, "the cylinder filled");
-    assert_eq!(w.players[0].mag_round[0], ROUND, "and remembers what with");
+    assert_eq!(w.players[0].gun().loaded, MAG, "the cylinder filled");
+    assert_eq!(w.players[0].gun().round, ROUND, "and remembers what with");
     assert_eq!(
         inv_count(&w.players[0].inv, ROUND),
         (PACK - MAG) as u32,
@@ -176,7 +178,11 @@ fn a_reload_moves_rounds_from_the_pack_and_a_shot_spends_them() {
     }
     w.tick(&[input(0, true)]);
     assert_eq!(count_of(&w, EV_SHOT), 1, "the loaded gun fires");
-    assert_eq!(w.players[0].mag[0], MAG - 1, "and the cylinder paid for it");
+    assert_eq!(
+        w.players[0].gun().loaded,
+        MAG - 1,
+        "and the cylinder paid for it"
+    );
     assert_eq!(
         inv_count(&w.players[0].inv, ROUND),
         (PACK - MAG) as u32,
@@ -260,16 +266,19 @@ fn a_dry_trigger_refuses_out_loud_and_at_the_weapons_cadence() {
 /// times over.
 #[test]
 fn every_reload_refusal_has_a_cause() {
-    // HAND — a bow, which by design spends straight out of the quiver.
+    // A bow is no HAND refusal: it spends straight out of the quiver, so
+    // `R` on it picks the next arrow it carries and says which.
     let mut w = armed();
     w.tick(&[input(2, false)]);
     w.tick(&[Command::Reload { id: ME }]);
-    let ev = first(&w, EV_RELOAD_REFUSED);
-    assert_eq!(ev.b & 0xFFFF, REFUSE_RL_HAND);
-    assert_eq!((ev.b >> 16) as u16, BOW);
-    assert_eq!(ev.c, 0, "a hand with no magazine states no ceiling");
+    assert_eq!(count_of(&w, EV_RELOAD_REFUSED), 0);
+    assert_eq!(
+        count_of(&w, sim_core::world::EV_AMMO),
+        1,
+        "the arrow is said"
+    );
 
-    // HAND again, from an empty hand — the case a bow does not cover.
+    // HAND, from an empty hand.
     let mut w = armed();
     w.players[0].inv[0] = ItemStack::default();
     w.tick(&[Command::Reload { id: ME }]);
@@ -277,8 +286,8 @@ fn every_reload_refusal_has_a_cause() {
 
     // FULL — the key pressed on a cylinder that is already full.
     let mut w = armed();
-    w.players[0].mag[0] = MAG;
-    w.players[0].mag_round[0] = ROUND;
+    w.players[0].set_gun(|g| g.loaded = MAG);
+    w.players[0].set_gun(|g| g.round = ROUND);
     w.tick(&[Command::Reload { id: ME }]);
     let ev = first(&w, EV_RELOAD_REFUSED);
     assert_eq!(ev.b & 0xFFFF, REFUSE_RL_FULL);
@@ -339,6 +348,7 @@ fn a_partial_fill_takes_what_there_is_and_reports_it() {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Reload { id: ME }]);
     let ev = first(&w, EV_RELOAD);
@@ -352,42 +362,33 @@ fn a_partial_fill_takes_what_there_is_and_reports_it() {
     );
 }
 
-/// **The stated cost of keying the magazine by weapon row.**
-///
-/// `RangedDef::mag_slot`'s doc says two of a kind share one magazine, and
-/// this is that sentence made checkable. It is written as a gate rather
-/// than left in prose because a limitation nobody can run is a limitation
-/// that gets rediscovered as a bug — and because the day someone moves the
-/// magazine onto `ItemStack` (the ~500-site change that doc prices), this
-/// test is what tells them the trade-off actually changed.
+/// **Two of a kind keep their own magazines**: the rounds are in the gun
+/// (`combat::GunState`, in its stack's data), so a second revolver picked
+/// up beside a loaded one is as empty as it came.
 #[test]
-fn two_of_a_kind_share_one_magazine() {
+fn two_of_a_kind_keep_their_own_magazines() {
     let mut w = armed();
     // A second revolver, in another slot. Two stacks, one item.
     w.players[0].inv[3] = ItemStack {
         item: GUN,
         count: 1,
-        cond: 0,
-        skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], MAG);
-
-    // Past the fill's own beat first, or the press below reads BUSY —
-    // which would be a true answer to a different question.
+    assert_eq!(w.players[0].gun().loaded, MAG);
     for _ in 0..RELOAD_TICKS {
         w.tick(&[]);
     }
-    // Switch to the other one and it is already loaded — because the
-    // magazine belongs to the ROW, not to either stack.
     w.tick(&[input(3, false)]);
-    w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
-        first(&w, EV_RELOAD_REFUSED).b & 0xFFFF,
-        REFUSE_RL_FULL,
-        "the second revolver reads the first one's cylinder — this is the \
-         known cost of `RangedDef::mag_slot`, not a bug, and if it ever \
-         stops being true the doc there has to move with it"
+        w.players[0].gun().loaded,
+        0,
+        "the second revolver is its own"
+    );
+    assert_eq!(
+        GunState::of(w.players[0].inv[0].data).loaded,
+        MAG,
+        "and the first is still loaded"
     );
 }
 
@@ -432,174 +433,75 @@ fn starve(w: &mut World) {
     panic!("the clock never killed it");
 }
 
-/// A corpse and a sleeper do not reload, and the magazine does not follow a
-/// body to the beach.
+/// **A death bags the gun as it was**: loaded, with its round and its
+/// attachments, so the killer loots this revolver as it was fired — and
+/// the loose rounds go with it. Conservation, not a count: every round the
+/// body owned is in a bag afterwards, in the gun or beside it.
 ///
-/// The second half is `tests/persist.rs`'s ledger made concrete: the gun
-/// itself goes to the death bag inside `inv`, so a magazine that stayed
-/// with the player would mean the killer looted an empty revolver while the
-/// dead player respawned holding its rounds.
-///
-/// This is the **player** half only, and it was the whole of the story
-/// until 2026-08-30: the rounds left the player and were destroyed on the
-/// way. `a_death_sheds_the_cylinder_into_the_bag` is the other end, and
-/// the two are separate tests because they fail for different reasons —
-/// this one goes red if a corpse starts keeping rounds, that one if the
-/// rounds stop arriving anywhere.
+/// `armed()` leaves the drop disarmed (`w.backpack` inert, `stack_max` 0
+/// for the round), so both are armed here; either alone turns this
+/// green-on-nothing.
 #[test]
-fn a_death_empties_the_cylinder() {
-    let mut w = armed();
-    w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], MAG);
-    starve(&mut w);
-    assert_eq!(w.players[0].mag[0], 0, "a corpse keeps no rounds");
-    assert_eq!(
-        w.players[0].mag_round[0], NO_ITEM,
-        "and an emptied magazine names no round — NO_ITEM, not item 0"
-    );
-}
-
-/// **The killer gets the rounds that were in the cylinder** (`NOW.md`
-/// §0mag item 1).
-///
-/// The assertion is deliberately a **conservation** one rather than a
-/// count of the shed stack: every round the dead player owned — the six
-/// seated in the magazine and the four still loose in the pack — is in a
-/// bag afterwards, `PACK` of them, and the gun is there with them. That
-/// shape is what makes it hard to satisfy dishonestly. A build that sheds
-/// the magazine but drops the pack passes a "the bag has six" test and
-/// fails this one; a build that destroys the magazine, which is what
-/// shipped until 2026-08-30, reads 4 here and cannot be argued into 10.
-///
-/// `armed()` leaves both halves of the drop disarmed and that is not
-/// incidental — it is why this needs its own fixture. `w.backpack` at
-/// `base_ticks == 0` makes `spill_at` return before it looks at anything
-/// (the module is inert), and `w.gather.stack_max[ROUND]` at 0 makes
-/// `inv_add` add **nothing at all** by its own zero-ceiling guard. Either
-/// one alone turns this test green-on-nothing, so both are set and both
-/// are load-bearing.
-#[test]
-fn a_death_sheds_the_cylinder_into_the_bag() {
+fn a_death_bags_the_gun_loaded_and_scoped() {
+    const SCOPE: u16 = 20;
     let mut w = armed();
     w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
-    // The shipped pistol round stacks 128; the fixture only needs a
-    // ceiling above `PACK` so the whole lot can merge into one slot and
-    // the sum below is not really a test of slot arithmetic.
     w.gather.stack_max[ROUND as usize] = 128;
     w.gather.stack_max[GUN as usize] = 1;
-
+    w.combat.mods[1] = sim_core::combat::ModDef {
+        item: SCOPE,
+        ..sim_core::combat::ModDef::NONE
+    };
     w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], MAG, "the cylinder filled");
-    assert_eq!(
-        inv_count(&w.players[0].inv, ROUND),
-        (PACK - MAG) as u32,
-        "and the pack paid for it"
-    );
-
+    w.players[0].set_gun(|g| g.mods = 0b10);
+    assert_eq!(w.players[0].gun().loaded, MAG);
     starve(&mut w);
-
-    assert_eq!(w.players[0].mag[0], 0, "the corpse still keeps no rounds");
-    let bagged = |item: u16| -> u32 {
+    let bagged = |item: u16| -> Vec<ItemStack> {
         w.backpacks
             .entries()
             .iter()
             .flat_map(|b| b.items.iter())
-            .filter(|s| s.item == item)
-            .map(|s| s.count as u32)
-            .sum()
+            .filter(|s| s.item == item && s.count > 0)
+            .copied()
+            .collect()
     };
-    assert!(
-        !w.backpacks.entries().is_empty(),
-        "no bag stood up at all — the fixture is disarmed, not the code under test"
-    );
+    let gun = bagged(GUN);
+    assert_eq!(gun.len(), 1, "the gun went into the bag");
+    let g = GunState::of(gun[0].data);
     assert_eq!(
-        bagged(ROUND),
+        (g.loaded, g.round, g.mods),
+        (MAG, ROUND, 0b10),
+        "loaded, with its round, wearing its scope"
+    );
+    let loose: u32 = bagged(ROUND).iter().map(|s| u32::from(s.count)).sum();
+    assert_eq!(
+        loose + u32::from(g.loaded),
         PACK as u32,
-        "every round the body owned must be in a bag: {} loose in the pack plus \
-         {MAG} seated in the cylinder",
-        PACK - MAG
-    );
-    assert_eq!(bagged(GUN), 1, "and the gun went with them");
-}
-
-/// **A shed round arrives as ammunition, not as scrap** — the condition
-/// half, and it needs a pack with nothing left in it.
-///
-/// This exists as its own test because the obvious place for it does not
-/// work, and the mutant is what said so. Asserting the shed stack's `cond`
-/// inside `a_death_sheds_the_cylinder_into_the_bag` **survives** a mutant
-/// that stamps the wrong condition entirely: four loose rounds are already
-/// in the bag by then (`drop_for` copies `inv` wholesale), so the shed
-/// stack merges as a *top-up*, and `inv_add` stamps `cond` on the
-/// empty-slot pass only — by design, since an item that stacks past 1
-/// carries no condition and there would be two to reconcile. The
-/// assertion read the pack's zero and called it the magazine's.
-///
-/// So the pack is drained to exactly one magazine: the reload empties it,
-/// the body falls carrying no loose rounds, and the shed stack is the
-/// first of its kind to reach the bag. Now the stamp is observable and a
-/// wrong condition is red.
-#[test]
-fn a_shed_round_arrives_as_ammunition_not_scrap() {
-    let mut w = armed();
-    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
-    w.gather.stack_max[ROUND as usize] = 128;
-    w.gather.stack_max[GUN as usize] = 1;
-    // Exactly a magazine, so the fill takes all of it. `cond_max` stays 0
-    // for `ROUND`, which is the shipped truth for every round (rule V7)
-    // and is what the shed must reproduce.
-    w.players[0].inv[1] = ItemStack {
-        item: ROUND,
-        count: MAG,
-        cond: 0,
-        skin: 0,
-    };
-
-    w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], MAG, "the cylinder filled");
-    assert_eq!(
-        inv_count(&w.players[0].inv, ROUND),
-        0,
-        "the pack must be empty, or the shed stack merges and the stamp is invisible"
-    );
-
-    starve(&mut w);
-
-    let shed: Vec<_> = w
-        .backpacks
-        .entries()
-        .iter()
-        .flat_map(|b| b.items.iter())
-        .filter(|s| s.item == ROUND && s.count > 0)
-        .collect();
-    assert_eq!(shed.len(), 1, "one fresh stack of rounds, got {shed:?}");
-    assert_eq!(shed[0].count, MAG, "and it is the whole cylinder");
-    assert_eq!(
-        shed[0].cond,
-        w.gather.cond_max_of(ROUND),
-        "a shed round is minted at cond_max, not at whatever the buffer held"
+        "every round the body owned is in the bag"
     );
 }
 
-/// The store is exactly as wide as the cap says, and `NO_MAG` is out of it.
-///
-/// Wall 4's shape for a fixed array: the bound is stated, and the sentinel
-/// that means "no slot" is provably not a slot — an unguarded index with it
-/// panics rather than aliasing the first magazine.
+/// A fresh gun is empty, and the state round-trips through its data: a
+/// gun's data of 0 is no rounds, no round, no attachments.
 #[test]
-fn the_magazine_store_is_bounded_and_says_so() {
+fn a_fresh_gun_is_empty_and_its_state_round_trips() {
     let w = armed();
-    assert_eq!(w.players[0].mag.len(), MAX_MAGS);
-    assert_eq!(w.players[0].mag_round.len(), MAX_MAGS);
-    assert!(
-        (NO_MAG as usize) >= MAX_MAGS,
-        "NO_MAG must not name a real magazine slot"
-    );
-    // A fresh body starts empty: the first thing a player does with a gun
-    // is load it.
-    for (loaded, round) in w.players[0].mag.iter().zip(w.players[0].mag_round.iter()) {
-        assert_eq!(*loaded, 0);
-        assert_eq!(*round, NO_ITEM);
+    assert_eq!(w.players[0].gun(), GunState::NONE);
+    assert_eq!(GunState::of(0), GunState::NONE);
+    for g in [
+        GunState::NONE,
+        GunState {
+            mods: 0b1010_0101,
+            loaded: 37,
+            round: 0x2122,
+        },
+        GunState {
+            mods: 0xFF,
+            loaded: sim_core::combat::GUN_LOADED_MAX,
+            round: 0,
+        },
+    ] {
+        assert_eq!(GunState::of(g.data()), g);
     }
 }
 
@@ -626,8 +528,8 @@ fn the_hash_sees_the_magazine_and_a_save_carries_it() {
 
     // A different count.
     let mut loaded = armed();
-    loaded.players[0].mag[0] = 1;
-    loaded.players[0].mag_round[0] = ROUND;
+    loaded.players[0].set_gun(|g| g.loaded = 1);
+    loaded.players[0].set_gun(|g| g.round = ROUND);
     assert_ne!(
         loaded.state_hash(),
         h0,
@@ -639,8 +541,8 @@ fn the_hash_sees_the_magazine_and_a_save_carries_it() {
     // The same count, a different round in it. This is the half a naive
     // hash of `mag` alone would miss.
     let mut other = armed();
-    other.players[0].mag[0] = 1;
-    other.players[0].mag_round[0] = ROUND + 1;
+    other.players[0].set_gun(|g| g.loaded = 1);
+    other.players[0].set_gun(|g| g.round = ROUND + 1);
     assert_ne!(
         other.state_hash(),
         loaded.state_hash(),
@@ -669,9 +571,9 @@ fn the_hash_sees_the_magazine_and_a_save_carries_it() {
     };
     let a = restored(&loaded);
     let b = restored(&other);
-    assert_eq!(a.players[0].mag[0], 1, "the count came back");
-    assert_eq!(a.players[0].mag_round[0], ROUND, "and so did the round");
-    assert_eq!(b.players[0].mag_round[0], ROUND + 1, "and the other one's");
+    assert_eq!(a.players[0].gun().loaded, 1, "the count came back");
+    assert_eq!(a.players[0].gun().round, ROUND, "and so did the round");
+    assert_eq!(b.players[0].gun().round, ROUND + 1, "and the other one's");
     assert_ne!(
         a.state_hash(),
         b.state_hash(),
@@ -707,11 +609,11 @@ fn unload_returns_the_magazine_to_the_pack() {
     // BUSY: mid-reload, an unload would undo the fill half-way.
     w.tick(&[Command::Unload { id: ME }]);
     assert_eq!(first(&w, EV_RELOAD_REFUSED).b & 0xFFFF, REFUSE_RL_BUSY);
-    assert_eq!(w.players[0].mag[0], MAG);
+    assert_eq!(w.players[0].gun().loaded, MAG);
     settle(&mut w);
     w.tick(&[Command::Unload { id: ME }]);
-    assert_eq!(w.players[0].mag[0], 0);
-    assert_eq!(w.players[0].mag_round[0], NO_ITEM);
+    assert_eq!(w.players[0].gun().loaded, 0);
+    assert_eq!(w.players[0].gun().round, NO_ITEM);
     assert_eq!(inv_count(&w.players[0].inv, ROUND), PACK as u32);
     let ev = first(&w, EV_RELOAD);
     assert_eq!(ev.b, mag_pair(0, MAG));
@@ -742,13 +644,17 @@ fn a_reload_switches_to_the_next_carried_round() {
         count: PACK,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!((w.players[0].mag[0], w.players[0].mag_round[0]), (3, ROUND));
+    assert_eq!(
+        (w.players[0].gun().loaded, w.players[0].gun().round),
+        (3, ROUND)
+    );
     settle(&mut w);
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
-        (w.players[0].mag[0], w.players[0].mag_round[0]),
+        (w.players[0].gun().loaded, w.players[0].gun().round),
         (MAG, ROUND2),
         "the cylinder holds only the new round"
     );
@@ -786,12 +692,16 @@ fn a_shot_wears_the_gun_and_a_broken_gun_refuses() {
     );
 
     w.players[0].inv[0].cond = 0;
-    let loaded = w.players[0].mag[0];
+    let loaded = w.players[0].gun().loaded;
     for _ in 0..=RATE_TICKS {
         w.tick(&[input(0, true)]);
         assert_eq!(count_of(&w, EV_SHOT), 0, "a broken gun fired");
     }
-    assert_eq!(w.players[0].mag[0], loaded, "a broken gun spent a round");
+    assert_eq!(
+        w.players[0].gun().loaded,
+        loaded,
+        "a broken gun spent a round"
+    );
     assert!(
         (0..=RATE_TICKS).any(|_| {
             w.tick(&[input(0, true)]);
@@ -820,16 +730,18 @@ fn r_on_a_full_magazine_loads_the_next_kind_of_round() {
         count: PACK,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
-        w.players[0].mag_round[0], ROUND,
+        w.players[0].gun().round,
+        ROUND,
         "the list's first loads first"
     );
     settle(&mut w);
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
-        (w.players[0].mag[0], w.players[0].mag_round[0]),
+        (w.players[0].gun().loaded, w.players[0].gun().round),
         (MAG, HV),
         "a full magazine took the next kind"
     );
@@ -844,33 +756,5 @@ fn r_on_a_full_magazine_loads_the_next_kind_of_round() {
     // And round again, back to the first.
     settle(&mut w);
     w.tick(&[Command::Reload { id: ME }]);
-    assert_eq!(w.players[0].mag_round[0], ROUND);
-}
-
-/// **The attachments go into the bag with the gun**, Rust's mods riding the
-/// rifle into the corpse: each comes off its gun as its item, and the body
-/// keeps none.
-#[test]
-fn a_death_sheds_the_attachments_into_the_bag() {
-    const SCOPE: u16 = 20;
-    let mut w = armed();
-    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
-    w.gather.stack_max[GUN as usize] = 1;
-    w.gather.stack_max[SCOPE as usize] = 1;
-    w.combat.mods[1] = sim_core::combat::ModDef {
-        item: SCOPE,
-        ..sim_core::combat::ModDef::NONE
-    };
-    w.players[0].mods[0] = 0b10;
-    starve(&mut w);
-    assert_eq!(w.players[0].mods, [0; MAX_MAGS], "a corpse wears nothing");
-    let bagged: u32 = w
-        .backpacks
-        .entries()
-        .iter()
-        .flat_map(|b| b.items.iter())
-        .filter(|s| s.item == SCOPE)
-        .map(|s| s.count as u32)
-        .sum();
-    assert_eq!(bagged, 1, "the scope is in the bag");
+    assert_eq!(w.players[0].gun().round, ROUND);
 }

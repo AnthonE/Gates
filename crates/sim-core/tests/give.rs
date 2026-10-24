@@ -42,6 +42,7 @@ fn fixture() -> World {
         count: 30,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }
@@ -130,6 +131,7 @@ fn a_stack_keeps_its_condition_and_its_skin() {
         count: 1,
         cond: 77,
         skin: 5,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[3] = paper;
     give(&mut w, 3, 1, TAKER);
@@ -198,6 +200,7 @@ fn a_full_pack_refuses_and_a_nearly_full_one_takes_what_fits() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mut w = fixture();
     w.players[1].inv = [paper; INV_SLOTS];
@@ -222,6 +225,7 @@ fn a_full_pack_refuses_and_a_nearly_full_one_takes_what_fits() {
         count: 95,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     give(&mut w, 3, 30, TAKER);
     assert_eq!(wood(&w, 1), 100, "the top-up did not fill the stack");

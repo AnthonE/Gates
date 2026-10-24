@@ -208,6 +208,7 @@ fn a_full_quiver_spills_the_arrow_at_your_feet() {
             count: QUIVER,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     stop(&mut w, 0);
@@ -295,12 +296,14 @@ fn world_with_bow() -> Box<World> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[P].inv[7] = ItemStack {
         item: ARROW,
         count: QUIVER,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }

@@ -1393,6 +1393,11 @@ impl ClientCore {
         &self.haven
     }
 
+    /// The island's seed, for a read that needs no occupants.
+    pub fn seed(&self) -> u64 {
+        self.predict.seed()
+    }
+
     /// The island this client stands on, as the seed plus the same four
     /// borrows the predictor hands `movement::step` — including **the very
     /// `SlotCache` the predictor just filled**.
@@ -1991,9 +1996,6 @@ pub struct ClientCore {
     /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
     /// v94): the weapon it was said for, and the round.
     bow_ammo: (u16, u16),
-    /// The gun in hand and its attachment mask, as the shard last said
-    /// (`EventMsg::Mods`).
-    gun_mods: (u16, u8),
     /// The fires heard of (`Fire`, wire v94), oldest first; the burnt-out
     /// ones go when the next is heard.
     fires: [Fire; FIRES],
@@ -2736,7 +2738,6 @@ impl ClientCore {
             mag: (0, 0),
             mag_item: NO_ITEM,
             bow_ammo: (NO_ITEM, NO_ITEM),
-            gun_mods: (NO_ITEM, 0),
             fires: [Fire::default(); FIRES],
             fire_len: 0,
             gather_refusal_head: 0,
@@ -3620,10 +3621,6 @@ impl ClientCore {
             EventMsg::Ammo { weapon, round } => {
                 // A level the HUD reads every frame (`bow_round`); no flag.
                 self.bow_ammo = (weapon, round);
-            }
-            EventMsg::Mods { weapon, mods } => {
-                // A level, `Ammo`'s: read every frame (`held_mods`).
-                self.gun_mods = (weapon, mods);
             }
             EventMsg::Fire { qx, qy, qz, until } => {
                 // One fire a point: a join or a resync restates the ones
@@ -5189,14 +5186,14 @@ impl ClientCore {
         self.mag
     }
 
-    /// The attachments on the gun in hand (`EventMsg::Mods`), one bit per
-    /// attachment row; 0 for any other hand.
+    /// The attachments on the gun in hand, one bit per attachment row, off
+    /// its own stack (`sim_core::combat::GunState`); 0 for an empty hand.
     pub fn held_mods(&self) -> u8 {
-        let (weapon, mods) = self.gun_mods;
-        if weapon == self.held_item() {
-            mods
-        } else {
+        let s = self.inv[self.input.sel as usize];
+        if s.count == 0 {
             0
+        } else {
+            sim_core::combat::GunState::of(s.data).mods
         }
     }
 
@@ -6185,6 +6182,7 @@ mod tests {
                 count: 21,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         }];
         let len = encode_event_inv(&slots, &mut buf).unwrap();
@@ -6196,6 +6194,7 @@ mod tests {
                 count: 21,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         assert_eq!(c.pop_toast(), Some((3, 7)));

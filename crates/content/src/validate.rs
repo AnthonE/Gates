@@ -795,8 +795,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // Both baked fields are `u16` on `RangedDef`, so the ceiling is the
         // field and not a taste — refused here, where a person reads the
         // message, rather than truncated at the bake.
-        if w.magazine.unwrap_or(0) > u16::MAX as u32 {
-            return Err(format!("weapon `{}`: magazine over u16", w.id));
+        // The rounds live in the gun's stack data, a byte of it
+        // (`combat::GunState`): an extended magazine at its 300% ceiling
+        // still fits.
+        if w.magazine.unwrap_or(0) * 3 > u32::from(sim_core::combat::GUN_LOADED_MAX) {
+            return Err(format!(
+                "weapon `{}`: magazine over 85, past what a gun's data holds extended",
+                w.id
+            ));
         }
         let reload_ticks =
             w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
@@ -2379,7 +2385,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 k.input, k.output
             ));
         }
-        if k.input == k.output {
+        // A row into itself boils (`oven::step`): only a salt vessel's.
+        let boils = c
+            .balance
+            .survival
+            .vessels
+            .iter()
+            .any(|v| v.item == k.input && v.salt);
+        if k.input == k.output && !boils {
             return Err(format!("cook: `{}` cooks into itself", k.input));
         }
         // The fuel is not a cook input **at a station that burns**: such
@@ -2418,25 +2431,27 @@ pub fn structural(c: &Content) -> Result<(), String> {
     // never water.
     let fm = &c.farm;
     let item_of = |id: &str| c.items.iter().find(|i| i.id == id);
-    for (what, id) in [("water", &fm.water), ("emptied", &fm.emptied)] {
-        let Some(it) = item_of(id) else {
-            return Err(format!("farm: {what} `{id}` is not an item"));
+    // The vessels: the water lives in one item's data (`survival::Water`),
+    // so a vessel never stacks, and holds what that data can.
+    for v in &c.balance.survival.vessels {
+        let Some(it) = item_of(&v.item) else {
+            return Err(format!("survival: vessel `{}` is not an item", v.item));
         };
-        // One skin's water is one skin: a stack of full skins would turn
-        // whole for one skin's pour (a tend, a planter's slot, a catcher's
-        // fill rewrite the stack's item, not one of it).
         if it.stack != 1 {
-            return Err(format!(
-                "farm: {what} `{id}` stacks to {}, not 1: a pour empties the whole stack",
-                it.stack
-            ));
+            return Err(format!("survival: vessel `{}` stacks; its water is its own", v.item));
+        }
+        if v.ml == 0 || v.ml > u32::from(sim_core::survival::WATER_ML_MAX) {
+            return Err(format!("survival: vessel `{}` ml {} out of 1..=32767", v.item, v.ml));
+        }
+        if v.sip_ml == 0 || v.sip_ml > v.ml {
+            return Err(format!("survival: vessel `{}` sip_ml {} out of 1..=ml", v.item, v.sip_ml));
         }
     }
-    if fm.water == fm.emptied {
-        return Err(format!(
-            "farm: water and emptied are both `{}`: a pour would leave the skin full",
-            fm.water
-        ));
+    if item_of(&fm.water).is_none() {
+        return Err(format!("farm: water `{}` is not an item", fm.water));
+    }
+    if !c.balance.survival.vessels.iter().any(|v| v.item == fm.water) {
+        return Err(format!("farm: water `{}` is not a survival vessel", fm.water));
     }
     if fm.clone_y_per == 0 {
         return Err("farm: clone_y_per must be above 0".to_string());

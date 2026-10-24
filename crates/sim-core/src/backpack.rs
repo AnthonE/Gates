@@ -124,6 +124,7 @@ impl BackpackContent {
             count: 0,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; MAX_BODY_DROPS],
     };
 
@@ -859,6 +860,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         inv
@@ -913,6 +915,7 @@ mod tests {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut bags = Backpacks::new();
         let mut ev = EventQueue::default();

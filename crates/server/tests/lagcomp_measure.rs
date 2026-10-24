@@ -937,6 +937,7 @@ fn duel_shard() -> (Box<ShardCore>, ShardStats) {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     (core, stats)

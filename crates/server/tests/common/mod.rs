@@ -191,6 +191,7 @@ pub fn stack(content: &content::Content, id: &str) -> sim_core::gather::ItemStac
         count: 1,
         cond: catalog.cond_max(item as usize),
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     }
 }
 

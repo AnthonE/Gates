@@ -229,12 +229,14 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, weapon: u16, round: u16, pitch:
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: round,
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // And the magazine, loaded (reload v1) — harmless for the bow, which
     // has no `mag_slot` and spends straight out of the quiver, and
@@ -243,8 +245,8 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, weapon: u16, round: u16, pitch:
     // enough because every sweep in this file builds a fresh shooter per
     // placement — `pull` fires exactly once per body it is handed — so a
     // cylinder never has to survive a second shot here.
-    p.mag[0] = 8;
-    p.mag_round[0] = round;
+    p.set_gun(|g| g.loaded = 8);
+    p.set_gun(|g| g.round = round);
     p.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,

@@ -169,9 +169,9 @@ pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
 const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
 
 /// A planter box (farming v2): one water slot and nothing else. Its six
-/// beds hold plants in `farm.rs`, not stacks; a full waterskin in slot 0 is
-/// poured into the tank (`OvenState::water`) once a plant thirsts and left
-/// there empty ([`crate::farm::FarmContent::water_full`]).
+/// beds hold plants in `farm.rs`, not stacks; a waterskin of fresh water in
+/// slot 0 is poured into the tank (`OvenState::water`) once a plant thirsts
+/// and left there empty ([`crate::farm::FarmContent::water_vessel`]).
 pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
     fuel: 1,
     input: 0,
@@ -402,15 +402,11 @@ impl CookContent {
         }
         let farm = &self.farm;
         let waters = arch == ARCH_PLANTER && farm.skin_wu > 0;
-        if waters && item == farm.water_full {
+        if waters && item == farm.water_vessel {
             roles |= ROLE_FUEL;
         }
-        // A catcher's one slot takes a skin, empty to be filled or full to
-        // be taken back out.
-        if arch == ARCH_CATCHER
-            && farm.skin_wu > 0
-            && (item == farm.water_empty || item == farm.water_full)
-        {
+        // A catcher's one slot takes a skin, to be filled and taken back.
+        if arch == ARCH_CATCHER && farm.skin_wu > 0 && item == farm.water_vessel {
             roles |= ROLE_FUEL;
         }
         if self.row_for(arch, item).is_some() {
@@ -426,7 +422,7 @@ impl CookContent {
         // that could not be moved back out through its own door would be
         // trapped by the rule meant to keep junk out.
         if (burns && self.byproduct_pct > 0 && item == self.byproduct)
-            || (waters && item == farm.water_empty)
+            || (waters && item == farm.water_vessel)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
@@ -559,6 +555,7 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, co
                 count: put,
                 cond,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             left -= put;
         }
@@ -771,6 +768,15 @@ pub fn sweep(
                 ovens[i].cook[s] = 0;
                 continue;
             }
+            // A row that pays its own input back boils it (the water pass):
+            // a vessel of sea water on the fire comes off fresh, in place,
+            // and anything else on that row — fresh, empty — does not cook.
+            let boils = row.output == stack.item;
+            let mut sea = crate::survival::Water::of(stack.data);
+            if boils && !sea.salt {
+                ovens[i].cook[s] = 0;
+                continue;
+            }
             // A furnace cooks faster while a work's ceiling turns the smelt
             // knob (`works::KNOB_SMELT_PCT`); everything else at its own pace.
             let cook_step = if arch == crate::deploy::ARCH_FURNACE {
@@ -780,6 +786,12 @@ pub fn sweep(
             };
             ovens[i].cook[s] = ovens[i].cook[s].saturating_add(cook_step);
             if (ovens[i].cook[s] as u32) < row.ticks {
+                continue;
+            }
+            if boils {
+                sea.salt = false;
+                boxes[i].items[s].data = sea.data();
+                ovens[i].cook[s] = 0;
                 continue;
             }
             // Pay every row over this input, on a scratch copy, and commit
@@ -873,6 +885,7 @@ mod tests {
             count: 8,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(slots_add(&mut s, 1, 5, 10, 0), 5);
         assert_eq!(
@@ -881,7 +894,8 @@ mod tests {
                 item: 1,
                 count: 10,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         assert_eq!(
@@ -890,7 +904,8 @@ mod tests {
                 item: 1,
                 count: 3,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
     }
@@ -903,12 +918,14 @@ mod tests {
             count: 9,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s[1] = ItemStack {
             item: 2,
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(slots_room(&s, 1, 1, 10, 0));
         assert!(!slots_room(&s, 1, 2, 10, 0));
@@ -932,6 +949,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(take_one(&mut s, 3));
         assert_eq!(s[1], ItemStack::default());

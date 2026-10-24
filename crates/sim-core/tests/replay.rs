@@ -1136,6 +1136,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     count: 8,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 };
             }
         }
@@ -1165,6 +1166,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                             count,
                             cond: 0,
                             skin: 0,
+                            ..sim_core::gather::ItemStack::EMPTY
                         };
                     }
                     walk_up_the_beach(&mut world, seed, w);

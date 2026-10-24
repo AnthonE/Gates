@@ -120,14 +120,13 @@
 //! a slab presents.
 
 use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
-use crate::combat::{held_item, CombatContent};
+use crate::combat::{held_gun, held_item, set_held_gun, CombatContent, GunState};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
 use crate::input::{BTN_AIM, BTN_PRIMARY, BTN_SPRINT};
 use crate::limits::{
     ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROWS_PER_OWNER, MAX_ARROW_LIFE_TICKS,
-    MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PELLETS,
-    MAX_PLAYERS,
+    MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_PELLETS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -146,8 +145,8 @@ use crate::yaw_lut::yaw_dir;
 // The mechanic a body-part ladder needs to be legible. `rate_ticks` alone
 // makes a firefight an unbroken stream of identical clicks, and the
 // difference between a leg and a chest is then only a slightly longer
-// stream; with a magazine, missing has a price. The magazine is per weapon
-// row (`RangedDef::mag_slot`, whose doc states the cost of that choice) and
+// stream; with a magazine, missing has a price. The magazine is the gun's
+// own, in its stack's data (`combat::GunState`), and
 // the wait is paid on `Player::next_swing`, the field gather, melee and
 // both ranged paths already share — so a reload stops a swing and a swing
 // stops a reload, with no second clock to keep in step.
@@ -242,20 +241,20 @@ pub fn reload(
         return false;
     };
     // An extended magazine holds more (`attach.rs`).
-    let def = cc.modded(def, p.mods.get(def.mag_slot as usize).copied().unwrap_or(0));
+    let mut g = held_gun(p);
+    let def = cc.modded(def, g.mods);
     // A bow: `R` picks the next kind of arrow it carries (Rust holds `R`
     // for a wheel of the kinds you carry; one press a kind is the same
     // choice). A bow spends straight out of the quiver, so there is no
     // cylinder to fill — `magazine == 0` is read as exactly that.
-    if def.magazine == 0 && !def.hitscan && (def.mag_slot as usize) < MAX_MAGS {
+    if def.magazine == 0 && !def.hitscan {
         return switch_round(tick, cc, events, p, &def);
     }
-    if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
+    if def.magazine == 0 {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     }
-    let slot = def.mag_slot as usize;
-    let loaded = p.mag[slot];
+    let loaded = g.loaded;
     let pair = mag_pair(loaded, def.magazine);
     // Mid-cadence, mid-swing or mid-reload — one field, one sentence.
     // Checked before the full test so that spamming the key during a
@@ -269,7 +268,7 @@ pub fn reload(
     // is loaded in place of what is in it, which goes back to the pack. With
     // one kind carried the magazine is simply full, and says so.
     let next_kind = (loaded >= def.magazine)
-        .then(|| next_carried(p, &def, p.mag_round[slot]))
+        .then(|| next_carried(p, &def, g.round))
         .flatten();
     if loaded >= def.magazine && next_kind.is_none() {
         refuse(events, REFUSE_RL_FULL, pair);
@@ -286,11 +285,11 @@ pub fn reload(
     // `StartReload`, which refunds the partial magazine and loads the new
     // round. Mixing is still never done: the old kind leaves before the new
     // one goes in.
-    let held_kind = p.mag_round[slot] != NO_ITEM && loaded > 0;
+    let held_kind = g.round != NO_ITEM && loaded > 0;
     let round = if let Some(r) = next_kind {
         r
-    } else if held_kind && inv_count(&p.inv, p.mag_round[slot]) > 0 {
-        p.mag_round[slot]
+    } else if held_kind && inv_count(&p.inv, g.round) > 0 {
+        g.round
     } else {
         let Some(r) = def
             .ammo
@@ -305,7 +304,7 @@ pub fn reload(
         r
     };
     // A switch empties the magazine first, so it wants a full one's worth.
-    let switching = held_kind && round != p.mag_round[slot];
+    let switching = held_kind && round != g.round;
     let kept = if switching { 0 } else { loaded };
     let want = def.magazine - kept;
     // `u32` down to `u16`: `inv_count` totals a whole inventory and
@@ -325,17 +324,18 @@ pub fn reload(
     // refund; what still does not fit spills at the shooter's feet.
     inv_take(&mut p.inv, round, got as u32);
     if switching {
-        refund(gc, p, slot, spill);
+        refund(gc, p, &mut g, spill);
     }
-    let was = p.mag_round[slot];
-    p.mag[slot] = kept + got;
-    p.mag_round[slot] = round;
+    let was = g.round;
+    g.loaded = kept + got;
+    g.round = round;
+    set_held_gun(p, g);
     // The beat you are helpless for, on the shared cadence field.
     p.next_swing = tick + def.reload_ticks.max(1) as u64;
     events.push(
         EV_RELOAD,
         p.id,
-        mag_pair(p.mag[slot], def.magazine),
+        mag_pair(g.loaded, def.magazine),
         got as u32,
     );
     // A new kind in the magazine is said, the bow's `EV_AMMO`, so the
@@ -360,8 +360,15 @@ fn next_carried(p: &Player, def: &crate::combat::RangedDef, current: u16) -> Opt
         .find(|&r| r != current && inv_count(&p.inv, r) > 0)
 }
 
-fn refund(gc: &GatherContent, p: &mut Player, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
-    let (n, round) = (p.mag[slot], p.mag_round[slot]);
+/// Empty `g`'s magazine into `p`'s pack (the rest to `spill`). The caller
+/// writes `g` back to the gun's stack.
+fn refund(
+    gc: &GatherContent,
+    p: &mut Player,
+    g: &mut GunState,
+    spill: &mut [ItemStack; INV_SLOTS],
+) {
+    let (n, round) = (g.loaded, g.round);
     if n > 0 && round != NO_ITEM {
         inv_add_spilling(
             &mut p.inv,
@@ -372,8 +379,8 @@ fn refund(gc: &GatherContent, p: &mut Player, slot: usize, spill: &mut [ItemStac
             gc.cond_max_of(round),
         );
     }
-    p.mag[slot] = 0;
-    p.mag_round[slot] = NO_ITEM;
+    g.loaded = 0;
+    g.round = NO_ITEM;
 }
 
 /// Empty the held weapon's magazine back into the pack (`NOW.md` §0mag 2,
@@ -397,24 +404,23 @@ pub fn unload(
     let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
         events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
     };
-    let Some(def) = cc
-        .held_ranged(item)
-        .filter(|d| d.magazine > 0 && (d.mag_slot as usize) < MAX_MAGS)
-    else {
+    let Some(def) = cc.held_ranged(item).filter(|d| d.magazine > 0) else {
         refuse(events, REFUSE_RL_HAND, 0);
         return false;
     };
-    let slot = def.mag_slot as usize;
-    let pair = mag_pair(p.mag[slot], def.magazine);
+    let mut g = held_gun(p);
+    let def = cc.modded(def, g.mods);
+    let pair = mag_pair(g.loaded, def.magazine);
     if tick < p.next_swing {
         refuse(events, REFUSE_RL_BUSY, pair);
         return false;
     }
-    if p.mag[slot] == 0 || p.mag_round[slot] == NO_ITEM {
+    if g.loaded == 0 || g.round == NO_ITEM {
         refuse(events, REFUSE_RL_UNLOADED, pair);
         return false;
     }
-    refund(gc, p, slot, spill);
+    refund(gc, p, &mut g, spill);
+    set_held_gun(p, g);
     events.push(EV_RELOAD, p.id, mag_pair(0, def.magazine), 0);
     true
 }
@@ -938,8 +944,8 @@ fn carried_rounds<'a>(
         .filter(move |&a| inv_count(&p.inv, a) > 0 && cc.ammo_def(a).is_some())
 }
 
-/// The round a bow will loose: the one picked (`Player::mag_round` in the
-/// bow's slot) while it is still carried, else the first carried in the
+/// The round a bow will loose: the one picked (`GunState::round` on the
+/// bow) while it is still carried, else the first carried in the
 /// weapon's list — and the pick follows, announced (`EV_AMMO`) when it
 /// moves, so the readout is never stale. `None` when none is carried.
 fn keep_round(
@@ -948,19 +954,16 @@ fn keep_round(
     p: &mut Player,
     def: &crate::combat::RangedDef,
 ) -> Option<u16> {
-    let slot = def.mag_slot as usize;
-    if slot >= MAX_MAGS {
-        // A slotless bow (test fixtures, an unarmed row): the list's first.
-        return carried_rounds(cc, p, def).next();
-    }
-    let picked = p.mag_round[slot];
+    let mut g = held_gun(p);
+    let picked = g.round;
     if picked != NO_ITEM && carried_rounds(cc, p, def).any(|r| r == picked) {
         return Some(picked);
     }
     let next = carried_rounds(cc, p, def).next();
     let now = next.unwrap_or(NO_ITEM);
     if now != picked {
-        p.mag_round[slot] = now;
+        g.round = now;
+        set_held_gun(p, g);
         events.push(
             EV_AMMO,
             p.id,
@@ -982,7 +985,6 @@ fn switch_round(
     p: &mut Player,
     def: &crate::combat::RangedDef,
 ) -> bool {
-    let slot = def.mag_slot as usize;
     let current = keep_round(cc, events, p, def).unwrap_or(NO_ITEM);
     let mut after = false;
     let mut next = None;
@@ -998,7 +1000,9 @@ fn switch_round(
         events.push(EV_AMMO, p.id, held | u32::from(current), 0);
         return false;
     };
-    p.mag_round[slot] = next;
+    let mut g = held_gun(p);
+    g.round = next;
+    set_held_gun(p, g);
     let rearm = if def.draw_ticks > 0 {
         1 + u64::from(def.draw_ticks)
     } else {
@@ -2616,9 +2620,9 @@ fn hitscan_in(
             continue;
         }
         // The gun as its attachments make it (`attach.rs`).
-        let mods = p.mods.get(def.mag_slot as usize).copied().unwrap_or(0);
-        let quiet = cc.quiet(&def, mods);
-        let def = cc.modded(def, mods);
+        let gs = held_gun(p);
+        let quiet = cc.quiet(&def, gs.mods);
+        let def = cc.modded(def, gs.mods);
         let gun = def.gun;
         // The trigger. Released, it re-arms a semi-automatic; held, an
         // automatic fires at its cadence and a semi-automatic only once.
@@ -2648,12 +2652,11 @@ fn hitscan_in(
         // magazineless hitscan row, and an unguarded index into
         // `Player::mag` with `NO_MAG` is the aliasing the constant exists
         // to prevent.
-        let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
-            .then_some(def.mag_slot as usize);
+        let mag = def.magazine > 0;
         let round = match mag {
-            Some(slot) if p.mag[slot] > 0 => Some(p.mag_round[slot]),
-            Some(_) => None,
-            None => def
+            true if gs.loaded > 0 => Some(gs.round),
+            true => None,
+            false => def
                 .ammo
                 .iter()
                 .copied()
@@ -2695,8 +2698,8 @@ fn hitscan_in(
             // refusal and not a silence: without it the gun going quiet is
             // indistinguishable from the client having dropped the input,
             // and the player is owed the sentence that says *press reload*.
-            if let Some(slot) = mag {
-                let pair = mag_pair(players[i].mag[slot], magazine);
+            if mag {
+                let pair = mag_pair(gs.loaded, magazine);
                 events.push(
                     EV_RELOAD_REFUSED,
                     id,
@@ -2723,8 +2726,14 @@ fn hitscan_in(
             // One round out of the magazine. No event for the spend: the
             // client counts its own shots off `EV_SHOT` (`ClientCore`), and
             // a fill and a dry click both restate the pair, which heals it.
-            Some(slot) => players[i].mag[slot] -= 1,
-            None => {
+            true => set_held_gun(
+                &mut players[i],
+                GunState {
+                    loaded: gs.loaded - 1,
+                    ..gs
+                },
+            ),
+            false => {
                 inv_take(&mut players[i].inv, round, 1);
             }
         }
