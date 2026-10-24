@@ -1913,3 +1913,62 @@ three at a time, so the per-file figures in the sidecars overlap.
 > **pumpkin_seed** — "A single small heap of pumpkin seeds on a plain white background, three-quarter view from above. About twenty flat oval cream-white pumpkin seeds with pale rims piled together, the heap 11 centimetres across and 3 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No pumpkin, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dry flat cream-white pumpkin seeds with pale rims, matte"
 >
 > **berry_seed** — "A single small heap of tiny berry seeds on a plain white background, three-quarter view from above. Many tiny dark red-brown seeds piled together, the heap 7 centimetres across and 1.5 centimetres tall. Dry. Real, photographed in soft daylight. Exactly one heap. No berries, no bowl, no bag. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Tiny dark red-brown dry seeds, matte"
+
+## The arrows and the exact parts — Meshy, 2026-10-24
+
+The eleven rows `WANTED.md` §12.3 routed to Blender, sent to Meshy instead
+(operator: *"just use meshy instead of blender no reason not too"*): five
+arrows and six thin or exact parts that the prop kit built. Same terms and
+pipeline as the batch above. Long things were rolled upright in a 9:16
+frame, the spear's lesson, and every one held on its first roll: the
+arrows' 9 mm shafts and fletching reconstructed straight. Imported to a
+cube of the kit row's height, so each keeps the row's height, except the
+pistol round (0.078 → 0.087). Stood with `stand_grip.py` on the shaft
+(arrows 0.20–0.80; the high-velocity arrow fitted at grip 0.30, because its
+shaft has too few vertices at 0.40 for the slide and it is straight to
+0.07°), the blade 0.05–0.95, the pipe 0.10–0.90, the fuse 0.25–0.75 and the
+syringe 0.05–0.95.
+
+The arrows are also what the world draws now. An arrow stuck where it hit,
+planted where it fell or lodged in a body draws its item's own model once
+it has loaded (`structures::arrow_as_model`, `lodged::draw`), with its head
+where the stand-in shaft's was. The shaft stays as the fallback. The streak
+in flight (`tracer.rs`) stays a deliberately unlit tracer.
+
+**264 credits for the 11** (balance 1,007 → 743, measured).
+
+| file | item | tris | size (m) | image | mesh |
+|---|---|---|---|---|---|
+| `held/wooden_arrow.glb` | Wooden Arrow | 2,807 | 0.06 × 0.79 × 0.06 | `01a16e96-d582-706a-8919-9f04ba08426f` | `01a16e97-281a-7079-bd04-beff49297925` |
+| `held/bone_arrow.glb` | Bone Arrow | 2,815 | 0.09 × 0.83 × 0.08 | `01a16e96-d57d-75af-98c5-36befff7089d` | `01a16e97-2bbf-7651-9050-4014d1b06669` |
+| `held/metal_arrow.glb` | Metal Arrow | 3,148 | 0.08 × 0.86 × 0.08 | `01a16e96-d57e-76ab-a618-3106c51ae63d` | `01a16e97-2b6b-7679-af10-9f0d8a0a70f3` |
+| `held/high_velocity_arrow.glb` | High Velocity Arrow | 2,189 | 0.07 × 0.86 × 0.06 | `01a16e97-b035-73b2-898e-27da01ae377f` | `01a16e98-2cb0-7489-8ce6-3528a09975f2` |
+| `held/fire_arrow.glb` | Fire Arrow | 2,703 | 0.08 × 0.79 × 0.09 | `01a16e97-d782-7783-b1a6-bd724f037c8b` | `01a16e98-5510-73e2-a36d-ed3425f74e43` |
+| `held/metal_blade.glb` | Metal Blade | 2,839 | 0.06 × 0.42 × 0.03 | `01a16e98-0416-7391-a188-1ae4eeee8c65` | `01a16e98-8516-7197-afab-be0a8baa0e3f` |
+| `held/metal_pipe.glb` | Metal Pipe | 3,290 | 0.06 × 0.43 × 0.06 | `01a16e98-bab9-74a3-9cad-221f0df1465c` | `01a16e99-1018-712b-9fe7-e0cc31ddec85` |
+| `held/metal_spring.glb` | Metal Spring | 3,330 | 0.11 × 0.26 × 0.11 | `01a16e98-e1de-71a5-af69-99f5d771c359` | `01a16e99-3930-7608-a6e2-f46af8ef0210` |
+| `held/electric_fuse.glb` | Electric Fuse | 3,247 | 0.07 × 0.16 × 0.04 | `01a16e99-1667-7310-9587-7d02e2f40710` | `01a16e99-75e9-7347-bf17-7ba5001032a5` |
+| `held/medical_syringe.glb` | Medical Syringe | 3,214 | 0.06 × 0.28 × 0.06 | `01a16e99-a082-7768-9cee-89c000daf853` | `01a16e9a-236d-7057-a248-0f91ca9abf15` |
+| `held/pistol_round.glb` | Pistol Round | 3,082 | 0.09 × 0.09 × 0.03 | `01a16e99-c8a2-7779-b503-e783a4d9ce0a` | `01a16e9a-4776-73f8-ae0d-793295c22b32` |
+
+> **wooden_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and its tip simply whittled to a sharp fire-hardened point, blackened by fire. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, fire-blackened sharpened wooden point, matte"
+>
+> **bone_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a flat carved off-white bone arrowhead 6 centimetres long lashed to the tip with sinew. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, off-white carved bone head, pale sinew lashing, matte"
+>
+> **metal_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a flat barbed steel broadhead 7 centimetres long fixed to the tip. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, dull grey forged steel broadhead with a little rust, matte"
+>
+> **high_velocity_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a slim needle-like steel bodkin point 6 centimetres long fixed to the tip. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, slim dull grey steel needle point, matte"
+>
+> **fire_arrow** — "A single arrow standing straight upright on a plain white background, point at the top, seen from the side. The WHOLE arrow is in frame from the nock at the bottom to the tip at the top, with white space above and below: a straight thin wooden arrow shaft 80 centimetres long and only 9 millimetres thick, three grey-brown feather fletchings bound with thread near the notched nock at the bottom, and a short bundle of dark oil-soaked cloth rag tied around the shaft just below a small point, unlit. Handmade, weathered. Real, photographed in soft daylight. Exactly one arrow. No second arrow, no bow, no quiver, no stand, no wall, no flame, no smoke, no glow. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Weathered pale wooden shaft, grey-brown feather fletching, thread binding, dark oil-soaked cloth rag bundle, tar stains, no flame, no glow"
+>
+> **metal_blade** — "A single crude knife blade ground from scrap steel standing straight upright on a plain white background, point at the top, seen from the side. A straight single-edged blade 30 centimetres long and 6 centimetres wide, with visible file and grinding marks and a bright honed edge, and its 12 centimetre tang at the bottom wrapped tightly in dirty cloth strips. 42 centimetres long in all, 3 millimetres thick. Rusty patches. Real, photographed in soft daylight. Exactly one blade. No handle guard, no sheath, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Scratched dull grey scrap steel with file marks and rust patches, bright honed edge, dirty grey cloth wrapping, no text"
+>
+> **metal_pipe** — "A single length of rusty steel pipe standing straight upright on a plain white background, three-quarter view. A round steel pipe 43 centimetres long and 6 centimetres across, a threaded coupling screwed onto the top end, the bottom end cut rough. Rust-brown and dark grey, flaking, dirty. Real, photographed in soft daylight. Exactly one pipe. No valve, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Rust-brown flaking steel pipe with dark grey patches, worn threads on the coupling, dirty, no paint, no text"
+>
+> **metal_spring** — "A single heavy steel coil spring standing upright on a plain white background, three-quarter view. A thick round steel wire coiled into eight even turns, 26 centimetres tall and 11 centimetres across, flat ground ends. Dark oily steel with rust in the gaps between the coils. Real, photographed in soft daylight. Exactly one spring. No car parts, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Dark oily steel coil with an oily sheen, orange-brown rust between the coils, matte rust, no paint"
+>
+> **electric_fuse** — "A single large industrial cartridge fuse standing upright on a plain white background, three-quarter view. A white ceramic cylinder 10 centimetres long and 4 centimetres across with a small glass window, two brass end caps with flat blade contacts sticking out of each end, 16 centimetres long in all. Scuffed, dusty. Real, photographed in soft daylight. Exactly one fuse. No holder, no wires. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Off-white glazed ceramic body, small glass window, tarnished brass end caps and blades, dust and scuffs, no text, no letters, no numbers"
+>
+> **medical_syringe** — "A single large glass medical syringe standing straight upright on a plain white background, needle at the top, seen from the side. A clear glass barrel with printed graduation lines 15 centimetres long and 3 centimetres across, half full of dark red fluid, a steel finger flange and a scuffed steel plunger at the bottom, a thin steel needle 6 centimetres long at the top. 28 centimetres long in all. Real, photographed in soft daylight. Exactly one syringe. No cap, no packaging, no stand. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Clear glass barrel with faint white graduation lines, dark red fluid, scuffed brushed steel plunger and flange, thin steel needle, no text, no numbers"
+>
+> **pistol_round** — "A single small group of three revolver cartridges standing upright side by side on a plain white background, three-quarter view. Each a short brass case with a rounded copper bullet, 4 centimetres tall and 1 centimetre across, the three together 4 centimetres wide. Slightly tarnished. Real, photographed in soft daylight. Exactly three cartridges. No box, no gun, no loose bullets. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Tarnished brass cartridge cases, rounded copper bullets, small scratches, no text, no headstamp"

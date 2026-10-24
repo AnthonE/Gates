@@ -3383,9 +3383,6 @@ fn sync_loot(
         name[..raw.len()].copy_from_slice(raw);
         let want = match live.get(&g.id) {
             Some(old) if old.item == g.item && old.name == name => old.wanted,
-            // An arrow lies stuck where it hit or planted point-down, which
-            // its held row's laid pose cannot draw: the stand-in below.
-            _ if crate::ui::hold::is_arrow(catalog, g.item) => None,
             _ => crate::ui::hold::held_model(
                 catalog,
                 sim_core::gather::ItemStack {
@@ -3466,6 +3463,18 @@ fn sync_loot(
                 );
                 drawn = g.skin;
                 (mesh, mat, transform)
+            }
+            // An arrow stands stuck where it hit or planted point-down, in
+            // its own model once that has loaded and the stand-in until then.
+            Some(i) if crate::ui::hold::is_arrow(catalog, g.item) => {
+                let (mesh, mat) = models.row(i);
+                let shaft = if g.stuck() {
+                    stuck_transform(position, g.dir)
+                } else {
+                    planted_transform(position, g.id)
+                };
+                let len = crate::ui::hold::HELD_MODELS[i].height_m;
+                (mesh, mat, arrow_as_model(shaft, ARROW_LEN_M, len))
             }
             Some(i) => {
                 let (mesh, mat) = models.row(i);
@@ -3579,6 +3588,18 @@ fn planted_transform(position: Vec3, id: u32) -> Transform {
     // The cylinder is centred on its length.
     let translation = position + rotation * Vec3::Y * (ARROW_LEN_M * 0.5 - ARROW_BURY_M);
     Transform::from_translation(translation).with_rotation(rotation)
+}
+
+/// The arrow a stand-in `shaft` draws, in an arrow model's frame instead
+/// (`ui::hold`'s arrow rows: the nock at the origin, the head up +Y, `len`
+/// long): the head stays where the shaft's was, so it is buried or stuck
+/// exactly as deep. `shaft` is the centred cylinder's, `shaft_len` long, its
+/// +Y running from the head to the nock.
+pub fn arrow_as_model(shaft: Transform, shaft_len: f32, len: f32) -> Transform {
+    let back = shaft.rotation * Vec3::Y;
+    let head = shaft.translation - back * shaft_len * 0.5;
+    Transform::from_translation(head + back * len)
+        .with_rotation(shaft.rotation * Quat::from_rotation_x(std::f32::consts::PI))
 }
 
 #[allow(clippy::too_many_arguments)]

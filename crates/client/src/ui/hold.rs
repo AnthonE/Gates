@@ -756,12 +756,48 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.45,
         0.80,
     ),
-    HeldModelDef::kit("metal_blade", 0.420, 0.08, 0.90),
-    HeldModelDef::kit("metal_pipe", 0.425, 0.30, 0.90),
-    HeldModelDef::kit("metal_spring", 0.256, 0.45, 0.90),
-    HeldModelDef::kit("electric_fuse", 0.160, 0.50, 1.00),
-    HeldModelDef::kit("medical_syringe", 0.279, 0.45, 1.00),
-    HeldModelDef::kit("pistol_round", 0.078, 0.50, 1.00),
+    HeldModelDef::upright(
+        "metal_blade",
+        "models/held/metal_blade.glb",
+        0.420,
+        0.08,
+        0.90,
+    ),
+    HeldModelDef::upright(
+        "metal_pipe",
+        "models/held/metal_pipe.glb",
+        0.425,
+        0.30,
+        0.90,
+    ),
+    HeldModelDef::upright(
+        "metal_spring",
+        "models/held/metal_spring.glb",
+        0.256,
+        0.45,
+        0.90,
+    ),
+    HeldModelDef::upright(
+        "electric_fuse",
+        "models/held/electric_fuse.glb",
+        0.160,
+        0.50,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "medical_syringe",
+        "models/held/medical_syringe.glb",
+        0.279,
+        0.45,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "pistol_round",
+        "models/held/pistol_round.glb",
+        0.087,
+        0.50,
+        1.00,
+    ),
     HeldModelDef::upright("key_lock", "models/held/key_lock.glb", 0.160, 0.35, 1.00),
     HeldModelDef::upright("code_lock", "models/held/code_lock.glb", 0.180, 0.40, 1.00),
     HeldModelDef::upright("waterskin", "models/held/waterskin.glb", 0.310, 0.45, 0.90),
@@ -977,11 +1013,15 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     ),
     // Arrows, carried laid forward. On the ground an arrow keeps its own
     // stand-in, stuck where it hit (`structures::sync_loot`).
-    HeldModelDef::kit_arrow("wooden_arrow", 0.790),
-    HeldModelDef::kit_arrow("bone_arrow", 0.825),
-    HeldModelDef::kit_arrow("metal_arrow", 0.860),
-    HeldModelDef::kit_arrow("high_velocity_arrow", 0.860),
-    HeldModelDef::kit_arrow("fire_arrow", 0.790),
+    HeldModelDef::arrow("wooden_arrow", "models/held/wooden_arrow.glb", 0.790),
+    HeldModelDef::arrow("bone_arrow", "models/held/bone_arrow.glb", 0.825),
+    HeldModelDef::arrow("metal_arrow", "models/held/metal_arrow.glb", 0.860),
+    HeldModelDef::arrow(
+        "high_velocity_arrow",
+        "models/held/high_velocity_arrow.glb",
+        0.860,
+    ),
+    HeldModelDef::arrow("fire_arrow", "models/held/fire_arrow.glb", 0.790),
     // Rust's tree items (2026-10-17; Meshy, 2026-10-18). The head-heavy
     // ones take the hafted tools' carry; the swords take the bat's, a long
     // straight thing held near upright. Each `reach_cm` in `weapons.toml` is
@@ -1621,14 +1661,6 @@ impl HeldModelDef {
         d
     }
 
-    /// A prop from the kit (`render::heldkit`), carried as an
-    /// [`upright`](Self::upright) row: the small things, palmed.
-    const fn kit(key: &'static str, height_m: f32, grip_frac: f32, scale: f32) -> Self {
-        let mut d = Self::upright(key, "", height_m, grip_frac, scale);
-        d.src = HeldSrc::Gen(key);
-        d
-    }
-
     /// A kit prop too big or too loose to close a fist on — an armful of
     /// logs, a handful of ore, folded cloth, a garment — borne on the open
     /// hand: the palm under its foot, the clip's hand left as it is. Hung
@@ -1689,10 +1721,8 @@ impl HeldModelDef {
     /// A kit arrow, carried laid forward like the spear and the rolled plan,
     /// point away from the eye. It is never swung at anything; a punch with
     /// one in the fist is a bash.
-    const fn kit_arrow(key: &'static str, height_m: f32) -> Self {
-        let mut d = Self::tool(key, "", height_m, 0.40).stroked(Stroke::Bash);
-        d.src = HeldSrc::Gen(key);
-        d
+    const fn arrow(key: &'static str, path: &'static str, height_m: f32) -> Self {
+        Self::tool(key, path, height_m, 0.40).stroked(Stroke::Bash)
     }
 
     /// How far up the model's own +Y the grip point sits once scaled, metres.
