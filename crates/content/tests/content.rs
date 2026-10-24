@@ -3555,16 +3555,16 @@ fn the_shipped_pig_bakes() {
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
     assert_eq!(pig.hp, 150);
-    // 50% and 100% of the −127..=127 axis, floored.
+    // 50% and 80% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
-    assert_eq!(pig.flee_gait, 127);
+    assert_eq!(pig.flee_gait, 101);
     // **The catchability relation, and it is gameplay rather than balance.**
     // The flight rides the sprint button, so the pig's top speed is
-    // `run_pct` of `SPRINT_SPEED`. Since 2026-10-20 it MATCHES the player's
-    // (operator: "pigs need to match my running speed"): a fleeing pig is
-    // not caught on foot, it is stalked, shot or limped (`mobs.toml`). What
-    // it may never do is outrun the player, or a hurt pig is simply gone.
-    assert_eq!(pig.run_pct, 100);
+    // `run_pct` of `SPRINT_SPEED`. Since 2026-10-24 a sprint beats it
+    // (operator: animals "not overpowered"): a charge can be run from and a
+    // hurt pig run down. What it may never do is outrun the player, or a
+    // hurt pig is simply gone.
+    assert_eq!(pig.run_pct, 80);
     let wolf = mc.def(sim_core::mob::MOB_WOLF);
     assert!(
         wolf.run_pct > 100,

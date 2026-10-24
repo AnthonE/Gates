@@ -50,14 +50,13 @@ hp = 150
 # 50% of WALK_SPEED = 1.39 m/s, an amble a player outwalks without trying.
 walk_pct = 50
 
-# **100% of SPRINT_SPEED = 5.5 m/s: the player's own top speed** (operator,
-# 2026-10-20: "pigs need to match my running speed"). It was 70 because a
-# pig at 100 that fled on sight could never be caught. Since 2026-08-11 a
-# whole pig CHARGES (`brave_pct` below), so the speed is mostly the speed it
-# comes at you. A pig hurt under 75% still runs, and a sprint no longer closes
-# on it: crouch up on it from behind (half the spook radius, and its blind
-# cone), finish it at range, or wound it under 10% so it limps (`LIMP_PCT`).
-flee_pct = 100
+# **80% of SPRINT_SPEED = 4.4 m/s** (operator, 2026-10-24: animals "not
+# overpowered"). It was 100, the player's own top speed (2026-10-20), and a
+# charge could not be run from nor a hurt pig run down. Rust's boar is out-
+# run by a sprint; here a sprint gains 1.1 m/s on it either way. Since
+# 2026-08-11 a whole pig CHARGES (`brave_pct` below), so the speed is mostly
+# the speed it comes at you; one hurt under 75% runs, and a sprint closes.
+flee_pct = 80
 flee_seconds = 3
 
 # **The bite.** Their boar bites 12 every 1.5 s and runs once hurt past a
@@ -206,12 +205,14 @@ hp = 150
 # amble, so a wolf crossing a meadow reads as going somewhere.
 walk_pct = 55
 
-# **120% of SPRINT_SPEED = 6.6 m/s: a wolf outruns you**, as theirs does at
-# 9 m/s (operator, 2026-10-20: "i can outrun the wolfs"). It was 85, which a
-# sprinting player beat by 0.83 m/s. Now a wolf that has noticed you closes
-# 1.1 m/s on open ground: running buys time to reach a door, a rock or water,
-# and the chase ends at the edge of its range (`roam_m`), or in a fight.
-flee_pct = 120
+# **105% of SPRINT_SPEED = 5.8 m/s: a wolf still outruns you, barely**
+# (operator, 2026-10-24: animals "not overpowered"; at 120 it closed 1.1 m/s
+# and a run from one was hopeless). Theirs is 9 m/s against a 5.5 sprint
+# (2026-10-20: "i can outrun the wolfs" — it was 85 then). Now a wolf that
+# has noticed you closes 0.3 m/s on open ground: running buys real time to
+# reach a door, a rock or water, and the chase ends at the edge of its range
+# (`roam_m`), or in a fight.
+flee_pct = 105
 
 # Six seconds of commitment past the last moment you were inside the notice
 # radius — twice the pig's, because breaking off after three would let a
