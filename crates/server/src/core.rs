@@ -1477,10 +1477,14 @@ impl ShardCore {
             } else {
                 String::new()
             };
+            let safe = Self::world_slot_of(&self.world, self.clients[slot].id)
+                .map(|w| &self.world.players[w])
+                .is_some_and(|p| p.safe && !p.dead && !p.sleeping);
             roster.push(crate::online::Who {
                 wallet: key.to_ascii_lowercase(),
                 name,
                 agent: self.standings_agent[slot],
+                safe,
             });
         }
         self.online.publish(roster);
