@@ -1,0 +1,202 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gates — full-screen card</title>
+<!--
+  One file, three scenes (keep the URL field, not the "Local file" checkbox,
+  or the query string gets dropped):
+    Starting Soon -> file:///home/anthony/stream-overlays/card.html?m=start   (?min=10 or ?until=19:30)
+    BRB           -> file:///home/anthony/stream-overlays/card.html?m=brb
+    Ending        -> file:///home/anthony/stream-overlays/card.html?m=end
+  Text lives in config.js. Previous version: old-2026-10-19/.
+-->
+<link rel="stylesheet" href="gates.css">
+<style>
+  html, body { width: 1920px; height: 1080px; background: var(--bg); }
+
+  /* Slideshow: slow push-in, long crossfade. */
+  .slides { position: absolute; inset: 0; }
+  .slides div {
+    position: absolute; inset: -4%; background-size: cover; background-position: center;
+    opacity: 0; transition: opacity 2.4s ease;
+    filter: saturate(.85) contrast(1.05);
+  }
+  .slides div.on { opacity: 1; animation: push 14s linear forwards; }
+  @keyframes push { from { transform: scale(1) translateX(0); } to { transform: scale(1.08) translateX(-1.5%); } }
+
+  /* Text side goes near-black so type stays crisp at any bitrate. */
+  .shade {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(90deg, rgba(10,12,10,.97) 0%, rgba(10,12,10,.9) 38%, rgba(10,12,10,.45) 70%, rgba(10,12,10,.6) 100%),
+      linear-gradient(0deg, rgba(10,12,10,.95) 0%, transparent 30%);
+  }
+  .grain {
+    position: absolute; inset: 0; opacity: .09; mix-blend-mode: overlay; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .scan {
+    position: absolute; inset: 0; pointer-events: none; opacity: .35;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 2px, transparent 2px 4px);
+  }
+  canvas.spores { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ---- left column ---- */
+  .copy { position: absolute; left: 120px; top: 150px; width: 980px; }
+  .eyebrow { display: flex; align-items: center; gap: 16px; font: 700 18px/1 var(--mono); letter-spacing: .28em; color: var(--muted); text-transform: uppercase; }
+  .eyebrow .mark { width: 42px; height: 42px; }
+  h1 {
+    margin-top: 34px; font: 700 250px/.82 var(--sg); letter-spacing: -.02em;
+    color: var(--ink); text-shadow: 0 6px 40px rgba(0,0,0,.6);
+  }
+  .state {
+    margin-top: 40px; display: inline-flex; align-items: center; gap: 18px;
+    font: 700 54px/1 var(--sg); letter-spacing: .08em; text-transform: uppercase; color: var(--lime);
+  }
+  .state::before { content: ""; width: 14px; height: 54px; background: var(--lime); }
+  .tagline { margin-top: 22px; font: 500 30px/1.35 var(--sg); color: var(--muted); max-width: 860px; }
+
+  .agenda {
+    margin-top: 52px; max-width: 900px; padding: 24px 28px; position: relative;
+    background: rgba(22,27,23,.82); border: 1px solid var(--line-2); border-left: 4px solid var(--gold);
+  }
+  .agenda small { display: block; font: 700 15px/1 var(--mono); letter-spacing: .2em; color: var(--gold); margin-bottom: 14px; }
+  .agenda p { font: 500 32px/1.3 var(--sg); }
+
+  .socials { margin-top: 44px; display: grid; grid-template-columns: auto 1fr; gap: 14px 28px; font: 500 28px/1 var(--mono); }
+  .socials dt { color: var(--dim); text-transform: uppercase; font-size: 18px; letter-spacing: .18em; align-self: center; }
+  .socials dd { color: var(--ink); }
+  .cta {
+    margin-top: 46px; display: inline-flex; align-items: center; gap: 18px; padding: 22px 30px;
+    background: var(--lime); color: var(--bg); font: 700 34px/1 var(--sg);
+  }
+  .cta span { font: 700 30px/1 var(--mono); }
+
+  /* ---- the gate ring ---- */
+  .gate { position: absolute; right: 150px; top: 150px; width: 640px; height: 640px; }
+  .gate svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .gate .ring { transform-origin: 50% 50%; animation: spin 90s linear infinite; }
+  .gate .ticks { transform-origin: 50% 50%; animation: spin 140s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .gate .core {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  }
+  .gate .big { font: 700 128px/1 var(--mono); letter-spacing: -.04em; color: var(--ink); font-variant-numeric: tabular-nums; text-shadow: 0 0 40px rgba(184,255,56,.25); }
+  .gate .small { font: 700 18px/1 var(--mono); letter-spacing: .3em; color: var(--muted); text-transform: uppercase; }
+  .gate.soon .big { font-size: 64px; letter-spacing: .02em; color: var(--lime); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .45; } }
+
+  .ticker-host { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; }
+
+  body[data-m="brb"] .socials, body[data-m="brb"] .cta,
+  body[data-m="start"] .cta, body[data-m="end"] .agenda { display: none; }
+</style>
+
+<div class="slides" id="slides"></div>
+<div class="shade"></div>
+<canvas class="spores" id="spores"></canvas>
+<div class="scan"></div>
+<div class="grain"></div>
+
+<div class="copy">
+  <div class="eyebrow"><span class="mark"></span><span>Elo Pros · survival · 100-player shards</span></div>
+  <h1>GATES</h1>
+  <div class="state" id="state"></div>
+  <div class="tagline" id="tagline"></div>
+  <div class="agenda"><small>// ON THE AGENDA</small><p id="today"></p></div>
+  <div class="cta">PLAY FREE <span id="play"></span></div>
+  <dl class="socials" id="socials"></dl>
+</div>
+
+<div class="gate" id="gate">
+  <svg viewBox="0 0 640 640">
+    <defs>
+      <filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <g class="ticks">
+      <circle cx="320" cy="320" r="304" fill="none" stroke="#3a453c" stroke-width="2" stroke-dasharray="2 14"/>
+    </g>
+    <!-- the broken gold ring from the key art -->
+    <g class="ring">
+      <circle cx="320" cy="320" r="262" fill="none" stroke="#000" stroke-opacity=".5" stroke-width="40" stroke-dasharray="1480 166"/>
+      <circle cx="320" cy="320" r="262" fill="none" stroke="#c9a227" stroke-width="30" stroke-dasharray="1480 166"/>
+      <circle cx="320" cy="320" r="262" fill="none" stroke="#f0d36a" stroke-opacity=".5" stroke-width="3" stroke-dasharray="1480 166" transform="translate(0,-9)"/>
+    </g>
+    <!-- lime progress arc (countdown remaining) -->
+    <circle id="arc" cx="320" cy="320" r="222" fill="none" stroke="#b8ff38" stroke-width="6" stroke-linecap="square"
+            transform="rotate(-90 320 320)" filter="url(#glow)" stroke-dasharray="1394.9" stroke-dashoffset="0"/>
+    <circle cx="320" cy="320" r="222" fill="none" stroke="#2b332c" stroke-width="1"/>
+  </svg>
+  <div class="core"><div class="small" id="label"></div><div class="big" id="big"></div><div class="small" id="sub"></div></div>
+</div>
+
+<div class="ticker-host" id="ticker"></div>
+
+<script src="config.js"></script>
+<script src="gates.js"></script>
+<script>
+  const C = window.GATES;
+  const q = new URLSearchParams(location.search);
+  const m = ["start", "brb", "end"].includes(q.get("m")) ? q.get("m") : "start";
+  document.body.dataset.m = m;
+  const $ = (id) => document.getElementById(id);
+
+  const COPY = {
+    start: ["Starting soon", "The island's loading. Grab a drink — we wake up with nothing.", "Doors open in"],
+    brb:   ["Be right back", "Stepped away from the keyboard. Base is (probably) still standing.", "AFK for"],
+    end:   ["That's the wipe", "Thanks for raiding with us. The island resets — the grudges don't.", "wipe complete"],
+  };
+  $("state").textContent = COPY[m][0];
+  $("tagline").textContent = COPY[m][1];
+  $("label").textContent = COPY[m][2];
+  $("today").textContent = C.today;
+  $("play").textContent = C.playUrl;
+  $("socials").innerHTML = C.socials.map(([k, v]) => "<dt>" + k + "</dt><dd>" + v + "</dd>").join("");
+
+  // Slideshow
+  const slides = $("slides");
+  C.art.forEach((src) => { const d = document.createElement("div"); d.style.backgroundImage = "url('" + src + "')"; slides.appendChild(d); });
+  let si = Math.floor(Math.random() * C.art.length);
+  function nextSlide() {
+    [...slides.children].forEach((d, i) => d.classList.toggle("on", i === si));
+    si = (si + 1) % C.art.length;
+  }
+  nextSlide(); setInterval(nextSlide, 12000);
+
+  mountSpores($("spores"), 70);
+  mountTicker($("ticker"));
+
+  // Clock in the ring
+  const arc = $("arc"), CIRC = 2 * Math.PI * 222;
+  const pad = (n) => String(n).padStart(2, "0");
+  const mmss = (s) => pad(Math.floor(s / 60)) + ":" + pad(Math.floor(s % 60));
+  const t0 = Date.now();
+  let target = t0 + (parseFloat(q.get("min")) || C.countdownMinutes) * 60000;
+  if (q.get("until")) {
+    const [h, mi] = q.get("until").split(":").map(Number);
+    const d = new Date(); d.setHours(h, mi || 0, 0, 0);
+    if (d < Date.now()) d.setDate(d.getDate() + 1);
+    target = d.getTime();
+  }
+  const span = target - t0;
+
+  function tick() {
+    const now = Date.now();
+    if (m === "start") {
+      const left = Math.max(0, (target - now) / 1000);
+      $("gate").classList.toggle("soon", left <= 0);
+      $("big").textContent = left > 0 ? mmss(left) : "ANY SEC";
+      $("sub").textContent = left > 0 ? "gates open" : "stand by";
+      arc.style.strokeDashoffset = CIRC * Math.min(1, 1 - (target - now) / span);
+    } else if (m === "brb") {
+      const away = (now - t0) / 1000;
+      $("big").textContent = mmss(away);
+      $("sub").textContent = "hearth is paid up";
+      arc.style.strokeDashoffset = CIRC * (1 - ((away % 60) / 60)); // sweeps once a minute
+    } else {
+      $("big").textContent = "GG";
+      $("sub").textContent = "see you next wipe";
+      arc.style.strokeDashoffset = 0;
+    }
+  }
+  tick(); setInterval(tick, 250);
+</script>
