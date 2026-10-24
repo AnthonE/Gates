@@ -1972,3 +1972,49 @@ in flight (`tracer.rs`) stays a deliberately unlit tracer.
 > **medical_syringe** — "A single large glass medical syringe standing straight upright on a plain white background, needle at the top, seen from the side. A clear glass barrel with printed graduation lines 15 centimetres long and 3 centimetres across, half full of dark red fluid, a steel finger flange and a scuffed steel plunger at the bottom, a thin steel needle 6 centimetres long at the top. 28 centimetres long in all. Real, photographed in soft daylight. Exactly one syringe. No cap, no packaging, no stand. No readable writing, no letters, no numbers, no symbols, no ground, no people, no hands, no labels, no logos, no scale bar."  ·  texture: "Clear glass barrel with faint white graduation lines, dark red fluid, scuffed brushed steel plunger and flange, thin steel needle, no text, no numbers"
 >
 > **pistol_round** — "A single small group of three revolver cartridges standing upright side by side on a plain white background, three-quarter view. Each a short brass case with a rounded copper bullet, 4 centimetres tall and 1 centimetre across, the three together 4 centimetres wide. Slightly tarnished. Real, photographed in soft daylight. Exactly three cartridges. No box, no gun, no loose bullets. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Tarnished brass cartridge cases, rounded copper bullets, small scratches, no text, no headstamp"
+
+## The bat and the auto turret — Meshy, 2026-10-24
+
+**The bat** (`held/bat.glb`) replaces the generated lathe (`render::heldgen`)
+as the spawn tool's look: a varnished hardwood bat, rolled upright in a 9:16
+frame. Its handle came back 1.8 cm across, and the fist closes on 3.4 cm
+(`VIEWMODEL_SEAT`), so it is `--fit-axes 0.0906 0.840 0.0888`: x1.85 in
+girth, which puts 3.4 cm at the grip, the barrel at 8.7 cm (the lathe's was
+8.8) and keeps the row's 0.840 m. Packed at **1024**, not the held items'
+512: it is in the hand from the first second of every life. The lathe stays
+as the canvas a painted bat skin draws on (`render/canvas.rs`); a painted
+bat now wears the lathe's own material, not the file's
+(`render/paint.rs`).
+
+**The auto turret** is one roll, cut in two with `ci/cut_glb.py` at the top
+of its box (0.47 m), so the two halves match:
+
+- `deploy/turret_base.glb` — the box. The model is `--turn=y90` (its
+  cradle's clamps faced −X) and scaled x0.722 so the box fills the
+  deployable's 0.7 m footprint (`DEPLOY_VOL[18]`), then compacted and
+  re-fitted inside 0.7 × 0.6 × 0.7. It also stands under the town's
+  sentries, as the last one did.
+- `deploy/turret_head.glb` — the post, the empty gun cradle and the sensor
+  box, which turns to the turret's aim (`render/sentry.rs`
+  `TURRET_HEAD_GLB`). Its origin is the post's axis at the sim's gun
+  height, `turret::GUN_M` = 0.9 m over the base. The gun in the turret's
+  box is drawn in the cradle as that gun's held model (`sentry::gun_mount`).
+- `held/auto_turret.glb` — the whole model at 512: the held token, the
+  dropped item and the icon.
+
+A cut leaves the whole model's vertices behind (`cut_glb.py` drops
+triangles only), so both halves were compacted to the vertices they use
+before their bounds were measured.
+
+**2 rolls, 48 credits** (balance 743 → 695, measured).
+
+| file | tris | size (m) | image | mesh |
+|---|---|---|---|---|
+| `held/bat.glb` | 3,272 | 0.09 × 0.84 × 0.09 | `01a16eb8-970b-7196-bdf9-6f69e1539971` | `01a16eb9-11c8-760a-86da-6d0365afcd1a` |
+| `deploy/turret_base.glb` | 3,436 | 0.65 × 0.48 × 0.70 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+| `deploy/turret_head.glb` | 2,460 | 0.51 × 0.63 × 0.66 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+| `held/auto_turret.glb` | 5,845 | 0.65 × 1.08 × 0.77 | `01a16eb8-9897-7429-8119-7f823b374240` | `01a16eb9-148e-76f9-a6d3-9d45365e153e` |
+
+> **bat** — "A single hand-made hardwood baseball bat standing straight upright on a plain white background, knob at the bottom and barrel at the top, seen from the side. The WHOLE bat is in frame with white space above and below: 84 centimetres long, a slim round handle 3.4 centimetres thick over its lower third with a flared knob 5 centimetres across at the very bottom, swelling smoothly into a thick round barrel 9 centimetres across with a rounded end. Honey-amber varnished hardwood with visible long grain, the varnish worn through and darkened by hands on the handle, dents, scuffs and a few chips on the barrel. Real, photographed in soft daylight. Exactly one bat. No grip tape text, no logo, no brand, no ball, no glove, no stand. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Honey-amber varnished hardwood with long straight grain, handle worn and darkened by hands, dents, scuffs and small chips on the barrel, glossy varnish, no text, no logo"
+>
+> **auto_turret** — "A single automatic sentry gun mount with NO gun fitted, on a plain white background, three-quarter view. A squat armoured steel base box 70 centimetres wide, 70 centimetres deep and 55 centimetres tall with bolted plates, cable runs and an access hatch; a short round steel post rising from the centre of its top; on the post a rotating head: an empty U-shaped steel gun cradle with two clamps opening forward, and a small sensor box with a round dark lens fixed to one side of the cradle. 1.1 metres tall in all. Worn olive and grey paint chipped to bare steel, rust streaks, grime. Real, photographed in soft daylight. Exactly one turret. No gun, no barrel, no weapon, no ammo belt, no tripod legs, no logos. No ground, no people, no hands, no text, no labels, no scale bar."  ·  texture: "Worn olive drab and grey painted steel chipped to bare metal, rust streaks, grime, bolts, black rubber cables, dark glass lens, no text, no logos"

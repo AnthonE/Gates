@@ -393,7 +393,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     // closing on the handle is `render::fingers`, not this row.
     HeldModelDef {
         key: "bat",
-        src: HeldSrc::Gen("bat"),
+        src: HeldSrc::Glb("models/held/bat.glb"),
         height_m: 0.840,
         grip_frac: 0.12,
         scale: 1.0,
@@ -977,7 +977,13 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.80,
         0.10,
     ),
-    HeldModelDef::kit_deploy("auto_turret", 0.270, 0.80, 0.45),
+    HeldModelDef::deploy(
+        "auto_turret",
+        "models/held/auto_turret.glb",
+        1.082,
+        0.80,
+        0.14,
+    ),
     HeldModelDef::kit_deploy("camp_fire", 0.193, 0.80, 0.30),
     HeldModelDef::kit_deploy("metal_window_bars", 1.200, 0.50, 0.12),
     HeldModelDef::kit_deploy("garage_door", 1.000, 0.50, 0.12),

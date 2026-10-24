@@ -221,7 +221,7 @@ const SUBJECTS: &[Subject] = &[
     // The hearth is the tool cupboard, and the render is the cupboard.
     s("hearth", "models/deploy/hearth.glb", [0.0, 0.0, 0.0]),
     // The tools and weapons with models, on the diagonal.
-    long("bat", Src::Gen("bat"), 1.0),
+    long("bat", Src::Glb("models/held/bat.glb"), 1.0),
     long(
         "stone_hatchet",
         Src::Glb("models/held/stone_hatchet.glb"),
@@ -448,7 +448,7 @@ const SUBJECTS: &[Subject] = &[
     ),
     kit("planter_box", [0.0, 0.0, 0.0]),
     kit("camp_fire", [0.0, 0.0, 0.0]),
-    kit("auto_turret", [30.0, 0.0, 0.0]),
+    s("auto_turret", "models/held/auto_turret.glb", [30.0, 0.0, 0.0]),
     kit("metal_window_bars", [90.0, 0.0, 0.0]),
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
