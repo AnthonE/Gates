@@ -190,6 +190,22 @@ pub const ARCH_RUG: u8 = 22;
 /// banks rain under open sky, fills an empty waterskin in its one slot, and
 /// waters the planters and ground plants within its reach.
 pub const ARCH_CATCHER: u8 = 23;
+/// Electricity (`power.rs`): Rust's small generator — a box of low grade
+/// fuel that burns like a furnace's (`oven.rs`) and puts power out while it
+/// runs.
+pub const ARCH_GENERATOR: u8 = 24;
+/// A solar panel: power by daylight (`power::solar_rw`).
+pub const ARCH_SOLAR: u8 = 25;
+/// A rechargeable battery, small or large by its row's numbers.
+pub const ARCH_BATTERY: u8 = 26;
+/// A switch: passes power on while it is on (`DeployRec::open`).
+pub const ARCH_SWITCH: u8 = 27;
+/// A splitter: one input, three outputs, split evenly.
+pub const ARCH_SPLITTER: u8 = 28;
+/// A root combiner: two inputs summed into one output.
+pub const ARCH_COMBINER: u8 = 29;
+/// A ceiling light: lit with its draw met, the rest passed on.
+pub const ARCH_LIGHT: u8 = 30;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -212,7 +228,7 @@ pub const ARCH_CATCHER: u8 = 23;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 24] = [
+pub const DEPLOY_VOL: [[f32; 3]; 31] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
     [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
@@ -237,6 +253,13 @@ pub const DEPLOY_VOL: [[f32; 3]; 24] = [
     [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
     [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
     [0.9, 1.1, 0.9],     // 23 water catcher — a funnel over a barrel
+    [1.0, 0.8, 0.6],     // 24 small generator — an engine on a frame
+    [1.6, 1.2, 1.0],     // 25 solar panel — a tilted panel on its stand
+    [0.6, 0.5, 0.4],     // 26 battery — both sizes draw at one size
+    [0.0, 0.0, 0.0],     // 27 switch — a box on the wall's foot, walk-over
+    [0.0, 0.0, 0.0],     // 28 splitter — walk-over
+    [0.0, 0.0, 0.0],     // 29 root combiner — walk-over
+    [0.0, 0.0, 0.0],     // 30 ceiling light — hangs, walk-over
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -351,6 +374,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_CATCHER
         || arch == ARCH_TURRET
         || arch == ARCH_VENDING
+        || arch == ARCH_GENERATOR
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything
@@ -596,8 +620,14 @@ pub const REFUSE_D_OWN_CAP: u32 = 27;
 /// Told to the bag's owner only; any other hand hears `REFUSE_D_OWNER`, so
 /// the refusal does not tell a stranger somebody just woke there.
 pub const REFUSE_D_BAG_SPENT: u32 = 28;
+/// A wire longer than the content's span (`power.rs`, `[power]` `wire_max_m`).
+pub const REFUSE_D_WIRE_FAR: u32 = 29;
+/// A wire to a port the part does not have, or one already wired.
+pub const REFUSE_D_WIRE_PORT: u32 = 30;
+/// A wire that would feed a part its own power back (`power::would_loop`).
+pub const REFUSE_D_WIRE_LOOP: u32 = 31;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_BAG_SPENT;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_WIRE_LOOP;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -1233,6 +1263,9 @@ pub struct Deploys {
     /// The auto turrets' authorize lists (`turret.rs`), keyed and dropped
     /// like `shops`; a turret whose list is its owner alone has none.
     turrets: crate::turret::TurretRecs,
+    /// The wires and the batteries' charges (`power.rs`), keyed by place;
+    /// a part's go with it in [`Deploys::remove_at`].
+    power: crate::power::PowerStore,
     /// The privilege volumes, cached per hearth — the shape the upkeep
     /// sweep's coverage questions read (`claim::ClaimCache`, whose doc
     /// carries the determinism and bounds arguments whole). Derived state
@@ -1265,6 +1298,7 @@ impl Deploys {
             locks: Locks::new(),
             shops: crate::shop::Shops::new(),
             turrets: crate::turret::TurretRecs::new(),
+            power: crate::power::PowerStore::new(),
             claim: crate::claim::ClaimCache::new(),
             hearth_gen: 0,
             grief: [GriefRec::default(); MAX_GRIEF_PER_TICK],
@@ -1544,6 +1578,23 @@ impl Deploys {
         self.turrets.restore(recs);
     }
 
+    pub fn power(&self) -> &crate::power::PowerStore {
+        &self.power
+    }
+
+    pub(crate) fn power_mut(&mut self) -> &mut crate::power::PowerStore {
+        &mut self.power
+    }
+
+    /// Replace the wires and charges from a decoded world save. Boot-only.
+    pub(crate) fn restore_power(
+        &mut self,
+        wires: &[crate::power::WireRec],
+        cells: &[crate::power::CellRec],
+    ) {
+        self.power.restore(wires, cells);
+    }
+
     /// Write the two mirror bits of `entries[i]` from the lock store's
     /// verdict. `World::rebuild_doors` is the only caller and the doc
     /// there is the argument; it exists as a method because `entries` is
@@ -1762,6 +1813,13 @@ impl Deploys {
             .find(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
     }
 
+    /// Write entry `i`'s `open` bit — a switch's position (`power::toggle`).
+    pub(crate) fn set_open_at(&mut self, i: usize, open: bool) {
+        if i < self.len {
+            self.entries[i].open = open;
+        }
+    }
+
     /// The store index of the deployable at an address — `Pieces`'
     /// `find_index`, for the same reason: `find` hands out a reference the
     /// borrow checker will not let a mutation follow. The address is
@@ -1788,7 +1846,7 @@ impl Deploys {
     /// server's deploy walk reads tail-down and never re-derives an append,
     /// so the broadcast is the only way a record placed mid-walk reaches a
     /// client.
-    fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
+    pub(crate) fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
         }
@@ -1837,6 +1895,12 @@ impl Deploys {
                 self.claim.hearth_swap_remove(h, self.hearth_count);
                 self.hearth_gen += 1;
             }
+        }
+        // A power part's wires and its charge (`power.rs`): the next part
+        // placed here starts unwired.
+        if crate::power::is_part(dc.defs[rec.row as usize].arch) {
+            self.power
+                .forget(box_key(rec.cx, rec.cz, rec.level, rec.loc));
         }
         if holds_items(dc.defs[rec.row as usize].arch) {
             // A vending machine's offers go with it (raid, decay, pickup):
@@ -2201,7 +2265,7 @@ pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     )
 }
 
-fn player_xz(p: &Player) -> (f32, f32) {
+pub(crate) fn player_xz(p: &Player) -> (f32, f32) {
     (
         p.body.qx as f32 * crate::movement::POS_XZ_Q,
         p.body.qz as f32 * crate::movement::POS_XZ_Q,
@@ -3591,7 +3655,7 @@ fn door_in_reach(
 /// serves a **box's** lock bits too (locks on boxes): the event is
 /// addressed, the client's mirror updates whatever record stands there,
 /// and a box's `open` is simply always false.
-fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
+pub(crate) fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
     let d = &deploys.entries[i];
     events.push(
         EV_DOOR,

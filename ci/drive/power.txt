@@ -1,0 +1,55 @@
+# The turret and power run: lay a foundation, put the auto turret on it, open
+# its panel, set a solar panel beside it and wire the two. Coordinates are for
+# RES=1280x720 at the default spawn, which faces north on open ground.
+#
+#   POP=0 KIT="item.building_plan:1, item.wood:1000, item.autoturret:1, item.solar_panel:1, item.wire_tool:1, item.revolver:1, item.pistol_ammo:64" \
+#     ./ci/drive.sh shots/power ci/drive/power.txt 'dev_env = "clear,noon"'
+#
+# load
+sleep 75
+moveto 640 360
+click 1
+sleep 3
+# a foundation a few metres ahead
+key 1
+sleep 1
+move 0 120
+sleep 2
+click 1
+sleep 3
+shot 01-foundation
+# the turret on it
+key 3
+sleep 2
+click 1
+sleep 3
+shot 02-turret
+# its panel: WEAPON, AMMO, the readout, the list and the mode
+key e
+sleep 3
+shot 03-turret-panel
+key Escape
+sleep 1
+# a solar panel to the right, on the ground
+key 4
+sleep 1
+move 160 0
+sleep 2
+click 1
+sleep 3
+shot 04-solar
+# the wire tool: the panel's output, then the turret's input
+key 5
+sleep 1
+click 1
+sleep 2
+shot 05-wire-picked
+move -160 0
+sleep 2
+click 1
+sleep 3
+shot 06-wired
+key e
+sleep 3
+shot 07-turret-powered
+key Escape

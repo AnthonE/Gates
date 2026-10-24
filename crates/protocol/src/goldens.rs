@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 194] = [
+pub const FIXTURES: [&str; 197] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -349,6 +349,11 @@ pub const FIXTURES: [&str; 194] = [
     "action_detach.bin",
     // The turret's own list (v146): editable, three listed.
     "event_turret.bin",
+    // Electricity (v150): a wire run at its ports' last values, a part's
+    // wires taken up, and a wire laid as the event tells it.
+    "action_wire.bin",
+    "action_unwire.bin",
+    "event_wire.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2305,7 +2310,29 @@ pub fn event_turret() -> crate::TurretView {
     v.gun = 0x0055;
     v.ammo = 0x0066;
     v.rounds = 0x0300;
+    v.powered = true;
+    v.power_in = 0x0A0B;
     v
+}
+
+/// A wire run (v150): every field distinct, its ports at their last values.
+pub fn action_wire() -> (u32, u8, u32, u8) {
+    (
+        0x1122_3344,
+        (sim_core::power::MAX_OUTS - 1) as u8,
+        0x5566_7788,
+        (sim_core::power::MAX_INS - 1) as u8,
+    )
+}
+
+/// A part's wires taken up (v150).
+pub fn action_unwire() -> u32 {
+    0x0A0B_0C0D
+}
+
+/// A wire laid, as the event tells it (v150).
+pub fn event_wire() -> (u32, u32, u8, u8) {
+    (0x0102_0304, 0x0506_0708, 2, 1)
 }
 
 /// A machine's view (v118): editable, two live rows apart (0 and 4) with

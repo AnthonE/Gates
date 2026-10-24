@@ -119,7 +119,7 @@ pub const BUILD: [&str; 17] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 29] = [
+pub const DEPLOY: [&str; 32] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -160,6 +160,10 @@ pub const DEPLOY: [&str; 29] = [
     // A bag that respawned you, cooling down (v140). The owner's alone:
     // anyone else is told "you haven't been let in".
     "that bag isn't ready yet",
+    // Electricity's wires (v150, `sim_core::power`).
+    "that wire would be too long",
+    "that part has no free port for it",
+    "that would feed it its own power",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.

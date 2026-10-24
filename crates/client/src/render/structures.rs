@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 31] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -573,6 +573,22 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
     // 23 · water catcher: a barrel under a tarp funnel on a pole frame, as
     // wide as a barrel and chest high, `DEPLOY_VOL`'s row, in its wood.
     ([0.9, 1.1, 0.9], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 24–30 · electricity (`sim_core::power`), greyboxes until models: the
+    // generator's engine in hazard yellow, the solar panel's blue cells, a
+    // battery's green steel, and the small parts as grey boxes, the ceiling
+    // light a warm white. The three solid rows are `DEPLOY_VOL`'s.
+    ([1.0, 0.8, 0.6], Color::srgb(0.553, 0.451, 0.122), 0.6, 0.5),
+    ([1.6, 1.2, 1.0], Color::srgb(0.082, 0.122, 0.251), 0.3, 0.6),
+    ([0.6, 0.5, 0.4], Color::srgb(0.200, 0.302, 0.220), 0.6, 0.4),
+    (
+        [0.25, 0.3, 0.15],
+        Color::srgb(0.353, 0.353, 0.353),
+        0.6,
+        0.5,
+    ),
+    ([0.3, 0.2, 0.2], Color::srgb(0.302, 0.302, 0.322), 0.6, 0.5),
+    ([0.3, 0.2, 0.2], Color::srgb(0.302, 0.322, 0.302), 0.6, 0.5),
+    ([0.4, 0.15, 0.4], Color::srgb(0.851, 0.820, 0.702), 0.4, 0.2),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2473,6 +2489,13 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/floor_spikes.glb"), // 21 floor spikes
     Some("models/deploy/abyss_rug.glb"), // 22 rug
     Some("models/deploy/water_catcher.glb"), // 23 water catcher
+    None,                  // 24 small generator — greybox
+    None,                  // 25 solar panel — greybox
+    None,                  // 26 battery — greybox
+    None,                  // 27 switch — greybox
+    None,                  // 28 splitter — greybox
+    None,                  // 29 root combiner — greybox
+    None,                  // 30 ceiling light — greybox
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
@@ -4116,6 +4139,26 @@ pub fn spawn_deploy(
             spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
         }
     }
+    // A ceiling light gets a lamp, dark until the sim says power reaches it
+    // (`power::Grid::lit`, told as a fire's flame is). See [`LampLight`].
+    if arch == sim_core::deploy::ARCH_LIGHT {
+        e.with_child((
+            LampLight {
+                cx: rec.cx,
+                cz: rec.cz,
+                level: rec.level,
+                loc: rec.loc,
+            },
+            PointLight {
+                color: LAMP_COLOR,
+                intensity: 0.0,
+                range: LAMP_RANGE_M,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, LAMP_LIFT_M, 0.0),
+        ));
+    }
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
     if burns(arch) {
@@ -4458,6 +4501,44 @@ pub fn apply_fire_lights(
         // Assign only on a change: `PointLight` is `Changed`-tracked and the
         // render world re-extracts what moved, so writing the same lumens every
         // frame would re-upload every fire on the shard forever.
+        if light.intensity != want {
+            light.intensity = want;
+        }
+    }
+}
+
+/// A ceiling light's lamp (`sim_core::power`): [`FireLight`]'s shape and its
+/// lit set, a light of its own so nothing that listens for fires (the
+/// crackle, the roar) hears a lamp.
+#[derive(Component)]
+pub struct LampLight {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+}
+
+/// A lamp's warm white, a bulb's 3,000 K. **(knob)**
+const LAMP_COLOR: Color = Color::srgb(1.0, 0.86, 0.66);
+/// How far its pool reaches, metres: a room. **(knob)**
+const LAMP_RANGE_M: f32 = 9.0;
+/// Lumens when lit: a household bulb's. **(knob)**
+const LAMP_LUMENS: f32 = 1_200.0;
+/// How far over the part's origin the bulb sits, metres.
+const LAMP_LIFT_M: f32 = 0.1;
+
+/// Drive every lamp off the lit set, [`fire_lights`]' way.
+pub fn lamp_lights(net: NonSend<super::Net>, mut q: Query<(&LampLight, &mut PointLight)>) {
+    if q.is_empty() {
+        return;
+    }
+    let ovens = net.session.core.ovens();
+    for (lamp, mut light) in q.iter_mut() {
+        let want = if ovens.is_lit(lamp.cx, lamp.cz, lamp.level, lamp.loc) {
+            LAMP_LUMENS
+        } else {
+            0.0
+        };
         if light.intensity != want {
             light.intensity = want;
         }

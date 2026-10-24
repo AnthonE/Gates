@@ -895,6 +895,17 @@ pub enum DeployArchetype {
     /// A water catcher (farming v2): banks rain, fills a waterskin, waters
     /// the planters and ground plants in reach (`cooking.toml` `[farm]`).
     Catcher,
+    /// Electricity (`sim-core/src/power.rs`, `[power]` below): the small
+    /// generator, the solar panel, a battery, the switch, the splitter, the
+    /// root combiner and the ceiling light. Each row's numbers are its
+    /// `[[power.part]]`.
+    Generator,
+    Solar,
+    Battery,
+    Switch,
+    Splitter,
+    Combiner,
+    Light,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -1304,6 +1315,41 @@ pub struct TurretSpec {
     pub damage_pct: u32,
     /// The guns a turret fires: `firearm` rows, by item id.
     pub guns: Vec<String>,
+}
+
+/// Electricity (`deployables.toml` `[power]`, `sim_core::power`): the wire
+/// tool and how far a wire reaches, what the generator burns, and each
+/// part's numbers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerSpec {
+    pub wire_tool: String,
+    pub wire_max_m: u32,
+    /// What the small generator burns, and how long a unit runs it.
+    pub fuel: String,
+    pub fuel_s: u32,
+    #[serde(default)]
+    pub part: Vec<PowerPart>,
+}
+
+/// One deployable's power numbers, by its item id. Absent fields are 0, and
+/// `charge_pct` 100.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerPart {
+    pub id: String,
+    #[serde(default)]
+    pub out_rw: u32,
+    #[serde(default)]
+    pub draw_rw: u32,
+    #[serde(default)]
+    pub capacity_rwm: u32,
+    #[serde(default = "full_charge")]
+    pub charge_pct: u32,
+}
+
+fn full_charge() -> u32 {
+    100
 }
 
 /// One fel tier (`mobs.toml` `[[fel_tier]]`, `ARC.md` §2): how far every

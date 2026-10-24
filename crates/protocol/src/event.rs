@@ -28,7 +28,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_CATCHER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_LIGHT, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
@@ -666,7 +666,15 @@ const SUB_CAPTION: u32 = 109;
 /// owed to whoever has its box open, on the open and whenever it moves.
 /// See [`TurretView`].
 const SUB_TURRET: u32 = 110;
-const SUB_MAX: u32 = SUB_TURRET;
+/// A wire laid, or every wire on a part taken up (wire v150,
+/// `sim_core::world::EV_WIRE`). See `EventMsg::Wire`.
+const SUB_WIRE: u32 = 111;
+const SUB_MAX: u32 = SUB_WIRE;
+/// Widths of a wire's ports (`sim_core::power::ports`).
+const WIRE_PORT_OUT_BITS: u32 = 2;
+const WIRE_PORT_IN_BITS: u32 = 1;
+const _: () = assert!(sim_core::power::MAX_OUTS <= 1 << WIRE_PORT_OUT_BITS);
+const _: () = assert!(sim_core::power::MAX_INS <= 1 << WIRE_PORT_IN_BITS);
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -1153,7 +1161,8 @@ const _: () = assert!(
         + DEPLOY_SYNC_BATCH * DEPLOY_REC_BITS
         <= MAX_EVENT_MSG_BYTES * 8
 );
-const DEPLOY_DEFS_TOTAL_BITS: u32 = 6;
+const DEPLOY_DEFS_TOTAL_BITS: u32 = 7;
+const _: () = assert!(MAX_DEPLOY_DEFS < 1 << DEPLOY_DEFS_TOTAL_BITS);
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
 /// (recycler v0) and three bits held exactly eight. Seven of the sixteen
@@ -2550,6 +2559,17 @@ pub enum EventMsg {
     Shop(ShopView),
     /// An auto turret as the receiver sees it (v146) — see [`TurretView`].
     Turret(TurretView),
+    /// A wire (v150, `sim_core::power`): `set`, the wire from output `out`
+    /// of the part at box address `from` to input `inp` of the part at `to`
+    /// is laid; else every wire on the part at `from` is taken up (`to`,
+    /// `out` and `inp` zero).
+    Wire {
+        from: u32,
+        to: u32,
+        out: u8,
+        inp: u8,
+        set: bool,
+    },
     /// The receiver's shop press at machine `key` (v118): `op` and `row` as
     /// sent, `times` lots for a buy, and `code` a `sim_core::shop::REFUSE_SH_*`
     /// or 0 when it went through.
@@ -4037,7 +4057,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_CATCHER || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_LIGHT || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -6444,6 +6464,10 @@ pub struct TurretView {
     pub gun: u16,
     pub ammo: u16,
     pub rounds: u16,
+    /// (v150) Whether its draw is met (`power::Power::feeds`), and the rW
+    /// reaching it.
+    pub powered: bool,
+    pub power_in: u16,
 }
 
 impl TurretView {
@@ -6484,6 +6508,36 @@ pub fn encode_event_turret(view: &TurretView, buf: &mut [u8]) -> Result<usize, W
     w.write(view.gun as u32, 16)?;
     w.write(view.ammo as u32, 16)?;
     w.write(view.rounds as u32, 16)?;
+    w.write_bit(view.powered)?;
+    w.write(view.power_in as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A wire laid or a part's taken up — see [`EventMsg::Wire`].
+pub fn encode_event_wire(
+    from: u32,
+    to: u32,
+    out: u8,
+    inp: u8,
+    set: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from == 0
+        || (set && to == 0)
+        || (!set && (to != 0 || out != 0 || inp != 0))
+        || out as usize >= sim_core::power::MAX_OUTS
+        || inp as usize >= sim_core::power::MAX_INS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WIRE)?;
+    w.write_bit(set)?;
+    w.write(from, 32)?;
+    if set {
+        w.write(to, 32)?;
+        w.write(out as u32, WIRE_PORT_OUT_BITS)?;
+        w.write(inp as u32, WIRE_PORT_IN_BITS)?;
+    }
     Ok(w.finish())
 }
 
@@ -7421,7 +7475,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_CATCHER
+                if arch > ARCH_LIGHT
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -8223,6 +8277,33 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Shop(view)
         }
+        SUB_WIRE => {
+            let set = r.read_bit()?;
+            let from = r.read(32)?;
+            let (to, out, inp) = if set {
+                (
+                    r.read(32)?,
+                    r.read(WIRE_PORT_OUT_BITS)? as u8,
+                    r.read(WIRE_PORT_IN_BITS)? as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            if from == 0
+                || (set && to == 0)
+                || out as usize >= sim_core::power::MAX_OUTS
+                || inp as usize >= sim_core::power::MAX_INS
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Wire {
+                from,
+                to,
+                out,
+                inp,
+                set,
+            }
+        }
         SUB_TURRET => {
             let mut view = TurretView {
                 key: r.read(32)?,
@@ -8240,6 +8321,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             view.gun = r.read(16)? as u16;
             view.ammo = r.read(16)? as u16;
             view.rounds = r.read(16)? as u16;
+            view.powered = r.read_bit()?;
+            view.power_in = r.read(16)? as u16;
             if !view.valid() {
                 return Err(WireError::Malformed);
             }
@@ -11034,6 +11117,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/turret.rs"),
         },
         Module {
+            file: "power.rs",
+            src: include_str!("../../sim-core/src/power.rs"),
+        },
+        Module {
             file: "shop.rs",
             src: include_str!("../../sim-core/src/shop.rs"),
         },
@@ -11579,7 +11666,9 @@ mod wire_domains {
             // 19 -> 25 at v135: farming v2's six. 26 at v137:
             // `REFUSE_D_SWIMMING`. 28 at v140: `REFUSE_D_OWN_CAP` and
             // `REFUSE_D_BAG_SPENT`.
-            live_max: 28,
+            // 28 -> 31 at wire v150: a wire too long, a port it cannot
+            // take, a loop (`REFUSE_D_WIRE_*`).
+            live_max: 31,
         },
         Domain {
             what: "container kind",
@@ -11666,7 +11755,8 @@ mod wire_domains {
             // catcher.
             min_members: 24,
             bits: ARCH_BITS,
-            live_max: 23,
+            // 23 -> 30 at wire v150: electricity's seven parts.
+            live_max: 30,
         },
         Domain {
             what: "deploy matter",
@@ -12131,6 +12221,10 @@ mod wire_domains {
             // A turret view's list length (v146), bounded by
             // `TURRET_AUTH_CAP`, const-asserted beside the width.
             "TURRET_AUTH_BITS",
+            // A wire's ports (v150), bounded by `power::MAX_OUTS` and
+            // `MAX_INS`, const-asserted beside the widths.
+            "WIRE_PORT_OUT_BITS",
+            "WIRE_PORT_IN_BITS",
             // What a `SUB_DRANK` says (v137, the water pass): the wire's own
             // three kinds — a mouthful, a fill, a pour — and the decoder
             // refuses the fourth. Not a sim-core enumeration.

@@ -1284,6 +1284,11 @@ impl ClientCore {
         (key != 0 && self.turret.key == key).then_some(&self.turret)
     }
 
+    /// Every wire this client knows (`EventMsg::Wire`, v150).
+    pub fn wires(&self) -> &[sim_core::power::WireRec] {
+        &self.wires
+    }
+
     /// Vending machine `key`'s offers and stock as the shard last told this
     /// client (`EventMsg::Shop`, v118) — it is told when it opens one
     /// (`encode_action_container(CONT_BOX, key)`) and again while it stays
@@ -1505,10 +1510,10 @@ fn is_edge_insert(defs: &DeployContent, have: u16, row: u8) -> bool {
 }
 
 /// `is_door`'s twin for warmth: does this row burn when lit — a fire or a
-/// furnace, and not a running recycler (`OvenState::arch_burns`).
+/// furnace, and not a running recycler or generator (`OvenState::arch_heats`).
 fn burns(defs: &DeployContent, have: u16, row: u8) -> bool {
     (row as u16) < have.min(defs.def_count)
-        && sim_core::oven::OvenState::arch_burns(defs.defs[row as usize].arch)
+        && sim_core::oven::OvenState::arch_heats(defs.defs[row as usize].arch)
 }
 
 /// The archetype of a solid (movement-blocking) deploy row, or `None` —
@@ -1839,6 +1844,13 @@ pub struct ClientCore {
     turret: protocol::TurretView,
     /// Bumped on every `Turret`, so a renderer redraws only when it moved.
     pub turret_gen: u32,
+    /// The wires this client was told about (`EventMsg::Wire`, v150): laid
+    /// as told, a part's dropped when they are taken up or the part goes,
+    /// and all of them on a deploy reset (the walk tells them again). Read
+    /// with [`Self::wires`].
+    wires: Vec<sim_core::power::WireRec>,
+    /// Bumped whenever `wires` moves, so the renderer redraws only then.
+    pub wires_gen: u32,
     /// THE GATE's casino as told (`EventMsg::Wheel*`, `Slots`, v123).
     pub casino: CasinoView,
     /// Bumped on every casino answer and spin, so a panel redraws only when
@@ -2524,6 +2536,8 @@ impl ClientCore {
             shop_gen: 0,
             turret: protocol::TurretView::default(),
             turret_gen: 0,
+            wires: Vec::new(),
+            wires_gen: 0,
             shop_result: None,
             shop_result_seq: 0,
             casino: CasinoView::default(),
@@ -3264,6 +3278,26 @@ impl ClientCore {
                 self.turret = view;
                 self.turret_gen = self.turret_gen.wrapping_add(1);
             }
+            EventMsg::Wire {
+                from,
+                to,
+                out,
+                inp,
+                set,
+            } => {
+                if set {
+                    self.wires.retain(|w| {
+                        !((w.from == from && w.out == out) || (w.to == to && w.inp == inp))
+                    });
+                    if self.wires.len() < sim_core::limits::MAX_WIRES {
+                        self.wires
+                            .push(sim_core::power::WireRec { from, out, to, inp });
+                    }
+                } else {
+                    self.wires.retain(|w| !w.touches(from));
+                }
+                self.wires_gen = self.wires_gen.wrapping_add(1);
+            }
             EventMsg::Shop(view) => {
                 self.shop_gen = self.shop_gen.wrapping_add(1);
                 let k = self
@@ -3570,6 +3604,8 @@ impl ClientCore {
                     // The walk re-lights what burns: the server sends an
                     // `EV_OVEN` after each batch for its lit fires.
                     self.ovens.clear();
+                    self.wires.clear();
+                    self.wires_gen = self.wires_gen.wrapping_add(1);
                     self.pieces
                         .rebuild_cols(&self.piece_defs, self.piece_defs_have);
                     flags |= APPLIED_DEPLOY_RESET;
@@ -3906,6 +3942,12 @@ impl ClientCore {
                     self.pending_door = None; // predicted a door that's gone
                 }
                 if let Some(gone) = self.deploys.remove(cx, cz, level, loc) {
+                    // Its wires went with it on the shard (`Deploys::remove_at`).
+                    let key = sim_core::deploy::box_key(cx, cz, level, loc);
+                    if self.wires.iter().any(|w| w.touches(key)) {
+                        self.wires.retain(|w| !w.touches(key));
+                        self.wires_gen = self.wires_gen.wrapping_add(1);
+                    }
                     if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, gone.row) {
                         self.pieces.set_insert(
                             cx,

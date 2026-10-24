@@ -57,6 +57,17 @@ pub fn readout(col: &mut ChildSpawnerCommands, core: &ClientCore, key: u32) {
         ),
     };
     col.spawn((Text::new(line), font_bold(12.0), TextColor(TEXT)));
+    // Rust's turret is dead without its power (`sim_core::power`).
+    if let Some(v) = core.turret_view(key) {
+        let power = if v.powered {
+            format!("POWER · {} rW", v.power_in)
+        } else if v.power_in > 0 {
+            format!("POWER · {} rW: NOT ENOUGH TO RUN IT", v.power_in)
+        } else {
+            "NO POWER: wire a generator, a battery or a solar panel to it".to_string()
+        };
+        col.spawn((Text::new(power), font_bold(12.0), TextColor(TEXT)));
+    }
 }
 
 /// A right-click into the open turret: a gun to the weapon slot, anything

@@ -505,6 +505,8 @@ pub fn step(
     haven: &Haven,
     tick: u64,
     def: &TurretDef,
+    pc: &crate::power::PowerContent,
+    power: &crate::power::Power,
     dc: &DeployContent,
     pieces: &Pieces,
     occ: &mut Occupants,
@@ -539,8 +541,12 @@ pub fn step(
             boxes[k] = deploys.box_index(box_key(t.cx, t.cz, t.level, t.loc));
             let g = gun_in(def, deploys, boxes[k]);
             table[k].carried = g.map(|g| def.guns[g].item);
-            hot[k] = recs[k].is_some()
-                && g.is_some_and(|g| rounds_in(deploys, boxes[k], def.guns[g].ammo) > 0);
+            // And power: Rust's turret is dead without its 10 rW
+            // (`power.rs`); a row that draws nothing needs no wire.
+            let fed = recs[k].is_some_and(|r| {
+                power.feeds(box_key(t.cx, t.cz, t.level, t.loc), pc.def(r.row).draw_rw)
+            });
+            hot[k] = fed && g.is_some_and(|g| rounds_in(deploys, boxes[k], def.guns[g].ammo) > 0);
         }
     }
     for k in 0..MAX_TURRETS {

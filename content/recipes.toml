@@ -631,6 +631,107 @@ inputs = [
     { item = "item.metal_frags", count = 75 },
 ]
 
+# Electricity (`sim-core/src/power.rs`): the wire tool and the switch at
+# Rust's first bench and prices; the rest priced against our materials, the
+# sources and the large battery up the bench ladder. Known from the start.
+[[recipe]]
+id = "recipe.wire_tool"
+output = "item.wire_tool"
+count = 1
+station = "workbench1"
+seconds = 5
+inputs = [
+    { item = "item.metal_frags", count = 25 },
+    { item = "item.rope", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.switch"
+output = "item.switch"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.splitter"
+output = "item.splitter"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.root_combiner"
+output = "item.root_combiner"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.ceiling_light"
+output = "item.ceiling_light"
+count = 1
+station = "workbench1"
+seconds = 15
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.battery_small"
+output = "item.battery_small"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 75 },
+    { item = "item.tech_trash", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.generator_small"
+output = "item.generator_small"
+count = 1
+station = "workbench2"
+seconds = 45
+inputs = [
+    { item = "item.metal_frags", count = 300 },
+    { item = "item.gears", count = 2 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.solar_panel"
+output = "item.solar_panel"
+count = 1
+station = "workbench2"
+seconds = 45
+inputs = [
+    { item = "item.metal_frags", count = 150 },
+    { item = "item.sheet_metal", count = 1 },
+    { item = "item.tech_trash", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.battery_large"
+output = "item.battery_large"
+count = 1
+station = "workbench3"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 300 },
+    { item = "item.sheet_metal", count = 2 },
+    { item = "item.tech_trash", count = 4 },
+]
+
 [[recipe]]
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"

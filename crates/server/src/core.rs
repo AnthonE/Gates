@@ -70,7 +70,7 @@ use sim_core::world::{
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
     EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
-    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -137,6 +137,7 @@ fn reads_hand(act: &ActionMsg) -> bool {
             | ActionMsg::Drink
             | ActionMsg::Attach { .. }
             | ActionMsg::Detach { .. }
+            | ActionMsg::Wire { .. }
     )
 }
 
@@ -3888,6 +3889,11 @@ impl ShardCore {
                     ActionMsg::Unload => Command::Unload { id: c.id },
                     ActionMsg::Attach { slot } => Command::Attach { id: c.id, slot },
                     ActionMsg::Detach { bit } => Command::Detach { id: c.id, bit },
+                    ActionMsg::Wire { from, out, to, inp } => Command::Wire {
+                        id: c.id,
+                        wire: sim_core::power::WireRec { from, out, to, inp },
+                    },
+                    ActionMsg::Unwire { key } => Command::Unwire { id: c.id, key },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {
@@ -6269,6 +6275,40 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_WIRE => {
+                    // A wire laid or a part's taken up (`power.rs`): a world
+                    // fact aimed as a fire's flame is, at the clients that
+                    // hold the part it leaves (owner exempt).
+                    let (cx, cz, level, loc) = sim_core::deploy::box_addr(ev.a);
+                    let rec = self.world.deploys.find(cx, cz, level, loc).copied();
+                    let owner = rec.map_or(0, |d| d.owner);
+                    let (acx, acz) =
+                        rec.map_or((cx, cz), |d| interest::deploy_cell(&d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
+                    let set = ev.c >> 16 & 1 != 0;
+                    let (out, inp) = ((ev.c >> 8) as u8, ev.c as u8);
+                    let (to, out, inp) = if set { (ev.b, out, inp) } else { (0, 0, 0) };
+                    match protocol::encode_event_wire(ev.a, to, out, inp, set, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.owned_event_visible(slot, owner, at) {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_PLANT => {
                     // Farming v2: the record as it stands at drain, found
                     // by the index hint (verified by id) or by a scan. A
@@ -7189,6 +7229,14 @@ impl ShardCore {
             may_edit: sim_core::turret::spares(&self.world.pieces, deploys, b.owner, x, z, viewer),
             peacekeeper: rec.peacekeeper,
             n: rec.auth.len() as u8,
+            powered: self.world.power.feeds(
+                key,
+                self.world
+                    .deploys
+                    .find(b.cx, b.cz, b.level, b.loc)
+                    .map_or(0, |d| self.world.power_def.def(d.row).draw_rw),
+            ),
+            power_in: self.world.power.grid.input(key),
             ..Default::default()
         };
         view.auth[..rec.auth.len()].copy_from_slice(rec.auth.members());
@@ -8665,7 +8713,16 @@ impl ShardCore {
                         src.cx, src.cz, src.level, src.loc,
                     ))
                     .map(|i| self.world.deploys.oven_states()[i]);
-                lit[n] = oven.filter(|o| o.is_converter()).map(|o| o.lit);
+                // A light's glow and a turret's lamp ride the same bit
+                // (`power::Grid::lit`).
+                lit[n] = oven
+                    .filter(|o| o.is_converter())
+                    .map(|o| o.lit)
+                    .or_else(|| {
+                        self.world.power.grid.lit(sim_core::deploy::box_key(
+                            src.cx, src.cz, src.level, src.loc,
+                        ))
+                    });
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
                     break;
@@ -8724,6 +8781,35 @@ impl ShardCore {
                         self.clients[slot].ev_resync();
                         ShardStats::bump(&stats.ev_resyncs);
                         return;
+                    }
+                }
+                // The wires out of every part in the batch (`power.rs`), the
+                // lit bits' reason: the walk carries no wire, and a joiner
+                // would see a base's parts standing unwired.
+                for d in wire[..n].iter() {
+                    let key = sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc);
+                    for w in self.world.deploys.power().wires() {
+                        if w.from != key {
+                            continue;
+                        }
+                        let Ok(len) = protocol::encode_event_wire(
+                            w.from,
+                            w.to,
+                            w.out,
+                            w.inp,
+                            true,
+                            &mut self.ev_buf,
+                        ) else {
+                            ShardStats::bump(&stats.encode_range_errors);
+                            continue;
+                        };
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
+                            return;
+                        }
                     }
                 }
             } else {

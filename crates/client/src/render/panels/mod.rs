@@ -1393,7 +1393,7 @@ pub fn keys(
             match hand {
                 crate::ui::hold::Held::Plan => Panel::Wheel,
                 crate::ui::hold::Held::Hammer => Panel::Hammer,
-                crate::ui::hold::Held::Other => Panel::None,
+                crate::ui::hold::Held::Wire | crate::ui::hold::Held::Other => Panel::None,
             }
         } else {
             Panel::None

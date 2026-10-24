@@ -605,3 +605,86 @@ fn a_turrets_slots_take_what_they_are_for() {
     let shots = turret_shots(&mut w, 300);
     assert!(shots > 0, "a gun in its slot with rounds never fired");
 }
+
+/// **A turret that needs power holds fire until it has it** (Rust's 10 rW):
+/// loaded and in reach of a stranger it stands dark; a solar panel at noon,
+/// wired to it with the wire tool, wakes it.
+#[test]
+fn a_turret_fires_only_with_its_power() {
+    use sim_core::deploy::{ARCH_SOLAR, PLACE_ANY};
+    use sim_core::limits::{DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS};
+    const SOLAR_ITEM: u16 = 45;
+    const WIRE_ITEM: u16 = 46;
+    let (mut w, key) = turret_world(128);
+    w.gather.stack_max[SOLAR_ITEM as usize] = 1;
+    w.gather.stack_max[WIRE_ITEM as usize] = 1;
+    w.gather.item_count = w.gather.item_count.max(WIRE_ITEM + 1);
+    let solar_row = w.deploy.def_count;
+    w.deploy.defs[solar_row as usize] = sim_core::deploy::DeployDef {
+        arch: ARCH_SOLAR,
+        placement: PLACE_ANY,
+        hp: 250,
+        matter: sim_core::deploy::MATTER_METAL,
+        item: SOLAR_ITEM,
+        n_costs: 0,
+        costs: [(0, 0); 4],
+    };
+    w.deploy.def_count += 1;
+    let (tcx, tcz, tlevel, tloc) = sim_core::deploy::box_addr(key);
+    let turret_row = w
+        .deploys
+        .find(tcx, tcz, tlevel, tloc)
+        .expect("the turret's record")
+        .row;
+    w.power_def.parts[turret_row as usize].draw_rw = 10;
+    w.power_def.parts[solar_row as usize].out_rw = 20;
+    w.power_def.wire_tool = WIRE_ITEM;
+    w.power_def.wire_max_mm = 30_000;
+    // Noon, so the panel gives its whole rating.
+    let noon = ((DAY_TICKS as f64 * DAY_PORTION as f64) as u64) / 2 + DAY_TICKS - DAY_PHASE_TICKS;
+    w.tick = noon - noon % 15;
+
+    assert_eq!(turret_shots(&mut w, 300), 0, "an unpowered turret fired");
+
+    let i = w.deploys.box_index(key).unwrap();
+    let (bx, bz) = (w.deploys.boxes()[i].cx, w.deploys.boxes()[i].cz);
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let stack = |item| ItemStack {
+        item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[o].inv[3] = stack(SOLAR_ITEM);
+    w.players[o].frame.sel = 3;
+    w.tick(&[Command::PlaceDeploy {
+        id: OWNER,
+        row: solar_row,
+        cx: bx - 2,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let panel = box_key(bx - 2, bz, 0, LOC_PLANE);
+    assert!(
+        w.deploys.find(bx - 2, bz, 0, LOC_PLANE).is_some(),
+        "the panel did not place"
+    );
+    w.players[o].inv[3] = stack(WIRE_ITEM);
+    w.tick(&[Command::Wire {
+        id: OWNER,
+        wire: sim_core::power::WireRec {
+            from: panel,
+            out: 0,
+            to: key,
+            inp: 0,
+        },
+    }]);
+    assert_eq!(w.deploys.power().wires().len(), 1, "the wire was not run");
+    assert!(
+        turret_shots(&mut w, 300) > 0,
+        "a powered turret never fired"
+    );
+}

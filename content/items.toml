@@ -1094,6 +1094,99 @@ slot = "hand"
 class = "construction"
 description = "Sells what your crew stocks it with, for junk. Anyone can buy."
 
+# Electricity (`sim-core/src/power.rs`, `deployables.toml` `[power]`): Rust's
+# core kit. The wire tool runs a wire from one part's output to another's
+# input; the parts are deployables. Their numbers are the Facepunch wiki's.
+[[item]]
+id = "item.wire_tool"
+name = "Wire Tool"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Click a part's output, then another's input, to run a wire. Right click to pull its wires."
+
+[[item]]
+id = "item.generator_small"
+name = "Small Generator"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "items"
+description = "Burns low grade fuel and puts out 40 power while it runs."
+
+[[item]]
+id = "item.solar_panel"
+name = "Large Solar Panel"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "items"
+description = "Up to 20 power at noon, less toward dawn and dusk, none at night."
+
+[[item]]
+id = "item.battery_small"
+name = "Small Battery"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Stores 400 rWm and gives up to 15 power, only what its output draws."
+
+[[item]]
+id = "item.battery_large"
+name = "Large Battery"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "items"
+description = "Stores 24,000 rWm and gives up to 100 power, only what its output draws."
+
+[[item]]
+id = "item.switch"
+name = "Switch"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Passes power on while it is on. Draws 1."
+
+[[item]]
+id = "item.splitter"
+name = "Splitter"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Splits its power evenly over the outputs wired. Draws 1."
+
+[[item]]
+id = "item.root_combiner"
+name = "Root Combiner"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Adds its two inputs into one output. Draws 1."
+
+[[item]]
+id = "item.ceiling_light"
+name = "Ceiling Light"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Lights with 2 power and passes the rest on."
+
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
 # day: the pig pays raw meat (`mobs.toml`) and the campfire turns it into

@@ -90,7 +90,7 @@ pub fn looks(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 212] = [
+pub const STEMS: [&str; 221] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -286,6 +286,16 @@ pub const STEMS: [&str; 212] = [
     "hemp_seed",
     "planter_box",
     "auto_turret",
+    // Electricity's core kit (`sim_core::power`).
+    "wire_tool",
+    "small_generator",
+    "large_solar_panel",
+    "small_battery",
+    "large_battery",
+    "switch",
+    "splitter",
+    "root_combiner",
+    "ceiling_light",
     "vending_machine",
     // Farming v2's water catcher (`ci/icons/water_catcher.py`, ours).
     "water_catcher",

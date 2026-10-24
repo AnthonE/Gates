@@ -653,11 +653,11 @@ pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
 const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
 
-/// Deployable definitions the sim preallocates for (the alpha set is 9
-/// rows, content/deployables.toml). The content bake refuses a set past
-/// this; the wire carries the row in 5 bits — exactly this range.
+/// Deployable definitions the sim preallocates for (content/deployables.toml).
+/// The content bake refuses a set past this; the wire carries the row in 6
+/// bits — exactly this range (32 until power's eight parts, wire v149).
 /// Structural cap like `MAX_PIECE_DEFS`.
-pub const MAX_DEPLOY_DEFS: usize = 32;
+pub const MAX_DEPLOY_DEFS: usize = 64;
 
 /// Cost rows one deployable may carry, for pricing its repair. A
 /// deployable's *placement* costs one crafted item; its repair is priced
@@ -719,6 +719,22 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 /// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
+
+/// Wires on the island at once (`power::PowerStore`): a part has at most
+/// three outputs, and this is two for every part [`MAX_POWER_NODES`] holds.
+/// Overflow policy: **refuse** the connect with `power::REFUSE_W_FULL`.
+pub const MAX_WIRES: usize = 2_048;
+
+/// Power parts the solve takes in a period (`power::Grid`), shard-wide.
+/// Past it, a part stands dark until one comes down: it is not in the grid,
+/// so nothing reaches it. Structural, not a knob: the grid's arrays and its
+/// index are sized by it.
+pub const MAX_POWER_NODES: usize = 1_024;
+
+/// Batteries holding a charge at once (`power::CellRec`). A battery past it
+/// holds nothing until one comes down. Structural, like the grid's.
+pub const MAX_BATTERIES: usize = 512;
+const _: () = assert!(MAX_BATTERIES <= MAX_POWER_NODES && MAX_WIRES <= 2 * MAX_POWER_NODES);
 
 /// Players one auto turret's authorize list holds (`turret::TurretRec`),
 /// the lock's `LOCK_AUTH_CAP`. Overflow policy: **refuse** the add with

@@ -41,6 +41,9 @@ use sim_core::gather::ItemStack;
 pub const PLAN_STEM: &str = "building_plan";
 /// The file stem of the item that opens the action wheel and repairs.
 pub const HAMMER_STEM: &str = "hammer";
+/// The file stem of the item that runs wires between power parts
+/// (`render::wires`).
+pub const WIRE_STEM: &str = "wire_tool";
 
 /// What the selected hotbar slot is holding, as far as the mouse cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -53,6 +56,8 @@ pub enum Held {
     Plan,
     /// The hammer.
     Hammer,
+    /// The wire tool (`render::wires`).
+    Wire,
 }
 
 impl Held {
@@ -96,6 +101,7 @@ pub fn held(catalog: &ItemCatalog, stack: ItemStack) -> Held {
     match stem(name).as_str() {
         PLAN_STEM => Held::Plan,
         HAMMER_STEM => Held::Hammer,
+        WIRE_STEM => Held::Wire,
         _ => Held::Other,
     }
 }
@@ -142,6 +148,9 @@ pub enum Click {
     /// (`ACT_PLANT`, `render::farm_ghost`). A seed is what a planter's
     /// catalog roles call an input.
     Plant,
+    /// The wire tool: pick a part's output, then another's input
+    /// (`render::wires`).
+    Wire,
 }
 
 impl Click {
@@ -177,6 +186,7 @@ pub fn click_of(
     match held(catalog, stack) {
         Held::Plan => return Click::Build,
         Held::Hammer => return Click::Repair,
+        Held::Wire => return Click::Wire,
         Held::Other => {}
     }
     if crate::ui::research::is_paper(research, stack) {
@@ -280,6 +290,9 @@ pub fn hand_hint(
         }
         Click::Plant => plant_hint(catalog, research, stack, crate::ui::farm::PlantAim::None),
         Click::Build | Click::Deploy => String::new(),
+        Click::Wire => {
+            "[LMB] A PART'S OUTPUT, THEN ANOTHER'S INPUT  ·  [RMB] PULL A PART'S WIRES".to_string()
+        }
     }
 }
 

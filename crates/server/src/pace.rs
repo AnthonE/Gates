@@ -95,7 +95,11 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::Rotate { .. } => Kind::Build,
         ActionMsg::Demolish { .. } => Kind::Demolish,
         // A seed in the soil churns a joiner's plant walk like a deploy.
-        ActionMsg::Deploy { .. } | ActionMsg::Plant { .. } => Kind::Deploy,
+        // A wire run or taken up churns a joiner's walk like a deploy.
+        ActionMsg::Deploy { .. }
+        | ActionMsg::Plant { .. }
+        | ActionMsg::Wire { .. }
+        | ActionMsg::Unwire { .. } => Kind::Deploy,
         // Taking stock back out moves a pack's worth, like a trade; so does
         // handing a stack to someone.
         ActionMsg::Move { .. }

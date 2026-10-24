@@ -531,6 +531,13 @@ impl Content {
                     DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
                     DeployArchetype::Rug => sim_core::deploy::ARCH_RUG,
                     DeployArchetype::Catcher => sim_core::deploy::ARCH_CATCHER,
+                    DeployArchetype::Generator => sim_core::deploy::ARCH_GENERATOR,
+                    DeployArchetype::Solar => sim_core::deploy::ARCH_SOLAR,
+                    DeployArchetype::Battery => sim_core::deploy::ARCH_BATTERY,
+                    DeployArchetype::Switch => sim_core::deploy::ARCH_SWITCH,
+                    DeployArchetype::Splitter => sim_core::deploy::ARCH_SPLITTER,
+                    DeployArchetype::Combiner => sim_core::deploy::ARCH_COMBINER,
+                    DeployArchetype::Light => sim_core::deploy::ARCH_LIGHT,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -1723,6 +1730,15 @@ impl Content {
             .ok_or_else(|| format!("bake: fuel burn {} s overflows the tick span", f.seconds))?;
         cc.byproduct_pct = u16::try_from(f.byproduct_pct)
             .map_err(|_| format!("bake: fuel byproduct_pct {} overflows u16", f.byproduct_pct))?;
+        // The small generator's fuel (`deployables.toml` `[power]`).
+        if let Some(p) = &self.power {
+            cc.gen_fuel_item = self
+                .item_index(&p.fuel)
+                .ok_or_else(|| format!("bake: power fuel `{}` names no item", p.fuel))?;
+            cc.gen_fuel_ticks = p.fuel_s.checked_mul(TICK_HZ).ok_or_else(|| {
+                format!("bake: power fuel {} s overflows the tick span", p.fuel_s)
+            })?;
+        }
         if self.cooks.len() > MAX_COOK_ROWS {
             return Err(format!(
                 "bake: {} cook rows exceed the sim's {MAX_COOK_ROWS}-row table",
@@ -2951,6 +2967,42 @@ impl Content {
 
     /// A player auto turret's gun (`[turret]`), in sim units, or
     /// `TurretDef::INERT` for a set without one.
+    /// Electricity (`[power]`): each part's numbers on its deploy row, the
+    /// wire tool, and a wire's span. A battery's capacity goes from rWm to
+    /// rW·ticks, the unit the sim charges in.
+    pub fn bake_power(&self) -> Result<sim_core::power::PowerContent, String> {
+        let Some(p) = &self.power else {
+            return Ok(sim_core::power::PowerContent::EMPTY);
+        };
+        let mut pc = sim_core::power::PowerContent::EMPTY;
+        pc.wire_tool = self
+            .item_index(&p.wire_tool)
+            .ok_or_else(|| format!("bake: power wire_tool `{}` names no item", p.wire_tool))?;
+        pc.wire_max_mm = p
+            .wire_max_m
+            .checked_mul(1000)
+            .ok_or_else(|| format!("bake: power wire_max_m {} overflows", p.wire_max_m))?;
+        for part in &p.part {
+            let row = self
+                .deploy_index(&part.id)
+                .ok_or_else(|| format!("bake: power part `{}` is no deployable", part.id))?;
+            let rw = |what: &str, v: u32| {
+                u16::try_from(v)
+                    .map_err(|_| format!("bake: power `{}` {what} {v} overflows", part.id))
+            };
+            pc.parts[row as usize] = sim_core::power::PowerDef {
+                out_rw: rw("out_rw", part.out_rw)?,
+                draw_rw: rw("draw_rw", part.draw_rw)?,
+                capacity: part
+                    .capacity_rwm
+                    .checked_mul(60 * TICK_HZ)
+                    .ok_or_else(|| format!("bake: power `{}` capacity overflows", part.id))?,
+                charge_pct: rw("charge_pct", part.charge_pct)?,
+            };
+        }
+        Ok(pc)
+    }
+
     pub fn bake_turret(&self) -> Result<sim_core::turret::TurretDef, String> {
         let Some(t) = &self.turret else {
             return Ok(sim_core::turret::TurretDef::INERT);
