@@ -241,7 +241,9 @@ use crate::worldcont::WorldContRec;
 /// (a count, the next id, then each plant), so no older file reads.
 /// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
 /// (+32), and its tail the teas (+18); no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 31;
+/// **32 — placed things keep their skin**: every deploy record grew the
+/// skin catalog id it was placed from (+2), so no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 32;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -357,8 +359,8 @@ pub const BUILDING_BYTES: usize = 2 + 4 + 4 + 4 + 2;
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
 ///
-/// 17 → 20 at format 19: the pose (free placement).
-const DEPLOY_BYTES: usize = 20 + 8 + 8;
+/// 17 → 20 at format 19: the pose (free placement). 20 → 22 at 32: the skin.
+const DEPLOY_BYTES: usize = 22 + 8 + 8;
 /// A hearth: address, owner, the stock rows, and the crew — its count
 /// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
 /// roster is hashed, tail included, so a save that dropped the tail would
@@ -772,6 +774,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(d.uh);
         o.b(d.open);
         o.b(d.locked);
+        o.u16(d.skin);
         o.u64(*ready);
     }
     for placed in w.deploys.placed() {
@@ -1501,6 +1504,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // file still refuses) but deliberately never kept — the mirror
         // comment below says why.
         let _locked = r.b()?;
+        let skin = r.u16()?;
         let ready = r.u64()?;
         // A slot is four bits, and an edge insert hangs in its doorway at
         // the centre pose — anything else is a record no verb could write.
@@ -1538,6 +1542,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // Not saved — see the piece load above.
             dmg: 0,
             keyed: false,
+            skin,
         };
         bag_ready[i] = ready;
     }
@@ -2263,7 +2268,7 @@ mod tests {
             + 100 * 597                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
-            + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
+            + 4_096 * 38                    // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
             + 2_048 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
@@ -2318,7 +2323,7 @@ mod tests {
         // 19 → 21: 20 is what the encoder has written since format 6 (the
         // constant was a byte short — see `PIECE_BYTES`), plus the plate.
         assert_eq!(PIECE_BYTES, 37);
-        assert_eq!(DEPLOY_BYTES, 36);
+        assert_eq!(DEPLOY_BYTES, 38);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
@@ -2409,8 +2414,9 @@ mod tests {
         // caps in one merge: the live charges' from 64 to every seat's share
         // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
         // hand's share was capped (1,024 × 143) — counts, so old saves load.
+        // 5_501_026 at format 32: the skin, two bytes on 4,096 deploys.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_492_834,
+            WORLD_SAVE_MAX_BYTES, 5_501_026,
             "the world save ceiling moved"
         );
     }

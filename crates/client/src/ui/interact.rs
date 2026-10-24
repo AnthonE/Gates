@@ -1513,6 +1513,7 @@ mod tests {
             has_lock: false,
             dmg: 0,
             keyed: false,
+            skin: 0,
         }
     }
 

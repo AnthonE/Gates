@@ -1917,6 +1917,8 @@ pub fn event_deploy_placed() -> DeployRec {
         keyed: true,
         // `event_piece_placed`'s rule for the hp (v102).
         hp: 0x5AC3,
+        // Every one of the skin's sixteen bits set somewhere (v143).
+        skin: 0xA5C3,
         ..DeployRec::default()
     }
 }
@@ -1953,6 +1955,8 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             hp: u16::MAX - i as u16 * 2731,
             // Off the index too (v120), so the draws above keep their order.
             keyed: i % 3 == 0,
+            // And the skin (v143): some placed bare, some skinned.
+            skin: if i % 4 == 0 { 0x5A3C ^ i as u16 } else { 0 },
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.

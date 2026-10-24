@@ -724,7 +724,7 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     let deploy0 = pieces_at(&w, players) + w.pieces.len() * PIECE_BYTES;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
-        let at = deploy0 + i * 28;
+        let at = deploy0 + i * 30;
         // Anchor the offset math on the record's own address bytes
         // before bending anything — a wrong stride would forge noise.
         assert_eq!(

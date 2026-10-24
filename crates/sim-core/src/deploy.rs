@@ -966,6 +966,10 @@ pub struct DeployRec {
     /// filled at encode from the lock store, `dmg`'s posture: not hashed,
     /// not saved. False with no lock.
     pub keyed: bool,
+    /// The skin catalog id of the item it was placed from (0 = none), and
+    /// the one the item comes back wearing when it is picked up. Sim
+    /// state, hashed, saved and on the wire (wire v143).
+    pub skin: u16,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -3009,6 +3013,7 @@ pub fn stand_authored(
         locked: false,
         dmg: 0,
         keyed: false,
+        skin: 0,
     };
     if !deploys.insert(rec, tick) {
         return false;
@@ -3284,6 +3289,21 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
         return;
     }
+    // The stack in hand is the one placed, so a skinned door in hand is the
+    // door that stands. Bots place with nothing selected: the first stack.
+    let sel = p.frame.sel as usize;
+    let slot = if p
+        .inv
+        .get(sel)
+        .is_some_and(|s| s.count > 0 && s.item == def.item)
+    {
+        sel
+    } else {
+        p.inv
+            .iter()
+            .position(|s| s.count > 0 && s.item == def.item)
+            .unwrap_or(0)
+    };
     let rec = DeployRec {
         cx,
         cz,
@@ -3304,6 +3324,7 @@ pub fn place_deploy(
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
         keyed: false,
+        skin: p.inv[slot].skin,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -3359,7 +3380,11 @@ pub fn place_deploy(
         };
         deploys.boxes.len += 1;
     }
-    inv_take(&mut p.inv, def.item, 1);
+    let held = &mut p.inv[slot];
+    held.count -= 1;
+    if held.count == 0 {
+        *held = ItemStack::default();
+    }
     events.push(
         EV_DEPLOY_PLACED,
         crate::gather::cell_key(cx, cz),
@@ -3937,13 +3962,15 @@ pub fn pick_up(
             );
         }
     }
-    crate::gather::inv_add_spilling(
+    // It comes back wearing the skin it was placed in.
+    crate::gather::inv_add_spilling_skinned(
         &mut p.inv,
         spill,
         def.item,
         1,
         gc.stack_max_of(def.item),
         gc.cond_max_of(def.item),
+        rec.skin,
     );
     drop_deploy(dc, pieces, deploys, i, events);
 }
@@ -6183,6 +6210,7 @@ mod tests {
                 locked: false,
                 dmg: 0,
                 keyed: false,
+                skin: 0,
             },
             0,
         ));
@@ -7103,6 +7131,62 @@ mod tests {
         assert_eq!(crate::craft::inv_count(&stranger.inv, 5), 0);
         lift(&mut p, &mut ev);
         assert_eq!(crate::craft::inv_count(&p.inv, 5), 1, "its owner lifts it");
+    }
+
+    #[test]
+    fn a_skinned_deployable_keeps_its_skin_through_place_and_pick_up() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        // Two workbenches (item 3): a plain one first, the skinned one in
+        // hand. The one in hand is the one that stands.
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (3, 1), (3, 1)]);
+        p.inv[3].skin = 21;
+        p.frame.sel = 3;
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1);
+        assert_eq!(deploys.entries()[0].skin, 21, "it stands in its skin");
+        assert_eq!(p.inv[3], ItemStack::default(), "the held stack was placed");
+        assert_eq!((p.inv[2].item, p.inv[2].skin), (3, 0), "not the plain one");
+
+        p.inv[2] = ItemStack::default();
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        assert_eq!(deploys.len(), 0);
+        let back = p.inv.iter().find(|s| s.item == 3 && s.count > 0);
+        assert_eq!(back.map(|s| s.skin), Some(21), "and comes back wearing it");
     }
 
     #[test]

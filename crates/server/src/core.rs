@@ -5580,6 +5580,8 @@ impl ShardCore {
                         // Its hp off the store too (wire v102): the hammer
                         // quotes a repair from it.
                         hp: placed.map_or(0, |d| d.hp),
+                        // And the skin it was placed in (wire v143).
+                        skin: placed.map_or(0, |d| d.skin),
                         ..DeployRec::default()
                     };
                     let (acx, acz) = interest::deploy_cell(&rec, &self.world.pieces);
