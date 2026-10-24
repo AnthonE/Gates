@@ -183,8 +183,14 @@ fn every_model_answers_to_an_item_that_exists() {
     );
     for m in &HELD_MODELS {
         let key = m.key;
+        // A vessel with water in it is drawn by its look (`icons::looks`):
+        // `full_waterskin`, `salt_waterskin` — the item behind it is the skin.
+        let item = ["full_", "salt_"]
+            .iter()
+            .find_map(|p| key.strip_prefix(p))
+            .unwrap_or(key);
         assert!(
-            names.iter().any(|n| n == key),
+            names.iter().any(|n| n == item),
             "a held row answers to {key:?} and no item in content/items.toml \
              normalises to that. Either the item was renamed — in which case \
              the model silently stopped drawing — or the key is a typo."

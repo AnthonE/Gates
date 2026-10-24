@@ -46,7 +46,7 @@ use sim_core::sock::Sock;
 /// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
 /// 29 header bits and seven rows of 320, held by the assert at
 /// `CATALOG_ROW_MAX_BITS` and `catalog_batches_walk_the_table_within_cap`)
-/// with headroom; the client-side framer refuses past it. 448 since v143:
+/// with headroom; the client-side framer refuses past it. 448 since v144:
 /// a box of thirty loaded guns is 30 × 102 bits once a stack carries its
 /// data.
 /// Registered in DECISIONS.md §open.
@@ -67,9 +67,9 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// walk fills it. 33 bits a node, 32 of them in 136 B.
 pub const NODE_STAGE_BATCH: usize = 32;
 
-/// Item names one catalog message carries. Four since v143: a worst-case
+/// Item names one catalog message carries. Four since v144: a worst-case
 /// row is 557 bits with a gun's handling, v131's damage, v135's fifth oven
-/// arch, v137's pour and v143's spread and round, and five of them would
+/// arch, v137's pour and v144's spread and round, and five of them would
 /// pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 4;
 
@@ -1126,7 +1126,8 @@ const PIECE_REC_BITS: usize = (PIECE_ID_BITS
 const _: () =
     assert!(FOOT_BITS + 4 * COEF_BITS + SOCK_DIR_BITS >= 2 * BUILD_CELL_BITS + BUILD_LOC_BITS);
 /// `write_deploy_rec`'s: address, row, the four state bits (v120's key
-/// bit the fourth), band, the pose's three bytes and the exact hp (v102).
+/// bit the fourth), band, the pose's three bytes, the exact hp (v102) and,
+/// at most, the skin (v143: a bit, then the id when there is one).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
@@ -1134,7 +1135,9 @@ const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + 4
     + DMG_BAND_BITS
     + 3 * 8
-    + STRUCT_HP_BITS) as usize;
+    + STRUCT_HP_BITS
+    + 1
+    + 16) as usize;
 // A full batch of either store's records still fits one message (v102's hp
 // took 16 bits a record): a field added after it must shrink the batch first.
 const _: () = assert!(
@@ -1375,7 +1378,7 @@ pub struct ItemRow {
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
     pub gun: Option<GunRow>,
-    /// What an attachment is (v143, `combat::ModDef` and the client's half
+    /// What an attachment is (v144, `combat::ModDef` and the client's half
     /// of the content row). `None` on all but attachments.
     pub attach: Option<ModRow>,
 }
@@ -1434,24 +1437,24 @@ pub struct GunRow {
     pub recoil_pitch: [u16; 2],
     pub recoil_yaw: [i16; 2],
     pub ads_recoil_pct: u8,
-    /// The exact cadence, 256ths of a tick (v143, `RangedDef::rate_sub`);
+    /// The exact cadence, 256ths of a tick (v144, `RangedDef::rate_sub`);
     /// 0 keeps `rate_ticks`.
     pub rate_sub: u16,
     /// The cone added on the move, and the bloom: added per shot, its cap,
-    /// how long it holds and how long it bleeds (v143, `combat::Gun`) —
+    /// how long it holds and how long it bleeds (v144, `combat::Gun`) —
     /// what the crosshair spreads by.
     pub moving: u16,
     pub per_shot: u16,
     pub max: u16,
     pub recover_ticks: u16,
     pub delay_ticks: u16,
-    /// A shotgun's pellets' own spread about the shot's line (v143).
+    /// A shotgun's pellets' own spread about the shot's line (v144).
     pub pellet: u16,
     /// The first round's muzzle speed out of this barrel, mm/tick, and its
-    /// drop, mm/tick² (v143): what your own tracer flies at. 0 is instant.
+    /// drop, mm/tick² (v144): what your own tracer flies at. 0 is instant.
     pub speed_mmpt: u16,
     pub drop_mmpt2: u8,
-    /// The attachments it takes (v143, `combat::Gun::mods`): one bit per
+    /// The attachments it takes (v144, `combat::Gun::mods`): one bit per
     /// attachment row, so the item card offers only what fits.
     pub mods: u8,
 }
@@ -2936,7 +2939,7 @@ pub fn encode_event_reload_refused(
 
 /// `slots` must be non-empty and within `INV_SLOTS` rows/indices — an
 /// empty update is a server bug, not a message.
-/// One stack in an inventory or a box (v143): item, count, condition and
+/// One stack in an inventory or a box (v144): item, count, condition and
 /// skin, then its data (`ItemStack::data`) behind a presence bit, so a
 /// stack that remembers nothing pays one bit for the field.
 fn write_stack(w: &mut BitWriter, s: &ItemStack) -> Result<(), WireError> {
@@ -3264,7 +3267,7 @@ pub fn encode_event_catalog(
                 )?;
             }
             w.write(g.ads_recoil_pct as u32, 7)?;
-            // v143: the cadence's remainder, the spread, the round.
+            // v144: the cadence's remainder, the spread, the round.
             w.write(g.rate_sub as u32, 16)?;
             for c in [g.moving, g.per_shot, g.max] {
                 w.write(c as u32, GUN_CONE_BITS)?;
@@ -3276,7 +3279,7 @@ pub fn encode_event_catalog(
             w.write(g.drop_mmpt2 as u32, GUN_DROP_BITS)?;
             w.write(g.mods as u32, 8)?;
         }
-        // An attachment (v143), behind a presence bit.
+        // An attachment (v144), behind a presence bit.
         w.write_bit(row.attach.is_some())?;
         if let Some(m) = row.attach {
             w.write(m.bit as u32, MOD_BIT_W)?;
@@ -3917,6 +3920,11 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.yaw as u32, 8)?;
     // The exact hp (v102) — `write_piece_rec`'s note applies.
     w.write(rec.hp as u32, STRUCT_HP_BITS)?;
+    // The skin it was placed in (v143), the ground item's shape.
+    w.write_bit(rec.skin != 0)?;
+    if rec.skin != 0 {
+        w.write(rec.skin as u32, 16)?;
+    }
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -3948,6 +3956,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         hp: r.read(STRUCT_HP_BITS)? as u16,
+        skin: if r.read_bit()? { r.read(16)? as u16 } else { 0 },
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -10141,6 +10150,7 @@ mod tests {
             loc: sim_core::build::LOC_PLANE,
             row: 7,
             hp: 1234,
+            skin: 22,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
@@ -10167,6 +10177,8 @@ mod tests {
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
             hp: u16::MAX - i as u16 * 2731,
+            // Every record skinned: the widest batch still fits (v143).
+            skin: u16::MAX - i as u16,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();
@@ -12196,7 +12208,7 @@ mod wire_domains {
             "GUN_CONE_BITS",
             "GUN_RECOIL_BITS",
             "GUN_RELOAD_BITS",
-            // v143: a bloom's hold and bleed in ticks (`validate` caps both
+            // v144: a bloom's hold and bleed in ticks (`validate` caps both
             // at a minute; `GunRow::coherent` refuses past the width) and a
             // bullet's drop, `world::SHOT_DROP_BITS` — `bake_ranged` refuses
             // a firearm round that drops past it.

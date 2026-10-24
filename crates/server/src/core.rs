@@ -5591,6 +5591,8 @@ impl ShardCore {
                         // Its hp off the store too (wire v102): the hammer
                         // quotes a repair from it.
                         hp: placed.map_or(0, |d| d.hp),
+                        // And the skin it was placed in (wire v143).
+                        skin: placed.map_or(0, |d| d.skin),
                         ..DeployRec::default()
                     };
                     let (acx, acz) = interest::deploy_cell(&rec, &self.world.pieces);
@@ -9973,7 +9975,7 @@ impl ShardCore {
             } else {
                 p.inv[p.frame.sel as usize].skin
             },
-            // The attachments on the held gun (v143), under the same rule,
+            // The attachments on the held gun (v144), under the same rule,
             // and its light while the key is down: a laser's dot and a
             // flashlight's beam are seen by everyone.
             held_mods: Self::held_mods_of(p),

@@ -241,11 +241,13 @@ use crate::worldcont::WorldContRec;
 /// (a count, the next id, then each plant), so no older file reads.
 /// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
 /// (+32), and its tail the teas (+18); no older file reads.
-/// **32 — item data** (`ItemStack::data`): every stack, in every store,
+/// **32 — placed things keep their skin**: every deploy record grew the
+/// skin catalog id it was placed from (+2), so no older file reads.
+/// **33 — item data** (`ItemStack::data`): every stack, in every store,
 /// is twelve bytes (+4: what the item remembers — a gun's attachments,
 /// rounds and round), and `PlayerSave` drops the per-body magazines that
 /// data replaced; no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 32;
+pub const WORLD_SAVE_FORMAT: u16 = 33;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -361,8 +363,8 @@ pub const BUILDING_BYTES: usize = 2 + 4 + 4 + 4 + 2;
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
 ///
-/// 17 → 20 at format 19: the pose (free placement).
-const DEPLOY_BYTES: usize = 20 + 8 + 8;
+/// 17 → 20 at format 19: the pose (free placement). 20 → 22 at 32: the skin.
+const DEPLOY_BYTES: usize = 22 + 8 + 8;
 /// A hearth: address, owner, the stock rows, and the crew — its count
 /// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
 /// roster is hashed, tail included, so a save that dropped the tail would
@@ -773,6 +775,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(d.uh);
         o.b(d.open);
         o.b(d.locked);
+        o.u16(d.skin);
         o.u64(*ready);
     }
     for placed in w.deploys.placed() {
@@ -1492,6 +1495,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // file still refuses) but deliberately never kept — the mirror
         // comment below says why.
         let _locked = r.b()?;
+        let skin = r.u16()?;
         let ready = r.u64()?;
         // A slot is four bits, and an edge insert hangs in its doorway at
         // the centre pose — anything else is a record no verb could write.
@@ -1529,6 +1533,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // Not saved — see the piece load above.
             dmg: 0,
             keyed: false,
+            skin,
         };
         bag_ready[i] = ready;
     }
@@ -2243,7 +2248,7 @@ mod tests {
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
         // 547 → 597 at format 31: four more worn stacks in `PlayerSave`
         // (+32), the teas in the tail (+18) (clothing v1). 597 → 613 at
-        // format 32: … 613 → 681 the same format, as it landed: every stack
+        // format 33: … 613 → 681 the same format, as it landed: every stack
         // twelve bytes (item data, +4 × 37) and the per-body magazines gone
         // (−64 with the masks).
         assert_eq!(
@@ -2258,18 +2263,18 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 32)
+            + 100 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 33)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
-            + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
+            + 4_096 * 38                    // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (32) + the oven's 30 + the planter's water (30)
+            + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (33) + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
-            + 256 * 388                     // bags: 28 + 30 twelve-byte stacks (32)
-            + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (32) (256 at roadside junk)
+            + 256 * 388                     // bags: 28 + 30 twelve-byte stacks (33)
+            + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (33) (256 at roadside junk)
             + 1_200 * 25                    // charges (every seat's share: 100 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
-            + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 32; 512 at 18; the stuck direction at 20)
+            + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 33; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
             + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
@@ -2316,7 +2321,7 @@ mod tests {
         // 19 → 21: 20 is what the encoder has written since format 6 (the
         // constant was a byte short — see `PIECE_BYTES`), plus the plate.
         assert_eq!(PIECE_BYTES, 37);
-        assert_eq!(DEPLOY_BYTES, 36);
+        assert_eq!(DEPLOY_BYTES, 38);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
@@ -2407,10 +2412,11 @@ mod tests {
         // caps in one merge: the live charges' from 64 to every seat's share
         // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
         // hand's share was capped (1,024 × 143) — counts, so old saves load.
-        // 5_663_026 at format 32: every stack in every store twelve bytes
+        // 5_501_026 at format 32: the skin, two bytes on 4,096 deploys.
+        // 5_671_218 at format 33: every stack in every store twelve bytes
         // (item data), and the per-body magazines it replaced gone.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_663_026,
+            WORLD_SAVE_MAX_BYTES, 5_671_218,
             "the world save ceiling moved"
         );
     }

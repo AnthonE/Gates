@@ -2252,15 +2252,6 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
-        // v0 skins an item and not a placed thing: a deployable's record
-        // does not carry a skin yet, so placing a skinned box would strip
-        // it. Refused rather than silently lost.
-        if c.deployables.iter().any(|d| d.id == s.covers) {
-            return Err(format!(
-                "skin `{}` covers `{}`, a deployable — placed things do not carry skins yet",
-                s.id, s.covers
-            ));
-        }
     }
 
     // Balance globals point at real items.

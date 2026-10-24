@@ -655,6 +655,9 @@ struct Live {
     plate: i8,
     /// A rotate can change only this bit, keeping address, row and damage.
     facing: u8,
+    /// The skin a deployable was drawn in (wire v143), zero for plain and
+    /// while its look is still loading, so the look landing is a redraw.
+    skin: u16,
     foot_drop: f32,
     /// Where a free-placed deployable was drawn standing (its feet's y).
     /// Redraw state for the reason `plate` is: the floor under it can arrive
@@ -3021,6 +3024,7 @@ pub fn stream(
                 own,
                 plate: rec.plate,
                 facing: rec.facing,
+                skin: 0,
                 foot_drop,
                 base_y: 0.0,
                 sock: rec.sock,
@@ -3037,6 +3041,7 @@ pub fn stream(
 
     // ---- deployables ----------------------------------------------------
     let dhave = core.deploy_defs_have.min(core.deploy_defs.def_count);
+    let mut deploy_waiting = false;
     for rec in core.deploys.entries() {
         if (rec.row as u16) >= dhave {
             continue;
@@ -3072,6 +3077,18 @@ pub fn stream(
         } else {
             sim_core::deploy::body_base_y(seed, haven, core.pieces.cols(), rec, arch)
         };
+        let (look, look_skin, waits) = deploy_look(
+            rec,
+            core.deploy_defs.defs[rec.row as usize].item,
+            deploy_base_mat(kit, arch, matter),
+            (&core.catalog, &core.skins),
+            &models,
+            &mut skin_mats,
+            &assets,
+            &meshes,
+            &mut materials,
+        );
+        deploy_waiting |= waits;
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
@@ -3095,6 +3112,7 @@ pub fn stream(
                 && live.lock == lock_bits(rec)
                 && live.plate == plate
                 && live.base_y == base_y
+                && live.skin == look_skin
             {
                 continue;
             }
@@ -3144,6 +3162,7 @@ pub fn stream(
             arch,
             matter,
             plate,
+            look,
         );
         ring.deploys.insert(
             key,
@@ -3157,6 +3176,7 @@ pub fn stream(
                 own: 0,
                 plate,
                 facing: 0,
+                skin: look_skin,
                 foot_drop: 0.0,
                 base_y,
                 sock: Default::default(),
@@ -3240,6 +3260,7 @@ pub fn stream(
                     own: 0,
                     plate: 0,
                     facing: 0,
+                    skin: 0,
                     foot_drop: 0.0,
                     base_y: 0.0,
                     sock: Default::default(),
@@ -3317,6 +3338,7 @@ pub fn stream(
                 // column and no plate to be drawn against.
                 plate: 0,
                 facing: 0,
+                skin: 0,
                 foot_drop: 0.0,
                 base_y: 0.0,
                 sock: Default::default(),
@@ -3332,6 +3354,7 @@ pub fn stream(
     });
 
     ring.pending_loot = body_waiting
+        | deploy_waiting
         | sync_loot(
             &mut commands,
             &mut ring.gitems,
@@ -3914,6 +3937,80 @@ pub fn door_cue(arch: u8, matter: u8, open: bool) -> crate::sound::Cue {
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
 /// this crate stays green over a shard where no fire lights anything.
 #[allow(clippy::too_many_arguments)]
+/// A placed thing's skin, as [`spawn_deploy`] draws it: the skin's own
+/// model when it has one (`ui::hold::SKIN_MODELS`, keyed by the item's held
+/// row, a retexture of the world model), else the base model in the skin's
+/// tint (`SkinMats::for_part`).
+pub struct DeployLook {
+    mesh: Option<Handle<Mesh>>,
+    mat: Handle<StandardMaterial>,
+}
+
+/// The material a deployable is drawn in, unskinned.
+fn deploy_base_mat(kit: &Kit, arch: u8, matter: u8) -> Handle<StandardMaterial> {
+    if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
+        kit.door_metal.clone()
+    } else {
+        kit.deploy_mat[(arch as usize).min(DEPLOY.len() - 1)].clone()
+    }
+}
+
+/// `rec`'s look (wire v143), the skin it is drawn in, and whether a look is
+/// still loading: plain until then, and `stream` runs again
+/// (`pending_loot`). A skin the catalog does not know draws plain, as a
+/// ground stack's does, and its arrival is the redraw.
+#[allow(clippy::too_many_arguments)]
+fn deploy_look(
+    rec: &DeployRec,
+    item: u16,
+    base: Handle<StandardMaterial>,
+    (catalog, skins): (&protocol::ItemCatalog, &protocol::SkinCatalog),
+    models: &super::viewmodel::Models,
+    skin_mats: &mut super::viewmodel::SkinMats,
+    assets: &AssetServer,
+    meshes: &Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> (Option<DeployLook>, u16, bool) {
+    if rec.skin == 0 {
+        return (None, 0, false);
+    }
+    let Some(tint) = crate::ui::skins::tint_of(skins, rec.skin) else {
+        return (None, 0, false);
+    };
+    let row = crate::ui::hold::held_model(
+        catalog,
+        sim_core::gather::ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    if let Some((mesh, mat)) = row.and_then(|i| models.skinned(i, rec.skin)) {
+        if meshes.contains(mesh.id())
+            && materials.contains(mat.id())
+            && assets.is_loaded_with_dependencies(mat.id())
+        {
+            let look = DeployLook {
+                mesh: Some(mesh),
+                mat,
+            };
+            return (Some(look), rec.skin, false);
+        }
+        let failed = [mesh.id().untyped(), mat.id().untyped()]
+            .iter()
+            .any(|&id| matches!(assets.load_state(id), bevy::asset::LoadState::Failed(_)));
+        if !failed {
+            return (None, 0, true);
+        }
+    }
+    match skin_mats.for_part(rec.skin, tint, &base, materials) {
+        Some(mat) => (Some(DeployLook { mesh: None, mat }), rec.skin, false),
+        None => (None, 0, true),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
@@ -3924,6 +4021,7 @@ pub fn spawn_deploy(
     arch: u8,
     matter: u8,
     plate: i8,
+    look: Option<DeployLook>,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let drop = model_drop(arch);
@@ -3954,16 +4052,19 @@ pub fn spawn_deploy(
     };
 
     let metal_door = arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL;
-    let mat = if metal_door {
-        kit.door_metal.clone()
-    } else {
-        kit.deploy_mat[idx].clone()
+    // A skin is its own model or the base one in the skin's material
+    // ([`deploy_look`]); the damage bands darken whichever it is.
+    let (skin_mesh, mat) = match look {
+        Some(l) => (l.mesh, l.mat),
+        None => (None, deploy_base_mat(kit, arch, matter)),
     };
 
     let mut e = commands.spawn((
         super::WorldEntity,
         Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
             kit.shutters_open.clone()
+        } else if let Some(m) = skin_mesh {
+            m
         } else if metal_door {
             kit.door_metal_mesh.clone()
         } else {

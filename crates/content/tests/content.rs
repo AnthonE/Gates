@@ -818,10 +818,9 @@ fn a_skin_fits_one_carried_item() {
     let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.wood"))
         .expect_err("a skin on a stackable");
     assert!(err.contains("a skin fits one item"), "got: {err}");
-    // Not a placed thing, yet: the deploy record carries no skin.
-    let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.box_small"))
-        .expect_err("a skin on a deployable");
-    assert!(err.contains("deployable"), "got: {err}");
+    // A placed thing is fine: the deploy record carries its skin (v143).
+    skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.box_small"))
+        .expect("a skin on a deployable");
     // And a name the wire can carry.
     let err =
         skins_with(&SKIN_ROW.replace("Gilt Hatchet", &"x".repeat(25))).expect_err("a 25-byte name");

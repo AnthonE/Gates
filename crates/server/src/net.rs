@@ -790,7 +790,7 @@ pub fn bake_catalog(
                     .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
                     .unwrap_or(0),
                 gun,
-                // An attachment (v143): its bit and slot off the sim's
+                // An attachment (v144): its bit and slot off the sim's
                 // table, the view's half (kick, zoom, laser, light) off the
                 // content row, which the sim never reads.
                 attach: combat.mod_bit(idx as u16).and_then(|bit| {

@@ -27,6 +27,7 @@
 use client::render::structures::{
     deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, LOCK_ASSET, LOCK_BACK_M, METAL_DOOR_ASSET,
 };
+use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
 /// ships and `crates/client/` is what cargo builds. Same hop `tests/ui.rs`
@@ -35,14 +36,29 @@ fn asset_path(rel: &str) -> std::path::PathBuf {
     std::path::Path::new("../../assets").join(rel)
 }
 
-/// Every deployable model, by archetype: the table's rows and the metal
-/// door, which draws its own model on the door's row.
+/// Every deployable model, by archetype: the table's rows, the metal door,
+/// which draws its own model on the door's row, and every skin of a placed
+/// thing (wire v143) — a repaint of one of those, drawn where it stands, so
+/// held to the same box. A skin's archetype is the one whose model its
+/// held row draws.
 fn models() -> impl Iterator<Item = (usize, &'static str)> {
-    DEPLOY_ASSET
-        .iter()
-        .enumerate()
-        .filter_map(|(arch, path)| path.map(|rel| (arch, rel)))
-        .chain([(sim_core::deploy::ARCH_DOOR as usize, METAL_DOOR_ASSET)])
+    let base = || {
+        DEPLOY_ASSET
+            .iter()
+            .enumerate()
+            .filter_map(|(arch, path)| path.map(|rel| (arch, rel)))
+            .chain([(sim_core::deploy::ARCH_DOOR as usize, METAL_DOOR_ASSET)])
+    };
+    let skins = SKIN_MODELS.iter().filter_map(move |s| {
+        let row = HELD_MODELS.iter().find(|h| h.key == s.key)?;
+        let HeldSrc::Glb(held) = row.src else {
+            return None;
+        };
+        base()
+            .find(|&(_, rel)| rel == held)
+            .map(|(arch, _)| (arch, s.path))
+    });
+    base().chain(skins)
 }
 
 /// The JSON chunk of a GLB, parsed enough to count parts and bound vertices.

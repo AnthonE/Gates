@@ -8,7 +8,8 @@
 #            the catalogId the platform's item contract mints it under.
 #            Nonzero, unique, never reused for a different look.
 #   name     what the store and the item's label say (≤ 24 ASCII bytes)
-#   covers   the one item it fits (a stack-1 item, not a deployable, v0)
+#   covers   the one item it fits (a stack-1 item; a deployable keeps its
+#            skin when placed and when picked back up)
 #   tint     the look, v0: an sRGB multiply over the item's own colours. A
 #            skin with a model of its own (`client::ui::hold::SKIN_MODELS`)
 #            draws that, and a picture of it in the store; its tint is the
@@ -245,3 +246,21 @@ name = "Tidewrack Cleaver"
 covers = "item.cleaver_salvaged"
 tint = [196, 188, 170]
 season = "realm"
+
+# Placed things keep their skin (wire v143): the first two for the base, each
+# the world model repainted (`ci/meshy_retexture.py`), drawn where it stands.
+[[skin]]
+id = "skin.box_large_strongbox"
+catalog = 23
+name = "Strongbox"
+covers = "item.box_large"
+tint = [120, 96, 78]
+season = "base"
+
+[[skin]]
+id = "skin.door_metal_bulkhead"
+catalog = 24
+name = "Bulkhead Door"
+covers = "item.door_metal"
+tint = [150, 150, 140]
+season = "base"

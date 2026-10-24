@@ -571,7 +571,7 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 189);
     // Captions (v138).
     g!(seen, golden_event, 190);
-    // Weapon attachments (v143).
+    // Weapon attachments (v144).
     g!(seen, golden_action, 191);
     g!(seen, golden_action, 192);
     assert_eq!(GOLDEN.len(), FIXTURES.len());

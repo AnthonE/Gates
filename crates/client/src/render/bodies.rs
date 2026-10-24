@@ -134,7 +134,7 @@ struct Live {
     muzzle: Option<Vec3>,
     /// The way that gun's barrel points, beside [`Live::muzzle`].
     barrel: Option<Vec3>,
-    /// The held gun's attachments, and its light key down (wire v143):
+    /// The held gun's attachments, and its light key down (wire v144):
     /// a laser's dot and a flashlight's beam (`mods::remote`).
     mods: u8,
     beam: bool,

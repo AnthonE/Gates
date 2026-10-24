@@ -1350,7 +1350,9 @@ pub use voice::{
 /// tag) and 1 for a `SolanaProof` (32-byte Ed25519 key + 64-byte signature
 /// over `siws_message_for`). `REFUSE_LINK` (11) says the shard could not read
 /// whether that Solana account is linked to an Ethereum one.
-/// v143 — bullets fly (`sim_core::bullet`): a firearm's `SUB_SHOT` carries
+/// v143 — placed things keep their skin: the placed-deployable record ends
+/// with a bit and, when set, the 16-bit skin catalog id it was placed from.
+/// v144 — bullets fly (`sim_core::bullet`): a firearm's `SUB_SHOT` carries
 /// its round's speed in the first `u16` as an arrow's does, and in the
 /// second `world::SHOT_BULLET`, the reach (2 m units) and the drop
 /// (`shot_is_bullet`, `bullet_reach_mm`, `bullet_drop`), and a silenced
@@ -1364,7 +1366,7 @@ pub use voice::{
 /// (`ItemStack::data`: a gun's attachments, rounds and round); a snapshot's
 /// hand closes with the held gun's attachments and its light behind
 /// another (`EntityState::held_mods`, `beam`); `MAX_EVENT_MSG_BYTES` 448.
-pub const PROTO_VER: u16 = 143;
+pub const PROTO_VER: u16 = 144;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -2295,10 +2297,10 @@ const ACT_LATTICE: u32 = 40;
 const ACT_PLANT: u32 = 41;
 /// Tend plant `plant` (wire v135, `Command::Tend`): `farm::TEND_*`.
 const ACT_TEND: u32 = 42;
-/// Put the attachment in an inventory slot on the gun in hand (wire v143,
+/// Put the attachment in an inventory slot on the gun in hand (wire v144,
 /// `Command::Attach`).
 const ACT_ATTACH: u32 = 43;
-/// Take an attachment off the gun in hand by its bit (wire v143,
+/// Take an attachment off the gun in hand by its bit (wire v144,
 /// `Command::Detach`).
 const ACT_DETACH: u32 = 44;
 /// Width of `ActionMsg::Detach`'s bit: one of `MAX_MODS`.
@@ -2779,10 +2781,10 @@ pub enum ActionMsg {
     /// No payload, `Reload`'s reasoning.
     Unload,
     /// Put the attachment in inventory slot `slot` on the gun in hand
-    /// (wire v143, `Command::Attach`). The slot is shape-checked here and
+    /// (wire v144, `Command::Attach`). The slot is shape-checked here and
     /// the rest is the sim's verdict.
     Attach { slot: u8 },
-    /// Take attachment `bit` off the gun in hand (wire v143,
+    /// Take attachment `bit` off the gun in hand (wire v144,
     /// `Command::Detach`).
     Detach { bit: u8 },
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
@@ -4687,7 +4689,7 @@ pub struct EntityState {
     /// seventeen only where someone paid for it. Meaningless with an empty
     /// hand, and sent as 0 then.
     pub held_skin: u16,
-    /// The attachments on the held gun (v143, `combat::GunState::mods`):
+    /// The attachments on the held gun (v144, `combat::GunState::mods`):
     /// a bit per catalog `ModRow`, so a scope, a silencer, a laser or a
     /// light is drawn on someone else's rifle. Behind a presence bit like
     /// the skin: an unmodded hand pays one bit.
@@ -5063,7 +5065,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w
             .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
         self.w.write_bit(e.lit)?;
-        // One bit for "anything more" (v143), so the plain hand nearly
+        // One bit for "anything more" (v144), so the plain hand nearly
         // every body carries costs what it did before attachments: the
         // worst-case keyframe sits a byte under the datagram budget.
         let extras = e.held_skin != 0 || e.held_mods != 0;
@@ -5367,7 +5369,7 @@ fn decode_entity(
     Ok(e)
 }
 
-/// The hand's extras (v143): one bit, then the skin and the held gun's
+/// The hand's extras (v144): one bit, then the skin and the held gun's
 /// attachments (with its light) each behind their own. "More" with neither
 /// is a second spelling of a plain hand and is refused.
 fn read_hand_extras(r: &mut BitReader) -> Result<(u16, u8, bool), WireError> {
@@ -6253,7 +6255,7 @@ mod tests {
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
-        // plant and tend (v135) 41 and 42, the attachments (v143) 43 and 44.
+        // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44.
         assert_eq!(ACT_MAX, ACT_DETACH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,

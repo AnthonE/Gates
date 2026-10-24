@@ -10291,6 +10291,11 @@ impl World {
             buf[18] = d.pose.oz as u8;
             buf[19] = d.pose.yaw;
             h.update(&buf);
+            // Its skin, only when it wears one: an unskinned world hashes
+            // as it did before skins could be placed (the goldens).
+            if d.skin != 0 {
+                h.update(&d.skin.to_le_bytes());
+            }
         }
         // The code locks (lock v1). Every byte is state a shard can
         // disagree about and a raid can turn on: two shards that disagree

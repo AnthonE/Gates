@@ -136,7 +136,7 @@ pub struct RemoteState {
     /// The skin the held item wears (skins v0), 0 for its own look. Newer
     /// sample, `held`'s reason: a look is an identity, not a quantity.
     pub held_skin: u16,
-    /// The held gun's attachments and its light key (v143), `held`'s
+    /// The held gun's attachments and its light key (v144), `held`'s
     /// newer-sample rule.
     pub held_mods: u8,
     pub beam: bool,

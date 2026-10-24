@@ -307,7 +307,7 @@ fn main() {
     // Captions (v138).
     let len = protocol::encode_event_caption(&goldens::event_caption(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[190], &buf[..len]);
-    // Weapon attachments (v143).
+    // Weapon attachments (v144).
     let len = protocol::encode_action_attach(goldens::action_attach(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[191], &buf[..len]);
     let len = protocol::encode_action_detach(goldens::action_detach(), &mut buf).unwrap();
