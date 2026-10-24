@@ -24,10 +24,10 @@
 
 #![cfg(feature = "render")]
 
-use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 use client::render::structures::{
     deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, LOCK_ASSET, LOCK_BACK_M, METAL_DOOR_ASSET,
 };
+use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
 /// ships and `crates/client/` is what cargo builds. Same hop `tests/ui.rs`

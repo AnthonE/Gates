@@ -4009,6 +4009,7 @@ fn deploy_look(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,

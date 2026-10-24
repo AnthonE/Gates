@@ -3815,11 +3815,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         hp: r.read(STRUCT_HP_BITS)? as u16,
-        skin: if r.read_bit()? {
-            r.read(16)? as u16
-        } else {
-            0
-        },
+        skin: if r.read_bit()? { r.read(16)? as u16 } else { 0 },
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims

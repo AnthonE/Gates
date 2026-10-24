@@ -3292,10 +3292,17 @@ pub fn place_deploy(
     // The stack in hand is the one placed, so a skinned door in hand is the
     // door that stands. Bots place with nothing selected: the first stack.
     let sel = p.frame.sel as usize;
-    let slot = if p.inv.get(sel).is_some_and(|s| s.count > 0 && s.item == def.item) {
+    let slot = if p
+        .inv
+        .get(sel)
+        .is_some_and(|s| s.count > 0 && s.item == def.item)
+    {
         sel
     } else {
-        p.inv.iter().position(|s| s.count > 0 && s.item == def.item).unwrap_or(0)
+        p.inv
+            .iter()
+            .position(|s| s.count > 0 && s.item == def.item)
+            .unwrap_or(0)
     };
     let rec = DeployRec {
         cx,
