@@ -163,6 +163,11 @@ pub struct Connecting {
     /// 2026-08-09 — see [`begin_connect`] for what that cost.
     pub address: protocol::Address,
     pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, crate::JoinError>>>,
+    /// WATCH rather than PLAY: a spectator's seat on any agent the shard has
+    /// that consented (`Session::watch`), anonymous, with no body and no
+    /// sign-in. Set by the menu's pick, never by a flag (`--spectate`
+    /// connects before the window).
+    pub watch: bool,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
     /// rather than an `Instant`, so the screen has one clock and it is the
     /// renderer's.
