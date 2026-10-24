@@ -583,45 +583,45 @@ Catalog ids are *proposed* until the row ships. An id is the
 
 | cat? | name | covers | look (prompt basis) | glow | tag |
 |---|---|---|---|---|---|
-| 23 | Anneal AR | item.assault_rifle | heat-treated steel, temper bands straw to gold to purple to blue, oil-slick sheen | | R |
-| 24 | Anneal Thompson | item.thompson | same | | R |
-| 25 | Anneal Custom SMG | item.custom_smg | same | | R |
-| 26 | Anneal Python | item.python | same | | R |
-| 27 | Anneal Mace | item.mace | same, on the head | | R |
-| 28 | Regent AR | item.assault_rifle | matte black body, engraved gold filigree, gold front sight | sight | R |
-| 29 | Regent Custom SMG | item.custom_smg | same | sight | R |
-| 30 | Regent Bolt Rifle | item.bolt_rifle | same | sight | R |
-| 31 | Regent Longsword | item.longsword | black blade, gold-inlaid fuller and guard | | R |
-| 32 | Relic SMG | item.custom_smg | pale carved stone fused into the frame, cyan runes in the cracks | yes | R, given only |
-| 33 | Relic Longsword | item.longsword | same; the runes run down the blade | yes | R, given only |
-| 34 | Ember Longsword | item.longsword | blade glowing red-hot at the edge, char-black near the guard | yes | R |
-| 35 | Ember AR | item.assault_rifle | black char, orange ember cracks | yes | R |
-| 36 | Ember Pickaxe | item.pickaxe_metal | same; matches the Ember Hatchet (2) | yes | R |
-| 37 | Bloodline AR | item.assault_rifle | crimson lacquer on black, clean edges, not neon | | R |
-| 38 | Bloodline Shotgun | item.pump_shotgun | same | | R |
-| 39 | Bloodline Semi Pistol | item.semi_pistol | same | | R |
-| 40 | Old Reliable AR | item.assault_rifle | flaking red-orange paint, mismatched wood stock, tape wraps, field repairs | | R |
-| 41 | Old Reliable Bolt Rifle | item.bolt_rifle | same | | R |
-| 42 | Timberline Hatchet | item.hatchet_metal | warm wood grain, red plaid grip wrap | | R |
-| 43 | Timberline Pickaxe | item.pickaxe_metal | same | | R |
-| 44 | Timberline Hammer | item.hammer | same | | R |
-| 45 | Timberline AR | item.assault_rifle | wood-grain furniture, plaid sling | | R |
-| 46 | Carved Semi Rifle | item.semi_rifle | walnut engraved with leaves and knots | | R |
-| 47 | Carved Bow | item.bow | same | | R |
-| 48 | Carved Crossbow | item.crossbow | same | | B |
-| 49 | Bitgrid Semi Rifle | item.semi_rifle | subtle grey-green square-pixel camo | | R |
-| 50 | Bitgrid AR | item.assault_rifle | same | | R |
-| 51 | Bitgrid Thompson | item.thompson | same | | R |
-| 52 | Nightwork AR | item.assault_rifle | matte black, no shine, at the luma floor | | R |
-| 53 | Nightwork Thompson | item.thompson | same | | R |
-| 54 | Nightwork Bolt Rifle | item.bolt_rifle | same | | R |
-| 55 | Thicket Bolt Rifle | item.bolt_rifle | moss-and-bark camo, twine wraps | | R |
-| 56 | Thicket Bow | item.bow | same | | R |
-| 57 | Snowblind Semi Rifle | item.semi_rifle | off-white with grey frost wear | | R |
-| 58 | Snowblind AR | item.assault_rifle | same | | R |
-| 59 | Thornback Sword | item.sword_salvaged | barbed wire wrapped, spikes welded on the spine | | R |
-| 60 | Thornback Mace | item.mace | same | | R |
-| 61 | Fireworks Launcher | item.rocket_launcher | carnival stripes, a painted star burst at the muzzle | | R |
+| 25 | Anneal AR | item.assault_rifle | heat-treated steel, temper bands straw to gold to purple to blue, oil-slick sheen | | R |
+| 26 | Anneal Thompson | item.thompson | same | | R |
+| 27 | Anneal Custom SMG | item.custom_smg | same | | R |
+| 28 | Anneal Python | item.python | same | | R |
+| 29 | Anneal Mace | item.mace | same, on the head | | R |
+| 30 | Regent AR | item.assault_rifle | matte black body, engraved gold filigree, gold front sight | sight | R |
+| 31 | Regent Custom SMG | item.custom_smg | same | sight | R |
+| 32 | Regent Bolt Rifle | item.bolt_rifle | same | sight | R |
+| 33 | Regent Longsword | item.longsword | black blade, gold-inlaid fuller and guard | | R |
+| 34 | Relic SMG | item.custom_smg | pale carved stone fused into the frame, cyan runes in the cracks | yes | R, given only |
+| 35 | Relic Longsword | item.longsword | same; the runes run down the blade | yes | R, given only |
+| 36 | Ember Longsword | item.longsword | blade glowing red-hot at the edge, char-black near the guard | yes | R |
+| 37 | Ember AR | item.assault_rifle | black char, orange ember cracks | yes | R |
+| 38 | Ember Pickaxe | item.pickaxe_metal | same; matches the Ember Hatchet (2) | yes | R |
+| 39 | Bloodline AR | item.assault_rifle | crimson lacquer on black, clean edges, not neon | | R |
+| 40 | Bloodline Shotgun | item.pump_shotgun | same | | R |
+| 41 | Bloodline Semi Pistol | item.semi_pistol | same | | R |
+| 42 | Old Reliable AR | item.assault_rifle | flaking red-orange paint, mismatched wood stock, tape wraps, field repairs | | R |
+| 43 | Old Reliable Bolt Rifle | item.bolt_rifle | same | | R |
+| 44 | Timberline Hatchet | item.hatchet_metal | warm wood grain, red plaid grip wrap | | R |
+| 45 | Timberline Pickaxe | item.pickaxe_metal | same | | R |
+| 46 | Timberline Hammer | item.hammer | same | | R |
+| 47 | Timberline AR | item.assault_rifle | wood-grain furniture, plaid sling | | R |
+| 48 | Carved Semi Rifle | item.semi_rifle | walnut engraved with leaves and knots | | R |
+| 49 | Carved Bow | item.bow | same | | R |
+| 50 | Carved Crossbow | item.crossbow | same | | B |
+| 51 | Bitgrid Semi Rifle | item.semi_rifle | subtle grey-green square-pixel camo | | R |
+| 52 | Bitgrid AR | item.assault_rifle | same | | R |
+| 53 | Bitgrid Thompson | item.thompson | same | | R |
+| 54 | Nightwork AR | item.assault_rifle | matte black, no shine, at the luma floor | | R |
+| 55 | Nightwork Thompson | item.thompson | same | | R |
+| 56 | Nightwork Bolt Rifle | item.bolt_rifle | same | | R |
+| 57 | Thicket Bolt Rifle | item.bolt_rifle | moss-and-bark camo, twine wraps | | R |
+| 58 | Thicket Bow | item.bow | same | | R |
+| 59 | Snowblind Semi Rifle | item.semi_rifle | off-white with grey frost wear | | R |
+| 60 | Snowblind AR | item.assault_rifle | same | | R |
+| 61 | Thornback Sword | item.sword_salvaged | barbed wire wrapped, spikes welded on the spine | | R |
+| 62 | Thornback Mace | item.mace | same | | R |
+| 63 | Fireworks Launcher | item.rocket_launcher | carnival stripes, a painted star burst at the muzzle | | R |
 
 **First drop, by impact per credit:** Anneal, Regent, the Ember additions and
 Bloodline. The Relic pair is the scarce one: give it through
@@ -635,30 +635,30 @@ PNG on the frozen UV templates (`render/canvas.rs`), checked by
 
 | cat? | name | covers | look |
 |---|---|---|---|
-| 62 | Junkyard Bat | item.bat | nails, bottle caps and stickers |
-| 63 | Barber Bat | item.bat | red and white spiral stripe |
-| 64 | Tally Bat | item.bat | scratched tally marks down the barrel |
-| 65 | Pig Print Tunic | item.armor_burlap_body | a hand-stamped pig, our own mob |
-| 66 | Junk King Tunic | item.armor_burlap_body | a crown sewn from scrap |
-| 67 | Gate Crasher Tunic | item.armor_burlap_body | a painted gate kicked open |
-| 68 | Wipe Survivor Tunic | item.armor_burlap_body | "I SURVIVED WIPE" in stencil |
+| 64 | Junkyard Bat | item.bat | nails, bottle caps and stickers |
+| 65 | Barber Bat | item.bat | red and white spiral stripe |
+| 66 | Tally Bat | item.bat | scratched tally marks down the barrel |
+| 67 | Pig Print Tunic | item.armor_burlap_body | a hand-stamped pig, our own mob |
+| 68 | Junk King Tunic | item.armor_burlap_body | a crown sewn from scrap |
+| 69 | Gate Crasher Tunic | item.armor_burlap_body | a painted gate kicked open |
+| 70 | Wipe Survivor Tunic | item.armor_burlap_body | "I SURVIVED WIPE" in stencil |
 
 ### 13.3 · Base and worn (P: needs a pipeline first)
 
-**Deployable looks** need these changes:
-- lift `validate.rs`'s refusal
-- carry the catalog id on the placed structure
-- draw a per-skin GLB in `DEPLOY_ASSET` (`render/structures.rs`)
-
-That is likely a wire change (`PROTO_VER`) and may be a save format, which would
-make it WIPE and target `next-wipe`. Check `ci/deploy_kind.py` when built. Door looks also need wood and metal doors split first (§0.4).
+**Deployable looks landed 2026-10-24** (wire v143, world save 32): a placed
+thing keeps its skin, and picking it up gives the skin back. A look is a
+`SKIN_MODELS` row on the deployable's held key, a repaint of the world model
+(`ci/meshy_retexture.py` on `models/deploy/*.glb`), and
+`tests/deploy_assets.rs` holds it to its archetype's box. The wooden and
+metal doors already draw different models (`METAL_DOOR_ASSET`), so §0.4's door
+note no longer blocks a door look; small and large box still share one.
 
 | name | covers | look |
 |---|---|---|
 | Reactor Door | item.garage_door, item.door_metal | hazard stripes, radiation dials that glow at night |
-| Bulkhead Door / Garage | item.door_metal, item.garage_door | riveted striped steel shutter |
+| Bulkhead Door / Garage | item.door_metal, item.garage_door | riveted striped steel shutter — ✅ door **shipped 2026-10-24** (24); the garage door is an insert built from the sim's solids, no model to repaint yet |
 | Airlock Door | item.door_metal | porthole hatch, wheel lock |
-| Strongbox | item.box_large | iron-strapped old chest |
+| Strongbox | item.box_large | iron-strapped old chest — ✅ **shipped 2026-10-24** (23) |
 | Regent Door / Box | item.door_metal, item.box_large | the black-and-gold set on the base |
 | Scrapheap Sentry | item.autoturret | junk-welded plates, mismatched paint |
 | Regent Sentry | item.autoturret | black and gold |

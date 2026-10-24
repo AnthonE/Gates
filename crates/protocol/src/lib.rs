@@ -1349,7 +1349,9 @@ pub use voice::{
 /// tag) and 1 for a `SolanaProof` (32-byte Ed25519 key + 64-byte signature
 /// over `siws_message_for`). `REFUSE_LINK` (11) says the shard could not read
 /// whether that Solana account is linked to an Ethereum one.
-pub const PROTO_VER: u16 = 142;
+/// v143 — placed things keep their skin: the placed-deployable record ends
+/// with a bit and, when set, the 16-bit skin catalog id it was placed from.
+pub const PROTO_VER: u16 = 143;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

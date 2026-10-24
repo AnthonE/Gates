@@ -1124,7 +1124,8 @@ const PIECE_REC_BITS: usize = (PIECE_ID_BITS
 const _: () =
     assert!(FOOT_BITS + 4 * COEF_BITS + SOCK_DIR_BITS >= 2 * BUILD_CELL_BITS + BUILD_LOC_BITS);
 /// `write_deploy_rec`'s: address, row, the four state bits (v120's key
-/// bit the fourth), band, the pose's three bytes and the exact hp (v102).
+/// bit the fourth), band, the pose's three bytes, the exact hp (v102) and,
+/// at most, the skin (v143: a bit, then the id when there is one).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
@@ -1132,7 +1133,9 @@ const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + 4
     + DMG_BAND_BITS
     + 3 * 8
-    + STRUCT_HP_BITS) as usize;
+    + STRUCT_HP_BITS
+    + 1
+    + 16) as usize;
 // A full batch of either store's records still fits one message (v102's hp
 // took 16 bits a record): a field added after it must shrink the batch first.
 const _: () = assert!(
@@ -3776,6 +3779,11 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.yaw as u32, 8)?;
     // The exact hp (v102) — `write_piece_rec`'s note applies.
     w.write(rec.hp as u32, STRUCT_HP_BITS)?;
+    // The skin it was placed in (v143), the ground item's shape.
+    w.write_bit(rec.skin != 0)?;
+    if rec.skin != 0 {
+        w.write(rec.skin as u32, 16)?;
+    }
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -3807,6 +3815,11 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         hp: r.read(STRUCT_HP_BITS)? as u16,
+        skin: if r.read_bit()? {
+            r.read(16)? as u16
+        } else {
+            0
+        },
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -9938,6 +9951,7 @@ mod tests {
             loc: sim_core::build::LOC_PLANE,
             row: 7,
             hp: 1234,
+            skin: 22,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
@@ -9964,6 +9978,8 @@ mod tests {
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
             hp: u16::MAX - i as u16 * 2731,
+            // Every record skinned: the widest batch still fits (v143).
+            skin: u16::MAX - i as u16,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();

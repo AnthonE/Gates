@@ -1105,7 +1105,7 @@ impl SkinModelDef {
 /// object) or `ci/meshy_retexture.py` (the row's own mesh repainted, Rust's
 /// way: held, aimed and fired exactly as the item is), then
 /// `assets/models/MANIFEST.md`, `held/skins/`.
-pub const SKIN_MODELS: [SkinModelDef; 19] = [
+pub const SKIN_MODELS: [SkinModelDef; 21] = [
     SkinModelDef::new(1, "bat", "models/held/skins/obsidian_bat.glb"),
     SkinModelDef::new(2, "stone_hatchet", "models/held/skins/ember_hatchet.glb").glowing(),
     SkinModelDef::new(3, "stone_pickaxe", "models/held/skins/frost_pickaxe.glb"),
@@ -1152,6 +1152,10 @@ pub const SKIN_MODELS: [SkinModelDef; 19] = [
         "salvaged_cleaver",
         "models/held/skins/tidewrack_cleaver.glb",
     ),
+    // Placed things (wire v143): the world model repainted, so one file is
+    // the box where it stands, in a hand and on the ground.
+    SkinModelDef::new(23, "large_box", "models/held/skins/strongbox_box.glb"),
+    SkinModelDef::new(24, "metal_door", "models/held/skins/bulkhead_door.glb"),
 ];
 
 /// The [`SKIN_MODELS`] index of skin `skin` worn on [`HELD_MODELS`] row
