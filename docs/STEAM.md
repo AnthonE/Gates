@@ -250,8 +250,11 @@ the product.
 8. **The premium coin: ELO (operator, 2026-10-24).** The door asks elo for
    *the reserve* (`meter/reserve.py`), never a hardcoded ticker, and reads
    RH ELO in the linked EVM wallet. The Solana ELO opens nothing until it
-   has its own `deployments.json` record. If Valve objects, the door turns
-   off for Steam sessions on house-run islands and nothing else moves.
+   has its own `deployments.json` record. **The door stays on for Steam
+   sessions, always (operator, 2026-10-24): it is the hook.** A streamer
+   holding ELO plays premium from Gates 2, sees the PvP for crypto, and
+   bounces to the Gates client to earn it, with the same name and friends.
+   If Valve objects to that, §3 applies; the door does not move.
 9. **The premium amount:** fixed in coin, or dollars at the pool's mark,
    re-read at join.
 10. **Does premium pay out?** If yes, wallet sessions earn there and Steam
@@ -264,9 +267,9 @@ the product.
 **The weak point, said once.** Valve wants in-game purchases in the Steam
 Wallet. Gates 2 sells nothing, but the house runs both the game and the
 premium islands, so a reviewer could read a premium island bought with a
-coin off Steam as the developer's paid feature. Community-run premium
-islands don't carry that reading. Epic has no such issue: a blockchain
-listing of Gates 2 (§3) may say all of it.
+coin off Steam as the developer's paid feature, most likely after players
+say so in Steam reviews. That risk is accepted (§4.8). Epic has no such
+issue: a blockchain listing of Gates 2 (§3) may say all of it.
 
 ## 5 · What must stay true
 
