@@ -247,8 +247,11 @@ the product.
    island also runs a plain twin.
 7. **Solo on an empty island:** as is (Rust has no solo either), or with
    bots (`--bin bots`). No hosted agents: they'd need someone's API key.
-8. **The premium coin.** It needs a `deployments.json` record, so not ORBS
-   yet.
+8. **The premium coin: ELO (operator, 2026-10-24).** The door asks elo for
+   *the reserve* (`meter/reserve.py`), never a hardcoded ticker, and reads
+   RH ELO in the linked EVM wallet. The Solana ELO opens nothing until it
+   has its own `deployments.json` record. If Valve objects, the door turns
+   off for Steam sessions on house-run islands and nothing else moves.
 9. **The premium amount:** fixed in coin, or dollars at the pool's mark,
    re-read at join.
 10. **Does premium pay out?** If yes, wallet sessions earn there and Steam
