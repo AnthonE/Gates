@@ -9,8 +9,8 @@
 #
 # **An OPERATOR ACT** (CLAUDE.md: deploying the public shard, publishing the
 # depot or the web page). A dry run by default, the same shape as
-# ci/deploy_shard.sh, and the dry run touches the network only to ask GitHub
-# about HEAD's run. Run it on the shard box: the deploy and --wipe act on this
+# ci/deploy_shard.sh. The dry run touches the network only for HEAD's gates
+# run, which it dispatches and waits on when main's HEAD has none yet. Run it on the shard box: the deploy and --wipe act on this
 # machine, the page and the depots go to the origin over ssh.
 #
 # The order is the point. publish_web.sh and publish_depot.py each refuse a
@@ -85,15 +85,18 @@ if ! command -v gh >/dev/null 2>&1; then
   refuse "gh is not installed, so nothing can say HEAD is green"
 else
   gh_err=$(mktemp); trap 'rm -f "$gh_err"' EXIT
-  runs=$(gh run list --commit "$SHA" --workflow gates --limit 50 \
-           --json databaseId,status,conclusion,event,headBranch,url 2>"$gh_err")
-  rc=$?
-  if [ "$rc" != 0 ]; then
-    refuse "could not ask GitHub: $(head -c 300 "$gh_err")"
-  else
-    # A push to main runs the fast tier and a dispatched run the full one;
-    # either counts. A red one, or one still running, outranks a green one.
-    report=$(python3 - "$runs" <<'PY'
+  # Sets $verdict: GREEN/RED/PENDING <url>, NONE, or ERROR <why>.
+  gates_verdict() {
+    runs=$(gh run list --commit "$SHA" --workflow gates --limit 50 \
+             --json databaseId,status,conclusion,event,headBranch,url 2>"$gh_err")
+    rc=$?
+    if [ "$rc" != 0 ]; then
+      verdict="ERROR could not ask GitHub: $(head -c 300 "$gh_err")"
+    else
+      # A dispatched run on main counts, and so does a push run from before
+      # the gates moved to ship time. A red one, or one still running,
+      # outranks a green one.
+      report=$(python3 - "$runs" <<'PY'
 import json, sys
 try:
     runs = json.loads(sys.argv[1])
@@ -112,34 +115,61 @@ for r in runs:
 print("RED " + red[0]["url"] if red else "PENDING " + live[0]["url"] if live
       else "GREEN " + green[0]["url"] if green else "NONE")
 PY
-)
-    printf '%s\n' "$report" | sed '$d'
-    verdict=$(printf '%s\n' "$report" | tail -1)
-    # A merge commit's tree is often a tree the PR's run already passed (the
-    # PR was up to date with main when it merged): gates.yml's last job names
-    # the tree it tested, so that run counts and main's own run of the same
-    # files need not be waited for. A red run of HEAD still outranks it.
-    case "$verdict" in
-      PENDING* | NONE)
-        tree=$(git rev-parse 'HEAD^{tree}')
-        same=$(gh api "repos/{owner}/{repo}/actions/artifacts?name=gates-tree-$tree" \
-                 --jq '.artifacts[].workflow_run.id' 2>/dev/null | while read -r id; do
-                 [ "$(gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .conclusion 2>/dev/null)" = success ] \
-                   && gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .html_url && break
-               done)
-        if [ -n "$same" ]; then
-          echo "  (HEAD's own run: ${verdict})"
-          verdict="GREEN $same (the same tree, ${tree:0:12})"
-        fi ;;
-    esac
-    case "$verdict" in
-      GREEN*) echo "  green: ${verdict#GREEN }" ;;
-      RED*) refuse "HEAD's gates run is red (${verdict#RED }). Release a commit whose run is green" ;;
-      PENDING*) refuse "HEAD's gates run has not finished (${verdict#PENDING }). Wait for it to go green" ;;
-      NONE) refuse "no finished gates run on main for $SHORT (a cancelled one counts as none). Push it to main; a docs-only push runs no gate, so dispatch one: gh workflow run gates --ref main" ;;
-      *) refuse "${verdict#ERROR }" ;;
-    esac
+  )
+      printf '%s\n' "$report" | sed '$d'
+      verdict=$(printf '%s\n' "$report" | tail -1)
+      # HEAD's tree may be one a branch's run already passed (a run dispatched
+      # on a branch that was up to date with main): gates.yml's last job names
+      # the tree it tested, so that run counts and main's own run of the same
+      # files need not be waited for. A red run of HEAD still outranks it.
+      case "$verdict" in
+        PENDING* | NONE)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          same=$(gh api "repos/{owner}/{repo}/actions/artifacts?name=gates-tree-$tree" \
+                   --jq '.artifacts[].workflow_run.id' 2>/dev/null | while read -r id; do
+                   [ "$(gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .conclusion 2>/dev/null)" = success ] \
+                     && gh api "repos/{owner}/{repo}/actions/runs/$id" --jq .html_url && break
+                 done)
+          if [ -n "$same" ]; then
+            echo "  (HEAD's own run: ${verdict})"
+            verdict="GREEN $same (the same tree, ${tree:0:12})"
+          fi ;;
+      esac
+    fi
+  }
+  gates_verdict
+  # The gates run when we ship, not on every push (gates.yml's header). No
+  # run yet: start one on main and wait for it, then wait on whatever is
+  # running. The dry run does this too, so a dry run first warms the release.
+  if [ "$verdict" = NONE ]; then
+    if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$SHA" ]; then
+      verdict="ERROR HEAD $SHORT is not origin/main, and the gates run on main. Merge it first"
+    elif gh workflow run gates --ref main 2>"$gh_err"; then
+      echo "  no run for $SHORT yet: dispatched one on main"
+      for _ in $(seq 24); do
+        sleep 5
+        url=$(gh run list --commit "$SHA" --workflow gates --event workflow_dispatch \
+                --limit 1 --json url --jq '.[0].url // empty' 2>/dev/null)
+        [ -n "$url" ] && { verdict="PENDING $url"; break; }
+      done
+      [ "$verdict" = NONE ] && verdict="ERROR dispatched the gates, but no run for $SHORT showed up in 2 minutes"
+    else
+      verdict="ERROR could not dispatch the gates: $(head -c 300 "$gh_err")"
+    fi
   fi
+  if [ "${verdict%% *}" = PENDING ]; then
+    url=${verdict#PENDING }
+    echo "  waiting on $url (about 35 minutes)"
+    gh run watch "${url##*/}" --interval 60 >/dev/null 2>&1
+    gates_verdict
+  fi
+  case "$verdict" in
+    GREEN*) echo "  green: ${verdict#GREEN }" ;;
+    RED*) refuse "HEAD's gates run is red (${verdict#RED }). Release a commit whose run is green" ;;
+    PENDING*) refuse "HEAD's gates run has not finished (${verdict#PENDING }). Wait for it to go green" ;;
+    NONE) refuse "no finished gates run on main for $SHORT (a cancelled one counts as none). Dispatch one: gh workflow run gates --ref main" ;;
+    *) refuse "${verdict#ERROR }" ;;
+  esac
 fi
 
 echo
