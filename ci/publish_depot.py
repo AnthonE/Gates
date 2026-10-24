@@ -290,14 +290,25 @@ def _cast_send(digest: str, label: str, memo: str) -> str:
         # like a dead provider. Both names, current one first.
         'POOL="${ELO_RH_RPC_POOL:-$SCRY_RH_RPC_POOL}"; '
         'if [ -z "$POOL" ]; then echo "ELO_RH_RPC_POOL is not set in keys.env" >&2; exit 1; fi; '
-        'RPC=""; '
+        # ⚠ **Every endpoint is asked, and the highest answer wins.** The
+        # first endpoint that answered `chain-id` used to be trusted for the
+        # nonce too, and on 2026-10-24 a lagging one handed out 262 while the
+        # chain was at 263: `nonce too low`, the linux depot left unsealed.
+        # Now the send goes through the endpoint with the highest block, at
+        # the highest pending nonce any endpoint reports.
+        'A=$(~/.foundry/bin/cast wallet address --private-key "$PRIVATE_KEY"); '
+        'RPC=""; BEST=-1; NONCE=-1; '
         'for u in $(printf %s "$POOL" | tr "," " "); do '
-        '  if ~/.foundry/bin/cast chain-id --rpc-url "$u" >/dev/null 2>&1; then RPC="$u"; break; fi; '
+        '  [ "$(~/.foundry/bin/cast chain-id --rpc-url "$u" 2>/dev/null)" = 4663 ] || continue; '
+        '  b=$(~/.foundry/bin/cast block-number --rpc-url "$u" 2>/dev/null) || continue; '
+        '  n=$(~/.foundry/bin/cast nonce "$A" --block pending --rpc-url "$u" 2>/dev/null) || continue; '
+        '  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$u; fi; '
+        '  if [ "$n" -gt "$NONCE" ]; then NONCE=$n; fi; '
         "done; "
         'if [ -z "$RPC" ]; then echo "no reachable endpoint in the RPC pool" >&2; exit 1; fi; '
         f"~/.foundry/bin/cast send {NOTARY} "
         f"'notarize(bytes32,string,string)' {digest} {shlex.quote(label)} {shlex.quote(memo)} "
-        '--rpc-url "$RPC" --private-key "$PRIVATE_KEY" --json'
+        '--rpc-url "$RPC" --nonce "$NONCE" --private-key "$PRIVATE_KEY" --json'
     )
 
 
