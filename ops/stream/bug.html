@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gates — in-game HUD</title>
+<!--
+  Transparent 1920x1080 overlay for the Game scene: corner bug top-left, ticker
+  along the bottom. Already wired in OBS as "Overlay - URL Bug".
+  Optional extras via query string (use the URL field, not "Local file"):
+    ?ticker=0   hide the bottom ticker
+    ?scale=0.8  HUD size (default 0.7; 1 = original full size)
+  The bug stays still after its intro on purpose: it has to survive a 9-second
+  clip screenshotted at phone size, without pulling eyes off the game.
+-->
+<link rel="stylesheet" href="gates.css">
+<style>
+  html, body { width: 1920px; height: 1080px; }
+  /* Whole HUD shrinks together; ticker stays pinned to the bottom edge. */
+  :root { --hud: .7; }
+  .bug, .ticker-host { zoom: var(--hud); }
+
+  .bug {
+    position: absolute; top: 28px; left: 28px;
+    display: flex; align-items: center; gap: 16px; padding: 12px 20px 12px 12px;
+    background: rgba(10, 12, 10, .84); border: 1px solid var(--line-2);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 8px 30px rgba(0,0,0,.35);
+    animation: in .7s cubic-bezier(.2,.8,.2,1) both;
+  }
+  @keyframes in { from { opacity: 0; transform: translateX(-24px); } }
+  .bug .mark { width: 52px; height: 52px; }
+  .bug .name { font: 700 34px/1 var(--sg); letter-spacing: .02em; }
+  .bug .rule { width: 1px; height: 40px; background: var(--line-2); }
+  .bug .stack { display: flex; flex-direction: column; gap: 7px; }
+  .bug .url { font: 700 21px/1 var(--mono); color: var(--lime); }
+  .bug .sub { display: flex; align-items: center; gap: 9px; font: 500 14px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .bug .sub b { color: var(--ink); font-weight: 700; }
+
+  /* gold sliver = the gate ring, echoed */
+  .bug::after {
+    content: ""; position: absolute; left: -1px; right: -1px; bottom: -4px; height: 3px;
+    background: linear-gradient(90deg, var(--gold) 0 60%, transparent 60% 66%, var(--gold) 66%);
+  }
+
+  .ticker-host { position: absolute; left: 0; right: 0; bottom: 0; height: 52px; animation: up .8s cubic-bezier(.2,.8,.2,1); }
+  @keyframes up { from { transform: translateY(100%); } }
+</style>
+<body class="transparent">
+<div class="bug">
+  <span class="mark"></span>
+  <span class="name">GATES</span>
+  <span class="rule"></span>
+  <span class="stack">
+    <span class="url" id="url"></span>
+    <span class="sub"><span class="live-dot"></span><b>LIVE</b> · <span id="up">00:00</span> · 100-player survival</span>
+  </span>
+</div>
+<div class="ticker-host" id="ticker"></div>
+
+<script src="config.js"></script>
+<script src="gates.js"></script>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get("scale")) document.documentElement.style.setProperty("--hud", q.get("scale"));
+  document.getElementById("url").textContent = GATES.playUrl;
+  if (q.get("ticker") === "0") document.getElementById("ticker").remove();
+  else mountTicker(document.getElementById("ticker"));
+
+  // Uptime since this source loaded (OBS keeps it alive if
+  // "Shutdown source when not visible" is off).
+  const t0 = Date.now(), pad = (n) => String(n).padStart(2, "0");
+  setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000), h = Math.floor(s / 3600);
+    document.getElementById("up").textContent = (h ? h + ":" : "") + pad(Math.floor(s / 60) % 60) + ":" + pad(s % 60);
+  }, 1000);
+</script>
