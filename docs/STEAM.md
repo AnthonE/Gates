@@ -2,7 +2,9 @@
 
 The plan for a Steam edition (working name **Gates 2**). It's the same game
 with **no economy**: JUNK is a material and a leaderboard number, like scrap in
-Rust. It cross-plays with Gates on plain islands and has solo and LAN modes.
+Rust. **Gates and Gates 2 are two games that are clients of the same
+shards.** A server is its own thing with its own door, and each game's client
+joins whatever servers admit it. Gates 2 has solo and LAN modes.
 The point is the funnel: people meet the game on Steam, and **elopros.com does
 the pitching**, never the Steam build.
 
@@ -39,16 +41,25 @@ a Steam session earns may become money or an NFT, by any road.
 
 ## 1 · The shape
 
-| shard | economy | Gates client | Gates 2 client |
-|---|---|---|---|
-| economy island (today's public one) | on | joins | **refused** |
-| plain island (official or community) | off | joins; the wallet is only a login | joins |
-| LAN / solo (runs on the player's machine) | off | joins | joins |
+Each shard has a **door** (who may join) and an **economy** switch (whether
+anything pays out). The shard decides admission; a client only lists and
+dials.
 
-What crosses between the two editions: **identity** (name, face, friends,
-boards, playtime). What never crosses: **inventory**. Saves are per world
-file, so a plain island's character and an economy island's are already
-different saves, and Gates wipes weekly anyway.
+| shard | door | economy | Gates | Gates 2 |
+|---|---|---|---|---|
+| plain island | open | off | joins | joins |
+| premium island | holds ≥ X of the coin (§4.8) | on or off (§4.10) | joins | joins with a linked wallet that holds it |
+| LAN / solo (the player's machine) | open | off | joins | joins |
+
+**The one line, enforced by the shard: a session that signed in through
+Steam never earns a payout or a mint.** On a premium island with the economy
+on, a Steam player plays alongside everyone, but their extraction and their
+board places pay nothing. That keeps Gates 2 a game with no economy even on
+a shared server.
+
+What crosses between the games: **identity** (name, face, friends, boards,
+playtime). What never crosses: **inventory**. Saves are per world file, so
+one island's character is not another's, and Gates wipes weekly anyway.
 
 ## 2 · Phases
 
@@ -74,15 +85,25 @@ One switch in `shard.toml`: `economy = false`.
   would be sent a free NFT copy for playing on Steam.
 - Standings and boards run unchanged: no prize, just the board.
 
-### P2 · The shard says what it is *(protocol + server + client, WIRE)*
+### P2 · Doors, and Steam sessions earn nothing *(protocol + server, WIRE)*
 
-- The challenge frame carries the shard's mode (economy on/off), so a
-  client knows before it signs anything. Bump `PROTO_VER`, run
-  `gen_goldens`.
-- Both sides enforce it. An economy shard refuses a Steam proof with a new
-  refuse code (`REFUSE_EDITION`, the 13th of 256 `Refuse.code` values) and a
-  `refuse_text` sentence. A Gates 2 client hides economy shards in the list
-  and won't dial one, so a modified client still can't get in.
+- **The token door.** `entitle.rs` already asks elo what a wallet holds at
+  join and refuses on a definite zero, never on a failed read. A premium
+  door is the same read with "holds at least X of the coin" in place of
+  "holds a ticket". A Steam player is checked through their linked wallet
+  (P4); unlinked, they're refused with a new code (`REFUSE_MEMBERS`, the
+  13th of 256 `Refuse.code` values). Its sentence names no store, coin or
+  link: "this server is for members".
+- **Steam sessions earn nothing.** Standings already flags a row that
+  "ever joined as a declared agent this wipe" and leaves it out of the
+  paid places unless `prize_agents` says otherwise
+  (`Prizes::eligible`). Add the same flag for a Steam session, with no
+  setting to turn it on. A flagged row is never paid a place and never
+  credited extraction, and an Outfitter sale on that session is recorded
+  in the save, never queued for `mints.rs`.
+- **The list says the door.** The challenge frame and the server list carry
+  the door and the economy switch, so a client can label a premium island
+  before dialing. Bump `PROTO_VER`, run `gen_goldens`.
 
 P2 and P4 share one wire bump if they land together.
 
@@ -96,8 +117,9 @@ existing build is unchanged. Gates 2 builds with it off:
   `ui/offer.rs` (free gifts stay), `ui/locker.rs`'s ITEM STORE and
   INVENTORY, the launcher-backed NEWS / ITEM STORE / WORKSHOP entries in
   `ui/hub.rs`, `deeplink.rs` (`elo://`), and every call in `elo.rs`.
-- **The server list** stops coming from elopros.com and reads a plain list
-  (decision §4.5 for the host).
+- **The server list** stops coming from elopros.com and reads a neutral
+  list (decision §4.5 for the host). Premium islands are listed with a
+  "members" label and no link.
 - **One plain website link** in the main menu. No pitch screen, no prices,
   no coin.
 - **A CI guard.** Build the Gates 2 binary and grep its strings for
@@ -187,7 +209,7 @@ the product.
 
 - **It still ships:** a direct download (GitHub release, the elo depot) and
   itch.io.
-- **Epic takes Gates itself, with conditions** (its *Blockchain Technology
+- **Epic takes Gates, or Gates 2 with the coin door, with conditions** (its *Blockchain Technology
   Guidelines*, as quoted by search on 2026-10-23; the page didn't load
   directly, so re-read it before signing): a signed Blockchain Rider; the
   **base product free**, with no add-ons sold through Epic; we handle
@@ -225,6 +247,23 @@ the product.
    island also runs a plain twin.
 7. **Solo on an empty island:** as is (Rust has no solo either), or with
    bots (`--bin bots`). No hosted agents: they'd need someone's API key.
+8. **The premium coin.** It needs a `deployments.json` record, so not ORBS
+   yet.
+9. **The premium amount:** fixed in coin, or dollars at the pool's mark,
+   re-read at join.
+10. **Does premium pay out?** If yes, wallet sessions earn there and Steam
+    sessions don't (§1). If no, premium is just better servers: lower
+    population, better hardware, longer wipes.
+11. **NFTs:** keep the ticket and skin NFTs for Gates, or retire them for
+    the coin door. They're live on chain, so retiring them touches the
+    store.
+
+**The weak point, said once.** Valve wants in-game purchases in the Steam
+Wallet. Gates 2 sells nothing, but the house runs both the game and the
+premium islands, so a reviewer could read a premium island bought with a
+coin off Steam as the developer's paid feature. Community-run premium
+islands don't carry that reading. Epic has no such issue: a blockchain
+listing of Gates 2 (§3) may say all of it.
 
 ## 5 · What must stay true
 
@@ -232,7 +271,8 @@ the product.
 |---|---|
 | the Gates 2 binary names no store, wallet or NFT | the P3 strings check |
 | a plain shard can't boot with a money setting | the P1 boot check |
-| an economy shard refuses a Steam proof | P2, `REFUSE_EDITION` |
+| a Steam session is never paid a place, credited extraction or minted | P2, the standings flag |
+| a refusal in Gates 2 names no store, coin or link | P2, `REFUSE_MEMBERS` |
 | the mint job never touches a plain world | P1, `mint_pending.py` |
 | a Steam↔wallet link is private unless its holder shows it | P6, `walletlink.py` |
 | nothing earned in a Steam session becomes money or an NFT | all of the above |
