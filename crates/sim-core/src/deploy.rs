@@ -282,7 +282,7 @@ const _: () = {
 ///
 /// **One op space, three stores, and that is the point.** 0..=5 run against
 /// the code lock at a door (`lock.rs`); 6..=8 run against the hearth's
-/// crew (`crew_op`); 9..=11 against an auto turret's list
+/// crew (`crew_op`); 9..=13 against an auto turret's list and mode
 /// (`turret::auth_op`). They share a space because they are one question —
 /// *who may do this here* — and the answer is a `Roster` either way; and
 /// they share a *wire field*, so a second space would mean a second width
@@ -309,9 +309,13 @@ pub const ACCESS_OP_TURRET_AUTH: u8 = 9;
 pub const ACCESS_OP_TURRET_DEAUTH: u8 = 10;
 /// Empty it, owner and all (Rust's `ClearList`).
 pub const ACCESS_OP_TURRET_CLEAR: u8 = 11;
+/// Peacekeeper: it shoots only the hostile (Rust's `SERVER_Peacekeeper`).
+pub const ACCESS_OP_TURRET_PEACEKEEPER: u8 = 12;
+/// Attack all: it shoots anybody off its list (Rust's `SERVER_AttackAll`).
+pub const ACCESS_OP_TURRET_ATTACK_ALL: u8 = 13;
 /// The highest op above, named rather than counted — the wire refuses
 /// past it and the sim refuses past it, in that order.
-pub const ACCESS_OP_MAX: u8 = ACCESS_OP_TURRET_CLEAR;
+pub const ACCESS_OP_MAX: u8 = ACCESS_OP_TURRET_ATTACK_ALL;
 /// Whether an op addresses the hearth's crew rather than a door's lock.
 /// The one place the split is written down, so the wire's range check and
 /// the dispatcher cannot disagree about which half an op belongs to.
@@ -323,7 +327,7 @@ pub fn op_is_crew(op: u8) -> bool {
 }
 /// Whether an op addresses an auto turret's list (`turret::auth_op`).
 pub fn op_is_turret(op: u8) -> bool {
-    (ACCESS_OP_TURRET_AUTH..=ACCESS_OP_TURRET_CLEAR).contains(&op)
+    (ACCESS_OP_TURRET_AUTH..=ACCESS_OP_TURRET_ATTACK_ALL).contains(&op)
 }
 
 /// Does a deployable of this archetype hold items — that is, does

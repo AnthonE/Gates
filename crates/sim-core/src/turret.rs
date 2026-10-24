@@ -38,10 +38,20 @@
 //! themselves off, and a clear empties it, owner and all (Rust's
 //! `ClearList`).
 //!
-//! A turret whose list is still its owner alone keeps no record: the store
-//! ([`TurretRecs`]) holds only the turrets somebody changed, keyed by box
-//! address like the vending machine's offers, and dropped with the turret
-//! in `Deploys::remove_at`.
+//! ## Peacekeeper and attack all
+//!
+//! Rust's two modes, set by the same privilege ([`auth_op`]). **Attack
+//! all**, the one it is placed in, shoots anybody off its list.
+//! **Peacekeeper** shoots only the hostile among them: a body whose
+//! `Player::hostile` clock runs, which any attack on a player sets for five
+//! minutes (`combat::HOSTILE_TICKS`) and so does any blow on a turret
+//! (`World::chip`), so a peacekeeper turret answers whoever shoots it. Its
+//! list is spared in either.
+//!
+//! A turret whose list is still its owner alone, attacking all, keeps no
+//! record: the store ([`TurretRecs`]) holds only the turrets somebody
+//! changed, keyed by box address like the vending machine's offers, and
+//! dropped with the turret in `Deploys::remove_at`.
 //!
 //! ## The table is derived, not kept
 //!
@@ -155,23 +165,34 @@ pub struct TurretRec {
     pub key: u32,
     /// Whom it spares.
     pub auth: TurretAuth,
+    /// Peacekeeper (shoots only the hostile) rather than attack all.
+    pub peacekeeper: bool,
 }
 
 /// Bytes of one [`TurretRec`] in `state_hash` and the world save: the key,
-/// the list's count and its whole array.
-pub const TURRET_REC_BYTES: usize = 4 + 1 + TURRET_AUTH_CAP * 4;
+/// the list's count, its whole array and the mode (format 35).
+pub const TURRET_REC_BYTES: usize = 4 + 1 + TURRET_AUTH_CAP * 4 + 1;
 
 impl TurretRec {
     /// The record a turret owned by `owner` has without one: its owner alone
-    /// on the list. The store never holds this shape ([`TurretRecs`]).
+    /// on the list, attacking all. The store never holds this shape
+    /// ([`TurretRecs`]).
     pub fn fresh(key: u32, owner: u32) -> Self {
         Self {
             key,
             auth: TurretAuth::of(owner),
+            peacekeeper: false,
         }
     }
 
-    /// Every field, little-endian: the key, the count, the whole list.
+    /// Whether it shoots `p`, a body in reach and in sight it could: off its
+    /// list, and hostile too when it keeps the peace.
+    pub fn shoots(&self, p: &Player) -> bool {
+        !self.auth.contains(p.id) && (!self.peacekeeper || p.hostile > 0)
+    }
+
+    /// Every field, little-endian: the key, the count, the whole list, the
+    /// mode.
     pub fn hash_bytes(&self) -> [u8; TURRET_REC_BYTES] {
         let mut b = [0u8; TURRET_REC_BYTES];
         b[0..4].copy_from_slice(&self.key.to_le_bytes());
@@ -179,6 +200,7 @@ impl TurretRec {
         for (k, id) in self.auth.raw().iter().enumerate() {
             b[5 + k * 4..9 + k * 4].copy_from_slice(&id.to_le_bytes());
         }
+        b[TURRET_REC_BYTES - 1] = self.peacekeeper as u8;
         b
     }
 }
@@ -287,11 +309,12 @@ impl TurretRecs {
     }
 }
 
-/// Apply one turret list op (`deploy::op_is_turret`) from `p` at turret `i`
+/// Apply one turret op (`deploy::op_is_turret`) from `p` at turret `i`
 /// (an index into the box store, already found to be a turret the presser
-/// reaches). Putting yourself on and clearing take the turret's building
-/// privilege ([`spares`]); taking yourself off takes nothing, the crew
-/// leave's rule, so a refusal never tells a stranger whether they were on.
+/// reaches). Putting yourself on, clearing and setting the mode take the
+/// turret's building privilege ([`spares`]); taking yourself off takes
+/// nothing, the crew leave's rule, so a refusal never tells a stranger
+/// whether they were on.
 /// Refusals are `EV_DEPLOY_REFUSED`; the list itself reaches the client in
 /// its turret view while the box is open.
 pub fn auth_op(
@@ -303,8 +326,9 @@ pub fn auth_op(
     events: &mut EventQueue,
 ) {
     use crate::deploy::{
-        ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR, ACCESS_OP_TURRET_DEAUTH, REFUSE_D_AUTH_FULL,
-        REFUSE_D_FULL, REFUSE_D_KIND, REFUSE_D_OWNER,
+        ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR,
+        ACCESS_OP_TURRET_DEAUTH, ACCESS_OP_TURRET_PEACEKEEPER, REFUSE_D_AUTH_FULL, REFUSE_D_FULL,
+        REFUSE_D_KIND, REFUSE_D_OWNER,
     };
     use crate::roster::Added;
     use crate::world::EV_DEPLOY_REFUSED;
@@ -317,7 +341,10 @@ pub fn auth_op(
     let privileged = spares(pieces, deploys, b.owner, x, z, p.id);
     let mut rec = deploys.turret_recs().get(key, b.owner);
     match op {
-        ACCESS_OP_TURRET_AUTH | ACCESS_OP_TURRET_CLEAR if !privileged => {
+        ACCESS_OP_TURRET_DEAUTH => {
+            rec.auth.remove(p.id);
+        }
+        _ if !privileged => {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
             return;
         }
@@ -327,10 +354,9 @@ pub fn auth_op(
                 return;
             }
         }
-        ACCESS_OP_TURRET_DEAUTH => {
-            rec.auth.remove(p.id);
-        }
         ACCESS_OP_TURRET_CLEAR => rec.auth.clear(),
+        ACCESS_OP_TURRET_PEACEKEEPER => rec.peacekeeper = true,
+        ACCESS_OP_TURRET_ATTACK_ALL => rec.peacekeeper = false,
         _ => {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
             return;
@@ -538,7 +564,7 @@ pub fn step(
         // Looks are spread over the cadence by index, so the turrets do not
         // all walk their sight lines on one tick.
         if (tick + k as u64).is_multiple_of(LOOK_TICKS) {
-            // Its own list, read once for every player asked.
+            // Its own list and mode, read once for every player asked.
             let rec = deploys
                 .turret_recs()
                 .get(box_key(t.cx, t.cz, t.level, t.loc), t.owner);
@@ -548,7 +574,7 @@ pub fn step(
                     && !p.sleeping
                     && p.hp > 0
                     && !crate::combat::protected(p)
-                    && !rec.auth.contains(p.id)
+                    && rec.shoots(p)
             };
             sentry::look(
                 seed,

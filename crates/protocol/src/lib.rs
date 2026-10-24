@@ -1375,7 +1375,10 @@ pub use voice::{
 /// turret's authorize list, take yourself off and clear it
 /// (`ACCESS_OP_TURRET_*`), and `SUB_TURRET` (110) tells whoever has its box
 /// open the list and whether they may change it (`TurretView`).
-pub const PROTO_VER: u16 = 146;
+/// v147 — peacekeeper: access ops 12 and 13 set an auto turret to keep the
+/// peace or attack all (`ACCESS_OP_TURRET_PEACEKEEPER`, `_ATTACK_ALL`), and
+/// `TurretView` carries the mode after `may_edit`.
+pub const PROTO_VER: u16 = 147;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

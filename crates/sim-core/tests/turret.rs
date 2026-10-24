@@ -511,3 +511,44 @@ fn a_turret_spares_its_own_list_and_only_its_privileged_may_join_it() {
     let (owner_hits, _) = hurt_in(&mut w, 400);
     assert!(owner_hits > 0, "a cleared turret still spared its owner");
 }
+
+/// **Peacekeeper shoots only the hostile** (Rust's mode): a stranger minding
+/// their own business is spared, the same stranger hostile is shot, and a
+/// blow on the turret makes its striker hostile. Only its privilege sets it.
+#[test]
+fn a_peacekeeper_turret_shoots_only_the_hostile() {
+    use sim_core::deploy::{
+        ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_PEACEKEEPER, REFUSE_D_OWNER,
+    };
+    use sim_core::world::EV_DEPLOY_REFUSED;
+    let (mut w, key) = turret_world(128);
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    w.players[s].body = Body::at(SEED, &w.haven, x + 1.5, z);
+
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_PEACEKEEPER)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER && e.b == REFUSE_D_OWNER),
+        "a stranger set the turret's mode"
+    );
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_PEACEKEEPER)]);
+    assert!(w.deploys.turret_recs().get(key, OWNER).peacekeeper);
+    w.players[s].hostile = 0;
+    let (_, stranger_hits) = hurt_in(&mut w, 300);
+    assert_eq!(stranger_hits, 0, "a peacekeeper shot a peaceful stranger");
+
+    w.players[s].hostile = sim_core::combat::HOSTILE_TICKS;
+    let (owner_hits, stranger_hits) = hurt_in(&mut w, 300);
+    assert!(stranger_hits > 0, "a peacekeeper spared a hostile stranger");
+    assert_eq!(owner_hits, 0, "it shot its owner");
+
+    // Back to attack all, and the record goes: owner alone, attacking all.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_ATTACK_ALL)]);
+    assert!(w.deploys.turret_recs().is_empty());
+}

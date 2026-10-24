@@ -7174,8 +7174,8 @@ impl ShardCore {
     }
 
     /// Auto turret `i` (an index into the box store) as player `viewer` is
-    /// shown it (`SUB_TURRET`): its list, and whether `viewer` has its
-    /// building privilege (`turret::spares`).
+    /// shown it (`SUB_TURRET`): its list and mode, and whether `viewer` has
+    /// its building privilege (`turret::spares`).
     pub fn turret_view(&self, i: usize, viewer: u32) -> protocol::TurretView {
         let deploys = &self.world.deploys;
         let Some(b) = deploys.boxes().get(i) else {
@@ -7187,6 +7187,7 @@ impl ShardCore {
         let mut view = protocol::TurretView {
             key,
             may_edit: sim_core::turret::spares(&self.world.pieces, deploys, b.owner, x, z, viewer),
+            peacekeeper: rec.peacekeeper,
             n: rec.auth.len() as u8,
             ..Default::default()
         };

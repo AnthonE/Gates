@@ -4888,6 +4888,15 @@ impl World {
             if rec.owner != deploy::WORLD_OWNER {
                 self.struct_hitmarker(c.by, c.structure.min(rec.hp));
             }
+            // A blow on a turret is an attack (`turret.rs` §Peacekeeper):
+            // its striker is hostile, so a peacekeeper turret answers it.
+            if (rec.row as usize) < self.deploy.defs.len()
+                && self.deploy.defs[rec.row as usize].arch == deploy::ARCH_TURRET
+            {
+                if let Some(s) = self.slot_of(c.by) {
+                    self.players[s].hostile = crate::combat::HOSTILE_TICKS;
+                }
+            }
             deploy::damage_deploy(
                 &self.deploy,
                 &mut self.pieces,

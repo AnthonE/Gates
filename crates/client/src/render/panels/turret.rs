@@ -1,14 +1,16 @@
 //! The auto turret's own controls, under its box on the inventory page
 //! (`sim_core::turret`): who is on its list, and the three list buttons —
 //! AUTHORIZE (put yourself on), DEAUTHORIZE (take yourself off) and CLEAR
-//! LIST (empty it, owner and all). Each sends `ACT_ACCESS` with its
+//! LIST (empty it, owner and all) — and its mode, PEACEKEEPER (only the
+//! hostile) or ATTACK ALL. Each sends `ACT_ACCESS` with its
 //! `ACCESS_OP_TURRET_*` at the turret's address; the sim's verdict comes
 //! back as the turret view (`EventMsg::Turret`) or a deploy refusal.
 
 use bevy::prelude::*;
 use client_core::core::ClientCore;
 use sim_core::deploy::{
-    box_key, ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR, ACCESS_OP_TURRET_DEAUTH, ARCH_TURRET,
+    box_key, ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR,
+    ACCESS_OP_TURRET_DEAUTH, ACCESS_OP_TURRET_PEACEKEEPER, ARCH_TURRET,
 };
 use sim_core::inventory::CONT_BOX;
 
@@ -63,12 +65,26 @@ pub fn auth_block(col: &mut ChildSpawnerCommands, core: &ClientCore, key: u32) {
             TextColor(TEXT_DIM),
         ));
     }
+    col.spawn((
+        Text::new(if view.peacekeeper {
+            "MODE · PEACEKEEPER: only the hostile"
+        } else {
+            "MODE · ATTACK ALL: anyone off the list"
+        }),
+        font_bold(12.0),
+        TextColor(TEXT),
+    ));
     col.spawn(Node {
         flex_direction: FlexDirection::Row,
         column_gap: Val::Px(6.0),
         ..default()
     })
     .with_children(|row| {
+        if view.may_edit && view.peacekeeper {
+            button(row, "ATTACK ALL", ACCESS_OP_TURRET_ATTACK_ALL);
+        } else if view.may_edit {
+            button(row, "PEACEKEEPER", ACCESS_OP_TURRET_PEACEKEEPER);
+        }
         if view.may_edit && !on {
             button(row, "AUTHORIZE", ACCESS_OP_TURRET_AUTH);
         }

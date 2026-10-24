@@ -2291,11 +2291,13 @@ pub fn action_shop() -> (u32, sim_core::shop::ShopAct) {
 }
 
 /// A turret's view (v146): editable, three listed ids that differ in every
-/// byte, so a dropped or reordered id moves the fixture.
+/// byte, so a dropped or reordered id moves the fixture; (v147) keeping the
+/// peace.
 pub fn event_turret() -> crate::TurretView {
     let mut v = crate::TurretView {
         key: 0x0A0B_0C0D,
         may_edit: true,
+        peacekeeper: true,
         n: 3,
         ..Default::default()
     };

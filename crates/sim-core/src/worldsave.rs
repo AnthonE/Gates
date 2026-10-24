@@ -250,7 +250,9 @@ use crate::worldcont::WorldContRec;
 /// **34 — the turret's own list** (`turret::TurretRecs`): a count and the
 /// records of every turret whose list is not its owner alone, after the
 /// plants; no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 34;
+/// **35 — peacekeeper**: each turret record ends with its mode (+1); no
+/// older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 35;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -952,6 +954,12 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
             o.u16(row.price);
         }
     }
+    // The turrets' lists (format 34): a count, then each record's bytes.
+    // Before the plants, which end the blob.
+    o.u16(w.deploys.turret_recs().len() as u16);
+    for t in w.deploys.turret_recs().entries() {
+        o.bytes(&t.hash_bytes());
+    }
     // The plants (format 30): a count, the next id, then each plant.
     o.u16(w.farm.len() as u16);
     o.u32(w.farm.next_id());
@@ -959,11 +967,6 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         let mut b = [0u8; crate::farm::PLANT_BYTES];
         crate::farm::pack(p, &mut b);
         o.bytes(&b);
-    }
-    // The turrets' lists (format 34): a count, then each record's bytes.
-    o.u16(w.deploys.turret_recs().len() as u16);
-    for t in w.deploys.turret_recs().entries() {
-        o.bytes(&t.hash_bytes());
     }
 
     if o.at > o.buf.len() {
@@ -2082,6 +2085,45 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         shops[k] = rec;
     }
 
+    // --- the turrets' lists (format 34) -------------------------------------
+    // Each must name a turret in this file, once, and differ from its
+    // owner alone attacking all (that turret keeps no record).
+    let mut turrets = crate::boxed_array::<
+        crate::turret::TurretRec,
+        { crate::limits::MAX_TURRET_RECS },
+    >(crate::turret::TurretRec::default());
+    let n_turrets = r.count(crate::limits::MAX_TURRET_RECS)?;
+    for k in 0..n_turrets {
+        let key = r.u32()?;
+        let len = r.u8()?;
+        let mut ids = [0u32; crate::limits::TURRET_AUTH_CAP];
+        for id in ids.iter_mut() {
+            *id = r.u32()?;
+        }
+        let auth = crate::roster::Roster::restore(&ids, len).ok_or(WorldSaveError::CountOverCap)?;
+        let peacekeeper = r.b()?;
+        let owner = boxes[..n_boxes]
+            .iter()
+            .zip(ovens[..n_boxes].iter())
+            .find(|(b, ov)| {
+                ov.arch == crate::deploy::ARCH_TURRET
+                    && crate::deploy::box_key(b.cx, b.cz, b.level, b.loc) == key
+            })
+            .map(|(b, _)| b.owner);
+        let rec = crate::turret::TurretRec {
+            key,
+            auth,
+            peacekeeper,
+        };
+        if key == 0
+            || owner.is_none_or(|o| rec == crate::turret::TurretRec::fresh(key, o))
+            || turrets[..k].iter().any(|t| t.key == key)
+        {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        turrets[k] = rec;
+    }
+
     // --- the plants (format 30) ---------------------------------------------
     let n_plants = r.count(crate::limits::MAX_PLANTS)?;
     let next_plant = r.u32()?;
@@ -2109,37 +2151,6 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             return Err(WorldSaveError::BadPlant);
         }
         plants[k] = p;
-    }
-
-    // --- the turrets' lists (format 34) -------------------------------------
-    // Each must name a turret in this file, once, with a list that is not
-    // its owner alone (that turret keeps no record).
-    let mut turrets = [crate::turret::TurretRec::default(); crate::limits::MAX_TURRET_RECS];
-    let n_turrets = r.count(crate::limits::MAX_TURRET_RECS)?;
-    for k in 0..n_turrets {
-        let key = r.u32()?;
-        let len = r.u8()?;
-        let mut ids = [0u32; crate::limits::TURRET_AUTH_CAP];
-        for id in ids.iter_mut() {
-            *id = r.u32()?;
-        }
-        let auth = crate::roster::Roster::restore(&ids, len).ok_or(WorldSaveError::CountOverCap)?;
-        let owner = boxes[..n_boxes]
-            .iter()
-            .zip(ovens[..n_boxes].iter())
-            .find(|(b, ov)| {
-                ov.arch == crate::deploy::ARCH_TURRET
-                    && crate::deploy::box_key(b.cx, b.cz, b.level, b.loc) == key
-            })
-            .map(|(b, _)| b.owner);
-        let rec = crate::turret::TurretRec { key, auth };
-        if key == 0
-            || owner.is_none_or(|o| rec == crate::turret::TurretRec::fresh(key, o))
-            || turrets[..k].iter().any(|t| t.key == key)
-        {
-            return Err(WorldSaveError::BadContentRow);
-        }
-        turrets[k] = rec;
     }
 
     // --- commit -----------------------------------------------------------
@@ -2321,21 +2332,21 @@ mod tests {
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
             + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
             + 6 + 4_096 * 58 // plants (format 30): a count and the next id, then each plant
-            + 2 + 512 * 45; // turret lists (format 34): a count, then key + count + ten ids
-                              // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                              // 56 -> 62 at format 10: a tenth count, plus the
-                              // spent store's `u32` eviction counter beside the
-                              // body one. 62 -> 64 at format 14: an eleventh
-                              // count for the loose stacks. No head field beside
-                              // it — `next_id` is derived by the loader from the
-                              // ids it installs (`GroundItems::restore`), unlike
-                              // a bag's, and a head field duplicating a
-                              // derivable one is a second place for it to be
-                              // wrong. 64 -> 90 at format 15: the admin's sky and
-                              // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                              // fires' count. 92 -> 1380 at format 21: the
-                              // works, every slot whether or not content
-                              // names one (`MAX_WORKS` × `WORK_BYTES`).
+            + 2 + 512 * 46; // turret lists (format 34): a count, then key + count + ten ids (+ the mode at 35)
+                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                            // 56 -> 62 at format 10: a tenth count, plus the
+                            // spent store's `u32` eviction counter beside the
+                            // body one. 62 -> 64 at format 14: an eleventh
+                            // count for the loose stacks. No head field beside
+                            // it — `next_id` is derived by the loader from the
+                            // ids it installs (`GroundItems::restore`), unlike
+                            // a bag's, and a head field duplicating a
+                            // derivable one is a second place for it to be
+                            // wrong. 64 -> 90 at format 15: the admin's sky and
+                            // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                            // fires' count. 92 -> 1380 at format 21: the
+                            // works, every slot whether or not content
+                            // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
@@ -2459,8 +2470,9 @@ mod tests {
         // 5_671_218 at format 33: every stack in every store twelve bytes
         // (item data), and the per-body magazines it replaced gone.
         // 5_694_260 at format 34: the turrets' lists, 2 + 512 × 45.
+        // 5_694_772 at format 35: each one's mode, a byte on 512.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_694_260,
+            WORLD_SAVE_MAX_BYTES, 5_694_772,
             "the world save ceiling moved"
         );
     }

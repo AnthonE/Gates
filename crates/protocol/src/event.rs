@@ -6429,12 +6429,14 @@ impl ShopView {
 
 /// An auto turret (`sim_core::deploy::ARCH_TURRET`) as the receiver sees it
 /// (v146): its box key, whether the receiver has its building privilege
-/// (`turret::spares`: may put themselves on and clear it), and its authorize
-/// list in the order it was added to.
+/// (`turret::spares`: may put themselves on, clear it and set its mode),
+/// (v147) whether it keeps the peace, and its authorize list in the order
+/// it was added to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TurretView {
     pub key: u32,
     pub may_edit: bool,
+    pub peacekeeper: bool,
     pub n: u8,
     pub auth: [u32; sim_core::limits::TURRET_AUTH_CAP],
 }
@@ -6466,6 +6468,7 @@ pub fn encode_event_turret(view: &TurretView, buf: &mut [u8]) -> Result<usize, W
     let mut w = begin(buf, SUB_TURRET)?;
     w.write(view.key, 32)?;
     w.write_bit(view.may_edit)?;
+    w.write_bit(view.peacekeeper)?;
     w.write(view.n as u32, TURRET_AUTH_BITS)?;
     for &id in view.listed() {
         w.write(id, 32)?;
@@ -8213,6 +8216,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let mut view = TurretView {
                 key: r.read(32)?,
                 may_edit: r.read_bit()?,
+                peacekeeper: r.read_bit()?,
                 n: r.read(TURRET_AUTH_BITS)? as u8,
                 ..Default::default()
             };
@@ -11747,7 +11751,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 9,
             bits: ACCESS_OP_BITS,
-            live_max: 11,
+            live_max: 13,
         },
         Domain {
             what: "bag-removal reason",
