@@ -41,6 +41,9 @@ use sim_core::gather::ItemStack;
 pub const PLAN_STEM: &str = "building_plan";
 /// The file stem of the item that opens the action wheel and repairs.
 pub const HAMMER_STEM: &str = "hammer";
+/// The file stem of the item that runs wires between power parts
+/// (`render::wires`).
+pub const WIRE_STEM: &str = "wire_tool";
 
 /// What the selected hotbar slot is holding, as far as the mouse cares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -53,6 +56,8 @@ pub enum Held {
     Plan,
     /// The hammer.
     Hammer,
+    /// The wire tool (`render::wires`).
+    Wire,
 }
 
 impl Held {
@@ -96,6 +101,7 @@ pub fn held(catalog: &ItemCatalog, stack: ItemStack) -> Held {
     match stem(name).as_str() {
         PLAN_STEM => Held::Plan,
         HAMMER_STEM => Held::Hammer,
+        WIRE_STEM => Held::Wire,
         _ => Held::Other,
     }
 }
@@ -142,6 +148,9 @@ pub enum Click {
     /// (`ACT_PLANT`, `render::farm_ghost`). A seed is what a planter's
     /// catalog roles call an input.
     Plant,
+    /// The wire tool: pick a part's output, then another's input
+    /// (`render::wires`).
+    Wire,
 }
 
 impl Click {
@@ -177,6 +186,7 @@ pub fn click_of(
     match held(catalog, stack) {
         Held::Plan => return Click::Build,
         Held::Hammer => return Click::Repair,
+        Held::Wire => return Click::Wire,
         Held::Other => {}
     }
     if crate::ui::research::is_paper(research, stack) {
@@ -280,6 +290,9 @@ pub fn hand_hint(
         }
         Click::Plant => plant_hint(catalog, research, stack, crate::ui::farm::PlantAim::None),
         Click::Build | Click::Deploy => String::new(),
+        Click::Wire => {
+            "[LMB] A PART'S OUTPUT, THEN ANOTHER'S INPUT  ·  [RMB] PULL A PART'S WIRES".to_string()
+        }
     }
 }
 
@@ -1222,7 +1235,7 @@ impl SkinModelDef {
 /// object) or `ci/meshy_retexture.py` (the row's own mesh repainted, Rust's
 /// way: held, aimed and fired exactly as the item is), then
 /// `assets/models/MANIFEST.md`, `held/skins/`.
-pub const SKIN_MODELS: [SkinModelDef; 19] = [
+pub const SKIN_MODELS: [SkinModelDef; 21] = [
     SkinModelDef::new(1, "bat", "models/held/skins/obsidian_bat.glb"),
     SkinModelDef::new(2, "stone_hatchet", "models/held/skins/ember_hatchet.glb").glowing(),
     SkinModelDef::new(3, "stone_pickaxe", "models/held/skins/frost_pickaxe.glb"),
@@ -1269,6 +1282,10 @@ pub const SKIN_MODELS: [SkinModelDef; 19] = [
         "salvaged_cleaver",
         "models/held/skins/tidewrack_cleaver.glb",
     ),
+    // Placed things (wire v143): the world model repainted, so one file is
+    // the box where it stands, in a hand and on the ground.
+    SkinModelDef::new(23, "large_box", "models/held/skins/strongbox_box.glb"),
+    SkinModelDef::new(24, "metal_door", "models/held/skins/bulkhead_door.glb"),
 ];
 
 /// The [`SKIN_MODELS`] index of skin `skin` worn on [`HELD_MODELS`] row
@@ -1792,9 +1809,11 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     if stack.count == 0 {
         return None;
     }
-    let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
-    let s = stem(name);
-    HELD_MODELS.iter().position(|m| m.key == s)
+    let (look, plain) = crate::ui::icons::looks(catalog, stack)?;
+    HELD_MODELS
+        .iter()
+        .position(|m| m.key == look)
+        .or_else(|| HELD_MODELS.iter().position(|m| m.key == plain))
 }
 
 /// The draw of the stack in hand — `(draw_ticks, nock_ticks)` off the
@@ -1913,6 +1932,7 @@ pub fn held_model_of(catalog: &ItemCatalog, held: Option<u16>) -> Option<usize> 
             count: 1,
             cond: 1,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     )
 }
@@ -1970,6 +1990,7 @@ mod tests {
             count: 1,
             cond: 5_000,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = |s: ItemStack| [s, ItemStack::default()];
 
@@ -1993,6 +2014,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(
             lit_model_in_hand(&c, &inv(rock), 0, true),
@@ -2142,6 +2164,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 
@@ -2285,6 +2308,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Plan
@@ -2297,6 +2321,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Hammer
@@ -2309,6 +2334,7 @@ mod tests {
                     count: 5,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2328,6 +2354,7 @@ mod tests {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2348,6 +2375,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Held::Other
@@ -2363,12 +2391,14 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
             ItemStack {
                 item: 0,
                 count: 9,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         ];
         assert_eq!(held_in_hand(&c, &inv, 0), Held::Hammer);
@@ -2392,6 +2422,7 @@ mod tests {
                     count: 0,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2404,6 +2435,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Some(0)
@@ -2428,6 +2460,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2442,6 +2475,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             None
@@ -2461,6 +2495,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }
             ),
             Some(
@@ -2478,6 +2513,7 @@ mod tests {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 }],
                 0
             ),
@@ -2517,6 +2553,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = [stack(0), stack(1), stack(2), stack(3)];
         assert!(sights_in_hand(&c, &inv, 0), "a revolver");
@@ -2542,6 +2579,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let inv = [stack(0), stack(1)];
         assert_eq!(draw_in_hand(&c, &inv, 0), Some((30, 60)));

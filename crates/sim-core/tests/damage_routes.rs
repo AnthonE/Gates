@@ -232,6 +232,13 @@ const ROUTES: &[(&str, bool, bool, &str)] = &[
          are the same module's",
     ),
     (
+        "bullet.rs",
+        true,
+        true,
+        "a firearm round that flies — the bearing is the round's own flight, \
+         an arrow's rule, because it is an arrow's flight",
+    ),
+    (
         "charge.rs",
         true,
         true,

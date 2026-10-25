@@ -72,13 +72,13 @@ fn only_a_zero_muzzle_speed_is_instant() {
 #[test]
 fn an_instant_shot_is_a_gun_and_a_flying_one_is_a_bow() {
     assert_eq!(
-        shot_cue(0),
+        shot_cue(0, 1),
         Cue::ShotGun,
         "a shot with no flight came out of a barrel"
     );
     for speed in [1u16, 1_333, u16::MAX] {
         assert_eq!(
-            shot_cue(speed),
+            shot_cue(speed, 1),
             Cue::ShotBow,
             "{speed} mm/tick is an arrow, and an arrow does not carry 100 m"
         );

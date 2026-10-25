@@ -160,6 +160,8 @@ pub fn build_screen(
                         table_grid(row, ui, core, icons);
                     } else if let Some((arch, l)) = open_fire(core) {
                         fire_grid(row, core, icons, arch, l);
+                    } else if let Some(key) = super::turret::open_turret(core) {
+                        turret_grid(row, core, icons, key);
                     } else if looting(core.cont_kind) {
                         container_grid(row, core, icons);
                     } else {
@@ -263,7 +265,21 @@ fn info_card(
         paper,
     );
     let desc = String::from_utf8_lossy(core.item_descs.get(stack.item as usize)).into_owned();
-    let stats = info::stats(row, stack, loaded);
+    let mut stats = info::stats(row, stack, loaded);
+    // The gun in hand's attachments, a line a slot (Rust's mod slots).
+    let mut fitted = [None; 4];
+    if in_hand && row.gun.is_some() {
+        for (item, m) in core.mod_rows(core.held_mods()) {
+            if let Some(slot) = fitted.get_mut(m.group as usize) {
+                *slot = Some(m.bit);
+                stats.push(info::Stat {
+                    label: info::MOD_SLOT_NAMES[m.group as usize],
+                    value: crate::ui::craft::item_label(&core.catalog, item),
+                    frac: None,
+                });
+            }
+        }
+    }
     let acts = info::actions(
         row,
         stack,
@@ -273,6 +289,8 @@ fn info_card(
             paper,
             loaded_in_hand: loaded.is_some_and(|n| n > 0),
             room: split_slot(&core.inv).is_some(),
+            attachable: kind == CONT_SELF && core.attachable(stack.item).is_some(),
+            fitted,
         },
     );
     col.spawn((
@@ -588,6 +606,17 @@ pub fn info_clicks(
                 Err(e) => ui.say(format!("the unload would not encode ({e:?})")),
             }
         }
+        info::Act::Attach => send_attach(&mut ui, &net, slot),
+        info::Act::Detach(bit) => {
+            let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+            match protocol::encode_action_detach(bit, &mut buf) {
+                Ok(len) => match net.session.send_action(&buf[..len]) {
+                    Ok(()) => ui.say("attachment off"),
+                    Err(e) => ui.say(e.to_string()),
+                },
+                Err(e) => ui.say(format!("the detach would not encode ({e:?})")),
+            }
+        }
         info::Act::Split => {
             let Some(to) = split_slot(&core.inv) else {
                 ui.say("no room in your inventory to split that");
@@ -712,6 +741,81 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         } else {
             take_all_button(col);
         }
+    });
+}
+
+/// An auto turret, in the container's seat: Rust's turret panel — its one
+/// weapon slot and six ammo slots, what the gun has to fire, then its list
+/// and mode (`panels::turret`). The cells are `cell()`, unchanged, at the
+/// sim's own slot numbers (`turret::WEAPON_SLOT`, `turret::AMMO_SLOTS`), so
+/// dragging just works; the sim refuses what a slot is not for.
+fn turret_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, key: u32) {
+    use sim_core::turret::{AMMO_SLOTS, WEAPON_SLOT};
+    let name = container_name(
+        CONT_BOX,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        &core.catalog,
+    );
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(6.0),
+            ..default()
+        },
+        BackgroundColor(super::REGION_BG),
+    ))
+    .with_children(|col| {
+        section(col, &name);
+        col.spawn((Text::new("WEAPON"), font_bold(11.0), TextColor(TEXT_DIM)));
+        grid(
+            col,
+            core,
+            icons,
+            CONT_BOX,
+            WEAPON_SLOT,
+            WEAPON_SLOT + 1,
+            1,
+            NO_SEL,
+        );
+        col.spawn((Text::new("AMMO"), font_bold(11.0), TextColor(TEXT_DIM)));
+        grid(
+            col,
+            core,
+            icons,
+            CONT_BOX,
+            AMMO_SLOTS.start,
+            AMMO_SLOTS.end,
+            AMMO_SLOTS.len(),
+            NO_SEL,
+        );
+        // A box filled before the panel can hold stacks past its slots.
+        // They are drawn so they can be taken out; nothing goes back.
+        if core.cont[AMMO_SLOTS.end..sim_core::limits::BOX_SLOTS]
+            .iter()
+            .any(|s| s.count > 0)
+        {
+            col.spawn((
+                Text::new("TAKE THESE OUT"),
+                font_bold(11.0),
+                TextColor(TEXT_DIM),
+            ));
+            grid(
+                col,
+                core,
+                icons,
+                CONT_BOX,
+                AMMO_SLOTS.end,
+                sim_core::limits::BOX_SLOTS,
+                AMMO_SLOTS.len(),
+                NO_SEL,
+            );
+        }
+        super::turret::readout(col, core, key);
+        super::turret::auth_block(col, core, key);
     });
 }
 
@@ -2377,6 +2481,18 @@ pub fn drag_pointer(
 /// card's first action, so the card never offers a verb the gesture would
 /// not do. Every branch of the decision is `ui::slots::quick_move`'s (and
 /// the fire's and the table's own); this sends what it is handed.
+/// Put the attachment in pack slot `slot` on the gun in hand.
+fn send_attach(ui: &mut Ui, net: &super::super::Net, slot: usize) {
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_attach(slot as u8, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say("attached"),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the attach would not encode ({e:?})")),
+    }
+}
+
 fn quick(
     ui: &mut Ui,
     net: &super::super::Net,
@@ -2388,6 +2504,12 @@ fn quick(
 ) {
     let core = &net.session.core;
     let stack = cell_stack(core, kind, slot);
+    // An attachment the gun in hand takes goes on it, with no container
+    // open to move it into (Rust's drag onto the gun's mod slot).
+    if kind == CONT_SELF && !looting(core.cont_kind) && core.attachable(stack.item).is_some() {
+        send_attach(ui, net, slot);
+        return;
+    }
     // A material right-clicked with the hearth open goes into it, the
     // way a right-click moves a stack into an open box.
     if let Some(at) = hearth_at.filter(|_| kind == CONT_SELF) {
@@ -2406,6 +2528,16 @@ fn quick(
             core.cont_handle,
             arch,
             l,
+            kind,
+            slot,
+            &core.catalog,
+            &core.inv,
+            &core.cont,
+            &core.worn,
+        )
+    } else if super::turret::open_turret(core).is_some() {
+        super::turret::quick_move(
+            core.cont_handle,
             kind,
             slot,
             &core.catalog,

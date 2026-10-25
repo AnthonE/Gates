@@ -178,12 +178,14 @@ fn shipped_world() -> Raid {
         count: 200,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: satchel,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     Raid { w, cx, cz, twig }
 }

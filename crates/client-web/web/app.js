@@ -1806,6 +1806,41 @@ document.addEventListener("fullscreenchange", () => {
   else kb.unlock();
 });
 
+/* ── raw mouse, like a desktop shooter ─────────────────────────────────────
+   A plain pointer lock hands the game OS-accelerated movement, so the same
+   flick turns further the faster it is: the browser player got mouse accel
+   the desktop client never had (winit reads raw input there). winit 0.30
+   asks for the lock with no options, so its canvas asks for
+   `unadjustedMovement` instead. Chromium on Linux refuses that option
+   outright, and a refusal answered with a second, plain request can lose the
+   click to the fullscreen request one frame later (`web.rs`,
+   follow_pointer_lock), so Linux asks plainly from the start and any other
+   refusal is remembered and asked plainly next time. */
+const RAW_MOUSE_REFUSED = "gates.rawMouseRefused";
+{
+  const canvas = $("gates");
+  const plain = canvas && canvas.requestPointerLock;
+  const linux = /Linux/.test(navigator.platform) && !/CrOS/.test(navigator.userAgent);
+  let refused = linux;
+  try { refused = refused || localStorage.getItem(RAW_MOUSE_REFUSED) === "1"; } catch (err) { /* private mode */ }
+  if (plain) {
+    canvas.requestPointerLock = function () {
+      if (refused) return plain.call(this);
+      let p;
+      try { p = plain.call(this, { unadjustedMovement: true }); } catch (err) { return plain.call(this); }
+      if (p && p.catch) {
+        p.catch((err) => {
+          if (err && err.name !== "NotSupportedError") return;
+          refused = true;
+          try { localStorage.setItem(RAW_MOUSE_REFUSED, "1"); } catch (e) { /* private mode */ }
+          plain.call(this);
+        });
+      }
+      return p;
+    };
+  }
+}
+
 async function play({ guest = false } = {}) {
   if (busy || !canTransport) return;
   if (dl.failed) { location.reload(); return; }

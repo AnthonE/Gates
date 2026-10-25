@@ -93,6 +93,22 @@ item = "item.barricade_wood"
 cost = 15
 requires = "item.hatchet_metal"
 
+# Rust's first-bench attachments, off the hammer that roots the tree.
+[[research]]
+item = "item.gun_flashlight"
+cost = 15
+requires = "item.hammer_salvaged"
+
+[[research]]
+item = "item.muzzle_brake"
+cost = 30
+requires = "item.gun_flashlight"
+
+[[research]]
+item = "item.muzzle_boost"
+cost = 30
+requires = "item.gun_flashlight"
+
 # Their chain: … Wooden Barricade → Barbed Wooden Barricade → Wooden Floor
 # Spikes → Wood Shutters, every one ours since 2026-10-18.
 [[research]]
@@ -228,6 +244,48 @@ item = "item.pump_shotgun"
 cost = 60
 requires = "item.shotgun_shells"
 
+# Rust's second-bench attachments, off the guns that take them.
+[[research]]
+item = "item.holosight"
+cost = 60
+requires = "item.revolver"
+
+[[research]]
+item = "item.lasersight"
+cost = 60
+requires = "item.holosight"
+
+[[research]]
+item = "item.silencer"
+cost = 60
+requires = "item.semi_pistol"
+
+[[research]]
+item = "item.extended_mag"
+cost = 60
+requires = "item.thompson"
+
+# Their second-bench rounds: off the round they are a kind of.
+[[research]]
+item = "item.pistol_ammo_hv"
+cost = 60
+requires = "item.pistol_ammo"
+
+[[research]]
+item = "item.pistol_ammo_fire"
+cost = 60
+requires = "item.pistol_ammo"
+
+[[research]]
+item = "item.shotgun_slug"
+cost = 60
+requires = "item.shotgun_shells"
+
+[[research]]
+item = "item.shotgun_fire"
+cost = 60
+requires = "item.shotgun_shells"
+
 [[research]]
 item = "item.rocket_launcher"
 cost = 120
@@ -312,3 +370,25 @@ requires = "item.satchel_charge"
 item = "item.c4"
 cost = 120
 requires = "item.rocket"
+
+# Their third-bench rifle rounds, off the assault rifle that fires them.
+[[research]]
+item = "item.rifle_ammo_hv"
+cost = 120
+requires = "item.assault_rifle"
+
+# Their 8x, off the bolt rifle it is for.
+[[research]]
+item = "item.scope_8x"
+cost = 120
+requires = "item.bolt_rifle"
+
+[[research]]
+item = "item.rifle_ammo_fire"
+cost = 120
+requires = "item.rifle_ammo_hv"
+
+[[research]]
+item = "item.rifle_ammo_explosive"
+cost = 120
+requires = "item.rifle_ammo_fire"

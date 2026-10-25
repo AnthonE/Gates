@@ -67,6 +67,7 @@ fn duel_world() -> World {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w
@@ -301,6 +302,7 @@ fn no_weapon_may_hit_its_own_holder() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     swing_once(&mut w, 1, 0, 0);
     assert_eq!(w.players[0].hp, FIXTURE_HP);
@@ -320,6 +322,7 @@ fn a_hand_with_no_weapon_in_it_cannot_hurt() {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
             _ => ItemStack::default(),
         };
@@ -366,6 +369,7 @@ fn a_standing_node_outranks_a_person() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.players[1].body = Body::at(SEED, hv(SEED), tx + 0.5, tz);
@@ -421,12 +425,14 @@ fn death_takes_the_beach_and_everything_on_you() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[1].inv[5] = ItemStack {
         item: 3,
         count: 42,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[1].hp = 1; // one swing from the end
 

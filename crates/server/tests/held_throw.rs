@@ -86,12 +86,14 @@ impl Raid {
             count: 1000,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[SATCHEL_SLOT as usize] = ItemStack {
             item: satchel,
             count: satchels,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         r.core.push_action(
             0,

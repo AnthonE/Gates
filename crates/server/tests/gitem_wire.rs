@@ -114,6 +114,7 @@ fn drop_one(core: &mut ShardCore, wslot: usize, item: u16, count: u16) -> u32 {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     )
 }
@@ -156,6 +157,7 @@ fn a_stacks_condition_and_skin_reach_the_client() {
         count: 1,
         cond: 5,
         skin: 0x0A61,
+        ..ItemStack::EMPTY
     };
     let id = drop_stack(&mut core, w0, sheet);
     let mut seen = Vec::new();
@@ -350,6 +352,7 @@ fn a_stack_that_lands_mid_walk_is_appended_not_restarted() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // More than one batch, so the walk is mid-way after one pump.
     let batch = protocol::event::GITEM_SYNC_BATCH;

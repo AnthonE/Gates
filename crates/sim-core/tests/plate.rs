@@ -153,6 +153,7 @@ impl Rig {
                 count: 99,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         let mut ev = EventQueue::default();

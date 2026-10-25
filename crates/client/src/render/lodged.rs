@@ -149,6 +149,7 @@ pub fn draw(
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..sim_core::gather::ItemStack::EMPTY
             };
             let i = crate::ui::hold::held_model(&core.catalog, stack)?;
             let (mh, mt) = m.row(i);

@@ -151,26 +151,35 @@ fn seashore() -> (f32, f32) {
 
 #[test]
 fn a_vessel_fills_with_the_sea_and_pours_out_on_a_fire() {
-    use sim_core::survival::Vessel;
-    let (empty, fresh, salt) = (3u16, 4u16, 5u16);
+    use sim_core::survival::{Vessel, Water};
+    let skin = 3u16;
     let mut w = World::new(SEED);
     w.combat = CombatContent::probe_fixture();
     w.survival = SurvivalContent::probe_fixture();
-    w.survival.vessels[0] = Vessel { empty, fresh, salt };
+    w.survival.vessels[0] = Vessel {
+        item: skin,
+        ml: 1000,
+        sip_ml: 250,
+        water_per_l: 100,
+        salt: true,
+    };
     w.survival.vessel_count = 1;
     w.tick(&[Command::Join { id: 1 }]);
     let (x, z) = seashore();
     w.players[0].body = Body::at(w.seed, &w.haven, x, z);
     w.players[0].inv[0] = sim_core::gather::ItemStack {
-        item: empty,
+        item: skin,
         count: 1,
-        cond: 0,
-        skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     w.tick(&[Command::Drink { id: 1 }]);
     assert_eq!(
-        w.players[0].inv[0].item, salt,
-        "dipped in the sea, it holds salt"
+        Water::of(w.players[0].inv[0].data),
+        Water {
+            ml: 1000,
+            salt: true
+        },
+        "dipped in the sea, it holds a litre of salt"
     );
 
     // A fire at the feet, inside the splash of a pour.
@@ -186,5 +195,5 @@ fn a_vessel_fills_with_the_sea_and_pours_out_on_a_fire() {
     });
     hold(&mut w, sim_core::input::BTN_AIM, 1);
     assert!(w.fires.is_empty(), "the pour put the fire out");
-    assert_eq!(w.players[0].inv[0].item, empty, "and left the vessel empty");
+    assert_eq!(w.players[0].inv[0].data, 0, "and left the vessel empty");
 }

@@ -801,6 +801,69 @@ pub struct ItemStack {
     pub count: u16,
     pub cond: u16,
     pub skin: u16,
+    /// What this one item remembers, by its content row's `data` kind
+    /// (`GatherContent::data_of`): a gun's attachments, rounds and round
+    /// (`gun_data`), a vessel's water, a seed's genes, a blueprint's
+    /// recipe. 0 for everything else. Rust's `Item.instanceData`, inline
+    /// so it travels with the stack through every move, box, bag, death
+    /// and save the way `skin` does.
+    pub data: u32,
+}
+
+impl ItemStack {
+    /// The empty stack, and the base every literal builds on
+    /// (`ItemStack { item, count, ..ItemStack::EMPTY }`), so a new field
+    /// is one line here rather than eight hundred elsewhere.
+    pub const EMPTY: Self = Self {
+        item: 0,
+        count: 0,
+        cond: 0,
+        skin: 0,
+        data: 0,
+    };
+
+    /// Bytes on disk and in the digest: item, count, condition, skin and
+    /// data, little-endian. The one layout every save loop and
+    /// `state_hash` share.
+    pub const BYTES: usize = 12;
+
+    pub fn to_le(&self) -> [u8; Self::BYTES] {
+        let mut b = [0u8; Self::BYTES];
+        b[0..2].copy_from_slice(&self.item.to_le_bytes());
+        b[2..4].copy_from_slice(&self.count.to_le_bytes());
+        b[4..6].copy_from_slice(&self.cond.to_le_bytes());
+        b[6..8].copy_from_slice(&self.skin.to_le_bytes());
+        b[8..12].copy_from_slice(&self.data.to_le_bytes());
+        b
+    }
+
+    /// The raw read; the canonical-empty check is [`Self::canonical`].
+    pub fn from_le(b: &[u8]) -> Self {
+        let u16_at = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        Self {
+            item: u16_at(0),
+            count: u16_at(2),
+            cond: u16_at(4),
+            skin: u16_at(6),
+            data: u32::from_le_bytes([b[8], b[9], b[10], b[11]]),
+        }
+    }
+
+    /// An empty slot is all zeros: "0 of item 7" (or a forgotten
+    /// condition, skin or data) hashes differently from the empty slot
+    /// the sim produces, so a loader refuses it.
+    pub fn canonical(&self) -> bool {
+        self.count > 0 || *self == Self::EMPTY
+    }
+
+    /// Two stacks are one kind and may merge: same item, look, condition
+    /// and data — two genomes, two skins or two loaded guns never join.
+    pub fn joins(&self, other: &Self) -> bool {
+        self.item == other.item
+            && self.skin == other.skin
+            && self.cond == other.cond
+            && self.data == other.data
+    }
 }
 
 /// Add `amount` of `item` to an inventory: top up matching stacks in slot
@@ -862,7 +925,12 @@ pub fn inv_add_skinned(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.skin == skin && s.cond == cond && s.count < stack_max
+        if s.count > 0
+            && s.item == item
+            && s.skin == skin
+            && s.cond == cond
+            && s.data == 0
+            && s.count < stack_max
         {
             let take = (stack_max - s.count).min(left);
             s.count += take;
@@ -1907,6 +1975,7 @@ mod tests {
                 count: 100,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         assert_eq!(
@@ -1915,7 +1984,8 @@ mod tests {
                 item: 3,
                 count: 40,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         // Fill every slot, then overflow is lost.
@@ -1925,6 +1995,7 @@ mod tests {
                 count: 100,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         assert_eq!(inv_add(&mut inv, 3, 50, 100, 0), 0);
@@ -1938,6 +2009,7 @@ mod tests {
                 count: 100,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             }
         );
     }
@@ -1975,6 +2047,7 @@ mod tests {
                 count: 100,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         inv[7] = ItemStack::default();

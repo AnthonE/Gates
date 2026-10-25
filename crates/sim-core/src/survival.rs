@@ -66,7 +66,7 @@
 //! half is blocked behind the ground's structure moving from bump into
 //! albedo).
 
-use crate::gather::NO_ITEM;
+use crate::gather::{ItemStack, NO_ITEM};
 use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use crate::world::{
     EventQueue, Player, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DRANK, EV_HEALTH, EV_VITALS,
@@ -162,21 +162,63 @@ impl ConsumableDef {
 /// How many water vessels content may author (a skin, a jug, ...).
 pub const MAX_VESSELS: usize = 4;
 
-/// One water vessel: the item empty, full of fresh water, and full of salt
-/// (`NO_ITEM` for a vessel that is never filled with it).
+/// One water vessel, Rust's: an item that holds up to `ml` of water, fresh
+/// or (when `salt`) the sea's, in its stack's data ([`Water`]). A drink is
+/// a sip of `sip_ml`, worth `water_per_l` of the meter a litre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vessel {
-    pub empty: u16,
-    pub fresh: u16,
-    pub salt: u16,
+    pub item: u16,
+    pub ml: u16,
+    pub sip_ml: u16,
+    pub water_per_l: u16,
+    pub salt: bool,
 }
 
 impl Vessel {
     pub const NONE: Self = Self {
-        empty: NO_ITEM,
-        fresh: NO_ITEM,
-        salt: NO_ITEM,
+        item: NO_ITEM,
+        ml: 0,
+        sip_ml: 0,
+        water_per_l: 0,
+        salt: false,
     };
+
+    /// The meter `ml` of fresh water is worth.
+    pub fn worth(&self, ml: u16) -> u16 {
+        (u32::from(self.water_per_l) * u32::from(ml) / 1000).min(u16::MAX as u32) as u16
+    }
+}
+
+/// What a vessel holds, in its stack's data (`ItemStack::data`): the
+/// millilitres in the low fifteen bits and whether it is salt above them.
+/// A vessel's data of 0 is an empty one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Water {
+    pub ml: u16,
+    pub salt: bool,
+}
+
+/// The most a vessel's data can hold, ml (`content::validate` keeps every
+/// vessel under it).
+pub const WATER_ML_MAX: u16 = 0x7FFF;
+
+impl Water {
+    pub fn of(data: u32) -> Self {
+        Self {
+            ml: (data & u32::from(WATER_ML_MAX)) as u16,
+            salt: data & 1 << 15 != 0,
+        }
+    }
+
+    /// Canonical: an empty vessel holds nothing, salt or fresh.
+    pub fn data(self) -> u32 {
+        let ml = self.ml.min(WATER_ML_MAX);
+        if ml == 0 {
+            0
+        } else {
+            u32::from(ml) | u32::from(self.salt) << 15
+        }
+    }
 }
 
 /// The whole survival ruleset the sim knows. Construction input like the
@@ -301,30 +343,22 @@ impl SurvivalContent {
         &self.vessels[..(self.vessel_count as usize).min(MAX_VESSELS)]
     }
 
-    /// The vessel `item` is the empty one of.
+    /// The vessel `item` is.
     #[inline]
-    pub fn vessel_empty(&self, item: u16) -> Option<Vessel> {
+    pub fn vessel(&self, item: u16) -> Option<Vessel> {
         if item == NO_ITEM {
             return None;
         }
-        self.vessels().iter().copied().find(|v| v.empty == item)
+        self.vessels().iter().copied().find(|v| v.item == item)
     }
 
-    /// The vessel `item` is a full one of, and whether what it holds is salt.
+    /// The vessel a stack is, and the water in it.
     #[inline]
-    pub fn vessel_full(&self, item: u16) -> Option<(Vessel, bool)> {
-        if item == NO_ITEM {
+    pub fn vessel_water(&self, s: &ItemStack) -> Option<(Vessel, Water)> {
+        if s.count == 0 {
             return None;
         }
-        self.vessels().iter().find_map(|v| {
-            if v.fresh == item {
-                Some((*v, false))
-            } else if v.salt == item {
-                Some((*v, true))
-            } else {
-                None
-            }
-        })
+        Some((self.vessel(s.item)?, Water::of(s.data)))
     }
 
     /// The consumable row of an item, or `None` when the hand is empty, the
@@ -674,14 +708,11 @@ pub fn consume(
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
         return false;
     }
+    if let Some((v, w)) = sc.vessel_water(&stack) {
+        return sip(sc, slot, p, events, v, w);
+    }
     let Some(def) = sc.row(stack.item) else {
-        // A vessel of sea water is not drunk: it is boiled first.
-        let why = if sc.vessel_full(stack.item).is_some_and(|(_, salt)| salt) {
-            REFUSE_C_SALT
-        } else {
-            REFUSE_C_NOT_FOOD
-        };
-        events.push(EV_CONSUME_REFUSED, p.id, why, 0);
+        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
         return false;
     };
     // Refuse a consume that could not do anything: a full pair and no heal
@@ -699,18 +730,7 @@ pub fn consume(
     }
 
     p.inv[slot].count -= 1;
-    let drunk = sc
-        .vessel_full(stack.item)
-        .filter(|(v, _)| v.fresh == stack.item);
-    if let (0, Some((v, _))) = (p.inv[slot].count, drunk) {
-        // A drunk vessel is an empty one, in the same slot.
-        p.inv[slot] = crate::gather::ItemStack {
-            item: v.empty,
-            count: 1,
-            cond: 0,
-            skin: stack.skin,
-        };
-    } else if p.inv[slot].count == 0 {
+    if p.inv[slot].count == 0 {
         // The canonical empty, all three fields — NOT `NO_ITEM`, which
         // `PlayerSave::read_le` refuses twice over (`item >= MAX_ITEM_DEFS`
         // and the canonical-empty rule): eat your last stack, get swept by
@@ -739,6 +759,39 @@ pub fn consume(
         ((stack.item as u32) << 16) | slot as u32,
         0,
     );
+    announce(sc, p, events);
+    true
+}
+
+/// A sip from the vessel in `slot`: `sip_ml` of what it holds, or the
+/// rest, worth its share of the meter. Sea water is not drunk — it is
+/// boiled first — and an empty vessel or a full meter refuses.
+fn sip(
+    sc: &SurvivalContent,
+    slot: usize,
+    p: &mut Player,
+    events: &mut EventQueue,
+    v: Vessel,
+    mut w: Water,
+) -> bool {
+    let why = if w.ml == 0 {
+        Some(REFUSE_C_NOT_FOOD)
+    } else if w.salt {
+        Some(REFUSE_C_SALT)
+    } else if p.water >= sc.max_water {
+        Some(REFUSE_C_FULL)
+    } else {
+        None
+    };
+    if let Some(why) = why {
+        events.push(EV_CONSUME_REFUSED, p.id, why, 0);
+        return false;
+    }
+    let took = v.sip_ml.max(1).min(w.ml);
+    w.ml -= took;
+    p.inv[slot].data = w.data();
+    p.water = p.water.saturating_add(v.worth(took)).min(sc.max_water);
+    events.push(EV_CONSUMED, p.id, ((v.item as u32) << 16) | slot as u32, 0);
     announce(sc, p, events);
     true
 }
@@ -892,14 +945,14 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NO_WATER, 0);
         return Step::Quiet;
     };
-    // An empty vessel in hand fills instead of drinking: with fresh water
-    // where there is any, else with the sea when the vessel holds salt.
+    // A vessel in hand with room fills instead of drinking: to the brim,
+    // with fresh water where there is any, else with the sea when the
+    // vessel holds salt — never one water into the other.
     let sel = p.frame.sel as usize;
     let held = p.inv.get(sel).copied().unwrap_or_default();
-    if let Some(v) = sc.vessel_empty(held.item).filter(|_| held.count == 1) {
-        let into = if salt { v.salt } else { v.fresh };
-        if into != NO_ITEM {
-            p.inv[sel].item = into;
+    if let Some((v, w)) = sc.vessel_water(&held).filter(|_| held.count == 1) {
+        if w.ml < v.ml && (!salt || v.salt) && (w.ml == 0 || w.salt == salt) {
+            p.inv[sel].data = Water { ml: v.ml, salt }.data();
             events.push(EV_DRANK, p.id, drank_b(DRANK_FILL, salt as u16), 0);
             return Step::Changed;
         }
@@ -964,7 +1017,6 @@ pub fn fall(p: &mut Player, dmg: u16, events: &mut EventQueue) -> Step {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gather::ItemStack;
     use crate::world::EventQueue;
 
     fn player(sc: &SurvivalContent) -> Player {
@@ -1027,6 +1079,7 @@ mod tests {
             count: 2,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
         assert!(
@@ -1050,6 +1103,7 @@ mod tests {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
         let span = sc.consumable[0].seconds as u32 * TICK_HZ;
@@ -1083,6 +1137,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q, 100));
@@ -1140,6 +1195,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             let mut ev = EventQueue::default();
             let ok = consume(sc, 0, &mut p, &mut ev, 100);
@@ -1173,33 +1229,57 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q, 100));
         assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));
     }
 
-    /// Drinking a full vessel leaves the empty one in the slot.
+    /// A vessel is drunk a sip at a time, out of its own data, and comes
+    /// back empty in the same slot; sea water and an empty one refuse.
     #[test]
-    fn a_drunk_vessel_comes_back_empty() {
+    fn a_vessel_is_drunk_a_sip_at_a_time() {
         let mut sc = SurvivalContent::probe_fixture();
         sc.vessels[0] = Vessel {
-            empty: 3,
-            fresh: 0,
-            salt: NO_ITEM,
+            item: 3,
+            ml: 500,
+            sip_ml: 250,
+            water_per_l: 100,
+            salt: true,
         };
         sc.vessel_count = 1;
         let mut p = player(&sc);
         p.water = 0;
         p.inv[2] = ItemStack {
-            item: 0,
+            item: 3,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: Water {
+                ml: 500,
+                salt: false,
+            }
+            .data(),
+            ..ItemStack::EMPTY
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 2, &mut p, &mut q, 100));
-        assert_eq!((p.inv[2].item, p.inv[2].count), (3, 1));
+        assert_eq!((p.water, Water::of(p.inv[2].data).ml), (25, 250));
+        assert!(consume(&sc, 2, &mut p, &mut q, 100));
+        assert_eq!((p.water, p.inv[2].data, p.inv[2].count), (50, 0, 1));
+        assert!(!consume(&sc, 2, &mut p, &mut q, 100), "an empty vessel");
+        p.inv[2].data = Water {
+            ml: 500,
+            salt: true,
+        }
+        .data();
+        assert!(
+            !consume(&sc, 2, &mut p, &mut q, 100),
+            "the sea is boiled first"
+        );
+        assert_eq!(
+            Water::of(Water { ml: 0, salt: true }.data()),
+            Water::default()
+        );
     }
 
     /// Refilling a meter does not bank the partial minute of damage.
@@ -1233,6 +1313,7 @@ mod tests {
             count: 2,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.bleed = 60;
         let mut q = EventQueue::default();

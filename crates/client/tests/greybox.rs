@@ -384,7 +384,7 @@ fn every_solid_deploy_blocks_what_it_draws() {
 
     assert_eq!(
         DEPLOY_VOL.len(),
-        sim_core::deploy::ARCH_CATCHER as usize + 1,
+        sim_core::deploy::ARCH_LIGHT as usize + 1,
         "the sim volume table and the archetype space drifted"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -416,6 +416,12 @@ fn every_solid_deploy_blocks_what_it_draws() {
                             | ARCH_WINDOW_SHUTTER
                             | sim_core::deploy::ARCH_FLOOR_SPIKES
                             | sim_core::deploy::ARCH_RUG
+                            // Electricity's small parts: a switch, a splitter,
+                            // a combiner and a lamp are underfoot or overhead.
+                            | sim_core::deploy::ARCH_SWITCH
+                            | sim_core::deploy::ARCH_SPLITTER
+                            | sim_core::deploy::ARCH_COMBINER
+                            | sim_core::deploy::ARCH_LIGHT
                     ),
                     "arch {arch} became walk-over without the doc's excuse list"
                 );

@@ -31,6 +31,7 @@ fn weapons() -> CombatContent {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 12,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -46,6 +47,7 @@ fn weapons() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -63,6 +65,7 @@ fn weapons() -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }
@@ -98,16 +101,18 @@ fn range_with(weapon: u16) -> (World, usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     if weapon == GUN {
-        p.mag[0] = 8;
-        p.mag_round[0] = ROUND;
+        p.set_gun(|g| g.loaded = 8);
+        p.set_gun(|g| g.round = ROUND);
     } else {
         p.inv[7] = ItemStack {
             item: ARROW,
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     (w, pig)

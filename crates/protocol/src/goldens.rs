@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 191] = [
+pub const FIXTURES: [&str; 197] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -344,6 +344,16 @@ pub const FIXTURES: [&str; 191] = [
     "event_vessel.bin",
     // Captions (v138): a translated transcript's second piece.
     "event_caption.bin",
+    // Weapon attachments (v144): the two verbs at their widths' last values.
+    "action_attach.bin",
+    "action_detach.bin",
+    // The turret's own list (v146): editable, three listed.
+    "event_turret.bin",
+    // Electricity (v150): a wire run at its ports' last values, a part's
+    // wires taken up, and a wire laid as the event tells it.
+    "action_wire.bin",
+    "action_unwire.bin",
+    "event_wire.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -646,6 +656,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 40,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -658,6 +669,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     // wrote the halves in the wrong order moves bytes.
                     cond: 4_321,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -667,6 +679,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 77,
                     cond: 9_876,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],
@@ -737,6 +750,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         held: None,
         lit: false,
         held_skin: 0,
+        held_mods: 0,
+        beam: false,
     }
 }
 
@@ -1196,6 +1211,7 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
                     0 => 1 + rng.next_bounded(900) as u16,
                     _ => 0,
                 },
+                ..ItemStack::EMPTY
             },
         };
     }
@@ -1917,6 +1933,8 @@ pub fn event_deploy_placed() -> DeployRec {
         keyed: true,
         // `event_piece_placed`'s rule for the hp (v102).
         hp: 0x5AC3,
+        // Every one of the skin's sixteen bits set somewhere (v143).
+        skin: 0xA5C3,
         ..DeployRec::default()
     }
 }
@@ -1953,6 +1971,8 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             hp: u16::MAX - i as u16 * 2731,
             // Off the index too (v120), so the draws above keep their order.
             keyed: i % 3 == 0,
+            // And the skin (v143): some placed bare, some skinned.
+            skin: if i % 4 == 0 { 0x5A3C ^ i as u16 } else { 0 },
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.
@@ -2275,6 +2295,46 @@ pub fn action_shop() -> (u32, sim_core::shop::ShopAct) {
     )
 }
 
+/// A turret's view (v146): editable, three listed ids that differ in every
+/// byte, so a dropped or reordered id moves the fixture; (v147) keeping the
+/// peace.
+pub fn event_turret() -> crate::TurretView {
+    let mut v = crate::TurretView {
+        key: 0x0A0B_0C0D,
+        may_edit: true,
+        peacekeeper: true,
+        n: 3,
+        ..Default::default()
+    };
+    v.auth[..3].copy_from_slice(&[0x0102_0304, 0x1122_3344, 0xA1B2_C3D4]);
+    v.gun = 0x0055;
+    v.ammo = 0x0066;
+    v.rounds = 0x0300;
+    v.powered = true;
+    v.power_in = 0x0A0B;
+    v
+}
+
+/// A wire run (v150): every field distinct, its ports at their last values.
+pub fn action_wire() -> (u32, u8, u32, u8) {
+    (
+        0x1122_3344,
+        (sim_core::power::MAX_OUTS - 1) as u8,
+        0x5566_7788,
+        (sim_core::power::MAX_INS - 1) as u8,
+    )
+}
+
+/// A part's wires taken up (v150).
+pub fn action_unwire() -> u32 {
+    0x0A0B_0C0D
+}
+
+/// A wire laid, as the event tells it (v150).
+pub fn event_wire() -> (u32, u32, u8, u8) {
+    (0x0102_0304, 0x0506_0708, 2, 1)
+}
+
 /// A machine's view (v118): editable, two live rows apart (0 and 4) with
 /// every field different, so a shifted row or a transposed field moves a
 /// byte.
@@ -2465,6 +2525,16 @@ pub fn event_fire() -> (i32, i32, i32, u32) {
 /// so a swap reddens.
 pub fn event_ammo() -> (u16, u16) {
     (3, 260)
+}
+
+/// The attach verb (v144) on the pack's last slot.
+pub fn action_attach() -> u8 {
+    (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The detach verb (v144) on the last attachment bit.
+pub fn action_detach() -> u8 {
+    (sim_core::limits::MAX_MODS - 1) as u8
 }
 
 /// A full batch of arrows in bodies with `reset` set: players and animals
@@ -3092,6 +3162,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 64,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3101,6 +3172,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 2,
                     cond: 12_345,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3110,6 +3182,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     count: 11,
                     cond: 40_000,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],
@@ -3211,6 +3284,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     count: 1,
                     cond: 9_100,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -3220,6 +3294,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     count: 1,
                     cond: 10_000,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ],

@@ -455,12 +455,14 @@ fn a_wrap_from_the_pack_holds_the_hand() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[pack] = ItemStack {
         item: BANDAGE,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].hp -= 30;
     let mut seq = 0u16;

@@ -90,7 +90,9 @@
 
 use core::ops::Range;
 
-use crate::deploy::{Deploys, ARCH_CATCHER, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
+use crate::deploy::{
+    Deploys, ARCH_CATCHER, ARCH_FIRE, ARCH_FURNACE, ARCH_GENERATOR, ARCH_PLANTER, ARCH_RECYCLER,
+};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
 use crate::world::{EventQueue, EV_OVEN};
@@ -169,9 +171,9 @@ pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
 const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
 
 /// A planter box (farming v2): one water slot and nothing else. Its six
-/// beds hold plants in `farm.rs`, not stacks; a full waterskin in slot 0 is
-/// poured into the tank (`OvenState::water`) once a plant thirsts and left
-/// there empty ([`crate::farm::FarmContent::water_full`]).
+/// beds hold plants in `farm.rs`, not stacks; a waterskin of fresh water in
+/// slot 0 is poured into the tank (`OvenState::water`) once a plant thirsts
+/// and left there empty ([`crate::farm::FarmContent::water_vessel`]).
 pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
     fuel: 1,
     input: 0,
@@ -298,6 +300,11 @@ pub struct CookContent {
     /// hundredths. `byproduct_pct == 0` ⇒ fuel leaves nothing.
     pub byproduct: u16,
     pub byproduct_pct: u16,
+    /// What the small generator burns (`power.rs`, `deployables.toml`
+    /// `[power]`), and how long a unit runs it. `gen_fuel_ticks == 0` ⇒ it
+    /// never starts. It leaves nothing behind.
+    pub gen_fuel_item: u16,
+    pub gen_fuel_ticks: u32,
     pub rows: [CookRow; MAX_COOK_ROWS],
     pub row_count: u16,
     /// The farm (`farm.rs`, `cooking.toml` `[farm]` and `[[crop]]`): inline
@@ -313,6 +320,8 @@ impl CookContent {
         fuel_ticks: 0,
         byproduct: 0,
         byproduct_pct: 0,
+        gen_fuel_item: 0,
+        gen_fuel_ticks: 0,
         rows: [CookRow::INERT; MAX_COOK_ROWS],
         row_count: 0,
         farm: crate::farm::FarmContent::EMPTY,
@@ -397,20 +406,17 @@ impl CookContent {
     pub fn roles(&self, arch: u8, item: u16) -> u8 {
         let burns = OvenState::arch_burns(arch);
         let mut roles = 0;
-        if burns && self.fuel_ticks > 0 && item == self.fuel_item {
+        let (fuel, fuel_ticks) = self.fuel_of(arch);
+        if burns && fuel_ticks > 0 && item == fuel {
             roles |= ROLE_FUEL;
         }
         let farm = &self.farm;
         let waters = arch == ARCH_PLANTER && farm.skin_wu > 0;
-        if waters && item == farm.water_full {
+        if waters && item == farm.water_vessel {
             roles |= ROLE_FUEL;
         }
-        // A catcher's one slot takes a skin, empty to be filled or full to
-        // be taken back out.
-        if arch == ARCH_CATCHER
-            && farm.skin_wu > 0
-            && (item == farm.water_empty || item == farm.water_full)
-        {
+        // A catcher's one slot takes a skin, to be filled and taken back.
+        if arch == ARCH_CATCHER && farm.skin_wu > 0 && item == farm.water_vessel {
             roles |= ROLE_FUEL;
         }
         if self.row_for(arch, item).is_some() {
@@ -425,8 +431,8 @@ impl CookContent {
         // What the container itself made stays where it landed: an output
         // that could not be moved back out through its own door would be
         // trapped by the rule meant to keep junk out.
-        if (burns && self.byproduct_pct > 0 && item == self.byproduct)
-            || (waters && item == farm.water_empty)
+        if (burns && arch != ARCH_GENERATOR && self.byproduct_pct > 0 && item == self.byproduct)
+            || (waters && item == farm.water_vessel)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
@@ -434,6 +440,16 @@ impl CookContent {
             roles |= ROLE_OUTPUT;
         }
         roles
+    }
+
+    /// What a burner of this archetype burns and how long a unit lasts: the
+    /// generator's low grade fuel, every other burner's wood.
+    pub fn fuel_of(&self, arch: u8) -> (u16, u32) {
+        if arch == ARCH_GENERATOR {
+            (self.gen_fuel_item, self.gen_fuel_ticks)
+        } else {
+            (self.fuel_item, self.fuel_ticks)
+        }
     }
 
     /// May `item` go into a container of this archetype at all.
@@ -491,6 +507,12 @@ impl OvenState {
     /// asks it of a bare archetype — the move verb knows what it is moving
     /// into before it has a state row in hand.
     pub fn arch_burns(arch: u8) -> bool {
+        arch == ARCH_FIRE || arch == ARCH_FURNACE || arch == ARCH_GENERATOR
+    }
+
+    /// Does this burner warm whoever is near while lit (comfort, the cold)?
+    /// A fire and a furnace; a generator burns its fuel in an engine.
+    pub fn arch_heats(arch: u8) -> bool {
         arch == ARCH_FIRE || arch == ARCH_FURNACE
     }
 
@@ -559,6 +581,7 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, co
                 count: put,
                 cond,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
             left -= put;
         }
@@ -663,12 +686,13 @@ pub fn toggle(
     // fuel to lay, so the switch is just a switch, and refusing it for
     // want of something it never consumes would be a rule with no reason
     // behind it.
+    let (fuel, fuel_ticks) = cc.fuel_of(st.arch);
     let has_fuel = !st.burns()
         || st.burn > 0
-        || (cc.fuel_ticks > 0
+        || (fuel_ticks > 0
             && boxes[i].items[fuel_slots(st.arch)]
                 .iter()
-                .any(|s| s.count > 0 && s.item == cc.fuel_item));
+                .any(|s| s.count > 0 && s.item == fuel));
     if !has_fuel {
         events.push(crate::world::EV_DEPLOY_REFUSED, p.id, REFUSE_D_FUEL, 0);
         return true;
@@ -718,10 +742,11 @@ pub fn sweep(
         if ovens[i].burns() {
             ovens[i].burn = ovens[i].burn.saturating_sub(step);
             if ovens[i].burn == 0 {
-                let taken = if cc.fuel_ticks == 0 {
+                let (fuel_item, fuel_ticks) = cc.fuel_of(arch);
+                let taken = if fuel_ticks == 0 {
                     false
                 } else {
-                    take_one(&mut boxes[i].items[fuel.clone()], cc.fuel_item)
+                    take_one(&mut boxes[i].items[fuel.clone()], fuel_item)
                 };
                 if !taken {
                     ovens[i].lit = false;
@@ -729,8 +754,12 @@ pub fn sweep(
                     announce(b.cx, b.cz, b.level, b.loc, false, 0, events);
                     continue;
                 }
-                ovens[i].burn = cc.fuel_ticks.min(u16::MAX as u32) as u16;
-                // The byproduct, banked in hundredths and paid whole.
+                ovens[i].burn = fuel_ticks.min(u16::MAX as u32) as u16;
+                // The byproduct, banked in hundredths and paid whole. An
+                // engine leaves none.
+                if arch == ARCH_GENERATOR {
+                    continue;
+                }
                 ovens[i].bank = ovens[i].bank.saturating_add(cc.byproduct_pct);
                 let units = ovens[i].bank / 100;
                 if units > 0 {
@@ -771,6 +800,15 @@ pub fn sweep(
                 ovens[i].cook[s] = 0;
                 continue;
             }
+            // A row that pays its own input back boils it (the water pass):
+            // a vessel of sea water on the fire comes off fresh, in place,
+            // and anything else on that row — fresh, empty — does not cook.
+            let boils = row.output == stack.item;
+            let mut sea = crate::survival::Water::of(stack.data);
+            if boils && !sea.salt {
+                ovens[i].cook[s] = 0;
+                continue;
+            }
             // A furnace cooks faster while a work's ceiling turns the smelt
             // knob (`works::KNOB_SMELT_PCT`); everything else at its own pace.
             let cook_step = if arch == crate::deploy::ARCH_FURNACE {
@@ -780,6 +818,12 @@ pub fn sweep(
             };
             ovens[i].cook[s] = ovens[i].cook[s].saturating_add(cook_step);
             if (ovens[i].cook[s] as u32) < row.ticks {
+                continue;
+            }
+            if boils {
+                sea.salt = false;
+                boxes[i].items[s].data = sea.data();
+                ovens[i].cook[s] = 0;
                 continue;
             }
             // Pay every row over this input, on a scratch copy, and commit
@@ -873,6 +917,7 @@ mod tests {
             count: 8,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(slots_add(&mut s, 1, 5, 10, 0), 5);
         assert_eq!(
@@ -881,7 +926,8 @@ mod tests {
                 item: 1,
                 count: 10,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         assert_eq!(
@@ -890,7 +936,8 @@ mod tests {
                 item: 1,
                 count: 3,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
     }
@@ -903,12 +950,14 @@ mod tests {
             count: 9,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s[1] = ItemStack {
             item: 2,
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(slots_room(&s, 1, 1, 10, 0));
         assert!(!slots_room(&s, 1, 2, 10, 0));
@@ -932,6 +981,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert!(take_one(&mut s, 3));
         assert_eq!(s[1], ItemStack::default());

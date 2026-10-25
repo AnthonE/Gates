@@ -256,7 +256,7 @@ pub fn gather(
             // inversion is not a setting any reference offers.
             // A narrowed view turns as much slower as it is narrower, so the
             // world moves under the crosshair at the same speed on screen.
-            let narrow = zoom.as_deref().map_or(0.0, |z| z.0.clamp(0.0, 0.5));
+            let narrow = zoom.as_deref().map_or(0.0, |z| z.0.clamp(0.0, 0.9));
             let rad = MOUSE_RAD_PER_PX * settings.sensitivity * (1.0 - narrow);
             if free {
                 // The head. Same sensitivity and the same sign as the body —

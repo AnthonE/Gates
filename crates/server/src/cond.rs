@@ -110,6 +110,7 @@ mod tests {
             count,
             cond,
             skin: 0,
+            ..ItemStack::EMPTY
         };
 
         // Legal: at the ceiling, worn, dead (cond 0 with a ceiling), and a
@@ -168,6 +169,7 @@ mod tests {
             count,
             cond,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(violation(&[stack(seed, 3, 15_625)], &gc), None);
         assert_eq!(

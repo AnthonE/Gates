@@ -43,8 +43,12 @@ const PLAYER: u32 = 3;
 const PLANTER: u16 = 20;
 const SEED_ITEM: u16 = 21;
 const CORN: u16 = 22;
-const SKIN_FULL: u16 = 23;
-const SKIN_EMPTY: u16 = 24;
+/// The farm's waterskin, and its data full (`survival::Water`: a litre of
+/// fresh water) and empty.
+const SKIN: u16 = 23;
+const SKIN_ML: u16 = 1000;
+const FULL: u32 = SKIN_ML as u32;
+const DRY: u32 = 0;
 const HEMP_SEED: u16 = 26;
 const HEMP_YIELD: u16 = 27;
 const CATCHER: u16 = 28;
@@ -94,8 +98,7 @@ fn farm_world() -> (Box<World>, u16, u16) {
         (PLANTER, 1),
         (SEED_ITEM, 50),
         (CORN, 50),
-        (SKIN_FULL, 1),
-        (SKIN_EMPTY, 1),
+        (SKIN, 1),
         (HEMP_SEED, 50),
         (HEMP_YIELD, 50),
         (CATCHER, 1),
@@ -133,8 +136,8 @@ fn farm_world() -> (Box<World>, u16, u16) {
     let mut fc = FarmContent::probe_fixture();
     fc.crops[0].seed = SEED_ITEM;
     fc.crops[0].yield_item = CORN;
-    fc.water_full = SKIN_FULL;
-    fc.water_empty = SKIN_EMPTY;
+    fc.water_vessel = SKIN;
+    fc.water_ml = SKIN_ML;
     fc.rain_wu_s = 0;
     fc.ground_rain_wu_s = 0;
     fc.catcher_rain_wu_s = 0;
@@ -163,6 +166,7 @@ fn farm_world() -> (Box<World>, u16, u16) {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The builder kit for the roofed tests: the fixture's wood and stone.
     for (slot, item) in [(0usize, 0u16), (1, 1)] {
@@ -171,6 +175,7 @@ fn farm_world() -> (Box<World>, u16, u16) {
             count: 200,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     (w, cx, cz)
@@ -185,6 +190,7 @@ fn place_planter(w: &mut World, cx: u16, cz: u16, level: u8) -> u32 {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = PLANTER_SLOT as u8;
     let before = w.deploys.len();
@@ -230,10 +236,10 @@ fn load_skin(w: &mut World, host: u32) {
         i,
         0,
         ItemStack {
-            item: SKIN_FULL,
+            item: SKIN,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: FULL,
+            ..ItemStack::EMPTY
         },
     );
 }
@@ -461,11 +467,7 @@ fn night_and_a_roof_hold_a_plant_and_it_drinks_nothing() {
     assert_eq!(w.farm.entries()[0].grown, 0, "it grew under a roof");
     assert_eq!(tank(&w, host), 0, "it drank under a roof");
     let i = w.deploys.box_index(host).unwrap();
-    assert_eq!(
-        w.deploys.box_slot(i, 0).item,
-        SKIN_FULL,
-        "the skin was poured"
-    );
+    assert_eq!(w.deploys.box_slot(i, 0).data, FULL, "the skin was poured");
 }
 
 /// **The farm keeps the clock everyone sees**: an admin `/time`
@@ -532,17 +534,13 @@ fn a_dry_planter_holds_and_a_skin_is_poured_only_for_a_thirsty_plant() {
     load_skin(&mut w, host);
     idle(&mut w, 60);
     let i = w.deploys.box_index(host).unwrap();
-    assert_eq!(
-        w.deploys.box_slot(i, 0).item,
-        SKIN_FULL,
-        "an idle planter drank"
-    );
+    assert_eq!(w.deploys.box_slot(i, 0).data, FULL, "an idle planter drank");
     assert_eq!(tank(&w, host), 0);
     plant(&mut w, host, 2);
     idle(&mut w, OVEN_PERIOD_TICKS * 2);
     assert_eq!(
-        w.deploys.box_slot(i, 0).item,
-        SKIN_EMPTY,
+        w.deploys.box_slot(i, 0).data,
+        DRY,
         "the skin was not poured"
     );
     assert!(tank(&w, host) > 0);
@@ -881,6 +879,7 @@ fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = PLANTER_SLOT as u8;
     w.tick(&[Command::PlaceDeploy {
@@ -897,10 +896,10 @@ fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
     assert_eq!(w.farm.len(), 1, "self-heal has not reached the plant yet");
 
     w.players[0].inv[HAND] = ItemStack {
-        item: SKIN_FULL,
+        item: SKIN,
         count: 1,
-        cond: 0,
-        skin: 0,
+        data: FULL,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = HAND as u8;
     for act in [TEND_WATER, TEND_PICK, TEND_CLEAR] {
@@ -911,7 +910,7 @@ fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
         }]);
         assert_eq!(refused(&w), Some(REFUSE_D_REACH), "act {act} let through");
     }
-    assert_eq!(w.players[0].inv[HAND].item, SKIN_FULL, "the skin was spent");
+    assert_eq!(w.players[0].inv[HAND].data, FULL, "the skin was spent");
     assert!(!w.players[0]
         .inv
         .iter()
@@ -955,6 +954,7 @@ fn plant_clone(w: &mut World, host: u32, spot: u8, item: u16, genes: u16) -> u32
         count: 1,
         cond: genes + 1,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let next = w.farm.next_id();
     w.tick(&[Command::Plant {
@@ -1156,6 +1156,7 @@ fn a_clone_plants_its_genes_and_a_blank_seed_rolls() {
         count: 1,
         cond: sim_core::farm::GENOME_VALUES as u16 + 1,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let next = w.farm.next_id();
     let tick = w.tick;
@@ -1380,7 +1381,8 @@ fn a_clone_pays_seeds_carrying_genes_and_kills_the_plant() {
             item: SEED_ITEM,
             count: 10,
             cond: 0,
-            skin: 0
+            skin: 0,
+            ..ItemStack::EMPTY
         },
         "a clone merged into the blank seeds"
     );
@@ -1396,7 +1398,8 @@ fn a_clone_pays_seeds_carrying_genes_and_kills_the_plant() {
             item: SEED_ITEM,
             count: 2,
             cond: genes + 1,
-            skin: 0
+            skin: 0,
+            ..ItemStack::EMPTY
         }]
     );
 
@@ -1526,6 +1529,7 @@ fn sow_clone(w: &mut World, x: f32, z: f32, genes: u16) -> u32 {
         count: 1,
         cond: genes + 1,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let next = w.farm.next_id();
     sow(w, CLONE_SLOT, x, z);
@@ -1539,10 +1543,10 @@ const HAND: usize = 5;
 /// Pour the full skin put in hand on plant `id`.
 fn pour(w: &mut World, id: u32) -> Option<u32> {
     w.players[0].inv[HAND] = ItemStack {
-        item: SKIN_FULL,
+        item: SKIN,
         count: 1,
-        cond: 0,
-        skin: 0,
+        data: FULL,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = HAND as u8;
     w.tick(&[Command::Tend {
@@ -1761,6 +1765,7 @@ fn a_foreign_claim_refuses_a_seed_and_the_crew_sows() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = PLANTER_SLOT as u8;
     w.tick(&[Command::PlaceDeploy {
@@ -1793,6 +1798,7 @@ fn a_foreign_claim_refuses_a_seed_and_the_crew_sows() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Plant {
         id: STRANGER,
@@ -1938,6 +1944,7 @@ fn place_bench(w: &mut World, cx: u16, cz: u16) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = PLANTER_SLOT as u8;
     w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 1.5);
@@ -2079,7 +2086,7 @@ fn watered_meadow_corn_ripens_at_the_soils_pace_and_picks_two() {
     // Ripe, it drinks no more: a skin is refused, not poured away.
     assert_eq!(pour(&mut w, id), Some(REFUSE_D_PLANT_STAGE));
     assert_eq!(
-        w.players[0].inv[HAND].item, SKIN_FULL,
+        w.players[0].inv[HAND].data, FULL,
         "a ripe plant spent the skin"
     );
     w.tick(&[Command::Tend {
@@ -2119,14 +2126,11 @@ fn a_dry_ground_plant_holds_until_rain_or_a_skin_waters_it() {
 
     // A skin: poured whole, the plant takes what it holds.
     assert_eq!(pour(&mut w, a), None);
-    assert_eq!(
-        w.players[0].inv[HAND].item, SKIN_EMPTY,
-        "the skin did not empty"
-    );
+    assert_eq!(w.players[0].inv[HAND].data, DRY, "the skin did not empty");
     assert_eq!(plant_of(&w, a).water, w.cook.farm.ground_cap_wu);
     assert_eq!(pour(&mut w, a), Some(REFUSE_D_PLANT_WATER), "a full plant");
     assert_eq!(
-        w.players[0].inv[HAND].item, SKIN_FULL,
+        w.players[0].inv[HAND].data, FULL,
         "a refused pour spent the skin"
     );
     idle(&mut w, 60);
@@ -2208,6 +2212,7 @@ fn place_catcher(
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = PLANTER_SLOT as u8;
     let (x, z) = sim_core::footprint::centre(cx, cz, pose);
@@ -2303,15 +2308,15 @@ fn a_catcher_fills_an_empty_skin_for_exactly_a_skins_worth() {
         i,
         0,
         ItemStack {
-            item: SKIN_EMPTY,
+            item: SKIN,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: DRY,
+            ..ItemStack::EMPTY
         },
     );
     set_tank(&mut w, c, skin - 1);
     idle(&mut w, 2 * OVEN_PERIOD_TICKS);
-    assert_eq!(slot0(&w, c).item, SKIN_EMPTY, "filled short of a skin");
+    assert_eq!(slot0(&w, c).data, DRY, "filled short of a skin");
     assert_eq!(
         tank(&w, c),
         skin - 1,
@@ -2320,11 +2325,7 @@ fn a_catcher_fills_an_empty_skin_for_exactly_a_skins_worth() {
 
     set_tank(&mut w, c, skin + 500);
     idle(&mut w, 2 * OVEN_PERIOD_TICKS);
-    assert_eq!(
-        slot0(&w, c).item,
-        SKIN_FULL,
-        "a skin's worth filled nothing"
-    );
+    assert_eq!(slot0(&w, c).data, FULL, "a skin's worth filled nothing");
     assert_eq!(slot0(&w, c).count, 1);
     assert_eq!(tank(&w, c), 500, "a fill cost other than one skin");
     // And a full skin is left alone.
@@ -2348,6 +2349,7 @@ fn sprinkle_into_planter(dx_q: i8, start: u32) -> (u32, u32, u32) {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         w.players[0].frame.sel = PLANTER_SLOT as u8;
         let before = w.deploys.len();
@@ -2508,6 +2510,7 @@ fn eat(w: &mut World, item: u16) {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Consume {
         id: PLAYER,
@@ -2569,6 +2572,7 @@ fn a_seed_from_the_last_meal_in_hand_spares_the_held_slot() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].frame.sel = 0;
     let seeds = held(&w, SEED_ITEM);
@@ -2596,6 +2600,7 @@ fn a_seed_from_eating_spills_into_a_bag_from_a_full_pack() {
                 count: 50,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
     }
@@ -2681,6 +2686,7 @@ fn a_potato_seed_grows_and_picks_five_potatoes() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let id = w.farm.next_id();
     w.tick(&[Command::Plant {

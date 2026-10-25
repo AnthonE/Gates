@@ -104,7 +104,7 @@ use sim_core::world::{
     EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
     EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
+    EV_VITALS, EV_WEAK_MARK, EV_WIRE, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
     PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE,
     TRUST_VERB_MAX,
 };
@@ -342,6 +342,7 @@ fn duel_world() -> World {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
@@ -361,6 +362,7 @@ fn arm_victim_with_junk(w: &mut World) {
         count: JUNK_COUNT,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -547,6 +549,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -567,18 +570,21 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: ARROW,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Input {
         id: ATTACKER,
@@ -648,6 +654,7 @@ fn gun_world() -> World {
         damage: 20,
         ammo: [RL_ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 4,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
@@ -664,12 +671,14 @@ fn gun_world() -> World {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: RL_ROUND,
         count: RL_PACK,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }
@@ -704,6 +713,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
         damage: 30,
         ammo: [WOOD, HV, NO_ITEM, NO_ITEM],
         rate_ticks: 37,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -723,6 +733,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
             damage_pct: 100,
             fire_ticks: [0; 2],
             blast: Default::default(),
+            ..Default::default()
         };
     }
     for (i, item) in [(0, BOW), (1, WOOD), (2, HV)] {
@@ -731,6 +742,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
             count: if item == BOW { 1 } else { 5 },
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.tick(&[]);
@@ -765,8 +777,8 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
 #[test]
 fn a_reload_names_the_magazine_and_what_it_cost() {
     let mut w = gun_world();
-    w.players[0].mag[0] = 2;
-    w.players[0].mag_round[0] = RL_ROUND;
+    w.players[0].set_gun(|g| g.loaded = 2);
+    w.players[0].set_gun(|g| g.round = RL_ROUND);
     w.tick(&[Command::Reload { id: ATTACKER }]);
 
     let ev = only(&w, EV_RELOAD);
@@ -795,7 +807,11 @@ fn a_reload_names_the_magazine_and_what_it_cost() {
         (RL_PACK - (RL_MAG - 2)) as u32,
         "the rounds EV_RELOAD.c named came out of the inventory"
     );
-    assert_eq!(w.players[0].mag[0], RL_MAG, "and went into the magazine");
+    assert_eq!(
+        w.players[0].gun().loaded,
+        RL_MAG,
+        "and went into the magazine"
+    );
 }
 
 /// **EV_RELOAD_REFUSED names the hand, the reason and the count.**
@@ -809,7 +825,7 @@ fn a_dry_click_names_the_hand_the_reason_and_the_count() {
     let mut w = gun_world();
     // Empty on purpose. `gun_world` loads nothing, so this is the state a
     // freshly crafted revolver is in.
-    assert_eq!(w.players[0].mag[0], 0);
+    assert_eq!(w.players[0].gun().loaded, 0);
     w.tick(&[Command::Input {
         id: ATTACKER,
         frame: InputFrame {
@@ -876,6 +892,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         damage: 20,
         ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: true,
         range_mm: RANGE_MM,
         structure: 0,
@@ -895,19 +912,21 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: ROUND,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // Loaded (reload v1). A gun with an empty cylinder raises
     // `EV_RELOAD_REFUSED` and no `EV_SHOT`, which `only` reports as "the
     // cause never fired" — this suite is about the shot's payload, so the
     // magazine is filled here rather than reloaded in the middle of it.
-    w.players[0].mag[0] = 8;
-    w.players[0].mag_round[0] = ROUND;
+    w.players[0].set_gun(|g| g.loaded = 8);
+    w.players[0].set_gun(|g| g.round = ROUND);
     w.tick(&[Command::Input {
         id: ATTACKER,
         frame: InputFrame {
@@ -988,6 +1007,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1008,18 +1028,21 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: ARROW,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The victim would be under the falling arrow otherwise, and a body
     // resolves before the world does — `EV_HIT`, not this.
@@ -1103,6 +1126,7 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
         damage: 30,
         ammo: [FIRE_ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1120,18 +1144,21 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
         damage_pct: 80,
         fire_ticks: [BURN, BURN],
         blast: Default::default(),
+        ..Default::default()
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FIRE_ARROW,
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[1].dead = true;
     w.players[1].active = false;
@@ -1504,6 +1531,7 @@ fn stump_grubbed_names_the_cell() {
         count: 1,
         cond: w.gather.cond_max_of(tool),
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The stump is shin-high under the swinger's feet: look straight down.
     until_looking(&mut w, EV_STUMP_GRUBBED, 0);
@@ -1687,6 +1715,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     let mut seq = 1u16;
@@ -1925,6 +1954,7 @@ fn consumed_names_the_player_then_item_over_slot() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Consume {
         id: BODY,
@@ -2313,6 +2343,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
             count: 200,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     (cx, cz)
@@ -2495,6 +2526,7 @@ fn plant_names_the_plant_then_its_stage_then_its_index() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
     let host = box_key(cx, cz, GROUND, 0);
@@ -2507,10 +2539,14 @@ fn plant_names_the_plant_then_its_stage_then_its_index() {
         i,
         0,
         ItemStack {
-            item: w.cook.farm.water_full,
+            item: w.cook.farm.water_vessel,
             count: 1,
-            cond: 0,
-            skin: 0,
+            data: sim_core::survival::Water {
+                ml: w.cook.farm.water_ml,
+                salt: false,
+            }
+            .data(),
+            ..ItemStack::EMPTY
         },
     );
     // Slot 1 holds the fixture's seed (item 1).
@@ -2593,6 +2629,7 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
 
@@ -2609,6 +2646,7 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
             count: 2,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
 
@@ -3536,6 +3574,7 @@ fn moved_names_the_address_and_what_moved() {
         count: 30,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[9] = ItemStack::default();
 
@@ -3655,6 +3694,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // Select the charge on its own tick. Buttons stay at zero throughout:
     // item 3 is also a melee row in this fixture, and a held primary would
@@ -3969,12 +4009,14 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Craft {
         id: BODY,
@@ -4009,6 +4051,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
             count: def.out_count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "and the inventory holds what the event announced"
     );
@@ -4022,6 +4065,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for s in w.players[0].inv.iter_mut().skip(1) {
         *s = ItemStack {
@@ -4029,6 +4073,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
             count: 100,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w.tick(&[Command::Craft {
@@ -4232,6 +4277,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -4500,7 +4546,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 74] = [
+    const COVERED: [(&str, u8); 75] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
@@ -4575,6 +4621,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_SENTRY_LOCK", EV_SENTRY_LOCK),
         ("EV_AMMO", EV_AMMO),
         ("EV_FIRE", EV_FIRE),
+        ("EV_WIRE", EV_WIRE),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -4855,6 +4902,7 @@ fn table_world(w: &mut World) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -4875,12 +4923,14 @@ fn table_world(w: &mut World) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: 3,
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -4898,6 +4948,7 @@ fn research_names_the_player_then_the_recipe_then_the_price() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -4918,6 +4969,7 @@ fn research_names_the_player_then_the_recipe_then_the_price() {
         count: 20,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Unlock {
         id: BUILDER,
@@ -4975,6 +5027,7 @@ fn a_research_table_names_its_cell_then_its_state_then_who_started_it() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     w.deploys.set_box_slot(
@@ -4985,6 +5038,7 @@ fn a_research_table_names_its_cell_then_its_state_then_who_started_it() {
             count: 20,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     w.tick(&[Command::Use {
@@ -5416,6 +5470,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
     let key = box_key(cx, cz, GROUND, 0);
@@ -5428,6 +5483,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
             count: JUNK_COUNT,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     stand_an_outsider(&mut w);
@@ -5493,6 +5549,7 @@ fn trust_names_a_bag_emptied_with_loot() {
         count: JUNK_COUNT,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let bag_of = |w: &mut World, owner: u32| {
         let b = w.players[0].body;
@@ -5627,6 +5684,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
             count: JUNK_COUNT,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let tick = w.tick;
         w.backpacks
@@ -5802,6 +5860,7 @@ fn trust_names_the_giver_the_receiver_and_a_give() {
         count: JUNK_COUNT,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let frame = InputFrame {
         seq: 1,
@@ -5997,6 +6056,7 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
         count: 6,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (x, z) = sim_core::town::kiosk_world(&t, 1).unwrap();
     w.players[0].body = Body::at(SEED, hv(SEED), x + 40.0, z);
@@ -6037,6 +6097,7 @@ fn a_shop_press_names_the_presser_the_machine_then_the_press() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
     let b = w.deploys.boxes()[0];
@@ -6100,6 +6161,7 @@ fn casino_world() -> World {
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }
@@ -6226,12 +6288,14 @@ fn a_work_names_itself_what_happened_and_who() {
         count: 6,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: 1,
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let deposit = Command::Arc {
         id: BUILDER,
@@ -6308,6 +6372,7 @@ fn a_dry_tank_takes_a_real_refill_to_relight() {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[0] = stack(0, 6);
     w.players[0].inv[1] = stack(1, 2);
@@ -6380,6 +6445,7 @@ fn extraction_names_the_player_the_exchange_and_what_left() {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[0] = stack(0, 6);
     w.players[0].inv[1] = stack(1, 2);
@@ -6437,12 +6503,14 @@ fn a_payment_names_the_payer_the_outcome_and_the_tag() {
         count: 60,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FILLER,
         count: 50,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let pay = |id, count| Command::Pay {
         id,
@@ -6581,6 +6649,7 @@ fn a_swipe_names_the_player_the_door_and_how() {
         count: 1,
         cond: 400,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Swipe {
         id: BUILDER,
@@ -6645,4 +6714,64 @@ fn a_sentry_lock_names_the_gun_and_the_target() {
     );
     assert_eq!(ev.b, BUILDER);
     assert_eq!(ev.c, 0, "EV_SENTRY_LOCK.c is reserved and must stay zero");
+}
+
+/// `EV_WIRE` (electricity, `power.rs`): a wire run from output 2 of one
+/// splitter to input 0 of another is `a` = the part it leaves, `b` = the part
+/// it reaches, `c` = `1 << 16 | out << 8 | inp`; taking the first part's
+/// wires up is `a` = that part and `b` = `c` = 0.
+#[test]
+fn wire_names_from_then_to_then_its_ports() {
+    use sim_core::deploy::ARCH_SPLITTER;
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    w.deploy.defs[DEPLOY_FIRE as usize].arch = ARCH_SPLITTER;
+    w.players[0].inv[4] = ItemStack {
+        item: w.deploy.defs[DEPLOY_FIRE as usize].item,
+        count: 2,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    place_deploy(&mut w, DEPLOY_FIRE, cx + 1, cz, GROUND, LOC_PLANE);
+    let (from, to) = (box_key(cx, cz, GROUND, 0), box_key(cx + 1, cz, GROUND, 0));
+    // The wire tool: item 3, in the selected slot.
+    w.power_def.wire_tool = 3;
+    w.power_def.wire_max_mm = 30_000;
+    w.players[0].inv[6] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[0].frame.sel = 6;
+    w.tick(&[Command::Wire {
+        id: BUILDER,
+        wire: sim_core::power::WireRec {
+            from,
+            out: 2,
+            to,
+            inp: 0,
+        },
+    }]);
+    let e = only(&w, EV_WIRE);
+    assert_eq!(e.a, from, "EV_WIRE.a is the part the wire LEAVES");
+    assert_eq!(e.b, to, "EV_WIRE.b is the part it REACHES");
+    assert_eq!(
+        e.c,
+        1 << 16 | 2 << 8,
+        "EV_WIRE.c is set << 16 | out << 8 | inp"
+    );
+    w.tick(&[Command::Unwire {
+        id: BUILDER,
+        key: from,
+    }]);
+    let e = only(&w, EV_WIRE);
+    assert_eq!(
+        (e.a, e.b, e.c),
+        (from, 0, 0),
+        "taken up: the part, then zeros"
+    );
 }

@@ -387,18 +387,21 @@ fn world() -> (World, u16, u16) {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FURNACE_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: BAG_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: PLAYER,
@@ -637,7 +640,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
 fn the_volume_table_covers_every_archetype() {
     assert_eq!(
         DEPLOY_VOL.len(),
-        sim_core::deploy::ARCH_CATCHER as usize + 1,
+        sim_core::deploy::ARCH_LIGHT as usize + 1,
         "a new archetype needs a volume row"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -667,6 +670,11 @@ fn the_volume_table_covers_every_archetype() {
         ARCH_WINDOW_SHUTTER,
         sim_core::deploy::ARCH_FLOOR_SPIKES,
         sim_core::deploy::ARCH_RUG,
+        // Electricity's small parts: underfoot or overhead.
+        sim_core::deploy::ARCH_SWITCH,
+        sim_core::deploy::ARCH_SPLITTER,
+        sim_core::deploy::ARCH_COMBINER,
+        sim_core::deploy::ARCH_LIGHT,
     ] {
         assert!(
             solid_vol(arch).is_none(),

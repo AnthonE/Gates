@@ -1005,6 +1005,28 @@ catalog id (`iconbake --skins` → `ci/icons/skin_renders/<catalog>.png`, then
 `finish_icons.py --only-renders` → `assets/icons/skins/<catalog>.png`), held by
 `tests/held_assets.rs`; the browser shell's store reads the same file.
 
+### Placed things (2026-10-24)
+
+The first skins for the base (wire v143: a placed deployable keeps its
+skin). Each is the world model repainted on its own UVs, the Realm drop's
+recipe (`--concept` from the item's icon render, upright, no glow), so one
+file draws the box where it stands, in a hand and on the ground, and
+`tests/deploy_assets.rs` holds it to its archetype's box. 38 credits each.
+
+| file | skin (catalog) | base | retexture task |
+|---|---|---|---|
+| `strongbox_box.glb` | Strongbox (23) | `deploy/box.glb` | `01a16b47-146e-7682-8ed4-eaf0e3db6f97` |
+| `bulkhead_door.glb` | Bulkhead Door (24) | `deploy/door_metal.glb` | `01a16b46-ea9b-7357-95e4-35e766cef161` |
+
+> **Strongbox** — "the wooden planks become dark oiled oak with deep grain, bound by heavy riveted bands of blackened wrought iron across every edge and corner, iron corner caps, a large hammered iron hasp on the front, worn bright where hands touch it, a few dents and scratches. An old reinforced strongbox."
+>
+> **Bulkhead Door** — "heavy industrial bulkhead steel plate, painted dark gunmetal grey, rows of raised rivets along every seam, diagonal yellow and black hazard stripes across the bottom third, chipped and scraped paint showing bare steel beneath, streaks of rust from the rivets."
+
+Both inside the Realm drop's frame: "Exactly this object, the same shape,
+proportions and parts, seen the same way, repainted as a premium cosmetic
+skin: " + the line + " Realistic, highly detailed. No text, no letters, no
+logos, no symbols. Plain white background."
+
 ## Textures are KTX2/UASTC at 1024, and the reason is VRAM
 
 **Every `.glb` here carries GPU-compressed textures since 2026-08-11**

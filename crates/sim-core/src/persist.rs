@@ -48,9 +48,9 @@
 //! they came from is the server's business.
 
 use crate::craft::CraftJob;
-use crate::gather::{ItemStack, NO_ITEM};
+use crate::gather::ItemStack;
 use crate::limits::{
-    CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_MAGS, MAX_RECIPES, WEAR_SLOTS,
+    CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, WEAR_SLOTS,
 };
 use crate::movement::{self, Body};
 use crate::terrain::ISLAND_SIZE;
@@ -79,7 +79,7 @@ use crate::world::Player;
 /// 401 → 409, and the feet's stack (Rust's boots) 409 → 417. Four more worn
 /// stacks at `SAVE_FORMAT` 12 (clothing v1: legs, hands, shirt, face).
 pub const PLAYER_SAVE_BYTES: usize =
-    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4;
+    SCALARS_BYTES + CRAFT_QUEUE * 6 + (INV_SLOTS + WEAR_SLOTS) * ItemStack::BYTES;
 
 /// The fixed head of the record: body, meters, heal, counters, the
 /// blueprint mask, the torch's remainder, and the crawl with its two
@@ -268,15 +268,6 @@ pub struct PlayerSave {
     /// where it left it, which is the honest answer: nobody was holding
     /// it up while the session was closed.
     pub light_acc: u32,
-    /// The magazine, keyed by weapon row (`Player::mag`, `Player::mag_round`;
-    /// store format 9). Without it a reconnect off the store found the
-    /// cylinder empty and the rounds gone — the pack was debited at the
-    /// reload. On disk the round is written `+ 1`, so an empty magazine
-    /// (`NO_ITEM`) is zero bytes and an unwritten record still decodes to
-    /// [`PlayerSave::EMPTY`]. Unvalidated beyond the widths, for the world
-    /// save's reason (`worldsave.rs`, format 12).
-    pub mag: [u16; MAX_MAGS],
-    pub mag_round: [u16; MAX_MAGS],
 }
 
 impl Default for PlayerSave {
@@ -308,12 +299,14 @@ impl PlayerSave {
             count: 0,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; INV_SLOTS],
         worn: [ItemStack {
             item: 0,
             count: 0,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; WEAR_SLOTS],
         jobs: [CraftJob {
             recipe: 0,
@@ -335,8 +328,6 @@ impl PlayerSave {
         light_acc: 0,
         known: 0,
         glyphs: 0,
-        mag: [0; MAX_MAGS],
-        mag_round: [NO_ITEM; MAX_MAGS],
     };
 
     /// The record for a player as they stand. A pure read — the server
@@ -368,8 +359,6 @@ impl PlayerSave {
             heal_span: p.heal_span,
             heal_acc: p.heal_acc,
             light_acc: p.light_acc,
-            mag: p.mag,
-            mag_round: p.mag_round,
         }
     }
 
@@ -412,16 +401,8 @@ impl PlayerSave {
             at += 6;
         }
         for s in self.inv.iter().chain(self.worn.iter()) {
-            out[at..at + 2].copy_from_slice(&s.item.to_le_bytes());
-            out[at + 2..at + 4].copy_from_slice(&s.count.to_le_bytes());
-            out[at + 4..at + 6].copy_from_slice(&s.cond.to_le_bytes());
-            out[at + 6..at + 8].copy_from_slice(&s.skin.to_le_bytes());
-            at += 8;
-        }
-        for (loaded, round) in self.mag.iter().zip(self.mag_round.iter()) {
-            out[at..at + 2].copy_from_slice(&loaded.to_le_bytes());
-            out[at + 2..at + 4].copy_from_slice(&round.wrapping_add(1).to_le_bytes());
-            at += 4;
+            out[at..at + ItemStack::BYTES].copy_from_slice(&s.to_le());
+            at += ItemStack::BYTES;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
     }
@@ -501,42 +482,20 @@ impl PlayerSave {
         // with the same three checks would be two places for the rule to
         // drift apart.
         for s in inv.iter_mut().chain(worn.iter_mut()) {
-            *s = ItemStack {
-                item: u16_at(at),
-                count: u16_at(at + 2),
-                cond: u16_at(at + 4),
-                skin: u16_at(at + 6),
-            };
-            // Canonical empty: an emptied slot zeroes ALL THREE fields,
-            // which is what the state hash reads. A record that said "0 of
-            // item 7" would hash differently from the same inventory the
-            // sim produced, and a difference nothing can see is wall 5's
-            // failure mode — and since durability v0 the SAME sentence
-            // holds for condition: a slot emptied by a path that forgot to
-            // zero `cond` hashes differently from the sim's own empty, so
-            // `count == 0 && cond != 0` is refused exactly as
-            // `count == 0 && item != 0` always was.
-            if s.item as usize >= MAX_ITEM_DEFS
-                || (s.count == 0 && s.item != 0)
-                || (s.count == 0 && s.cond != 0)
-                || (s.count == 0 && s.skin != 0)
-            {
+            *s = ItemStack::from_le(&src[at..at + ItemStack::BYTES]);
+            // Canonical empty (`ItemStack::canonical`): a record that said
+            // "0 of item 7", or kept a condition, skin or data on an empty
+            // slot, would hash differently from the inventory the sim
+            // produced, and a difference nothing can see is wall 5's
+            // failure mode.
+            if s.item as usize >= MAX_ITEM_DEFS || !s.canonical() {
                 return Err(SaveError::BadItemStack);
             }
-            at += 8;
-        }
-        let mut mag = [0u16; MAX_MAGS];
-        let mut mag_round = [NO_ITEM; MAX_MAGS];
-        for (loaded, round) in mag.iter_mut().zip(mag_round.iter_mut()) {
-            *loaded = u16_at(at);
-            *round = u16_at(at + 2).wrapping_sub(1);
-            at += 4;
+            at += ItemStack::BYTES;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
 
         Ok(Self {
-            mag,
-            mag_round,
             body,
             dead,
             inv,
@@ -623,15 +582,7 @@ mod tests {
             // transposition with `food_acc`, `hurt_acc` or `heal_acc`
             // reads as a wrong value rather than a coincidence.
             light_acc: 123_456,
-            // One loaded magazine and one empty that still names its last
-            // round (the sim leaves it set), so both halves of the `+ 1`
-            // encoding are pinned.
-            mag: [0; MAX_MAGS],
-            mag_round: [NO_ITEM; MAX_MAGS],
         };
-        s.mag[2] = 6;
-        s.mag_round[2] = 0x2122;
-        s.mag_round[5] = 0x3132;
         s.jobs[0] = CraftJob {
             recipe: 2,
             remaining: 5,
@@ -651,6 +602,7 @@ mod tests {
                     count: (i as u16 + 1) * 7,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
             }
         }
@@ -665,6 +617,9 @@ mod tests {
             cond: 0x2233,
             // Skinned (format 7): a saved skinned tool comes back skinned.
             skin: 0x0A0B,
+            // And remembering something (format 13): a loaded, scoped gun
+            // logs back in loaded and scoped.
+            data: 0x0B06_0C0D,
         };
         // The worn slots, distinct from each other and from every
         // inventory stack, so the codec cannot pass by writing the
@@ -676,24 +631,28 @@ mod tests {
             count: 1,
             cond: 0x4455,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s.worn[1] = ItemStack {
             item: 11,
             count: 1,
             cond: 0x6677,
             skin: 0x0E0F,
+            ..ItemStack::EMPTY
         };
         s.worn[2] = ItemStack {
             item: 13,
             count: 1,
             cond: 0x7788,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s.worn[6] = ItemStack {
             item: 17,
             count: 1,
             cond: 0x99AA,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s
     }
@@ -720,10 +679,11 @@ mod tests {
     /// and the feet (+8, Rust's boots).
     /// 417 → 449 at `SAVE_FORMAT` 11: sixteen magazines (guns v1).
     /// 449 → 481 at `SAVE_FORMAT` 12: four more worn stacks (clothing v1).
+    /// 481 → 565 at `SAVE_FORMAT` 13: every stack carries its data (+4 × 37)
+    /// and the per-body magazines it replaced are gone (−64).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 481, "the on-disk record size moved");
-        assert_eq!(MAX_MAGS, 16);
+        assert_eq!(PLAYER_SAVE_BYTES, 565, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
         assert_eq!(WEAR_SLOTS, 7);
@@ -821,7 +781,12 @@ mod tests {
         assert_eq!(
             &buf[127..129],
             &0x0A0Bu16.to_le_bytes(),
-            "inv[0].skin at 127 — the slot stride is 8 since format 7"
+            "inv[0].skin at 127"
+        );
+        assert_eq!(
+            &buf[129..133],
+            &0x0B06_0C0Du32.to_le_bytes(),
+            "inv[0].data at 129 — the slot stride is 12 since format 13"
         );
         // The worn slots close the record (format 4), and they are pinned
         // here rather than left to the round trip for this block's stated
@@ -830,54 +795,36 @@ mod tests {
         // walk them with one shared `.chain()` — which means the two halves
         // agree about a wrong offset by construction and only an
         // independent decoder can say so.
-        assert_eq!(&buf[361..363], &9u16.to_le_bytes(), "worn[0].item at 361");
-        assert_eq!(&buf[363..365], &1u16.to_le_bytes(), "worn[0].count at 363");
+        assert_eq!(&buf[481..483], &9u16.to_le_bytes(), "worn[0].item at 481");
+        assert_eq!(&buf[483..485], &1u16.to_le_bytes(), "worn[0].count at 483");
         assert_eq!(
-            &buf[365..367],
+            &buf[485..487],
             &0x4455u16.to_le_bytes(),
-            "worn[0].cond at 365"
+            "worn[0].cond at 485"
         );
-        assert_eq!(&buf[369..371], &11u16.to_le_bytes(), "worn[1].item at 369");
+        assert_eq!(&buf[493..495], &11u16.to_le_bytes(), "worn[1].item at 493");
         assert_eq!(
-            &buf[373..375],
+            &buf[497..499],
             &0x6677u16.to_le_bytes(),
-            "worn[1].cond at 373"
+            "worn[1].cond at 497"
         );
         assert_eq!(
-            &buf[375..377],
+            &buf[499..501],
             &0x0E0Fu16.to_le_bytes(),
-            "worn[1].skin at 375"
+            "worn[1].skin at 499"
         );
-        assert_eq!(&buf[377..379], &13u16.to_le_bytes(), "worn[2].item at 377");
+        assert_eq!(&buf[505..507], &13u16.to_le_bytes(), "worn[2].item at 505");
         assert_eq!(
-            &buf[381..383],
+            &buf[509..511],
             &0x7788u16.to_le_bytes(),
-            "worn[2].cond at 381 — the feet (store format 10)"
+            "worn[2].cond at 509 — the feet (store format 10)"
         );
         assert_eq!(
-            &buf[409..411],
+            &buf[553..555],
             &17u16.to_le_bytes(),
-            "worn[6].item at 409 — the face (store format 12)"
+            "worn[6].item at 553 — the face closes the record (store format 12)"
         );
-        // The magazine closes the record (format 9): pairs from 417, the
-        // round written `+ 1` so an empty one is zero bytes.
-        assert_eq!(&buf[417..421], &[0, 0, 0, 0], "mag[0] empty at 417");
-        assert_eq!(&buf[425..427], &6u16.to_le_bytes(), "mag[2] at 425");
-        assert_eq!(
-            &buf[427..429],
-            &0x2123u16.to_le_bytes(),
-            "mag_round[2] + 1 at 427"
-        );
-        assert_eq!(
-            &buf[439..441],
-            &0x3133u16.to_le_bytes(),
-            "mag_round[5] + 1 at 439"
-        );
-        assert_eq!(
-            &buf[445..449],
-            &[0, 0, 0, 0],
-            "mag[7] closes the record at 449"
-        );
+        assert_eq!(buf.len(), 565);
     }
 
     /// Every refusal, one per reason, built by hand off a legal record —
@@ -956,21 +903,27 @@ mod tests {
             Err(SaveError::BadItemStack)
         );
         // The cond half of canonical empty (format 3): inv[1] is a zeroed
-        // slot in the fixture, at offset 113; condition on an empty slot is
+        // slot in the fixture, at offset 133; condition on an empty slot is
         // state nothing can see and is refused exactly as "0 of item 7"
         // always was. This is the check nobody would think of — a slot
         // emptied by a path that forgot to zero `cond` hashes differently
         // from the sim's own empty (wall 5).
         assert_eq!(
-            bent(&|b| b[133..135].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[137..139].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry condition"
         );
         // And the skin half (format 7), for the same reason.
         assert_eq!(
-            bent(&|b| b[135..137].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[139..141].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry a skin"
+        );
+        // And the data half (format 13).
+        assert_eq!(
+            bent(&|b| b[141..145].copy_from_slice(&7u32.to_le_bytes())),
+            Err(SaveError::BadItemStack),
+            "an empty slot may not carry data"
         );
     }
 

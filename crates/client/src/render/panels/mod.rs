@@ -60,6 +60,7 @@ pub mod ring;
 pub mod shop;
 pub mod team;
 pub mod tech;
+pub mod turret;
 pub mod vendor;
 pub mod wheel;
 
@@ -372,6 +373,8 @@ pub(crate) struct Seen {
     /// `ClientCore::shop_gen` at the last redraw: a machine's offers or a
     /// shop answer arriving.
     pub shop_gen: u32,
+    /// `ClientCore::turret_gen` at the last redraw: a turret's list moving.
+    pub turret_gen: u32,
     /// `ClientCore::casino_gen` at the last redraw.
     pub casino_gen: u32,
     /// The profile card's and the friends list's generations at the last
@@ -986,6 +989,7 @@ pub fn register(app: &mut App) {
                 (
                     inv::fire_clicks,
                     inv::take_all_clicks,
+                    turret::clicks,
                     inv::info_clicks,
                     hearth::clicks,
                 )
@@ -1389,7 +1393,7 @@ pub fn keys(
             match hand {
                 crate::ui::hold::Held::Plan => Panel::Wheel,
                 crate::ui::hold::Held::Hammer => Panel::Hammer,
-                crate::ui::hold::Held::Other => Panel::None,
+                crate::ui::hold::Held::Wire | crate::ui::hold::Held::Other => Panel::None,
             }
         } else {
             Panel::None
@@ -1737,6 +1741,7 @@ fn detect_changes(
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
             || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
             || (ui.panel == Panel::Shop && core.shop_gen != ui.seen.shop_gen)
+            || (ui.panel == Panel::Inventory && core.turret_gen != ui.seen.turret_gen)
             || (matches!(ui.panel, Panel::BigWheel | Panel::Slots)
                 && core.casino_gen != ui.seen.casino_gen)
             || (core.stock_addr, core.stock_count, core.stock) != ui.seen.stock
@@ -1763,6 +1768,7 @@ fn detect_changes(
             ui.seen.bank_gen = core.bank_gen;
             ui.seen.team_gen = core.team_gen;
             ui.seen.shop_gen = core.shop_gen;
+            ui.seen.turret_gen = core.turret_gen;
             ui.seen.casino_gen = core.casino_gen;
             ui.seen.stock = (core.stock_addr, core.stock_count, core.stock);
             ui.dirty = true;

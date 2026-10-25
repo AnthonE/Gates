@@ -364,11 +364,12 @@ const _: () = assert!(
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
 /// Item definitions the sim preallocates for (CONTENT.md §2). The content
-/// bake refuses a set past this. 160 leaves farming v2's rows headroom
-/// (127 filled the old 7-bit held field); the wire's held field is 8 bits
-/// since v135, so anything up to 255 fits beside its empty-hand code
-/// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
-pub const MAX_ITEM_DEFS: usize = 160;
+/// bake refuses a set past this. 192 since Rust's other rounds and the
+/// weapon attachments filled 160 (127 filled the old 7-bit held field); the
+/// wire's held field is 8 bits since v135, so anything up to 255 fits
+/// beside its empty-hand code (`protocol::HELD_NONE`). Every per-item table
+/// in `World` grows with it.
+pub const MAX_ITEM_DEFS: usize = 192;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -447,8 +448,11 @@ pub const HOTBAR_SLOTS: usize = 6;
 /// rows, CONTENT.md §2). The content bake refuses a set past this.
 /// Proposed default, DECISIONS.md §open (craft verb row). 64 → 128 when
 /// Rust's tree items arrived (operator, 2026-10-17): the 62 rows of the day
-/// left two for a tree that wanted twenty.
-pub const MAX_RECIPES: usize = 128;
+/// left two for a tree that wanted twenty. 128 → 192 for electricity (127
+/// were taken): the blueprint mask stays 128 bits, because blueprint recipes
+/// rank first (`content` `recipe_index`) and only they are ever asked of it.
+/// Below 256 so a recipe index and a count still cross in 8 bits.
+pub const MAX_RECIPES: usize = 192;
 
 /// Inputs one recipe may carry (alpha data uses ≤ 3). The bake refuses
 /// past it. Structural cap like `MAX_TOOLS_PER_NODE`, not a knob.
@@ -649,11 +653,11 @@ pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
 const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
 
-/// Deployable definitions the sim preallocates for (the alpha set is 9
-/// rows, content/deployables.toml). The content bake refuses a set past
-/// this; the wire carries the row in 5 bits — exactly this range.
+/// Deployable definitions the sim preallocates for (content/deployables.toml).
+/// The content bake refuses a set past this; the wire carries the row in 6
+/// bits — exactly this range (32 until power's eight parts, wire v149).
 /// Structural cap like `MAX_PIECE_DEFS`.
-pub const MAX_DEPLOY_DEFS: usize = 32;
+pub const MAX_DEPLOY_DEFS: usize = 64;
 
 /// Cost rows one deployable may carry, for pricing its repair. A
 /// deployable's *placement* costs one crafted item; its repair is priced
@@ -715,6 +719,34 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 /// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
+
+/// Wires on the island at once (`power::PowerStore`): a part has at most
+/// three outputs, and this is two for every part [`MAX_POWER_NODES`] holds.
+/// Overflow policy: **refuse** the connect with `power::REFUSE_W_FULL`.
+pub const MAX_WIRES: usize = 2_048;
+
+/// Power parts the solve takes in a period (`power::Grid`), shard-wide.
+/// Past it, a part stands dark until one comes down: it is not in the grid,
+/// so nothing reaches it. Structural, not a knob: the grid's arrays and its
+/// index are sized by it.
+pub const MAX_POWER_NODES: usize = 1_024;
+
+/// Batteries holding a charge at once (`power::CellRec`). A battery past it
+/// holds nothing until one comes down. Structural, like the grid's.
+pub const MAX_BATTERIES: usize = 512;
+const _: () = assert!(MAX_BATTERIES <= MAX_POWER_NODES && MAX_WIRES <= 2 * MAX_POWER_NODES);
+
+/// Players one auto turret's authorize list holds (`turret::TurretRec`),
+/// the lock's `LOCK_AUTH_CAP`. Overflow policy: **refuse** the add with
+/// `REFUSE_D_AUTH_FULL`, never evict (`roster.rs`).
+pub const TURRET_AUTH_CAP: usize = 10;
+
+/// Turrets with a record of their own (`turret::TurretRecs`): one whose list
+/// is still its owner alone keeps none, so this counts the turrets somebody
+/// has authorized on, deauthorized from or cleared. Overflow policy:
+/// **refuse** the op that would create one with `REFUSE_D_FULL`.
+pub const MAX_TURRET_RECS: usize = 512;
+const _: () = assert!(MAX_TURRET_RECS <= MAX_BOXES);
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
@@ -1109,19 +1141,18 @@ pub const MAX_COOK_ROWS: usize = 32;
 pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
 
 /// The width of `Player::known`, and therefore the hard ceiling on how
-/// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
-/// rather than assumed: the mask is a `u128` in the sim and the save file
-/// and two 64-bit words on the wire (`SUB_KNOWN`), so a 129th recipe is a
-/// widening in three places and must fail here rather than silently become
-/// unlockable.
+/// many recipes a blueprint can gate: the mask is a `u128` in the sim and
+/// the save file and two 64-bit words on the wire (`SUB_KNOWN`). Blueprint
+/// recipes rank first, so the content bake refuses a blueprint recipe or a
+/// research row past this bit rather than let it silently become
+/// unlearnable; the table itself may be wider ([`MAX_RECIPES`]).
 pub const KNOWN_MASK_BITS: usize = 128;
 /// The mask's 64-bit words, as `EV_KNOWN` / `EV_KNOWN_HI` and `SUB_KNOWN`
 /// state them.
 pub const KNOWN_WORDS: usize = KNOWN_MASK_BITS / 64;
 const _: () = assert!(
-    MAX_RECIPES <= KNOWN_MASK_BITS,
-    "Player::known is a u128 mask over recipe indices — a recipe past bit 127 \
-     could never be researched, and nothing else would say so"
+    KNOWN_MASK_BITS <= MAX_RECIPES && MAX_RESEARCH_ROWS <= MAX_RECIPES,
+    "the mask covers the first recipes, and a research row teaches one"
 );
 
 /// Skin rows the sim preallocates for (`content/skins.toml`, `skin.rs`).
@@ -1330,6 +1361,40 @@ pub const MAX_ARROWS: usize = 128;
 /// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy and in the
 /// same place — before the ammo leaves the quiver.
 pub const MAX_ARROWS_PER_OWNER: usize = 4;
+
+/// Weapon attachments the content may declare (`combat::ModDef`): one bit
+/// each of a gun's attachment mask (`Player::mods`), so a `u8` holds them.
+pub const MAX_MODS: usize = 8;
+
+/// Bullets in flight across the whole shard (`bullet.rs`). A firearm's
+/// round flies like Rust's — travel time and drop — so it is a sim entity
+/// for the fraction of a second it is in the air. Sized off the per-owner
+/// share below: `MAX_PLAYERS × MAX_BULLETS_PER_OWNER` fits, so the store is
+/// never the reason a shot is refused while every owner keeps to its share.
+/// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy for its
+/// reason — never steal a live round to make room.
+pub const MAX_BULLETS: usize = 2048;
+
+/// Bullets one shooter may have in flight at once. A shotgun volley is up to
+/// `MAX_PELLETS` and an automatic holds three or four (a rifle round lives
+/// ~14 ticks and the cadence is four), so 20 is a full volley plus a burst.
+/// `bake_ranged` refuses a gun whose pellets × rounds-in-the-air at full
+/// cadence would pass it, so with shipped content this never binds.
+/// Overflow policy: **refuse the shot**, before the round is spent.
+pub const MAX_BULLETS_PER_OWNER: usize = 20;
+const _: () = assert!(MAX_PLAYERS * MAX_BULLETS_PER_OWNER <= MAX_BULLETS);
+const _: () = assert!(MAX_PELLETS <= MAX_BULLETS_PER_OWNER);
+
+/// Collision samples one bullet may take in one tick, `ARROW_STEP_MM` apart:
+/// 27.2 m a tick, 816 m/s. The arrow's `MAX_ARROW_SUBSTEPS` for a round ten
+/// times faster, and a **content wall** the same way — `bake_ammo` refuses a
+/// firearm round faster than this rather than ship one that tunnels.
+pub const MAX_BULLET_SUBSTEPS: usize = 160;
+
+/// Ticks a bullet may fly before it is dropped, whatever its reach: three
+/// seconds. A round's `range_m` ends it long before this; the cap exists so
+/// a round fired straight up cannot hold a slot.
+pub const MAX_BULLET_LIFE_TICKS: u16 = 90;
 
 /// Stopped arrows not yet lying on the ground (`spent.rs`): the ones in a
 /// body, for at most the lodge, and the ones stopped this tick. Four full

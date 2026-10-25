@@ -198,6 +198,7 @@ fn full_pack_world(pos: (f32, f32)) -> Box<World> {
             count: STACK_MAX,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w
@@ -316,6 +317,7 @@ fn a_partial_spill_says_what_fit_and_what_fell() {
         count: STACK_MAX - room,
         cond: w.gather.cond_max_of(tree.output),
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     w.tick(&[hold_primary(yaw, 0)]);
@@ -396,12 +398,14 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let id = bp
         .stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
@@ -421,6 +425,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &Town::NONE, &mut ev,),
@@ -456,6 +461,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let near = bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev).unwrap();
 
@@ -467,6 +473,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let made = bp
         .spill_at(
@@ -507,6 +514,7 @@ fn a_spill_never_merges_into_somebody_else_s_bag() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let theirs = bp.stand_up(&bc, 0, 0, 0, 2, &held, 100, &mut ev).unwrap();
 
@@ -516,6 +524,7 @@ fn a_spill_never_merges_into_somebody_else_s_bag() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mine = bp
         .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &Town::NONE, &mut ev)
@@ -779,24 +788,28 @@ fn giveback_world() -> (Box<World>, u16, u16) {
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[3] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     (w, cx, cz)
 }
@@ -810,6 +823,7 @@ fn wall_off(w: &mut World) {
             count: STACK_MAX,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
 }
@@ -1009,6 +1023,7 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         count: STACK_MAX,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Craft {
         id: OWNER,
@@ -1116,6 +1131,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &Town::NONE, &mut ev);
     assert!(made.is_some(), "nothing stood up — the case did not run");
@@ -1162,6 +1178,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     bp.stand_up(&armed, 0, 0, 0, 1, &held, 10, &mut ev)
         .expect("the case needs a bag standing under armed content");
@@ -1172,6 +1189,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let made = bp.spill_at(
         &BackpackContent::EMPTY,
@@ -1220,12 +1238,14 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
         count: 1,
         cond: 123,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
         .expect("the fixture ladder is armed");
@@ -1240,6 +1260,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             count: STACK_MAX,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     bp.loot_nearest(&gc, &sim_core::town::Town::NONE, &mut p, &mut ev)
@@ -1252,6 +1273,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             count: 1,
             cond: 123,
             skin: 0,
+            ..ItemStack::EMPTY
         },
         "the tool travels worn"
     );
@@ -1280,6 +1302,7 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         count: STACK_MAX,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }; INV_SLOTS];
     held[0] = ItemStack::default();
     let first = bp
@@ -1295,12 +1318,14 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         count: 1,
         cond: 77,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     spill[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let stood = bp
         .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &Town::NONE, &mut ev)
@@ -1337,6 +1362,7 @@ fn a_skin_survives_a_bag_both_ways() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
         .expect("the fixture ladder is armed");
@@ -1348,6 +1374,7 @@ fn a_skin_survives_a_bag_both_ways() {
         count: 1,
         cond: 77,
         skin: 5,
+        ..ItemStack::EMPTY
     };
     let mut spill = [ItemStack::default(); INV_SLOTS];
     spill[0] = skinned;
@@ -1390,6 +1417,7 @@ fn a_spill_into_a_bag_in_the_safe_zone_never_pushes_its_clock_out() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         buf
     };

@@ -379,11 +379,11 @@ slot = "hand"
 class = "construction"
 description = "A free-standing wooden barrier to fight behind."
 
-# The water vessels, empty, fresh and salt: H at water with the empty one in
-# hand fills it — fresh at a lake, salt at the sea — drinking the fresh one
-# gives the empty one back, a salt one boils fresh on a camp fire
-# (`cooking.toml`), and the right mouse pours either out (balance.toml
-# `[[survival.vessels]]`, `survival::drink`, `World::pour`).
+# The water vessels: each holds its water in its own data, up to its
+# `[[survival.vessels]]` ml (balance.toml) — H at water fills it, fresh at a
+# lake, salt at the sea; eating drinks a sip; a salt one boils fresh on a
+# camp fire (`cooking.toml`); the right mouse pours it out
+# (`survival::drink`, `World::pour`).
 [[item]]
 id = "item.waterskin"
 name = "Waterskin"
@@ -392,17 +392,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
-description = "Empty. Fill it at fresh water to carry a drink with you."
-
-[[item]]
-id = "item.waterskin_full"
-name = "Full Waterskin"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Fresh water to drink, or to water a planter."
+description = "Holds a litre. Fill it at water, drink it a sip at a time."
 
 [[item]]
 id = "item.fire_pit"
@@ -783,6 +773,93 @@ slot = "none"
 class = "ammo"
 description = "Shells for the pump shotgun."
 
+# --- Rust's other rounds (2026-10-23) -------------------------------------
+#
+# Their item pages: HV flies faster and flatter for the same damage, an
+# incendiary round is slower and sets what it hits alight, an explosive
+# 5.56 bursts on contact, a slug is one heavy ball where buckshot is a
+# spread, and the handmade shell is the cheap one anyone can make. R on a
+# full magazine changes which one the gun is loaded with.
+[[item]]
+id = "item.rifle_ammo_hv"
+name = "HV 5.56 Rifle Ammo"
+stack = 128
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "ammo"
+description = "Rifle rounds that fly faster and drop less. R on a full magazine loads them."
+
+[[item]]
+id = "item.rifle_ammo_fire"
+name = "Incendiary 5.56 Ammo"
+stack = 128
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "ammo"
+description = "Slower rifle rounds that hit harder and light a fire where they land."
+
+[[item]]
+id = "item.rifle_ammo_explosive"
+name = "Explosive 5.56 Ammo"
+stack = 128
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "ammo"
+description = "Rifle rounds that burst on contact. They chip walls and doors."
+
+[[item]]
+id = "item.pistol_ammo_hv"
+name = "HV Pistol Round"
+stack = 128
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "Pistol rounds that fly faster and drop less."
+
+[[item]]
+id = "item.pistol_ammo_fire"
+name = "Incendiary Pistol Round"
+stack = 128
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "Slower pistol rounds that hit harder and light a fire where they land."
+
+[[item]]
+id = "item.shotgun_slug"
+name = "12 Gauge Slug"
+stack = 64
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "One heavy ball instead of buckshot: reaches further, needs aiming."
+
+[[item]]
+id = "item.shotgun_fire"
+name = "Incendiary Shell"
+stack = 64
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "Slow burning pellets. The shell lights a fire where it lands."
+
+[[item]]
+id = "item.handmade_shell"
+name = "Handmade Shell"
+stack = 64
+tier = 1
+rarity = "common"
+slot = "none"
+class = "ammo"
+description = "Stone and gunpowder in a paper tube. Weak and slow, but anyone can make it."
+
 [[item]]
 id = "item.rocket"
 name = "Rocket"
@@ -1003,7 +1080,7 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 class = "construction"
-description = "Shoots strangers on sight. Load it with pistol rounds; your crew it spares."
+description = "Shoots anyone not on its list. Give it a gun and rounds; authorize your crew on it."
 
 # The compound shop (`sim-core/src/shop.rs`): Rust's vending machine, priced in
 # junk. Its owner and their crew stock it and set its offers; anyone buys.
@@ -1016,6 +1093,99 @@ rarity = "uncommon"
 slot = "hand"
 class = "construction"
 description = "Sells what your crew stocks it with, for junk. Anyone can buy."
+
+# Electricity (`sim-core/src/power.rs`, `deployables.toml` `[power]`): Rust's
+# core kit. The wire tool runs a wire from one part's output to another's
+# input; the parts are deployables. Their numbers are the Facepunch wiki's.
+[[item]]
+id = "item.wire_tool"
+name = "Wire Tool"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "tools"
+description = "Click a part's output, then another's input, to run a wire. Right click to pull its wires."
+
+[[item]]
+id = "item.generator_small"
+name = "Small Generator"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "items"
+description = "Burns low grade fuel and puts out 40 power while it runs."
+
+[[item]]
+id = "item.solar_panel"
+name = "Large Solar Panel"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "items"
+description = "Up to 20 power at noon, less toward dawn and dusk, none at night."
+
+[[item]]
+id = "item.battery_small"
+name = "Small Battery"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Stores 400 rWm and gives up to 15 power, only what its output draws."
+
+[[item]]
+id = "item.battery_large"
+name = "Large Battery"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "items"
+description = "Stores 24,000 rWm and gives up to 100 power, only what its output draws."
+
+[[item]]
+id = "item.switch"
+name = "Switch"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Passes power on while it is on. Draws 1."
+
+[[item]]
+id = "item.splitter"
+name = "Splitter"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Splits its power evenly over the outputs wired. Draws 1."
+
+[[item]]
+id = "item.root_combiner"
+name = "Root Combiner"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Adds its two inputs into one output. Draws 1."
+
+[[item]]
+id = "item.ceiling_light"
+name = "Ceiling Light"
+stack = 5
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Lights with 2 power and passes the rest on."
 
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
@@ -1558,16 +1728,6 @@ description = "Catches rain. Fills a waterskin and waters planters within 3 m."
 
 # --- the water pass's vessels ---------------------------------------------
 
-[[item]]
-id = "item.waterskin_salt"
-name = "Salt Waterskin"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Sea water. Boil it on a camp fire to drink it, or pour it on a fire."
-
 # The jug: twice a skin of lake water, for a base's planters and a long walk
 # inland. Fresh only — sea water is boiled in a skin.
 [[item]]
@@ -1578,17 +1738,8 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "tools"
-description = "Empty. Holds two skins of fresh water — fill it at a lake."
+description = "Holds two litres of fresh water. Fill it at a lake."
 
-[[item]]
-id = "item.water_jug_full"
-name = "Full Water Jug"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Fresh water: a long drink, or a fire put out."
 # --- clothing v1: Rust's seven clothing slots --------------------------------
 # Rust's cloth and hide pieces for the slots armor v0 never had: the legs,
 # the hands, the shirt under the body piece and the face under the hat. Names,
@@ -1788,3 +1939,87 @@ rarity = "common"
 slot = "hand"
 class = "food"
 description = "Berries and mushrooms. Heals you slowly over half a minute."
+
+# --- weapon attachments (2026-10-23) --------------------------------------
+#
+# Rust's weapon mods, an item each until it goes on a gun
+# (`content/weapons.toml` `[[attachment]]`, `sim-core/src/attach.rs`).
+[[item]]
+id = "item.holosight"
+name = "Holosight"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "A red-dot sight: a tighter, closer aim. Right-click it with a gun in hand to fit it."
+
+[[item]]
+id = "item.scope_8x"
+name = "8x Zoom Scope"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "weapons"
+description = "Eight times through the sights, for the long shot. Kicks harder."
+
+[[item]]
+id = "item.silencer"
+name = "Silencer"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "Muffles the gun to a thump heard at forty metres and hides its flash. Slower, weaker rounds."
+
+[[item]]
+id = "item.muzzle_brake"
+name = "Muzzle Brake"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "Halves the kick, at a little of the damage."
+
+[[item]]
+id = "item.muzzle_boost"
+name = "Muzzle Boost"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "Fires a tenth faster, at a tenth of the damage."
+
+[[item]]
+id = "item.lasersight"
+name = "Weapon Lasersight"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "A dot where the gun points: a tighter cone, and half the spread from the hip."
+
+[[item]]
+id = "item.gun_flashlight"
+name = "Weapon Flashlight"
+stack = 1
+tier = 2
+rarity = "common"
+slot = "none"
+class = "weapons"
+description = "A light on the barrel. The light key turns it on."
+
+[[item]]
+id = "item.extended_mag"
+name = "Extended Magazine"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "weapons"
+description = "A quarter more rounds in the magazine."

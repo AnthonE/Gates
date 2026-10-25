@@ -273,6 +273,7 @@ pub fn stream(
                         count: 1,
                         cond: 0,
                         skin: 0,
+                        ..sim_core::gather::ItemStack::EMPTY
                     },
                 )
             });

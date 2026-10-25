@@ -15,8 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_MAGS, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
-    WEAR_SLOTS,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
 };
 use crate::loot::LootContent;
 use crate::melee;
@@ -478,6 +477,35 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// client owns a *picture* of a projectile the server already fired, and
 /// a forged one changes nothing but what its author sees.
 pub const EV_SHOT: u8 = 35;
+
+/// `EV_SHOT.c`'s low half carries this bit for a **bullet** (`bullet.rs`):
+/// a firearm round that flies. The high half is its speed in mm/tick, as an
+/// arrow's; the low half is this bit, the reach in [`SHOT_REACH_UNIT_MM`]
+/// above [`SHOT_DROP_BITS`], and the drop in mm/tick² below them. An arrow's
+/// drop never reaches this bit (`bake_ammo` holds a bow round's drop under
+/// it), so the three readings — beam, arrow, bullet — partition the event.
+pub const SHOT_BULLET: u32 = 0x8000;
+/// A bullet from a silenced gun (`combat::CombatContent::quiet`): heard at
+/// a bow's radius, drawn with no flash.
+pub const SHOT_QUIET: u32 = 0x4000;
+/// Width of a bullet's drop in `EV_SHOT.c` (mm/tick², up to 63).
+pub const SHOT_DROP_BITS: u32 = 6;
+/// Width of a bullet's reach in `EV_SHOT.c`, in [`SHOT_REACH_UNIT_MM`].
+pub const SHOT_REACH_BITS: u32 = 8;
+/// The unit of a bullet's reach in `EV_SHOT.c`: two metres, eight bits, so
+/// up to 510 m — past the interest band every gun stops inside.
+pub const SHOT_REACH_UNIT_MM: u32 = 2000;
+
+/// `EV_SHOT.c` for a bullet at `speed` mm/tick, `drop` mm/tick², flying at
+/// most `reach_mm`, `quiet` if silenced.
+pub fn shot_bullet_c(speed: u16, drop: u16, reach_mm: u32, quiet: bool) -> u32 {
+    let reach = (reach_mm / SHOT_REACH_UNIT_MM).min((1 << SHOT_REACH_BITS) - 1);
+    u32::from(speed) << 16
+        | SHOT_BULLET
+        | if quiet { SHOT_QUIET } else { 0 }
+        | reach << SHOT_DROP_BITS
+        | u32::from(drop).min((1 << SHOT_DROP_BITS) - 1)
+}
 
 /// EV_KNOWN: a = the player who holds it, b = bits 0..32 of the blueprint
 /// mask, c = bits 32..64. **Own-fact** — a blueprint is personal, so only
@@ -992,7 +1020,13 @@ pub const PAID_NO_BODY: u32 = 2;
 /// never leaves a ghost on a far client.
 pub const EV_PLANT_GONE: u8 = 74;
 
-pub const EV_MAX: u8 = EV_PLANT_GONE;
+/// EV_WIRE (`power.rs`): a = the part a wire leaves, b = the part it
+/// reaches, c = `1 << 16 | out << 8 | inp` for a wire laid; or a = a part
+/// and b = c = 0 for every wire on it taken up. Aimed at the clients that
+/// hold the part `a`, as a door's state is.
+pub const EV_WIRE: u8 = 75;
+
+pub const EV_MAX: u8 = EV_WIRE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1345,36 +1379,16 @@ pub struct Player {
     /// The lag-comp favour the swing was taken under, spent when the strike
     /// tick itself brings none (a starved tick).
     pub strike_favour: u8,
-    /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
-    /// inventory slot and **not** by item index.
-    ///
-    /// Keyed by the weapon row, so nothing has to move it: a gun that
-    /// travels from the hotbar to a box to the ground and back keeps its
-    /// count, because the count was never attached to where the gun was.
-    /// That is the whole reason it is not a field on `ItemStack` — the
-    /// stated cost is in `RangedDef::mag_slot`, and `tests/reload.rs`
-    /// gates it.
-    ///
-    /// Zero on a fresh body, so a spawned revolver starts empty and the
-    /// first thing a player does with a gun is load it.
-    pub mag: [u16; MAX_MAGS],
-    /// Which round is in each magazine, `NO_ITEM` when empty — parallel to
-    /// [`Player::mag`].
-    ///
-    /// A weapon lists up to `MAX_WEAPON_AMMO` rounds in preference order,
-    /// so "six loaded" is not a fact until you say six of *what*: the
-    /// magazine has to remember, or a reload that topped up a partly-full
-    /// cylinder with a different round would fire the wrong damage and an
-    /// unload would return the wrong item to the pack. `ranged::reload`
-    /// refuses to mix — a magazine holding one kind tops up with that kind
-    /// or not at all.
-    pub mag_round: [u16; MAX_MAGS],
     /// The gun's aim-cone penalty, hundredths of a degree (`combat::Gun`):
     /// what sustained fire has added, as of [`Player::shot_at`]. Neither
     /// hashed nor saved — a restart lets the barrel settle.
     pub bloom: u16,
     /// The tick of this body's last gunshot, which `bloom` bleeds from.
     pub shot_at: u64,
+    /// When the gun may fire next, in 256ths of a tick
+    /// (`RangedDef::rate_sub`): the exact moment `next_swing` rounds up.
+    /// Neither hashed nor saved, `bloom`'s rule.
+    pub shot_due: u64,
     /// A semi-automatic fired on this pull, so the trigger has to come up
     /// before it fires again (`combat::Gun::semi`). Neither hashed nor saved.
     pub trigger_spent: bool,
@@ -1633,6 +1647,18 @@ pub struct Player {
 }
 
 impl Player {
+    /// The state of the gun in hand (`combat::held_gun`).
+    pub fn gun(&self) -> crate::combat::GunState {
+        crate::combat::held_gun(self)
+    }
+
+    /// Change the state of the gun in hand; nothing for an empty hand.
+    pub fn set_gun(&mut self, f: impl FnOnce(&mut crate::combat::GunState)) {
+        let mut g = self.gun();
+        f(&mut g);
+        crate::combat::set_held_gun(self, g);
+    }
+
     /// Crouched, as every rule that cares reads it (v83): the frame holds
     /// `BTN_CROUCH`, the body stands on something, and it is alive, awake
     /// and not downed. Derived, never stored — `frame` and `body` are
@@ -1679,13 +1705,12 @@ impl Default for Player {
             strike_at: 0,
             strike_sel: 0,
             strike_favour: 0,
-            mag: [0; MAX_MAGS],
             // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
             // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
             // array would say every empty magazine holds one.
-            mag_round: [NO_ITEM; MAX_MAGS],
             bloom: 0,
             shot_at: 0,
+            shot_due: 0,
             trigger_spent: false,
             draw_on: 0,
             ws_cell: NO_CELL,
@@ -2333,6 +2358,18 @@ pub enum Command {
         key: u32,
         act: crate::shop::ShopAct,
     },
+    /// Lay a wire (`power::connect`): from a part's output to another's
+    /// input, the wire tool in hand.
+    Wire {
+        id: u32,
+        wire: crate::power::WireRec,
+    },
+    /// Take up every wire on the part at box address `key`
+    /// (`power::unwire`).
+    Unwire {
+        id: u32,
+        key: u32,
+    },
     /// Put `stake` junk on one colour of THE GATE's wheel (`casino.rs`). The
     /// sim checks the terminal, the round, the cap and the funds.
     Wheel {
@@ -2424,6 +2461,19 @@ pub enum Command {
     /// No payload, `Reload`'s reasoning: the sim reads the hand it has.
     Unload {
         id: u32,
+    },
+    /// Put the attachment in inventory `slot` on the gun in hand
+    /// (`attach::attach`, Rust's weapon mods). The slot is the sender's
+    /// claim and the sim is the verdict; a refusal moves nothing.
+    Attach {
+        id: u32,
+        slot: u8,
+    },
+    /// Take attachment `bit` (`CombatContent::mods`) off the gun in hand,
+    /// into the pack (`attach::detach`).
+    Detach {
+        id: u32,
+        bit: u8,
     },
 }
 
@@ -2597,6 +2647,13 @@ pub struct World {
     /// Player auto turrets (`turret.rs`): the gun and its round, baked from
     /// `[turret]`; `TurretDef::INERT` holds every turret silent.
     pub turret_def: crate::turret::TurretDef,
+    /// Electricity's numbers (`power.rs`, `deployables.toml` `[power]`);
+    /// `PowerContent::EMPTY` asks no part for anything.
+    pub power_def: crate::power::PowerContent,
+    /// The solve, this period's and the last (`power::Power`). Derived from
+    /// the deploy store and the wires each period, hashed while it holds a
+    /// part, never saved.
+    pub power: crate::power::Power,
     /// The turret table — derived from the deploy store each look, hashed
     /// while live, never saved. Bodies are `turret::TURRET_SLOT0..`.
     pub turrets: [crate::turret::Turret; crate::limits::MAX_TURRETS],
@@ -2739,6 +2796,9 @@ pub struct World {
     /// that only grows with `MAX_ARROWS`. One allocation at construction,
     /// none in the tick.
     pub arrows: Box<ranged::Arrows>,
+    /// Firearm rounds in flight (`bullet.rs`). Hashed, not saved — the
+    /// arrows' rule: a restart drops a fraction of a second of flight.
+    pub bullets: crate::bullet::Bullets,
     /// Arrows that have landed and can be taken back — sim state, hashed
     /// and **saved**, which is the pair's whole distinction (`spent.rs`).
     /// One field up is a trajectory between two ticks and `worldsave.rs`
@@ -2799,6 +2859,8 @@ impl World {
             sentry_def: crate::sentry::SentryDef::INERT,
             sentries: [crate::sentry::Sentry::default(); crate::sentry::SENTRIES],
             turret_def: crate::turret::TurretDef::INERT,
+            power_def: crate::power::PowerContent::EMPTY,
+            power: crate::power::Power::new(),
             turrets: [crate::turret::Turret::default(); crate::limits::MAX_TURRETS],
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
@@ -2845,6 +2907,7 @@ impl World {
             slot_cache: Box::new(crate::occupy::SlotCache::shard()),
             slot_hint: Box::new(SlotHint::EMPTY),
             arrows: Box::new(ranged::Arrows::new()),
+            bullets: crate::bullet::Bullets::new(),
             spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
             trust: TrustLedger::new(),
@@ -3991,6 +4054,18 @@ impl World {
                 return;
             }
         }
+        // A turret's box is its panel (`turret::slot_takes`): one gun and
+        // six stacks of rounds, each slot what it is for.
+        let turret = ground == inventory::CONT_BOX && self.deploys.turret_index(cont).is_some();
+        if turret
+            && to_kind == inventory::CONT_BOX
+            && src.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, to_slot as usize, src.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
+        }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
         // A wear slot takes the piece that goes in it and nothing else
         // (`CanWearItem`, `combat::wearable_in`). Asked here for the same
@@ -4107,6 +4182,17 @@ impl World {
                     .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
                 return;
             }
+        }
+        // And its swap: the stack a turret slot gives back must fit there.
+        if turret
+            && plan == inventory::MovePlan::Swap
+            && from_kind == inventory::CONT_BOX
+            && dst.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, from_slot as usize, dst.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
         }
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
         // What a research table's slot may hold (`research::table_accepts`)
@@ -4225,6 +4311,7 @@ impl World {
                     count: 1,
                     cond: gc.cond_max_of(round),
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
                 ground.drop_one(bc, at, stack, tick, dir);
             },
@@ -4851,6 +4938,15 @@ impl World {
             if rec.owner != deploy::WORLD_OWNER {
                 self.struct_hitmarker(c.by, c.structure.min(rec.hp));
             }
+            // A blow on a turret is an attack (`turret.rs` §Peacekeeper):
+            // its striker is hostile, so a peacekeeper turret answers it.
+            if (rec.row as usize) < self.deploy.defs.len()
+                && self.deploy.defs[rec.row as usize].arch == deploy::ARCH_TURRET
+            {
+                if let Some(s) = self.slot_of(c.by) {
+                    self.players[s].hostile = crate::combat::HOSTILE_TICKS;
+                }
+            }
             deploy::damage_deploy(
                 &self.deploy,
                 &mut self.pieces,
@@ -5360,56 +5456,9 @@ impl World {
         // reason `backpack.rs`'s header names the others.
         let mut shed = [ItemStack::default(); INV_SLOTS];
         shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
-        // **And the loaded rounds go with them** (`NOW.md` §0mag item 1).
-        // Until 2026-08-30 they did not: `mag`/`mag_round` are cleared by
-        // the `..Player::default()` above, so up to a magazine's worth was
-        // destroyed per death and the killer looted an empty revolver
-        // while the shot that emptied it had already been paid for. That
-        // is the armor argument one level down — a corpse that keeps its
-        // plates is a body nobody fights for, and a corpse that eats its
-        // ammunition is a body nobody reloads before.
-        //
-        // **No content lookup is needed and that is the whole trick.**
-        // `mag_round[slot]` already names the item and `mag[slot]` already
-        // counts it, so this does not need `self.combat` and does not need
-        // a reverse map from `mag_slot` to a weapon row — there is no such
-        // map in the tree, and adding one to shed ammunition would have
-        // been the expensive way to answer a question the pair of arrays
-        // answers by construction. The `NO_ITEM` guard is the same one
-        // `reload` uses: `hitscan` deliberately leaves `mag_round` naming
-        // the spent kind after the last round, so `loaded == 0` is the
-        // only honest emptiness test and the round check is belt-and-braces
-        // against a save that arrived with a count and no kind.
-        //
-        // `cond_max_of` and not zero, and not the source stack's own
-        // condition. The source stack's is unrecoverable — `reload`'s
-        // `inv_take` discards it, by the same content rule V7 that makes
-        // the question moot: a round stacks past 1 (the shipped one stacks
-        // 128) so it carries no condition and `cond_max_of` is 0 for every
-        // one of them. It is written as the ceiling rather than as 0
-        // because a hypothetical round that *did* carry condition should
-        // arrive as ammunition arrives, not as scrap.
-        //
-        // Bounded by `inv_add`, which tops up matching stacks before it
-        // fills empties and returns what fit; a remainder past the 28 free
-        // slots is destroyed, which is the stated overflow policy and the
-        // same one `inv_add`'s other bare callers carry. The shipped set
-        // cannot reach it — `the_shed_magazines_fit_the_bag_they_shed_into`
-        // measures the worst case at one slot against 28 — and a content
-        // set that could is one where eight firearms each carry a magazine
-        // deeper than four full stacks of its own round.
-        for (loaded, round) in body.mag.iter().zip(body.mag_round.iter()) {
-            if *loaded == 0 || *round == NO_ITEM {
-                continue;
-            }
-            gather::inv_add(
-                &mut shed,
-                *round,
-                *loaded,
-                self.gather.stack_max_of(*round),
-                self.gather.cond_max_of(*round),
-            );
-        }
+        // The guns go with the rest of the pack, loaded and wearing their
+        // attachments: both are the gun's own (`combat::GunState`), so the
+        // killer loots this rifle as it was fired.
         self.drain_spill(slot, &mut shed);
     }
 
@@ -5763,11 +5812,10 @@ impl World {
                     // debited from the pack at the reload, so a record
                     // that forgot them would make logging off a way to
                     // lose a loaded cylinder.
-                    mag: s.mag,
-                    mag_round: s.mag_round,
                     // The gun's cone and trigger settle over a restart.
                     bloom: 0,
                     shot_at: 0,
+                    shot_due: 0,
                     trigger_spent: false,
                     draw_on: 0,
                     // Dry and warm: the store's record is a body that left
@@ -6916,6 +6964,16 @@ impl World {
                             loc,
                             &mut self.events,
                             reach,
+                        ) || crate::power::toggle(
+                            &self.deploy,
+                            &self.pieces,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
                         ));
                     // A door in plain sight and on this storey, the box
                     // store's rule (`reach.rs`): not through a floor, not
@@ -7101,7 +7159,31 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
+                    if deploy::op_is_turret(op) {
+                        // An auto turret's list (`turret::auth_op`): worked
+                        // where its box is opened, under the box's reach.
+                        match self
+                            .deploys
+                            .turret_index(deploy::box_key(cx, cz, level, loc))
+                        {
+                            Some(i) if self.box_reachable(i, slot) => crate::turret::auth_op(
+                                &self.pieces,
+                                &mut self.deploys,
+                                i,
+                                &self.players[slot],
+                                op,
+                                &mut self.events,
+                            ),
+                            Some(_) => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0)
+                            }
+                            None => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_KIND, 0)
+                            }
+                        }
+                    } else if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
                     } else if deploy::op_is_crew(op) {
@@ -7282,6 +7364,31 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
                     crate::seat::sit(&town, &mut self.players, slot, seat);
+                }
+            }
+            Command::Wire { id, wire } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::power::connect(
+                        &self.deploy,
+                        &self.power_def,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        wire,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Unwire { id, key } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::power::unwire(
+                        &self.deploy,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        key,
+                        &mut self.events,
+                    );
                 }
             }
             Command::Shop { id, key, act } => {
@@ -7746,6 +7853,36 @@ impl World {
                     self.drain_spill(slot, &mut spill);
                 }
             }
+            Command::Attach { id, slot: inv } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    crate::attach::attach(
+                        &self.combat,
+                        &self.gather,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        inv,
+                        &mut spill,
+                    );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Detach { id, bit } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    crate::attach::detach(
+                        &self.combat,
+                        &self.gather,
+                        &mut self.events,
+                        &mut self.players[slot],
+                        bit,
+                        &mut spill,
+                    );
+                    self.announce_spill(slot, &spill);
+                    self.drain_spill(slot, &mut spill);
+                }
+            }
         }
     }
 
@@ -7816,13 +7953,14 @@ impl World {
         let p = &self.players[i];
         let sel = p.frame.sel as usize;
         let held = p.inv.get(sel).copied().unwrap_or_default();
-        let Some((v, salt)) = self
+        let Some((_, water)) = self
             .survival
-            .vessel_full(held.item)
-            .filter(|_| held.count == 1)
+            .vessel_water(&held)
+            .filter(|(_, w)| held.count == 1 && w.ml > 0)
         else {
             return false;
         };
+        let salt = water.salt;
         let (fx, fz) = crate::yaw_lut::yaw_dir(p.frame.yaw);
         let x = p.body.qx as f32 * POS_XZ_Q + fx * POUR_AHEAD_M;
         let z = p.body.qz as f32 * POS_XZ_Q + fz * POUR_AHEAD_M;
@@ -7849,7 +7987,8 @@ impl World {
         {
             let (bx, bz) = b.xz();
             let (dx, dz) = (bx - x, bz - z);
-            if ((st.burns() && st.lit) || st.arch == deploy::ARCH_PLANTER)
+            if ((crate::oven::OvenState::arch_heats(st.arch) && st.lit)
+                || st.arch == deploy::ARCH_PLANTER)
                 && dx * dx + dz * dz <= r * r
                 && crate::reach::clear_box(
                     seed,
@@ -7869,7 +8008,7 @@ impl World {
         let sees_box = |j: usize| seen[j / 64] >> (j % 64) & 1 != 0;
         let (boxes, ovens) = self.deploys.oven_parts_mut();
         for (j, (b, st)) in boxes.iter().zip(ovens.iter_mut()).enumerate() {
-            if st.burns() && st.lit && sees_box(j) {
+            if crate::oven::OvenState::arch_heats(st.arch) && st.lit && sees_box(j) {
                 st.lit = false;
                 crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
                 doused += 1;
@@ -7888,11 +8027,11 @@ impl World {
             ovens,
             (x, z),
             r,
-            salt,
+            (self.cook.farm.wu_of(water.ml), salt),
             sees_box,
             sees_ground,
         );
-        self.players[i].inv[sel].item = v.empty;
+        self.players[i].inv[sel].data = 0;
         let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
         self.events.push(
             EV_DRANK,
@@ -8107,7 +8246,7 @@ impl World {
             .boxes()
             .iter()
             .zip(self.deploys.oven_states())
-            .filter(|(_, st)| st.lit && st.burns())
+            .filter(|(_, st)| st.lit && crate::oven::OvenState::arch_heats(st.arch))
             .map(|(b, _)| (b.cx, b.cz, b.level, b.pose))
             .find(|&at| {
                 crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
@@ -9037,6 +9176,7 @@ impl World {
                     count: 1,
                     cond: self.gather.cond_max_of(item),
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
                 self.ground_items
                     .drop_one(&self.backpack, at, stack, tick, [0; 3]);
@@ -9311,6 +9451,16 @@ impl World {
         // lands as a sentry's does, minus the hostile clock — a turret is
         // not the town's law, it is somebody's door.
         let mut trounds = [None; crate::limits::MAX_TURRETS];
+        // Electricity before the guns, so a turret fires on this period's
+        // solve (`power.rs`).
+        crate::power::sweep(
+            tick,
+            &self.deploy,
+            &self.power_def,
+            &mut self.deploys,
+            &mut self.power,
+            &mut self.events,
+        );
         {
             let t0 = crate::turret::TURRET_SLOT0;
             crate::turret::step(
@@ -9318,6 +9468,8 @@ impl World {
                 &self.haven,
                 tick,
                 &self.turret_def,
+                &self.power_def,
+                &self.power,
                 &self.deploy,
                 &self.pieces,
                 &mut crate::occupy::Occupants {
@@ -9440,6 +9592,7 @@ impl World {
             &mut self.events,
             &mut kills,
             &mut chips,
+            &mut self.bullets,
             &mut quarry,
         );
         let n_mob = quarry.n;
@@ -9457,6 +9610,48 @@ impl World {
             // Was `DEATH_BY_ARROW` from hitscan v0 to arrow recovery v1,
             // under the refusal that constant's doc states and this bump
             // lifts. A rifle no longer reports an arrow.
+            self.down_or_die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm, k.head);
+        }
+        // Rounds in flight, the ones just fired among them: a bullet's first
+        // tick of flight is the tick its trigger broke, so a body inside one
+        // tick's reach (12 m for a rifle) is hit as soon as a hitscan's was.
+        let mut quarry = ranged::Quarry {
+            mobs: &self.mobs,
+            mc: &self.mob,
+            hits: &mut mob_hits,
+            n: 0,
+            drums: &drums,
+            struck: &mut drum_hits,
+            nd: 0,
+        };
+        let (n_shot, n_chips) = crate::bullet::step(
+            seed,
+            tick,
+            &self.haven,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &self.rewind,
+            &self.combat,
+            &mut self.bullets,
+            self.arrows.lit_mut(),
+            &mut self.players,
+            &mut self.events,
+            &mut kills,
+            &mut chips,
+            Some(&mut quarry),
+        );
+        let n_mob = quarry.n;
+        self.land_mob_shots(&mob_hits[..n_mob]);
+        for c in chips.iter().take(n_chips) {
+            self.chip(c, &mut removals);
+        }
+        for k in kills.iter().take(n_shot) {
             self.down_or_die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm, k.head);
         }
         let mut quarry = ranged::Quarry {
@@ -9786,19 +9981,6 @@ impl World {
             // the buffer above: it decides what the next ticks hit.
             h.update(&p.strike_at.to_le_bytes());
             h.update(&[p.strike_sel, p.strike_favour]);
-            // The magazine, in its own update rather than widening the
-            // buffer above — and hashed at all because it decides whether
-            // a gun fires. Sim state outside the hash is the shape this
-            // repo pays for twice over: two shards could disagree about a
-            // loaded cylinder with `test_replay` green, and a save that
-            // dropped it would restore a world that hashes the same and
-            // plays differently. Both halves: `mag_round` is what the next
-            // shot spends, so a magazine holding the wrong round is a
-            // divergence even at an identical count.
-            for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
-                h.update(&loaded.to_le_bytes());
-                h.update(&round.to_le_bytes());
-            }
             // `bloom`, `shot_at` and `trigger_spent` are not hashed and not
             // saved, `hostile`'s rule: a gun's cone settles in a few tenths
             // of a second and a restart lets it, and what they change (where
@@ -10031,6 +10213,25 @@ impl World {
         // Safe without a count for the reason `players` is: slot order is
         // allocation order, allocation is deterministic, so two runs that
         // agree about the shot agree about the index.
+        // Bullets in flight, the arrows' shape and the arrows' reason: an
+        // empty store folds nothing, so no replay that fires no gun moves.
+        for b in self.bullets.entries() {
+            let mut buf = [0u8; 44];
+            buf[0..4].copy_from_slice(&b.qx.to_le_bytes());
+            buf[4..8].copy_from_slice(&b.qy.to_le_bytes());
+            buf[8..12].copy_from_slice(&b.qz.to_le_bytes());
+            buf[12..16].copy_from_slice(&b.vx.to_le_bytes());
+            buf[16..20].copy_from_slice(&b.vy.to_le_bytes());
+            buf[20..24].copy_from_slice(&b.vz.to_le_bytes());
+            buf[24..28].copy_from_slice(&b.owner.to_le_bytes());
+            buf[28..30].copy_from_slice(&b.round.to_le_bytes());
+            buf[30..32].copy_from_slice(&b.damage.to_le_bytes());
+            buf[32..34].copy_from_slice(&b.life.to_le_bytes());
+            buf[34] = b.back;
+            buf[36..40].copy_from_slice(&b.volley.to_le_bytes());
+            buf[40..44].copy_from_slice(&b.flown.to_le_bytes());
+            h.update(&buf);
+        }
         for a in self.arrows.entries() {
             let mut buf = [0u8; 40];
             buf[0..4].copy_from_slice(&a.qx.to_le_bytes());
@@ -10186,6 +10387,21 @@ impl World {
         for r in self.deploys.shops().entries() {
             h.update(&r.hash_bytes());
         }
+        // The turrets' lists, the same idiom: a world where every turret
+        // still spares its owner alone hashes as it did.
+        for r in self.deploys.turret_recs().entries() {
+            h.update(&r.hash_bytes());
+        }
+        // Electricity (`power.rs`), the same idiom: the wires and charges a
+        // save carries, then the solve while it holds a part.
+        for w in self.deploys.power().wires() {
+            h.update(&w.bytes());
+        }
+        for c in self.deploys.power().cells() {
+            h.update(&c.key.to_le_bytes());
+            h.update(&c.charge.to_le_bytes());
+        }
+        self.power.grid.hash_into(&mut |b| h.update(b));
         // The casino's held stakes and running spins (`casino.rs`), on the
         // same idiom: a world nobody gambled in hashes as it did.
         for seat in self.casino.seated() {
@@ -10221,6 +10437,11 @@ impl World {
             buf[18] = d.pose.oz as u8;
             buf[19] = d.pose.yaw;
             h.update(&buf);
+            // Its skin, only when it wears one: an unskinned world hashes
+            // as it did before skins could be placed (the goldens).
+            if d.skin != 0 {
+                h.update(&d.skin.to_le_bytes());
+            }
         }
         // The code locks (lock v1). Every byte is state a shard can
         // disagree about and a raid can turn on: two shards that disagree
@@ -10439,13 +10660,13 @@ impl World {
                 // tick would call two stacks equal right up until one of
                 // them vanished, which is the trap `refill_at` names one
                 // store down.
-                let mut buf = [0u8; 32];
+                let mut buf = [0u8; 24 + ItemStack::BYTES];
                 buf[0..4].copy_from_slice(&g.id.to_le_bytes());
                 buf[4..8].copy_from_slice(&g.qx.to_le_bytes());
                 buf[8..12].copy_from_slice(&g.qy.to_le_bytes());
                 buf[12..16].copy_from_slice(&g.qz.to_le_bytes());
-                buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
-                buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
+                buf[16..16 + ItemStack::BYTES].copy_from_slice(&stack_bytes(&g.stack));
+                buf[16 + ItemStack::BYTES..].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
                 // A stuck arrow's angle, only when it has one, so a store
                 // of things lying on the ground folds what it always did.
@@ -10527,17 +10748,9 @@ impl World {
     }
 }
 
-/// One stack as `state_hash` folds it: item, count, condition and skin,
-/// little-endian. The one encoding every store's loop shares, so a field
-/// added to `ItemStack` is added to the digest once rather than at six
-/// hand-copied buffers that can disagree.
-fn stack_bytes(s: &ItemStack) -> [u8; 8] {
-    let mut b = [0u8; 8];
-    b[0..2].copy_from_slice(&s.item.to_le_bytes());
-    b[2..4].copy_from_slice(&s.count.to_le_bytes());
-    b[4..6].copy_from_slice(&s.cond.to_le_bytes());
-    b[6..8].copy_from_slice(&s.skin.to_le_bytes());
-    b
+/// One stack as `state_hash` folds it (`ItemStack::to_le`).
+fn stack_bytes(s: &ItemStack) -> [u8; ItemStack::BYTES] {
+    s.to_le()
 }
 
 /// [`World::secret_seed`]'s channel of the salt (`rng::salted`), apart from
@@ -10741,6 +10954,7 @@ mod tests {
             count: 1,
             cond,
             skin: 0,
+            ..ItemStack::EMPTY
         };
 
         // 1. The player inventory loop.

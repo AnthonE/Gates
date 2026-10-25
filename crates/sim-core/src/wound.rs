@@ -55,7 +55,7 @@ pub const WOUNDED_HP: u16 = 10;
 /// Devblog 71's rule against raid revive loops). Same row.
 pub const REWOUND_TICKS: u64 = 1_800;
 /// The crawl, as a divisor on the frame's movement axes: a third of the
-/// walk, ~1.0 m/s against `WALK_SPEED = 3.0`. The reference publishes no
+/// walk, ~0.93 m/s against `WALK_SPEED = 2.8`. The reference publishes no
 /// speed ("considerably slower than walking") so this is ours; the shape —
 /// scaling the wish vector rather than a speed the step reads — is what
 /// lets one function serve the sim and the client's predictor identically

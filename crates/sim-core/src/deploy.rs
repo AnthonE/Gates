@@ -167,8 +167,9 @@ pub const ARCH_BARRICADE: u8 = 16;
 /// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
-/// rounds a gun on top spends on anybody who is not its owner or on every
-/// crew its owner is on where it stands (`turret::spares`).
+/// rounds a gun on top spends on anybody not on its own authorize list
+/// (`turret::TurretRecs`). Only its building privilege opens it
+/// (`turret::spares`).
 pub const ARCH_TURRET: u8 = 18;
 /// A player's vending machine (`shop.rs`, the compound shop): a container
 /// whose stock anyone in reach may buy at the offers its owner set, paid in
@@ -189,6 +190,22 @@ pub const ARCH_RUG: u8 = 22;
 /// banks rain under open sky, fills an empty waterskin in its one slot, and
 /// waters the planters and ground plants within its reach.
 pub const ARCH_CATCHER: u8 = 23;
+/// Electricity (`power.rs`): Rust's small generator — a box of low grade
+/// fuel that burns like a furnace's (`oven.rs`) and puts power out while it
+/// runs.
+pub const ARCH_GENERATOR: u8 = 24;
+/// A solar panel: power by daylight (`power::solar_rw`).
+pub const ARCH_SOLAR: u8 = 25;
+/// A rechargeable battery, small or large by its row's numbers.
+pub const ARCH_BATTERY: u8 = 26;
+/// A switch: passes power on while it is on (`DeployRec::open`).
+pub const ARCH_SWITCH: u8 = 27;
+/// A splitter: one input, three outputs, split evenly.
+pub const ARCH_SPLITTER: u8 = 28;
+/// A root combiner: two inputs summed into one output.
+pub const ARCH_COMBINER: u8 = 29;
+/// A ceiling light: lit with its draw met, the rest passed on.
+pub const ARCH_LIGHT: u8 = 30;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -211,7 +228,7 @@ pub const ARCH_CATCHER: u8 = 23;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 24] = [
+pub const DEPLOY_VOL: [[f32; 3]; 31] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
     [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
@@ -236,6 +253,13 @@ pub const DEPLOY_VOL: [[f32; 3]; 24] = [
     [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
     [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
     [0.9, 1.1, 0.9],     // 23 water catcher — a funnel over a barrel
+    [1.0, 0.8, 0.6],     // 24 small generator — an engine on a frame
+    [1.6, 1.2, 1.0],     // 25 solar panel — a tilted panel on its stand
+    [0.6, 0.5, 0.4],     // 26 battery — both sizes draw at one size
+    [0.0, 0.0, 0.0],     // 27 switch — a box on the wall's foot, walk-over
+    [0.0, 0.0, 0.0],     // 28 splitter — walk-over
+    [0.0, 0.0, 0.0],     // 29 root combiner — walk-over
+    [0.0, 0.0, 0.0],     // 30 ceiling light — hangs, walk-over
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -279,9 +303,10 @@ const _: () = {
 /// width bump there costs every C→S message a bit; the op is four bits
 /// inside this one payload instead.
 ///
-/// **One op space, two stores, and that is the point.** 0..=5 run against
+/// **One op space, three stores, and that is the point.** 0..=5 run against
 /// the code lock at a door (`lock.rs`); 6..=8 run against the hearth's
-/// crew (`crew_op`). They share a space because they are one question —
+/// crew (`crew_op`); 9..=13 against an auto turret's list and mode
+/// (`turret::auth_op`). They share a space because they are one question —
 /// *who may do this here* — and the answer is a `Roster` either way; and
 /// they share a *wire field*, so a second space would mean a second width
 /// for the domain gate to bound and a second chance to get it wrong.
@@ -301,9 +326,19 @@ pub const ACCESS_OP_CREW_JOIN: u8 = 6;
 pub const ACCESS_OP_CREW_LEAVE: u8 = 7;
 /// Clear it back to the clearer alone.
 pub const ACCESS_OP_CREW_CLEAR: u8 = 8;
+/// Put yourself on the auto turret's list at the address (`turret.rs`).
+pub const ACCESS_OP_TURRET_AUTH: u8 = 9;
+/// Take yourself off it.
+pub const ACCESS_OP_TURRET_DEAUTH: u8 = 10;
+/// Empty it, owner and all (Rust's `ClearList`).
+pub const ACCESS_OP_TURRET_CLEAR: u8 = 11;
+/// Peacekeeper: it shoots only the hostile (Rust's `SERVER_Peacekeeper`).
+pub const ACCESS_OP_TURRET_PEACEKEEPER: u8 = 12;
+/// Attack all: it shoots anybody off its list (Rust's `SERVER_AttackAll`).
+pub const ACCESS_OP_TURRET_ATTACK_ALL: u8 = 13;
 /// The highest op above, named rather than counted — the wire refuses
 /// past it and the sim refuses past it, in that order.
-pub const ACCESS_OP_MAX: u8 = ACCESS_OP_CREW_CLEAR;
+pub const ACCESS_OP_MAX: u8 = ACCESS_OP_TURRET_ATTACK_ALL;
 /// Whether an op addresses the hearth's crew rather than a door's lock.
 /// The one place the split is written down, so the wire's range check and
 /// the dispatcher cannot disagree about which half an op belongs to.
@@ -312,6 +347,10 @@ pub fn op_is_crew(op: u8) -> bool {
         op,
         ACCESS_OP_CREW_JOIN | ACCESS_OP_CREW_LEAVE | ACCESS_OP_CREW_CLEAR
     )
+}
+/// Whether an op addresses an auto turret's list (`turret::auth_op`).
+pub fn op_is_turret(op: u8) -> bool {
+    (ACCESS_OP_TURRET_AUTH..=ACCESS_OP_TURRET_ATTACK_ALL).contains(&op)
 }
 
 /// Does a deployable of this archetype hold items — that is, does
@@ -335,6 +374,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_CATCHER
         || arch == ARCH_TURRET
         || arch == ARCH_VENDING
+        || arch == ARCH_GENERATOR
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything
@@ -580,8 +620,14 @@ pub const REFUSE_D_OWN_CAP: u32 = 27;
 /// Told to the bag's owner only; any other hand hears `REFUSE_D_OWNER`, so
 /// the refusal does not tell a stranger somebody just woke there.
 pub const REFUSE_D_BAG_SPENT: u32 = 28;
+/// A wire longer than the content's span (`power.rs`, `[power]` `wire_max_m`).
+pub const REFUSE_D_WIRE_FAR: u32 = 29;
+/// A wire to a port the part does not have, or one already wired.
+pub const REFUSE_D_WIRE_PORT: u32 = 30;
+/// A wire that would feed a part its own power back (`power::would_loop`).
+pub const REFUSE_D_WIRE_LOOP: u32 = 31;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_BAG_SPENT;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_WIRE_LOOP;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -966,6 +1012,10 @@ pub struct DeployRec {
     /// filled at encode from the lock store, `dmg`'s posture: not hashed,
     /// not saved. False with no lock.
     pub keyed: bool,
+    /// The skin catalog id of the item it was placed from (0 = none), and
+    /// the one the item comes back wearing when it is picked up. Sim
+    /// state, hashed, saved and on the wire (wire v143).
+    pub skin: u16,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -1210,6 +1260,12 @@ pub struct Deploys {
     /// address like a lock is keyed by its door's. Dropped with the machine
     /// in [`Deploys::remove_at`].
     shops: crate::shop::Shops,
+    /// The auto turrets' authorize lists (`turret.rs`), keyed and dropped
+    /// like `shops`; a turret whose list is its owner alone has none.
+    turrets: crate::turret::TurretRecs,
+    /// The wires and the batteries' charges (`power.rs`), keyed by place;
+    /// a part's go with it in [`Deploys::remove_at`].
+    power: crate::power::PowerStore,
     /// The privilege volumes, cached per hearth — the shape the upkeep
     /// sweep's coverage questions read (`claim::ClaimCache`, whose doc
     /// carries the determinism and bounds arguments whole). Derived state
@@ -1241,6 +1297,8 @@ impl Deploys {
             boxes: Box::new(BoxStore::new()),
             locks: Locks::new(),
             shops: crate::shop::Shops::new(),
+            turrets: crate::turret::TurretRecs::new(),
+            power: crate::power::PowerStore::new(),
             claim: crate::claim::ClaimCache::new(),
             hearth_gen: 0,
             grief: [GriefRec::default(); MAX_GRIEF_PER_TICK],
@@ -1362,8 +1420,8 @@ impl Deploys {
 
     /// Every player id this store files a thing under, through `f`: each
     /// deployable's owner (a bag's is whose bag it is), each cupboard's owner
-    /// and crew, each box's owner, each lock's owner, auth and guests
-    /// (`World::remap_player_ids`).
+    /// and crew, each box's owner, each lock's owner, auth and guests, each
+    /// turret's list (`World::remap_player_ids`).
     pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
         for d in self.entries[..self.len].iter_mut() {
             d.owner = f(d.owner);
@@ -1380,6 +1438,7 @@ impl Deploys {
             l.auth.map_ids(f);
             l.guests.map_ids(f);
         }
+        self.turrets.map_ids(f);
     }
 
     /// Where hearth `h` stands: its deploy record's centre, or its cell's
@@ -1506,6 +1565,36 @@ impl Deploys {
         self.shops.restore(recs);
     }
 
+    pub fn turret_recs(&self) -> &crate::turret::TurretRecs {
+        &self.turrets
+    }
+
+    pub(crate) fn turret_recs_mut(&mut self) -> &mut crate::turret::TurretRecs {
+        &mut self.turrets
+    }
+
+    /// Replace the turrets' lists from a decoded world save. Boot-only.
+    pub(crate) fn restore_turrets(&mut self, recs: &[crate::turret::TurretRec]) {
+        self.turrets.restore(recs);
+    }
+
+    pub fn power(&self) -> &crate::power::PowerStore {
+        &self.power
+    }
+
+    pub(crate) fn power_mut(&mut self) -> &mut crate::power::PowerStore {
+        &mut self.power
+    }
+
+    /// Replace the wires and charges from a decoded world save. Boot-only.
+    pub(crate) fn restore_power(
+        &mut self,
+        wires: &[crate::power::WireRec],
+        cells: &[crate::power::CellRec],
+    ) {
+        self.power.restore(wires, cells);
+    }
+
     /// Write the two mirror bits of `entries[i]` from the lock store's
     /// verdict. `World::rebuild_doors` is the only caller and the doc
     /// there is the argument; it exists as a method because `entries` is
@@ -1624,6 +1713,12 @@ impl Deploys {
             .filter(|&i| self.boxes.ovens[i].arch == ARCH_VENDING)
     }
 
+    /// [`Self::vending_index`] for an auto turret.
+    pub fn turret_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].arch == ARCH_TURRET)
+    }
+
     /// Resolve a packed box address to an index into `boxes()`, or `None`
     /// when no box stands there. The index is transient — swap-remove
     /// invalidates it — which is exactly why the handle on the wire is the
@@ -1718,6 +1813,13 @@ impl Deploys {
             .find(|d| d.cx == cx && d.cz == cz && d.level == level && d.loc == loc)
     }
 
+    /// Write entry `i`'s `open` bit — a switch's position (`power::toggle`).
+    pub(crate) fn set_open_at(&mut self, i: usize, open: bool) {
+        if i < self.len {
+            self.entries[i].open = open;
+        }
+    }
+
     /// The store index of the deployable at an address — `Pieces`'
     /// `find_index`, for the same reason: `find` hands out a reference the
     /// borrow checker will not let a mutation follow. The address is
@@ -1744,7 +1846,7 @@ impl Deploys {
     /// server's deploy walk reads tail-down and never re-derives an append,
     /// so the broadcast is the only way a record placed mid-walk reaches a
     /// client.
-    fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
+    pub(crate) fn insert(&mut self, rec: DeployRec, tick: u64) -> bool {
         if self.len == MAX_DEPLOYS {
             return false;
         }
@@ -1794,10 +1896,19 @@ impl Deploys {
                 self.hearth_gen += 1;
             }
         }
+        // A power part's wires and its charge (`power.rs`): the next part
+        // placed here starts unwired.
+        if crate::power::is_part(dc.defs[rec.row as usize].arch) {
+            self.power
+                .forget(box_key(rec.cx, rec.cz, rec.level, rec.loc));
+        }
         if holds_items(dc.defs[rec.row as usize].arch) {
             // A vending machine's offers go with it (raid, decay, pickup):
             // the next machine at this address starts with none.
             self.shops
+                .drop_key(box_key(rec.cx, rec.cz, rec.level, rec.loc));
+            // And a turret's list: the next one placed here starts fresh.
+            self.turrets
                 .drop_key(box_key(rec.cx, rec.cz, rec.level, rec.loc));
             if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level, rec.loc)) {
                 let bx = self.boxes.entries[b];
@@ -2154,7 +2265,7 @@ pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     )
 }
 
-fn player_xz(p: &Player) -> (f32, f32) {
+pub(crate) fn player_xz(p: &Player) -> (f32, f32) {
     (
         p.body.qx as f32 * crate::movement::POS_XZ_Q,
         p.body.qz as f32 * crate::movement::POS_XZ_Q,
@@ -3009,6 +3120,7 @@ pub fn stand_authored(
         locked: false,
         dmg: 0,
         keyed: false,
+        skin: 0,
     };
     if !deploys.insert(rec, tick) {
         return false;
@@ -3284,6 +3396,21 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_COST, 0);
         return;
     }
+    // The stack in hand is the one placed, so a skinned door in hand is the
+    // door that stands. Bots place with nothing selected: the first stack.
+    let sel = p.frame.sel as usize;
+    let slot = if p
+        .inv
+        .get(sel)
+        .is_some_and(|s| s.count > 0 && s.item == def.item)
+    {
+        sel
+    } else {
+        p.inv
+            .iter()
+            .position(|s| s.count > 0 && s.item == def.item)
+            .unwrap_or(0)
+    };
     let rec = DeployRec {
         cx,
         cz,
@@ -3304,6 +3431,7 @@ pub fn place_deploy(
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
         keyed: false,
+        skin: p.inv[slot].skin,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -3359,7 +3487,11 @@ pub fn place_deploy(
         };
         deploys.boxes.len += 1;
     }
-    inv_take(&mut p.inv, def.item, 1);
+    let held = &mut p.inv[slot];
+    held.count -= 1;
+    if held.count == 0 {
+        *held = ItemStack::default();
+    }
     events.push(
         EV_DEPLOY_PLACED,
         crate::gather::cell_key(cx, cz),
@@ -3523,7 +3655,7 @@ fn door_in_reach(
 /// serves a **box's** lock bits too (locks on boxes): the event is
 /// addressed, the client's mirror updates whatever record stands there,
 /// and a box's `open` is simply always false.
-fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
+pub(crate) fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) {
     let d = &deploys.entries[i];
     events.push(
         EV_DOOR,
@@ -3937,13 +4069,15 @@ pub fn pick_up(
             );
         }
     }
-    crate::gather::inv_add_spilling(
+    // It comes back wearing the skin it was placed in.
+    crate::gather::inv_add_spilling_skinned(
         &mut p.inv,
         spill,
         def.item,
         1,
         gc.stack_max_of(def.item),
         gc.cond_max_of(def.item),
+        rec.skin,
     );
     drop_deploy(dc, pieces, deploys, i, events);
 }
@@ -4804,6 +4938,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         p
@@ -5700,6 +5835,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         take_stock(&dc, &gc, &mut deploys, &mut p, (CX, CZ, 0), 0, &mut ev);
@@ -6183,6 +6319,7 @@ mod tests {
                 locked: false,
                 dmg: 0,
                 keyed: false,
+                skin: 0,
             },
             0,
         ));
@@ -7103,6 +7240,62 @@ mod tests {
         assert_eq!(crate::craft::inv_count(&stranger.inv, 5), 0);
         lift(&mut p, &mut ev);
         assert_eq!(crate::craft::inv_count(&p.inv, 5), 1, "its owner lifts it");
+    }
+
+    #[test]
+    fn a_skinned_deployable_keeps_its_skin_through_place_and_pick_up() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        // Two workbenches (item 3): a plain one first, the skinned one in
+        // hand. The one in hand is the one that stands.
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (3, 1), (3, 1)]);
+        p.inv[3].skin = 21;
+        p.frame.sel = 3;
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1);
+        assert_eq!(deploys.entries()[0].skin, 21, "it stands in its skin");
+        assert_eq!(p.inv[3], ItemStack::default(), "the held stack was placed");
+        assert_eq!((p.inv[2].item, p.inv[2].skin), (3, 0), "not the plain one");
+
+        p.inv[2] = ItemStack::default();
+        pick_up(
+            &dc,
+            &gc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        assert_eq!(deploys.len(), 0);
+        let back = p.inv.iter().find(|s| s.item == 3 && s.count > 0);
+        assert_eq!(back.map(|s| s.skin), Some(21), "and comes back wearing it");
     }
 
     #[test]
@@ -9776,22 +9969,24 @@ mod tests {
             .unwrap();
         deploys.set_box_slot(
             b,
-            0,
+            1,
             ItemStack {
                 item: AMMO,
                 count: 5,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
         deploys.set_box_slot(
             b,
-            1,
+            0,
             ItemStack {
                 item: GUN,
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
         reconcile(&dc, &deploys, &def, &mut table, &mut slots);

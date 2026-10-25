@@ -208,6 +208,7 @@ fn a_full_quiver_spills_the_arrow_at_your_feet() {
             count: QUIVER,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     stop(&mut w, 0);
@@ -267,6 +268,7 @@ fn world_with_bow() -> Box<World> {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -284,6 +286,7 @@ fn world_with_bow() -> Box<World> {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     w.combat = c;
     // Long enough a life that nothing here races the despawn.
@@ -293,12 +296,14 @@ fn world_with_bow() -> Box<World> {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[P].inv[7] = ItemStack {
         item: ARROW,
         count: QUIVER,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w
 }

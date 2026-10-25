@@ -1576,7 +1576,13 @@ impl Combat {
             return self.over(None, End::Parted);
         };
         let me = pos(body);
-        let Some(mut t) = tracks.get(foe.id).copied() else {
+        // An animal's track outlives its body: remembered out of sight, it
+        // would read as one that ran off, not one that fell.
+        let tracked = tracks
+            .get(foe.id)
+            .copied()
+            .filter(|_| Species::of(foe.id) == Species::Player || !tracks.gone(foe.id));
+        let Some(mut t) = tracked else {
             // Gone from the snapshot the moment after my round landed, in
             // sight and near: it fell, and its carcass took it out of the
             // snapshot. The markers cannot say so when the hurt began in an
@@ -1821,7 +1827,19 @@ impl Combat {
         // Where the sim will fire this frame's shot from: the stance's eye,
         // which a crouch held off the ground does not lower.
         let eye = [me[0], me[1] + eye_m(crouch && body.grounded), me[2]];
-        let (look, solved) = if r.hitscan {
+        // A round that flies (`sim_core::bullet`) is led like an arrow, by
+        // its flight; against a player only by its flight, because the shard
+        // judges the whole flight where my screen shows them.
+        let (look, solved) = if r.hitscan && r.speed_mmpt > 0 {
+            let ahead_ticks = match t.species {
+                Species::Player => 0.0,
+                _ => kit.lead_ticks as f32,
+            };
+            match aim::lead(eye, at, t.vel, ahead_ticks, r.speed_mmpt, r.drop_mmpt2) {
+                Some((p, _)) => (Look::Point(p), true),
+                None => (Look::Point(at), false),
+            }
+        } else if r.hitscan {
             let look = match t.species {
                 Species::Player => Look::Body {
                     id: t.id,

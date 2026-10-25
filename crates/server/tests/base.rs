@@ -108,6 +108,7 @@ fn stack(c: &content::Content, id: &str, count: u16) -> ItemStack {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 

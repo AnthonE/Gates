@@ -42,6 +42,7 @@ fn stack(item: u16, count: u16) -> ItemStack {
         count,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }
 }
 
@@ -509,6 +510,7 @@ fn a_take_announces_its_item_and_keeps_its_skin() {
         count: 5,
         cond: 0,
         skin: 7,
+        ..ItemStack::EMPTY
     };
     g.scatter(&bc, SEED, hv(), 1, p.body.qx, p.body.qz, &items, 0);
 

@@ -709,6 +709,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         p
@@ -871,6 +872,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 7,
+            ..ItemStack::EMPTY
         };
         let plan = plan_move(1, skinned, ItemStack::default(), 1).expect("into empty");
         let (src, dst) = resolve(plan, skinned, ItemStack::default());
@@ -894,7 +896,8 @@ mod tests {
                 item: 0,
                 count: 2,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         assert_eq!(inv_count(&p.inv, 0), 2);
@@ -919,6 +922,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let mut p = player(&[]);
         p.inv[0] = broken;
@@ -1352,6 +1356,7 @@ mod tests {
                 count: 100,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         let mut ev = EventQueue::default();

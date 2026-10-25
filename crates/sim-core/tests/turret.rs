@@ -57,13 +57,13 @@ fn buildable_cell(w: &World) -> (u16, u16) {
 }
 
 /// A world with the owner's turret placed and the stranger standing 9 m
-/// from it; `rounds` pistol rounds in its box's first slot and a [`GUN`] in
-/// its second. Returns the world and the turret's box key.
+/// from it; a [`GUN`] in its weapon slot and `rounds` pistol rounds in its
+/// first ammo slot. Returns the world and the turret's box key.
 fn turret_world(rounds: u16) -> (World, u32) {
     turret_world_with(rounds, Some(GUN))
 }
 
-/// [`turret_world`] with `gun` (or none) in the box's second slot.
+/// [`turret_world`] with `gun` (or none) in the weapon slot.
 fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     let mut w = World::new(SEED);
     w.gather = GatherContent::probe_fixture();
@@ -126,6 +126,7 @@ fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[o].frame.sel = 3;
     w.tick(&[Command::PlaceDeploy {
@@ -145,24 +146,26 @@ fn turret_world_with(rounds: u16, gun: Option<u16>) -> (World, u32) {
     if rounds > 0 {
         w.deploys.set_box_slot(
             i,
-            0,
+            1,
             ItemStack {
                 item: ROUND,
                 count: rounds,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
     }
     if let Some(item) = gun {
         w.deploys.set_box_slot(
             i,
-            1,
+            0,
             ItemStack {
                 item,
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         );
     }
@@ -217,6 +220,7 @@ fn a_turret_fires_the_gun_in_its_box_with_that_guns_round() {
             count: 64,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
     let shots = turret_shots(&mut w, 300);
@@ -340,7 +344,7 @@ fn a_stranger_cannot_unload_a_turret_and_its_owner_can() {
         id,
         cont: key,
         from_kind: CONT_BOX,
-        from_slot: 0,
+        from_slot: 1,
         to_kind: CONT_SELF,
         to_slot: 10,
         count: 64,
@@ -385,6 +389,7 @@ fn only_the_hands_a_turret_spares_move_its_rounds() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mv = |w: &mut World, id, from_kind, from_slot, to_kind, to_slot, count| {
         w.tick(&[Command::Move {
@@ -404,12 +409,282 @@ fn only_the_hands_a_turret_spares_move_its_rounds() {
             .next()
     };
     let refused = Some((EV_DEPLOY_REFUSED, REFUSE_D_OWNER));
-    assert_eq!(mv(&mut w, STRANGER, CONT_BOX, 0, CONT_SELF, 6, 64), refused);
+    assert_eq!(mv(&mut w, STRANGER, CONT_BOX, 1, CONT_SELF, 6, 64), refused);
     assert_eq!(mv(&mut w, STRANGER, CONT_SELF, 5, CONT_BOX, 1, 10), refused);
     assert_eq!(rounds_left(&w, key), 64, "a stranger moved its rounds");
     assert_eq!(w.players[s].inv[5].count, 10);
     // Its owner still loads and unloads it.
-    let r = mv(&mut w, OWNER, CONT_BOX, 0, CONT_SELF, 6, 64);
+    let r = mv(&mut w, OWNER, CONT_BOX, 1, CONT_SELF, 6, 64);
     assert_eq!(r.map(|r| r.0), Some(EV_MOVED), "its owner was refused");
     assert_eq!(rounds_left(&w, key), 0);
+}
+
+fn access(id: u32, key: u32, op: u8) -> Command {
+    let (cx, cz, level, loc) = sim_core::deploy::box_addr(key);
+    Command::Access {
+        id,
+        cx,
+        cz,
+        level,
+        loc,
+        op,
+        code: 0,
+    }
+}
+
+/// Who the turret hurt in `ticks`: (owner hits, stranger hits).
+fn hurt_in(w: &mut World, ticks: usize) -> (u32, u32) {
+    let (mut owner, mut stranger) = (0, 0);
+    for _ in 0..ticks {
+        w.tick(&[]);
+        for e in w.events.entries() {
+            match e.code {
+                EV_HURT if e.a == OWNER => owner += 1,
+                EV_HURT if e.a == STRANGER => stranger += 1,
+                _ => {}
+            }
+        }
+    }
+    (owner, stranger)
+}
+
+/// **The turret spares its own list, Rust's model.** A stranger may not
+/// put themselves on it; its owner's clear empties it, owner and all, so it
+/// shoots its owner; the owner putting themselves back on is spared again;
+/// and the list rides a save.
+#[test]
+fn a_turret_spares_its_own_list_and_only_its_privileged_may_join_it() {
+    use sim_core::deploy::{
+        ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR, ACCESS_OP_TURRET_DEAUTH, REFUSE_D_OWNER,
+    };
+    use sim_core::world::EV_DEPLOY_REFUSED;
+    let (mut w, key) = turret_world(128);
+    // Both in arm's reach of it, the stranger in its line too.
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    w.players[s].body = Body::at(SEED, &w.haven, x + 1.5, z);
+
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_AUTH)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER && e.b == REFUSE_D_OWNER),
+        "a stranger put themselves on the turret's list"
+    );
+    // Taking yourself off a list you are not on is nothing, and says nothing.
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_DEAUTH)]);
+    assert!(w.deploys.turret_recs().is_empty(), "a no-op kept a record");
+    assert!(!w.deploys.turret_recs().authorized(key, OWNER, STRANGER));
+    let (owner_hits, stranger_hits) = hurt_in(&mut w, 300);
+    assert_eq!(owner_hits, 0, "it shot the owner on its list");
+    assert!(stranger_hits > 0, "it spared a stranger off its list");
+
+    // The clear: nobody is on it, and it shoots its owner too.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_CLEAR)]);
+    assert_eq!(w.deploys.turret_recs().get(key, OWNER).auth.len(), 0);
+    let mut blob = vec![0; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = sim_core::worldsave::encode(&w, &mut blob).unwrap();
+    let mut back = World::new(SEED);
+    back.gather = w.gather;
+    back.build = w.build;
+    back.deploy = w.deploy;
+    back.combat = w.combat;
+    back.turret_def = w.turret_def;
+    sim_core::worldsave::decode_into(&mut back, &blob[..n]).unwrap();
+    assert_eq!(
+        back.deploys.turret_recs().entries(),
+        w.deploys.turret_recs().entries(),
+        "the cleared list did not ride the save"
+    );
+    // Its owner's privilege puts them back on, and the record goes: the
+    // list is its owner alone again.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_AUTH)]);
+    assert!(w.deploys.turret_recs().is_empty());
+    assert!(w.deploys.turret_recs().authorized(key, OWNER, OWNER));
+
+    // Cleared again, it turns on its owner.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_CLEAR)]);
+    let (owner_hits, _) = hurt_in(&mut w, 400);
+    assert!(owner_hits > 0, "a cleared turret still spared its owner");
+}
+
+/// **Peacekeeper shoots only the hostile** (Rust's mode): a stranger minding
+/// their own business is spared, the same stranger hostile is shot, and a
+/// blow on the turret makes its striker hostile. Only its privilege sets it.
+#[test]
+fn a_peacekeeper_turret_shoots_only_the_hostile() {
+    use sim_core::deploy::{
+        ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_PEACEKEEPER, REFUSE_D_OWNER,
+    };
+    use sim_core::world::EV_DEPLOY_REFUSED;
+    let (mut w, key) = turret_world(128);
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    w.players[s].body = Body::at(SEED, &w.haven, x + 1.5, z);
+
+    w.tick(&[access(STRANGER, key, ACCESS_OP_TURRET_PEACEKEEPER)]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER && e.b == REFUSE_D_OWNER),
+        "a stranger set the turret's mode"
+    );
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_PEACEKEEPER)]);
+    assert!(w.deploys.turret_recs().get(key, OWNER).peacekeeper);
+    w.players[s].hostile = 0;
+    let (_, stranger_hits) = hurt_in(&mut w, 300);
+    assert_eq!(stranger_hits, 0, "a peacekeeper shot a peaceful stranger");
+
+    w.players[s].hostile = sim_core::combat::HOSTILE_TICKS;
+    let (owner_hits, stranger_hits) = hurt_in(&mut w, 300);
+    assert!(stranger_hits > 0, "a peacekeeper spared a hostile stranger");
+    assert_eq!(owner_hits, 0, "it shot its owner");
+
+    // Back to attack all, and the record goes: owner alone, attacking all.
+    w.tick(&[access(OWNER, key, ACCESS_OP_TURRET_ATTACK_ALL)]);
+    assert!(w.deploys.turret_recs().is_empty());
+}
+
+/// **The turret panel's slots** (Rust's): its first takes a gun it fires
+/// and nothing else, the next six that gun's rounds, the rest nothing; a
+/// gun anywhere but the weapon slot is not fired.
+#[test]
+fn a_turrets_slots_take_what_they_are_for() {
+    use sim_core::inventory::{CONT_BOX, CONT_SELF, REFUSE_M_TURRET};
+    use sim_core::world::{EV_MOVED, EV_MOVE_REFUSED};
+    let (mut w, key) = turret_world_with(0, None);
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    let stack = |item, count| ItemStack {
+        item,
+        count,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[o].inv[5] = stack(ROUND, 20);
+    w.players[o].inv[6] = stack(GUN, 1);
+    let put = |w: &mut World, from_slot: u8, to_slot| {
+        let count = w.players[o].inv[from_slot as usize].count;
+        w.tick(&[Command::Move {
+            id: OWNER,
+            cont: key,
+            from_kind: CONT_SELF,
+            from_slot,
+            to_kind: CONT_BOX,
+            to_slot,
+            count,
+        }]);
+        w.events
+            .entries()
+            .iter()
+            .filter(|e| (e.code == EV_MOVED || e.code == EV_MOVE_REFUSED) && e.a == OWNER)
+            .map(|e| (e.code, e.b))
+            .next()
+    };
+    let refused = Some((EV_MOVE_REFUSED, REFUSE_M_TURRET));
+    assert_eq!(put(&mut w, 5, 0), refused, "rounds went in the weapon slot");
+    assert_eq!(put(&mut w, 6, 3), refused, "a gun went in an ammo slot");
+    assert_eq!(
+        put(&mut w, 5, 9),
+        refused,
+        "rounds went past the ammo slots"
+    );
+    assert_eq!(put(&mut w, 6, 0).map(|r| r.0), Some(EV_MOVED));
+    assert_eq!(put(&mut w, 5, 4).map(|r| r.0), Some(EV_MOVED));
+    let shots = turret_shots(&mut w, 300);
+    assert!(shots > 0, "a gun in its slot with rounds never fired");
+}
+
+/// **A turret that needs power holds fire until it has it** (Rust's 10 rW):
+/// loaded and in reach of a stranger it stands dark; a solar panel at noon,
+/// wired to it with the wire tool, wakes it.
+#[test]
+fn a_turret_fires_only_with_its_power() {
+    use sim_core::deploy::{ARCH_SOLAR, PLACE_ANY};
+    use sim_core::limits::{DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS};
+    const SOLAR_ITEM: u16 = 45;
+    const WIRE_ITEM: u16 = 46;
+    let (mut w, key) = turret_world(128);
+    w.gather.stack_max[SOLAR_ITEM as usize] = 1;
+    w.gather.stack_max[WIRE_ITEM as usize] = 1;
+    w.gather.item_count = w.gather.item_count.max(WIRE_ITEM + 1);
+    let solar_row = w.deploy.def_count;
+    w.deploy.defs[solar_row as usize] = sim_core::deploy::DeployDef {
+        arch: ARCH_SOLAR,
+        placement: PLACE_ANY,
+        hp: 250,
+        matter: sim_core::deploy::MATTER_METAL,
+        item: SOLAR_ITEM,
+        n_costs: 0,
+        costs: [(0, 0); 4],
+    };
+    w.deploy.def_count += 1;
+    let (tcx, tcz, tlevel, tloc) = sim_core::deploy::box_addr(key);
+    let turret_row = w
+        .deploys
+        .find(tcx, tcz, tlevel, tloc)
+        .expect("the turret's record")
+        .row;
+    w.power_def.parts[turret_row as usize].draw_rw = 10;
+    w.power_def.parts[solar_row as usize].out_rw = 20;
+    w.power_def.wire_tool = WIRE_ITEM;
+    w.power_def.wire_max_mm = 30_000;
+    // Noon, so the panel gives its whole rating.
+    let noon = ((DAY_TICKS as f64 * DAY_PORTION as f64) as u64) / 2 + DAY_TICKS - DAY_PHASE_TICKS;
+    w.tick = noon - noon % 15;
+
+    assert_eq!(turret_shots(&mut w, 300), 0, "an unpowered turret fired");
+
+    let i = w.deploys.box_index(key).unwrap();
+    let (bx, bz) = (w.deploys.boxes()[i].cx, w.deploys.boxes()[i].cz);
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let stack = |item| ItemStack {
+        item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[o].inv[3] = stack(SOLAR_ITEM);
+    w.players[o].frame.sel = 3;
+    w.tick(&[Command::PlaceDeploy {
+        id: OWNER,
+        row: solar_row,
+        cx: bx - 2,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let panel = box_key(bx - 2, bz, 0, LOC_PLANE);
+    assert!(
+        w.deploys.find(bx - 2, bz, 0, LOC_PLANE).is_some(),
+        "the panel did not place"
+    );
+    w.players[o].inv[3] = stack(WIRE_ITEM);
+    w.tick(&[Command::Wire {
+        id: OWNER,
+        wire: sim_core::power::WireRec {
+            from: panel,
+            out: 0,
+            to: key,
+            inp: 0,
+        },
+    }]);
+    assert_eq!(w.deploys.power().wires().len(), 1, "the wire was not run");
+    assert!(
+        turret_shots(&mut w, 300) > 0,
+        "a powered turret never fired"
+    );
 }

@@ -599,25 +599,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     .as_deref()
                     .filter(|a| !a.is_empty())
                     .ok_or_else(|| format!("weapon `{}`: firearms need ammo", w.id))?;
-                // The bow's check, inverted, and it is the load-bearing
-                // half of this file's header contract: a bow's round
-                // carries ballistics and a firearm's does not, because a
-                // firearm is hitscan and there is no flight for a speed to
-                // describe. Both halves are refused so the pairing can
-                // never be ambiguous — a round that owned an `[[ammo]]` row
-                // *and* armed a gun would leave "which of the two is this"
-                // to whichever reader asked, and `RangedDef::hitscan` is
-                // baked off the kind precisely so nothing has to ask.
+                // A firearm's round may carry ballistics, and the shipped
+                // ones do: it then flies as a bullet with travel time and
+                // drop (`sim_core::bullet`). A round without an `[[ammo]]`
+                // row still resolves on the trigger's tick (`hitscan`).
                 for id in rounds {
                     item_exists(id, &format!("weapon `{}` ammo", w.id))?;
-                    if c.ammo.iter().any(|a| &a.id == id) {
-                        return Err(format!(
-                            "weapon `{}`: round `{id}` has an [[ammo]] row, so it is a \
-                             projectile — a firearm is hitscan and its rounds carry no \
-                             ballistics",
-                            w.id
-                        ));
-                    }
                 }
                 // A duplicate is a silently dead entry here for the same
                 // reason it is on a bow: preference order is the whole of
@@ -808,8 +795,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // Both baked fields are `u16` on `RangedDef`, so the ceiling is the
         // field and not a taste — refused here, where a person reads the
         // message, rather than truncated at the bake.
-        if w.magazine.unwrap_or(0) > u16::MAX as u32 {
-            return Err(format!("weapon `{}`: magazine over u16", w.id));
+        // The rounds live in the gun's stack data, a byte of it
+        // (`combat::GunState`): an extended magazine at its 300% ceiling
+        // still fits.
+        if w.magazine.unwrap_or(0) * 3 > u32::from(sim_core::combat::GUN_LOADED_MAX) {
+            return Err(format!(
+                "weapon `{}`: magazine over 85, past what a gun's data holds extended",
+                w.id
+            ));
         }
         let reload_ticks =
             w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
@@ -832,7 +825,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ));
         }
         // How a gun handles belongs to a gun, and every gun says.
-        match (w.kind, w.gun) {
+        match (w.kind, &w.gun) {
             (WeaponKind::Firearm, None) => {
                 return Err(format!("weapon `{}`: a firearm needs a [weapon.gun]", w.id));
             }
@@ -871,6 +864,20 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
                 if g.ads_recoil_pct > 100 {
                     return err("ads_recoil_pct over 100");
+                }
+                if !(25..=400).contains(&g.velocity_pct) {
+                    return err("velocity_pct outside 25..=400");
+                }
+                for (i, m) in g.mods.iter().enumerate() {
+                    if !c.attachments.iter().any(|a| &a.id == m) {
+                        return Err(format!(
+                            "weapon `{}`: takes `{m}`, which is no [[attachment]]",
+                            w.id
+                        ));
+                    }
+                    if g.mods[..i].contains(m) {
+                        return Err(format!("weapon `{}`: takes `{m}` twice", w.id));
+                    }
                 }
                 if [g.bloom_recover_ms, g.bloom_delay_ms]
                     .iter()
@@ -926,10 +933,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // opinion about gravity, only about a round that cannot fly.
         //
         // A round that hits for nothing, or for more than twice what its
-        // weapon says, is a typo rather than a balance call.
-        if a.damage_pct == 0 || a.damage_pct > 200 {
+        // weapon says, is a typo rather than a balance call — unless it
+        // names its own pellets, when it is a different shot entirely: a
+        // slug is one ball worth a whole shell of buckshot.
+        let ceiling = if a.pellets > 0 { 1000 } else { 200 };
+        if a.damage_pct == 0 || a.damage_pct > ceiling {
             return Err(format!(
-                "ammo `{}`: damage_pct {} is outside 1..=200",
+                "ammo `{}`: damage_pct {} is outside 1..={ceiling}",
                 a.id, a.damage_pct
             ));
         }
@@ -942,6 +952,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 a.id
             ));
         }
+        // A round's own pellets and falloff, the gun's bounds.
+        if a.pellets as usize > sim_core::limits::MAX_PELLETS {
+            return Err(format!("ammo `{}`: pellets past MAX_PELLETS", a.id));
+        }
+        let [near, far] = a.falloff_m;
+        if a.falloff_pct > 100 || (a.falloff_pct > 0 && (near > far || far > 1000)) {
+            return Err(format!(
+                "ammo `{}`: falloff is not near <= far <= 1000 m, 0..=100 %",
+                a.id
+            ));
+        }
+        // (see the attachments below)
         // A blast is a planted charge's, so it has a charge's bound: one
         // build cell (`charge::BLAST_MAX_CM`), and numbers that fit `u16`.
         if let Some(b) = a.blast {
@@ -954,6 +976,42 @@ pub fn structural(c: &Content) -> Result<(), String> {
             if a.fire_s != [0, 0] {
                 return Err(format!("ammo `{}`: a round either burns or blows up", a.id));
             }
+        }
+    }
+
+    // Weapon attachments: item-backed, one bit each of a gun's mask, and
+    // every number a share of the gun's own inside a range a typo leaves.
+    if c.attachments.len() > sim_core::limits::MAX_MODS {
+        return Err(format!(
+            "{} attachments, past the {} bits of a gun's mask",
+            c.attachments.len(),
+            sim_core::limits::MAX_MODS
+        ));
+    }
+    for (i, a) in c.attachments.iter().enumerate() {
+        item_exists(&a.id, "attachment")?;
+        if c.attachments[..i].iter().any(|o| o.id == a.id) {
+            return Err(format!("attachment `{}`: listed twice", a.id));
+        }
+        let shares = [
+            ("aim_pct", a.aim_pct, 10, 300),
+            ("hip_pct", a.hip_pct, 10, 300),
+            ("recoil_pct", a.recoil_pct, 10, 300),
+            ("damage_pct", a.damage_pct, 10, 300),
+            ("velocity_pct", a.velocity_pct, 25, 200),
+            ("rate_pct", a.rate_pct, 50, 200),
+            ("magazine_pct", a.magazine_pct, 100, 300),
+        ];
+        for (what, v, lo, hi) in shares {
+            if !(lo..=hi).contains(&v) {
+                return Err(format!(
+                    "attachment `{}`: {what} {v} outside {lo}..={hi}",
+                    a.id
+                ));
+            }
+        }
+        if a.zoom_pct > 95 {
+            return Err(format!("attachment `{}`: zoom_pct past 95", a.id));
         }
     }
 
@@ -2194,15 +2252,6 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
-        // v0 skins an item and not a placed thing: a deployable's record
-        // does not carry a skin yet, so placing a skinned box would strip
-        // it. Refused rather than silently lost.
-        if c.deployables.iter().any(|d| d.id == s.covers) {
-            return Err(format!(
-                "skin `{}` covers `{}`, a deployable — placed things do not carry skins yet",
-                s.id, s.covers
-            ));
-        }
     }
 
     // Balance globals point at real items.
@@ -2327,7 +2376,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 k.input, k.output
             ));
         }
-        if k.input == k.output {
+        // A row into itself boils (`oven::step`): only a salt vessel's.
+        let boils = c
+            .balance
+            .survival
+            .vessels
+            .iter()
+            .any(|v| v.item == k.input && v.salt);
+        if k.input == k.output && !boils {
             return Err(format!("cook: `{}` cooks into itself", k.input));
         }
         // The fuel is not a cook input **at a station that burns**: such
@@ -2366,23 +2422,43 @@ pub fn structural(c: &Content) -> Result<(), String> {
     // never water.
     let fm = &c.farm;
     let item_of = |id: &str| c.items.iter().find(|i| i.id == id);
-    for (what, id) in [("water", &fm.water), ("emptied", &fm.emptied)] {
-        let Some(it) = item_of(id) else {
-            return Err(format!("farm: {what} `{id}` is not an item"));
+    // The vessels: the water lives in one item's data (`survival::Water`),
+    // so a vessel never stacks, and holds what that data can.
+    for v in &c.balance.survival.vessels {
+        let Some(it) = item_of(&v.item) else {
+            return Err(format!("survival: vessel `{}` is not an item", v.item));
         };
-        // One skin's water is one skin: a stack of full skins would turn
-        // whole for one skin's pour (a tend, a planter's slot, a catcher's
-        // fill rewrite the stack's item, not one of it).
         if it.stack != 1 {
             return Err(format!(
-                "farm: {what} `{id}` stacks to {}, not 1: a pour empties the whole stack",
-                it.stack
+                "survival: vessel `{}` stacks; its water is its own",
+                v.item
+            ));
+        }
+        if v.ml == 0 || v.ml > u32::from(sim_core::survival::WATER_ML_MAX) {
+            return Err(format!(
+                "survival: vessel `{}` ml {} out of 1..=32767",
+                v.item, v.ml
+            ));
+        }
+        if v.sip_ml == 0 || v.sip_ml > v.ml {
+            return Err(format!(
+                "survival: vessel `{}` sip_ml {} out of 1..=ml",
+                v.item, v.sip_ml
             ));
         }
     }
-    if fm.water == fm.emptied {
+    if item_of(&fm.water).is_none() {
+        return Err(format!("farm: water `{}` is not an item", fm.water));
+    }
+    if !c
+        .balance
+        .survival
+        .vessels
+        .iter()
+        .any(|v| v.item == fm.water)
+    {
         return Err(format!(
-            "farm: water and emptied are both `{}`: a pour would leave the skin full",
+            "farm: water `{}` is not a survival vessel",
             fm.water
         ));
     }

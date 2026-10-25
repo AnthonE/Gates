@@ -178,7 +178,9 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// **11** — guns v1: `MAX_MAGS` 8 → 16, eight more magazines, 417 → 449.
 /// **12** — clothing v1: Rust's seven clothing slots, four more worn stacks
 /// (legs, hands, shirt, face), 449 → 481.
-pub const SAVE_FORMAT: u16 = 12;
+/// **13** — item data: every stack twelve bytes (`ItemStack::data`, a gun's
+/// own magazine and attachments), and the per-body magazines gone, 481 → 565.
+pub const SAVE_FORMAT: u16 = 13;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
 /// zero padding, so a file written before it reads 0 there and is checked
@@ -1188,6 +1190,7 @@ mod tests {
             count: n,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         s.known = (1u128 << bits) - 1;
         s
@@ -1202,6 +1205,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         assert_eq!(worth(&kit), 0, "a bat and a torch are a spawn kit");
@@ -1212,6 +1216,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(worth(&dressed), 1);
         // Tiers, not counts: one blueprint is worth as much as thirty.
@@ -1373,7 +1378,9 @@ mod tests {
         // the feet's stack (Rust's boots).
         // 489 → 521 at SAVE_FORMAT 11: sixteen magazines, not eight (guns v1).
         // 521 → 553 at SAVE_FORMAT 12: four more worn stacks (clothing v1).
-        assert_eq!(SAVE_RECORD_BYTES, 553);
+        // 553 → 637 at SAVE_FORMAT 13: item data on every stack, the
+        // per-body magazines gone.
+        assert_eq!(SAVE_RECORD_BYTES, 637);
         let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

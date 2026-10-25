@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 31] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -573,6 +573,22 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
     // 23 · water catcher: a barrel under a tarp funnel on a pole frame, as
     // wide as a barrel and chest high, `DEPLOY_VOL`'s row, in its wood.
     ([0.9, 1.1, 0.9], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 24–30 · electricity (`sim_core::power`), greyboxes until models: the
+    // generator's engine in hazard yellow, the solar panel's blue cells, a
+    // battery's green steel, and the small parts as grey boxes, the ceiling
+    // light a warm white. The three solid rows are `DEPLOY_VOL`'s.
+    ([1.0, 0.8, 0.6], Color::srgb(0.553, 0.451, 0.122), 0.6, 0.5),
+    ([1.6, 1.2, 1.0], Color::srgb(0.082, 0.122, 0.251), 0.3, 0.6),
+    ([0.6, 0.5, 0.4], Color::srgb(0.200, 0.302, 0.220), 0.6, 0.4),
+    (
+        [0.25, 0.3, 0.15],
+        Color::srgb(0.353, 0.353, 0.353),
+        0.6,
+        0.5,
+    ),
+    ([0.3, 0.2, 0.2], Color::srgb(0.302, 0.302, 0.322), 0.6, 0.5),
+    ([0.3, 0.2, 0.2], Color::srgb(0.302, 0.322, 0.302), 0.6, 0.5),
+    ([0.4, 0.15, 0.4], Color::srgb(0.851, 0.820, 0.702), 0.4, 0.2),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -655,6 +671,9 @@ struct Live {
     plate: i8,
     /// A rotate can change only this bit, keeping address, row and damage.
     facing: u8,
+    /// The skin a deployable was drawn in (wire v143), zero for plain and
+    /// while its look is still loading, so the look landing is a redraw.
+    skin: u16,
     foot_drop: f32,
     /// Where a free-placed deployable was drawn standing (its feet's y).
     /// Redraw state for the reason `plate` is: the floor under it can arrive
@@ -2470,6 +2489,13 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/floor_spikes.glb"), // 21 floor spikes
     Some("models/deploy/abyss_rug.glb"), // 22 rug
     Some("models/deploy/water_catcher.glb"), // 23 water catcher
+    None,                  // 24 small generator — greybox
+    None,                  // 25 solar panel — greybox
+    None,                  // 26 battery — greybox
+    None,                  // 27 switch — greybox
+    None,                  // 28 splitter — greybox
+    None,                  // 29 root combiner — greybox
+    None,                  // 30 ceiling light — greybox
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
@@ -3021,6 +3047,7 @@ pub fn stream(
                 own,
                 plate: rec.plate,
                 facing: rec.facing,
+                skin: 0,
                 foot_drop,
                 base_y: 0.0,
                 sock: rec.sock,
@@ -3037,6 +3064,7 @@ pub fn stream(
 
     // ---- deployables ----------------------------------------------------
     let dhave = core.deploy_defs_have.min(core.deploy_defs.def_count);
+    let mut deploy_waiting = false;
     for rec in core.deploys.entries() {
         if (rec.row as u16) >= dhave {
             continue;
@@ -3072,6 +3100,18 @@ pub fn stream(
         } else {
             sim_core::deploy::body_base_y(seed, haven, core.pieces.cols(), rec, arch)
         };
+        let (look, look_skin, waits) = deploy_look(
+            rec,
+            core.deploy_defs.defs[rec.row as usize].item,
+            deploy_base_mat(kit, arch, matter),
+            (&core.catalog, &core.skins),
+            &models,
+            &mut skin_mats,
+            &assets,
+            &meshes,
+            &mut materials,
+        );
+        deploy_waiting |= waits;
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
@@ -3095,6 +3135,7 @@ pub fn stream(
                 && live.lock == lock_bits(rec)
                 && live.plate == plate
                 && live.base_y == base_y
+                && live.skin == look_skin
             {
                 continue;
             }
@@ -3144,6 +3185,7 @@ pub fn stream(
             arch,
             matter,
             plate,
+            look,
         );
         ring.deploys.insert(
             key,
@@ -3157,6 +3199,7 @@ pub fn stream(
                 own: 0,
                 plate,
                 facing: 0,
+                skin: look_skin,
                 foot_drop: 0.0,
                 base_y,
                 sock: Default::default(),
@@ -3240,6 +3283,7 @@ pub fn stream(
                     own: 0,
                     plate: 0,
                     facing: 0,
+                    skin: 0,
                     foot_drop: 0.0,
                     base_y: 0.0,
                     sock: Default::default(),
@@ -3317,6 +3361,7 @@ pub fn stream(
                 // column and no plate to be drawn against.
                 plate: 0,
                 facing: 0,
+                skin: 0,
                 foot_drop: 0.0,
                 base_y: 0.0,
                 sock: Default::default(),
@@ -3332,6 +3377,7 @@ pub fn stream(
     });
 
     ring.pending_loot = body_waiting
+        | deploy_waiting
         | sync_loot(
             &mut commands,
             &mut ring.gitems,
@@ -3390,6 +3436,7 @@ fn sync_loot(
                     count: g.count,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 },
             ),
         };
@@ -3934,6 +3981,81 @@ pub fn door_cue(arch: u8, matter: u8, open: bool) -> crate::sound::Cue {
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
 /// this crate stays green over a shard where no fire lights anything.
 #[allow(clippy::too_many_arguments)]
+/// A placed thing's skin, as [`spawn_deploy`] draws it: the skin's own
+/// model when it has one (`ui::hold::SKIN_MODELS`, keyed by the item's held
+/// row, a retexture of the world model), else the base model in the skin's
+/// tint (`SkinMats::for_part`).
+pub struct DeployLook {
+    mesh: Option<Handle<Mesh>>,
+    mat: Handle<StandardMaterial>,
+}
+
+/// The material a deployable is drawn in, unskinned.
+fn deploy_base_mat(kit: &Kit, arch: u8, matter: u8) -> Handle<StandardMaterial> {
+    if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
+        kit.door_metal.clone()
+    } else {
+        kit.deploy_mat[(arch as usize).min(DEPLOY.len() - 1)].clone()
+    }
+}
+
+/// `rec`'s look (wire v143), the skin it is drawn in, and whether a look is
+/// still loading: plain until then, and `stream` runs again
+/// (`pending_loot`). A skin the catalog does not know draws plain, as a
+/// ground stack's does, and its arrival is the redraw.
+#[allow(clippy::too_many_arguments)]
+fn deploy_look(
+    rec: &DeployRec,
+    item: u16,
+    base: Handle<StandardMaterial>,
+    (catalog, skins): (&protocol::ItemCatalog, &protocol::SkinCatalog),
+    models: &super::viewmodel::Models,
+    skin_mats: &mut super::viewmodel::SkinMats,
+    assets: &AssetServer,
+    meshes: &Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> (Option<DeployLook>, u16, bool) {
+    if rec.skin == 0 {
+        return (None, 0, false);
+    }
+    let Some(tint) = crate::ui::skins::tint_of(skins, rec.skin) else {
+        return (None, 0, false);
+    };
+    let row = crate::ui::hold::held_model(
+        catalog,
+        sim_core::gather::ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
+        },
+    );
+    if let Some((mesh, mat)) = row.and_then(|i| models.skinned(i, rec.skin)) {
+        if meshes.contains(mesh.id())
+            && materials.contains(mat.id())
+            && assets.is_loaded_with_dependencies(mat.id())
+        {
+            let look = DeployLook {
+                mesh: Some(mesh),
+                mat,
+            };
+            return (Some(look), rec.skin, false);
+        }
+        let failed = [mesh.id().untyped(), mat.id().untyped()]
+            .iter()
+            .any(|&id| matches!(assets.load_state(id), bevy::asset::LoadState::Failed(_)));
+        if !failed {
+            return (None, 0, true);
+        }
+    }
+    match skin_mats.for_part(rec.skin, tint, &base, materials) {
+        Some(mat) => (Some(DeployLook { mesh: None, mat }), rec.skin, false),
+        None => (None, 0, true),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
@@ -3944,6 +4066,7 @@ pub fn spawn_deploy(
     arch: u8,
     matter: u8,
     plate: i8,
+    look: Option<DeployLook>,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let drop = model_drop(arch);
@@ -3974,16 +4097,19 @@ pub fn spawn_deploy(
     };
 
     let metal_door = arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL;
-    let mat = if metal_door {
-        kit.door_metal.clone()
-    } else {
-        kit.deploy_mat[idx].clone()
+    // A skin is its own model or the base one in the skin's material
+    // ([`deploy_look`]); the damage bands darken whichever it is.
+    let (skin_mesh, mat) = match look {
+        Some(l) => (l.mesh, l.mat),
+        None => (None, deploy_base_mat(kit, arch, matter)),
     };
 
     let mut e = commands.spawn((
         super::WorldEntity,
         Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
             kit.shutters_open.clone()
+        } else if let Some(m) = skin_mesh {
+            m
         } else if metal_door {
             kit.door_metal_mesh.clone()
         } else {
@@ -4012,6 +4138,26 @@ pub fn spawn_deploy(
         for &(at, out) in &mounts[..n] {
             spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
         }
+    }
+    // A ceiling light gets a lamp, dark until the sim says power reaches it
+    // (`power::Grid::lit`, told as a fire's flame is). See [`LampLight`].
+    if arch == sim_core::deploy::ARCH_LIGHT {
+        e.with_child((
+            LampLight {
+                cx: rec.cx,
+                cz: rec.cz,
+                level: rec.level,
+                loc: rec.loc,
+            },
+            PointLight {
+                color: LAMP_COLOR,
+                intensity: 0.0,
+                range: LAMP_RANGE_M,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, LAMP_LIFT_M, 0.0),
+        ));
     }
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
@@ -4355,6 +4501,44 @@ pub fn apply_fire_lights(
         // Assign only on a change: `PointLight` is `Changed`-tracked and the
         // render world re-extracts what moved, so writing the same lumens every
         // frame would re-upload every fire on the shard forever.
+        if light.intensity != want {
+            light.intensity = want;
+        }
+    }
+}
+
+/// A ceiling light's lamp (`sim_core::power`): [`FireLight`]'s shape and its
+/// lit set, a light of its own so nothing that listens for fires (the
+/// crackle, the roar) hears a lamp.
+#[derive(Component)]
+pub struct LampLight {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+}
+
+/// A lamp's warm white, a bulb's 3,000 K. **(knob)**
+const LAMP_COLOR: Color = Color::srgb(1.0, 0.86, 0.66);
+/// How far its pool reaches, metres: a room. **(knob)**
+const LAMP_RANGE_M: f32 = 9.0;
+/// Lumens when lit: a household bulb's. **(knob)**
+const LAMP_LUMENS: f32 = 1_200.0;
+/// How far over the part's origin the bulb sits, metres.
+const LAMP_LIFT_M: f32 = 0.1;
+
+/// Drive every lamp off the lit set, [`fire_lights`]' way.
+pub fn lamp_lights(net: NonSend<super::Net>, mut q: Query<(&LampLight, &mut PointLight)>) {
+    if q.is_empty() {
+        return;
+    }
+    let ovens = net.session.core.ovens();
+    for (lamp, mut light) in q.iter_mut() {
+        let want = if ovens.is_lit(lamp.cx, lamp.cz, lamp.level, lamp.loc) {
+            LAMP_LUMENS
+        } else {
+            0.0
+        };
         if light.intensity != want {
             light.intensity = want;
         }
