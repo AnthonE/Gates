@@ -2025,8 +2025,9 @@ pub const BIOMES: usize = 7;
 
 /// The biomes' names in [`Biome`] order, as content spells them
 /// (`cooking.toml` `[farm] soil`).
-pub const BIOME_NAMES: [&str; BIOMES] =
-    ["beach", "meadow", "forest", "highland", "desert", "fel", "snow"];
+pub const BIOME_NAMES: [&str; BIOMES] = [
+    "beach", "meadow", "forest", "highland", "desert", "fel", "snow",
+];
 
 /// Every biome, in [`Biome`] order.
 pub const ALL_BIOMES: [Biome; BIOMES] = [
@@ -2091,7 +2092,12 @@ pub fn biome(h: f32, moist: f32, fel: f32, cold: f32) -> Biome {
 /// [`biome`] at a world point whose height is known: reads the moisture, the
 /// corruption and the cold there.
 pub fn biome_at(seed: u64, h: f32, x: f32, z: f32) -> Biome {
-    biome(h, moisture(seed, x, z), fel(seed, x, z), cold(seed, x, z, h))
+    biome(
+        h,
+        moisture(seed, x, z),
+        fel(seed, x, z),
+        cold(seed, x, z, h),
+    )
 }
 
 // --- The coast road (TERRAIN.md §1 stage 7) -------------------------------

@@ -1022,7 +1022,14 @@ pub fn step(
         };
         let temp_pm = crate::climate::crop_pm(
             air,
-            crate::climate::air_dc_at(air, rec.arid_pm, arctic_pm(seed, &rec), rec.alt_m as i32, day_tick, wx),
+            crate::climate::air_dc_at(
+                air,
+                rec.arid_pm,
+                arctic_pm(seed, &rec),
+                rec.alt_m as i32,
+                day_tick,
+                wx,
+            ),
         ) as u32;
         let health = water_pm
             .min(fc.hardy(rec.genes, rec.soil_pm as u32))

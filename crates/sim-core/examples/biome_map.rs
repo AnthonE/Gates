@@ -68,7 +68,12 @@ fn main() {
 
             let m = terrain::moisture(seed, x, z);
             let sl = terrain::ground_slope(seed, &haven, x, z);
-            let c = match terrain::biome(h, m, terrain::fel(seed, x, z), terrain::cold(seed, x, z, h)) {
+            let c = match terrain::biome(
+                h,
+                m,
+                terrain::fel(seed, x, z),
+                terrain::cold(seed, x, z, h),
+            ) {
                 Biome::Beach => [230u8, 214, 150],
                 Biome::Meadow => [124, 168, 82],
                 Biome::Forest => [34, 84, 44],
