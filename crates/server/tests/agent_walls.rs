@@ -3017,10 +3017,14 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
                     })
                 });
                 let plan = BasePlan::new(0, cx, cz);
+                // Beside the scene, never on it: the agent stands at `near`,
+                // and a wall laid through a body is refused (`REFUSE_B_SPOT`).
+                let off_the_agent =
+                    |x: u16, z: u16| (i32::from(x) - c0).abs() > 1 || (i32::from(z) - r0).abs() > 1;
                 if even
                     && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
                         let (x, z) = plan.cell(dx, dz);
-                        buildable(x, z)
+                        buildable(x, z) && off_the_agent(x, z)
                     })
                 {
                     plot = Some((cx, cz));

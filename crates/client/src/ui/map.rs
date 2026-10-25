@@ -59,8 +59,9 @@ pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
 pub const FEL_GROUND: [f32; 3] = [46.0, 70.0, 42.0];
 /// The snow that lies all year (`terrain::cold`), as the world's own ground
 /// wears it (`ground_splat`): a cool white, blue against the haven's warm
-/// fill so the island's authored destination never reads as a snowfield.
-pub const SNOW_GROUND: [f32; 3] = [206.0, 218.0, 232.0];
+/// fill so the island's authored destination never reads as a snowfield —
+/// but under ten bluer than red, the line past which the map reads as sea.
+pub const SNOW_GROUND: [f32; 3] = [222.0, 226.0, 230.0];
 /// How far a fully corrupted pixel goes toward [`FEL_GROUND`]: the base map's
 /// heart and the spread's overlay ([`paint_blight`]) share it, so the two
 /// cannot drift apart.
