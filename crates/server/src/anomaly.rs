@@ -80,6 +80,9 @@ pub enum Kind {
     /// admin. Logged because a *refused* admin attempt is exactly the
     /// thing an operator wants to see afterwards.
     AdminRefused = 3,
+    /// A cheat check flagged a player (`cheat.rs`). `what` is the
+    /// [`crate::cheat::Check`], `a`/`b`/`c` its numbers, the note the name.
+    Suspect = 4,
 }
 
 /// One line, before it is a line. `Copy` and integer-only so it crosses
@@ -388,6 +391,7 @@ pub fn format_line(rec: &Record, out: &mut String) {
         Kind::Bug => "bug",
         Kind::AdminAct => "admin",
         Kind::AdminRefused => "admin_refused",
+        Kind::Suspect => "suspect",
     };
     let _ = write!(out, "{{\"tick\":{},\"kind\":\"{}\"", rec.tick, kind);
     if rec.kind == Kind::Counter {
@@ -395,6 +399,12 @@ pub fn format_line(rec: &Record, out: &mut String) {
         let _ = write!(out, ",\"counter\":\"{}\",\"delta\":{}", name, rec.a);
     } else {
         let _ = write!(out, ",\"what\":{}", rec.what);
+        if let Some(check) = (rec.kind == Kind::Suspect)
+            .then(|| crate::cheat::Check::from_code(rec.what))
+            .flatten()
+        {
+            let _ = write!(out, ",\"check\":\"{}\"", check.name());
+        }
         if rec.who != 0 {
             let _ = write!(out, ",\"who\":{}", rec.who);
         }

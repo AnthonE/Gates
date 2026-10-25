@@ -46,6 +46,8 @@ pub mod boot;
 pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.
 pub mod bugs;
+/// Cheat checks: snap hits, headshot rate, wall tracking (`cheat.rs`).
+pub mod cheat;
 pub mod client;
 /// Gates' Rust+: the team, team chat and raid alerts, from outside the game.
 pub mod companion;

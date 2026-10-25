@@ -470,6 +470,11 @@ pub struct ShardCore {
     /// Every wallet's achievements (`achievements.rs`), tallied off the
     /// sim's events per connection. Not sim state.
     pub achievements: crate::achievements::Achievements,
+    /// The cheat checks (`cheat.rs`), fed off each tick's aims and hits and
+    /// written to the anomaly log. Not sim state.
+    cheats: crate::cheat::Checks,
+    /// The cheat checks' sight-line memo (`terrain::Lattice`).
+    cheat_lat: Box<sim_core::terrain::Lattice>,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -1080,6 +1085,8 @@ impl ShardCore {
             restart_fired: false,
             standings: crate::standings::Standings::off(),
             achievements: crate::achievements::Achievements::off(),
+            cheats: crate::cheat::Checks::new(),
+            cheat_lat: Box::new(sim_core::terrain::Lattice::new()),
             gifts: crate::gifts::Gifts::off(),
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
@@ -1855,6 +1862,47 @@ impl ShardCore {
                 self.played_minute[slot] = id;
             }
         }
+    }
+
+    /// This tick's aims, shots and hits through the cheat checks
+    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named.
+    fn note_cheats(&mut self, ops: &mut Ops<'_>) {
+        use crate::anomaly::{Kind, Record};
+        let tick = self.world.tick;
+        let mut ground = crate::cheat::Ground {
+            seed: self.world.seed,
+            haven: &self.world.haven,
+            cols: self.world.pieces.cols(),
+            lat: &mut self.cheat_lat,
+        };
+        let (clients, agent, teams, tags) = (
+            &self.clients,
+            &self.standings_agent,
+            &self.teams,
+            &self.tags,
+        );
+        let exempt = |id: u32| {
+            (0..MAX_PLAYERS).any(|s| clients[s].connected && clients[s].id == id && agent[s])
+        };
+        self.cheats.tick(
+            tick,
+            &self.world.players,
+            self.world.events.entries(),
+            exempt,
+            |a, b| teams.mates(a, b),
+            |from, to| ground.hidden(from, to),
+            |f| {
+                let name = tags
+                    .iter()
+                    .find(|t| t.id == f.who)
+                    .map_or("", |t| t.name.as_str());
+                ops.log.push(
+                    Record::new(tick, Kind::Suspect, f.check as u16, f.who)
+                        .with(f.a, f.b, f.c)
+                        .note(name.as_bytes()),
+                );
+            },
+        );
     }
 
     /// This tick's events, tallied into each wallet's achievements
@@ -3923,6 +3971,7 @@ impl ShardCore {
         mark(Phase::Interest);
         self.note_standings(n);
         self.note_achievements(n);
+        self.note_cheats(ops);
         // The boards, rebuilt at most every five seconds; whatever moved
         // them since the last look is owed to everyone.
         if self
