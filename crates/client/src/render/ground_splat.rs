@@ -163,10 +163,13 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
 /// (`terrain::fel_wander`), from which the shader rebuilds the heart and the
 /// live spread (`blight_at`, `sim_core::blight`). The desert's warm sand and
 /// the Verdigris' ash and obsidian are tints on the four identities, not
-/// identities of their own, so the splat stays four — and one `vec2` at one
-/// location keeps WebGL2's attribute count where the desert left it.
+/// identities of their own, so the splat stays four — and one vector at one
+/// location keeps WebGL2's attribute count where the desert left it. z is the
+/// cold, 0..1 (`terrain::cold`): the snow that lies all year, laid by the
+/// shader over whatever the ground is (snowcaps v0); a third lane of the same
+/// location, so the count did not move for it either.
 pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
-    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
+    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x3);
 
 /// The desert's sand, linear: a pale warm tan, where the beach's sand is a
 /// pale grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about

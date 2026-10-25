@@ -561,11 +561,17 @@ pub enum Cue {
     /// A knock on a sheet-metal or garage door: a blow on metal, where
     /// [`Cue::Knock`] is a fist on wood.
     KnockMetal,
+    /// A step in snow (snowcaps v0): the island's fifth ground, chosen where
+    /// the ground lies white all year (`steps::surface_cue`). Appended, the
+    /// enum's append-order rule, with its remote twin after it.
+    StepSnow,
+    /// A step in snow heard at another body, as [`Cue::RemoteStepSand`].
+    RemoteStepSnow,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 151;
+pub const CUE_COUNT: usize = 153;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -725,6 +731,8 @@ impl Cue {
         Cue::RecyclerStart,
         Cue::RecyclerStop,
         Cue::KnockMetal,
+        Cue::StepSnow,
+        Cue::RemoteStepSnow,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -815,7 +823,9 @@ impl Cue {
             | Cue::StepMetal
             | Cue::RemoteStepWood
             | Cue::RemoteStepConcrete
-            | Cue::RemoteStepMetal => 0.10,
+            | Cue::RemoteStepMetal
+            | Cue::StepSnow
+            | Cue::RemoteStepSnow => 0.10,
             Cue::Swing
             | Cue::RemoteSwing
             | Cue::ImpactWood
@@ -1393,6 +1403,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.55, 300, 3, true),   // recycler on
     row(GAME, 24.0, 0.50, 300, 3, true),   // recycler off
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock, metal
+    // The snow's step, yours and another body's: the step family's rows.
+    STEP,
+    RSTEP,
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).

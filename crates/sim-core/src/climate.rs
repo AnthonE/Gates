@@ -3,8 +3,8 @@
 //! Rust blends a per-biome temperature curve over the hour of the day by
 //! the biome weights at a point: temperate ground mild, the arid band hot
 //! by day and cold by night, the snow band cold. Ours has the temperate
-//! south and middle and the arid north (`terrain::aridity`), and it has
-//! mountains where Rust has snow, so altitude takes the snow's place: the
+//! middle, the arid north (`terrain::aridity`) and the arctic south
+//! (`terrain::arctic`, snowcaps v0), and its mountains are cold too: the
 //! air loses a degree every `lapse_m` above `lapse_from_m`. Cloud flattens
 //! the day's swing (an overcast noon is cooler, an overcast night warmer)
 //! and rain cools the air outright.
@@ -30,6 +30,9 @@ pub struct ClimateContent {
     /// The desert's: hotter days, colder nights.
     pub arid_low_dc: i16,
     pub arid_high_dc: i16,
+    /// The arctic's: cold all day.
+    pub arctic_low_dc: i16,
+    pub arctic_high_dc: i16,
     /// Above this altitude the air cools, a degree every `lapse_m`.
     pub lapse_from_m: u16,
     pub lapse_m: u16,
@@ -52,6 +55,8 @@ impl ClimateContent {
         temperate_high_dc: 0,
         arid_low_dc: 0,
         arid_high_dc: 0,
+        arctic_low_dc: 0,
+        arctic_high_dc: 0,
         lapse_from_m: 0,
         lapse_m: 0,
         cloud_flatten_pm: 0,
@@ -85,12 +90,23 @@ fn lerp(a: i16, b: i16, t_pm: i32) -> i32 {
 }
 
 /// The air at a point, deci-degrees: `arid_pm` is how arid the ground is
-/// (`terrain::aridity` × 1000), `alt_m` how high the body stands above the
+/// (`terrain::aridity` × 1000), `arctic_pm` how arctic (`terrain::arctic` ×
+/// 1000; the two never meet), `alt_m` how high the body stands above the
 /// sea.
-pub fn air_dc_at(cc: &ClimateContent, arid_pm: u16, alt_m: i32, day_tick: u64, wx: &Wx) -> i16 {
+pub fn air_dc_at(
+    cc: &ClimateContent,
+    arid_pm: u16,
+    arctic_pm: u16,
+    alt_m: i32,
+    day_tick: u64,
+    wx: &Wx,
+) -> i16 {
     let arid = arid_pm.min(1000) as i32;
+    let arctic = arctic_pm.min(1000) as i32;
     let lo = lerp(cc.temperate_low_dc, cc.arid_low_dc, arid);
     let hi = lerp(cc.temperate_high_dc, cc.arid_high_dc, arid);
+    let lo = lo + (cc.arctic_low_dc as i32 - lo) * arctic / 1000;
+    let hi = hi + (cc.arctic_high_dc as i32 - hi) * arctic / 1000;
     // Cloud pulls the hour toward the middle of its swing.
     let w = warmth_pm(day_tick) as i32;
     let keep = 1000 - wx.cloud.min(1000) as i32 * cc.cloud_flatten_pm.min(1000) as i32 / 1000;
@@ -115,8 +131,10 @@ pub fn air_dc(
 ) -> i16 {
     let arid = crate::terrain::aridity(seed, x, z);
     let arid_pm = (arid * 1000.0).clamp(0.0, 1000.0) as u16;
+    let arctic = crate::terrain::arctic(seed, x, z);
+    let arctic_pm = (arctic * 1000.0).clamp(0.0, 1000.0) as u16;
     let alt = alt_m.clamp(-1000.0, 10_000.0) as i32;
-    air_dc_at(cc, arid_pm, alt, day_tick, wx)
+    air_dc_at(cc, arid_pm, arctic_pm, alt, day_tick, wx)
 }
 
 /// Where the sky's water turns to snow (snow v0): all of it falls as snow
@@ -177,6 +195,8 @@ mod tests {
             temperate_high_dc: 240,
             arid_low_dc: 40,
             arid_high_dc: 420,
+            arctic_low_dc: -180,
+            arctic_high_dc: -60,
             lapse_from_m: 30,
             lapse_m: 10,
             cloud_flatten_pm: 400,
@@ -229,12 +249,16 @@ mod tests {
         let clear = Wx::default();
         let dawn = at(0);
         let peak = at(PEAK_PM);
-        assert_eq!(air_dc_at(&c, 0, 10, dawn, &clear), 80);
-        assert_eq!(air_dc_at(&c, 0, 10, peak, &clear), 240);
-        assert_eq!(air_dc_at(&c, 1000, 10, peak, &clear), 420);
-        assert_eq!(air_dc_at(&c, 1000, 10, dawn, &clear), 40);
+        assert_eq!(air_dc_at(&c, 0, 0, 10, dawn, &clear), 80);
+        assert_eq!(air_dc_at(&c, 0, 0, 10, peak, &clear), 240);
+        assert_eq!(air_dc_at(&c, 1000, 0, 10, peak, &clear), 420);
+        assert_eq!(air_dc_at(&c, 1000, 0, 10, dawn, &clear), 40);
+        // The arctic: cold at its warmest hour, colder at dawn.
+        assert_eq!(air_dc_at(&c, 0, 1000, 10, peak, &clear), -60);
+        assert_eq!(air_dc_at(&c, 0, 1000, 10, dawn, &clear), -180);
+        assert_eq!(air_dc_at(&c, 0, 500, 10, peak, &clear), 90);
         // 100 m above the lapse line is ten degrees colder.
-        assert_eq!(air_dc_at(&c, 0, 130, peak, &clear), 140);
+        assert_eq!(air_dc_at(&c, 0, 0, 130, peak, &clear), 140);
     }
 
     #[test]
@@ -247,14 +271,14 @@ mod tests {
         let peak = at(PEAK_PM);
         let dawn = at(0);
         // Mid is 160; full cloud keeps 60 % of the 80-degree half swing.
-        assert_eq!(air_dc_at(&c, 0, 0, peak, &overcast), 160 + 48);
-        assert_eq!(air_dc_at(&c, 0, 0, dawn, &overcast), 160 - 48);
+        assert_eq!(air_dc_at(&c, 0, 0, 0, peak, &overcast), 160 + 48);
+        assert_eq!(air_dc_at(&c, 0, 0, 0, dawn, &overcast), 160 - 48);
         let storm = Wx {
             cloud: 1000,
             rain: 1000,
             ..Wx::default()
         };
-        assert_eq!(air_dc_at(&c, 0, 0, peak, &storm), 160 + 48 - 60);
+        assert_eq!(air_dc_at(&c, 0, 0, 0, peak, &storm), 160 + 48 - 60);
     }
 
     #[test]

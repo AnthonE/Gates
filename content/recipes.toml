@@ -1368,6 +1368,15 @@ station = "none"
 seconds = 12
 inputs = [{ item = "item.leather", count = 15 }]
 
+# Snowcaps v0: the warm head, by hand.
+[[recipe]]
+id = "recipe.armor_hide_hood"
+output = "item.armor_hide_hood"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.leather", count = 10 }]
+
 [[recipe]]
 id = "recipe.armor_bandana_face"
 output = "item.armor_bandana_face"

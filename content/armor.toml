@@ -251,6 +251,16 @@ move_penalty_pct = 0
 cold_pct = 20
 fel_pct = 3
 
+# Snowcaps v0 (ours): the warm head, where burlap's and the beanie's are 6.
+# Hide's draughts are the legs' and the boots' trouble, not a fur lining's.
+[[armor]]
+id = "item.armor_hide_hood"
+slot = "head"
+reduction_pct = 6
+move_penalty_pct = 0
+cold_pct = 20
+fel_pct = 5
+
 [[armor]]
 id = "item.armor_leather_hands"
 slot = "hands"

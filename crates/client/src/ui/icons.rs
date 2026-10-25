@@ -175,6 +175,7 @@ pub const STEMS: [&str; 221] = [
     "hide_pants",
     "hide_boots",
     "hide_vest",
+    "hide_hood",
     "leather_gloves",
     "hoodie",
     "pants",

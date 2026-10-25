@@ -811,7 +811,8 @@ pub fn steps(
                 // A floor kicks nothing up (`body_landing` knows no floor).
                 let ground = floor_step(&net.session.core, &world, pos).unwrap_or_else(|| {
                     let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
-                    crate::sound::steps::surface_cue(splat, false)
+                    let cold = sim_core::terrain::cold(world.seed, pos[0], pos[2], pos[1]);
+                    crate::sound::steps::surface_cue(splat, false, cold)
                 });
                 super::fx::world::body_landing(fx, ground, Vec3::from(pos));
             }
@@ -839,7 +840,8 @@ pub fn steps(
     let cue = floor_step(core, &world, pos).unwrap_or_else(|| {
         let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
         let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
-        crate::sound::steps::surface_cue(splat, below_sea)
+        let cold = sim_core::terrain::cold(world.seed, pos[0], pos[2], pos[1]);
+        crate::sound::steps::surface_cue(splat, below_sea, cold)
     });
     sound.play(Request::own(cue).with_gain(step.gain));
     let now = blight.as_deref().and_then(|b| b.now.as_ref());
@@ -1175,7 +1177,8 @@ pub fn remote_steps(
         let cue = crate::sound::steps::remote(floor.unwrap_or_else(|| {
             let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
             let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
-            crate::sound::steps::surface_cue(splat, below_sea)
+            let cold = sim_core::terrain::cold(world.seed, pos[0], pos[2], pos[1]);
+            crate::sound::steps::surface_cue(splat, below_sea, cold)
         }));
         sound.play(Request::at(cue, pos).with_gain(step.gain));
         // Only within earshot: the leaves are nine scatter lookups, and a
@@ -1515,7 +1518,8 @@ pub fn remote_hands(
                         super::fx::world::splash(fx, at, 0.7);
                     } else {
                         let splat = sim_core::terrain::splat(world.seed, at.x, at.z);
-                        let ground = crate::sound::steps::surface_cue(splat, false);
+                        let cold = sim_core::terrain::cold(world.seed, at.x, at.z, feet_y);
+                        let ground = crate::sound::steps::surface_cue(splat, false, cold);
                         super::fx::world::body_landing(fx, ground, at);
                     }
                 }

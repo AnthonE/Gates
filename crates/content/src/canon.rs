@@ -696,6 +696,8 @@ pub fn hash(c: &Content) -> u64 {
         cl.temperate_high_c as u32,
         cl.arid_low_c as u32,
         cl.arid_high_c as u32,
+        cl.arctic_low_c as u32,
+        cl.arctic_high_c as u32,
         cl.lapse_from_m,
         cl.lapse_m,
         cl.cloud_flatten_pm,

@@ -689,7 +689,7 @@ fn blight_at(wp: vec3<f32>, n: f32) -> Blight {
 }
 
 @fragment
-fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec3<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
     // assigns its surface colour below.
     // COLOR.a is the rock weight, not opacity. Only the material's resident
@@ -1176,11 +1176,15 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // survive it (`ART.md`: a modifier that sets a colour keeps the mean-1
     // field). Never on the Verdigris' hot ground, whose fissures glow and
     // pools lie flat: from the fel block's own gate it stays bare.
+    // The snow that lies all year (snowcaps v0) is the floor under the
+    // weather's: `zone.z` is the ground's cold (`terrain::cold`), so the caps
+    // stay white through a thaw and the weather's snow only adds to them.
     let band = splat.snow_band;
-    let snow = splat.snow.x
+    let fallen = splat.snow.x
         * smoothstep(splat.snow.y - splat.snow.w, splat.snow.y, wp.y)
         * smoothstep(band.x - band.z, band.x, dry)
-        * (1.0 - smoothstep(band.y, band.y + band.z, dry))
+        * (1.0 - smoothstep(band.y, band.y + band.z, dry));
+    let snow = max(fallen, clamp(zone.z, 0.0, 1.0))
         * smoothstep(0.55, 0.85, in.world_normal.y)
         * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
         * (1.0 - smoothstep(0.02, 0.25, fel));

@@ -98,7 +98,14 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
     let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
     for (cx, cz) in sim_core::find::mild_cells(seed, hint) {
         let s = terrain::scatter(seed, &table, &haven, cx, cz);
-        if s.occupant != want {
+        // A tree pays its row's swings only grown and of the middle size
+        // class (`gather::tree_wood_pm`, `wild_grown_at`): a small or young
+        // one pays fewer, a large one more, and these fixtures count swings.
+        if s.occupant != want
+            || (want == Occupant::Tree
+                && (!(751..=1000).contains(&sim_core::gather::tree_wood_pm(s.scale))
+                    || sim_core::gather::wild_grown_at(seed, cx as u16, cz as u16) != 0))
+        {
             continue;
         }
         // Outside the slot's own reach, or a wide node seats the body on
@@ -1954,8 +1961,13 @@ fn the_mark_is_at_the_height_the_ray_entered_the_node() {
     let run = ((mx - px) * (mx - px) + (mz - pz) * (mz - pz)).sqrt();
     let ray_y = eye + run / ch * sv;
     let q = movement::POS_Y_Q;
+    // The mark's x and z are quantized too (`POS_XZ_Q`), and a run read
+    // off them is off by up to a quantum along the look, which the slope
+    // of the ray turns into height: a steep look at a grazed top edge
+    // spends most of the margin on it.
+    let slack = 3.0 * q + movement::POS_XZ_Q * (sv / ch).abs();
     assert!(
-        (my - ray_y).max(ray_y - my) <= 3.0 * q,
+        (my - ray_y).max(ray_y - my) <= slack,
         "mark at y {my:.3} where the ray was at {ray_y:.3} — eye {eye:.2}, \
          node top {:.2}; a mark at eye height is the planar rule back",
         s.y + top

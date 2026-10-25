@@ -435,6 +435,10 @@ temperate_low_c = 3
 temperate_high_c = 22
 arid_low_c = -6
 arid_high_c = 38
+# The arctic south (snowcaps v0): under freezing at its warmest hour, so it
+# snows there whatever the sky and a bare body wants a fire or a snow jacket.
+arctic_low_c = -18
+arctic_high_c = -4
 lapse_from_m = 30
 lapse_m = 10
 cloud_flatten_pm = 400

@@ -531,12 +531,15 @@ fn playback_rates_stay_sane() {
 #[test]
 fn the_surface_comes_from_the_dominant_splat_channel() {
     // `terrain::splat`'s channel order: [sand, grass, forest floor, rock].
-    assert_eq!(surface_cue([200, 30, 20, 5], false), Cue::StepSand);
-    assert_eq!(surface_cue([30, 200, 20, 5], false), Cue::StepGrass);
-    assert_eq!(surface_cue([30, 20, 200, 5], false), Cue::StepLitter);
-    assert_eq!(surface_cue([30, 20, 5, 200], false), Cue::StepRock);
+    assert_eq!(surface_cue([200, 30, 20, 5], false, 0.0), Cue::StepSand);
+    assert_eq!(surface_cue([30, 200, 20, 5], false, 0.0), Cue::StepGrass);
+    assert_eq!(surface_cue([30, 20, 200, 5], false, 0.0), Cue::StepLitter);
+    assert_eq!(surface_cue([30, 20, 5, 200], false, 0.0), Cue::StepRock);
+    // Under the snow that lies all year, the snow is the ground.
+    assert_eq!(surface_cue([30, 20, 5, 200], false, 1.0), Cue::StepSnow);
+    assert_eq!(surface_cue([30, 200, 20, 5], false, 0.49), Cue::StepGrass);
     // Below the waterline the ground does not get a vote.
-    assert_eq!(surface_cue([30, 20, 5, 200], true), Cue::StepWater);
+    assert_eq!(surface_cue([30, 20, 5, 200], true, 1.0), Cue::StepWater);
 }
 
 #[test]
@@ -657,6 +660,7 @@ fn a_remote_step_is_the_same_boot_on_the_same_ground() {
         (Cue::StepWood, Cue::RemoteStepWood),
         (Cue::StepConcrete, Cue::RemoteStepConcrete),
         (Cue::StepMetal, Cue::RemoteStepMetal),
+        (Cue::StepSnow, Cue::RemoteStepSnow),
     ];
     for (local, far) in pairs {
         assert_eq!(remote(local), far, "{local:?} maps to the wrong twin");

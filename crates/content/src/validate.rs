@@ -1172,6 +1172,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("temperate_high_c", cl.temperate_high_c),
             ("arid_low_c", cl.arid_low_c),
             ("arid_high_c", cl.arid_high_c),
+            ("arctic_low_c", cl.arctic_low_c),
+            ("arctic_high_c", cl.arctic_high_c),
             ("rain_cool_c", cl.rain_cool_c),
             ("crop_frost_c", cl.crop_frost_c),
             ("crop_warm_c", cl.crop_warm_c),
@@ -1182,7 +1184,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 return Err(format!("climate `{name}`: {v} °C is past ±100"));
             }
         }
-        if cl.temperate_low_c > cl.temperate_high_c || cl.arid_low_c > cl.arid_high_c {
+        if cl.temperate_low_c > cl.temperate_high_c
+            || cl.arid_low_c > cl.arid_high_c
+            || cl.arctic_low_c > cl.arctic_high_c
+        {
             return Err("[climate]: a biome's dawn is warmer than its afternoon".into());
         }
         if cl.cloud_flatten_pm > 1000 || cl.lapse_from_m > u16::MAX as u32 || cl.lapse_m > 1000 {
@@ -1943,7 +1948,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // live. Zero density is legal (a wolf row can arm only the site
         // guards); a density with nowhere to live is a row that cannot be.
         let h = &m.habitat;
-        let weights = [h.meadow, h.forest, h.highland, h.desert, h.fel];
+        let weights = [h.meadow, h.forest, h.highland, h.desert, h.fel, h.snow];
         if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
             return Err(format!(
                 "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",

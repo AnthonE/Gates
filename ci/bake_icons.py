@@ -273,6 +273,7 @@ ITEMS = {
     "armor_hide_legs": "delapouite/leg-armor",
     "armor_hide_feet": "delapouite/fur-boot",
     "armor_hide_shirt": "lorc/leather-vest",
+    "armor_hide_hood": "lorc/hood",
     "armor_leather_hands": "delapouite/winter-gloves",
     "armor_hoodie_shirt": "delapouite/hoodie",
     "armor_pants_legs": "lorc/trousers",

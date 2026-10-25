@@ -13,10 +13,14 @@
 
 use crate::terrain;
 
-/// Ground no climate band reaches: not the desert, not the Verdigris. Where a
-/// fixture tests a verb rather than a climate, the climate stays out of it.
+/// Ground no climate band reaches: not the desert, not the arctic, not the
+/// Verdigris. Where a fixture tests a verb rather than a climate, the climate
+/// stays out of it. (A snowcap is height, and a fixture's level ground is
+/// never up on one.)
 pub fn mild(seed: u64, x: f32, z: f32) -> bool {
-    terrain::aridity(seed, x, z) == 0.0 && terrain::fel(seed, x, z) == 0.0
+    terrain::aridity(seed, x, z) == 0.0
+        && terrain::arctic(seed, x, z) == 0.0
+        && terrain::fel(seed, x, z) == 0.0
 }
 
 /// [`mild`] at a scatter cell's centre.
@@ -168,10 +172,16 @@ pub fn biome_ground(seed: u64, want: terrain::Biome) -> Option<(f32, f32)> {
 
 /// A biome by the name content spells it (`terrain::BIOME_NAMES`).
 pub fn biome_named(name: &str) -> Option<terrain::Biome> {
-    use terrain::Biome::*;
-    let all: [terrain::Biome; terrain::BIOMES] = [Beach, Meadow, Forest, Highland, Desert, Fel];
     terrain::BIOME_NAMES
         .iter()
         .position(|n| *n == name)
-        .map(|i| all[i])
+        .map(|i| terrain::ALL_BIOMES[i])
+}
+
+/// Ground nothing authored stands on or sweeps: no site's floor
+/// (`terrain::site_sweep`) and no landmark within `pad` metres. A fixture
+/// that wants open ground wants the wilderness, not a carved yard whose
+/// flatness is a structure's.
+pub fn unbuilt(haven: &terrain::Haven, x: f32, z: f32, pad: f32) -> bool {
+    terrain::site_sweep(haven, x, z) == 0.0 && !crate::landmark::covers(&haven.marks, x, z, pad)
 }

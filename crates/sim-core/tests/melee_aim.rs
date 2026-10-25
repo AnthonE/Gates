@@ -200,7 +200,10 @@ fn level_ground(seed: u64) -> (f32, f32) {
         let mut x = 320.0f32;
         while x < 1728.0 {
             let y0 = terrain::ground(seed, h, x, z);
-            if y0 >= terrain::LAND_MIN_H + 2.0 && sim_core::find::mild(seed, x, z) {
+            if y0 >= terrain::LAND_MIN_H + 2.0
+                && sim_core::find::mild(seed, x, z)
+                && sim_core::find::unbuilt(h, x, z, 10.0)
+            {
                 let mut drop = 0.0f32;
                 let mut d = 0.5f32;
                 while d <= RUN_M {

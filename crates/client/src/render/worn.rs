@@ -411,6 +411,7 @@ pub fn load(
             ),
             ("Beenie Hat", vec![part(cap.clone(), &red, Bone::Head)]),
             ("Burlap Hood", vec![part(hood.clone(), &burlap, Bone::Head)]),
+            ("Hide Hood", vec![part(hood.clone(), &hide, Bone::Head)]),
             ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
             // The suit is the tunic's cut in the mask's blacked cloth: two
             // parts, so a helmet over it still fits `MAX_PARTS`.
