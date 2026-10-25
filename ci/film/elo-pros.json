@@ -1,0 +1,22 @@
+{
+  "recording": "film/elo.rec",
+  "out": "film/elo-pros",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 42,
+  "settle": 10,
+  "budget": {"ao": 0, "shadow_px": 2048, "shadow_m": 110, "cascades": 2, "clouds": 1, "gaussian": true, "tree_lod_m": 220, "blur_samples": 2},
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "shots": [
+    {"name": "build-lapse", "at": 5, "len": 5, "speed": 9, "hour": [0.3, 0.4], "weather": "clear", "fov": 42, "ease": true, "orbit": {"center": [2334, 3, 3096], "radius": [46, 40], "height": [17, 13], "from": 205, "to": 243}, "look": {"shutter": 0.25, "saturation": 1.1}},
+    {"name": "dawn-sea", "at": 60, "len": 4.5, "hour": [0.021, 0.0273], "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [1066, 1.1, 912], "look": [880, 14, 700]}, {"t": 4.5, "pos": [1076.8, 1.19, 904.8], "look": [889.9, 14.0, 692.8]}], "look": {"exposure": 0.2, "temperature": 0.04, "saturation": 1.12, "shake": 0.06}},
+    {"name": "beach-push", "at": 67, "len": 4.5, "hour": [0.034, 0.0403], "weather": "clear", "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [1058, 1.2, 900], "look": [1245, 7, 945]}, {"t": 4.5, "pos": [1077.8, 1.29, 904.5], "look": [1249.5, 7.0, 945.9]}], "look": {"exposure": 0.15, "temperature": 0.04, "saturation": 1.1, "shake": 0.06}},
+    {"name": "gate-crane", "at": 81, "len": 4.5, "hour": [0.802, 0.8092], "weather": "clear", "fov": 42, "ease": true, "orbit": {"center": [1848, 46, 2040], "radius": [155, 132.5], "height": [2, 20.0], "from": 22, "to": 41.8}, "look": {"shutter": 0.35, "temperature": 0.05, "saturation": 1.1}},
+    {"name": "base-dusk", "at": 200, "len": 3.5, "hour": [0.88, 0.93], "weather": "clear", "fov": 42, "keys": [{"t": 0, "pos": [2300, 3.0, 3080], "look": [2340, 5, 3102]}, {"t": 3.5, "pos": [2302.8, 3.15, 3082.1], "look": [2340.0, 5.0, 3102.0]}], "look": {"exposure": [[0, 0.6], [3.5, 3.0]], "temperature": 0.0, "saturation": 1.1, "shake": 0.05}},
+    {"name": "raid-plant", "at": 301.0, "len": 3.0, "hour": 0.8, "weather": "clear", "fov": 24, "keys": [{"t": 0, "pos": [2346, 1.3, 3117], "look": [2354.5, 1.0, 3105.5]}, {"t": 3.0, "pos": [2347.0, 1.3, 3116.2], "look": [2354.5, 1.0, 3105.5]}], "look": {"exposure": 0.2, "temperature": 0.04, "shake": 0.15, "focus": "look", "fstop": 2.8}},
+    {"name": "raid-walkaway", "at": 308.5, "len": 5.5, "hour": 0.8, "weather": "clear", "fov": 40, "speed": [[0, 1], [2.9, 1], [3.3, 0.3], [5.1, 0.3], [5.5, 0.6]], "keys": [{"t": 0, "pos": [2370, 1.7, 3143], "look": [2355, 2.5, 3107]}, {"t": 5.5, "pos": [2369.0, 1.7, 3141.8], "look": [2355, 2.5, 3107]}], "look": {"exposure": 0.2, "temperature": 0.04, "shake": [[0, 0.15], [4.0, 0.15], [4.15, 1.8], [5.1, 0.6], [5.5, 0.4]]}},
+    {"name": "raid-blast-slowmo", "at": 635.5, "len": 5.0, "hour": 0.79, "weather": "clear", "fov": 38, "speed": [[0, 1], [2.2, 1], [2.6, 0.3], [4.5, 0.3], [5, 1]], "keys": [{"t": 0, "pos": [2329, 1.7, 3112], "look": [2356, 3, 3105]}, {"t": 5.0, "pos": [2329.9, 1.7, 3111.5], "look": [2356, 3, 3105]}], "look": {"exposure": 0.2, "temperature": 0.04, "shake": [[0, 0.12], [3.3, 0.12], [3.45, 1.8], [4.5, 0.4], [5, 0.3]]}},
+    {"name": "crew", "at": 646, "len": 3.5, "hour": 0.785, "weather": "clear", "fov": 32, "keys": [{"t": 0, "pos": [2333, 1.7, 3116], "look": [2340, 1.2, 3107]}, {"t": 3.5, "pos": [2334.8, 1.62, 3116.8], "look": [2340.0, 1.2, 3107.0]}], "track": {"near": [2340, 3107], "up": 1.2, "lag": 0.8}, "look": {"focus": "subject", "fstop": 2.4, "exposure": 0.2, "temperature": 0.05, "saturation": 1.1, "shake": 0.08}}
+  ]
+}
