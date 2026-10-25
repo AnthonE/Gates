@@ -1600,14 +1600,15 @@ impl WornLook {
 }
 
 /// One player's tag as the shard sent it (`EventMsg::Tag`): the proven
-/// address, the name that wallet set on the platform (possibly empty) and
-/// its picture's revision (0 for none).
+/// address, the name that wallet set on the platform (possibly empty), its
+/// picture's revision (0 for none) and the guild tag it wears (v152).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tag {
     pub id: u32,
     pub address: protocol::Address,
     pub name: protocol::Name,
     pub pic: u32,
+    pub guild: protocol::Guild,
 }
 
 /// Vending machines a client remembers the offers of (`ClientCore::shop_offers`).
@@ -3260,6 +3261,7 @@ impl ClientCore {
                 address,
                 name,
                 pic,
+                guild,
             } => {
                 if let Some(row) = self.tags.get_mut((id & 0xFF) as usize) {
                     *row = Tag {
@@ -3267,6 +3269,7 @@ impl ClientCore {
                         address,
                         name,
                         pic,
+                        guild,
                     };
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }

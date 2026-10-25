@@ -591,6 +591,7 @@ mod tests {
             address: agent_wallet,
             name: protocol::Name::new(name).unwrap(),
             pic: 0,
+            guild: protocol::Guild::NONE,
         };
         let rook = Kin::parse("rook").unwrap();
         assert_eq!(rook.post, 0);
