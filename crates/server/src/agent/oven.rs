@@ -11,6 +11,10 @@
 //!   (`content/cooking.toml`). Wood goes in the fuel slot and the meat on the
 //!   grill (Rust's camp fire, `sim_core::oven::FIRE_LAYOUT`); what comes off
 //!   is taken; the fire is put out when the last piece is done.
+//! - **Warm**: the same fire with only wood in it, kept lit while the body
+//!   beside it is cold or still mending ([`wants_warmth`]): a lit fire takes
+//!   the chill away and its comfort mends a body to 80 % fast
+//!   (`sim_core::exposure`). Put out once it is warm and whole.
 //! - **Recycle**: salvaged parts go into a recycler, and junk,
 //!   fragments and cloth come out; it is switched off when the last is
 //!   taken apart.
@@ -58,6 +62,16 @@ pub const FUEL_LOAD: u16 = 20;
 const FUEL_LOW: u32 = 4;
 /// Fuel a cook wants in the pack before it is worth going.
 pub const FUEL_MIN: u32 = 10;
+/// A warm-up is over below this much cold, per cent of the meter (the HUD
+/// shows COLD from 25).
+pub const WARM_ENOUGH_PCT: u8 = 10;
+/// …and once a fire's comfort has mended the body to this share of its hp:
+/// comfort's cap is 80 % (`content/balance.toml` `regen_*`), so a little
+/// under it.
+pub const REST_HP_PCT: u32 = 75;
+/// A body this hungry or thirsty, per cent, does not mend by a fire: it
+/// eats and drinks first.
+const REST_FED_PCT: u32 = 25;
 /// Its own device this near is walked to rather than another put down; a
 /// recycler it has seen, this near, is walked to.
 pub const KEEP_M: f32 = 80.0;
@@ -80,6 +94,10 @@ const MAX_TRIES: u8 = 3;
 /// A cook or a recycle that came to nothing is not offered again for this
 /// long.
 pub const RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A warm-up that came to nothing (no ground for a fire, no way to it) is
+/// not offered again for this long: the cold is still there a minute on,
+/// and so is the ground.
+pub const WARM_RETRY_TICKS: u32 = 5 * 60 * TICK_HZ;
 /// The drift left at a press, once the eyes have settled.
 const PRESS_SLACK_M: f32 = 0.1;
 
@@ -131,6 +149,8 @@ impl Keep {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Work {
     Cook,
+    /// A fire kept lit to stand by ([`wants_warmth`]).
+    Warm,
     Recycle,
     /// Paper for this sample, paid with `cost` of the research coin.
     Research {
@@ -146,7 +166,7 @@ impl Work {
     /// The device it is done at.
     pub fn device(self) -> &'static str {
         match self {
-            Work::Cook => FIRE_ITEM,
+            Work::Cook | Work::Warm => FIRE_ITEM,
             Work::Recycle => RECYCLER_ITEM,
             Work::Research { .. } => TABLE_ITEM,
             Work::Shop => crate::agent::shop::SHOP_ITEM,
@@ -254,10 +274,22 @@ pub fn raw(book: &Book, item: u16) -> bool {
     page.cooks != NO_ITEM && page.class != Class::Food && book.page(page.cooks).class == Class::Food
 }
 
+/// The body wants a fire's warmth: it is cold, or hurt and fed and watered
+/// enough for a fire's comfort to mend it.
+pub fn wants_warmth(core: &ClientCore) -> bool {
+    let pct = |v: u16, max: u16| u32::from(v) * 100 / u32::from(max.max(1));
+    let fed = pct(core.food, core.max_food) >= REST_FED_PCT
+        && pct(core.water, core.max_water) >= REST_FED_PCT;
+    core.cold_hurting
+        || core.cold_pct >= WARM_ENOUGH_PCT
+        || (fed && core.hp_max > 0 && pct(core.hp, core.hp_max) < REST_HP_PCT)
+}
+
 /// What a session puts into the device for its work, from the pack.
 fn feeds(work: Work, core: &ClientCore, book: &Book, item: u16) -> bool {
     match work {
         Work::Cook => raw(book, item),
+        Work::Warm => item == book.fuel(),
         Work::Recycle => book.page(item).recycles,
         Work::Research { sample, .. } => item == sample,
         Work::Shop => crate::agent::shop::ware(core, item),
@@ -455,7 +487,9 @@ pub fn can_tend(core: &ClientCore, book: &Book, work: Work, near: bool, keep: &K
         return false;
     }
     let fuel = book.fuel();
-    if work == Work::Cook && (fuel == NO_ITEM || carried(core, fuel) < FUEL_MIN) {
+    if matches!(work, Work::Cook | Work::Warm)
+        && (fuel == NO_ITEM || carried(core, fuel) < FUEL_MIN)
+    {
         return false;
     }
     if near {
@@ -469,7 +503,7 @@ pub fn can_tend(core: &ClientCore, book: &Book, work: Work, near: bool, keep: &K
     }
     // A fire pit is made from the fuel itself, anywhere: enough for the pit
     // and a fire's worth.
-    work == Work::Cook
+    matches!(work, Work::Cook | Work::Warm)
         && recipe_for(core, item, &Stations::NONE).is_some_and(|(r, ..)| {
             let def = core.recipes.recipes[usize::from(r)];
             def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())]
@@ -628,6 +662,27 @@ pub fn plan(
             let (to, count) = land(slots, grill, item, want, cap(item))?;
             Some((true, from as u8, to, count))
         }
+        Work::Warm => {
+            // Only wood: whatever else is in it (what a cook left, the
+            // charcoal the burning makes) comes off, and fuel goes in when
+            // it runs low.
+            let (fuel, fire) = (book.fuel(), fuel_slots(ARCH_FIRE));
+            for (i, s) in slots.iter().enumerate() {
+                if s.count > 0 && !(s.item == fuel && fire.contains(&i)) {
+                    if let Some(shift) = take(i, s) {
+                        return Some(shift);
+                    }
+                }
+            }
+            if units(&slots[fire.clone()], fuel) >= FUEL_LOW {
+                return None;
+            }
+            let from = from_pack(&|item| item == fuel)?;
+            let laid = units(&slots[fire.clone()], fuel);
+            let want = FUEL_LOAD.saturating_sub(laid as u16).min(pack[from].count);
+            let (to, count) = land(slots, fire, fuel, want, cap(fuel))?;
+            Some((true, from as u8, to, count))
+        }
         Work::Recycle => {
             for (i, s) in slots.iter().enumerate() {
                 if s.count > 0 && !book.page(s.item).recycles {
@@ -704,6 +759,7 @@ pub fn should_run(work: Work, core: &ClientCore, book: &Book, slots: &[ItemStack
         Work::Cook => slots[input_slots(ARCH_FIRE)]
             .iter()
             .any(|s| s.count > 0 && raw(book, s.item)),
+        Work::Warm => wants_warmth(core) && units(&slots[fuel_slots(ARCH_FIRE)], book.fuel()) > 0,
         Work::Recycle => slots
             .iter()
             .any(|s| s.count > 0 && book.page(s.item).recycles),
@@ -1448,6 +1504,41 @@ mod tests {
         fire[1] = stack(raw_meat, count);
         assert_eq!(plan(&core, &fire), None, "the grill is loaded");
         assert!(should_run(Work::Cook, &core, &book, &fire));
+    }
+
+    /// A warm-up keeps only wood in the fire, runs while the body is cold
+    /// or hurt enough to mend there, and is put out once it is neither.
+    #[test]
+    fn a_warm_up_burns_wood_while_the_body_is_cold_or_mending() {
+        let (mut core, book, id) = shipped();
+        let (raw_meat, wood) = (id("item.raw_meat"), id("item.wood"));
+        (core.food, core.max_food, core.water, core.max_water) = (100, 100, 100, 100);
+        (core.hp, core.hp_max) = (100, 100);
+        core.inv[HOTBAR_SLOTS] = stack(wood, 40);
+        assert!(!wants_warmth(&core), "warm and whole");
+        core.cold_pct = 40;
+        assert!(wants_warmth(&core));
+        assert!(can_tend(&core, &book, Work::Warm, true, &Keep::NONE));
+        let mut fire = [ItemStack::default(); BOX_SLOTS];
+        fire[1] = stack(raw_meat, 2);
+        // What a cook left comes off; then a load of wood goes in.
+        let (into, from, ..) = plan(Work::Warm, &core, &book, &fire, false, &Keep::NONE).unwrap();
+        assert_eq!((into, from), (false, 1));
+        fire[1] = ItemStack::default();
+        let (into, _, to, count) =
+            plan(Work::Warm, &core, &book, &fire, false, &Keep::NONE).unwrap();
+        assert_eq!((into, usize::from(to), count), (true, 0, FUEL_LOAD));
+        fire[0] = stack(wood, count);
+        assert_eq!(
+            plan(Work::Warm, &core, &book, &fire, true, &Keep::NONE),
+            None
+        );
+        assert!(should_run(Work::Warm, &core, &book, &fire));
+        // Warm again: it is put out. Badly hurt and fed: it stays lit.
+        core.cold_pct = 0;
+        assert!(!should_run(Work::Warm, &core, &book, &fire));
+        core.hp = 40;
+        assert!(should_run(Work::Warm, &core, &book, &fire));
     }
 
     /// Meat, wood and a fire to cook on: a cook can go; no wood, no meat,

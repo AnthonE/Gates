@@ -207,7 +207,7 @@
     },
     "observation": {
       "type": "object", "additionalProperties": false,
-      "required": ["body", "health", "food", "water", "pack", "craftable_now", "in_view", "water_nearby",
+      "required": ["body", "health", "food", "water", "condition", "pack", "craftable_now", "in_view", "water_nearby",
                    "threats", "last_fight", "last_goal", "current_goal", "hits_taken_since_last_decision",
                    "deaths", "respawns", "sleeping_bags_down", "my_death_backpack", "home",
                    "a_sleeping_bag_is_ready", "night", "base_next", "stations", "loot_known", "loot_place",
@@ -217,6 +217,17 @@
         "health": {"$ref": "#/$defs/meter"},
         "food": {"$ref": "#/$defs/meter"},
         "water": {"$ref": "#/$defs/meter"},
+        "condition": {
+          "type": "object", "additionalProperties": false,
+          "required": ["bleeding", "cold_pct", "cold_hurting", "wet_pct", "verdigris_pct", "verdigris_hurting",
+                       "comfort_pct", "air_c"],
+          "properties": {
+            "bleeding": {"type": "boolean"}, "cold_pct": {"type": "integer"}, "cold_hurting": {"type": "boolean"},
+            "wet_pct": {"type": "integer"}, "verdigris_pct": {"type": "integer"},
+            "verdigris_hurting": {"type": "boolean"}, "comfort_pct": {"type": "integer"},
+            "air_c": {"type": ["integer", "null"]}
+          }
+        },
         "pack": {
           "type": "object", "additionalProperties": false, "required": ["items", "free_slots"],
           "properties": {"items": {"$ref": "#/$defs/items"}, "free_slots": {"type": "integer"}}
@@ -259,8 +270,9 @@
         "a_sleeping_bag_is_ready": {"type": "boolean"},
         "night": {"type": "boolean"},
         "base_next": {
-          "type": "object", "additionalProperties": false, "required": ["milestone", "missing", "raw"],
-          "properties": {"milestone": {"type": "string"}, "missing": {"$ref": "#/$defs/items"}, "raw": {"$ref": "#/$defs/items"}}
+          "type": "object", "additionalProperties": false, "required": ["milestone", "missing", "raw", "waiting_on_work"],
+          "properties": {"milestone": {"type": "string"}, "missing": {"$ref": "#/$defs/items"}, "raw": {"$ref": "#/$defs/items"},
+                         "waiting_on_work": {"type": ["string", "null"]}}
         },
         "stations": {
           "type": "object", "additionalProperties": false, "required": ["workbench", "furnace"],
