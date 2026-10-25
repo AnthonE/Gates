@@ -39,6 +39,9 @@ sleep 4
 key 4
 sleep 3
 move 1200 0
+sleep 2
+# close, inside E's 3 m (placing reaches 5)
+move 0 60
 sleep 3
 shot 04-solar-ghost
 click 1
@@ -50,6 +53,8 @@ sleep 3
 click 1
 sleep 2
 shot 05-wire-picked
+move 0 -60
+sleep 2
 move -1200 0
 sleep 3
 click 1
