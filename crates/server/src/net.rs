@@ -729,6 +729,22 @@ pub fn bake_catalog(
                 recoil_pitch: g.recoil_pitch,
                 recoil_yaw: g.recoil_yaw,
                 ads_recoil_pct: g.ads_recoil_pct,
+                rate_sub: u16::try_from(ranged.rate_sub)
+                    .map_err(|_| format!("catalog: `{}` cadence overflows the wire", item.id))?,
+                moving: g.moving,
+                per_shot: g.per_shot,
+                max: g.max,
+                recover_ticks: g.recover_ticks,
+                delay_ticks: g.delay_ticks,
+                pellet: g.pellet,
+                speed_mmpt: combat
+                    .ammo_def(ranged.ammo[0])
+                    .filter(|a| a.speed_mmpt > 0)
+                    .map_or(0, |a| g.muzzle(a.speed_mmpt)),
+                drop_mmpt2: combat
+                    .ammo_def(ranged.ammo[0])
+                    .map_or(0, |a| a.drop_mmpt2.min(63) as u8),
+                mods: g.mods,
             })
         } else {
             None
@@ -762,7 +778,7 @@ pub fn bake_catalog(
                 holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
                 revive: survival.revives(idx as u16),
                 use_ticks: eat.use_ticks,
-                pour: survival.vessel_full(idx as u16).is_some(),
+                pour: survival.vessel(idx as u16).is_some(),
                 class: item.class.code(),
                 // What one hit takes off a body (v131), the order the sim
                 // reads a hand in: a gun or a bow, else a swing, else a
@@ -774,6 +790,24 @@ pub fn bake_catalog(
                     .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
                     .unwrap_or(0),
                 gun,
+                // An attachment (v144): its bit and slot off the sim's
+                // table, the view's half (kick, zoom, laser, light) off the
+                // content row, which the sim never reads.
+                attach: combat.mod_bit(idx as u16).and_then(|bit| {
+                    let m = combat.mods[bit as usize];
+                    let a = content.attachments.get(bit as usize)?;
+                    Some(protocol::ModRow {
+                        bit,
+                        group: m.group,
+                        aim_pct: m.aim_pct,
+                        hip_pct: m.hip_pct,
+                        recoil_pct: a.recoil_pct as u16,
+                        zoom_pct: a.zoom_pct as u8,
+                        quiet: m.quiet,
+                        laser: a.laser,
+                        light: a.light,
+                    })
+                }),
             },
         )
         .map_err(|_| {
@@ -834,6 +868,8 @@ pub struct SimTables {
     pub sentry: sim_core::sentry::SentryDef,
     /// A player auto turret's guns (`deployables.toml` `[turret]`).
     pub turret: sim_core::turret::TurretDef,
+    /// Electricity's numbers (`deployables.toml` `[power]`).
+    pub power: sim_core::power::PowerContent,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
     /// Each item's description line (`content/items.toml` `description`).
@@ -887,6 +923,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         heli: content.bake_heli()?,
         sentry: content.bake_sentry()?,
         turret: content.bake_turret()?,
+        power: content.bake_power()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival, &cook)?,
         item_descs: bake_item_descs(content)?,
@@ -937,6 +974,7 @@ pub fn install_tables(
         heli,
         sentry,
         turret,
+        power,
         research,
         catalog,
         item_descs,
@@ -969,6 +1007,7 @@ pub fn install_tables(
     core.world.heli_def = heli;
     core.world.sentry_def = sentry;
     core.world.turret_def = turret;
+    core.world.power_def = power;
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;
@@ -3034,7 +3073,7 @@ async fn handshake_task(
     // than filed under a guess: a linked player seated on their Solana key
     // for the length of an outage would be a second character.
     //
-    // **An Elo Pros pass (v144)** is elo saying who is signed in on its site:
+    // **An Elo Pros pass (v151)** is elo saying who is signed in on its site:
     // checked against elo's pinned key, this game, these same names and this
     // join's nonce, with no call out. A pass naming a wallet IS that wallet — the same save and
     // copy as signing with it, and nothing asked it to sign. One naming no
@@ -4455,7 +4494,7 @@ pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BY
 }
 
 /// The auth frame's read: [`read_frame`] at `MAX_AUTH_MSG_BYTES`, the one
-/// handshake frame that may be longer (an Elo Pros pass, v144). Read once per
+/// handshake frame that may be longer (an Elo Pros pass, v151). Read once per
 /// join, after the challenge.
 pub async fn read_auth_frame(
     recv: &mut RecvStream,
@@ -4828,7 +4867,7 @@ pub async fn client_handshake_with(
     let challenge =
         protocol::decode_challenge(&frame[..n]).map_err(|e| format!("challenge: {e:?}"))?;
     let auth = auth_for(&challenge);
-    // The auth frame alone may carry an Elo Pros pass (v144).
+    // The auth frame alone may carry an Elo Pros pass (v151).
     let mut abuf = [0u8; protocol::MAX_AUTH_MSG_BYTES];
     let len = protocol::encode_auth(&auth, &mut abuf).map_err(|e| format!("encode auth: {e:?}"))?;
     write_frame(send, &abuf[..len])

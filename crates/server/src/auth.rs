@@ -309,7 +309,7 @@ pub fn verify_solana_any<S: AsRef<str>>(
     Err(AuthError::WrongSigner)
 }
 
-/// Who an Elo Pros pass says the player is (v144).
+/// Who an Elo Pros pass says the player is (v151).
 #[derive(Debug)]
 pub struct Passed {
     /// `acct_` and 20 hex: the save key of a player whose account links no
@@ -321,7 +321,7 @@ pub struct Passed {
     pub wallet: Option<Address>,
 }
 
-/// Verify an **Elo Pros pass** (v144): what elo hands a player signed in on
+/// Verify an **Elo Pros pass** (v151): what elo hands a player signed in on
 /// its site, in place of a wallet signature. `base64url(text).base64url(sig)`,
 /// an Ed25519 signature by elo's account key over the text's bytes, and the
 /// text exactly:

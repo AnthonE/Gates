@@ -689,7 +689,7 @@ pub async fn sign_siws_web(
     })
 }
 
-/// An **Elo Pros pass** for this join (v144): the page's `pass` function is
+/// An **Elo Pros pass** for this join (v151): the page's `pass` function is
 /// handed the name the proof binds and the shard's nonce for this join, and
 /// answers with the pass elo issued for this game, that name and that nonce
 /// (`POST /api/account/play`). The shard checks it against

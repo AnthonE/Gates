@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 191] = [
+const GOLDEN: [&[u8]; 197] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -254,6 +254,12 @@ const GOLDEN: [&[u8]; 191] = [
     include_bytes!("golden/action_tend.bin"),
     include_bytes!("golden/event_vessel.bin"),
     include_bytes!("golden/event_caption.bin"),
+    include_bytes!("golden/action_attach.bin"),
+    include_bytes!("golden/action_detach.bin"),
+    include_bytes!("golden/event_turret.bin"),
+    include_bytes!("golden/action_wire.bin"),
+    include_bytes!("golden/action_unwire.bin"),
+    include_bytes!("golden/event_wire.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -569,8 +575,17 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 189);
     // Captions (v138).
     g!(seen, golden_event, 190);
+    // Weapon attachments (v144).
+    g!(seen, golden_action, 191);
+    g!(seen, golden_action, 192);
+    // The turret's own list (v146).
+    g!(seen, golden_event, 193);
+    // Electricity (v150).
+    g!(seen, golden_action, 194);
+    g!(seen, golden_action, 195);
+    g!(seen, golden_event, 196);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 191, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 197, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1032,6 +1047,42 @@ fn golden_action(fixture: &[u8], name: &str) {
             );
             protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap()
         }
+        "action_attach.bin" => {
+            let slot = protocol::goldens::action_attach();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Attach { slot },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_attach(slot, &mut buf).unwrap()
+        }
+        "action_wire.bin" => {
+            let (from, out, to, inp) = protocol::goldens::action_wire();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Wire { from, out, to, inp },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_wire(from, out, to, inp, &mut buf).unwrap()
+        }
+        "action_unwire.bin" => {
+            let key = protocol::goldens::action_unwire();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Unwire { key },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_unwire(key, &mut buf).unwrap()
+        }
+        "action_detach.bin" => {
+            let bit = protocol::goldens::action_detach();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Detach { bit },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_detach(bit, &mut buf).unwrap()
+        }
         "action_unload.bin" => {
             assert_eq!(
                 decode_action(fixture).unwrap(),
@@ -1460,6 +1511,30 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_shop(&view, &mut buf).unwrap()
+        }
+        "event_wire.bin" => {
+            let (from, to, out, inp) = protocol::goldens::event_wire();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Wire {
+                    from,
+                    to,
+                    out,
+                    inp,
+                    set: true
+                },
+                "{name}"
+            );
+            protocol::encode_event_wire(from, to, out, inp, true, &mut buf).unwrap()
+        }
+        "event_turret.bin" => {
+            let view = protocol::goldens::event_turret();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Turret(view),
+                "{name}"
+            );
+            protocol::encode_event_turret(&view, &mut buf).unwrap()
         }
         "event_shop_result.bin" => {
             let (key, op, row, times, code) = protocol::goldens::event_shop_result();

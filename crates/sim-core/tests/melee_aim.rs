@@ -112,18 +112,21 @@ fn duel() -> Box<World> {
             count: 500,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[2] = ItemStack {
             item: 1,
             count: 500,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[3] = ItemStack {
             item: 4,
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     arm(&mut w);
@@ -146,6 +149,7 @@ fn arm(w: &mut World) {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
 }
@@ -949,6 +953,7 @@ fn a_blow_at_a_wall_wears_the_weapon_and_a_conditionless_item_never() {
         count: 1,
         cond: 123,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(swing_for_structure(&mut w, YAW_PLUS_X, chest) > 0);
     assert_eq!(held_cond(&w), 123, "an item with no condition was worn");

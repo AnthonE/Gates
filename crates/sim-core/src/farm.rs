@@ -648,9 +648,10 @@ pub struct CropDef {
 pub struct FarmContent {
     pub crops: [CropDef; MAX_CROPS],
     pub crop_count: u8,
-    /// A full waterskin, and what it is left as once poured.
-    pub water_full: u16,
-    pub water_empty: u16,
+    /// The waterskin a planter and a catcher take, and what it holds full,
+    /// ml: a full one is [`Self::skin_wu`] (`survival::Water` in its data).
+    pub water_vessel: u16,
+    pub water_ml: u16,
     /// Water units (1 wu = one plant drinking for one tick): one skin, a
     /// planter's tank, and what full rain banks per second.
     pub skin_wu: u32,
@@ -691,6 +692,19 @@ pub struct FarmContent {
 }
 
 impl FarmContent {
+    /// The water units `ml` of fresh water is worth: a full skin is
+    /// [`Self::skin_wu`].
+    pub fn wu_of(&self, ml: u16) -> u32 {
+        (u64::from(self.skin_wu) * u64::from(ml) / u64::from(self.water_ml.max(1)))
+            .min(u32::MAX as u64) as u32
+    }
+
+    /// The fresh water in `s`, ml, when it is the farm's skin holding any.
+    pub fn fresh_in(&self, s: &ItemStack) -> Option<u16> {
+        let w = crate::survival::Water::of(s.data);
+        (s.count > 0 && s.item == self.water_vessel && w.ml > 0 && !w.salt).then_some(w.ml)
+    }
+
     /// No crops: nothing plants.
     pub const EMPTY: Self = Self {
         crops: [CropDef {
@@ -702,8 +716,8 @@ impl FarmContent {
             clones: 0,
         }; MAX_CROPS],
         crop_count: 0,
-        water_full: 0,
-        water_empty: 0,
+        water_vessel: 0,
+        water_ml: 0,
         skin_wu: 0,
         planter_cap_wu: 0,
         rain_wu_s: 0,
@@ -742,8 +756,8 @@ impl FarmContent {
             clones: 2,
         };
         f.crop_count = 1;
-        f.water_full = 2;
-        f.water_empty = 3;
+        f.water_vessel = 2;
+        f.water_ml = 1000;
         f.skin_wu = 3600 * hz;
         f.planter_cap_wu = 7200 * hz;
         f.rain_wu_s = 6 * hz;
@@ -975,12 +989,13 @@ pub fn step(
                     if ovens[h].water < need && fc.skin_wu > 0 {
                         if let Some(s) = boxes[h].items[crate::oven::fuel_slots(ARCH_PLANTER)]
                             .iter_mut()
-                            .find(|s| s.count > 0 && s.item == fc.water_full)
+                            .find(|s| fc.fresh_in(s).is_some())
                         {
-                            s.item = fc.water_empty;
+                            let wu = fc.wu_of(fc.fresh_in(s).unwrap_or(0));
+                            s.data = 0;
                             ovens[h].water = ovens[h]
                                 .water
-                                .saturating_add(fc.skin_wu)
+                                .saturating_add(wu)
                                 .min(fc.planter_cap_wu.max(fc.skin_wu));
                         }
                     }
@@ -1084,13 +1099,23 @@ fn catcher_visit(
     if rain > 0 && water < cap && open_sky_at(x, z, feet_of(&boxes[i], ARCH_CATCHER)) {
         water = water.saturating_add(rain).min(cap);
     }
-    if fc.skin_wu > 0 && water >= fc.skin_wu {
+    if fc.skin_wu > 0 {
+        // A skin with room tops up to the brim, when the barrel holds that
+        // much; one of sea water stays as it is.
         if let Some(s) = boxes[i].items[crate::oven::fuel_slots(ARCH_CATCHER)]
             .iter_mut()
-            .find(|s| s.count > 0 && s.item == fc.water_empty)
+            .find(|s| s.count > 0 && s.item == fc.water_vessel)
         {
-            s.item = fc.water_full;
-            water -= fc.skin_wu;
+            let w = crate::survival::Water::of(s.data);
+            let need = fc.wu_of(fc.water_ml.saturating_sub(w.ml));
+            if (w.ml == 0 || !w.salt) && w.ml < fc.water_ml && water >= need {
+                s.data = crate::survival::Water {
+                    ml: fc.water_ml,
+                    salt: false,
+                }
+                .data();
+                water -= need;
+            }
         }
     }
     let share = (fc.catcher_flow_wu_s as u64 * CATCHER_SPRINKLE_PERIODS * FARM_PERIOD_TICKS
@@ -1161,7 +1186,7 @@ pub fn pour(
     ovens: &mut [crate::oven::OvenState],
     (x, z): (f32, f32),
     r: f32,
-    salt: bool,
+    (wu, salt): (u32, bool),
     sees_box: impl Fn(usize) -> bool,
     sees_ground: impl Fn((i32, i32, i32)) -> bool,
 ) -> u16 {
@@ -1169,7 +1194,7 @@ pub fn pour(
         let (dx, dz) = (px - x, pz - z);
         dx * dx + dz * dz <= r * r
     };
-    let mut left = fc.skin_wu;
+    let mut left = wu;
     let mut reached = 0u16;
     let mut give = |bank: &mut u32, cap: u32| {
         if salt {
@@ -1661,9 +1686,10 @@ pub fn tend(
         TEND_WATER => {
             let sel = p.frame.sel as usize;
             let hand = p.inv.get(sel).copied().unwrap_or_default();
-            if fc.skin_wu == 0 || hand.count == 0 || hand.item != fc.water_full {
+            let Some(ml) = fc.fresh_in(&hand).filter(|_| fc.skin_wu > 0) else {
                 return Err(REFUSE_D_PLANT_ITEM);
-            }
+            };
+            let wu = fc.wu_of(ml);
             // A ripe or dying ground plant drinks no more, and its water is
             // its own: the skin would be poured for nothing. (A bed plant's
             // water is its planter's, which the others in it drink.)
@@ -1689,11 +1715,11 @@ pub fn tend(
             };
             // A skin is poured whole: what the soil cannot hold runs off.
             let room = cap.saturating_sub(*bank);
-            if room < fc.skin_wu / 4 {
+            if room < wu / 4 {
                 return Err(REFUSE_D_PLANT_WATER);
             }
-            *bank += fc.skin_wu.min(room);
-            p.inv[sel].item = fc.water_empty;
+            *bank += wu.min(room);
+            p.inv[sel].data = 0;
             Ok(())
         }
         _ => Err(REFUSE_D_KIND),

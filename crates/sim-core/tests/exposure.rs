@@ -96,6 +96,7 @@ fn what_you_wear_keeps_cold_out_and_a_road_sign_lets_it_in() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(exposure::target_chill(&ec, &night, &coat), base - 270);
     // Soaked, the coat keeps half.
@@ -108,6 +109,7 @@ fn what_you_wear_keeps_cold_out_and_a_road_sign_lets_it_in() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // The sheet of metal makes the night's cold worse by its share...
     assert_eq!(
@@ -321,6 +323,7 @@ fn the_road_sign_jacket_chills_a_clear_night_without_hurting() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let worn = exposure::target_chill(&ec, &night, &sign);
     assert!(worn > bare, "the jacket no longer draws any cold in");
@@ -610,6 +613,7 @@ fn the_heat_is_the_airs_and_shade_water_and_clothes_move_it() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let held = ec.warmth[0] as u16 * ec.clothes_heat_pm / 1000;
     assert_eq!(exposure::target_heat(&ec, &noon, &coat), 600 + held);
@@ -727,6 +731,7 @@ fn what_you_wear_wards_it_off_up_to_the_cap() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for _ in 0..10 {
         exposure::corrode(&ec, &deep(1000, true), &mut half, &mut ev);
@@ -739,6 +744,7 @@ fn what_you_wear_wards_it_off_up_to_the_cap() {
         count: 1,
         cond: 100,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     for _ in 0..10 {
         exposure::corrode(&ec, &deep(1000, true), &mut both, &mut ev);

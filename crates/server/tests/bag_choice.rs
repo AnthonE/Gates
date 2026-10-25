@@ -129,6 +129,7 @@ fn place_bag(
         // would hide that from a reader rather than say it.
         cond: 0,
         skin: 0,
+        data: 0,
     };
     let before = core.world.deploys.len();
     assert!(core.wants_action(net_slot), "hand should be open");

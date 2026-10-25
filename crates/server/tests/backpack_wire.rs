@@ -182,18 +182,21 @@ fn a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w1].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w1].inv[1] = ItemStack {
         item: FILLER,
         count: 42,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     let seen = fight_to_a_kill(&mut core, &stats, &mut clients);
@@ -287,12 +290,14 @@ fn a_late_joiner_is_handed_the_standing_bags_by_the_sync_walk() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w1].inv[0] = ItemStack {
         item: FILLER,
         count: 9,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let seen = fight_to_a_kill(&mut core, &stats, &mut clients);
     assert!(
@@ -344,12 +349,14 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w1].inv[1] = ItemStack {
         item: FILLER,
         count: 42,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     fight_to_a_kill(&mut core, &stats, &mut clients);
     let bag = core.world.backpacks.entries()[0];
@@ -412,6 +419,7 @@ fn a_despawn_storm_leaves_every_bag_walk_standing() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         items
     };
@@ -559,12 +567,14 @@ fn a_bag_reaches_who_is_near_and_its_owner_wherever_they_stand() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.players[w1].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let skipped_before = ShardStats::get(&stats.bag_events_skipped);
     let seen = fight_to_a_kill(&mut core, &stats, &mut clients);

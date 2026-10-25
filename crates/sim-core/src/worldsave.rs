@@ -49,7 +49,7 @@
 //!
 //! ## What is deliberately not here
 //!
-//! - **Arrows in flight.** Sub-second state whose whole meaning is a
+//! - **Arrows and bullets in flight.** Sub-second state whose whole meaning is a
 //!   trajectory between two ticks; restoring one would land it at a time
 //!   nobody shot for. They are dropped, which is the same thing that
 //!   happens to them at the end of their life anyway.
@@ -241,7 +241,20 @@ use crate::worldcont::WorldContRec;
 /// (a count, the next id, then each plant), so no older file reads.
 /// **31 — clothing v1**: every body's `PlayerSave` grew four worn stacks
 /// (+32), and its tail the teas (+18); no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 31;
+/// **32 — placed things keep their skin**: every deploy record grew the
+/// skin catalog id it was placed from (+2), so no older file reads.
+/// **33 — item data** (`ItemStack::data`): every stack, in every store,
+/// is twelve bytes (+4: what the item remembers — a gun's attachments,
+/// rounds and round), and `PlayerSave` drops the per-body magazines that
+/// data replaced; no older file reads.
+/// **34 — the turret's own list** (`turret::TurretRecs`): a count and the
+/// records of every turret whose list is not its owner alone, after the
+/// plants; no older file reads.
+/// **35 — peacekeeper**: each turret record ends with its mode (+1); no
+/// older file reads.
+/// **36 — electricity** (`power.rs`): the wires and the batteries' charges,
+/// two counted sections after the turrets' lists; no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 36;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -357,8 +370,8 @@ pub const BUILDING_BYTES: usize = 2 + 4 + 4 + 4 + 2;
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
 ///
-/// 17 → 20 at format 19: the pose (free placement).
-const DEPLOY_BYTES: usize = 20 + 8 + 8;
+/// 17 → 20 at format 19: the pose (free placement). 20 → 22 at 32: the skin.
+const DEPLOY_BYTES: usize = 22 + 8 + 8;
 /// A hearth: address, owner, the stock rows, and the crew — its count
 /// and the whole backing array, for `LOCK_BYTES`' reason (every byte of a
 /// roster is hashed, tail included, so a save that dropped the tail would
@@ -418,7 +431,7 @@ const SLOT_LIFE_BYTES: usize = 23;
 pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8 + 3;
 
 /// One stored `ItemStack`: item, count, condition, skin (format 16).
-pub const STACK_BYTES: usize = 8;
+pub const STACK_BYTES: usize = ItemStack::BYTES;
 
 pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_PLAYERS * PLAYER_BYTES
@@ -440,7 +453,13 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + 2
     + crate::limits::MAX_SHOPS * SHOP_BYTES
     + 6
-    + crate::limits::MAX_PLANTS * crate::farm::PLANT_BYTES;
+    + crate::limits::MAX_PLANTS * crate::farm::PLANT_BYTES
+    + 2
+    + crate::limits::MAX_TURRET_RECS * crate::turret::TURRET_REC_BYTES
+    + 2
+    + crate::limits::MAX_WIRES * crate::power::WIRE_BYTES
+    + 2
+    + crate::limits::MAX_BATTERIES * crate::power::CELL_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
 /// (wall 3) — the reason crosses to a server that can print, and nothing
@@ -604,10 +623,7 @@ impl<'a> W<'a> {
         self.at = end;
     }
     fn stack(&mut self, s: &ItemStack) {
-        self.u16(s.item);
-        self.u16(s.count);
-        self.u16(s.cond);
-        self.u16(s.skin);
+        self.bytes(&s.to_le());
     }
 }
 
@@ -772,6 +788,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(d.uh);
         o.b(d.open);
         o.b(d.locked);
+        o.u16(d.skin);
         o.u64(*ready);
     }
     for placed in w.deploys.placed() {
@@ -943,6 +960,22 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
             o.u16(row.price);
         }
     }
+    // The turrets' lists (format 34): a count, then each record's bytes.
+    // Before the plants, which end the blob.
+    o.u16(w.deploys.turret_recs().len() as u16);
+    for t in w.deploys.turret_recs().entries() {
+        o.bytes(&t.hash_bytes());
+    }
+    // Electricity (format 36): the wires, then the charges.
+    o.u16(w.deploys.power().wires().len() as u16);
+    for wire in w.deploys.power().wires() {
+        o.bytes(&wire.bytes());
+    }
+    o.u16(w.deploys.power().cells().len() as u16);
+    for c in w.deploys.power().cells() {
+        o.u32(c.key);
+        o.u32(c.charge);
+    }
     // The plants (format 30): a count, the next id, then each plant.
     o.u16(w.farm.len() as u16);
     o.u32(w.farm.next_id());
@@ -1024,27 +1057,18 @@ impl<'a> R<'a> {
     /// empty slot the sim would have produced, and a difference nothing can
     /// see is wall 5's failure mode.
     fn stack(&mut self, max_item: usize) -> Result<ItemStack, WorldSaveError> {
-        let item = self.u16()?;
-        let count = self.u16()?;
-        let cond = self.u16()?;
-        let skin = self.u16()?;
-        // The canonical-empty rule, all four fields (formats 7 and 16): a
-        // slot emptied by a path that forgot to zero `cond` or `skin`
-        // hashes differently from the same empty slot the sim produced — a
-        // difference nothing can see, which is wall 5's failure mode.
-        if item as usize >= max_item
-            || (count == 0 && item != 0)
-            || (count == 0 && cond != 0)
-            || (count == 0 && skin != 0)
-        {
+        let mut b = [0u8; ItemStack::BYTES];
+        for x in b.iter_mut() {
+            *x = self.u8()?;
+        }
+        let s = ItemStack::from_le(&b);
+        // The canonical-empty rule (`ItemStack::canonical`): a slot emptied
+        // by a path that forgot a field hashes differently from the same
+        // empty slot the sim produced — wall 5's failure mode.
+        if s.item as usize >= max_item || !s.canonical() {
             return Err(WorldSaveError::BadItemStack);
         }
-        Ok(ItemStack {
-            item,
-            count,
-            cond,
-            skin,
-        })
+        Ok(s)
     }
 }
 
@@ -1254,12 +1278,11 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             strike_favour: 0,
             // Unvalidated beyond the widths, `PlayerSave`'s reason: a save
             // file is not a client.
-            mag: save.mag,
-            mag_round: save.mag_round,
             // The gun's cone and trigger settle over a restart, and a bow's
             // draw with them.
             bloom: 0,
             shot_at: 0,
+            shot_due: 0,
             trigger_spent: false,
             draw_on: 0,
             ws_cell,
@@ -1501,6 +1524,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         // file still refuses) but deliberately never kept — the mirror
         // comment below says why.
         let _locked = r.b()?;
+        let skin = r.u16()?;
         let ready = r.u64()?;
         // A slot is four bits, and an edge insert hangs in its doorway at
         // the centre pose — anything else is a record no verb could write.
@@ -1538,6 +1562,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // Not saved — see the piece load above.
             dmg: 0,
             keyed: false,
+            skin,
         };
         bag_ready[i] = ready;
     }
@@ -1944,6 +1969,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let count = r.u16()?;
         let cond = r.u16()?;
         let skin = r.u16()?;
+        let data = r.u32()?;
         let expires = r.u64()?;
         let dir = [r.u8()? as i8, r.u8()? as i8, r.u8()? as i8];
         let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
@@ -1970,6 +1996,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 count,
                 cond,
                 skin,
+                data,
             },
             expires,
             dir,
@@ -2074,6 +2101,90 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         shops[k] = rec;
     }
 
+    // --- the turrets' lists (format 34) -------------------------------------
+    // Each must name a turret in this file, once, and differ from its
+    // owner alone attacking all (that turret keeps no record).
+    let mut turrets = crate::boxed_array::<
+        crate::turret::TurretRec,
+        { crate::limits::MAX_TURRET_RECS },
+    >(crate::turret::TurretRec::default());
+    let n_turrets = r.count(crate::limits::MAX_TURRET_RECS)?;
+    for k in 0..n_turrets {
+        let key = r.u32()?;
+        let len = r.u8()?;
+        let mut ids = [0u32; crate::limits::TURRET_AUTH_CAP];
+        for id in ids.iter_mut() {
+            *id = r.u32()?;
+        }
+        let auth = crate::roster::Roster::restore(&ids, len).ok_or(WorldSaveError::CountOverCap)?;
+        let peacekeeper = r.b()?;
+        let owner = boxes[..n_boxes]
+            .iter()
+            .zip(ovens[..n_boxes].iter())
+            .find(|(b, ov)| {
+                ov.arch == crate::deploy::ARCH_TURRET
+                    && crate::deploy::box_key(b.cx, b.cz, b.level, b.loc) == key
+            })
+            .map(|(b, _)| b.owner);
+        let rec = crate::turret::TurretRec {
+            key,
+            auth,
+            peacekeeper,
+        };
+        if key == 0
+            || owner.is_none_or(|o| rec == crate::turret::TurretRec::fresh(key, o))
+            || turrets[..k].iter().any(|t| t.key == key)
+        {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        turrets[k] = rec;
+    }
+
+    // --- electricity (format 36) -------------------------------------------
+    // Every wire joins two records in this file, from a real output to a
+    // real input, and no port is wired twice; every charge is a record's,
+    // once.
+    let in_file = |key: u32| {
+        key != 0
+            && deploys[..n_deploys]
+                .iter()
+                .any(|d| crate::deploy::box_key(d.cx, d.cz, d.level, d.loc) == key)
+    };
+    let mut wires = crate::boxed_array::<crate::power::WireRec, { crate::limits::MAX_WIRES }>(
+        crate::power::WireRec::default(),
+    );
+    let n_wires = r.count(crate::limits::MAX_WIRES)?;
+    for k in 0..n_wires {
+        let mut b = [0u8; crate::power::WIRE_BYTES];
+        b.copy_from_slice(r.take(crate::power::WIRE_BYTES)?);
+        let wire = crate::power::WireRec::from_bytes(&b);
+        if !in_file(wire.from)
+            || !in_file(wire.to)
+            || wire.out as usize >= crate::power::MAX_OUTS
+            || wire.inp as usize >= crate::power::MAX_INS
+            || wires[..k].iter().any(|v| {
+                (v.from == wire.from && v.out == wire.out) || (v.to == wire.to && v.inp == wire.inp)
+            })
+        {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        wires[k] = wire;
+    }
+    let mut cells = crate::boxed_array::<crate::power::CellRec, { crate::limits::MAX_BATTERIES }>(
+        crate::power::CellRec::default(),
+    );
+    let n_cells = r.count(crate::limits::MAX_BATTERIES)?;
+    for k in 0..n_cells {
+        let c = crate::power::CellRec {
+            key: r.u32()?,
+            charge: r.u32()?,
+        };
+        if !in_file(c.key) || cells[..k].iter().any(|d| d.key == c.key) {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        cells[k] = c;
+    }
+
     // --- the plants (format 30) ---------------------------------------------
     let n_plants = r.count(crate::limits::MAX_PLANTS)?;
     let next_plant = r.u32()?;
@@ -2136,6 +2247,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &locks[..n_locks],
     );
     w.deploys.restore_shops(&shops[..n_shops]);
+    w.deploys.restore_turrets(&turrets[..n_turrets]);
+    w.deploys
+        .restore_power(&wires[..n_wires], &cells[..n_cells]);
     w.farm.restore(&plants[..n_plants], next_plant);
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
@@ -2197,6 +2311,7 @@ mod tests {
             count: 0,
             cond: 9,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // A second, legal stack so the bag is not empty-by-construction.
         bag.items[1] = ItemStack {
@@ -2204,6 +2319,7 @@ mod tests {
             count: 3,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         w.backpacks.restore(&[bag], 2);
 
@@ -2247,9 +2363,12 @@ mod tests {
         // format 27: the blueprint mask's high word and the feet's stack in
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
         // 547 → 597 at format 31: four more worn stacks in `PlayerSave`
-        // (+32), the teas in the tail (+18) (clothing v1).
+        // (+32), the teas in the tail (+18) (clothing v1). 597 → 613 at
+        // format 33: … 613 → 681 the same format, as it landed: every stack
+        // twelve bytes (item data, +4 × 37) and the per-body magazines gone
+        // (−64 with the masks).
         assert_eq!(
-            PLAYER_BYTES, 597,
+            PLAYER_BYTES, 681,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2260,50 +2379,53 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 597                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31)
+            + 100 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 33)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
-            + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
+            + 4_096 * 38                    // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 2_048 * 143                   // containers: 13 + 12 eight-byte stacks + the oven's 30 + the planter's water (30)
+            + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (33) + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
-            + 256 * 268                     // bags: 28 + 30 eight-byte stacks
-            + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
+            + 256 * 388                     // bags: 28 + 30 twelve-byte stacks (33)
+            + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (33) (256 at roadside junk)
             + 1_200 * 25                    // charges (every seat's share: 100 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
-            + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
+            + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 33; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
             + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
-            + 6 + 4_096 * 58; // plants (format 30): a count and the next id, then each plant
-                              // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                              // 56 -> 62 at format 10: a tenth count, plus the
-                              // spent store's `u32` eviction counter beside the
-                              // body one. 62 -> 64 at format 14: an eleventh
-                              // count for the loose stacks. No head field beside
-                              // it — `next_id` is derived by the loader from the
-                              // ids it installs (`GroundItems::restore`), unlike
-                              // a bag's, and a head field duplicating a
-                              // derivable one is a second place for it to be
-                              // wrong. 64 -> 90 at format 15: the admin's sky and
-                              // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                              // fires' count. 92 -> 1380 at format 21: the
-                              // works, every slot whether or not content
-                              // names one (`MAX_WORKS` × `WORK_BYTES`).
+            + 6 + 4_096 * 58 // plants (format 30): a count and the next id, then each plant
+            + 2 + 512 * 46 // turret lists (format 34): a count, then key + count + ten ids (+ the mode at 35)
+            + 2 + 2_048 * 10 // wires (format 36): a count, then from, out, to, inp
+            + 2 + 512 * 8; // charges (format 36): a count, then key and charge
+                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                           // 56 -> 62 at format 10: a tenth count, plus the
+                           // spent store's `u32` eviction counter beside the
+                           // body one. 62 -> 64 at format 14: an eleventh
+                           // count for the loose stacks. No head field beside
+                           // it — `next_id` is derived by the loader from the
+                           // ids it installs (`GroundItems::restore`), unlike
+                           // a bag's, and a head field duplicating a
+                           // derivable one is a second place for it to be
+                           // wrong. 64 -> 90 at format 15: the admin's sky and
+                           // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                           // fires' count. 92 -> 1380 at format 21: the
+                           // works, every slot whether or not content
+                           // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
         // 1516 -> 1520 at format 25: the blight's salt.
         assert_eq!(HEAD_BYTES, 1_520);
-        // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
-        assert_eq!(GROUND_ITEM_BYTES, 35);
+        // 4 id + 12 position + 12 stack + 8 deadline + 3 stuck direction.
+        assert_eq!(GROUND_ITEM_BYTES, 39);
         // Three millimetre coordinates, the round, the ready deadline, the
         // host and its life.
         assert_eq!(SPENT_BYTES, 43);
         // A world container is 261: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
-        assert_eq!(WORLD_CONT_BYTES, 261);
+        assert_eq!(WORLD_CONT_BYTES, 381);
         // A lock is 106: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
         // counts + 10 auth ids (format 17, the crew's cap) + 8 guest ids at
         // four bytes each + 1 miss counter + 8 + 8 for the two tick
@@ -2318,7 +2440,7 @@ mod tests {
         // 19 → 21: 20 is what the encoder has written since format 6 (the
         // constant was a byte short — see `PIECE_BYTES`), plus the plate.
         assert_eq!(PIECE_BYTES, 37);
-        assert_eq!(DEPLOY_BYTES, 36);
+        assert_eq!(DEPLOY_BYTES, 38);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
@@ -2409,8 +2531,15 @@ mod tests {
         // caps in one merge: the live charges' from 64 to every seat's share
         // (1,200 × 25) and the containers' from 1,024 to 2,048 once each
         // hand's share was capped (1,024 × 143) — counts, so old saves load.
+        // 5_501_026 at format 32: the skin, two bytes on 4,096 deploys.
+        // 5_671_218 at format 33: every stack in every store twelve bytes
+        // (item data), and the per-body magazines it replaced gone.
+        // 5_694_260 at format 34: the turrets' lists, 2 + 512 × 45.
+        // 5_694_772 at format 35: each one's mode, a byte on 512.
+        // 5_719_352 at format 36: electricity, 2 + 2,048 × 10 wires and
+        // 2 + 512 × 8 charges.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_492_834,
+            WORLD_SAVE_MAX_BYTES, 5_719_352,
             "the world save ceiling moved"
         );
     }

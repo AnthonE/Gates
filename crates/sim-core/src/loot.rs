@@ -316,6 +316,7 @@ mod tests {
             count: 0,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; INV_SLOTS]
     }
 

@@ -31,7 +31,7 @@ once and written to `<world>.copies` (`wallet ok|had|used tx`); the online
 file is rewritten every minute, so a copy lands a minute or two after the
 first join.
 
-**Accounts (v144).** A player signed in to Elo Pros with no wallet linked
+**Accounts (v151).** A player signed in to Elo Pros with no wallet linked
 plays under their account id (`acct_…`), and has nothing to mint to. Their
 sales and their copy go to the platform's locker instead
 (`POST {ELO_ORIGIN}/api/locker/hold`, MAC'd with `ELO_LOCKER_SECRET`, which
@@ -66,7 +66,7 @@ import urllib.request
 from pathlib import Path
 
 WALLET = re.compile(r"^0x[0-9a-f]{40}$")
-#: An Elo Pros account with no wallet (v144): its unlocks are held, not minted.
+#: An Elo Pros account with no wallet (v151): its unlocks are held, not minted.
 ACCOUNT = re.compile(r"^acct_[0-9a-f]{20}$")
 ORIGIN = os.environ.get("ELO_ORIGIN", "https://elopros.com").rstrip("/")
 REF = re.compile(r"^[0-9A-Za-z-]{1,32}$")
@@ -271,7 +271,7 @@ if [ -n "$tx" ]; then echo "closed $tx"; else echo "fail send"; fi
 
 
 def post_hold(row: dict) -> str:
-    """Hold one row in the platform's locker for an account (v144): `held`,
+    """Hold one row in the platform's locker for an account (v151): `held`,
     `gone` (the platform has no such account), or why it failed."""
     secret = os.environ.get("ELO_LOCKER_SECRET", "")
     if len(secret) < 32:
@@ -387,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     give = not a.no_copies and free_now(now)
     everyone = copies_todo(read(online_p), read(copies_p))[:BATCH] if give else []
     # An account with no wallet has nothing to mint to: its sales and copy go
-    # to the platform's locker (v144), and the chain sees the rest.
+    # to the platform's locker (v151), and the chain sees the rest.
     todo = [s for s in every if WALLET.match(s[1])]
     held = [s for s in every if ACCOUNT.match(s[1])]
     people = [w for w in everyone if WALLET.match(w)]

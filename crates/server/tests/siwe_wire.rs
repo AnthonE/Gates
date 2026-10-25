@@ -792,7 +792,7 @@ fn a_solana_signature_over_the_browsers_own_text_verifies_at_the_shard() {
     .is_err());
 }
 
-// ── an Elo Pros pass (v144) ──────────────────────────────────────────────────
+// ── an Elo Pros pass (v151) ──────────────────────────────────────────────────
 
 /// elo's account key in these tests; the shard pins its public half.
 const ELO_SEED: [u8; 32] = [61; 32];

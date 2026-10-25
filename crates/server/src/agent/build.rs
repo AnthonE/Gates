@@ -4385,6 +4385,7 @@ mod tests {
             count: 1,
             cond: 0,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         });
         let mut b = Builder::new();
         for _ in 0..MAX_FAILS + 1 {
@@ -4403,6 +4404,7 @@ mod tests {
             count: 150,
             cond: 0,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         };
         assert!(!craft_fits(&core, 0, 1), "50 of 150 left in the slot");
         core.inv[3].count = 100;

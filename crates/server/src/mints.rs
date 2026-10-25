@@ -166,7 +166,7 @@ pub fn parse(line: &str) -> Option<Option<Sale>> {
     let ok_ref = reference
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    // A wallet, or an Elo Pros account with none (v144), whose sale the
+    // A wallet, or an Elo Pros account with none (v151), whose sale the
     // minter sends to the platform's locker instead of the chain.
     (ok_ref && (crate::entitle::is_wallet(wallet) || crate::auth::is_account_str(wallet))).then(
         || {

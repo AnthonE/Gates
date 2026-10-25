@@ -237,6 +237,7 @@ fn a_stump_pays_once_and_leaves_the_sapling_alone() {
         count: 1,
         cond: w.gather.cond_max_of(tool),
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     let (mut swings, mut paid, mut grubbed) = (0, 0, 0);
     for seq in 0..SWING_INTERVAL_TICKS * 12 {

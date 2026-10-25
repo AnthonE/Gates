@@ -1768,6 +1768,7 @@ pub fn dev_spawn_kit(
             cond: u16::try_from(item.condition_max)
                 .map_err(|_| format!("dev_spawn_kit: `{id}` condition_max overflows u16"))?,
             skin: 0,
+            ..sim_core::gather::ItemStack::EMPTY
         };
         if !kit.set(i, stack) {
             return Err(format!(

@@ -131,7 +131,7 @@ impl Gates {
     }
 
     /// Join `server` as **whoever is signed in to Elo Pros on this page**
-    /// (v144), with no wallet prompt. `pass` is `(domain: string, nonce:
+    /// (v151), with no wallet prompt. `pass` is `(domain: string, nonce:
     /// string) => Promise<string>`: handed the name this join binds (the
     /// page's own host for a shard under it, else the dialled host) and the
     /// shard's nonce for this join, it answers with the pass elo issues for

@@ -331,13 +331,13 @@ impl core::fmt::Debug for SolanaSignature {
     }
 }
 
-/// The longest Elo Pros pass on the wire (v144): the pass exactly as elo issued
+/// The longest Elo Pros pass on the wire (v151): the pass exactly as elo issued
 /// it, `base64url(text).base64url(ed25519 signature)`. Its text is seven short
 /// lines whose one free field is the shard's domain, at most [`DOMAIN_MAX`],
 /// so a real pass is well under this.
 pub const PASS_MAX: usize = 600;
 
-/// **A player signed in to Elo Pros (v144)**, proved by elo rather than by a
+/// **A player signed in to Elo Pros (v151)**, proved by elo rather than by a
 /// wallet signature: a pass naming the account, this game, the shard's domain
 /// and the wallet the account links, signed by elo's account key
 /// (`GET {origin}/api/account/pubkey`). The shard checks it with no call per
@@ -433,7 +433,7 @@ pub struct Auth {
     /// `Some`, `address` is [`Address::GUEST`] and `signature` is
     /// [`Signature::NONE`] on the wire, and the shard verifies this.
     pub solana: Option<SolanaProof>,
-    /// An Elo Pros pass instead of either (v144). When it is `Some`, the
+    /// An Elo Pros pass instead of either (v151). When it is `Some`, the
     /// other three are empty on the wire, and the shard verifies the pass.
     pub pass: Option<Pass>,
 }
@@ -703,7 +703,7 @@ pub(crate) fn read_challenge(r: &mut BitReader) -> Result<Challenge, WireError> 
     })
 }
 
-/// The tag byte before an auth frame's proof (v142; the pass is v144).
+/// The tag byte before an auth frame's proof (v142; the pass is v151).
 const AUTH_ETHEREUM: u32 = 0;
 const AUTH_SOLANA: u32 = 1;
 const AUTH_PASS: u32 = 2;

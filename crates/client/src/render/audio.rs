@@ -1537,8 +1537,11 @@ pub fn remote_hands(
 /// No item crosses the wire on `EV_SHOT` and none is wanted: the two cues
 /// exist because the two *disclosure radii* differ, and the radius is what
 /// the wire's one bit already tells you.
-pub fn shot_cue(speed_mmpt: u16) -> Cue {
-    if protocol::shot_is_instant(speed_mmpt) {
+pub fn shot_cue(speed_mmpt: u16, low: u16) -> Cue {
+    // A silenced gun is heard as the crossbow's thunk, at its 40 m.
+    if protocol::shot_is_quiet(speed_mmpt, low) {
+        Cue::ShotCrossbow
+    } else if protocol::shot_is_gun(speed_mmpt, low) {
         Cue::ShotGun
     } else {
         Cue::ShotBow
@@ -1577,30 +1580,35 @@ pub fn shots(
     bodies: Query<(&super::bodies::Body, &Transform)>,
     mut sound: ResMut<Sound>,
     gf: Res<super::gunfeel::GunFeel>,
+    mv: Option<Res<super::mods::ModView>>,
 ) {
     let core = &net.session.core;
     // Your own gun, heard the frame its trigger broke (`gunfeel`), as the
-    // kind of gun it is.
+    // kind of gun it is — or a silencer's thunk.
     if gf.fired > 0 && !core.spectating() {
         let p = core.predict.position();
-        let cue = gun_cue(&core.catalog, Some(gf.item)).unwrap_or(Cue::ShotGun);
+        let cue = if mv.as_deref().is_some_and(|v| v.quiet) {
+            Cue::ShotCrossbow
+        } else {
+            gun_cue(&core.catalog, Some(gf.item)).unwrap_or(Cue::ShotGun)
+        };
         sound.play(Request::at(cue, [p[0], p[1], p[2]]));
     }
     if feed.shots().is_empty() {
         return;
     }
     let mut rs = client_core::interp::RemoteState::default();
-    for &(shooter, _yaw, _pitch, speed_mmpt, _reach, _fine) in feed.shots() {
+    for &(shooter, _yaw, _pitch, speed_mmpt, low, _fine) in feed.shots() {
         // The one bit that separates the two weapons, and it is the same
         // bit the tracer reads: a projectile cannot leave a muzzle at rest,
         // so zero means the shot was instantaneous and instantaneous means
         // a firearm. Which projectile weapon is the hand's: a crossbow is
         // heard as one (`projectile_cue`).
-        let mut cue = shot_cue(speed_mmpt);
+        let mut cue = shot_cue(speed_mmpt, low);
         let at = if shooter == core.player_id {
             // Your gunshot was heard when it broke; the shard's word on it
             // is not a second report.
-            if protocol::shot_is_instant(speed_mmpt) && !core.spectating() {
+            if protocol::shot_is_gun(speed_mmpt, low) && !core.spectating() {
                 continue;
             }
             let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
@@ -1619,7 +1627,9 @@ pub fn shots(
         {
             if core.interp.sample(shooter, core.render_tick(), &mut rs) {
                 cue = projectile_cue(&core.catalog, cue, rs.held);
-                if protocol::shot_is_instant(speed_mmpt) {
+                if protocol::shot_is_gun(speed_mmpt, low)
+                    && !protocol::shot_is_quiet(speed_mmpt, low)
+                {
                     cue = gun_cue(&core.catalog, rs.held).unwrap_or(cue);
                 }
             }
@@ -1634,7 +1644,7 @@ pub fn shots(
             // the revolver's ring smeared its burst.
             if super::heli::is_heli(shooter) {
                 cue = heli_shot_cue(eye.pos.distance(Vec3::new(rs.x, rs.y + 1.6, rs.z)));
-            } else if protocol::shot_is_instant(speed_mmpt) {
+            } else if protocol::shot_is_gun(speed_mmpt, low) {
                 cue = Cue::ShotRifle;
             }
             [rs.x, rs.y + 1.6, rs.z]

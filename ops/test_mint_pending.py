@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory() as d:
           mp.main(["--world", str(world), "--close-free-door", "--now", "2026-12-01T00:00:05+00:00"]) == 0
           and closed == ["morr"])
 
-# ── accounts (v144) ─────────────────────────────────────────────────────────
+# ── accounts (v151) ─────────────────────────────────────────────────────────
 ACCT = "acct_" + "0123456789abcdef0123"
 with tempfile.TemporaryDirectory() as d:
     world = Path(d) / "island.world"

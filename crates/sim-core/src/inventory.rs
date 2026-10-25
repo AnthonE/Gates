@@ -258,7 +258,7 @@ pub fn deposits_into(kind: u8, from_kind: u8, to_kind: u8, src: ItemStack, dst: 
     // will not merge swaps: its merge branch (equal item, skin and cond)
     // returns a `Transfer` before the swap arm is reached, and a partial
     // onto anything else is `REFUSE_M_NO_ROOM` rather than either.
-    let merges = dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond;
+    let merges = dst.joins(&src);
     let swapped_back = from_kind == kind && to_kind != kind && dst.count > 0 && !merges;
     forward || swapped_back
 }
@@ -384,7 +384,10 @@ pub const REFUSE_M_SAFE: u32 = 13;
 /// "there" the player never dragged to. The address is the giver's own
 /// slot, both halves.
 pub const REFUSE_M_GIVE: u32 = 14;
-pub const REFUSE_M_MAX: u32 = REFUSE_M_GIVE;
+/// An auto turret's slot takes what it is for (`turret::slot_takes`): its
+/// first a gun it fires, the next six that gun's rounds, the rest nothing.
+pub const REFUSE_M_TURRET: u32 = 15;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_TURRET;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the
@@ -443,7 +446,7 @@ pub fn plan_move(cap: u16, src: ItemStack, dst: ItemStack, count: u16) -> Result
     // items, and a merge never has to pick whose look survives. So are two
     // conditions: a clone's `cond` is its genome (`farm.rs`), and a merge
     // would quietly breed the source into the destination's genes.
-    if dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond {
+    if dst.joins(&src) {
         // `saturating_sub`: a destination already over its ladder yields
         // zero room and refuses, rather than wrapping into a huge one.
         let room = cap.saturating_sub(dst.count);
@@ -486,6 +489,7 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
                     count: left,
                     cond: src.cond,
                     skin: src.skin,
+                    ..ItemStack::EMPTY
                 }
             };
             // The moved stack keeps its condition — this splice is the
@@ -506,6 +510,7 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
                 count: dst.count + count,
                 cond: if dst.count == 0 { src.cond } else { dst.cond },
                 skin: if dst.count == 0 { src.skin } else { dst.skin },
+                ..ItemStack::EMPTY
             };
             (new_src, new_dst)
         }
@@ -558,6 +563,7 @@ impl SpawnKit {
             count: 0,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }; MAX_SPAWN_KIT],
         count: 0,
     };

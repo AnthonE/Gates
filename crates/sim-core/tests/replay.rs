@@ -568,7 +568,14 @@ const TICKS: u64 = 900;
 /// hash came back exactly.
 /// **Moved → `0xDFE5_FB90_8304_DF97` at clothing v1** (2026-10-22, wipe): `state_hash`
 /// reads seven worn stacks and the teas.
-const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
+/// **Moved → `0x4027_BF8C_A997_07F5` at the reference's walk** (2026-10-23):
+/// `WALK_SPEED` 3.0 → 2.8 m/s.
+/// **Moved → `0xD39C_A9F3_3B60_CDE2` at bullets and attachments**
+/// (2026-10-23, wipe): the fixture gun's rounds fly, and `state_hash` reads
+/// the rounds in flight and every gun's attachments.
+/// **Moved → `0x749F_8C17_A776_9F59` at item data** (2026-10-24, wipe): every stack
+/// hashes twelve bytes, a gun's magazine is its own.
+const GOLDEN_FINAL_HASH: u64 = 0x749F_8C17_A776_9F59;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -696,7 +703,12 @@ const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
 /// hash and for its reason.
 /// **Moved → `0xCBE6_446E_651E_CBA2` at clothing v1** (2026-10-22, wipe), with the final
 /// hash.
-const GOLDEN_TRACE_HASH: u64 = 0xCBE6_446E_651E_CBA2;
+/// **Moved → `0x9CF1_FAAB_5BD2_E89E` at the reference's walk** (2026-10-23), with
+/// the final hash.
+/// **Moved → `0xDA37_9171_8DEE_3E80` at bullets and attachments** (2026-10-23,
+/// wipe), with the final hash.
+/// **Moved → `0x3102_AD7D_3CB4_FC60` at item data** (2026-10-24, wipe), with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x3102_AD7D_3CB4_FC60;
 
 /// Fold a stamped trace into one number.
 ///
@@ -1127,6 +1139,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     count: 8,
                     cond: 0,
                     skin: 0,
+                    ..sim_core::gather::ItemStack::EMPTY
                 };
             }
         }
@@ -1156,6 +1169,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                             count,
                             cond: 0,
                             skin: 0,
+                            ..sim_core::gather::ItemStack::EMPTY
                         };
                     }
                     walk_up_the_beach(&mut world, seed, w);

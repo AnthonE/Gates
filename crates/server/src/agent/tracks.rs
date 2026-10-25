@@ -786,6 +786,13 @@ impl Tracks {
         self.all().find(|t| t.id == id)
     }
 
+    /// Has `id` left the snapshot? Its track stays, remembered as last
+    /// seen, until forgotten; an animal's carcass is no body, so one that
+    /// fell is gone from the snapshot the moment it drops.
+    pub fn gone(&self, id: u32) -> bool {
+        !self.interp.ids().any(|i| i == id)
+    }
+
     /// Where a body in sight stands on my screen: its interpolated pose at
     /// the playout tick, the one the server judges melee and hitscan
     /// against. `None` for a body not in sight: nobody aims at a memory.
@@ -883,12 +890,17 @@ impl Tracks {
             return;
         };
         let from = [s.x, s.y, s.z];
-        let gun = protocol::shot_is_instant(speed_mmpt);
+        let gun = protocol::shot_is_gun(speed_mmpt, low);
         let past = |o: Own| {
-            let reach = f32::from(low) * 0.1;
+            let reach = if protocol::shot_is_bullet(speed_mmpt, low) {
+                protocol::bullet_reach_mm(low) as f32 / 1000.0
+            } else {
+                f32::from(low) * 0.1
+            };
             passes(from, s.crouched, aim, chest(o), WHIZ_M, reach)
         };
-        let (sound, max_m) = if !gun {
+        // A silenced gun carries no further than a bow (`world::SHOT_QUIET`).
+        let (sound, max_m) = if !gun || protocol::shot_is_quiet(speed_mmpt, low) {
             (Sound::Shot, BOW_HEAR_M)
         } else if self.own.is_some_and(past) {
             (Sound::Whiz, SHOT_HEAR_M)

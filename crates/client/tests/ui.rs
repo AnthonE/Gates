@@ -61,18 +61,21 @@ fn stocked() -> [ItemStack; INV_SLOTS] {
         count: 9,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[1] = ItemStack {
         item: 3,
         count: 100,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[2] = ItemStack {
         item: 7,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv
 }
@@ -148,6 +151,7 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let cont = empty();
 
@@ -185,6 +189,7 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let m = slots::move_args(
         HANDLE,
@@ -217,6 +222,7 @@ fn widening_own_did_not_legalise_two_ground_containers() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // One ground side plus the body: addressable.
     assert!(
@@ -321,6 +327,7 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
         count: 6,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let m = slots::move_args(
         HANDLE,
@@ -351,6 +358,7 @@ fn refusals_in_order() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // 1 · a kind past CONT_MAX.
@@ -576,6 +584,7 @@ fn affordability_is_the_tightest_input() {
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
     assert_eq!(
@@ -593,12 +602,14 @@ fn affordability_is_the_tightest_input() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     inv[2] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         craft::affordable(
@@ -629,6 +640,7 @@ fn the_ingredient_table_scales_with_the_stepper() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (lines, n) = craft::ingredients(
         &recipes.recipes[0],
@@ -987,6 +999,7 @@ fn the_wheel_prices_a_piece_against_the_bag() {
         count: 4,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (lines, n) = build::costs(&content, row, &inv);
     assert_eq!(n, 1);
@@ -1001,6 +1014,7 @@ fn the_wheel_prices_a_piece_against_the_bag() {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(build::affordable(&content, row, &inv));
 }
@@ -1830,6 +1844,7 @@ fn a_man_in_front_of_the_tree_takes_the_prompt() {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         for _ in 0..8 {
             w.tick(&[]);
@@ -2065,6 +2080,7 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         w.dev_spawn = Some((px, tz));
         w.tick(&[Command::Join { id: 1 }]);
@@ -2075,6 +2091,7 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
             count: 1,
             cond: w.gather.cond_max_of(0),
             skin: 0,
+            ..ItemStack::EMPTY
         };
         for _ in 0..8 {
             w.tick(&[]);
@@ -2095,6 +2112,7 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
             count: 4,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         let tick = w.tick;
         let id = w
@@ -2241,6 +2259,7 @@ fn the_prompts_butchering_hands_are_contents() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let mut cutting = Vec::new();
     for item in &content.items {
@@ -4433,6 +4452,7 @@ mod techtree_model {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         inv
     }
@@ -5565,6 +5585,7 @@ fn the_panels_protection_is_the_sims_protection() {
                         count,
                         cond: 0,
                         skin: 0,
+                        ..ItemStack::EMPTY
                     };
                     p.worn[i] = s;
                     worn[i] = s;
@@ -5636,6 +5657,7 @@ fn the_protection_total_stops_at_the_cap_on_both_sides() {
                     count: 1,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 };
                 p.worn[i] = s;
                 worn[i] = s;
@@ -5711,6 +5733,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         slots::worn_pct(&cat, &worn),
@@ -5739,6 +5762,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert_eq!(
         slots::worn_pct(&cat, &worn),
@@ -5756,6 +5780,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(slots::worn_pct(&cat, &worn) > 0);
 }
@@ -6100,6 +6125,7 @@ mod quick {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 
@@ -7161,6 +7187,7 @@ mod research_table {
             count,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     }
 

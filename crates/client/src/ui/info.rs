@@ -191,9 +191,24 @@ pub fn stats(row: ItemRow, stack: ItemStack, loaded: Option<u16>) -> Vec<Stat> {
 pub enum Act {
     Quick,
     Unload,
+    /// Put this attachment on the gun in hand.
+    Attach,
+    /// Take the gun in hand's attachment `bit` off.
+    Detach(u8),
     Split,
     Drop,
 }
+
+/// What a gun's attachment slot is called on the card, by
+/// `combat::MOD_*` (Rust's mod slots).
+pub const MOD_SLOT_NAMES: [&str; 4] = ["SIGHT", "MUZZLE", "UNDERBARREL", "MAGAZINE"];
+/// The verb that takes each slot's attachment off.
+const DETACH_LABELS: [&str; 4] = [
+    "Take off sight",
+    "Take off muzzle",
+    "Take off underbarrel",
+    "Take off magazine",
+];
 
 /// What the card's ACTIONS column needs to know about the picked slot.
 #[derive(Clone, Copy, Debug)]
@@ -208,6 +223,11 @@ pub struct Ctx {
     pub loaded_in_hand: bool,
     /// The pack has an empty slot for a split.
     pub room: bool,
+    /// The stack is an attachment the gun in hand takes and is not wearing.
+    pub attachable: bool,
+    /// The stack is the gun in hand, and the attachment bit in each of its
+    /// slots (`combat::MOD_*`).
+    pub fitted: [Option<u8>; 4],
 }
 
 /// The ACTIONS column, top to bottom: the right-click's verb first, Drop
@@ -232,6 +252,14 @@ pub fn actions(row: ItemRow, stack: ItemStack, ctx: Ctx) -> Vec<(Act, &'static s
         out.push((Act::Quick, label));
     }
     if ctx.kind == CONT_SELF {
+        if ctx.attachable {
+            out.push((Act::Attach, "Attach to gun"));
+        }
+        for (group, bit) in ctx.fitted.iter().enumerate() {
+            if let Some(bit) = bit {
+                out.push((Act::Detach(*bit), DETACH_LABELS[group]));
+            }
+        }
         if ctx.loaded_in_hand {
             out.push((Act::Unload, "Unload ammo"));
         }
@@ -275,7 +303,46 @@ mod tests {
             paper: false,
             loaded_in_hand: false,
             room: true,
+            attachable: false,
+            fitted: [None; 4],
         }
+    }
+
+    /// An attachment the gun in hand takes offers itself; a gun in hand
+    /// offers each fitted attachment off, by its slot.
+    #[test]
+    fn the_card_offers_to_attach_and_take_off() {
+        let scope = ItemRow {
+            stack_max: 1,
+            ..ItemRow::EMPTY
+        };
+        let acts = actions(
+            scope,
+            stack(1, 0),
+            Ctx {
+                attachable: true,
+                ..ctx(CONT_SELF)
+            },
+        );
+        assert!(acts.iter().any(|a| a.0 == Act::Attach));
+        let acts = actions(
+            scope,
+            stack(1, 0),
+            Ctx {
+                fitted: [Some(1), None, Some(5), None],
+                ..ctx(CONT_SELF)
+            },
+        );
+        let off: Vec<_> = acts
+            .iter()
+            .filter(|a| matches!(a.0, Act::Detach(_)))
+            .collect();
+        assert_eq!(off.len(), 2);
+        assert_eq!(off[0].0, Act::Detach(1));
+        assert_eq!(off[1], &(Act::Detach(5), "Take off underbarrel"));
+        assert!(!actions(scope, stack(1, 0), ctx(CONT_SELF))
+            .iter()
+            .any(|a| matches!(a.0, Act::Attach | Act::Detach(_))));
     }
 
     #[test]
@@ -294,6 +361,7 @@ mod tests {
                 recoil_pitch: [220, 260],
                 recoil_yaw: [-40, 40],
                 ads_recoil_pct: 50,
+                ..GunRow::default()
             }),
             ..ItemRow::EMPTY
         };

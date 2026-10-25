@@ -118,7 +118,7 @@ pub fn owned_of(cfg: &Config, wallet: Option<&str>, sc: &SkinContent) -> Owned {
         // there is nothing a read could change.
         return Owned::Known(SkinSet::EMPTY);
     }
-    // An Elo Pros account with no wallet (v144): what it unlocked is held on
+    // An Elo Pros account with no wallet (v151): what it unlocked is held on
     // the platform until it links one, and it wears it in the meantime.
     if crate::auth::is_account_str(wallet) {
         let url = format!("{origin}/api/locker/{wallet}/items/{STORE_TITLE}");

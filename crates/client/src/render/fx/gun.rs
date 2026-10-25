@@ -80,15 +80,23 @@ pub fn scatter(dir: Vec3, rad: f32, key: u32) -> Vec3 {
 
 /// A tracer from `start` along `dir` for `dist` metres: one hot streak.
 pub fn tracer(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32) {
-    if dist <= 2.0 {
+    tracer_at(fx, start, dir, dist, TRACER_MPS, 0.0);
+}
+
+/// A bullet's tracer: the streak at the round's own speed (m/s), falling at
+/// its own gravity (m/s²), for as long as the round takes to fly `dist` —
+/// so the streak is where the bullet is, and lands when it does.
+pub fn tracer_at(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32, mps: f32, gravity: f32) {
+    if dist <= 2.0 || mps <= 0.0 {
         return;
     }
-    let life = (dist / TRACER_MPS).clamp(0.03, 0.45);
+    let life = (dist / mps).clamp(0.03, 1.0);
     fx.glow.spawn(Particle {
         left: life,
         life,
         pos: start,
-        vel: dir * TRACER_MPS,
+        vel: dir * mps,
+        gravity,
         size0: 0.014,
         size1: 0.010,
         c0: [9.0, 6.0, 2.4, 0.9],
@@ -174,6 +182,7 @@ pub fn shots(
     mut cache: Local<Box<SlotCache>>,
     mut sound: Option<ResMut<super::super::audio::Sound>>,
     gf: Res<super::super::gunfeel::GunFeel>,
+    mv: Option<Res<super::super::mods::ModView>>,
 ) {
     if feed.shots().is_empty() && gf.fired == 0 {
         return;
@@ -195,9 +204,12 @@ pub fn shots(
     if gf.fired > 0 {
         let fwd = Vec3::from(cam.forward());
         let muzzle = own_muzzle(cam, gf.ads);
-        emit(&mut fx.glow, Layer::Flash, 2, muzzle, fwd, Matter::Metal);
+        // A silencer hides the flash (`mods`).
+        if !mv.as_deref().is_some_and(|v| v.quiet) {
+            emit(&mut fx.glow, Layer::Flash, 2, muzzle, fwd, Matter::Metal);
+            fx.flash(muzzle, MUZZLE_FLASH);
+        }
         emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, fwd, Matter::Metal);
-        fx.flash(muzzle, MUZZLE_FLASH);
         let pellets = gf.gun.map_or(1, |g| g.pellets.max(1));
         for k in 0..pellets {
             // The pellets' scatter is drawn, not known: the shard rolls the
@@ -211,16 +223,37 @@ pub fn shots(
             } else {
                 fwd
             };
-            tracer(&mut fx, muzzle + dir * 1.2, dir, OWN_TRACER_M);
+            // At the round's own speed and gravity when it flies.
+            match gf.gun.filter(|g| g.speed_mmpt > 0) {
+                Some(g) => {
+                    let hz = sim_core::limits::TICK_HZ as f32;
+                    let mps = f32::from(g.speed_mmpt) * hz / MM_PER_M;
+                    let gravity = f32::from(g.drop_mmpt2) * hz * hz / MM_PER_M;
+                    tracer_at(&mut fx, muzzle + dir * 1.2, dir, OWN_TRACER_M, mps, gravity);
+                }
+                None => tracer(&mut fx, muzzle + dir * 1.2, dir, OWN_TRACER_M),
+            }
         }
     }
 
     for &(shooter, yaw, pitch, speed_mmpt, reach, fine) in feed.shots() {
-        // Arrows fly (`tracer.rs`) and land as `EV_IMPACT`; only a firearm's
-        // instantaneous shot flashes and needs a trace.
-        if !protocol::shot_is_instant(speed_mmpt) {
+        // Arrows fly (`tracer.rs`) and land as `EV_IMPACT`; a firearm's shot,
+        // instant or a bullet, flashes here and draws its streak.
+        if !protocol::shot_is_gun(speed_mmpt, reach) {
             continue;
         }
+        let bullet = protocol::shot_is_bullet(speed_mmpt, reach);
+        // A bullet's streak flies at its round's speed and falls at its
+        // gravity (per tick → per second); a beam's at the drawn speed.
+        let (mps, gravity) = if bullet {
+            let hz = sim_core::limits::TICK_HZ as f32;
+            (
+                f32::from(speed_mmpt) * hz / MM_PER_M,
+                f32::from(protocol::bullet_drop(reach)) * hz * hz / MM_PER_M,
+            )
+        } else {
+            (TRACER_MPS, 0.0)
+        };
         let own = shooter == core.player_id;
         let (feet, crouched) = if own {
             let p = core.predict.position();
@@ -270,16 +303,23 @@ pub fn shots(
             let hands = if crouched { 1.42 - 0.65 } else { 1.42 };
             drawn + Vec3::Y * hands + dir * 0.55
         };
-        // Your own was drawn when it broke (`gunfeel`); the rest flash here.
+        // Your own was drawn when it broke (`gunfeel`); the rest flash here,
+        // a silenced one without the flash.
         if !own {
-            emit(&mut fx.glow, Layer::Flash, 2, muzzle, dir, Matter::Metal);
+            if !protocol::shot_is_quiet(speed_mmpt, reach) {
+                emit(&mut fx.glow, Layer::Flash, 2, muzzle, dir, Matter::Metal);
+                fx.flash(muzzle, MUZZLE_FLASH);
+            }
             emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, dir, Matter::Metal);
-            fx.flash(muzzle, MUZZLE_FLASH);
         }
 
         // Where the beam stops: the sim's own walk over as far as the round
         // flew (the event says), for shooters near enough to see.
-        let range_mm = reach as u32 * 100;
+        let range_mm = if bullet {
+            protocol::bullet_reach_mm(reach)
+        } else {
+            reach as u32 * 100
+        };
         let traced = traces < MAX_TRACES_PER_FRAME && feet.distance(eye_pos) <= TRACE_RANGE_M;
         let stop = traced.then(|| {
             traces += 1;
@@ -345,7 +385,7 @@ pub fn shots(
         if !own {
             let start = muzzle + dir * 0.3;
             let dist = (tracer_end - start).dot(dir).max(0.0);
-            tracer(&mut fx, start, dir, dist);
+            tracer_at(&mut fx, start, dir, dist, mps, gravity);
             // A shotgun's other pellets, drawn about the first's line.
             let pellets = core
                 .interp
@@ -360,11 +400,16 @@ pub fn shots(
                     PELLET_DRAW_RAD,
                     k as u32 ^ shooter.wrapping_mul(40_503),
                 );
-                tracer(&mut fx, start, pd, dist.min(40.0));
+                tracer_at(&mut fx, start, pd, dist.min(40.0), mps, gravity);
             }
         }
 
-        // The miss the shard did not mark.
+        // The miss the shard did not mark. A bullet's every stop is the
+        // shard's own `EV_IMPACT` (`bullet::step` walks its whole flight),
+        // so there is none to draw.
+        if bullet {
+            continue;
+        }
         let Some(b) = stop else { continue };
         let body_in_line = if own {
             // Your own hit arrives as `EV_HIT` on the same frame — an

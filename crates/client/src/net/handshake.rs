@@ -326,7 +326,7 @@ impl Proof {
 
 /// Who a browser join claims to be: an Ethereum address (the guest address
 /// is a guest), a Solana account (v142), or whoever is signed in to Elo Pros
-/// on this page (v144) — elo's pass says which, for the name this proof binds.
+/// on this page (v151) — elo's pass says which, for the name this proof binds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Claim {
     Ethereum(protocol::Address),
@@ -355,14 +355,14 @@ pub fn solana_auth_frame(
     protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
 }
 
-/// The buffer an auth frame is built in, for both clients (v144): the auth
+/// The buffer an auth frame is built in, for both clients (v151): the auth
 /// frame alone may run past the stream lane's ceiling, so it gets one of its
 /// own, `protocol::MAX_AUTH_MSG_BYTES` — the ceiling the shard reads it at.
 pub fn auth_buf() -> [u8; protocol::MAX_AUTH_MSG_BYTES] {
     [0u8; protocol::MAX_AUTH_MSG_BYTES]
 }
 
-/// The auth frame for an Elo Pros pass (v144), exactly as elo issued it. It
+/// The auth frame for an Elo Pros pass (v151), exactly as elo issued it. It
 /// may run to `protocol::MAX_AUTH_MSG_BYTES`, so `buf` is [`auth_buf`]'s.
 pub fn pass_auth_frame(pass: &str, buf: &mut [u8]) -> Result<usize, JoinError> {
     let pass = protocol::Pass::new(pass.trim().as_bytes()).ok_or_else(|| {

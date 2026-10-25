@@ -146,12 +146,14 @@ fn box_world() -> (World, u32, u16, u16) {
         count: 5,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: PLAYER,
@@ -272,6 +274,7 @@ fn items_move_into_and_out_of_a_box() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     let (code, _, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 25);
@@ -283,6 +286,7 @@ fn items_move_into_and_out_of_a_box() {
             count: 15,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -292,6 +296,7 @@ fn items_move_into_and_out_of_a_box() {
             count: 25,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
 
@@ -306,6 +311,7 @@ fn items_move_into_and_out_of_a_box() {
             count: 15,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     assert_eq!(
@@ -315,6 +321,7 @@ fn items_move_into_and_out_of_a_box() {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
 
@@ -330,6 +337,7 @@ fn items_move_into_and_out_of_a_box() {
             count: 15,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         }
     );
     // The foundation and the box each spent their own cost at placement,
@@ -354,6 +362,7 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     for s in BOX_SLOTS..INV_SLOTS {
@@ -374,6 +383,7 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
                 count: 40,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         // And the same slot as a *source* is equally not an address.
@@ -406,6 +416,7 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 
     // Right cell, wrong storey: the level is part of the address, which is
@@ -449,6 +460,7 @@ fn a_box_behind_a_wall_is_out_of_reach() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let (x, z) = cell_center(cx, cz);
     let outside = z - BUILD_CELL_M * 0.5 - 1.0;
@@ -462,6 +474,7 @@ fn a_box_behind_a_wall_is_out_of_reach() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.tick(&[Command::Place {
         id: PLAYER,
@@ -505,6 +518,7 @@ fn a_move_between_two_ground_containers_is_refused() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // A bag at the player's feet, dropped the way one reaches the world in
     // play — `drop_for` is the only route, so a fixture that reached into
@@ -516,6 +530,7 @@ fn a_move_between_two_ground_containers_is_refused() {
         count: 9,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let tick = w.tick;
     let bag = w
@@ -557,6 +572,7 @@ fn emptying_a_box_leaves_it_standing() {
         count: 6,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     // A bag in the store at the same index the box holds in *its* store.
     // The two are addressed by different handles into different arrays, so
@@ -570,6 +586,7 @@ fn emptying_a_box_leaves_it_standing() {
         count: 3,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let tick = w.tick;
     let bag = w
@@ -614,12 +631,14 @@ fn a_broken_box_spills_its_contents_onto_the_floor() {
         count: 30,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[5] = ItemStack {
         item: 2,
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 30);
     do_move(&mut w, key, CONT_SELF, 5, CONT_BOX, 6, 7);
@@ -655,12 +674,14 @@ fn a_broken_box_spills_its_contents_onto_the_floor() {
         count: 30,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }));
     assert!(got.contains(&&ItemStack {
         item: 2,
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     }));
     assert_eq!(bag.owner, PLAYER, "the spill belongs to whoever placed it");
     // Drained exactly once: a second tick must not stand a second bag up.
@@ -702,6 +723,7 @@ fn box_contents_are_in_the_state_hash() {
         count: 40,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let before = w.state_hash();
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 20);
@@ -727,6 +749,7 @@ fn two_boxes_differing_only_in_slot_order_hash_differently() {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, slot, 20);
         assert_eq!(
@@ -736,6 +759,7 @@ fn two_boxes_differing_only_in_slot_order_hash_differently() {
                 count: 20,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             }
         );
         w.state_hash()
@@ -766,6 +790,7 @@ fn the_same_commands_land_on_the_same_box_state() {
             count: 40,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 2, 11);
         do_move(&mut w, key, CONT_BOX, 2, CONT_BOX, 9, 4);
@@ -876,6 +901,7 @@ fn armor_moves_from_a_box_onto_the_body() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let bi = w.deploys.box_index(key).expect("the fixture's box");
     w.deploys.set_box_slot(bi, 3, plate);

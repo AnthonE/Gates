@@ -24,6 +24,14 @@ holds one — replaces it with a render of the game's own 3D model. A
 render is ours and owes nothing; the silhouette credit stays listed for
 every item either way, because the painted ones are derived works of it.
 
+**The weapon attachments' silhouettes are ours** (holosight, 8x zoom
+scope, silencer, muzzle brake, muzzle boost, weapon lasersight, weapon
+flashlight, extended magazine): drawn as plain shapes in
+`ci/icons/masks/` and painted like the rest, so they owe nothing. The
+ammunition kinds beside the base rounds (HV, incendiary, explosive, the
+slug, the incendiary and handmade shells) are recoloured renders of the
+game's own models, ours as well.
+
 ## What maps to what
 
 | file | source icon |
@@ -32,6 +40,15 @@ every item either way, because the painted ones are derived works of it.
 | `ash_mask.png` | `lorc/gas-mask` |
 | `ash_suit.png` | `delapouite/hazmat-suit` |
 | `auto_turret.png` | `lorc/sentry-gun` |
+| `ceiling_light.png` | `delapouite/ceiling-light` |
+| `large_battery.png` | `delapouite/car-battery` |
+| `large_solar_panel.png` | `lorc/sun` |
+| `root_combiner.png` | `delapouite/join` |
+| `small_battery.png` | `sbed/battery-pack-alt` |
+| `small_generator.png` | `delapouite/power-generator` |
+| `splitter.png` | `delapouite/split-arrows` |
+| `switch.png` | `lorc/lever` |
+| `wire_tool.png` | `delapouite/wire-coil` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `bandana.png` | `delapouite/bandana` |

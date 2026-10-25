@@ -4080,6 +4080,7 @@ mod tests {
                 count,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             };
         }
         p
@@ -6966,6 +6967,7 @@ mod tests {
             count: 9,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
 
         place_deploy(

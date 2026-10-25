@@ -28,7 +28,8 @@ pub const VEL_Q: f32 = 0.01;
 /// Fixed tick delta — the only dt the sim knows (30 Hz).
 pub const DT: f32 = 1.0 / 30.0;
 
-pub const WALK_SPEED: f32 = 3.0;
+/// The reference's walk, m/s (see `CROUCH_SPEED`).
+pub const WALK_SPEED: f32 = 2.8;
 pub const SPRINT_SPEED: f32 = 5.5;
 /// A crouched walk, m/s: the reference's duck speed (walk 2.8, run 5.5,
 /// duck 1.7). Crouch beats sprint and the drawn-bow walk — a body holding

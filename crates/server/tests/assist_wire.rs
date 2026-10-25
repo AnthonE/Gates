@@ -74,6 +74,7 @@ fn a_hand_hold_crosses_the_wire_and_only_its_participants_see_progress() {
         count: 1,
         cond: 400,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     // Keep the bystander out of the attack ray, while retaining its session.
     core.world.players[2].body.qx += 200;

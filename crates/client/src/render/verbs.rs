@@ -233,7 +233,10 @@ pub fn resolve(
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
     aimed.0.lit = matches!(
         aimed.0.verb,
-        interact::Verb::Fire | interact::Verb::Recycler | interact::Verb::Research
+        interact::Verb::Fire
+            | interact::Verb::Recycler
+            | interact::Verb::Research
+            | interact::Verb::Part
     ) && core
         .ovens()
         .is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level, aimed.0.loc);
@@ -1088,6 +1091,16 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        // A switch is flipped where it stands: the use verb at its address,
+        // which `power::toggle` answers (an `EV_DOOR` with its new position).
+        Verb::Switch => {
+            let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
+            send(net, toast, "switch", |buf| {
+                protocol::encode_action_use(cx, cz, level, loc, buf)
+            });
+        }
+        // The rest of a circuit has nothing on `E`; the wire tool works it.
+        Verb::Part => {}
         // A sleeper's pack opens like a bag; the server proves the reach.
         Verb::Sleeper => {
             let handle = pick.handle;

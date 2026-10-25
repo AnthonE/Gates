@@ -1777,6 +1777,7 @@ fn bow_fixture() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
@@ -1797,6 +1798,7 @@ fn bow_fixture() -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }
@@ -1809,12 +1811,14 @@ fn arm_archer(core: &mut ShardCore, w: usize) {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: 32,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
 }
 
@@ -1999,12 +2003,14 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         p.inv[7] = ItemStack {
             item: ARROW,
             count: 60_000,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // The magazine, filled to its ceiling (reload v1). Without this
         // the storm stops after eight shots per body and the anti-vacuity
@@ -2017,7 +2023,10 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         // events in a tick against a 256 cap, and the assert below said so
         // in those words. The client counts its own shots instead
         // (`ranged::hitscan` carries the whole finding).
-        p.mag[0] = u16::MAX;
+        p.set_gun(|g| {
+            g.loaded = sim_core::combat::GUN_LOADED_MAX;
+            g.round = ARROW;
+        });
     }
     let mut c = CombatContent::EMPTY;
     c.player_hp = 100;
@@ -2025,17 +2034,18 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         damage: 100,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 1,
+        rate_sub: 0,
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
         head_pct: 200,
         limb_pct: 50,
         // A magazine that cannot run out inside forty ticks, so the storm
-        // storms. `u16::MAX` and not zero: a hitscan row with no magazine
-        // is a shape `content/validate.rs` refuses at boot, and a load
-        // fixture that could not ship is one that stops measuring the
+        // storms. The gun's data's ceiling and not zero: a hitscan row with
+        // no magazine is a shape `content/validate.rs` refuses at boot, and
+        // a load fixture that could not ship is one that stops measuring the
         // thing that ships. `mag_slot` 0 — this fixture bakes no other.
-        magazine: u16::MAX,
+        magazine: sim_core::combat::GUN_LOADED_MAX,
         reload_ticks: 1,
         mag_slot: 0,
         draw_ticks: 0,
@@ -2160,13 +2170,13 @@ fn the_event_lane_holds_at_population() {
 /// `NOW.md` §0mag, and the judge's ranked fix 2 of pass -19. The fixture
 /// above deletes the per-shot `EV_RELOAD` because at a hundred bodies it
 /// doubled the lane to 256/256 (`ranged.rs` carries that finding, and
-/// `storm_core`'s `p.mag[0] = u16::MAX` is the line it left behind). What
+/// `storm_core`'s `p.set_gun(|g| g.loaded = GUN_LOADED_MAX` is the line it left behind). What
 /// replaced it is the same order of magnitude from the other side —
 /// `EV_RELOAD_REFUSED` is one own-fact event per client per press, and a
 /// press is one action per client per tick, which is the server's own
 /// ceiling and therefore reachable by **any** client simply holding R.
 /// Nothing drove it. `sim-core/tests/reload.rs` proves the path with one
-/// player and `probe_combat` rotates it across three bots; neither is a
+/// player and `probe_combat` rotates it across three bots); neither is a
 /// budget.
 ///
 /// It is also no longer hypothetical: `bot_smoke::test_bots_reload_over_

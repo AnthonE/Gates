@@ -611,6 +611,7 @@ pub fn wear_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
             count: 1,
             cond: max,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     )
     .is_some_and(|row| crate::ui::hold::HELD_MODELS[row].light.is_some());
@@ -730,12 +731,14 @@ mod tests {
             count: 1,
             cond: 399,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         inv[1] = ItemStack {
             item: SCRAP,
             count: 50,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         assert_eq!(
             affordable(&def, &inv, &catalog),

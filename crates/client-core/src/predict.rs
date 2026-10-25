@@ -456,6 +456,8 @@ mod tests {
             held: None,
             lit: false,
             held_skin: 0,
+            held_mods: 0,
+            beam: false,
         }
     }
 
@@ -635,6 +637,7 @@ mod tests {
             count: 50,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         world.tick(&[
             Command::Place {

@@ -47,6 +47,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         range_mm,
         structure: 0,
@@ -64,6 +65,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }
@@ -82,12 +84,14 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, pitch: u8) -> Player {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.frame = InputFrame {
         buttons: BTN_PRIMARY,

@@ -804,7 +804,7 @@ impl Session {
     }
 
     /// [`Session::connect`] as **whoever is signed in to Elo Pros on this page**
-    /// (v144): `pass` is handed the name this proof binds (`signs_as`, or the
+    /// (v151): `pass` is handed the name this proof binds (`signs_as`, or the
     /// dialled host) and answers with the pass elo issued for it
     /// (`elo::pass_web`). No wallet is asked anything; a pass naming a wallet
     /// joins as that wallet.
@@ -921,7 +921,7 @@ impl Session {
                 protocol::Address::GUEST
             }
         };
-        // An Elo Pros pass for the name this proof binds (v144): the page asks
+        // An Elo Pros pass for the name this proof binds (v151): the page asks
         // elo for one, and no wallet is asked anything.
         let pass = match (claim, &want, sign) {
             (net::handshake::Claim::Pass, Some(proof), Some(f)) => {

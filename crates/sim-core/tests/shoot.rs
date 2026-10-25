@@ -102,6 +102,7 @@ fn bow_fixture() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        rate_sub: 0,
         hitscan: false,
         // 60 m, the real bow's reach. `ranged::draw` divides this by the
         // round's speed for the flight, which at 1333 mm/tick is the 45
@@ -127,6 +128,7 @@ fn bow_fixture() -> CombatContent {
         damage_pct: 100,
         fire_ticks: [0; 2],
         blast: Default::default(),
+        ..Default::default()
     };
     c
 }
@@ -152,12 +154,14 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, ammo: u16) 
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: ammo,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     p.frame = InputFrame {
         seq: 1,
@@ -568,6 +572,7 @@ fn an_empty_hand_hands_the_arm_back() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     assert!(!ranged::draw(
         0,

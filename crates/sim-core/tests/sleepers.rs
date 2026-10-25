@@ -94,6 +94,7 @@ fn duel_world() -> World {
             count: 1,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
     }
     w
@@ -289,6 +290,7 @@ fn a_killed_body_leaves_a_pack_and_a_corpse() {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let sleeper = slot_of(&w, 2);
     let raider = slot_of(&w, 1);
@@ -452,6 +454,7 @@ fn a_return_takes_over_the_body_it_left() {
         count: 7,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let carried = w.players[slot].inv;
     let stood = w.players[slot].body;
@@ -555,7 +558,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
                 item: 8,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "kit slot 0"
@@ -567,7 +571,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
                 item: 9,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "kit slot 1"
@@ -624,13 +629,15 @@ fn a_takeover_of_a_dead_body_respawns_holding_the_spawn_kit() {
                 item: 8,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             },
             ItemStack {
                 item: 9,
                 count: 1,
                 cond: 0,
-                skin: 0
+                skin: 0,
+                ..ItemStack::EMPTY
             }
         ),
         "a raided sleeper's owner woke naked — the takeover door skipped the kit"

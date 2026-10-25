@@ -309,7 +309,11 @@ impl Rules {
                     hitscan: r.hitscan,
                     range_mm: r.range_mm,
                     round,
-                    speed_mmpt: flight.map_or(0, |a| a.speed_mmpt),
+                    // Out of this barrel (`Gun::muzzle`): a bolt sends
+                    // 5.56 out faster than the AK does.
+                    speed_mmpt: flight
+                        .filter(|a| a.speed_mmpt > 0)
+                        .map_or(0, |a| r.gun.muzzle(a.speed_mmpt)),
                     drop_mmpt2: flight.map_or(0, |a| a.drop_mmpt2),
                     magazine: r.magazine,
                     reload_ticks: r.reload_ticks,

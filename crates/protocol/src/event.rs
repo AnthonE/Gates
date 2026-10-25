@@ -28,7 +28,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_CATCHER, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_LIGHT, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
@@ -46,9 +46,11 @@ use sim_core::sock::Sock;
 /// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
 /// 29 header bits and seven rows of 320, held by the assert at
 /// `CATALOG_ROW_MAX_BITS` and `catalog_batches_walk_the_table_within_cap`)
-/// with headroom; the client-side framer refuses past it.
+/// with headroom; the client-side framer refuses past it. 448 since v144:
+/// a box of thirty loaded guns is 30 × 102 bits once a stack carries its
+/// data.
 /// Registered in DECISIONS.md §open.
-pub const MAX_EVENT_MSG_BYTES: usize = 320;
+pub const MAX_EVENT_MSG_BYTES: usize = 448;
 
 /// Harvested cells one sync message carries (join sync is drip-fed, one
 /// message per client per tick — server core). Overflow policy: the next
@@ -65,11 +67,11 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// walk fills it. 33 bits a node, 32 of them in 136 B.
 pub const NODE_STAGE_BATCH: usize = 32;
 
-/// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 447 bits with a gun's handling, v131's damage, v135's fifth oven
-/// arch and v137's pour, and six of them would pass `MAX_EVENT_MSG_BYTES`
-/// (the assert at `CATALOG_ROW_MAX_BITS`).
-pub const CATALOG_BATCH: usize = 5;
+/// Item names one catalog message carries. Four since v144: a worst-case
+/// row is 557 bits with a gun's handling, v131's damage, v135's fifth oven
+/// arch, v137's pour and v144's spread and round, and five of them would
+/// pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+pub const CATALOG_BATCH: usize = 4;
 
 /// Skin rows one skin-catalog message carries. A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 1 + 64 + 5 + 24 × 8 = 352 bits since a painted
@@ -660,7 +662,19 @@ const SUB_PLANT_SYNC: u32 = 108;
 /// player near them said out loud, or a line translated into their
 /// language. See [`Caption`].
 const SUB_CAPTION: u32 = 109;
-const SUB_MAX: u32 = SUB_CAPTION;
+/// An auto turret as its viewer sees it (wire v146, `sim_core::turret`):
+/// owed to whoever has its box open, on the open and whenever it moves.
+/// See [`TurretView`].
+const SUB_TURRET: u32 = 110;
+/// A wire laid, or every wire on a part taken up (wire v150,
+/// `sim_core::world::EV_WIRE`). See `EventMsg::Wire`.
+const SUB_WIRE: u32 = 111;
+const SUB_MAX: u32 = SUB_WIRE;
+/// Widths of a wire's ports (`sim_core::power::ports`).
+const WIRE_PORT_OUT_BITS: u32 = 2;
+const WIRE_PORT_IN_BITS: u32 = 1;
+const _: () = assert!(sim_core::power::MAX_OUTS <= 1 << WIRE_PORT_OUT_BITS);
+const _: () = assert!(sim_core::power::MAX_INS <= 1 << WIRE_PORT_IN_BITS);
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -1124,7 +1138,8 @@ const PIECE_REC_BITS: usize = (PIECE_ID_BITS
 const _: () =
     assert!(FOOT_BITS + 4 * COEF_BITS + SOCK_DIR_BITS >= 2 * BUILD_CELL_BITS + BUILD_LOC_BITS);
 /// `write_deploy_rec`'s: address, row, the four state bits (v120's key
-/// bit the fourth), band, the pose's three bytes and the exact hp (v102).
+/// bit the fourth), band, the pose's three bytes, the exact hp (v102) and,
+/// at most, the skin (v143: a bit, then the id when there is one).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
@@ -1132,7 +1147,9 @@ const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + 4
     + DMG_BAND_BITS
     + 3 * 8
-    + STRUCT_HP_BITS) as usize;
+    + STRUCT_HP_BITS
+    + 1
+    + 16) as usize;
 // A full batch of either store's records still fits one message (v102's hp
 // took 16 bits a record): a field added after it must shrink the batch first.
 const _: () = assert!(
@@ -1144,7 +1161,8 @@ const _: () = assert!(
         + DEPLOY_SYNC_BATCH * DEPLOY_REC_BITS
         <= MAX_EVENT_MSG_BYTES * 8
 );
-const DEPLOY_DEFS_TOTAL_BITS: u32 = 6;
+const DEPLOY_DEFS_TOTAL_BITS: u32 = 7;
+const _: () = assert!(MAX_DEPLOY_DEFS < 1 << DEPLOY_DEFS_TOTAL_BITS);
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
 /// (recycler v0) and three bits held exactly eight. Seven of the sixteen
@@ -1373,6 +1391,46 @@ pub struct ItemRow {
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
     pub gun: Option<GunRow>,
+    /// What an attachment is (v144, `combat::ModDef` and the client's half
+    /// of the content row). `None` on all but attachments.
+    pub attach: Option<ModRow>,
+}
+
+/// A weapon attachment, as the client needs it: its bit of a gun's mask and
+/// the slot it takes, the cone shares (the crosshair), the kick's share,
+/// how far the sights narrow the view, and the three things it shows — a
+/// silencer's quiet, a laser's dot, a flashlight's beam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModRow {
+    pub bit: u8,
+    pub group: u8,
+    pub aim_pct: u16,
+    pub hip_pct: u16,
+    pub recoil_pct: u16,
+    pub zoom_pct: u8,
+    pub quiet: bool,
+    pub laser: bool,
+    pub light: bool,
+}
+
+/// The widths of [`ModRow`] on the wire.
+const MOD_BIT_W: u32 = 3;
+const MOD_GROUP_W: u32 = 2;
+const MOD_PCT_W: u32 = 9;
+const MOD_ZOOM_W: u32 = 7;
+const MOD_ROW_BITS: usize = (MOD_BIT_W + MOD_GROUP_W + 3 * MOD_PCT_W + MOD_ZOOM_W + 3) as usize;
+const _: () = assert!(sim_core::limits::MAX_MODS <= 1 << MOD_BIT_W);
+
+impl ModRow {
+    /// Fits its widths: what `content::validate` holds an attachment to.
+    fn coherent(&self) -> bool {
+        (self.bit as usize) < sim_core::limits::MAX_MODS
+            && self.group <= sim_core::combat::MOD_MAGAZINE
+            && [self.aim_pct, self.hip_pct, self.recoil_pct]
+                .iter()
+                .all(|&p| p < 1 << MOD_PCT_W)
+            && self.zoom_pct < 1 << MOD_ZOOM_W
+    }
 }
 
 /// A firearm's handling, as the client needs it (`sim_core::combat::Gun`):
@@ -1392,6 +1450,26 @@ pub struct GunRow {
     pub recoil_pitch: [u16; 2],
     pub recoil_yaw: [i16; 2],
     pub ads_recoil_pct: u8,
+    /// The exact cadence, 256ths of a tick (v144, `RangedDef::rate_sub`);
+    /// 0 keeps `rate_ticks`.
+    pub rate_sub: u16,
+    /// The cone added on the move, and the bloom: added per shot, its cap,
+    /// how long it holds and how long it bleeds (v144, `combat::Gun`) —
+    /// what the crosshair spreads by.
+    pub moving: u16,
+    pub per_shot: u16,
+    pub max: u16,
+    pub recover_ticks: u16,
+    pub delay_ticks: u16,
+    /// A shotgun's pellets' own spread about the shot's line (v144).
+    pub pellet: u16,
+    /// The first round's muzzle speed out of this barrel, mm/tick, and its
+    /// drop, mm/tick² (v144): what your own tracer flies at. 0 is instant.
+    pub speed_mmpt: u16,
+    pub drop_mmpt2: u8,
+    /// The attachments it takes (v144, `combat::Gun::mods`): one bit per
+    /// attachment row, so the item card offers only what fits.
+    pub mods: u8,
 }
 
 /// The widths of [`GunRow`] on the wire: a gun row is these and a presence
@@ -1400,9 +1478,24 @@ const GUN_PELLET_BITS: u32 = 5;
 const GUN_CONE_BITS: u32 = 13;
 const GUN_RECOIL_BITS: u32 = 12;
 const GUN_RELOAD_BITS: u32 = 11;
-const GUN_ROW_BITS: usize =
-    (8 + GUN_RELOAD_BITS + 1 + GUN_PELLET_BITS + 2 * GUN_CONE_BITS + 4 * GUN_RECOIL_BITS + 7)
-        as usize;
+/// A bloom's hold and bleed, ticks: 1 023 is 34 s, past `validate`'s minute
+/// rounded to ticks only by a content typo.
+const GUN_BLOOM_TICK_BITS: u32 = 10;
+const GUN_DROP_BITS: u32 = sim_core::world::SHOT_DROP_BITS;
+const GUN_ROW_BITS: usize = (8
+    + GUN_RELOAD_BITS
+    + 1
+    + GUN_PELLET_BITS
+    + 2 * GUN_CONE_BITS
+    + 4 * GUN_RECOIL_BITS
+    + 7
+    + 16
+    + 4 * GUN_CONE_BITS
+    + 2 * GUN_BLOOM_TICK_BITS
+    + GUN_CONE_BITS
+    + 16
+    + GUN_DROP_BITS
+    + 8) as usize;
 const _: () = assert!(sim_core::limits::MAX_PELLETS < 1 << GUN_PELLET_BITS);
 
 impl GunRow {
@@ -1423,6 +1516,12 @@ impl GunRow {
             && self.ads_recoil_pct <= 100
             && self.rate_ticks > 0
             && self.reload_ticks < 1 << GUN_RELOAD_BITS
+            && [self.moving, self.per_shot, self.max, self.pellet]
+                .iter()
+                .all(|&c| c < 1 << GUN_CONE_BITS)
+            && self.recover_ticks < 1 << GUN_BLOOM_TICK_BITS
+            && self.delay_ticks < 1 << GUN_BLOOM_TICK_BITS
+            && u32::from(self.drop_mmpt2) < 1 << GUN_DROP_BITS
     }
 }
 
@@ -1446,7 +1545,9 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + ITEM_CLASS_BITS as usize
     + 16
     + 1
-    + GUN_ROW_BITS;
+    + GUN_ROW_BITS
+    + 1
+    + MOD_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
 // what took `CATALOG_BATCH` from 8 to 7: eight rows had filled the cap to
 // the byte. A column added to the row must shrink the batch first.
@@ -1477,6 +1578,7 @@ impl ItemRow {
         class: CLASS_OTHER,
         damage: 0,
         gun: None,
+        attach: None,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -1520,6 +1622,7 @@ impl ItemRow {
             && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
             && self.class <= CLASS_MAX
             && self.gun.is_none_or(|g| g.coherent())
+            && self.attach.is_none_or(|m| m.coherent())
     }
 }
 
@@ -2454,6 +2557,19 @@ pub enum EventMsg {
     /// A vending machine's offers as the receiver sees them (v118) — see
     /// [`ShopView`].
     Shop(ShopView),
+    /// An auto turret as the receiver sees it (v146) — see [`TurretView`].
+    Turret(TurretView),
+    /// A wire (v150, `sim_core::power`): `set`, the wire from output `out`
+    /// of the part at box address `from` to input `inp` of the part at `to`
+    /// is laid; else every wire on the part at `from` is taken up (`to`,
+    /// `out` and `inp` zero).
+    Wire {
+        from: u32,
+        to: u32,
+        out: u8,
+        inp: u8,
+        set: bool,
+    },
     /// The receiver's shop press at machine `key` (v118): `op` and `row` as
     /// sent, `times` lots for a buy, and `code` a `sim_core::shop::REFUSE_SH_*`
     /// or 0 when it went through.
@@ -2849,6 +2965,39 @@ pub fn encode_event_reload_refused(
 
 /// `slots` must be non-empty and within `INV_SLOTS` rows/indices — an
 /// empty update is a server bug, not a message.
+/// One stack in an inventory or a box (v144): item, count, condition and
+/// skin, then its data (`ItemStack::data`) behind a presence bit, so a
+/// stack that remembers nothing pays one bit for the field.
+fn write_stack(w: &mut BitWriter, s: &ItemStack) -> Result<(), WireError> {
+    w.write(s.item as u32, 16)?;
+    w.write(s.count as u32, 16)?;
+    w.write(s.cond as u32, 16)?;
+    w.write(s.skin as u32, 16)?;
+    w.write_bit(s.data != 0)?;
+    if s.data != 0 {
+        w.write(s.data, 32)?;
+    }
+    Ok(())
+}
+
+fn read_stack(r: &mut BitReader) -> Result<ItemStack, WireError> {
+    let mut s = ItemStack {
+        item: r.read(16)? as u16,
+        count: r.read(16)? as u16,
+        cond: r.read(16)? as u16,
+        skin: r.read(16)? as u16,
+        ..ItemStack::EMPTY
+    };
+    if r.read_bit()? {
+        s.data = r.read(32)?;
+        // Set says there is data, and zero is the absence of it.
+        if s.data == 0 {
+            return Err(WireError::Malformed);
+        }
+    }
+    Ok(s)
+}
+
 pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, WireError> {
     if slots.is_empty() || slots.len() > INV_SLOTS {
         return Err(WireError::Cap);
@@ -2860,10 +3009,7 @@ pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, Wire
             return Err(WireError::Range);
         }
         w.write(s.slot as u32, INV_SLOT_BITS)?;
-        w.write(s.stack.item as u32, 16)?;
-        w.write(s.stack.count as u32, 16)?;
-        w.write(s.stack.cond as u32, 16)?;
-        w.write(s.stack.skin as u32, 16)?;
+        write_stack(&mut w, &s.stack)?;
     }
     Ok(w.finish())
 }
@@ -3147,6 +3293,30 @@ pub fn encode_event_catalog(
                 )?;
             }
             w.write(g.ads_recoil_pct as u32, 7)?;
+            // v144: the cadence's remainder, the spread, the round.
+            w.write(g.rate_sub as u32, 16)?;
+            for c in [g.moving, g.per_shot, g.max] {
+                w.write(c as u32, GUN_CONE_BITS)?;
+            }
+            w.write(g.recover_ticks as u32, GUN_BLOOM_TICK_BITS)?;
+            w.write(g.delay_ticks as u32, GUN_BLOOM_TICK_BITS)?;
+            w.write(g.pellet as u32, GUN_CONE_BITS)?;
+            w.write(g.speed_mmpt as u32, 16)?;
+            w.write(g.drop_mmpt2 as u32, GUN_DROP_BITS)?;
+            w.write(g.mods as u32, 8)?;
+        }
+        // An attachment (v144), behind a presence bit.
+        w.write_bit(row.attach.is_some())?;
+        if let Some(m) = row.attach {
+            w.write(m.bit as u32, MOD_BIT_W)?;
+            w.write(m.group as u32, MOD_GROUP_W)?;
+            for p in [m.aim_pct, m.hip_pct, m.recoil_pct] {
+                w.write(p as u32, MOD_PCT_W)?;
+            }
+            w.write(m.zoom_pct as u32, MOD_ZOOM_W)?;
+            w.write_bit(m.quiet)?;
+            w.write_bit(m.laser)?;
+            w.write_bit(m.light)?;
         }
     }
     Ok((w.finish(), count))
@@ -3776,6 +3946,11 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write(rec.pose.yaw as u32, 8)?;
     // The exact hp (v102) — `write_piece_rec`'s note applies.
     w.write(rec.hp as u32, STRUCT_HP_BITS)?;
+    // The skin it was placed in (v143), the ground item's shape.
+    w.write_bit(rec.skin != 0)?;
+    if rec.skin != 0 {
+        w.write(rec.skin as u32, 16)?;
+    }
     // **No plate here, deliberately** (build plate v1). A deployable stands
     // on a piece or on bare ground, and in the first case the piece record
     // for its own column already carries the plate — so a second copy on
@@ -3807,6 +3982,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
             yaw: r.read(8)? as u8,
         },
         hp: r.read(STRUCT_HP_BITS)? as u16,
+        skin: if r.read_bit()? { r.read(16)? as u16 } else { 0 },
         ..DeployRec::default()
     };
     // An insert hangs in its doorway at the centre pose; one that claims
@@ -3881,7 +4057,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_CATCHER || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_LIGHT || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -4208,6 +4384,37 @@ pub fn encode_event_shot(
 /// chances to write `!= 0`.
 pub fn shot_is_instant(speed_mmpt: u16) -> bool {
     speed_mmpt == 0
+}
+
+/// Did this shot fly as a **bullet** — a firearm round with travel time and
+/// drop (`sim_core::bullet`) — rather than as an arrow? The second `u16`
+/// then carries `world::SHOT_BULLET`, the reach and the drop
+/// (`world::shot_bullet_c`), where an arrow's is its drop alone.
+pub fn shot_is_bullet(speed_mmpt: u16, low: u16) -> bool {
+    !shot_is_instant(speed_mmpt) && u32::from(low) & sim_core::world::SHOT_BULLET != 0
+}
+
+/// A gunshot of either kind — instant or a bullet — as opposed to an arrow:
+/// what the mixer picks the gunshot cue by and the arrow tracer skips.
+pub fn shot_is_gun(speed_mmpt: u16, low: u16) -> bool {
+    shot_is_instant(speed_mmpt) || shot_is_bullet(speed_mmpt, low)
+}
+
+/// A bullet's drop, mm/tick², out of its shot's second `u16`.
+pub fn bullet_drop(low: u16) -> u16 {
+    low & ((1 << sim_core::world::SHOT_DROP_BITS) - 1)
+}
+
+/// A bullet's reach, millimetres, out of its shot's second `u16`.
+pub fn bullet_reach_mm(low: u16) -> u32 {
+    use sim_core::world::{SHOT_DROP_BITS, SHOT_REACH_BITS, SHOT_REACH_UNIT_MM};
+    ((u32::from(low) >> SHOT_DROP_BITS) & ((1 << SHOT_REACH_BITS) - 1)) * SHOT_REACH_UNIT_MM
+}
+
+/// Was this bullet fired from a silenced gun (`world::SHOT_QUIET`)? Heard
+/// at a bow's radius and drawn with no flash.
+pub fn shot_is_quiet(speed_mmpt: u16, low: u16) -> bool {
+    shot_is_bullet(speed_mmpt, low) && u32::from(low) & sim_core::world::SHOT_QUIET != 0
 }
 
 /// Where an arrow stopped: a point in the entity lane's quanta and what
@@ -5555,10 +5762,7 @@ pub fn encode_event_cont_sync(
             return Err(WireError::Range);
         }
         w.write(s.slot as u32, INV_SLOT_BITS)?;
-        w.write(s.stack.item as u32, 16)?;
-        w.write(s.stack.count as u32, 16)?;
-        w.write(s.stack.cond as u32, 16)?;
-        w.write(s.stack.skin as u32, 16)?;
+        write_stack(&mut w, &s.stack)?;
     }
     Ok(w.finish())
 }
@@ -6243,6 +6447,100 @@ impl ShopView {
     }
 }
 
+/// An auto turret (`sim_core::deploy::ARCH_TURRET`) as the receiver sees it
+/// (v146): its box key, whether the receiver has its building privilege
+/// (`turret::spares`: may put themselves on, clear it and set its mode),
+/// (v147) whether it keeps the peace, and its authorize list in the order
+/// it was added to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TurretView {
+    pub key: u32,
+    pub may_edit: bool,
+    pub peacekeeper: bool,
+    pub n: u8,
+    pub auth: [u32; sim_core::limits::TURRET_AUTH_CAP],
+    /// (v148) The gun in its weapon slot it fires, 0 for none; the round
+    /// that gun spends, 0 for none; and how many of it the ammo slots hold.
+    pub gun: u16,
+    pub ammo: u16,
+    pub rounds: u16,
+    /// (v150) Whether its draw is met (`power::Power::feeds`), and the rW
+    /// reaching it.
+    pub powered: bool,
+    pub power_in: u16,
+}
+
+impl TurretView {
+    /// The listed ids.
+    pub fn listed(&self) -> &[u32] {
+        &self.auth[..(self.n as usize).min(self.auth.len())]
+    }
+
+    /// The shape both ends hold a view to: a real key, a count in range and
+    /// a zeroed tail.
+    pub fn valid(&self) -> bool {
+        self.key != 0
+            && (self.n as usize) <= self.auth.len()
+            && self.auth[self.n as usize..].iter().all(|&id| id == 0)
+            && (self.gun as usize) < MAX_ITEM_DEFS
+            && (self.ammo as usize) < MAX_ITEM_DEFS
+            && (self.gun != 0 || (self.ammo == 0 && self.rounds == 0))
+    }
+}
+
+/// Bits of [`TurretView::n`].
+const TURRET_AUTH_BITS: u32 = 4;
+const _: () = assert!(sim_core::limits::TURRET_AUTH_CAP < 1 << TURRET_AUTH_BITS);
+
+/// An auto turret to its viewer — see [`EventMsg::Turret`].
+pub fn encode_event_turret(view: &TurretView, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !view.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TURRET)?;
+    w.write(view.key, 32)?;
+    w.write_bit(view.may_edit)?;
+    w.write_bit(view.peacekeeper)?;
+    w.write(view.n as u32, TURRET_AUTH_BITS)?;
+    for &id in view.listed() {
+        w.write(id, 32)?;
+    }
+    w.write(view.gun as u32, 16)?;
+    w.write(view.ammo as u32, 16)?;
+    w.write(view.rounds as u32, 16)?;
+    w.write_bit(view.powered)?;
+    w.write(view.power_in as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A wire laid or a part's taken up — see [`EventMsg::Wire`].
+pub fn encode_event_wire(
+    from: u32,
+    to: u32,
+    out: u8,
+    inp: u8,
+    set: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from == 0
+        || (set && to == 0)
+        || (!set && (to != 0 || out != 0 || inp != 0))
+        || out as usize >= sim_core::power::MAX_OUTS
+        || inp as usize >= sim_core::power::MAX_INS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WIRE)?;
+    w.write_bit(set)?;
+    w.write(from, 32)?;
+    if set {
+        w.write(to, 32)?;
+        w.write(out as u32, WIRE_PORT_OUT_BITS)?;
+        w.write(inp as u32, WIRE_PORT_IN_BITS)?;
+    }
+    Ok(w.finish())
+}
+
 /// A vending machine's offers to its viewer — see [`EventMsg::Shop`].
 pub fn encode_event_shop(view: &ShopView, buf: &mut [u8]) -> Result<usize, WireError> {
     if !view.valid() {
@@ -6491,12 +6789,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 *s = InvSlot {
                     slot,
-                    stack: ItemStack {
-                        item: r.read(16)? as u16,
-                        count: r.read(16)? as u16,
-                        cond: r.read(16)? as u16,
-                        skin: r.read(16)? as u16,
-                    },
+                    stack: read_stack(&mut r)?,
                 };
             }
             EventMsg::Inv {
@@ -6723,6 +7016,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                         let y0 = sx(r.read(GUN_RECOIL_BITS)?);
                         let y1 = sx(r.read(GUN_RECOIL_BITS)?);
                         let ads_recoil_pct = r.read(7)? as u8;
+                        let rate_sub = r.read(16)? as u16;
+                        let moving = r.read(GUN_CONE_BITS)? as u16;
+                        let per_shot = r.read(GUN_CONE_BITS)? as u16;
+                        let max = r.read(GUN_CONE_BITS)? as u16;
+                        let recover_ticks = r.read(GUN_BLOOM_TICK_BITS)? as u16;
+                        let delay_ticks = r.read(GUN_BLOOM_TICK_BITS)? as u16;
+                        let pellet = r.read(GUN_CONE_BITS)? as u16;
+                        let speed_mmpt = r.read(16)? as u16;
+                        let drop_mmpt2 = r.read(GUN_DROP_BITS)? as u8;
+                        let mods = r.read(8)? as u8;
                         Some(GunRow {
                             rate_ticks,
                             reload_ticks,
@@ -6733,6 +7036,37 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                             recoil_pitch: [p0, p1],
                             recoil_yaw: [y0, y1],
                             ads_recoil_pct,
+                            rate_sub,
+                            moving,
+                            per_shot,
+                            max,
+                            recover_ticks,
+                            delay_ticks,
+                            pellet,
+                            speed_mmpt,
+                            drop_mmpt2,
+                            mods,
+                        })
+                    } else {
+                        None
+                    },
+                    attach: if r.read_bit()? {
+                        let bit = r.read(MOD_BIT_W)? as u8;
+                        let group = r.read(MOD_GROUP_W)? as u8;
+                        let aim_pct = r.read(MOD_PCT_W)? as u16;
+                        let hip_pct = r.read(MOD_PCT_W)? as u16;
+                        let recoil_pct = r.read(MOD_PCT_W)? as u16;
+                        let zoom_pct = r.read(MOD_ZOOM_W)? as u8;
+                        Some(ModRow {
+                            bit,
+                            group,
+                            aim_pct,
+                            hip_pct,
+                            recoil_pct,
+                            zoom_pct,
+                            quiet: r.read_bit()?,
+                            laser: r.read_bit()?,
+                            light: r.read_bit()?,
                         })
                     } else {
                         None
@@ -7141,7 +7475,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_CATCHER
+                if arch > ARCH_LIGHT
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -7943,6 +8277,57 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Shop(view)
         }
+        SUB_WIRE => {
+            let set = r.read_bit()?;
+            let from = r.read(32)?;
+            let (to, out, inp) = if set {
+                (
+                    r.read(32)?,
+                    r.read(WIRE_PORT_OUT_BITS)? as u8,
+                    r.read(WIRE_PORT_IN_BITS)? as u8,
+                )
+            } else {
+                (0, 0, 0)
+            };
+            if from == 0
+                || (set && to == 0)
+                || out as usize >= sim_core::power::MAX_OUTS
+                || inp as usize >= sim_core::power::MAX_INS
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Wire {
+                from,
+                to,
+                out,
+                inp,
+                set,
+            }
+        }
+        SUB_TURRET => {
+            let mut view = TurretView {
+                key: r.read(32)?,
+                may_edit: r.read_bit()?,
+                peacekeeper: r.read_bit()?,
+                n: r.read(TURRET_AUTH_BITS)? as u8,
+                ..Default::default()
+            };
+            if view.n as usize > view.auth.len() {
+                return Err(WireError::Malformed);
+            }
+            for k in 0..view.n as usize {
+                view.auth[k] = r.read(32)?;
+            }
+            view.gun = r.read(16)? as u16;
+            view.ammo = r.read(16)? as u16;
+            view.rounds = r.read(16)? as u16;
+            view.powered = r.read_bit()?;
+            view.power_in = r.read(16)? as u16;
+            if !view.valid() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Turret(view)
+        }
         SUB_SHOP_RESULT => {
             let key = r.read(32)?;
             let op = r.read(2)? as u8;
@@ -8425,12 +8810,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 *s = InvSlot {
                     slot,
-                    stack: ItemStack {
-                        item: r.read(16)? as u16,
-                        count: r.read(16)? as u16,
-                        cond: r.read(16)? as u16,
-                        skin: r.read(16)? as u16,
-                    },
+                    stack: read_stack(&mut r)?,
                 };
             }
             EventMsg::ContSync {
@@ -8540,6 +8920,7 @@ mod tests {
                 // And a skin (skins v0), for the same reason: a round trip
                 // against the input reads 0 where a dropped write loses it.
                 skin: 0x0A0B,
+                ..ItemStack::EMPTY
             },
         };
         let len = encode_event_inv(&[worn], &mut buf).unwrap();
@@ -8583,6 +8964,7 @@ mod tests {
                     count: 100 + i as u16,
                     cond: 200 + i as u16,
                     skin: 300 + i as u16,
+                    ..ItemStack::EMPTY
                 },
             };
         }
@@ -9156,6 +9538,7 @@ mod tests {
                 // The damage (v131) at the width's corner, distinct per row.
                 damage: u16::MAX - 5 * i as u16,
                 gun: None,
+                attach: None,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -9950,6 +10333,7 @@ mod tests {
             loc: sim_core::build::LOC_PLANE,
             row: 7,
             hp: 1234,
+            skin: 22,
             ..DeployRec::default()
         };
         let len = encode_event_deploy_placed(&rec, &mut buf).unwrap();
@@ -9976,6 +10360,8 @@ mod tests {
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
             hp: u16::MAX - i as u16 * 2731,
+            // Every record skinned: the widest batch still fits (v143).
+            skin: u16::MAX - i as u16,
             ..DeployRec::default()
         });
         let len = encode_event_deploy_sync(true, &recs, &mut buf).unwrap();
@@ -10297,6 +10683,7 @@ mod tests {
                     count: 4,
                     cond: 0,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
             InvSlot {
@@ -10306,6 +10693,7 @@ mod tests {
                     count: 60,
                     cond: 7_500,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             },
         ];
@@ -10339,6 +10727,7 @@ mod tests {
                 count: 1,
                 cond: 42,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         }];
         let len = encode_event_cont_sync(CONT_BAG, 7, true, &wide, &mut buf).unwrap();
@@ -10402,6 +10791,7 @@ mod tests {
                 count: 1,
                 cond: 0,
                 skin: 0,
+                ..ItemStack::EMPTY
             },
         }];
         assert_eq!(
@@ -10467,6 +10857,7 @@ mod tests {
                     count: u16::MAX,
                     cond: u16::MAX,
                     skin: 0,
+                    ..ItemStack::EMPTY
                 },
             };
         }
@@ -10726,6 +11117,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/turret.rs"),
         },
         Module {
+            file: "power.rs",
+            src: include_str!("../../sim-core/src/power.rs"),
+        },
+        Module {
             file: "shop.rs",
             src: include_str!("../../sim-core/src/shop.rs"),
         },
@@ -10890,8 +11285,16 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/space.rs"),
         },
         Module {
+            file: "attach.rs",
+            src: include_str!("../../sim-core/src/attach.rs"),
+        },
+        Module {
             file: "building.rs",
             src: include_str!("../../sim-core/src/building.rs"),
+        },
+        Module {
+            file: "bullet.rs",
+            src: include_str!("../../sim-core/src/bullet.rs"),
         },
         Module {
             file: "sock.rs",
@@ -11147,7 +11550,9 @@ mod wire_domains {
             //
             // 13 -> 14 at wire v102: `REFUSE_M_GIVE`, a give with no room
             // in the receiver's pack.
-            live_max: 14,
+            // 14 -> 15 at wire v148: `REFUSE_M_TURRET`, the turret panel's
+            // slots.
+            live_max: 15,
         },
         Domain {
             what: "wear slot",
@@ -11261,7 +11666,9 @@ mod wire_domains {
             // 19 -> 25 at v135: farming v2's six. 26 at v137:
             // `REFUSE_D_SWIMMING`. 28 at v140: `REFUSE_D_OWN_CAP` and
             // `REFUSE_D_BAG_SPENT`.
-            live_max: 28,
+            // 28 -> 31 at wire v150: a wire too long, a port it cannot
+            // take, a loop (`REFUSE_D_WIRE_*`).
+            live_max: 31,
         },
         Domain {
             what: "container kind",
@@ -11348,7 +11755,8 @@ mod wire_domains {
             // catcher.
             min_members: 24,
             bits: ARCH_BITS,
-            live_max: 23,
+            // 23 -> 30 at wire v150: electricity's seven parts.
+            live_max: 30,
         },
         Domain {
             what: "deploy matter",
@@ -11449,7 +11857,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 9,
             bits: ACCESS_OP_BITS,
-            live_max: 8,
+            live_max: 13,
         },
         Domain {
             what: "bag-removal reason",
@@ -11810,6 +12218,13 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A turret view's list length (v146), bounded by
+            // `TURRET_AUTH_CAP`, const-asserted beside the width.
+            "TURRET_AUTH_BITS",
+            // A wire's ports (v150), bounded by `power::MAX_OUTS` and
+            // `MAX_INS`, const-asserted beside the widths.
+            "WIRE_PORT_OUT_BITS",
+            "WIRE_PORT_IN_BITS",
             // What a `SUB_DRANK` says (v137, the water pass): the wire's own
             // three kinds — a mouthful, a fill, a pour — and the decoder
             // refuses the fourth. Not a sim-core enumeration.
@@ -11993,6 +12408,12 @@ mod wire_domains {
             "GUN_CONE_BITS",
             "GUN_RECOIL_BITS",
             "GUN_RELOAD_BITS",
+            // v144: a bloom's hold and bleed in ticks (`validate` caps both
+            // at a minute; `GunRow::coherent` refuses past the width) and a
+            // bullet's drop, `world::SHOT_DROP_BITS` — `bake_ranged` refuses
+            // a firearm round that drops past it.
+            "GUN_BLOOM_TICK_BITS",
+            "GUN_DROP_BITS",
         ];
 
         let mut widths = Vec::new();

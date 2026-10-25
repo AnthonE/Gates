@@ -1,8 +1,9 @@
 # Gates · content/weapons.toml — combat rows (CONTENT.md §1). Damage is
 # per body hit; TTK bands in balance.toml assert hits-to-kill (CONTENT §4
-# anchor 2). A `kind = "bow"` row is a projectile weapon and its rounds
-# carry the ballistics (the `[[ammo]]` table at the foot of this file); a
-# firearm names rounds with no `[[ammo]]` row and is hitscan.
+# anchor 2). A ranged row's rounds carry the ballistics (the `[[ammo]]`
+# table at the foot of this file): an arrow and a bullet both fly, with
+# travel time and drop. A firearm round with no `[[ammo]]` row would land
+# on the trigger's tick (hitscan); none ships.
 #
 # `structure` is the second damage column: what one hit takes off a
 # building piece or a deployable. It is its own number, never `damage`
@@ -311,7 +312,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 343
 range_m = 150
-ammo = ["item.pistol_ammo"]
+ammo = ["item.pistol_ammo", "item.pistol_ammo_hv", "item.pistol_ammo_fire"]
 # Eight rounds and 3.4 s, both the reference's own published figures for
 # this weapon, taken rather than argued (`reference/BALANCE.md` §6: take
 # theirs, a case is needed only to differ). The magazine is what gives a
@@ -338,6 +339,7 @@ falloff_m = [10, 60]
 falloff_pct = 80
 recoil_pitch_cdeg = [220, 260]
 recoil_yaw_cdeg = [-40, 40]
+mods = ["item.holosight", "item.silencer", "item.lasersight", "item.gun_flashlight"]
 
 # --- Rust's guns (guns v1, 2026-10-18) ------------------------------------
 #
@@ -360,10 +362,13 @@ recoil_yaw_cdeg = [-40, 40]
 #                        drifts right, an SMG 0.66) at a scale a hand can
 #                        pull down.
 #
-# A cadence is ticks at 30 Hz (`1800 / rate_per_min`, floored), so 462 (the
-# Thompson's) would be 3 ticks and 600 a minute; 450 is the honest four.
+# A gun's cadence is kept to the 256th of a tick and a held trigger carries
+# the remainder (`ranged::cadence`), so the Thompson's 462 fires 462.
 # Reach stops inside the interest band (176 m): their bullets fly eight
 # seconds, but a body past the band is not on anybody's screen.
+#
+# `velocity_pct` is their `projectileVelocityScale`: the barrel's share of
+# its round's muzzle speed (bolt 175 %, Custom SMG 80 %).
 
 [[weapon]]
 id = "item.assault_rifle"
@@ -375,7 +380,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 450
 range_m = 170
-ammo = ["item.rifle_ammo"]
+ammo = ["item.rifle_ammo", "item.rifle_ammo_hv", "item.rifle_ammo_fire", "item.rifle_ammo_explosive"]
 magazine = 30
 reload_ms = 4400
 [weapon.gun]
@@ -390,6 +395,7 @@ falloff_m = [20, 100]
 falloff_pct = 80
 recoil_pitch_cdeg = [180, 220]
 recoil_yaw_cdeg = [-20, 80]
+mods = ["item.holosight", "item.scope_8x", "item.silencer", "item.muzzle_brake", "item.muzzle_boost", "item.lasersight", "item.gun_flashlight", "item.extended_mag"]
 
 [[weapon]]
 id = "item.semi_rifle"
@@ -401,7 +407,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 343
 range_m = 170
-ammo = ["item.rifle_ammo"]
+ammo = ["item.rifle_ammo", "item.rifle_ammo_hv", "item.rifle_ammo_fire", "item.rifle_ammo_explosive"]
 magazine = 16
 reload_ms = 4400
 [weapon.gun]
@@ -415,6 +421,7 @@ falloff_m = [20, 100]
 falloff_pct = 80
 recoil_pitch_cdeg = [230, 270]
 recoil_yaw_cdeg = [-40, 40]
+mods = ["item.holosight", "item.scope_8x", "item.silencer", "item.muzzle_brake", "item.muzzle_boost", "item.lasersight", "item.gun_flashlight", "item.extended_mag"]
 
 [[weapon]]
 id = "item.thompson"
@@ -425,9 +432,9 @@ damage = 38
 structure = 1
 headshot_pct = 200
 limb_pct = 50
-rate_per_min = 450
+rate_per_min = 462
 range_m = 150
-ammo = ["item.pistol_ammo"]
+ammo = ["item.pistol_ammo", "item.pistol_ammo_hv", "item.pistol_ammo_fire"]
 magazine = 20
 reload_ms = 4000
 [weapon.gun]
@@ -442,6 +449,7 @@ falloff_m = [10, 60]
 falloff_pct = 80
 recoil_pitch_cdeg = [55, 75]
 recoil_yaw_cdeg = [-20, 20]
+mods = ["item.holosight", "item.scope_8x", "item.silencer", "item.muzzle_brake", "item.muzzle_boost", "item.lasersight", "item.gun_flashlight", "item.extended_mag"]
 
 [[weapon]]
 id = "item.custom_smg"
@@ -453,7 +461,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 600
 range_m = 150
-ammo = ["item.pistol_ammo"]
+ammo = ["item.pistol_ammo", "item.pistol_ammo_hv", "item.pistol_ammo_fire"]
 magazine = 30
 reload_ms = 4000
 [weapon.gun]
@@ -468,6 +476,8 @@ falloff_m = [10, 60]
 falloff_pct = 80
 recoil_pitch_cdeg = [55, 75]
 recoil_yaw_cdeg = [-25, 25]
+velocity_pct = 80
+mods = ["item.holosight", "item.scope_8x", "item.silencer", "item.muzzle_brake", "item.muzzle_boost", "item.lasersight", "item.gun_flashlight", "item.extended_mag"]
 
 # Their 1.7 s between rounds is the bolt; their reload is a round at a time
 # (1.24 s, then 0.87 a round, then 1.4 s), ours the whole four at once.
@@ -481,7 +491,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 35
 range_m = 170
-ammo = ["item.rifle_ammo"]
+ammo = ["item.rifle_ammo", "item.rifle_ammo_hv", "item.rifle_ammo_fire", "item.rifle_ammo_explosive"]
 magazine = 4
 reload_ms = 4800
 [weapon.gun]
@@ -491,6 +501,8 @@ falloff_m = [20, 100]
 falloff_pct = 80
 recoil_pitch_cdeg = [450, 550]
 recoil_yaw_cdeg = [-60, 60]
+velocity_pct = 175
+mods = ["item.holosight", "item.scope_8x", "item.silencer", "item.muzzle_brake", "item.lasersight", "item.gun_flashlight"]
 
 # Fifteen pellets of 14 (their buckshot), each scattering 12° about the
 # shot's line, whole to 10 m and a quarter from 40 m. Each pellet pays the
@@ -505,7 +517,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 55
 range_m = 60
-ammo = ["item.shotgun_shells"]
+ammo = ["item.shotgun_shells", "item.shotgun_slug", "item.shotgun_fire", "item.handmade_shell"]
 magazine = 8
 reload_ms = 5500
 [weapon.gun]
@@ -517,6 +529,7 @@ falloff_m = [10, 40]
 falloff_pct = 25
 recoil_pitch_cdeg = [500, 600]
 recoil_yaw_cdeg = [-80, 80]
+mods = ["item.holosight", "item.lasersight", "item.gun_flashlight"]
 
 [[weapon]]
 id = "item.semi_pistol"
@@ -528,7 +541,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 400
 range_m = 150
-ammo = ["item.pistol_ammo"]
+ammo = ["item.pistol_ammo", "item.pistol_ammo_hv", "item.pistol_ammo_fire"]
 magazine = 10
 reload_ms = 2900
 [weapon.gun]
@@ -542,6 +555,7 @@ falloff_m = [10, 60]
 falloff_pct = 80
 recoil_pitch_cdeg = [160, 200]
 recoil_yaw_cdeg = [-40, 40]
+mods = ["item.holosight", "item.silencer", "item.muzzle_brake", "item.muzzle_boost", "item.lasersight", "item.gun_flashlight", "item.extended_mag"]
 
 [[weapon]]
 id = "item.python"
@@ -553,7 +567,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 400
 range_m = 150
-ammo = ["item.pistol_ammo"]
+ammo = ["item.pistol_ammo", "item.pistol_ammo_hv", "item.pistol_ammo_fire"]
 magazine = 6
 reload_ms = 3750
 [weapon.gun]
@@ -567,6 +581,7 @@ falloff_m = [10, 60]
 falloff_pct = 80
 recoil_pitch_cdeg = [500, 600]
 recoil_yaw_cdeg = [-80, 80]
+mods = ["item.holosight", "item.lasersight", "item.gun_flashlight"]
 
 # The rocket launcher is a bow in this schema: it fires a round that flies
 # (the rocket's speed and drop, `[[ammo]]`), with no magazine to fill. A
@@ -728,6 +743,92 @@ drop_mps2 = 10
 damage_pct = 80
 fire_s = [20, 40]
 
+# --- bullets (2026-10-23) ------------------------------------------------------
+#
+# Rust's rounds are projectiles and these are their muzzle speeds (the item
+# pages' velocity column): 5.56 at 375 m/s, pistol at 300, buckshot at 225,
+# each scaled by the barrel's `velocity_pct`. Full gravity: 10 bakes to the
+# sim's 9.9. A bullet's sampler is wider than an arrow's (`bullet.rs`,
+# `MAX_BULLET_SUBSTEPS`: 816 m/s), and the bake holds every barrel to it.
+
+[[ammo]]
+id = "item.rifle_ammo"
+speed_mps = 375
+drop_mps2 = 10
+
+[[ammo]]
+id = "item.pistol_ammo"
+speed_mps = 300
+drop_mps2 = 10
+
+[[ammo]]
+id = "item.shotgun_shells"
+speed_mps = 225
+drop_mps2 = 10
+
+# Their other rounds, off the same pages: HV is 450 (rifle) and 400
+# (pistol) at the same damage; incendiary is 225 at 112 % and lights a fire
+# where it lands (a few seconds — theirs is a short burn, not a fire
+# arrow's); explosive 5.56 is 225 and bursts on contact, a small blast that
+# chips what it strikes (their raid table: ~185 rounds a stone wall). The
+# slug is one ball of 80 at 225 (571 % of a 14-pellet), carrying further
+# than buckshot; the incendiary shell 15 a pellet at 100 m/s, the handmade
+# shell 9 at 100. A shell's fire is lit by its first pellet only.
+[[ammo]]
+id = "item.rifle_ammo_hv"
+speed_mps = 450
+drop_mps2 = 10
+
+[[ammo]]
+id = "item.rifle_ammo_fire"
+speed_mps = 225
+drop_mps2 = 10
+damage_pct = 112
+fire_s = [2, 4]
+
+[[ammo]]
+id = "item.rifle_ammo_explosive"
+speed_mps = 225
+drop_mps2 = 10
+[ammo.blast]
+blast_m = 1
+damage = 10
+structure = 3
+
+[[ammo]]
+id = "item.pistol_ammo_hv"
+speed_mps = 400
+drop_mps2 = 10
+
+[[ammo]]
+id = "item.pistol_ammo_fire"
+speed_mps = 225
+drop_mps2 = 10
+damage_pct = 112
+fire_s = [2, 4]
+
+[[ammo]]
+id = "item.shotgun_slug"
+speed_mps = 225
+drop_mps2 = 10
+damage_pct = 571
+pellets = 1
+falloff_m = [30, 100]
+falloff_pct = 50
+
+[[ammo]]
+id = "item.shotgun_fire"
+speed_mps = 100
+drop_mps2 = 10
+damage_pct = 107
+fire_s = [2, 4]
+
+[[ammo]]
+id = "item.handmade_shell"
+speed_mps = 100
+drop_mps2 = 10
+damage_pct = 64
+
 # --- the rocket (guns v1) ----------------------------------------------------
 #
 # Rust's basic rocket: 18 m/s, a quarter of gravity, no drag (their wiki;
@@ -746,3 +847,60 @@ drop_mps2 = 2
 blast_m = 3
 damage = 275
 structure = 125
+
+# --- weapon attachments (2026-10-23) ---------------------------------------
+#
+# Rust's weapon mods, their item pages' numbers: each is a share of the gun's
+# own, 100 the identity. One per slot of a gun (sight, muzzle, underbarrel,
+# magazine), and a gun's `mods` says which it takes. The order here is each
+# one's bit of the mask on a gun (`Player::mods`), so it is saved state:
+# append, never reorder. `zoom_pct` is how far the sights narrow the view
+# (a holosight's ~1.7x, a scope's ~8x), `recoil_pct` the view's kick, and
+# `laser` and `light` what the client draws; the rest decide the shot.
+[[attachment]]
+id = "item.holosight"
+slot = "sight"
+aim_pct = 80
+zoom_pct = 40
+
+[[attachment]]
+id = "item.scope_8x"
+slot = "sight"
+recoil_pct = 150
+zoom_pct = 88
+
+[[attachment]]
+id = "item.silencer"
+slot = "muzzle"
+damage_pct = 75
+velocity_pct = 75
+quiet = true
+
+[[attachment]]
+id = "item.muzzle_brake"
+slot = "muzzle"
+damage_pct = 85
+recoil_pct = 50
+
+[[attachment]]
+id = "item.muzzle_boost"
+slot = "muzzle"
+damage_pct = 90
+rate_pct = 110
+
+[[attachment]]
+id = "item.lasersight"
+slot = "underbarrel"
+aim_pct = 80
+hip_pct = 50
+laser = true
+
+[[attachment]]
+id = "item.gun_flashlight"
+slot = "underbarrel"
+light = true
+
+[[attachment]]
+id = "item.extended_mag"
+slot = "magazine"
+magazine_pct = 125

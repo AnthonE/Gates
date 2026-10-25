@@ -169,6 +169,7 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -193,6 +194,7 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
             count: 10,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         },
     );
 
@@ -238,6 +240,7 @@ fn the_opener_is_told_the_offers_and_every_press_is_answered() {
         count: 10,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let seen_buy = ShopAct::Buy {
         row: 0,

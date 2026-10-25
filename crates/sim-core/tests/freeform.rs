@@ -642,6 +642,7 @@ fn a_door_hangs_in_a_triangles_doorway() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: p.id,
@@ -853,6 +854,7 @@ fn a_bench_spans_a_triangle_and_falls_with_it() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: p.id,
@@ -931,6 +933,7 @@ fn a_triangle_is_not_built_over_a_fire() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     w.tick(&[Command::PlaceDeploy {
         id: p.id,

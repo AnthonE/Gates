@@ -206,6 +206,7 @@ fn finishing_hit(healing: bool) {
         count: 1,
         cond: 400,
         skin: 0,
+        ..sim_core::gather::ItemStack::EMPTY
     };
     w.tick(&[
         Command::Input {
@@ -366,12 +367,14 @@ fn a_syringe_stands_a_downed_body_up_at_once() {
         count: 2,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     w.players[0].inv[4] = ItemStack {
         item: MEDKIT,
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let aim = |w: &World| {
         let mut f = frame(w, 0);
@@ -444,6 +447,7 @@ fn a_syringe_out_of_reach_does_nothing() {
         count: 1,
         cond: 0,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let a = w.players[0].body;
     w.players[1].body = Body::at(

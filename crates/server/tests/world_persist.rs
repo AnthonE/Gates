@@ -212,12 +212,14 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
             count: 500,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         core.world.players[slot].inv[1] = ItemStack {
             item: 1,
             count: 500,
             cond: 0,
             skin: 0,
+            ..ItemStack::EMPTY
         };
         // Through the action lane, which is the path a real client takes.
         core.push_action(
@@ -708,6 +710,7 @@ fn a_world_carrying_over_ceiling_condition_refuses_the_boot() {
         count: 1,
         cond: ceiling + 1,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     core.disconnect(0);
     core.tick_bare(&stats, |_, _, _| true);
@@ -774,6 +777,7 @@ fn a_world_bag_with_condition_on_a_conditionless_item_refuses_the_boot() {
         count: 3,
         cond: 7,
         skin: 0,
+        ..ItemStack::EMPTY
     };
     let q = sim_core::movement::quant_xz(1000.0);
     let tick = core.world.tick;
