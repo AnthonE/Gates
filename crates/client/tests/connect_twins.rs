@@ -182,6 +182,16 @@ fn both_twins_drive_the_same_handshake_in_the_same_order() {
             *x = "proof_wanted".to_string();
         }
     }
+    // v151: a page may join with an Elo Pros pass, which the desktop's
+    // launcher never hands over. `pass_auth_frame` is the auth frame's third
+    // assembly, and it must be offered right beside the other two.
+    let pass = b.iter().position(|x| x == "pass_auth_frame");
+    assert!(
+        pass.is_some_and(|i| b.get(i + 1).is_some_and(|x| x == "solana_auth_frame")),
+        "the browser connect no longer assembles an Elo Pros pass's auth frame beside the \
+         other two: {b:?}"
+    );
+    b.retain(|x| x != "pass_auth_frame");
     let sol = b.iter().position(|x| x == "solana_auth_frame");
     assert!(
         sol.is_some_and(|i| b.get(i + 1).is_some_and(|x| x == "auth_frame")),
@@ -195,9 +205,12 @@ fn both_twins_drive_the_same_handshake_in_the_same_order() {
         // watcher reads the frame after the welcome (`watch_from`). First of
         // all, the address is one host and nothing else (`server_host`): the
         // page signs for the host it dials, so both must refuse the rest.
+        // v151: the auth frame is built in its own buffer (`auth_buf`), the
+        // one handshake frame that may pass the stream lane's ceiling.
         vec![
             "server_host",
             "hello_as",
+            "auth_buf",
             "proof_wanted",
             "auth_frame",
             "welcome_from",

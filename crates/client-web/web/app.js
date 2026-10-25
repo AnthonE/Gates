@@ -53,6 +53,12 @@ const short = (a) => String(a).slice(0, 6) + "…" + String(a).slice(-4);
    navigating the post's frame. */
 const framed = (() => { try { return window.top !== window; } catch (err) { return true; } })();
 const EMBED = framed || q.has("embed");
+/* **An OBS browser source.** `?spectate…&obs=1` is the agent cam the platform's
+   stream kit writes (elopros.com/stream.html): the watch seat is taken without
+   a click, the menu and its music stay off the stream, and a seat that ends
+   is taken again (`obsWatch`, below). */
+const OBS = q.get("obs") === "1" && q.has("spectate");
+if (OBS) document.body.classList.add("obs");
 if (EMBED) {
   document.body.classList.add("embed");
   for (const a of document.querySelectorAll("a:not([target])")) {
@@ -770,6 +776,46 @@ const setSignedOut = (on) => {
 };
 
 let address = null;   /* the connected wallet, or null */
+
+/* ── signed in to Elo Pros (v151) ───────────────────────────────────────────
+   This page is on elopros.com, so a player signed in there — with Steam,
+   Discord, Google, GitHub or a wallet — has the platform's account token in
+   this origin's localStorage (`elo.account.token`, written by its
+   js/account.js). PLAY asks the platform for a pass for the shard
+   (`POST /api/account/play`) and joins with it: no wallet prompt, and a pass
+   naming a linked wallet plays as that wallet. A shard that takes no pass
+   answers REFUSE_AUTH, and PLAY carries on with the wallet. */
+const ACCOUNT_TOKEN = "elo.account.token";
+const ACCOUNT_VIEW = "elo.account.view";
+function eloAccount() {
+  if (!onOrigin) return null;
+  try {
+    const token = localStorage.getItem(ACCOUNT_TOKEN);
+    const v = JSON.parse(localStorage.getItem(ACCOUNT_VIEW) || "null");
+    if (!token || !v || !/^acct_[0-9a-f]{20}$/.test(String(v.id || ""))) return null;
+    if (Number(v.exp) && Number(v.exp) * 1000 < Date.now()) return null;
+    return { token, name: String(v.name || ""), named: v.named !== false,
+      wallet: /^0x[0-9a-f]{40}$/i.test(String(v.wallet || "")) ? wk(v.wallet) : null };
+  } catch (err) { return null; }
+}
+async function eloPass(domain, nonce) {
+  const a = eloAccount();
+  if (!a) throw new Error("you are not signed in to Elo Pros");
+  const r = await fetch(SITE + "/api/account/play", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Elo-Account " + a.token },
+    body: JSON.stringify({ game: "gates", shard: domain, nonce }),
+  });
+  if (r.status === 401 || r.status === 404) throw new Error("your Elo Pros sign-in has run out — sign in again on elopros.com");
+  if (!r.ok) throw new Error("Elo Pros didn't answer. Try again.");
+  return (await r.json()).token;
+}
+/* Join with the pass unless a different wallet is connected here: a wallet
+   in this browser that is not the account's is a choice to play as it. */
+function passFor(identity) {
+  const a = eloAccount();
+  return a && (!identity || (a.wallet && wk(identity) === a.wallet)) ? a : null;
+}
 let who = null;       /* { name, face, sworn } from the platform's register */
 let balance = null;   /* whole ELO, as the platform prints it */
 
@@ -1490,6 +1536,16 @@ function streamer() {
     return all.length > 0 && all[all.length - 1][1].trim() === "true";
   } catch (err) { return false; }
 }
+/* **One switch with the site's.** This page is on elopros.com, whose own
+   streamer mode (`elo.streamer`, its account menu and stream.html) blurs your
+   wallet there; on here it turns the game's on, the Options switch below
+   writes both, and `?streamer=1` turns both on from a link, the web's
+   `ELO_STREAMER=1`. Written before the game boots, which reads the line. */
+const SITE_STREAMER = "elo.streamer";
+try {
+  if (q.get("streamer") === "1") localStorage.setItem(SITE_STREAMER, "1");
+  if (localStorage.getItem(SITE_STREAMER) === "1" && !streamer()) saveNum("streamer_mode", true);
+} catch (err) { /* storage blocked: the game's own setting stands */ }
 const ALIAS_A = ["Amber", "Ash", "Birch", "Bramble", "Brass", "Cedar", "Cinder", "Clay", "Copper",
   "Dusk", "Ember", "Fern", "Flint", "Frost", "Gale", "Granite", "Hazel", "Iron", "Juniper", "Lichen",
   "Moss", "Oak", "Pine", "Quartz", "Reed", "Rust", "Sable", "Slate", "Sorrel", "Thorn", "Tide", "Willow"];
@@ -1617,7 +1673,9 @@ function paintButton(btn, fill, sub, idleSub) {
 const askFirst = () => touchOnly && !EMBED && !dl.started;
 
 function paintGo() {
+  const acct = passFor(address);
   const idle = askFirst() ? "needs a keyboard and mouse"
+    : acct && !(address && who && who.name) ? `as ${acct.named || !acct.wallet ? acct.name : short(acct.wallet)}`
     : address ? `as ${(who && who.name) || short(address)}`
     : wallet.has() && !EMBED ? "signs in with your wallet" : "as a guest";
   paintButton($("go"), $("go-fill"), $("go-sub"), idle);
@@ -1670,7 +1728,20 @@ async function join(kind, audio, identity) {
      that is not the network, and its own words say what it was. */
   let walletAsked = false;
   try {
-    if (kind === "watch") {
+    if (kind === "pass") {
+      const a = eloAccount();
+      busy = { label: "Connecting", sub: server };
+      paintGo();
+      say(`connecting to ${server} as ${a ? a.name : "your Elo Pros account"}…`, "", line);
+      g = await Gates.join_pass(server, hash, async (domain, nonce) => {
+        busy = { label: "Signing in", sub: "with your Elo Pros account" };
+        paintGo();
+        const pass = await eloPass(domain, nonce);
+        busy = { label: "Joining", sub: "the server is letting you in" };
+        paintGo();
+        return pass;
+      });
+    } else if (kind === "watch") {
       const target = $("watch-who").value.trim();
       busy = { label: "Connecting", sub: server };
       paintGo();
@@ -1700,6 +1771,13 @@ async function join(kind, audio, identity) {
     const raw = e && e.message !== undefined ? String(e.message) : String(e);
     const code = e && Number.isInteger(e.code) ? e.code : null;
     console.warn("gates: the join failed -", raw);
+    /* A shard that takes no Elo Pros pass yet: PLAY carries on with the
+       wallet, and says nothing about a refusal the player never caused. */
+    if (kind === "pass" && code === REFUSE_AUTH) {
+      busy = null;
+      paintGo();
+      return "pass-refused";
+    }
     if (code === REFUSE_VERSION && skewOf(row) === "older") {
       /* The shard is the one behind: a reload would change nothing. */
       say("This server is updating to the new Gates. Try again in a few minutes.", "bad", line);
@@ -1836,6 +1914,16 @@ async function play({ guest = false } = {}) {
   const audio = startAudio();   /* synchronously inside the press */
   startMusic();
   let identity = guest ? null : address;
+  /* Signed in to Elo Pros: join with its pass, and ask no wallet anything. */
+  if (!guest && passFor(identity)) {
+    if (!glue) {
+      busy = { label: "Play", sub: "starting when the download finishes" };
+      paintGo();
+      say("Got it — the game starts as soon as it has downloaded.");
+      if (!(await ready())) { busy = null; paintGo(); return; }
+    }
+    if ((await join("pass", audio, null)) !== "pass-refused") return;
+  }
   /* The wallet may have moved account without telling the page (an event
      missed while the tab slept): play as the account it is on now, rather
      than ask it to sign as one it has left. */
@@ -1866,7 +1954,7 @@ async function watch() {
   if (dl.failed) { location.reload(); return; }
   if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();
-  startMusic();
+  if (!OBS) startMusic();
   if (!glue) {
     busy = { label: "Watch", sub: "starting when the download finishes" };
     paintGo();
@@ -2568,6 +2656,7 @@ const streamerBox = $("streamer");
 streamerBox.checked = streamer();
 streamerBox.addEventListener("change", () => {
   saveNum("streamer_mode", streamerBox.checked);
+  try { localStorage.setItem(SITE_STREAMER, streamerBox.checked ? "1" : "0"); } catch (err) { /* private mode */ }
   renderServers();
   paintAccount();
   paintFriends();
@@ -2602,12 +2691,33 @@ let booting = null;
 const ready = () => booting || (booting = boot());
 if (!touchOnly || EMBED || cameBack) ready();
 /* The intro over the download, on anything that can play the game. */
-if (!touchOnly || EMBED) startMusic();
+if ((!touchOnly || EMBED) && !OBS) startMusic();
 paintMusic();
 paintDownload();
 loadServers();
 fillFeature();
 resume();
+if (OBS) obsWatch();
+
+/* The agent cam's loop. A seat that ends (the agent left, the shard restarted
+   for a patch) reloads the page, as every leave does, and this takes it again
+   a few seconds later; a refused seat (nobody watchable on, the server down)
+   is asked again every 15 s. The page's own sentence stands in for the menu
+   it hides. */
+async function obsWatch() {
+  const line = $("handoff-line");
+  $("handoff").hidden = false;
+  /* OBS before 29.1 ships a Chromium with no WebTransport. */
+  if (!canTransport) { line.textContent = "This browser source has no WebTransport, which Gates needs. Update OBS."; return; }
+  line.textContent = cameBack ? `${cameBack} — back in a moment…` : "finding someone to watch…";
+  if (cameBack) await sleep(5000);
+  for (;;) {
+    await watch();
+    if (document.body.classList.contains("playing")) return;
+    line.textContent = `${watchStatus.textContent || "no seat yet"} — trying again in 15 s`;
+    await sleep(15000);
+  }
+}
 
 /* ── the main thread's stalls, counted ─────────────────────────────────────
    `findings/browser-audio-20260913.md` §4: the audio hiccup is either a long

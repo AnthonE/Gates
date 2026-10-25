@@ -220,7 +220,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0xAD0B_54B4_D360_9EE5` at THE GATE's 92 m pylons** (2026-10-22, wipe,
 /// `town::GATE_*`): the gate's boxes and the fallen blocks moved; no height
 /// did.
-const GOLDEN_TERRAIN_HASH: u64 = 0xAD0B_54B4_D360_9EE5;
+/// **Moved → `0xD9E4_6039_1A02_7677` at the cold** (2026-10-25, wipe, snowcaps
+/// v0): no height moved, but the Snow row (`terrain::cold`, the snowline and
+/// the arctic south) draws its own scatter and carries ore, so
+/// `Haven::ore_pm` rescales.
+const GOLDEN_TERRAIN_HASH: u64 = 0xD9E4_6039_1A02_7677;
 
 #[test]
 fn test_terrain_golden() {

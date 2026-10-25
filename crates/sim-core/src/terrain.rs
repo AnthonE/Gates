@@ -1550,11 +1550,9 @@ fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 // edge wandering on a slow noise so the border reads as a climate rather
 // than a ruled line.
 //
-// **In the NORTH (+z, `ui/map.rs`), where Rust puts its snow.** The south of
-// the shipped seed is where the island's fixtures stand — the agent's test
-// scenes, the gather and clutter fixtures, the capture rig's spawn
-// (`ci/scene.sh`) — all calibrated on temperate ground, and the desert is the
-// same biome at either end. `DESERT_TOWARD` is the one sign to flip.
+// **In the NORTH (+z, `ui/map.rs`).** The desert is the same biome at either
+// end, and `DESERT_TOWARD` is the one sign to flip: no fixture stands on a
+// place any more, they search the island for mild ground (`find.rs`).
 //
 // It is folded INTO `moisture` rather than added beside it, so everything
 // that classifies ground — `biome`, `splat_from`, the scatter row, the mob
@@ -1624,6 +1622,124 @@ fn dune_of(moist: f32) -> f32 {
     )
 }
 
+// --- The cold (Rust's arctic) ------------------------------------------------
+//
+// Rust carries snow on its mountains and an arctic at one end of the map:
+// white ground all year, the coldest air, sparse pines, metal ore and wolves.
+// Ours has both. Above the snowline the ground is Snow, a wandering line so
+// the cap reads as weather rather than a contour; and the arctic is a band
+// across the far SOUTH, opposite the desert, the reference's latitude law
+// (arid at one end, cold at the other) with tundra as its soft edge. Both
+// are one field, `cold`, with a soft edge the scatter row and the client's
+// white ramp across.
+//
+// **A third climate input, not folded into moisture**, for the Verdigris'
+// reason: landmark kinds read moisture and the works' terminals stand at
+// landmarks. `biome()` takes it after the Verdigris, which wins where they
+// touch, and before the Highland, whose granite is what the snow lies on.
+//
+// Pure in the point and its height, and O(1): under the line's lowest reach,
+// one compare and no noise tap.
+
+/// The snowline: where the ground lies white all year, metres. Over the
+/// treeline by a band of bare granite, and low enough that every gate seed's
+/// major range carries a cap (summits 109–154 m measured). **(knob)**
+pub const SNOWLINE_H: f32 = 98.0;
+/// How far the snowline wanders up and down, metres, and how fast. **(knob)**
+const SNOWLINE_WANDER: f32 = 8.0;
+const SNOWLINE_FREQ: f32 = 1.0 / 300.0;
+const CH_SNOW: u32 = 240; // +octave index, 2 octaves
+/// The snow's soft edge: none to whole over this many metres of height,
+/// centred on the line. **(knob)**
+const SNOW_EDGE_M: f32 = 14.0;
+/// Ground at least this cold is [`Biome::Snow`].
+pub const COLD_BIOME_AT: f32 = 0.5;
+/// The scatter row's soft edge: below the first the row is the ground's own,
+/// above the second it is the Snow row whole.
+const COLD_ROW_BAND: (f32, f32) = (0.3, 0.7);
+
+/// The lowest any snow lies, metres: under this [`cold`] is the arctic's
+/// alone.
+pub const SNOW_FLOOR_H: f32 = SNOWLINE_H - SNOWLINE_WANDER - SNOW_EDGE_M * 0.5;
+
+/// Which way the arctic lies from the island centre along z: −1 south,
+/// opposite the desert.
+const ARCTIC_TOWARD: f32 = -DESERT_TOWARD;
+/// Where the arctic starts and where it is whole, as a distance from the
+/// island centre toward [`ARCTIC_TOWARD`] in units of `CONTINENT_RADIUS`,
+/// before the edge wanders. Further out than the desert's, so the cold is the
+/// island's far rim and the temperate middle keeps its room. **(knob)**
+const ARCTIC_LAT: (f32, f32) = (0.45, 0.65);
+/// How far the arctic's edge wanders, same units, and how fast. **(knob)**
+const ARCTIC_WANDER: f32 = 0.16;
+const ARCTIC_WANDER_FREQ: f32 = 1.0 / 700.0;
+const CH_ARCTIC: u32 = 244; // +octave index, 3 octaves
+
+const _: () = {
+    // The snow lies on the Highland's granite, never on its turf.
+    assert!(SNOW_FLOOR_H > TREELINE_H);
+    assert!(COLD_ROW_BAND.0 < COLD_BIOME_AT && COLD_BIOME_AT < COLD_ROW_BAND.1);
+    // The golden's scatter cells sit within ~64 m of the island centre, and
+    // the server tests' `shore()` walks +x along the centre's z: the arctic's
+    // nearest possible reach stays clear of both.
+    assert!((ARCTIC_LAT.0 - ARCTIC_WANDER) * CONTINENT_RADIUS > 96.0);
+    assert!(ARCTIC_LAT.1 > ARCTIC_LAT.0);
+    // The arctic and the desert never meet: opposite ends, each starting past
+    // the centre, so temperate ground always lies between them.
+    assert!(ARCTIC_TOWARD == -DESERT_TOWARD);
+    assert!(DESERT_LAT.0 - DESERT_WANDER > 0.0);
+};
+
+/// How arctic a point is, 0..1: 0 across the middle and the north, 1 along
+/// the far south. Pure in the point, like [`aridity`].
+pub fn arctic(seed: u64, x: f32, z: f32) -> f32 {
+    arctic_in(&mut Direct, seed, x, z)
+}
+
+/// [`arctic`] against a caller-owned [`Lattice`].
+pub fn arctic_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    arctic_in(lat, seed, x, z)
+}
+
+fn arctic_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let along = (z - ISLAND_SIZE * 0.5) * (ARCTIC_TOWARD / CONTINENT_RADIUS);
+    // Most of the island pays one compare and no noise tap.
+    if along <= ARCTIC_LAT.0 - ARCTIC_WANDER {
+        return 0.0;
+    }
+    let s = along + fbm(c, seed, CH_ARCTIC, x, z, ARCTIC_WANDER_FREQ, 3) * ARCTIC_WANDER;
+    fade(((s - ARCTIC_LAT.0) / (ARCTIC_LAT.1 - ARCTIC_LAT.0)).clamp(0.0, 1.0))
+}
+
+/// How cold the ground is, 0..1, at a point standing `h` metres up: 0 across
+/// almost all the island, 1 under the snow.
+pub fn cold(seed: u64, x: f32, z: f32, h: f32) -> f32 {
+    cold_in(&mut Direct, seed, x, z, h)
+}
+
+/// [`cold`] against a caller-owned [`Lattice`].
+pub fn cold_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32, h: f32) -> f32 {
+    cold_in(lat, seed, x, z, h)
+}
+
+fn cold_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32, h: f32) -> f32 {
+    let band = arctic_in(c, seed, x, z);
+    if h <= SNOW_FLOOR_H {
+        return band;
+    }
+    let line = SNOWLINE_H + fbm(c, seed, CH_SNOW, x, z, SNOWLINE_FREQ, 2) * SNOWLINE_WANDER;
+    band.max(ramp(line - SNOW_EDGE_M * 0.5, line + SNOW_EDGE_M * 0.5, h))
+}
+
+/// How much of a cell's scatter row is the Snow row, 0..1 — the soft edge of
+/// [`Biome::Snow`] (`biome()` is its hard one). None on the beach.
+pub fn cold_share(h: f32, cold: f32) -> f32 {
+    if cold <= 0.0 || h < BEACH_MAX_H {
+        return 0.0;
+    }
+    ramp(COLD_ROW_BAND.0, COLD_ROW_BAND.1, cold)
+}
+
 // --- The Verdigris (the corruption) -----------------------------------------
 //
 // The island's first break from Rust: a wasteland where the ancients' alloy
@@ -1634,10 +1750,10 @@ fn dune_of(moist: f32) -> f32 {
 //
 // **A blob, not a band**: one heart east-south-east of the centre and an edge
 // that wanders, so it reads as a place you walk into rather than a climate.
-// ESE because everything else is spoken for: the desert holds the north, the
-// fixtures the south and south-west (`ci/scene.sh`, the server tests' scans),
-// the town and the golden window the centre, and `shore()` walks +x at the
-// centre's z. The const block below holds all four.
+// ESE because the desert holds the north, the town and the golden window the
+// centre, and the server tests' `shore()` walks +x at the centre's z. The
+// const block below holds all three. (Fixtures search for mild ground,
+// `find.rs`, so none needs a place kept for it.)
 //
 // **Not folded into moisture.** Landmark kinds read moisture (`try_site`) and
 // the works' terminals stand at landmarks, so a fold would move the arc. It is
@@ -1897,14 +2013,32 @@ pub enum Biome {
     /// trees and sulfur. Its ground keeps whatever identity it had and the
     /// client paints it; the scatter row is its own, blended by `fel_share`.
     Fel = 5,
+    /// The cold (see the block above `SNOWLINE_H`): snow over granite,
+    /// sparse pines, metal ore. Its ground keeps its identity and the client
+    /// lays the white over it; the scatter row is its own, blended by
+    /// `cold_share`.
+    Snow = 6,
 }
 
 /// How many biomes there are — the length of every per-biome table.
-pub const BIOMES: usize = 6;
+pub const BIOMES: usize = 7;
 
 /// The biomes' names in [`Biome`] order, as content spells them
 /// (`cooking.toml` `[farm] soil`).
-pub const BIOME_NAMES: [&str; BIOMES] = ["beach", "meadow", "forest", "highland", "desert", "fel"];
+pub const BIOME_NAMES: [&str; BIOMES] = [
+    "beach", "meadow", "forest", "highland", "desert", "fel", "snow",
+];
+
+/// Every biome, in [`Biome`] order.
+pub const ALL_BIOMES: [Biome; BIOMES] = [
+    Biome::Beach,
+    Biome::Meadow,
+    Biome::Forest,
+    Biome::Highland,
+    Biome::Desert,
+    Biome::Fel,
+    Biome::Snow,
+];
 
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
@@ -1933,14 +2067,17 @@ pub const LAND_MIN_H: f32 = SEA_LEVEL + 0.6;
 /// heights outside the ranges' window. **(knob)**
 pub const TREELINE_H: f32 = 68.0;
 
-/// The biome at a point, from its height, its moisture and its corruption.
-/// The beach comes first, so the coast stays a coast even where the
-/// Verdigris reaches the sea; then the Verdigris, whatever it stands on.
-pub fn biome(h: f32, moist: f32, fel: f32) -> Biome {
+/// The biome at a point, from its height, its moisture, its corruption and
+/// its cold. The beach comes first, so the coast stays a coast even where the
+/// Verdigris reaches the sea; then the Verdigris, whatever it stands on; then
+/// the snow, over whatever it lies on.
+pub fn biome(h: f32, moist: f32, fel: f32, cold: f32) -> Biome {
     if h < BEACH_MAX_H {
         Biome::Beach
     } else if fel >= FEL_BIOME_AT {
         Biome::Fel
+    } else if cold >= COLD_BIOME_AT {
+        Biome::Snow
     } else if h > TREELINE_H {
         Biome::Highland
     } else if moist < DESERT_MOIST {
@@ -1952,10 +2089,15 @@ pub fn biome(h: f32, moist: f32, fel: f32) -> Biome {
     }
 }
 
-/// [`biome`] at a world point whose height is known: reads the moisture and
-/// the corruption there.
+/// [`biome`] at a world point whose height is known: reads the moisture, the
+/// corruption and the cold there.
 pub fn biome_at(seed: u64, h: f32, x: f32, z: f32) -> Biome {
-    biome(h, moisture(seed, x, z), fel(seed, x, z))
+    biome(
+        h,
+        moisture(seed, x, z),
+        fel(seed, x, z),
+        cold(seed, x, z, h),
+    )
 }
 
 // --- The coast road (TERRAIN.md §1 stage 7) -------------------------------
@@ -7152,6 +7294,7 @@ pub const PLANT_SHARES: [[u16; 2]; BIOMES] = [
     [40, 20],   // Highland
     [0, 30],    // Desert — no berries; the rest is cactus and dry scrub
     [0, 0],     // Fel — nothing grows that pays; charred scrub only
+    [0, 0],     // Snow — frozen scrub only
 ];
 
 const _: () = {
@@ -7280,7 +7423,7 @@ fn plant_in<C: Corners>(
 /// Lowered with the bush column's rise (2026-10-14), with the plant shares
 /// above, so the pickables grow by about a quarter and the rest of the rise
 /// is scenery scrub.
-pub const PICKUP_SHARES: [u16; BIOMES] = [75, 60, 75, 50, 140, 120];
+pub const PICKUP_SHARES: [u16; BIOMES] = [75, 60, 75, 50, 140, 120, 90];
 
 /// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
 /// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
@@ -7292,6 +7435,7 @@ pub const PICKUP_KINDS: [[u8; 5]; BIOMES] = [
     [40, 0, 30, 30, 0],   // Highland
     [45, 10, 25, 20, 0],  // Desert — loose ore in the sand, little wood
     [40, 10, 20, 30, 0],  // Fel — stone and sulfur in the ash, charred wood
+    [40, 10, 40, 10, 0],  // Snow — stone and metal out of the frost, deadfall
 ];
 
 const _: () = {
@@ -7466,6 +7610,12 @@ impl ScatterTable {
                 // the desert's reason: the budget rescales ore island-wide,
                 // and a heavy row here starves the highland's.
                 [30, 22, 6, 10, 70, 0, 0],
+                // The snow: Rust's arctic is its metal biome, so the ore
+                // leans to metal, among boulders and a few pines. Light, for
+                // the desert's reason and more so: the arctic is a band of
+                // the island, and the budget can only take ore down to half
+                // (`ORE_PM_MIN`), so a heavy row here would outvote it.
+                [24, 40, 18, 6, 20, 0, 0],
             ],
             clump_cap: [
                 f32::INFINITY,
@@ -7474,8 +7624,9 @@ impl ScatterTable {
                 f32::INFINITY,
                 f32::INFINITY,
                 f32::INFINITY,
+                f32::INFINITY,
             ],
-            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0, 1.0, 1.0],
+            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0, 1.0, 1.0, 1.0],
         }
     }
 }
@@ -7618,6 +7769,7 @@ fn ore_budget(seed: u64, haven: &Haven) -> [u16; 2] {
                 moisture_in(&mut lat, seed, x, z),
                 sl,
                 fel_in(&mut lat, seed, x, z),
+                cold_in(&mut lat, seed, x, z, hy),
                 clump_in(&mut lat, seed, x, z),
             );
             sum[0] += u32::from(row[2]);
@@ -8015,9 +8167,11 @@ fn scatter_in<C: Corners>(
         }
     }
 
-    // The Verdigris at this cell: the row leans toward its own, and a tree in
-    // it is no palm. Outside its reach this is one compare.
+    // The Verdigris and the cold at this cell: the row leans toward their
+    // own, and a tree in either is no palm. Under the snow's lowest reach and
+    // outside the Verdigris' each is one compare.
     let fel = fel_in(c, seed, x, z);
+    let cold = cold_in(c, seed, x, z, hy);
     if occupant == Occupant::None {
         // The grove/clearing field scales the whole row, not the tree entry
         // alone: a clearing is a clearing, not a clearing with the rocks
@@ -8039,7 +8193,7 @@ fn scatter_in<C: Corners>(
         let moist = moisture_in(c, seed, x, z);
         // And the island's ore budget over the row, so an island's metal and
         // sulfur follow `ORE_TARGET` rather than its rock area.
-        let row = ore_budgeted(scatter_draw_row(table, hy, moist, sl, fel, g), haven);
+        let row = ore_budgeted(scatter_draw_row(table, hy, moist, sl, fel, cold, g), haven);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
@@ -8050,7 +8204,7 @@ fn scatter_in<C: Corners>(
                     1 => Occupant::StoneNode,
                     2 => Occupant::MetalNode,
                     3 => Occupant::SulfurNode,
-                    4 => plant_in(c, seed, cell_x, cell_z, x, z, biome(hy, moist, fel)),
+                    4 => plant_in(c, seed, cell_x, cell_z, x, z, biome(hy, moist, fel, cold)),
                     5 => Occupant::Rock,
                     _ => Occupant::BarrelSlot,
                 };
@@ -8077,7 +8231,7 @@ fn scatter_in<C: Corners>(
     // other cell moves.
     let occupant = if occupant == Occupant::Shrub
         && cactus_at(seed, cell_x, cell_z)
-        && biome(hy, moisture_in(c, seed, x, z), fel) == Biome::Desert
+        && biome(hy, moisture_in(c, seed, x, z), fel, cold) == Biome::Desert
         && clears_side_roads(
             haven,
             x,
@@ -8108,7 +8262,7 @@ fn scatter_in<C: Corners>(
         // because three cells in four are empty and owe nothing.
         // A tree in the desert is a palm, whatever the painted field says.
         species: if occupant == Occupant::Tree
-            && biome(hy, moisture_in(c, seed, x, z), fel) == Biome::Desert
+            && biome(hy, moisture_in(c, seed, x, z), fel, cold) == Biome::Desert
         {
             PALM_SPECIES
         } else {
@@ -8458,12 +8612,14 @@ pub fn scatter_row(
     moist: f32,
     sl: f32,
     fel: f32,
+    cold: f32,
 ) -> [u16; OCCUPANT_KINDS] {
     blend_rows(
         table,
         splat_from(h, moist, sl),
         desert_share(h, moist),
         fel_share_on(h, fel),
+        cold_share(h, cold),
         [1.0; BIOMES],
     )
 }
@@ -8550,18 +8706,21 @@ fn edge_factor(w: [u8; 4]) -> f32 {
 /// — the one arithmetic both [`scatter_row`] and [`scatter_draw_row`] are.
 /// The sand channel is split between the beach row and the desert row by
 /// `desert` ([`desert_share`]), and the whole blend then leans toward the
-/// Verdigris row by `fel` ([`fel_share`]) — a convex mix again, so the
-/// saturation argument still holds, and outside the Verdigris (`fel` 0) the
-/// row is bit for bit what it was.
+/// Snow row by `snow` ([`cold_share`]) and the Verdigris row by `fel`
+/// ([`fel_share`]), the Verdigris last so it wins where they meet — convex
+/// mixes again, so the saturation argument still holds, and outside both
+/// (`snow` and `fel` 0) the row is bit for bit what it was.
 fn blend_rows(
     table: &ScatterTable,
     w: [u8; 4],
     desert: f32,
     fel: f32,
+    snow: f32,
     gb: [f32; BIOMES],
 ) -> [u16; OCCUPANT_KINDS] {
     let d = Biome::Desert as usize;
     let f = Biome::Fel as usize;
+    let sn = Biome::Snow as usize;
     let mut row = [0u16; OCCUPANT_KINDS];
     for (i, out) in row.iter_mut().enumerate() {
         let mut acc = 0.0f32;
@@ -8574,6 +8733,9 @@ fn blend_rows(
             }
             acc += table.weights[b][i] as f32 * gb[b] * *ch as f32;
         }
+        if snow > 0.0 {
+            acc = acc * (1.0 - snow) + table.weights[sn][i] as f32 * gb[sn] * 255.0 * snow;
+        }
         if fel > 0.0 {
             acc = acc * (1.0 - fel) + table.weights[f][i] as f32 * gb[f] * 255.0 * fel;
         }
@@ -8585,9 +8747,10 @@ fn blend_rows(
     // so the mix a cell DRAWS against and the mix `scatter_row` REPORTS carry
     // the edge or neither does. Two definitions of where a forest stops is
     // the drift this whole function exists to have retired.
-    // No treeline inside the Verdigris: what stands there is dead wood.
-    let edge = if fel > 0.0 {
-        edge_factor(w) * (1.0 - fel)
+    // No treeline inside the Verdigris, where what stands is dead wood, nor
+    // under the snow, where the trees are the Snow row's few.
+    let edge = if fel > 0.0 || snow > 0.0 {
+        edge_factor(w) * (1.0 - fel) * (1.0 - snow)
     } else {
         edge_factor(w)
     };
@@ -8623,6 +8786,7 @@ pub fn scatter_draw_row(
     moist: f32,
     sl: f32,
     fel: f32,
+    cold: f32,
     g: f32,
 ) -> [u16; OCCUPANT_KINDS] {
     let mut gb = [0.0f32; BIOMES];
@@ -8634,6 +8798,7 @@ pub fn scatter_draw_row(
         splat_from(h, moist, sl),
         desert_share(h, moist),
         fel_share_on(h, fel),
+        cold_share(h, cold),
         gb,
     )
 }

@@ -1806,6 +1806,17 @@ slot = "shirt"
 class = "clothing"
 description = "A leather vest. Wear it under a poncho."
 
+# Snowcaps v0: the head's warm piece, for the snow above the ranges' treeline.
+[[item]]
+id = "item.armor_hide_hood"
+name = "Hide Hood"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "head"
+class = "clothing"
+description = "A fur-lined leather hood. Keeps the snow's cold off your head."
+
 [[item]]
 id = "item.armor_leather_hands"
 name = "Leather Gloves"

@@ -215,7 +215,10 @@ companion_addr = "127.0.0.1:8434"
 # burns). The shard only writes down what each wallet took; whether it is paid
 # is the meter's switch, not this file's. WEEK ONE IS DRY (elo's
 # `docs/launch/GATES-LAUNCH.md` §A): the meter records the wipe as owed and
-# pays it when JUNK goes live. Change the motd when it does.
+# pays it when JUNK goes live. Change the motd when it does. The last motd
+# line points players at the wipe's predictions (elo's
+# `docs/store/GAME-PREDICTIONS.md`); it names no odds, so the house's agents,
+# who hear chat too, learn nothing about a market.
 #
 # extract_min_minutes: a wallet must play 2 hours in a wipe for what it took
 # out to reach the payout file, so fresh wallets can't carry one player's
@@ -229,10 +232,9 @@ extract_cap = 1000
 extract_min_minutes = 120
 # Agents' JUNK pays like a person's; unset, a declared agent's allowance is 0.
 prize_agents = true
-motd = "ALPHA: this week is a dry run"
-motd = "JUNK you take out is recorded"
-motd = "and paid when JUNK goes live"
+motd = "ALPHA: JUNK you take out is recorded, paid when JUNK goes live"
 motd = "Play 2 hours a wipe to get paid for it"
+motd = "Call how this wipe ends, win skins: elopros.com/games/gates/predict"
 
 # ── skins ────────────────────────────────────────────────────────────────────
 #

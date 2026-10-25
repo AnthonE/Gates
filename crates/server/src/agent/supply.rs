@@ -966,8 +966,24 @@ impl HomeJob {
                     },
                     Trip::Point(p) => (p, STAY_NEAR_M),
                 };
-                let there = (goal[0] - x).hypot(goal[1] - z) <= stop;
-                let step = if there {
+                let near = (goal[0] - x).hypot(goal[1] - z) <= stop;
+                // A trip that stays is home only inside: a wall between it
+                // and the box is the base's outside, however near, and from
+                // there a raider hacking the far wall is never seen. Near but
+                // walled off is the blocked case, a door to find.
+                let walled = near
+                    && self.trip != Trip::Stock
+                    && !sim_core::reach::sight(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        0,
+                        (x, body.qy as f32 * POS_Y_Q + 1.0, z),
+                        (goal[0], body.qy as f32 * POS_Y_Q + 1.0, goal[1]),
+                    );
+                let step = if walled {
+                    Step::Blocked
+                } else if near {
                     Step::Arrived
                 } else {
                     route.to(core, body, goal, stop - 0.2, false, tick)

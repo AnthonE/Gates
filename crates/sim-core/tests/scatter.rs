@@ -486,6 +486,7 @@ fn test_no_biome_row_saturates() {
                         terrain::moisture(seed, x, z),
                         terrain::ground_slope(seed, &haven, x, z),
                         terrain::fel(seed, x, z),
+                        terrain::cold(seed, x, z, h),
                         terrain::clump(seed, x, z),
                     ),
                     &haven,
@@ -686,14 +687,14 @@ const MIX_HI: f32 = 0.15;
 const MIX_STEPS: i32 = 200;
 
 fn mix_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
-    terrain::scatter_row(table, MIX_H, moist, MIX_SLOPE, 0.0)
+    terrain::scatter_row(table, MIX_H, moist, MIX_SLOPE, 0.0, 0.0)
 }
 
 /// The hard classifier, re-derived here rather than remembered — this is the
 /// control the ramp is measured against, and it is the code that shipped
 /// before this change.
 fn hard_row_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
-    table.weights[terrain::biome(MIX_H, moist, 0.0) as usize]
+    table.weights[terrain::biome(MIX_H, moist, 0.0, 0.0) as usize]
 }
 
 /// Where the splat is one-hot the blend must be the identity, or this is not
@@ -842,6 +843,7 @@ fn test_scatter_mix_is_convex_and_the_island_uses_it() {
                     terrain::moisture(seed, x, z),
                     sl,
                     terrain::fel(seed, x, z),
+                    terrain::cold(seed, x, z, h),
                 );
                 // Every entry the treeline does not touch is still strictly
                 // convex, and so is the PAIR it moves weight between — which

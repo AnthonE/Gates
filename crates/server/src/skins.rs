@@ -118,6 +118,15 @@ pub fn owned_of(cfg: &Config, wallet: Option<&str>, sc: &SkinContent) -> Owned {
         // there is nothing a read could change.
         return Owned::Known(SkinSet::EMPTY);
     }
+    // An Elo Pros account with no wallet (v151): what it unlocked is held on
+    // the platform until it links one, and it wears it in the meantime.
+    if crate::auth::is_account_str(wallet) {
+        let url = format!("{origin}/api/locker/{wallet}/items/{STORE_TITLE}");
+        return match crate::entitle::get_capped(&url, cfg.timeout, MAX_RESPONSE_BYTES) {
+            Some(body) => parse(&body, sc),
+            None => Owned::Unknown,
+        };
+    }
     if !crate::entitle::is_wallet(wallet) {
         // Our bug, not the chain's answer: the same `Unknown` the ticket
         // door gives it.
@@ -132,7 +141,9 @@ pub fn owned_of(cfg: &Config, wallet: Option<&str>, sc: &SkinContent) -> Owned {
     }
 }
 
-/// An `items/of` body → the owned set over `sc`'s rows.
+/// An `items/of` body → the owned set over `sc`'s rows. The platform's locker
+/// read (`/api/locker/{acct}/items/{title}`) answers in the same shape — an
+/// `items` array whose rows carry `catalog_id` — so one parser reads both.
 ///
 /// The only facts this may act on are the two flags that say *could not
 /// look* and *no contract*, and the `catalog_id` of each listed item — its

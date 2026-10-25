@@ -46,6 +46,24 @@ use std::path::Path;
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
+        "find.rs",
+        "near",
+        "locator: finds a fixture's land by the generator's own land line and \
+         climates; whoever stands there is seated on `ground` by `Body::at`.",
+    ),
+    (
+        "find.rs",
+        "spawn_ground",
+        "locator: finds level meadow or forest for a dev spawn by `biome_at`'s \
+         raw height; the body is seated on `ground` when it joins.",
+    ),
+    (
+        "find.rs",
+        "biome_ground",
+        "locator: finds level ground of a biome by `biome_at`'s raw height, as \
+         `spawn_ground` does.",
+    ),
+    (
         "weather.rs",
         "sand_at",
         "cosmetic: whether the ground under and upwind of the eye is dry land \

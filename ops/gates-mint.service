@@ -24,6 +24,9 @@ User=master
 Group=master
 WorkingDirectory=/home/master/gates-deploy
 Environment=PYTHONDONTWRITEBYTECODE=1
+# ELO_LOCKER_SECRET=… (the platform's, 32+ characters) holds what Elo Pros
+# accounts with no wallet unlock (v151). Absent, their sales wait.
+EnvironmentFile=-/home/master/gates-data/locker.env
 ExecStart=/usr/bin/python3 /home/master/gates-deploy/mint_pending.py --world /home/master/gates-data/island.world
 TimeoutStartSec=900
 

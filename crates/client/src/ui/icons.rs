@@ -90,7 +90,7 @@ pub fn looks(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 221] = [
+pub const STEMS: [&str; 222] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -175,6 +175,7 @@ pub const STEMS: [&str; 221] = [
     "hide_pants",
     "hide_boots",
     "hide_vest",
+    "hide_hood",
     "leather_gloves",
     "hoodie",
     "pants",

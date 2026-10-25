@@ -512,6 +512,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
             address,
             signature: wallet_sign(&sk, &proof.message(address)),
             solana: None,
+            pass: None,
         };
         assert!(
             server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
@@ -530,6 +531,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
         address,
         signature: wallet_sign(&sk, &sibling.message(address)),
         solana: None,
+        pass: None,
     };
     assert!(
         server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_err(),
@@ -572,6 +574,7 @@ fn a_signature_over_the_browsers_own_text_verifies_at_the_shard() {
         address,
         signature: wallet_sign(&sk, &proof.message(address)),
         solana: None,
+        pass: None,
     };
     assert!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth).is_ok(),
@@ -611,6 +614,7 @@ fn the_lowercase_address_is_refused_which_is_why_the_checksum_is_shared() {
         address,
         signature: wallet_sign(&sk, std::str::from_utf8(&text[..n]).unwrap()),
         solana: None,
+        pass: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
@@ -641,6 +645,7 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
         address,
         signature: wallet_sign(&sk, &elsewhere.message(address)),
         solana: None,
+        pass: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
@@ -705,6 +710,7 @@ async fn join_solana(
                         key,
                         signature: protocol::SolanaSignature(sig),
                     }),
+                    pass: None,
                 }
             },
         ),
@@ -769,6 +775,7 @@ fn a_solana_signature_over_the_browsers_own_text_verifies_at_the_shard() {
                 key,
                 signature: protocol::SolanaSignature(sig),
             }),
+            pass: None,
         }
     };
     let names = [PAGE, DOMAIN];
@@ -783,4 +790,123 @@ fn a_solana_signature_over_the_browsers_own_text_verifies_at_the_shard() {
         &sign("play.elopros.com")
     )
     .is_err());
+}
+
+// ── an Elo Pros pass (v151) ──────────────────────────────────────────────────
+
+/// elo's account key in these tests; the shard pins its public half.
+const ELO_SEED: [u8; 32] = [61; 32];
+
+/// A pass as `meter/accounts.py` issues one, signed by `seed`.
+fn issue_pass(seed: &[u8; 32], shard: &str, nonce: &[u8; protocol::NONCE_BYTES]) -> String {
+    use base64::Engine;
+    use ring::signature::Ed25519KeyPair;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let text = format!(
+        "elo account\nid: acct_0123456789abcdef0123\nfor: play:{}\nshard: {shard}\n\
+         nonce: {nonce}\nwallet: none\nexp: 4000000000",
+        protocol::SLUG
+    );
+    let pair = Ed25519KeyPair::from_seed_unchecked(seed).expect("a seed");
+    format!(
+        "{}.{}",
+        b64.encode(&text),
+        b64.encode(pair.sign(text.as_bytes()))
+    )
+}
+
+/// A shard that refuses guests, pinning elo's key when `pinned`.
+async fn shard_taking_passes(pinned: bool) -> server::net::ShardHandle {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let mut cfg = ShardConfig::ephemeral(20_260_807);
+    cfg.require_auth = true;
+    cfg.domain = DOMAIN.into();
+    if pinned {
+        let pair = Ed25519KeyPair::from_seed_unchecked(&ELO_SEED).expect("a seed");
+        cfg.elo_account_key = Some(pair.public_key().as_ref().try_into().expect("32 bytes"));
+    }
+    spawn_shard(
+        cfg,
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots")
+}
+
+/// Join with the pass `pass_for` makes from this join's challenge; it also
+/// hands the pass back, so a test can replay it.
+async fn join_pass(
+    handle: &server::net::ShardHandle,
+    pass_for: impl FnOnce(&protocol::Challenge) -> String,
+) -> (Result<protocol::Welcome, String>, String) {
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+    let mut sent = String::new();
+    let joined = tokio::time::timeout(
+        Duration::from_secs(5),
+        server::net::client_handshake_with(
+            &mut send,
+            &mut recv,
+            &protocol::Hello::this_build(),
+            |c| {
+                sent = pass_for(c);
+                protocol::Auth {
+                    pass: protocol::Pass::new(sent.as_bytes()),
+                    ..protocol::Auth::default()
+                }
+            },
+        ),
+    )
+    .await
+    .expect("inside 5 s")
+    .map(|j| j.welcome);
+    (joined, sent)
+}
+
+/// **A player signed in to Elo Pros joins a shard that refuses guests** with
+/// the pass elo issued for this shard and this join, and nothing signs. The
+/// same pass at a later join is refused (its nonce was this join's), as is a
+/// pass for another shard and one signed by any key but elo's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pass_joins_once_and_only_here() {
+    let handle = shard_taking_passes(true).await;
+    let (welcome, pass) = join_pass(&handle, |c| issue_pass(&ELO_SEED, DOMAIN, &c.nonce)).await;
+    assert_ne!(welcome.expect("elo's pass is admitted").player_id, 0);
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 0);
+
+    let (replayed, _) = join_pass(&handle, |_| pass.clone()).await;
+    assert!(replayed.is_err(), "a pass was admitted at a second join");
+    let (elsewhere, _) =
+        join_pass(&handle, |c| issue_pass(&ELO_SEED, "evil.example", &c.nonce)).await;
+    assert!(elsewhere.is_err(), "a pass for another shard was admitted");
+    let (forged, _) = join_pass(&handle, |c| issue_pass(&[62; 32], DOMAIN, &c.nonce)).await;
+    assert!(forged.is_err(), "a pass by another key was admitted");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 3);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A shard that pins no elo key takes no pass, however good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shard_without_elos_key_takes_no_pass() {
+    let handle = shard_taking_passes(false).await;
+    let (welcome, _) = join_pass(&handle, |c| issue_pass(&ELO_SEED, DOMAIN, &c.nonce)).await;
+    assert!(welcome.is_err(), "a pass was admitted with no key pinned");
+    assert_eq!(ShardStats::get(&handle.stats.refused_auth), 1);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }

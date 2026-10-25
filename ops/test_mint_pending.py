@@ -93,5 +93,37 @@ with tempfile.TemporaryDirectory() as d:
           mp.main(["--world", str(world), "--close-free-door", "--now", "2026-12-01T00:00:05+00:00"]) == 0
           and closed == ["morr"])
 
+# ── accounts (v151) ─────────────────────────────────────────────────────────
+ACCT = "acct_" + "0123456789abcdef0123"
+with tempfile.TemporaryDirectory() as d:
+    world = Path(d) / "island.world"
+    held_rows, minted_calls = [], []
+    mp.post_hold = lambda row: held_rows.append(row) or "held"
+    mp.run_remote = lambda host, batch: (minted_calls.append(batch) or
+                                         "".join(f"ok {r} {w} {c} 0x{i:x}\n" for i, (r, w, c) in enumerate(batch)))
+    Path(f"{world}.mints").write_text(f"300 {ACCT} 10\n301 {A} 10\n")
+    check("an account's sale is held on the platform and a wallet's is minted",
+          mp.main(["--world", str(world), "--no-copies"]) == 0
+          and held_rows == [{"account": ACCT, "game": "gates", "kind": "item", "catalog_id": 10,
+                             "ref": "gates:buy:300"}]
+          and minted_calls == [[("301", A, 10)]])
+    check("the held sale is logged, so the shard reads the locker and it is not held again",
+          f"300 {ACCT} 10 held" in Path(f"{world}.minted").read_text()
+          and mp.main(["--world", str(world), "--no-copies"]) == 0 and len(held_rows) == 1)
+    Path(f"{world}.online.json").write_text(json.dumps({"online": [{"wallet": ACCT, "agent": False}]}))
+    check("an account online gets its copy held on the platform",
+          mp.main(["--world", str(world), "--now", "2026-11-01T00:00:00+00:00"]) == 0
+          and held_rows[-1] == {"account": ACCT, "game": "gates", "kind": "copy", "ref": "gates:join"}
+          and Path(f"{world}.copies").read_text() == f"{ACCT} held locker\n")
+    mp.post_hold = lambda row: "unreachable"
+    Path(f"{world}.mints").write_text(f"400 {ACCT} 10\n")
+    check("a hold the platform did not take is retried, never logged",
+          mp.main(["--world", str(world), "--no-copies"]) == 1
+          and "400" not in Path(f"{world}.minted").read_text())
+import os  # noqa: E402
+os.environ.pop("ELO_LOCKER_SECRET", None)
+import importlib  # noqa: E402
+check("with no locker secret, nothing is held", importlib.reload(mp).post_hold({}) == "no-locker-secret")
+
 print("\nall minter checks pass" if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

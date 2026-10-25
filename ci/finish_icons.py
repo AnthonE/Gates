@@ -146,6 +146,7 @@ PAINT = {
     "hide_pants": dict(mat="leather", c=("#a8784c", "#5a3a20")),
     "hide_boots": dict(mat="leather", c=("#a8784c", "#5a3a20")),
     "hide_vest": dict(mat="leather", c=("#a8784c", "#5a3a20")),
+    "hide_hood": dict(mat="leather", c=("#a8784c", "#5a3a20")),
     "leather_gloves": dict(mat="leather", c=("#8a5a34", "#3e2614")),
     "hoodie": dict(mat="cloth", c=("#8a96a4", "#3c4652")),
     "pants": dict(mat="cloth", c=("#6c84a4", "#2c3c54")),

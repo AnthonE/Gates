@@ -95,6 +95,7 @@ static RECORDED: &[(Cue, &[Rec])] = &[
     ),
     (Cue::StepWater, takes!("freesound", "step_water", 0 1 2 3 4)),
     (Cue::StepWood, takes!("pd", "step_wood", 0 1 2 3 4 5 6 7)),
+    (Cue::StepSnow, takes!("pd", "step_snow", 0 1 2 3 4 5 6 7)),
     (
         Cue::StepConcrete,
         takes!("pd", "step_concrete", 0 1 2 3 4 5 6 7),
@@ -253,6 +254,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteStepRock => Cue::StepRock,
         Cue::RemoteStepWater => Cue::StepWater,
         Cue::RemoteStepWood => Cue::StepWood,
+        Cue::RemoteStepSnow => Cue::StepSnow,
         Cue::RemoteStepConcrete => Cue::StepConcrete,
         Cue::RemoteStepMetal => Cue::StepMetal,
         Cue::RemoteSwing => Cue::Swing,

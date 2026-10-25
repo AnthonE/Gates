@@ -527,7 +527,14 @@ fn the_treeline_is_scrub_and_the_forest_core_is_not() {
             for cx in 0..CELLS_PER_SIDE {
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::ground(seed, &haven, x, z) < LAND_MIN_H {
+                let gy = terrain::ground(seed, &haven, x, z);
+                if gy < LAND_MIN_H {
+                    continue;
+                }
+                // The treeline is a temperate law: under the snow, tundra
+                // included, the transfer stands down (`blend_rows`) and the
+                // Snow row's few trees are the stand.
+                if terrain::cold(seed, x, z, gy) > 0.0 {
                     continue;
                 }
                 let occ =

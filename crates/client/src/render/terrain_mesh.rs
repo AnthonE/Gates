@@ -1042,7 +1042,7 @@ pub fn heightfield(
     let mut uvs = Vec::with_capacity(count);
     let mut mods = Vec::with_capacity(count);
     let mut roads = Vec::with_capacity(count);
-    let mut zone: Vec<[f32; 2]> = Vec::with_capacity(count);
+    let mut zone: Vec<[f32; 3]> = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
@@ -1251,6 +1251,9 @@ pub fn heightfield(
                 // the heart and the live spread from it (`blight_at`), so the
                 // mesh never bakes a moment of the wipe.
                 terrain::fel_wander_memo(&mut lat, seed, x, z),
+                // The snow that lies all year (`terrain::cold`): the shader
+                // whitens by it whatever the weather.
+                terrain::cold_memo(&mut lat, seed, x, z, y),
             ]);
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);

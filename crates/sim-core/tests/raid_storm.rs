@@ -175,6 +175,7 @@ fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
 fn plots(seed: u64) -> [(u16, u16); PLOTS] {
     let mut out = [(0u16, 0u16); PLOTS];
     let mut n = 0usize;
+    let (hx, hz) = sim_core::find::build_hint(seed, 512, 512);
     for r in 0..128i32 {
         for dz in -r..=r {
             for dx in -r..=r {
@@ -187,8 +188,8 @@ fn plots(seed: u64) -> [(u16, u16); PLOTS] {
                 if dx % PLOT_SPACING != 0 || dz % PLOT_SPACING != 0 {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 2047) as u16;
-                let cz = (512 + dz).clamp(0, 2047) as u16;
+                let cx = (hx + dx).clamp(0, 2047) as u16;
+                let cz = (hz + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if !foundation_terrain_ok(seed, hv(seed), x, z) {
                     continue;

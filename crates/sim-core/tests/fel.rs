@@ -42,8 +42,8 @@ fn the_verdigris_keeps_clear_of_the_town_the_desert_and_the_fixtures() {
                 );
             }
         });
-        // The centre's golden window, the server tests' +x shore ray, and the
-        // capture rig's spawn in the south.
+        // The centre's golden window and the server tests' +x shore ray.
+        // (The capture rig's spawn searches for mild ground, `sim_core::find`.)
         let mut x = c - 64.0;
         while x < terrain::ISLAND_SIZE {
             assert_eq!(
@@ -53,7 +53,6 @@ fn the_verdigris_keeps_clear_of_the_town_the_desert_and_the_fixtures() {
             );
             x += 4.0;
         }
-        assert_eq!(terrain::fel(seed, 1500.0, 600.0), 0.0);
     }
 }
 

@@ -123,14 +123,15 @@ fn storm_deploy() -> DeployContent {
 /// The first buildable cell in a ring scan out from the middle of the map,
 /// `raid_storm.rs::plots` narrowed to one.
 fn cell(seed: u64) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(seed, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx) as u16;
-                let cz = (512 + dz) as u16;
+                let cx = (hx + dx) as u16;
+                let cz = (hz + dz) as u16;
                 let (x, z) = center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);

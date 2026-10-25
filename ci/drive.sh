@@ -10,7 +10,7 @@
 #   move DX DY (relative, pointer-accelerated) · moveto X Y · type TEXT
 #   shot NAME   (F12 in the game, copied to <outdir>/NAME.png)
 #
-# Env: KIT (dev_spawn_kit), POP (population, 3), SPAWN ("1500,600"), PORT
+# Env: KIT (dev_spawn_kit), POP (population, 3), SPAWN ("auto": mild ground the shard finds; or "biome:<name>", or "x,z"), PORT
 # (4455), RES (1280x720). Needs Xvfb, xdotool and lavapipe
 # (mesa-vulkan-drivers). Not a gate: it scores nothing (`CLAUDE.md`).
 set -uo pipefail
@@ -27,7 +27,7 @@ PORT=${PORT:-4455}
 {
   echo "bind = \"127.0.0.1:$PORT\""
   echo "seed = 20260731"
-  echo "dev_spawn = \"${SPAWN:-1500,600}\""
+  echo "dev_spawn = \"${SPAWN:-auto}\""
   echo "dev_spawn_kit = \"${KIT:-item.wood:1000, item.torch:1, item.hatchet_stone:1, item.bow:1, item.arrow_wood:20, item.box_small:1, item.building_plan:1, item.hammer:1}\""
   echo "require_auth = false"
   echo "population = ${POP:-3}"

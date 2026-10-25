@@ -35,7 +35,9 @@ pub struct ShardConfig {
     pub seed: u64,
     /// Dev-only fixed spawn `"x,z"` in meters (DECISIONS.md §open row
     /// "dev spawn override"). Unset is the shipping default; never set it
-    /// on a public shard — every joiner lands on the same point.
+    /// on a public shard — every joiner lands on the same point. `"auto"`
+    /// (mild, level ground) and `"biome:<name>"` ask the island for it
+    /// instead (`sim_core::find`), resolved here once the seed is known.
     pub dev_spawn: Option<(f32, f32)>,
     /// Dev-only sky and clock at boot, `/weather` and `/time` without an
     /// admin wallet: `dev_env = "storm,midnight"`, either half optional.
@@ -238,6 +240,14 @@ pub struct ShardConfig {
     /// one whose pages may collect a signature this shard accepts**, so list
     /// only names you serve.
     pub siwe_domains: Option<Vec<String>>,
+    /// elo's account key (`elo_account_pubkey`: standard base64 of 32 bytes,
+    /// what `GET {origin}/api/account/pubkey` serves). With it, a player
+    /// signed in to Elo Pros joins with the pass elo signed for this game and
+    /// one of [`ShardConfig::siwe_accepts`]' names (`auth::verify_pass`) —
+    /// as the wallet it links, or as their account when it links none. Pinned
+    /// here rather than fetched, so a join still makes no network call.
+    /// `None`, the default, admits no pass; wallets and guests are unchanged.
+    pub elo_account_key: Option<[u8; 32]>,
     /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
     ///
     /// [`entitle::Config::off`] is the shipping default and checks **nothing**
@@ -465,6 +475,7 @@ impl ShardConfig {
             companion_addr: None,
             domain: "127.0.0.1".into(),
             siwe_domains: None,
+            elo_account_key: None,
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
@@ -687,6 +698,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut dev_spawn_find: Option<String> = None;
     let mut dev_env: Option<(u8, u16)> = None;
     let mut dev_spawn_kit: Option<Vec<(String, u32)>> = None;
     let mut netsim: Option<NetSim> = None;
@@ -708,6 +720,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut companion_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
+    let mut elo_account_key: Option<[u8; 32]> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
@@ -767,6 +780,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                         .parse()
                         .map_err(|e| format!("shard.toml line {}: bad seed: {e}", n + 1))?,
                 );
+            }
+            "dev_spawn" if value == "auto" || value.starts_with("biome:") => {
+                // Asked for, not typed: resolved below, once the seed is
+                // known (`sim_core::find`).
+                if let Some(name) = value.strip_prefix("biome:") {
+                    if sim_core::find::biome_named(name).is_none() {
+                        return Err(format!(
+                            "shard.toml line {}: dev_spawn biome `{name}` is not one of {:?}",
+                            n + 1,
+                            sim_core::terrain::BIOME_NAMES
+                        ));
+                    }
+                }
+                dev_spawn_find = Some(value.to_string());
             }
             "dev_spawn" => {
                 let (x, z) = value
@@ -1084,6 +1111,25 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     parse_siwe_domains(value)
                         .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
                 );
+            }
+            // elo's account key (`ShardConfig::elo_account_key`). Absent ⇒
+            // this shard admits no Elo Pros pass.
+            "elo_account_pubkey" => {
+                use base64::Engine;
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .ok()
+                    .filter(|b| b.len() == 32)
+                    .ok_or_else(|| {
+                        format!(
+                            "shard.toml line {}: elo_account_pubkey is standard base64 of 32 bytes, \
+                             as GET /api/account/pubkey serves it",
+                            n + 1
+                        )
+                    })?;
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&raw);
+                elo_account_key = Some(key);
             }
             // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
             // copies, which is what every test, every community shard and
@@ -1616,6 +1662,19 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             ));
         }
     }
+    // `dev_spawn = "auto"` or `"biome:<name>"`: the generator decides where
+    // that ground is, so the shard searches its own island for it.
+    if let (Some(q), Some(seed)) = (&dev_spawn_find, seed) {
+        dev_spawn = Some(match q.strip_prefix("biome:") {
+            None => sim_core::find::spawn_ground(seed),
+            Some(name) => {
+                let want = sim_core::find::biome_named(name).expect("checked when parsed");
+                sim_core::find::biome_ground(seed, want).ok_or_else(|| {
+                    format!("shard.toml: dev_spawn: seed {seed} has no level {name} ground")
+                })?
+            }
+        });
+    }
     Ok(ShardConfig {
         prizes,
         discord_webhook,
@@ -1649,6 +1708,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         min_client: min_client.unwrap_or(0),
         domain: domain.expect("`bind` is read above, and its host is the default"),
         siwe_domains,
+        elo_account_key,
         entitle,
         skins,
         faces,
@@ -2034,12 +2094,17 @@ mod tests {
         let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
         let ok = parse_shard_toml(&format!("{base}dev_spawn = \"1024, 1024\"\n")).unwrap();
         assert_eq!(ok.dev_spawn, Some((1024.0, 1024.0)));
+        let auto = parse_shard_toml(&format!("{base}dev_spawn = \"auto\"\n")).unwrap();
+        let (x, z) = auto.dev_spawn.expect("auto resolves to ground");
+        assert!(sim_core::find::mild(1, x, z));
+        assert!(parse_shard_toml(&format!("{base}dev_spawn = \"biome:desert\"\n")).is_ok());
         for bad in [
             "\"1024\"",
             "\"1024,\"",
             "\"-1,5\"",
             "\"9999,5\"",
             "\"nan,5\"",
+            "\"biome:moon\"",
         ] {
             assert!(
                 parse_shard_toml(&format!("{base}dev_spawn = {bad}\n")).is_err(),
