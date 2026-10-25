@@ -98,13 +98,9 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
     let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
     for (cx, cz) in sim_core::find::mild_cells(seed, hint) {
         let s = terrain::scatter(seed, &table, &haven, cx, cz);
-        // A tree pays its row's swings only grown and of the middle size
-        // class (`gather::tree_wood_pm`, `wild_grown_at`): a small or young
-        // one pays fewer, a large one more, and these fixtures count swings.
+        // These fixtures count swings, so a tree is one that pays its row's.
         if s.occupant != want
-            || (want == Occupant::Tree
-                && (!(751..=1000).contains(&sim_core::gather::tree_wood_pm(s.scale))
-                    || sim_core::gather::wild_grown_at(seed, cx as u16, cz as u16) != 0))
+            || (want == Occupant::Tree && !sim_core::find::row_tree(seed, cx, cz, &s))
         {
             continue;
         }

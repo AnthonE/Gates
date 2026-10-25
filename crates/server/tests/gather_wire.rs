@@ -38,7 +38,8 @@ fn find_isolated_tree() -> ((f32, f32), u16, (u16, u16)) {
     let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
     for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
         let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-        if s.occupant != Occupant::Tree {
+        // A tree that pays its row's swings, as the yield is counted.
+        if !sim_core::find::row_tree(SEED, cx, cz, &s) {
             continue;
         }
         let (px, pz) = (s.x - 1.2, s.z);

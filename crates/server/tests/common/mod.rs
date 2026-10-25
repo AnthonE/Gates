@@ -79,10 +79,12 @@ pub fn shore() -> (f32, f32) {
 
 /// A level, dry clearing: nothing solid (a tree, a node, a container, a
 /// boulder) within `radius_cells` scatter cells of it — scrub and pickups are
-/// passable — and the ground within a few metres of level over it. Where two
-/// bodies meet in the arena with nothing between them.
+/// passable — and the ground within a few metres of level over it, holding a
+/// foundation everywhere and off every authored site. Where two bodies meet in
+/// the arena with nothing between them, and where the scenes build a base.
 pub fn clearing(radius_cells: i32) -> (f32, f32) {
     const CLEARING_ROCK_M: f32 = 64.0;
+    const CLEARING_SITE_M: f32 = 60.0;
     use sim_core::terrain::{self, ScatterTable, CELL_SIZE};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
@@ -101,16 +103,20 @@ pub fn clearing(radius_cells: i32) -> (f32, f32) {
         if sim_core::boulder::covers(SEED, &haven, x, z, CLEARING_ROCK_M) {
             continue;
         }
+        // Nor an authored site's floor or a landmark near it: the scenes
+        // build a base in the clearing, and a site's ground is not theirs.
+        if !sim_core::find::unbuilt(&haven, x, z, CLEARING_SITE_M) {
+            continue;
+        }
         let clear = (-r..=r).all(|dz| {
             (-r..=r).all(|dx| {
                 let s = terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz);
-                let h = terrain::ground(
-                    SEED,
-                    &haven,
-                    x + dx as f32 * CELL_SIZE,
-                    z + dz as f32 * CELL_SIZE,
-                );
-                terrain::occupant_volume(s.occupant).0 == 0.0 && h > 1.0 && (h - h0).abs() < 3.0
+                let (sx, sz) = (x + dx as f32 * CELL_SIZE, z + dz as f32 * CELL_SIZE);
+                let h = terrain::ground(SEED, &haven, sx, sz);
+                terrain::occupant_volume(s.occupant).0 == 0.0
+                    && h > 1.0
+                    && (h - h0).abs() < 3.0
+                    && sim_core::build::foundation_terrain_ok(SEED, &haven, sx, sz)
             })
         });
         if clear {

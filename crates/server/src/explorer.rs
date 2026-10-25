@@ -9243,7 +9243,8 @@ mod tests {
         for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
             let (seed, island) = core.island();
             let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
-            if slot.occupant != Occupant::Tree {
+            // A tree that pays its row's swings, as the harvest tests count.
+            if !sim_core::find::row_tree(seed, cx, cz, &slot) {
                 continue;
             }
             let y = terrain::ground(seed, bot.haven.as_ref().unwrap(), slot.x, slot.z - 5.0);

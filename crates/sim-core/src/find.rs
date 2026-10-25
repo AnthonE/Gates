@@ -23,6 +23,17 @@ pub fn mild(seed: u64, x: f32, z: f32) -> bool {
         && terrain::fel(seed, x, z) == 0.0
 }
 
+/// Whether the slot at cell (`cx`, `cz`) is a tree that pays its content
+/// row's own swings: grown (`gather::wild_grown_at`) and of the middle size
+/// class (`gather::tree_wood_pm` over three quarters and at most the row), so
+/// a fixture that counts swings or yields counts the row's. A small or young
+/// tree pays fewer, a large one more.
+pub fn row_tree(seed: u64, cx: i32, cz: i32, slot: &terrain::Slot) -> bool {
+    slot.occupant == terrain::Occupant::Tree
+        && (751..=1000).contains(&crate::gather::tree_wood_pm(slot.scale))
+        && crate::gather::wild_grown_at(seed, cx as u16, cz as u16) == 0
+}
+
 /// [`mild`] at a scatter cell's centre.
 pub fn mild_cell(seed: u64, cx: i32, cz: i32) -> bool {
     let (x, z) = cell_centre(cx, cz);
