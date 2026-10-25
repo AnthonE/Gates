@@ -321,6 +321,10 @@ pub const HEAL_STALL_TICKS: u32 = TICK_HZ;
 /// whenever nobody is near (`combat::safe`), the way a player does after a
 /// fight without stopping to think about it.
 pub const REFLEX_HEAL_PCT: u32 = 80;
+/// After a dressing goes on a bleeding wound, how long before the bleed is
+/// read again and another is wrapped: the 4 s wrap, and the exposure
+/// readout's second or two behind it.
+pub const STAUNCH_WAIT_TICKS: u32 = 7 * TICK_HZ;
 /// A downed body crawls to cover no further than this.
 pub const CRAWL_COVER_M: f32 = 10.0;
 /// A reload is not asked for again sooner than this after the last.
@@ -641,6 +645,10 @@ pub struct Memory {
     /// Raw meat, fuel and a fire to cook on (`agent::oven::can_tend`), and
     /// no cook came to nothing a moment ago.
     pub cook: bool,
+    /// Cold, or hurt enough for a fire's comfort to mend, with fuel and a
+    /// fire to stand by (`agent::oven::wants_warmth`), and no warm-up came to
+    /// nothing a moment ago.
+    pub warm: bool,
     /// Salvage the base does not want whole and a recycler to take it
     /// apart at, and no recycle came to nothing a moment ago.
     pub recycle: bool,
@@ -1008,6 +1016,8 @@ pub struct Survivor {
     /// The tick a bandage this bot is wrapping on has landed by (its
     /// `use_ticks` and a second for the lane), while one is.
     wrap_until: Option<u32>,
+    /// When it last put a dressing on a bleeding wound (`staunch`).
+    staunched_at: Option<u32>,
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
@@ -1045,6 +1055,7 @@ pub struct Survivor {
     shop_kept: Option<u32>,
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
+    warm_failed: Option<u32>,
     recycle_failed: Option<u32>,
     research_failed: Option<u32>,
     /// A research goal's read of the paper is queued: the goal ends once
@@ -1278,6 +1289,7 @@ impl Survivor {
             reload_at: None,
             dressed_at: None,
             wrap_until: None,
+            staunched_at: None,
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
@@ -1301,6 +1313,7 @@ impl Survivor {
             shop_kept: None,
             oven_stats: OvenStats::default(),
             cook_failed: None,
+            warm_failed: None,
             recycle_failed: None,
             research_failed: None,
             paper_read: false,
@@ -2423,6 +2436,7 @@ impl Survivor {
         self.oven_job = DeviceJob::new(match goal {
             Goal::Recycle => Work::Recycle,
             Goal::KeepShop => Work::Shop,
+            Goal::Warm => Work::Warm,
             _ => Work::Cook,
         });
         if goal == Goal::Loot {
@@ -2568,6 +2582,7 @@ impl Survivor {
             | Goal::Bag
             | Goal::Loot
             | Goal::Cook
+            | Goal::Warm
             | Goal::Recycle
             | Goal::Research
             | Goal::KeepShop
@@ -2712,12 +2727,14 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
-            Goal::Cook | Goal::Recycle | Goal::KeepShop if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
+            Goal::Cook | Goal::Warm | Goal::Recycle | Goal::KeepShop
+                if elapsed >= COOK_GOAL_SECS * TICK_HZ =>
+            {
                 self.oven_failed(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Cook | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
+            Goal::Cook | Goal::Warm | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
             Goal::Research if elapsed >= VISIT_GOAL_SECS * TICK_HZ => {
                 self.research_failed = Some(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -5383,6 +5400,20 @@ impl Survivor {
         self.medic = false;
         match self.dose(core, tick, HEAL_TARGET_PCT, false) {
             Dosed::Failed(why) => self.end_goal(tick, Outcome::Failed(why)),
+            // Whole enough, and still bleeding: nothing mends until a
+            // dressing closes it.
+            Dosed::Enough if core.bleed > 0 => {
+                if staunch_slot(core).is_some() || !self.staunch_due(tick) {
+                    self.staunch(core, tick);
+                } else {
+                    let outcome = if self.goal.is_some_and(|a| a.gained > 0) {
+                        Outcome::Done
+                    } else {
+                        Outcome::Failed(Why::NoMeds)
+                    };
+                    self.end_goal(tick, outcome);
+                }
+            }
             Dosed::Enough => self.end_goal(tick, Outcome::Done),
             Dosed::NoMeds => {
                 let outcome = if self.goal.is_some_and(|a| a.gained > 0) {
@@ -5394,6 +5425,34 @@ impl Survivor {
             }
             Dosed::Waiting | Dosed::Took => {}
         }
+    }
+
+    /// The last dressing has had its wrap and its readout.
+    fn staunch_due(&self, tick: u32) -> bool {
+        self.staunched_at
+            .is_none_or(|at| tick.wrapping_sub(at) >= STAUNCH_WAIT_TICKS)
+    }
+
+    /// Put the cheapest dressing that closes a wound on a bleeding one
+    /// (`loadout::STAUNCHES`), once the last one has landed and the bleed
+    /// been read again. True when one went on.
+    fn staunch(&mut self, core: &ClientCore, tick: u32) -> bool {
+        if core.bleed == 0
+            || self.awaiting.is_some()
+            || self.outbox.is_some()
+            || !self.staunch_due(tick)
+        {
+            return false;
+        }
+        let Some(slot) = staunch_slot(core) else {
+            return false;
+        };
+        self.consume(core, slot, tick);
+        let sent = matches!(self.awaiting, Some((Pending::Consume { .. }, _)));
+        if sent {
+            self.staunched_at = Some(tick);
+        }
+        sent
     }
 
     /// One step of taking meds toward `target_pct` of health: judge the
@@ -5490,6 +5549,13 @@ impl Survivor {
             return;
         }
         let low = u32::from(core.hp) * 100 < u32::from(core.hp_max) * REFLEX_HEAL_PCT;
+        // Bleeding with health to spare: a dressing between goals, as a
+        // player wraps a cut the moment the fight is over.
+        if !mine && calm && !low && core.bleed > 0 && self.staunch(core, tick) {
+            self.medic = true;
+            self.stats.reflex_heals += 1;
+            return;
+        }
         if !mine && (!calm || !low) {
             // Nothing to judge and nothing to take; the pool still drains.
             self.watch_dose(core, tick);
@@ -6137,7 +6203,7 @@ impl Survivor {
     /// base is behind their walls, and what is in it is theirs.
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
-            Work::Cook => (self.fire, oven::KEEP_M),
+            Work::Cook | Work::Warm => (self.fire, oven::KEEP_M),
             Work::Shop => return self.shop_machine(core),
             Work::Research { .. } => (oven::town_table(core), f32::MAX),
             Work::Recycle => (self.recycler, oven::SEEN_NEAR_M),
@@ -6202,6 +6268,7 @@ impl Survivor {
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
+            Work::Warm => self.warm_failed = Some(tick),
             Work::Shop => self.shop_failed = Some(tick),
             Work::Research { .. } => self.research_failed = Some(tick),
             Work::Recycle => self.recycle_failed = Some(tick),
@@ -6280,6 +6347,7 @@ impl Survivor {
         let work = self.oven_job.work();
         self.stats.phase = match work {
             Work::Cook => Phase::Cooking,
+            Work::Warm => Phase::Resting,
             Work::Shop => Phase::Trading,
             _ => Phase::Recycling,
         };
@@ -6336,7 +6404,7 @@ impl Survivor {
         );
         if let Some(at) = self.oven_job.placed() {
             match work {
-                Work::Cook => self.fire = Some(at),
+                Work::Cook | Work::Warm => self.fire = Some(at),
                 Work::Shop => self.shop = Some(at),
                 _ => self.recycler = Some(at),
             }
@@ -7037,8 +7105,13 @@ impl Survivor {
             // and where loot is: what it has seen, and the map.
             let stations = self.stations(core);
             let mut raw = [(0, 0); RAW_ROWS];
-            self.memory.raw_len =
-                raw_needs(core, &stations, self.builder.survey().needs(), &mut raw) as u8;
+            self.memory.raw_len = raw_needs(
+                core,
+                &stations,
+                self.builder.survey().needs(),
+                &self.ledger,
+                &mut raw,
+            ) as u8;
             self.memory.raw = raw;
             self.memory.stations = stations;
             self.memory.loot_held = self.loot.held(tick);
@@ -7161,6 +7234,14 @@ impl Survivor {
                 && self
                     .cook_failed
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // Mid-warm-up the wood is in the fire rather than the pack.
+            let warming = self.goal() == Some(Goal::Warm) && core.cont_kind == CONT_BOX;
+            self.memory.warm = oven::wants_warmth(core)
+                && (warming
+                    || oven::can_tend(core, &self.book, Work::Warm, fire.is_some(), &Keep::NONE))
+                && self
+                    .warm_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::WARM_RETRY_TICKS);
             // Salvage is taken apart unless the base wants it whole: what
             // the rest of the milestone costs, or the gear still to be made
             // takes.
@@ -7281,8 +7362,14 @@ impl Survivor {
         // has no room for is no chore.
         let book = &self.book;
         let mut bill = [(0, 0); stash::VISIT_ROWS];
-        let n = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
+        let billed = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
         let has = self.builder.stations(core);
+        let n = stash::with_inputs(core, &has, survey.needs(), &mut bill, billed);
+        // The makings in the box of what the base is short of are a take
+        // too: ore for fragments, wood for charcoal.
+        let makings = bill[billed..n]
+            .iter()
+            .any(|&(item, _)| self.ledger.units(item) > 0);
         let next = (chest && book.ready())
             .then(|| {
                 stash::plan(
@@ -7293,7 +7380,8 @@ impl Survivor {
                 )
             })
             .flatten();
-        self.memory.take_out = survey.take_out && matches!(next, Some(Transfer::Take { .. }));
+        self.memory.take_out =
+            (survey.take_out || makings) && matches!(next, Some(Transfer::Take { .. }));
         self.memory.put_away = matches!(next, Some(Transfer::Put { .. }));
         let mut rows = [(0u16, 0u32); stash::STORED_ROWS];
         self.memory.stored_len = self.ledger.totals(&mut rows) as u8;
@@ -8104,6 +8192,16 @@ fn needless_gear(core: &ClientCore, book: &Book, item: u16, name: &str) -> bool 
         || crate::agent::loadout::outclassed(name, working)
 }
 
+/// The pack slot of the cheapest dressing that closes a wound
+/// (`loadout::STAUNCHES`, in order), if one is carried.
+fn staunch_slot(core: &ClientCore) -> Option<usize> {
+    crate::agent::loadout::STAUNCHES.iter().find_map(|name| {
+        core.inv[..INV_SLOTS].iter().position(|st| {
+            st.count > 0 && core.catalog.name(usize::from(st.item)) == name.as_bytes()
+        })
+    })
+}
+
 /// The move that puts on better armour than is worn, if the pack holds
 /// some: `(pack slot, wear slot)`, by the catalog's wear slot and armour
 /// share, the best piece for each slot first.
@@ -8294,6 +8392,16 @@ pub fn observe(
     (s.hp, s.hp_max) = (core.hp, core.hp_max);
     (s.food, s.food_max) = (core.food, core.max_food);
     (s.water, s.water_max) = (core.water, core.max_water);
+    s.condition = crate::mind::Condition {
+        bleed: core.bleed,
+        cold_pct: core.cold_pct,
+        cold_hurting: core.cold_hurting,
+        wet_pct: core.wet_pct,
+        fel_pct: core.fel_pct,
+        fel_hurting: core.fel_hurting,
+        comfort_pct: core.comfort_pct,
+        air_c: core.air_read.then_some(core.air_c),
+    };
     s.free_slots = core.inv.iter().filter(|st| st.count == 0).count() as u8;
     // What the playbook counts by name goes in first: a pack of many kinds
     // must not push its wood, its stone or its tools off the list's end.
@@ -8309,6 +8417,7 @@ pub fn observe(
             || crate::agent::loadout::ARM_UP
                 .iter()
                 .any(|&(item, ..)| item == name)
+            || crate::agent::loadout::STAUNCHES.contains(&name)
     };
     for first in [true, false] {
         for stack in core.inv.iter().filter(|st| st.count > 0) {
@@ -8431,6 +8540,10 @@ pub fn observe(
     s.bag_ready = core.any_bag_ready();
     s.night = crate::agent::tracks::night(s.tick, &core.env);
     s.milestone = memory.base.milestone;
+    s.held_by = core
+        .arc
+        .granter(memory.base.held_by)
+        .and_then(|(_, w)| Name::new(w.name().as_bytes()));
     for &(item, units) in memory.base.needs() {
         let n = usize::from(s.needs_len);
         if let (Some(name), true) = (
@@ -8674,7 +8787,10 @@ pub fn observe(
     if armed && s.animals.count > 0 {
         s.offer(Goal::Hunt);
     }
-    if meds && core.hp < core.hp_max && pct(core.hp, core.hp_max) < HEAL_TARGET_PCT {
+    // A bleeding wound with a dressing for it in the pack is a heal too,
+    // whatever the bar says: nothing mends until it is closed.
+    let bleeding = core.bleed > 0 && staunch_slot(core).is_some();
+    if (meds && core.hp < core.hp_max && pct(core.hp, core.hp_max) < HEAL_TARGET_PCT) || bleeding {
         s.offer(Goal::Heal);
     }
     s.offer(Goal::Wait);
@@ -8716,6 +8832,9 @@ pub fn observe(
     // about.
     if memory.cook && !senses.hostile {
         s.offer(Goal::Cook);
+    }
+    if memory.warm && !senses.hostile {
+        s.offer(Goal::Warm);
     }
     if memory.recycle && !senses.hostile {
         s.offer(Goal::Recycle);

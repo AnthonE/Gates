@@ -67,7 +67,7 @@ stay in your terminal.
 The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `gather_stone`, `gather_ore`, `forage`, `gather_hemp`, `craft:<item name>`,
 `eat`, `drink`, `flee`, `wait`, `fight`, `hunt`, `heal`, `bag`, `recover`,
-`build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
+`build`, `go_home`, `stash`, `loot`, `cook`, `warm`, `recycle`, `defend`, `raid`,
 `join_team`, `invite`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
 `sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`,
@@ -107,6 +107,9 @@ and a reply naming anything else is refused.
 - **supply_wood / stone / ore / hemp** — a supply run: gather that kind for
   3 minutes (node after node), then deliver. One decision is a whole run.
   A full pack or nothing left in sight turns it for home early.
+- **warm** — sit by a lit fire, putting one down and lighting it if none is
+  near, until the cold is gone and the body has mended what a fire's
+  comfort mends (to 80 %). Offered while cold or hurt, with wood for it.
 - **buy:X / sell:X** — a trade at THE GATE (below).
 - **feed_work** — the nearest open work that takes something the pack
   holds, everything of it put in; or a lit one's tank topped up.
