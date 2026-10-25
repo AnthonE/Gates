@@ -70,7 +70,7 @@ use sim_core::world::{
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
     EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
-    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -137,6 +137,7 @@ fn reads_hand(act: &ActionMsg) -> bool {
             | ActionMsg::Drink
             | ActionMsg::Attach { .. }
             | ActionMsg::Detach { .. }
+            | ActionMsg::Wire { .. }
     )
 }
 
@@ -3888,6 +3889,11 @@ impl ShardCore {
                     ActionMsg::Unload => Command::Unload { id: c.id },
                     ActionMsg::Attach { slot } => Command::Attach { id: c.id, slot },
                     ActionMsg::Detach { bit } => Command::Detach { id: c.id, bit },
+                    ActionMsg::Wire { from, out, to, inp } => Command::Wire {
+                        id: c.id,
+                        wire: sim_core::power::WireRec { from, out, to, inp },
+                    },
+                    ActionMsg::Unwire { key } => Command::Unwire { id: c.id, key },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::RespawnGate => Command::RespawnGate { id: c.id },
                     ActionMsg::Move {
@@ -6269,6 +6275,40 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_WIRE => {
+                    // A wire laid or a part's taken up (`power.rs`): a world
+                    // fact aimed as a fire's flame is, at the clients that
+                    // hold the part it leaves (owner exempt).
+                    let (cx, cz, level, loc) = sim_core::deploy::box_addr(ev.a);
+                    let rec = self.world.deploys.find(cx, cz, level, loc).copied();
+                    let owner = rec.map_or(0, |d| d.owner);
+                    let (acx, acz) =
+                        rec.map_or((cx, cz), |d| interest::deploy_cell(&d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
+                    let set = ev.c >> 16 & 1 != 0;
+                    let (out, inp) = ((ev.c >> 8) as u8, ev.c as u8);
+                    let (to, out, inp) = if set { (ev.b, out, inp) } else { (0, 0, 0) };
+                    match protocol::encode_event_wire(ev.a, to, out, inp, set, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.owned_event_visible(slot, owner, at) {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_PLANT => {
                     // Farming v2: the record as it stands at drain, found
                     // by the index hint (verified by id) or by a scan. A
@@ -6399,11 +6439,12 @@ impl ShardCore {
                     }
                 }
                 EV_SENTRY_LOCK => {
-                    // A town sentry's lock-on beep, to the clients that have
-                    // the gun in interest — the target always among them,
-                    // since it stands in the town under the gun. Not a
-                    // whole-population fan-in (`BODY_BROADCAST_ARMS`): four
-                    // guns lock at most once a look each.
+                    // A town sentry's or a player turret's lock-on beep, to
+                    // the clients that have the gun in interest — the target
+                    // always among them, since it stands within the gun's
+                    // reach. Not a whole-population fan-in
+                    // (`BODY_BROADCAST_ARMS`): each gun locks at most once a
+                    // look.
                     match protocol::encode_event_sentry_lock(ev.a, ev.b, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -7168,6 +7209,44 @@ impl ShardCore {
                     have: sim_core::shop::count_in(&b.items, o.item).min(u16::MAX as u32) as u16,
                 };
             }
+        }
+        view
+    }
+
+    /// Auto turret `i` (an index into the box store) as player `viewer` is
+    /// shown it (`SUB_TURRET`): its list and mode, and whether `viewer` has
+    /// its building privilege (`turret::spares`).
+    pub fn turret_view(&self, i: usize, viewer: u32) -> protocol::TurretView {
+        let deploys = &self.world.deploys;
+        let Some(b) = deploys.boxes().get(i) else {
+            return protocol::TurretView::default();
+        };
+        let key = sim_core::deploy::box_key(b.cx, b.cz, b.level, b.loc);
+        let (x, z) = b.xz();
+        let rec = deploys.turret_recs().get(key, b.owner);
+        let mut view = protocol::TurretView {
+            key,
+            may_edit: sim_core::turret::spares(&self.world.pieces, deploys, b.owner, x, z, viewer),
+            peacekeeper: rec.peacekeeper,
+            n: rec.auth.len() as u8,
+            powered: self.world.power.feeds(
+                key,
+                self.world
+                    .deploys
+                    .find(b.cx, b.cz, b.level, b.loc)
+                    .map_or(0, |d| self.world.power_def.def(d.row).draw_rw),
+            ),
+            power_in: self.world.power.grid.input(key),
+            ..Default::default()
+        };
+        view.auth[..rec.auth.len()].copy_from_slice(rec.auth.members());
+        let def = &self.world.turret_def;
+        if let Some(g) = sim_core::turret::gun_in(def, deploys, Some(i)) {
+            let g = def.guns[g];
+            view.gun = g.item;
+            view.ammo = g.ammo;
+            view.rounds =
+                sim_core::turret::rounds_in(deploys, Some(i), g.ammo).min(u16::MAX as u32) as u16;
         }
         view
     }
@@ -8634,7 +8713,16 @@ impl ShardCore {
                         src.cx, src.cz, src.level, src.loc,
                     ))
                     .map(|i| self.world.deploys.oven_states()[i]);
-                lit[n] = oven.filter(|o| o.is_converter()).map(|o| o.lit);
+                // A light's glow and a turret's lamp ride the same bit
+                // (`power::Grid::lit`).
+                lit[n] = oven
+                    .filter(|o| o.is_converter())
+                    .map(|o| o.lit)
+                    .or_else(|| {
+                        self.world.power.grid.lit(sim_core::deploy::box_key(
+                            src.cx, src.cz, src.level, src.loc,
+                        ))
+                    });
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
                     break;
@@ -8693,6 +8781,35 @@ impl ShardCore {
                         self.clients[slot].ev_resync();
                         ShardStats::bump(&stats.ev_resyncs);
                         return;
+                    }
+                }
+                // The wires out of every part in the batch (`power.rs`), the
+                // lit bits' reason: the walk carries no wire, and a joiner
+                // would see a base's parts standing unwired.
+                for d in wire[..n].iter() {
+                    let key = sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc);
+                    for w in self.world.deploys.power().wires() {
+                        if w.from != key {
+                            continue;
+                        }
+                        let Ok(len) = protocol::encode_event_wire(
+                            w.from,
+                            w.to,
+                            w.out,
+                            w.inp,
+                            true,
+                            &mut self.ev_buf,
+                        ) else {
+                            ShardStats::bump(&stats.encode_range_errors);
+                            continue;
+                        };
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
+                            return;
+                        }
                     }
                 }
             } else {
@@ -9265,6 +9382,24 @@ impl ShardCore {
                     // A vending machine's offers and stock (`shop.rs`), owed
                     // to whoever has it open: on the open, and again whenever
                     // what the shop panel shows moves.
+                    // An auto turret's list, the same way (`turret.rs`).
+                    if kind == CONT_BOX && self.world.deploys.turret_index(handle).is_some() {
+                        let viewer = self.world.players[self.clients[slot].own_wslot].id;
+                        let view = self.turret_view(i, viewer);
+                        if self.clients[slot].last_turret != Some(view) {
+                            match protocol::encode_event_turret(&view, &mut self.ev_buf) {
+                                Ok(len) => {
+                                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                        ShardStats::bump(&stats.ev_sent);
+                                        self.clients[slot].last_turret = Some(view);
+                                    } else {
+                                        return;
+                                    }
+                                }
+                                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                            }
+                        }
+                    }
                     if kind == CONT_BOX && self.world.deploys.vending_index(handle).is_some() {
                         let viewer = self.world.players[self.clients[slot].own_wslot].id;
                         let view = self.shop_view(i, viewer);
@@ -10057,7 +10192,8 @@ impl ShardCore {
             // A pig has no hotbar, so the hand is empty — and `held` would
             // be *wrong* rather than merely meaningless if it were ever
             // filled: it is an index into the item catalog and a mob has no
-            // inventory to index it from.
+            // inventory to index it from. The one exception is a player's
+            // turret, whose gun is filled in by `fill_wire_cache`.
             held: None,
             // An animal's flame is the Verdigris in it: turned
             // (`Mob::turned`), it burns as the top tier's does.
@@ -10079,7 +10215,13 @@ impl ShardCore {
         for slot in 0..MAX_MOBS {
             let m = &self.world.mobs.m[slot];
             if m.alive {
-                self.wire_cache[MAX_PLAYERS + slot] = Self::wire_mob(slot, m);
+                let mut e = Self::wire_mob(slot, m);
+                // A turret carries the gun in its box (`turret::gun_in`),
+                // which the client mounts on it.
+                if sim_core::turret::is_turret_slot(slot) {
+                    e.held = self.world.turrets[slot - sim_core::turret::TURRET_SLOT0].carried;
+                }
+                self.wire_cache[MAX_PLAYERS + slot] = e;
             }
         }
     }

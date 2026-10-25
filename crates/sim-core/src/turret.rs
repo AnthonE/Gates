@@ -1,7 +1,19 @@
 //! A player's auto turret (`NOW.md` §0aa 1): Rust's `AutoTurret`, unpowered
-//! (there is no electricity here). A deployable with a box of rounds and a
-//! gun on top that shoots anybody in reach and in sight who is not **its
-//! owner or its owner's crew where it stands**.
+//! (there is no electricity here). A deployable with a box and a gun on top
+//! that shoots anybody in reach and in sight who is not **on its own
+//! authorize list**.
+//!
+//! ## Its gun is the one in its box
+//!
+//! As in Rust, the turret fires the gun it is given: the gun in its box's
+//! **weapon slot** ([`WEAPON_SLOT`]) when `[turret]` `guns` names it, at that
+//! gun's own numbers ([`TurretGun`]), spending that gun's round out of its
+//! six **ammo slots** ([`AMMO_SLOTS`]) — Rust's turret panel, one gun and
+//! six stacks. Each slot takes only what it is for ([`slot_takes`]). No gun,
+//! or no round for it, and it holds fire. The box is already saved,
+//! so this needs no save field; the gun it is firing rides the wire as its
+//! record's held item ([`Turret::carried`]), which is what the client
+//! mounts on it.
 //!
 //! ## What it reuses
 //!
@@ -12,27 +24,36 @@
 //! is where the gun points. So the wire, the client's turret mesh, the
 //! tracer and the lock-on beep all exist already.
 //!
-//! ## Who it spares, and why that is not its own list
+//! ## Who it spares: its own list
 //!
-//! The reference hangs a third authorisation list on the turret
-//! (`roster.rs`'s header). A list is state a save has to carry, and a new
-//! saved list is a world-format change, which is a wipe. So v0 asks the
-//! question building already answers: its owner, and whoever is on every
-//! crew its owner is on, of the hearths whose claim covers it
-//! (`claim::crew_cover`). Not "on every crew here": a stranger's hearth
-//! 16–18 m off the base's edge reaches the spot too, and that rule turned the
-//! base's turrets on its own crew. A turret outside its owner's claims spares
-//! its owner alone.
+//! Rust's model: the turret carries its own authorize list
+//! ([`TurretRec::auth`], a `roster::Roster`), and spares exactly who is on
+//! it. Placing it puts its placer on; nobody else is on until they say so.
+//! A cupboard's crew is not on it: a crewmate is shot until they authorize.
 //!
-//! **So a hand's turrets answer to the crews that hand is on**, and so do
-//! its vending machine and its key locks (`deploy::key_crew_passes`). The
-//! owner leaving a crew or clearing it withdraws them from that crew, and so
-//! does a hearth placed fresh over the base, crewed by its placer alone
-//! until the others rejoin; rejoining gives them back. That is Rust's
-//! model, where each turret and lock carries its own authorisation and a
-//! cupboard's list never spoke for it. The old rule asked only who was on
-//! the crew here, whoever the owner was, so one member's clear handed the
-//! clearer every other member's guns.
+//! **Who may change the list** is the turret's building privilege,
+//! [`spares`]: its owner and whoever is on every crew its owner is on, of
+//! the hearths whose claim covers it (`claim::shares_crew`). That is what
+//! opening its box already asked (`World`'s `CONT_BOX` path), and what Rust
+//! asks: building privilege where it stands. So a crewmate may put
+//! themselves on ([`auth_op`]), and a stranger may not; anybody may take
+//! themselves off, and a clear empties it, owner and all (Rust's
+//! `ClearList`).
+//!
+//! ## Peacekeeper and attack all
+//!
+//! Rust's two modes, set by the same privilege ([`auth_op`]). **Attack
+//! all**, the one it is placed in, shoots anybody off its list.
+//! **Peacekeeper** shoots only the hostile among them: a body whose
+//! `Player::hostile` clock runs, which any attack on a player sets for five
+//! minutes (`combat::HOSTILE_TICKS`) and so does any blow on a turret
+//! (`World::chip`), so a peacekeeper turret answers whoever shoots it. Its
+//! list is spared in either.
+//!
+//! A turret whose list is still its owner alone, attacking all, keeps no
+//! record: the store ([`TurretRecs`]) holds only the turrets somebody
+//! changed, keyed by box address like the vending machine's offers, and
+//! dropped with the turret in `Deploys::remove_at`.
 //!
 //! ## The table is derived, not kept
 //!
@@ -57,7 +78,10 @@ use crate::collide::ColIndex;
 use crate::deploy::{box_key, DeployContent, Deploys, ARCH_TURRET};
 use crate::gather::ItemStack;
 use crate::heli::Round;
-use crate::limits::{MAX_PLAYERS, MAX_TURRETS, TURRET_INTERFERENCE, TURRET_INTERFERENCE_M};
+use crate::limits::{
+    BOX_SLOTS, MAX_PLAYERS, MAX_TURRETS, MAX_TURRET_GUNS, MAX_TURRET_RECS, TURRET_AUTH_CAP,
+    TURRET_INTERFERENCE, TURRET_INTERFERENCE_M,
+};
 use crate::mob::Mob;
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav;
@@ -79,32 +103,288 @@ pub const fn is_turret_slot(slot: usize) -> bool {
 /// The gun's height over the turret's base, metres.
 pub const GUN_M: f32 = 0.9;
 
+/// Its box's one gun slot.
+pub const WEAPON_SLOT: usize = 0;
+/// The six slots its rounds go in. The box's other five stay empty.
+pub const AMMO_SLOTS: core::ops::Range<usize> = 1..7;
+const _: () = assert!(AMMO_SLOTS.end <= BOX_SLOTS);
+
+/// May `item` go into `slot` of a turret's box: the weapon slot takes a gun
+/// `[turret]` names, an ammo slot a round one of them fires, and the rest
+/// nothing (`inventory::REFUSE_M_TURRET`).
+pub fn slot_takes(def: &TurretDef, slot: usize, item: u16) -> bool {
+    if slot == WEAPON_SLOT {
+        def.live().iter().any(|g| g.item == item)
+    } else if AMMO_SLOTS.contains(&slot) {
+        def.live().iter().any(|g| g.ammo == item)
+    } else {
+        false
+    }
+}
+
 /// **Who a player's machine answers to**: its owner, and whoever is on
 /// every crew its owner is on, of the hearths whose claim covers `(x, z)`
-/// (`claim::shares_crew`). Outside its owner's claims, the owner alone. The
-/// turret spares exactly these; the vending machine (`shop.rs`) lets exactly
-/// these stock it and set its offers.
+/// (`claim::shares_crew`). Outside its owner's claims, the owner alone.
+/// These may open a turret, put themselves on its list and clear it
+/// ([`auth_op`]); the vending machine (`shop.rs`) lets exactly these stock
+/// it and set its offers. Whom the turret spares is its own list
+/// ([`TurretRecs::authorized`]).
 pub fn spares(pieces: &Pieces, deploys: &Deploys, owner: u32, x: f32, z: f32, id: u32) -> bool {
     id == owner || crate::claim::shares_crew(pieces, deploys, x, z, owner, id)
 }
 
-/// The baked `[turret]` table: the gun, and the round it spends out of its
-/// own box.
+/// One gun a turret can carry: the item, its numbers on a turret, and the
+/// round it spends out of the turret's box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurretGun {
+    pub item: u16,
+    pub def: SentryDef,
+    pub ammo: u16,
+}
+
+impl TurretGun {
+    pub const NONE: Self = Self {
+        item: 0,
+        def: SentryDef::INERT,
+        ammo: 0,
+    };
+}
+
+/// The baked `[turret]` table: every gun a turret fires, the first `n` of
+/// [`Self::guns`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TurretDef {
-    pub gun: SentryDef,
-    pub ammo: u16,
+    pub guns: [TurretGun; MAX_TURRET_GUNS],
+    pub n: u8,
 }
 
 impl TurretDef {
     pub const INERT: Self = Self {
-        gun: SentryDef::INERT,
-        ammo: 0,
+        guns: [TurretGun::NONE; MAX_TURRET_GUNS],
+        n: 0,
     };
 
     #[inline]
     pub fn armed(&self) -> bool {
-        self.gun.armed() && self.ammo != 0
+        self.n > 0
+    }
+
+    /// The guns that are live, in table order.
+    #[inline]
+    pub fn live(&self) -> &[TurretGun] {
+        &self.guns[..self.n as usize]
+    }
+}
+
+/// A turret's authorize list (`limits::TURRET_AUTH_CAP`).
+pub type TurretAuth = crate::roster::Roster<TURRET_AUTH_CAP>;
+
+/// What one turret keeps beyond its box, keyed by its packed box address
+/// (`deploy::box_key`). Saved (world format 34).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TurretRec {
+    pub key: u32,
+    /// Whom it spares.
+    pub auth: TurretAuth,
+    /// Peacekeeper (shoots only the hostile) rather than attack all.
+    pub peacekeeper: bool,
+}
+
+/// Bytes of one [`TurretRec`] in `state_hash` and the world save: the key,
+/// the list's count, its whole array and the mode (format 35).
+pub const TURRET_REC_BYTES: usize = 4 + 1 + TURRET_AUTH_CAP * 4 + 1;
+
+impl TurretRec {
+    /// The record a turret owned by `owner` has without one: its owner alone
+    /// on the list, attacking all. The store never holds this shape
+    /// ([`TurretRecs`]).
+    pub fn fresh(key: u32, owner: u32) -> Self {
+        Self {
+            key,
+            auth: TurretAuth::of(owner),
+            peacekeeper: false,
+        }
+    }
+
+    /// Whether it shoots `p`, a body in reach and in sight it could: off its
+    /// list, and hostile too when it keeps the peace.
+    pub fn shoots(&self, p: &Player) -> bool {
+        !self.auth.contains(p.id) && (!self.peacekeeper || p.hostile > 0)
+    }
+
+    /// Every field, little-endian: the key, the count, the whole list, the
+    /// mode.
+    pub fn hash_bytes(&self) -> [u8; TURRET_REC_BYTES] {
+        let mut b = [0u8; TURRET_REC_BYTES];
+        b[0..4].copy_from_slice(&self.key.to_le_bytes());
+        b[4] = self.auth.len() as u8;
+        for (k, id) in self.auth.raw().iter().enumerate() {
+            b[5 + k * 4..9 + k * 4].copy_from_slice(&id.to_le_bytes());
+        }
+        b[TURRET_REC_BYTES - 1] = self.peacekeeper as u8;
+        b
+    }
+}
+
+/// Every turret's record that differs from [`TurretRec::fresh`]: a dense
+/// list, swap-removed, boxed like the shops.
+pub struct TurretRecs {
+    entries: Box<[TurretRec; MAX_TURRET_RECS]>,
+    len: usize,
+}
+
+impl Default for TurretRecs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TurretRecs {
+    pub fn new() -> Self {
+        Self {
+            entries: crate::boxed_array(TurretRec::default()),
+            len: 0,
+        }
+    }
+
+    pub fn entries(&self) -> &[TurretRec] {
+        &self.entries[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn index_of(&self, key: u32) -> Option<usize> {
+        if key == 0 {
+            return None;
+        }
+        self.entries().iter().position(|r| r.key == key)
+    }
+
+    /// The turret at `key`'s record, owned by `owner`: its own, or
+    /// [`TurretRec::fresh`].
+    pub fn get(&self, key: u32, owner: u32) -> TurretRec {
+        self.index_of(key)
+            .map_or(TurretRec::fresh(key, owner), |i| self.entries[i])
+    }
+
+    /// Whether the turret at `key`, owned by `owner`, spares `id`.
+    pub fn authorized(&self, key: u32, owner: u32, id: u32) -> bool {
+        match self.index_of(key) {
+            Some(i) => self.entries[i].auth.contains(id),
+            None => id == owner,
+        }
+    }
+
+    /// Store `rec`, dropping it instead when it is back to fresh. False when
+    /// it needs a record and the store is full.
+    fn put(&mut self, rec: TurretRec, owner: u32) -> bool {
+        let fresh = rec == TurretRec::fresh(rec.key, owner);
+        match self.index_of(rec.key) {
+            Some(_) if fresh => {
+                self.drop_key(rec.key);
+                true
+            }
+            Some(i) => {
+                self.entries[i] = rec;
+                true
+            }
+            None if fresh => true,
+            None if self.len == MAX_TURRET_RECS => false,
+            None => {
+                self.entries[self.len] = rec;
+                self.len += 1;
+                true
+            }
+        }
+    }
+
+    /// Forget a turret's record (it is gone). A key with none is a no-op.
+    pub(crate) fn drop_key(&mut self, key: u32) {
+        if let Some(i) = self.index_of(key) {
+            self.len -= 1;
+            self.entries[i] = self.entries[self.len];
+            self.entries[self.len] = TurretRec::default();
+        }
+    }
+
+    /// Every listed id through `f` (`World::remap_player_ids`).
+    pub(crate) fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for r in self.entries[..self.len].iter_mut() {
+            r.auth.map_ids(f);
+        }
+    }
+
+    /// Replace every record from a decoded world save. Boot-only.
+    pub(crate) fn restore(&mut self, recs: &[TurretRec]) {
+        self.len = recs.len().min(MAX_TURRET_RECS);
+        self.entries[..self.len].copy_from_slice(&recs[..self.len]);
+        for r in self.entries[self.len..].iter_mut() {
+            *r = TurretRec::default();
+        }
+    }
+}
+
+/// Apply one turret op (`deploy::op_is_turret`) from `p` at turret `i`
+/// (an index into the box store, already found to be a turret the presser
+/// reaches). Putting yourself on, clearing and setting the mode take the
+/// turret's building privilege ([`spares`]); taking yourself off takes
+/// nothing, the crew leave's rule, so a refusal never tells a stranger
+/// whether they were on.
+/// Refusals are `EV_DEPLOY_REFUSED`; the list itself reaches the client in
+/// its turret view while the box is open.
+pub fn auth_op(
+    pieces: &Pieces,
+    deploys: &mut Deploys,
+    i: usize,
+    p: &Player,
+    op: u8,
+    events: &mut EventQueue,
+) {
+    use crate::deploy::{
+        ACCESS_OP_TURRET_ATTACK_ALL, ACCESS_OP_TURRET_AUTH, ACCESS_OP_TURRET_CLEAR,
+        ACCESS_OP_TURRET_DEAUTH, ACCESS_OP_TURRET_PEACEKEEPER, REFUSE_D_AUTH_FULL, REFUSE_D_FULL,
+        REFUSE_D_KIND, REFUSE_D_OWNER,
+    };
+    use crate::roster::Added;
+    use crate::world::EV_DEPLOY_REFUSED;
+    let Some(b) = deploys.boxes().get(i).copied() else {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+        return;
+    };
+    let key = box_key(b.cx, b.cz, b.level, b.loc);
+    let (x, z) = b.xz();
+    let privileged = spares(pieces, deploys, b.owner, x, z, p.id);
+    let mut rec = deploys.turret_recs().get(key, b.owner);
+    match op {
+        ACCESS_OP_TURRET_DEAUTH => {
+            rec.auth.remove(p.id);
+        }
+        _ if !privileged => {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+            return;
+        }
+        ACCESS_OP_TURRET_AUTH => {
+            if rec.auth.add(p.id) == Added::Full {
+                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
+                return;
+            }
+        }
+        ACCESS_OP_TURRET_CLEAR => rec.auth.clear(),
+        ACCESS_OP_TURRET_PEACEKEEPER => rec.peacekeeper = true,
+        ACCESS_OP_TURRET_ATTACK_ALL => rec.peacekeeper = false,
+        _ => {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
+            return;
+        }
+    }
+    if !deploys.turret_recs_mut().put(rec, b.owner) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
     }
 }
 
@@ -118,12 +398,15 @@ pub struct Turret {
     pub loc: u8,
     pub owner: u32,
     pub gun: Sentry,
+    /// The gun item it is firing ([`gun_in`]), for the wire to mount on it;
+    /// `None` with no gun in its box.
+    pub carried: Option<u16>,
 }
 
 impl Turret {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 34] {
-        let mut b = [0u8; 34];
+    pub fn hash_bytes(&self) -> [u8; 37] {
+        let mut b = [0u8; 37];
         b[0] = self.live as u8;
         b[1..3].copy_from_slice(&self.cx.to_le_bytes());
         b[3..5].copy_from_slice(&self.cz.to_le_bytes());
@@ -131,6 +414,8 @@ impl Turret {
         b[6] = self.loc;
         b[7..11].copy_from_slice(&self.owner.to_le_bytes());
         b[11..34].copy_from_slice(&self.gun.hash_bytes());
+        b[34] = self.carried.is_some() as u8;
+        b[35..37].copy_from_slice(&self.carried.unwrap_or(0).to_le_bytes());
         b
     }
 
@@ -153,7 +438,7 @@ impl Turret {
 pub fn reconcile(
     dc: &DeployContent,
     deploys: &Deploys,
-    ammo: u16,
+    def: &TurretDef,
     table: &mut [Turret; MAX_TURRETS],
     slots: &mut [Mob],
 ) {
@@ -181,14 +466,14 @@ pub fn reconcile(
                     let mut dry = [false; MAX_TURRETS];
                     for (d, t) in dry.iter_mut().zip(table.iter()) {
                         *d = t.live
-                            && rounds(deploys, box_key(t.cx, t.cz, t.level, t.loc), ammo) == 0;
+                            && loaded(def, deploys, box_key(t.cx, t.cz, t.level, t.loc)).is_none();
                     }
                     dry
                 });
                 let Some(j) = dry.iter().position(|&d| d) else {
                     return;
                 };
-                if rounds(deploys, box_key(d.cx, d.cz, d.level, d.loc), ammo) == 0 {
+                if loaded(def, deploys, box_key(d.cx, d.cz, d.level, d.loc)).is_none() {
                     continue;
                 }
                 dry[j] = false;
@@ -204,6 +489,7 @@ pub fn reconcile(
             loc: d.loc,
             owner: d.owner,
             gun: Sentry::default(),
+            carried: None,
         };
         // It starts facing the way it was placed.
         slots[k].yaw = (d.pose.yaw as u16) << 8;
@@ -212,13 +498,15 @@ pub fn reconcile(
 
 /// One tick of every player turret. A round that landed on somebody is
 /// written to `rounds` for `World::tick` to land (`sentry::step`'s split);
-/// each round fired, hit or miss, spends one of `def.ammo` from the box.
+/// each round fired, hit or miss, spends one of its gun's round from the box.
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
     haven: &Haven,
     tick: u64,
     def: &TurretDef,
+    pc: &crate::power::PowerContent,
+    power: &crate::power::Power,
     dc: &DeployContent,
     pieces: &Pieces,
     occ: &mut Occupants,
@@ -239,10 +527,10 @@ pub fn step(
     }
     let cols: &ColIndex = pieces.cols();
     if tick.is_multiple_of(LOOK_TICKS) {
-        reconcile(dc, deploys, def.ammo, table, slots);
+        reconcile(dc, deploys, def, table, slots);
     }
-    // Each entry's record and box, and whether that box holds a round: a
-    // dry gun neither shoots nor jams the guns around it.
+    // Each entry's record and box, the gun in that box, and whether it has a
+    // round for it: a dry gun neither shoots nor jams the guns around it.
     let mut recs = [None; MAX_TURRETS];
     let mut boxes = [None; MAX_TURRETS];
     let mut hot = [false; MAX_TURRETS];
@@ -251,7 +539,14 @@ pub fn step(
         if t.live {
             recs[k] = deploys.find(t.cx, t.cz, t.level, t.loc).copied();
             boxes[k] = deploys.box_index(box_key(t.cx, t.cz, t.level, t.loc));
-            hot[k] = recs[k].is_some() && rounds_in(deploys, boxes[k], def.ammo) > 0;
+            let g = gun_in(def, deploys, boxes[k]);
+            table[k].carried = g.map(|g| def.guns[g].item);
+            // And power: Rust's turret is dead without its 10 rW
+            // (`power.rs`); a row that draws nothing needs no wire.
+            let fed = recs[k].is_some_and(|r| {
+                power.feeds(box_key(t.cx, t.cz, t.level, t.loc), pc.def(r.row).draw_rw)
+            });
+            hot[k] = fed && g.is_some_and(|g| rounds_in(deploys, boxes[k], def.guns[g].ammo) > 0);
         }
     }
     for k in 0..MAX_TURRETS {
@@ -282,32 +577,37 @@ pub fn step(
         );
         let bi = boxes[k];
         let s = &mut table[k].gun;
-        // A dry gun lets its target go and looks at nobody; so does one
-        // jammed by the turrets around it (module doc).
-        if rounds_in(deploys, bi, def.ammo) == 0 || jammed(&recs, &hot, k, (x, z)) {
+        // No gun, or a dry one, lets its target go and looks at nobody; so
+        // does one jammed by the turrets around it (module doc).
+        let Some(g) = gun_in(def, deploys, bi).filter(|_| hot[k]) else {
+            s.drop_target();
+            continue;
+        };
+        if jammed(&recs, &hot, k, (x, z)) {
             s.drop_target();
             continue;
         }
+        let g = &def.guns[g];
         // Looks are spread over the cadence by index, so the turrets do not
         // all walk their sight lines on one tick.
         if (tick + k as u64).is_multiple_of(LOOK_TICKS) {
-            let (owner, dref) = (t.owner, &*deploys);
-            // [`spares`], with the walk taken once for every player asked.
-            let crew = crate::claim::crew_cover(pieces, dref, x, z, owner);
+            // Its own list and mode, read once for every player asked.
+            let rec = deploys
+                .turret_recs()
+                .get(box_key(t.cx, t.cz, t.level, t.loc), t.owner);
             let wanted = |p: &Player| {
                 p.active
                     && !p.dead
                     && !p.sleeping
                     && p.hp > 0
                     && !crate::combat::protected(p)
-                    && p.id != owner
-                    && !crew.holds(dref, p.id)
+                    && rec.shoots(p)
             };
             sentry::look(
                 seed,
                 haven,
                 tick,
-                &def.gun,
+                &g.def,
                 cols,
                 occ,
                 s,
@@ -332,7 +632,7 @@ pub fn step(
             seed,
             haven,
             tick,
-            &def.gun,
+            &g.def,
             cols,
             occ,
             s,
@@ -344,7 +644,7 @@ pub fn step(
         );
         if s.next_shot != before {
             if let Some(i) = bi {
-                spend_one(deploys, i, def.ammo);
+                spend_one(deploys, i, g.ammo);
             }
         }
     }
@@ -375,10 +675,26 @@ fn jammed(
         >= TURRET_INTERFERENCE
 }
 
-/// Rounds of `ammo` in box `bi`.
-fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
+/// The gun in box `bi`'s weapon slot, as its index in `def.guns`, when the
+/// turret fires it.
+pub fn gun_in(def: &TurretDef, deploys: &Deploys, bi: Option<usize>) -> Option<usize> {
+    let st = deploys.box_slot(bi?, WEAPON_SLOT);
+    if st.count == 0 {
+        return None;
+    }
+    def.live().iter().position(|g| g.item == st.item)
+}
+
+/// The gun in the box at `key`, if the box also holds a round for it.
+fn loaded(def: &TurretDef, deploys: &Deploys, key: u32) -> Option<usize> {
+    let bi = deploys.box_index(key);
+    gun_in(def, deploys, bi).filter(|&g| rounds_in(deploys, bi, def.guns[g].ammo) > 0)
+}
+
+/// Rounds of `ammo` in box `bi`'s ammo slots.
+pub fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     bi.map_or(0u32, |i| {
-        (0..crate::limits::BOX_SLOTS)
+        AMMO_SLOTS
             .map(|s| deploys.box_slot(i, s))
             .filter(|s| s.count > 0 && s.item == ammo)
             .map(|s| s.count as u32)
@@ -386,14 +702,9 @@ fn rounds_in(deploys: &Deploys, bi: Option<usize>, ammo: u16) -> u32 {
     })
 }
 
-/// Rounds of `ammo` in the box at `key`.
-fn rounds(deploys: &Deploys, key: u32, ammo: u16) -> u32 {
-    rounds_in(deploys, deploys.box_index(key), ammo)
-}
-
-/// Take one `item` out of box `i`, from the first stack holding it.
+/// Take one `item` out of box `i`'s ammo slots, from the first holding it.
 fn spend_one(deploys: &mut Deploys, i: usize, item: u16) {
-    for s in 0..crate::limits::BOX_SLOTS {
+    for s in AMMO_SLOTS {
         let mut st = deploys.box_slot(i, s);
         if st.count > 0 && st.item == item {
             st.count -= 1;

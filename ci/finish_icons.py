@@ -188,6 +188,18 @@ PAINT = {
     "planter_box": dict(mat="plain", c=("#86c45a", "#3f7a2a")),
     "auto_turret": dict(c=DARK_STEEL, metal=True),
     "vending_machine": dict(c=("#d8574a", "#7f2219"), metal=True, holes="#cfe6ee"),
+    # Electricity's core kit (`sim_core::power`): copper for the wire, the
+    # generator's hazard yellow, the panel's sun, a battery's green steel,
+    # grey for the small parts and the lamp's warm white.
+    "wire_tool": dict(c=("#e39a5b", "#8a4a1c"), metal=True),
+    "small_generator": dict(c=("#e8c547", "#8f6d12"), metal=True),
+    "large_solar_panel": dict(c=("#f6d55c", "#c47d16")),
+    "small_battery": dict(c=("#8fc78a", "#2f6a34"), metal=True),
+    "large_battery": dict(c=("#7fb37a", "#29572d"), metal=True),
+    "switch": dict(c=DARK_STEEL, metal=True),
+    "splitter": dict(c=STEEL, metal=True),
+    "root_combiner": dict(c=STEEL, metal=True),
+    "ceiling_light": dict(c=("#f4ead2", "#a8977a"), metal=True),
     "raw_meat": dict(c=("#e5776d", "#9d2f33"), holes="#f3d8cc"),
     "cooked_meat": dict(c=("#c98449", "#6c3a1a")),
     "burnt_meat": dict(c=("#6a5448", "#241a16")),

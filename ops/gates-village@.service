@@ -23,6 +23,10 @@
 #                              # Give each village its own start so they
 #                              # take turns asleep: millers 0, thatchers 3600.
 #
+# Each bot keeps a journal (`--journal`, journal-<name>.jsonl beside its key):
+# what it is doing and why, which the buddies runner publishes so the agent
+# floor on elopros.com shows it.
+#
 # `ci/deploy_shard.sh` restarts every gates-village@ unit on the binary it
 # installs to /opt/gates-agents, so a wire bump never strands a village.
 #
@@ -54,7 +58,7 @@ Environment=VILLAGE_BOTS=12
 Environment=VILLAGE_SHIFT=5400,1800
 EnvironmentFile=-/etc/gates-village/%i.env
 # A run is at most a day (`--seconds`); systemd starts the next.
-ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --scripted --society --bots ${VILLAGE_BOTS} --shift ${VILLAGE_SHIFT} --agent-keys /var/lib/gates-village/%i --agent-name ${VILLAGE_NAME} --seconds 86400
+ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --scripted --society --bots ${VILLAGE_BOTS} --shift ${VILLAGE_SHIFT} --agent-keys /var/lib/gates-village/%i --agent-name ${VILLAGE_NAME} --seconds 86400 --journal /var/lib/gates-village/%i/journal.jsonl
 Restart=always
 RestartSec=15
 

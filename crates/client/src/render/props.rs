@@ -194,7 +194,10 @@ pub struct PropAssets {
     pub cards: Option<RingCards>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
+    /// A felled pine's stump and what it wears: [`STUMP_GLB`]'s, or the
+    /// six-sided taper in the trunk's photo where that did not load.
     stump: Handle<Mesh>,
+    stump_material: Handle<StandardMaterial>,
     barrel: Handle<Mesh>,
     crate_box: Handle<Mesh>,
     cache_box: Handle<Mesh>,
@@ -501,10 +504,6 @@ pub fn grow(
         let want = g.base * share;
         if (t.scale.x - want).abs() > 1e-4 {
             t.scale = Vec3::splat(want);
-            // A stump stands on its own lift, which is to its size.
-            if f.part == FellPart::Stump {
-                t.translation.y = f.base_y + STUMP_LIFT_M * want;
-            }
         }
     }
 }
@@ -1201,9 +1200,10 @@ fn pine_mesh(variant: u32) -> Mesh {
 
 /// What a felled pine leaves behind. The browser's `stumpGeometry`, constant
 /// for constant: a six-sided taper 0.26 m at the top and 0.32 m at the base,
-/// 0.34 m tall, wearing the trunk band. The cut face is lighter — fresh
-/// timber against weathered bark is the whole reason a stump reads as a stump
-/// and not as a rock.
+/// 0.34 m tall, wearing the trunk band, standing on y = 0 as [`STUMP_GLB`]
+/// does. The cut face is lighter — fresh timber against weathered bark is the
+/// whole reason a stump reads as a stump and not as a rock. Drawn only where
+/// the model did not load (a headless build).
 fn stump_mesh() -> Mesh {
     // A stump is 0.34 m tall and 0.64 m across, so the bark map has to repeat
     // several times over it to read as bark rather than as one blurred patch.
@@ -1213,7 +1213,7 @@ fn stump_mesh() -> Mesh {
     // Mean-1 over the photograph, per `tint1` — the band still ramps weathered
     // to fresh up the stump, it just no longer sets the absolute colour.
     let col = |v: Vec3| {
-        let c = band_color(BAND_TRUNK, v.y + 0.17);
+        let c = band_color(BAND_TRUNK, v.y);
         let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         if l <= 1e-6 {
             [1.0, 1.0, 1.0, 1.0]
@@ -1224,10 +1224,10 @@ fn stump_mesh() -> Mesh {
     for i in 0..sides {
         let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
         let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
-        let b0 = Vec3::new(a0.cos() * r_base, -h * 0.5, a0.sin() * r_base);
-        let b1 = Vec3::new(a1.cos() * r_base, -h * 0.5, a1.sin() * r_base);
-        let t0 = Vec3::new(a0.cos() * r_top, h * 0.5, a0.sin() * r_top);
-        let t1 = Vec3::new(a1.cos() * r_top, h * 0.5, a1.sin() * r_top);
+        let b0 = Vec3::new(a0.cos() * r_base, 0.0, a0.sin() * r_base);
+        let b1 = Vec3::new(a1.cos() * r_base, 0.0, a1.sin() * r_base);
+        let t0 = Vec3::new(a0.cos() * r_top, h, a0.sin() * r_top);
+        let t1 = Vec3::new(a1.cos() * r_top, h, a1.sin() * r_top);
         s.tri(b0, t0, b1, col, None, 0.0);
         s.tri(b1, t0, t1, col, None, 0.0);
     }
@@ -1236,12 +1236,12 @@ fn stump_mesh() -> Mesh {
     // bark" survives while the map sets the level.
     let cut = tint1(0xb59a6e);
     let cap = move |_: Vec3| [cut[0], cut[1], cut[2], 1.0];
-    let centre = Vec3::new(0.0, h * 0.5, 0.0);
+    let centre = Vec3::new(0.0, h, 0.0);
     for i in 0..sides {
         let a0 = i as f32 / sides as f32 * std::f32::consts::TAU;
         let a1 = (i + 1) as f32 / sides as f32 * std::f32::consts::TAU;
-        let t0 = Vec3::new(a0.cos() * r_top, h * 0.5, a0.sin() * r_top);
-        let t1 = Vec3::new(a1.cos() * r_top, h * 0.5, a1.sin() * r_top);
+        let t0 = Vec3::new(a0.cos() * r_top, h, a0.sin() * r_top);
+        let t1 = Vec3::new(a1.cos() * r_top, h, a1.sin() * r_top);
         s.tri(centre, t0, t1, cap, None, 0.0);
     }
     s.mesh()
@@ -1675,7 +1675,14 @@ pub struct PropModels {
     /// The cacti's models ([`CACTUS_GLB`]). Empty on a headless build, which
     /// then draws `plants::cactus`.
     cactus: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// The felled pine's stump ([`STUMP_GLB`]). `None` on a headless build,
+    /// which then draws [`stump_mesh`].
+    stump: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
+
+/// What a felled pine leaves, Meshy's (`assets/models/MANIFEST.md` §stump):
+/// bark round the sides and a pale fresh-cut top, standing on its base.
+pub const STUMP_GLB: &str = "models/prop/stump.glb";
 
 /// The desert's two cacti, Meshy's (`assets/models/MANIFEST.md` §Cacti),
 /// standing on their base: the saguaro, then the ball cactus a slot of
@@ -1792,7 +1799,13 @@ impl PropModels {
             roadside,
             pickup,
             cactus,
+            stump: Some(load_model(server, STUMP_GLB)),
         }
+    }
+
+    /// The stump's model, or `None` for the generated taper.
+    pub fn stump(&self) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        self.stump.clone()
     }
 
     /// The pickup model for `o`, or `None` for the lump.
@@ -2250,6 +2263,9 @@ pub fn assets(
     // this is the identity that map was sourced for (`MANIFEST.md`: "the
     // identity ART asks for, not brick").
     let stone = photo(&maps.stone, 0.82, fresnel::DIELECTRIC, materials);
+    let stump = models
+        .stump()
+        .unwrap_or_else(|| (meshes.add(stump_mesh()), wood.clone()));
     PropAssets {
         pines: conifers.iter().map(|(b, _, _)| b.clone()).collect(),
         needles: conifers.iter().map(|(_, n, _)| n.clone()).collect(),
@@ -2265,7 +2281,8 @@ pub fn assets(
         // old amplitude a low-frequency lobe is a bulge, not a shape.
         blob: meshes.add(archetype_mesh(Occupant::StoneNode).expect("node mesh")),
         boulder: meshes.add(archetype_mesh(Occupant::Rock).expect("boulder mesh")),
-        stump: meshes.add(stump_mesh()),
+        stump: stump.0,
+        stump_material: stump.1,
         barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
         crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
         cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
@@ -3595,13 +3612,10 @@ pub fn spawn_slot(
             // sapling felled leaves a sapling's stump — not a full tree's.
             Grow::tree(slot.scale),
             Mesh3d(a.stump.clone()),
-            MeshMaterial3d(a.wood.clone()),
+            MeshMaterial3d(a.stump_material.clone()),
             Transform {
-                translation: Vec3::new(
-                    slot.x,
-                    transform.translation.y + STUMP_LIFT_M * slot.scale,
-                    slot.z,
-                ),
+                // Stood on its base, so the slot's own ground at any size.
+                translation: Vec3::new(slot.x, transform.translation.y, slot.z),
                 rotation: Quat::from_rotation_y(yaw),
                 scale: Vec3::splat(slot.scale),
             },
@@ -3778,10 +3792,6 @@ pub fn harvest_new(
     let h = &core.harvested;
     apply_fell_added(q, &|key| (h.contains(key), h.grubbed(key)));
 }
-
-/// Half a metre of stump lift: the mesh is centred on its own axis while the
-/// slot's `y` is the ground. `web/src/props.js` ships the same 0.17.
-pub const STUMP_LIFT_M: f32 = 0.17;
 
 /// How long a tree takes to go from standing to flat, seconds.
 ///

@@ -167,6 +167,30 @@ pub enum Verb {
     /// A casino seat (`sim_core::seat`): `handle` is the seat, or
     /// `seat::SEAT_NONE` to stand up. By nearness ([`resolve_seat`]).
     Sit,
+    /// An electric switch (`sim_core::power`): `E` flips it, which is the
+    /// use verb at its address; `open` is its position. `handle` is its box
+    /// key, so the wire tool can name it.
+    Switch,
+    /// Any other power part — a solar panel, a battery, a splitter, a root
+    /// combiner, a ceiling light. Nothing on `E`; aimed so the wire tool can
+    /// name it (`handle`, its box key) and the prompt can say what it is.
+    Part,
+}
+
+/// A power part's name, by archetype, for its prompt and the wire tool's.
+pub fn part_name(arch: u8) -> &'static str {
+    use sim_core::deploy::*;
+    match arch {
+        ARCH_GENERATOR => "SMALL GENERATOR",
+        ARCH_SOLAR => "SOLAR PANEL",
+        ARCH_BATTERY => "BATTERY",
+        ARCH_SWITCH => "SWITCH",
+        ARCH_SPLITTER => "SPLITTER",
+        ARCH_COMBINER => "ROOT COMBINER",
+        ARCH_LIGHT => "CEILING LIGHT",
+        ARCH_TURRET => "AUTO TURRET",
+        _ => "PART",
+    }
 }
 
 impl Verb {
@@ -227,6 +251,8 @@ impl Verb {
             Verb::Wheel => 22,
             Verb::Slots => 23,
             Verb::Sit => 24,
+            Verb::Switch => 27,
+            Verb::Part => 28,
         }
     }
 
@@ -265,6 +291,8 @@ impl Verb {
             Verb::Wheel => "BIG WHEEL",
             Verb::Slots => "SLOT MACHINE",
             Verb::Sit => "SEAT",
+            Verb::Switch => "SWITCH",
+            Verb::Part => "POWER PART",
         }
     }
 }
@@ -501,6 +529,9 @@ impl Pick {
             // boxes, `DOORS.md` §9.8). `E` stays the open — whether it
             // succeeds against a locked lid is the sim's verdict, never
             // this line's.
+            Verb::Box if self.arch == sim_core::deploy::ARCH_TURRET => {
+                format!("[E] OPEN AUTO TURRET{}", self.lock_hint())
+            }
             Verb::Box => format!("[E] OPEN BOX{}", self.lock_hint()),
             // The crew keys ride the hearth's prompt because there is
             // nowhere else a player would look for them, and `L` is
@@ -539,10 +570,24 @@ impl Pick {
                 if self.public {
                     // Rust's safe-zone recycler: it pays less than your own.
                     format!("PUBLIC RECYCLER ({}%)", sim_core::town::PUBLIC_RECYCLE_PCT)
+                } else if self.arch == sim_core::deploy::ARCH_GENERATOR {
+                    // The generator shares the recycler's keys: a box of
+                    // fuel and a switch (`oven.rs`).
+                    "SMALL GENERATOR".to_string()
                 } else {
                     "RECYCLER".to_string()
                 },
                 if self.lit { "STOP" } else { "START" }
+            ),
+            Verb::Switch => format!("[E] SWITCH {}", if self.open { "OFF" } else { "ON" }),
+            Verb::Part => format!(
+                "{}{}  ·  WIRE TOOL: [LMB] RUN A WIRE  ·  [RMB] PULL ITS WIRES",
+                part_name(self.arch),
+                if self.arch == sim_core::deploy::ARCH_LIGHT && self.lit {
+                    " (LIT)"
+                } else {
+                    ""
+                }
             ),
             // The recycler's two keys (research table v1): the table is a
             // container now, so `E` opens it and `C` is the switch that
@@ -1349,6 +1394,13 @@ pub fn resolve(
             ARCH_RECYCLER => Verb::Recycler,
             sim_core::deploy::ARCH_PLANTER => Verb::Planter,
             sim_core::deploy::ARCH_CATCHER => Verb::Catcher,
+            sim_core::deploy::ARCH_GENERATOR => Verb::Recycler,
+            sim_core::deploy::ARCH_SWITCH => Verb::Switch,
+            sim_core::deploy::ARCH_SOLAR
+            | sim_core::deploy::ARCH_BATTERY
+            | sim_core::deploy::ARCH_SPLITTER
+            | sim_core::deploy::ARCH_COMBINER
+            | sim_core::deploy::ARCH_LIGHT => Verb::Part,
             sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
@@ -1367,6 +1419,8 @@ pub fn resolve(
             || verb == Verb::Catcher
             || verb == Verb::Shop
             || verb == Verb::Research
+            || verb == Verb::Switch
+            || verb == Verb::Part
         {
             handle = box_key(rec.cx, rec.cz, rec.level, rec.loc);
             if handle == 0 {

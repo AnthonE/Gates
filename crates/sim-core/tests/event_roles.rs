@@ -104,7 +104,7 @@ use sim_core::world::{
     EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
     EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
+    EV_VITALS, EV_WEAK_MARK, EV_WIRE, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
     PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE,
     TRUST_VERB_MAX,
 };
@@ -4546,7 +4546,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 74] = [
+    const COVERED: [(&str, u8); 75] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
@@ -4621,6 +4621,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_SENTRY_LOCK", EV_SENTRY_LOCK),
         ("EV_AMMO", EV_AMMO),
         ("EV_FIRE", EV_FIRE),
+        ("EV_WIRE", EV_WIRE),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -6713,4 +6714,64 @@ fn a_sentry_lock_names_the_gun_and_the_target() {
     );
     assert_eq!(ev.b, BUILDER);
     assert_eq!(ev.c, 0, "EV_SENTRY_LOCK.c is reserved and must stay zero");
+}
+
+/// `EV_WIRE` (electricity, `power.rs`): a wire run from output 2 of one
+/// splitter to input 0 of another is `a` = the part it leaves, `b` = the part
+/// it reaches, `c` = `1 << 16 | out << 8 | inp`; taking the first part's
+/// wires up is `a` = that part and `b` = `c` = 0.
+#[test]
+fn wire_names_from_then_to_then_its_ports() {
+    use sim_core::deploy::ARCH_SPLITTER;
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    w.deploy.defs[DEPLOY_FIRE as usize].arch = ARCH_SPLITTER;
+    w.players[0].inv[4] = ItemStack {
+        item: w.deploy.defs[DEPLOY_FIRE as usize].item,
+        count: 2,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    place_deploy(&mut w, DEPLOY_FIRE, cx + 1, cz, GROUND, LOC_PLANE);
+    let (from, to) = (box_key(cx, cz, GROUND, 0), box_key(cx + 1, cz, GROUND, 0));
+    // The wire tool: item 3, in the selected slot.
+    w.power_def.wire_tool = 3;
+    w.power_def.wire_max_mm = 30_000;
+    w.players[0].inv[6] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[0].frame.sel = 6;
+    w.tick(&[Command::Wire {
+        id: BUILDER,
+        wire: sim_core::power::WireRec {
+            from,
+            out: 2,
+            to,
+            inp: 0,
+        },
+    }]);
+    let e = only(&w, EV_WIRE);
+    assert_eq!(e.a, from, "EV_WIRE.a is the part the wire LEAVES");
+    assert_eq!(e.b, to, "EV_WIRE.b is the part it REACHES");
+    assert_eq!(
+        e.c,
+        1 << 16 | 2 << 8,
+        "EV_WIRE.c is set << 16 | out << 8 | inp"
+    );
+    w.tick(&[Command::Unwire {
+        id: BUILDER,
+        key: from,
+    }]);
+    let e = only(&w, EV_WIRE);
+    assert_eq!(
+        (e.a, e.b, e.c),
+        (from, 0, 0),
+        "taken up: the part, then zeros"
+    );
 }

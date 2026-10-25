@@ -385,12 +385,15 @@ pub fn remote(
     world: Res<super::WorldId>,
     bodies: Res<Bodies>,
     cam: Query<&GlobalTransform, With<EyeCam>>,
-    mut lights: Query<(
-        &RemoteLight,
-        &mut SpotLight,
-        &mut Transform,
-        &mut GlobalTransform,
-    )>,
+    mut lights: Query<
+        (
+            &RemoteLight,
+            &mut SpotLight,
+            &mut Transform,
+            &mut GlobalTransform,
+        ),
+        Without<EyeCam>,
+    >,
     mut lasers: Query<
         (
             &RemoteLaser,
@@ -398,7 +401,7 @@ pub fn remote(
             &mut GlobalTransform,
             &mut Visibility,
         ),
-        (Without<RemoteLight>, Without<RemoteDot>),
+        (Without<RemoteLight>, Without<RemoteDot>, Without<EyeCam>),
     >,
     mut dots: Query<
         (
@@ -407,7 +410,7 @@ pub fn remote(
             &mut GlobalTransform,
             &mut Visibility,
         ),
-        (Without<RemoteLight>, Without<RemoteLaser>),
+        (Without<RemoteLight>, Without<RemoteLaser>, Without<EyeCam>),
     >,
 ) {
     let eye = cam.single().map_or(Vec3::ZERO, |g| g.translation());

@@ -245,19 +245,18 @@ impl Content {
         Ok(gc)
     }
 
-    /// Rank of `id` among all recipe ids, sorted — the wire-side recipe
-    /// index (same canonical mapping as `item_index`).
+    /// Rank of `id` among all recipes — the wire-side recipe index:
+    /// **blueprint recipes first**, then the rest, each run sorted by id.
+    /// A player's blueprint mask (`Player::known`) is a bit per recipe
+    /// index and only a blueprint recipe is ever asked of it, so ranking
+    /// them first is what lets the table outgrow the mask
+    /// (`limits::KNOWN_MASK_BITS`) while every blueprint still has its bit.
     pub fn recipe_index(&self, id: &str) -> Option<u16> {
-        let mut rank = 0u16;
-        let mut found = false;
-        for r in &self.recipes {
-            if r.id.as_str() < id {
-                rank += 1;
-            } else if r.id == id {
-                found = true;
-            }
+        fn key(r: &crate::schema::Recipe) -> (bool, &str) {
+            (!r.blueprint, r.id.as_str())
         }
-        found.then_some(rank)
+        let mine = key(self.recipes.iter().find(|r| r.id == id)?);
+        Some(self.recipes.iter().filter(|r| key(r) < mine).count() as u16)
     }
 
     /// The craft table. Refuses sets the sim's fixed capacities — or the
@@ -273,6 +272,13 @@ impl Content {
         cc.recipe_count = self.recipes.len() as u16;
         for r in &self.recipes {
             let idx = self.recipe_index(&r.id).expect("own id resolves") as usize;
+            if r.blueprint && idx >= sim_core::limits::KNOWN_MASK_BITS {
+                return Err(format!(
+                    "bake: blueprint recipe `{}` ranks {idx}, past the {}-bit blueprint mask",
+                    r.id,
+                    sim_core::limits::KNOWN_MASK_BITS
+                ));
+            }
             if r.seconds == 0 || r.seconds > u16::MAX as u32 {
                 return Err(format!(
                     "bake: `{}` seconds {} outside 1..=65535",
@@ -525,6 +531,13 @@ impl Content {
                     DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
                     DeployArchetype::Rug => sim_core::deploy::ARCH_RUG,
                     DeployArchetype::Catcher => sim_core::deploy::ARCH_CATCHER,
+                    DeployArchetype::Generator => sim_core::deploy::ARCH_GENERATOR,
+                    DeployArchetype::Solar => sim_core::deploy::ARCH_SOLAR,
+                    DeployArchetype::Battery => sim_core::deploy::ARCH_BATTERY,
+                    DeployArchetype::Switch => sim_core::deploy::ARCH_SWITCH,
+                    DeployArchetype::Splitter => sim_core::deploy::ARCH_SPLITTER,
+                    DeployArchetype::Combiner => sim_core::deploy::ARCH_COMBINER,
+                    DeployArchetype::Light => sim_core::deploy::ARCH_LIGHT,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -1717,6 +1730,15 @@ impl Content {
             .ok_or_else(|| format!("bake: fuel burn {} s overflows the tick span", f.seconds))?;
         cc.byproduct_pct = u16::try_from(f.byproduct_pct)
             .map_err(|_| format!("bake: fuel byproduct_pct {} overflows u16", f.byproduct_pct))?;
+        // The small generator's fuel (`deployables.toml` `[power]`).
+        if let Some(p) = &self.power {
+            cc.gen_fuel_item = self
+                .item_index(&p.fuel)
+                .ok_or_else(|| format!("bake: power fuel `{}` names no item", p.fuel))?;
+            cc.gen_fuel_ticks = p.fuel_s.checked_mul(TICK_HZ).ok_or_else(|| {
+                format!("bake: power fuel {} s overflows the tick span", p.fuel_s)
+            })?;
+        }
         if self.cooks.len() > MAX_COOK_ROWS {
             return Err(format!(
                 "bake: {} cook rows exceed the sim's {MAX_COOK_ROWS}-row table",
@@ -1959,6 +1981,16 @@ impl Content {
                     self.recipe_index(&parent.id).expect("own id resolves")
                 }
             };
+            // The mask the sim sets and asks is a bit per recipe index:
+            // a row past it could be researched and never learned.
+            let past = |r: u16| r != NO_RECIPE && r as usize >= sim_core::limits::KNOWN_MASK_BITS;
+            if past(recipe) || past(requires) {
+                return Err(format!(
+                    "bake: research row `{}` names a recipe past the {}-bit blueprint mask",
+                    r.item,
+                    sim_core::limits::KNOWN_MASK_BITS
+                ));
+            }
             rc.rows[i] = ResearchRow {
                 item,
                 recipe,
@@ -2935,6 +2967,42 @@ impl Content {
 
     /// A player auto turret's gun (`[turret]`), in sim units, or
     /// `TurretDef::INERT` for a set without one.
+    /// Electricity (`[power]`): each part's numbers on its deploy row, the
+    /// wire tool, and a wire's span. A battery's capacity goes from rWm to
+    /// rW·ticks, the unit the sim charges in.
+    pub fn bake_power(&self) -> Result<sim_core::power::PowerContent, String> {
+        let Some(p) = &self.power else {
+            return Ok(sim_core::power::PowerContent::EMPTY);
+        };
+        let mut pc = sim_core::power::PowerContent::EMPTY;
+        pc.wire_tool = self
+            .item_index(&p.wire_tool)
+            .ok_or_else(|| format!("bake: power wire_tool `{}` names no item", p.wire_tool))?;
+        pc.wire_max_mm = p
+            .wire_max_m
+            .checked_mul(1000)
+            .ok_or_else(|| format!("bake: power wire_max_m {} overflows", p.wire_max_m))?;
+        for part in &p.part {
+            let row = self
+                .deploy_index(&part.id)
+                .ok_or_else(|| format!("bake: power part `{}` is no deployable", part.id))?;
+            let rw = |what: &str, v: u32| {
+                u16::try_from(v)
+                    .map_err(|_| format!("bake: power `{}` {what} {v} overflows", part.id))
+            };
+            pc.parts[row as usize] = sim_core::power::PowerDef {
+                out_rw: rw("out_rw", part.out_rw)?,
+                draw_rw: rw("draw_rw", part.draw_rw)?,
+                capacity: part
+                    .capacity_rwm
+                    .checked_mul(60 * TICK_HZ)
+                    .ok_or_else(|| format!("bake: power `{}` capacity overflows", part.id))?,
+                charge_pct: rw("charge_pct", part.charge_pct)?,
+            };
+        }
+        Ok(pc)
+    }
+
     pub fn bake_turret(&self) -> Result<sim_core::turret::TurretDef, String> {
         let Some(t) = &self.turret else {
             return Ok(sim_core::turret::TurretDef::INERT);
@@ -2943,24 +3011,55 @@ impl Content {
             u16::try_from((ms as u64 * TICK_HZ as u64 / 1000).max(1))
                 .map_err(|_| format!("bake: turret {ms} ms overflows the sim"))
         };
-        let ammo = self
-            .item_index(&t.ammo)
-            .ok_or_else(|| format!("bake: turret ammo `{}` names no item", t.ammo))?;
-        Ok(sim_core::turret::TurretDef {
-            gun: sim_core::sentry::SentryDef {
-                range_mm: t.range_m * 1000,
-                damage: u16::try_from(t.damage)
-                    .map_err(|_| format!("bake: turret damage {} overflows", t.damage))?,
-                burst: u8::try_from(t.burst)
-                    .map_err(|_| format!("bake: turret burst {} overflows", t.burst))?,
-                rate_ticks: ms_ticks(t.rate_ms)?,
-                gap_ticks: ms_ticks(t.burst_gap_ms)?,
-                lock_ticks: ms_ticks(t.lock_ms)?,
-                lose_ticks: ms_ticks(t.lose_ms)?,
-                spread_pm: t.spread_cm_per_10m as u16,
-            },
-            ammo,
-        })
+        if t.guns.len() > sim_core::limits::MAX_TURRET_GUNS {
+            return Err(format!(
+                "bake: turret names {} guns, past MAX_TURRET_GUNS {}",
+                t.guns.len(),
+                sim_core::limits::MAX_TURRET_GUNS
+            ));
+        }
+        let mut def = sim_core::turret::TurretDef::INERT;
+        for (k, id) in t.guns.iter().enumerate() {
+            let w = self
+                .weapons
+                .iter()
+                .find(|w| &w.id == id)
+                .filter(|w| w.kind == WeaponKind::Firearm)
+                .ok_or_else(|| format!("bake: turret gun `{id}` is no firearm row"))?;
+            let (Some(magazine), Some(reload_ms), Some(ammo)) = (
+                w.magazine,
+                w.reload_ms,
+                w.ammo.as_ref().and_then(|a| a.first()),
+            ) else {
+                return Err(format!(
+                    "bake: turret gun `{id}` has no magazine, reload or round"
+                ));
+            };
+            let pellets = w.gun.as_ref().map_or(1, |g| g.pellets);
+            let damage = w.damage * pellets * t.damage_pct / 100;
+            def.guns[k] = sim_core::turret::TurretGun {
+                item: self
+                    .item_index(id)
+                    .ok_or_else(|| format!("bake: turret gun `{id}` names no item"))?,
+                def: sim_core::sentry::SentryDef {
+                    range_mm: t.range_m * 1000,
+                    damage: u16::try_from(damage)
+                        .map_err(|_| format!("bake: turret `{id}` damage {damage} overflows"))?,
+                    burst: u8::try_from(magazine)
+                        .map_err(|_| format!("bake: turret `{id}` burst {magazine} overflows"))?,
+                    rate_ticks: ms_ticks(60_000 / w.rate_per_min.max(1))?,
+                    gap_ticks: ms_ticks(reload_ms)?,
+                    lock_ticks: ms_ticks(t.lock_ms)?,
+                    lose_ticks: ms_ticks(t.lose_ms)?,
+                    spread_pm: t.spread_cm_per_10m as u16,
+                },
+                ammo: self
+                    .item_index(ammo)
+                    .ok_or_else(|| format!("bake: turret `{id}` round `{ammo}` names no item"))?,
+            };
+            def.n = k as u8 + 1;
+        }
+        Ok(def)
     }
 
     /// The bred brains the species rows carry (`genome`, `genome_tier`),

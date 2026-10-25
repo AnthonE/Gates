@@ -1020,7 +1020,13 @@ pub const PAID_NO_BODY: u32 = 2;
 /// never leaves a ghost on a far client.
 pub const EV_PLANT_GONE: u8 = 74;
 
-pub const EV_MAX: u8 = EV_PLANT_GONE;
+/// EV_WIRE (`power.rs`): a = the part a wire leaves, b = the part it
+/// reaches, c = `1 << 16 | out << 8 | inp` for a wire laid; or a = a part
+/// and b = c = 0 for every wire on it taken up. Aimed at the clients that
+/// hold the part `a`, as a door's state is.
+pub const EV_WIRE: u8 = 75;
+
+pub const EV_MAX: u8 = EV_WIRE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2352,6 +2358,18 @@ pub enum Command {
         key: u32,
         act: crate::shop::ShopAct,
     },
+    /// Lay a wire (`power::connect`): from a part's output to another's
+    /// input, the wire tool in hand.
+    Wire {
+        id: u32,
+        wire: crate::power::WireRec,
+    },
+    /// Take up every wire on the part at box address `key`
+    /// (`power::unwire`).
+    Unwire {
+        id: u32,
+        key: u32,
+    },
     /// Put `stake` junk on one colour of THE GATE's wheel (`casino.rs`). The
     /// sim checks the terminal, the round, the cap and the funds.
     Wheel {
@@ -2629,6 +2647,13 @@ pub struct World {
     /// Player auto turrets (`turret.rs`): the gun and its round, baked from
     /// `[turret]`; `TurretDef::INERT` holds every turret silent.
     pub turret_def: crate::turret::TurretDef,
+    /// Electricity's numbers (`power.rs`, `deployables.toml` `[power]`);
+    /// `PowerContent::EMPTY` asks no part for anything.
+    pub power_def: crate::power::PowerContent,
+    /// The solve, this period's and the last (`power::Power`). Derived from
+    /// the deploy store and the wires each period, hashed while it holds a
+    /// part, never saved.
+    pub power: crate::power::Power,
     /// The turret table — derived from the deploy store each look, hashed
     /// while live, never saved. Bodies are `turret::TURRET_SLOT0..`.
     pub turrets: [crate::turret::Turret; crate::limits::MAX_TURRETS],
@@ -2834,6 +2859,8 @@ impl World {
             sentry_def: crate::sentry::SentryDef::INERT,
             sentries: [crate::sentry::Sentry::default(); crate::sentry::SENTRIES],
             turret_def: crate::turret::TurretDef::INERT,
+            power_def: crate::power::PowerContent::EMPTY,
+            power: crate::power::Power::new(),
             turrets: [crate::turret::Turret::default(); crate::limits::MAX_TURRETS],
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
@@ -4027,6 +4054,18 @@ impl World {
                 return;
             }
         }
+        // A turret's box is its panel (`turret::slot_takes`): one gun and
+        // six stacks of rounds, each slot what it is for.
+        let turret = ground == inventory::CONT_BOX && self.deploys.turret_index(cont).is_some();
+        if turret
+            && to_kind == inventory::CONT_BOX
+            && src.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, to_slot as usize, src.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
+        }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
         // A wear slot takes the piece that goes in it and nothing else
         // (`CanWearItem`, `combat::wearable_in`). Asked here for the same
@@ -4143,6 +4182,17 @@ impl World {
                     .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_OVEN, addr);
                 return;
             }
+        }
+        // And its swap: the stack a turret slot gives back must fit there.
+        if turret
+            && plan == inventory::MovePlan::Swap
+            && from_kind == inventory::CONT_BOX
+            && dst.count > 0
+            && !crate::turret::slot_takes(&self.turret_def, from_slot as usize, dst.item)
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TURRET, addr);
+            return;
         }
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
         // What a research table's slot may hold (`research::table_accepts`)
@@ -4887,6 +4937,15 @@ impl World {
             // The town's stations do not break, so they mark nothing.
             if rec.owner != deploy::WORLD_OWNER {
                 self.struct_hitmarker(c.by, c.structure.min(rec.hp));
+            }
+            // A blow on a turret is an attack (`turret.rs` §Peacekeeper):
+            // its striker is hostile, so a peacekeeper turret answers it.
+            if (rec.row as usize) < self.deploy.defs.len()
+                && self.deploy.defs[rec.row as usize].arch == deploy::ARCH_TURRET
+            {
+                if let Some(s) = self.slot_of(c.by) {
+                    self.players[s].hostile = crate::combat::HOSTILE_TICKS;
+                }
             }
             deploy::damage_deploy(
                 &self.deploy,
@@ -6905,6 +6964,16 @@ impl World {
                             loc,
                             &mut self.events,
                             reach,
+                        ) || crate::power::toggle(
+                            &self.deploy,
+                            &self.pieces,
+                            &mut self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            &mut self.events,
                         ));
                     // A door in plain sight and on this storey, the box
                     // store's rule (`reach.rs`): not through a floor, not
@@ -7090,7 +7159,31 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
+                    if deploy::op_is_turret(op) {
+                        // An auto turret's list (`turret::auth_op`): worked
+                        // where its box is opened, under the box's reach.
+                        match self
+                            .deploys
+                            .turret_index(deploy::box_key(cx, cz, level, loc))
+                        {
+                            Some(i) if self.box_reachable(i, slot) => crate::turret::auth_op(
+                                &self.pieces,
+                                &mut self.deploys,
+                                i,
+                                &self.players[slot],
+                                op,
+                                &mut self.events,
+                            ),
+                            Some(_) => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0)
+                            }
+                            None => {
+                                self.events
+                                    .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_KIND, 0)
+                            }
+                        }
+                    } else if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
                     } else if deploy::op_is_crew(op) {
@@ -7271,6 +7364,31 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
                     crate::seat::sit(&town, &mut self.players, slot, seat);
+                }
+            }
+            Command::Wire { id, wire } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::power::connect(
+                        &self.deploy,
+                        &self.power_def,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        wire,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Unwire { id, key } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::power::unwire(
+                        &self.deploy,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        key,
+                        &mut self.events,
+                    );
                 }
             }
             Command::Shop { id, key, act } => {
@@ -7869,7 +7987,8 @@ impl World {
         {
             let (bx, bz) = b.xz();
             let (dx, dz) = (bx - x, bz - z);
-            if ((st.burns() && st.lit) || st.arch == deploy::ARCH_PLANTER)
+            if ((crate::oven::OvenState::arch_heats(st.arch) && st.lit)
+                || st.arch == deploy::ARCH_PLANTER)
                 && dx * dx + dz * dz <= r * r
                 && crate::reach::clear_box(
                     seed,
@@ -7889,7 +8008,7 @@ impl World {
         let sees_box = |j: usize| seen[j / 64] >> (j % 64) & 1 != 0;
         let (boxes, ovens) = self.deploys.oven_parts_mut();
         for (j, (b, st)) in boxes.iter().zip(ovens.iter_mut()).enumerate() {
-            if st.burns() && st.lit && sees_box(j) {
+            if crate::oven::OvenState::arch_heats(st.arch) && st.lit && sees_box(j) {
                 st.lit = false;
                 crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
                 doused += 1;
@@ -8127,7 +8246,7 @@ impl World {
             .boxes()
             .iter()
             .zip(self.deploys.oven_states())
-            .filter(|(_, st)| st.lit && st.burns())
+            .filter(|(_, st)| st.lit && crate::oven::OvenState::arch_heats(st.arch))
             .map(|(b, _)| (b.cx, b.cz, b.level, b.pose))
             .find(|&at| {
                 crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
@@ -9332,6 +9451,16 @@ impl World {
         // lands as a sentry's does, minus the hostile clock — a turret is
         // not the town's law, it is somebody's door.
         let mut trounds = [None; crate::limits::MAX_TURRETS];
+        // Electricity before the guns, so a turret fires on this period's
+        // solve (`power.rs`).
+        crate::power::sweep(
+            tick,
+            &self.deploy,
+            &self.power_def,
+            &mut self.deploys,
+            &mut self.power,
+            &mut self.events,
+        );
         {
             let t0 = crate::turret::TURRET_SLOT0;
             crate::turret::step(
@@ -9339,6 +9468,8 @@ impl World {
                 &self.haven,
                 tick,
                 &self.turret_def,
+                &self.power_def,
+                &self.power,
                 &self.deploy,
                 &self.pieces,
                 &mut crate::occupy::Occupants {
@@ -10256,6 +10387,21 @@ impl World {
         for r in self.deploys.shops().entries() {
             h.update(&r.hash_bytes());
         }
+        // The turrets' lists, the same idiom: a world where every turret
+        // still spares its owner alone hashes as it did.
+        for r in self.deploys.turret_recs().entries() {
+            h.update(&r.hash_bytes());
+        }
+        // Electricity (`power.rs`), the same idiom: the wires and charges a
+        // save carries, then the solve while it holds a part.
+        for w in self.deploys.power().wires() {
+            h.update(&w.bytes());
+        }
+        for c in self.deploys.power().cells() {
+            h.update(&c.key.to_le_bytes());
+            h.update(&c.charge.to_le_bytes());
+        }
+        self.power.grid.hash_into(&mut |b| h.update(b));
         // The casino's held stakes and running spins (`casino.rs`), on the
         // same idiom: a world nobody gambled in hashes as it did.
         for seat in self.casino.seated() {

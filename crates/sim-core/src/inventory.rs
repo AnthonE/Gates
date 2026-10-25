@@ -384,7 +384,10 @@ pub const REFUSE_M_SAFE: u32 = 13;
 /// "there" the player never dragged to. The address is the giver's own
 /// slot, both halves.
 pub const REFUSE_M_GIVE: u32 = 14;
-pub const REFUSE_M_MAX: u32 = REFUSE_M_GIVE;
+/// An auto turret's slot takes what it is for (`turret::slot_takes`): its
+/// first a gun it fires, the next six that gun's rounds, the rest nothing.
+pub const REFUSE_M_TURRET: u32 = 15;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_TURRET;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the

@@ -126,6 +126,7 @@ pub use event::{
     encode_event_team, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_MAX,
     TEAM_POS_MAX_M,
 };
+pub use event::{encode_event_turret, encode_event_wire, TurretView};
 pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
@@ -1366,7 +1367,31 @@ pub use voice::{
 /// (`ItemStack::data`: a gun's attachments, rounds and round); a snapshot's
 /// hand closes with the held gun's attachments and its light behind
 /// another (`EntityState::held_mods`, `beam`); `MAX_EVENT_MSG_BYTES` 448.
-pub const PROTO_VER: u16 = 144;
+/// v145 — main's v143, carried to the wipe: `SUB_SENTRY_LOCK` names a
+/// player's turret too (the gun's index is 7 bits over the town's sentries
+/// then the turrets, was 2), and a turret's record carries the gun in its
+/// box as its `held` item.
+/// v146 — the turret's own list: access ops 9–11 put yourself on an auto
+/// turret's authorize list, take yourself off and clear it
+/// (`ACCESS_OP_TURRET_*`), and `SUB_TURRET` (110) tells whoever has its box
+/// open the list and whether they may change it (`TurretView`).
+/// v147 — peacekeeper: access ops 12 and 13 set an auto turret to keep the
+/// peace or attack all (`ACCESS_OP_TURRET_PEACEKEEPER`, `_ATTACK_ALL`), and
+/// `TurretView` carries the mode after `may_edit`.
+/// v148 — the turret panel: a move refusal admits 15 (`REFUSE_M_TURRET`, a
+/// turret slot given what it is not for: its first takes a gun, the next six
+/// that gun's rounds), and `TurretView` closes with the gun in its weapon
+/// slot, that gun's round and the rounds its ammo slots hold.
+/// v149 — up to 192 recipes (`MAX_RECIPES`, was 128): a recipe index and
+/// the drip's total still cross in 8 bits, and blueprint recipes rank first
+/// so the 128-bit blueprint mask still covers every one.
+/// v150 — electricity (`sim_core::power`): a deploy row crosses in 6 bits
+/// (`MAX_DEPLOY_DEFS` 64); action 45 runs a wire or takes a part's up
+/// (`ActionMsg::Wire`, `Unwire`); `SUB_WIRE` (111) tells a wire laid or a
+/// part's taken up (`EventMsg::Wire`); a deploy refusal admits 29–31 (a wire
+/// too long, a port it cannot take, a loop); and `TurretView` closes with
+/// whether the turret is fed and the rW reaching it.
+pub const PROTO_VER: u16 = 150;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -2303,6 +2328,14 @@ const ACT_ATTACH: u32 = 43;
 /// Take an attachment off the gun in hand by its bit (wire v144,
 /// `Command::Detach`).
 const ACT_DETACH: u32 = 44;
+/// Lay a wire, or take up every wire on a part (wire v150,
+/// `Command::Wire` / `Command::Unwire`): a bit says which.
+const ACT_WIRE: u32 = 45;
+/// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
+const WIRE_OUT_BITS: u32 = 2;
+const WIRE_IN_BITS: u32 = 1;
+const _: () = assert!(sim_core::power::MAX_OUTS <= 1 << WIRE_OUT_BITS);
+const _: () = assert!(sim_core::power::MAX_INS <= 1 << WIRE_IN_BITS);
 /// Width of `ActionMsg::Detach`'s bit: one of `MAX_MODS`.
 const MOD_BIT_BITS: u32 = 3;
 const _: () = assert!(sim_core::limits::MAX_MODS <= 1 << MOD_BIT_BITS);
@@ -2348,7 +2381,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_DETACH;
+const ACT_MAX: u32 = ACT_WIRE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2432,9 +2465,10 @@ pub(crate) fn loc_max(deploy: bool) -> u8 {
 }
 const _: () = assert!(sim_core::build::LOC_NONE < 1 << BUILD_LOC_BITS);
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
-/// Deployable rows cross in 5 bits — exactly `MAX_DEPLOY_DEFS`, so the
-/// width itself is the range check.
-pub(crate) const DEPLOY_ROW_BITS: u32 = 5;
+/// Deployable rows cross in 6 bits — exactly `MAX_DEPLOY_DEFS`, so the
+/// width itself is the range check (5 until electricity's parts, v150).
+pub(crate) const DEPLOY_ROW_BITS: u32 = 6;
+const _: () = assert!(sim_core::limits::MAX_DEPLOY_DEFS == 1 << DEPLOY_ROW_BITS);
 /// A structure's damage band (`sim_core::build::DMG_BANDS`, wire v44).
 ///
 /// Three bits is the whole width, so — like `DEPLOY_ROW_BITS` — **the width
@@ -2787,6 +2821,17 @@ pub enum ActionMsg {
     /// Take attachment `bit` off the gun in hand (wire v144,
     /// `Command::Detach`).
     Detach { bit: u8 },
+    /// Run a wire from output `out` of the part at box address `from` to
+    /// input `inp` of the part at `to` (wire v150, `Command::Wire`).
+    Wire {
+        from: u32,
+        out: u8,
+        to: u32,
+        inp: u8,
+    },
+    /// Take up every wire on the part at box address `key` (wire v150,
+    /// `Command::Unwire`).
+    Unwire { key: u32 },
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -3052,6 +3097,45 @@ pub fn encode_action_detach(bit: u8, buf: &mut [u8]) -> Result<usize, WireError>
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_DETACH, ACTION_SUB_BITS)?;
     w.write(bit as u32, MOD_BIT_BITS)?;
+    Ok(w.finish())
+}
+
+/// Run a wire — see [`ActionMsg::Wire`].
+pub fn encode_action_wire(
+    from: u32,
+    out: u8,
+    to: u32,
+    inp: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from == 0
+        || to == 0
+        || out as usize >= sim_core::power::MAX_OUTS
+        || inp as usize >= sim_core::power::MAX_INS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_WIRE, ACTION_SUB_BITS)?;
+    w.write_bit(false)?;
+    w.write(from, 32)?;
+    w.write(out as u32, WIRE_OUT_BITS)?;
+    w.write(to, 32)?;
+    w.write(inp as u32, WIRE_IN_BITS)?;
+    Ok(w.finish())
+}
+
+/// Take up a part's wires — see [`ActionMsg::Unwire`].
+pub fn encode_action_unwire(key: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if key == 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_WIRE, ACTION_SUB_BITS)?;
+    w.write_bit(true)?;
+    w.write(key, 32)?;
     Ok(w.finish())
 }
 
@@ -4197,6 +4281,28 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Detach { bit }
+        }
+        ACT_WIRE => {
+            if r.read_bit()? {
+                let key = r.read(32)?;
+                if key == 0 {
+                    return Err(WireError::Malformed);
+                }
+                ActionMsg::Unwire { key }
+            } else {
+                let from = r.read(32)?;
+                let out = r.read(WIRE_OUT_BITS)? as u8;
+                let to = r.read(32)?;
+                let inp = r.read(WIRE_IN_BITS)? as u8;
+                if from == 0
+                    || to == 0
+                    || out as usize >= sim_core::power::MAX_OUTS
+                    || inp as usize >= sim_core::power::MAX_INS
+                {
+                    return Err(WireError::Malformed);
+                }
+                ActionMsg::Wire { from, out, to, inp }
+            }
         }
         ACT_FASTTRACK => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
@@ -6255,11 +6361,12 @@ mod tests {
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
-        // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44.
-        assert_eq!(ACT_MAX, ACT_DETACH);
+        // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44,
+        // and the wire (v150) 45.
+        assert_eq!(ACT_MAX, ACT_WIRE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            19,
+            18,
             "the spare action codes moved — say so where the count is written"
         );
     }

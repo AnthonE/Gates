@@ -203,6 +203,19 @@ ITEMS = {
     "planter": "lorc/sprout",
     "autoturret": "lorc/sentry-gun",
     "vending_machine": "delapouite/vending-machine",
+    # Electricity's core kit (`sim_core::power`): the wire tool's coil, the
+    # generator, the sun for the solar panel, a cell and a car battery for the
+    # two batteries' sizes, a lever for the switch, and the splitter and root
+    # combiner as arrows parting and joining; the ceiling light is a lamp.
+    "wire_tool": "delapouite/wire-coil",
+    "generator_small": "delapouite/power-generator",
+    "solar_panel": "lorc/sun",
+    "battery_small": "sbed/battery-pack-alt",
+    "battery_large": "delapouite/car-battery",
+    "switch": "lorc/lever",
+    "splitter": "delapouite/split-arrows",
+    "root_combiner": "delapouite/join",
+    "ceiling_light": "delapouite/ceiling-light",
     # The food loop's pair. A flat marbled cut and a drumstick are the two
     # most different meat silhouettes in the set, which is what a hotbar
     # holding both at 44 px needs — and a drumstick is the universal

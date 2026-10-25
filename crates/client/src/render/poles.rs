@@ -65,7 +65,7 @@ const CONDUCTOR: [f32; 4] = [0.14, 0.14, 0.15, 1.0];
 
 /// A plain triangle list: positions, normals, metre UVs, vertex colours.
 #[derive(Default)]
-struct Soup {
+pub(super) struct Soup {
     p: Vec<[f32; 3]>,
     n: Vec<[f32; 3]>,
     uv: Vec<[f32; 2]>,
@@ -74,13 +74,13 @@ struct Soup {
 }
 
 impl Soup {
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.i.is_empty()
     }
 
     /// A tube from `a` (radius `ra`) to `b` (radius `rb`), `sides` round,
     /// open-ended, its UVs in metres round and along.
-    fn tube(&mut self, a: Vec3, b: Vec3, ra: f32, rb: f32, sides: u32, col: [f32; 4]) {
+    pub(super) fn tube(&mut self, a: Vec3, b: Vec3, ra: f32, rb: f32, sides: u32, col: [f32; 4]) {
         let d = (b - a).normalize_or_zero();
         if d == Vec3::ZERO {
             return;
@@ -146,7 +146,7 @@ impl Soup {
         }
     }
 
-    fn mesh(self) -> Mesh {
+    pub(super) fn mesh(self) -> Mesh {
         let mut m = Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),

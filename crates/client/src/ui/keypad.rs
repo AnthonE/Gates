@@ -419,7 +419,7 @@ mod tests {
             .map(|o| o.0)
             .collect();
         for op in 0..=sim_core::deploy::ACCESS_OP_MAX {
-            if sim_core::deploy::op_is_crew(op) {
+            if sim_core::deploy::op_is_crew(op) || sim_core::deploy::op_is_turret(op) {
                 assert!(
                     !reachable.contains(&op),
                     "crew op {op} is on the keypad, and a door cannot answer it"

@@ -242,10 +242,11 @@ placement = "window"
 matter = "wood"
 hp = 200
 
-# A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box of
-# rounds with a gun on top that shoots anybody in reach who is not its owner
-# or the crew of the claim it stands in. Rust's turret hp; unpowered, since
-# nothing here carries power.
+# A player's auto turret (`sim-core/src/turret.rs`, `NOW.md` §0aa 1): a box
+# with a gun on top — the one you put in it, `[turret]` below — that shoots
+# anybody in reach who is not on its own authorize list (its placer, until
+# someone with building privilege there joins or clears it). Rust's turret hp;
+# it fires only with its 10 rW reaching it (`[power]` below).
 [[deployable]]
 id = "item.autoturret"
 archetype = "turret"
@@ -263,16 +264,138 @@ placement = "any"
 matter = "metal"
 hp = 500
 
-# The turret's gun. Range is the reference's 30 m; the rest is the revolver it
-# is built from — its 20 a round, eight to a burst at its 150 a minute, and
-# its 3.4 s reload between bursts. The 1 s beep before it opens up is ours.
+# Electricity (`sim-core/src/power.rs`): Rust's core kit. The generator is a
+# box of low grade fuel with a switch, the battery's two sizes share a shape,
+# and the small parts are walk-over. Ceiling lights stand on a floor until a
+# ceiling placement exists.
+[[deployable]]
+id = "item.generator_small"
+archetype = "generator"
+placement = "foundation"
+matter = "metal"
+hp = 500
+
+[[deployable]]
+id = "item.solar_panel"
+archetype = "solar"
+placement = "any"
+matter = "metal"
+hp = 250
+
+[[deployable]]
+id = "item.battery_small"
+archetype = "battery"
+placement = "foundation"
+matter = "metal"
+hp = 150
+
+[[deployable]]
+id = "item.battery_large"
+archetype = "battery"
+placement = "foundation"
+matter = "metal"
+hp = 500
+
+[[deployable]]
+id = "item.switch"
+archetype = "switch"
+placement = "foundation"
+matter = "metal"
+hp = 100
+
+[[deployable]]
+id = "item.splitter"
+archetype = "splitter"
+placement = "foundation"
+matter = "metal"
+hp = 100
+
+[[deployable]]
+id = "item.root_combiner"
+archetype = "combiner"
+placement = "foundation"
+matter = "metal"
+hp = 100
+
+[[deployable]]
+id = "item.ceiling_light"
+archetype = "light"
+placement = "foundation"
+matter = "metal"
+hp = 100
+
+# The turret. As in Rust it fires the gun you put in its box — the first of
+# `guns` it holds — at that gun's own `weapons.toml` numbers (its magazine a
+# burst, its rate, its reload between bursts, its round out of the same box),
+# for `damage_pct` of the gun's damage: a revolver turret's 21 a round is the
+# 20 the built-in gun dealt. Range is the reference's 30 m; the 1 s beep
+# before it opens up is ours.
 [turret]
 range_m = 30
-damage = 20
-burst = 8
-rate_ms = 400
-burst_gap_ms = 3400
 lock_ms = 1000
 lose_ms = 3000
 spread_cm_per_10m = 15
-ammo = "item.pistol_ammo"
+damage_pct = 60
+guns = [
+  "item.revolver",
+  "item.semi_pistol",
+  "item.python",
+  "item.thompson",
+  "item.custom_smg",
+  "item.semi_rifle",
+  "item.assault_rifle",
+  "item.bolt_rifle",
+  "item.pump_shotgun",
+]
+
+# Electricity's numbers (`sim-core/src/power.rs`), Rust's from the Facepunch
+# wiki (2026-10): the small generator's 40 rW, the large solar panel's 20 rW
+# at its best, the small battery's 15 rW from 400 rWm and the large's 100 rW
+# from 24,000 rWm, the ceiling light's 2 and the auto turret's 10. Rust's
+# logic parts draw 1. A wire spans 30 m (community-measured; the wiki is
+# silent). The generator's burn is one guide's ~250 low grade an hour: one
+# unit per 14 s. A battery stores all of what reaches it until we find
+# Rust's ratio.
+[power]
+wire_tool = "item.wire_tool"
+wire_max_m = 30
+fuel = "item.lowgrade"
+fuel_s = 14
+
+[[power.part]]
+id = "item.generator_small"
+out_rw = 40
+
+[[power.part]]
+id = "item.solar_panel"
+out_rw = 20
+
+[[power.part]]
+id = "item.battery_small"
+out_rw = 15
+capacity_rwm = 400
+
+[[power.part]]
+id = "item.battery_large"
+out_rw = 100
+capacity_rwm = 24000
+
+[[power.part]]
+id = "item.switch"
+draw_rw = 1
+
+[[power.part]]
+id = "item.splitter"
+draw_rw = 1
+
+[[power.part]]
+id = "item.root_combiner"
+draw_rw = 1
+
+[[power.part]]
+id = "item.ceiling_light"
+draw_rw = 2
+
+[[power.part]]
+id = "item.autoturret"
+draw_rw = 10

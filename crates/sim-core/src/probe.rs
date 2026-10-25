@@ -688,7 +688,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // The codes alternate so the ENTER op hits its miss path
                 // (the shock, which writes a player's hp from a door
                 // verb) as well as its match.
-                let op_now = ((t / 16) % (crate::deploy::ACCESS_OP_MAX as u32 + 1)) as u8;
+                let op_now = ((t / 16) % (crate::deploy::ACCESS_OP_CREW_CLEAR as u32 + 1)) as u8;
                 world.tick(&[
                     Command::Input {
                         id: 1,

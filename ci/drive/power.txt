@@ -1,0 +1,66 @@
+# The turret and power run: lay a foundation, put the auto turret on it, open
+# its panel, set a solar panel on the ground behind and wire the two.
+# Coordinates are for RES=1280x720 at SPAWN=1500,640, a hilltop flat enough
+# for the panel (the default spawn's slope is past its 0.5 m tilt); a spawn
+# faces north.
+#
+#   POP=0 SPAWN=1500,640 KIT="item.building_plan:1, item.wood:1000, item.autoturret:1, item.solar_panel:1, item.wire_tool:1, item.revolver:1, item.pistol_ammo:64" \
+#     ./ci/drive.sh shots/power ci/drive/power.txt 'dev_env = "clear,noon"'
+#
+# load: a cold join under lavapipe takes minutes; Esc mid-load cancels it
+sleep 300
+moveto 640 360
+click 1
+sleep 3
+# a foundation a few metres ahead
+key 1
+sleep 1
+move 0 120
+sleep 2
+click 1
+sleep 3
+shot 01-foundation
+# the turret on it, on the foundation's near half so E reaches it
+key 3
+sleep 2
+move 0 70
+sleep 2
+click 1
+sleep 3
+shot 02-turret
+# its panel: WEAPON, AMMO, the readout, the list and the mode
+key e
+sleep 3
+shot 03-turret-panel
+key Escape
+sleep 4
+# a solar panel on the flat spawn ground behind (a key in the frame the panel
+# closes is lost at lavapipe's frame rate; 300 px of mouse turns about 45°)
+key 4
+sleep 3
+move 1200 0
+sleep 2
+# close, inside E's 3 m (placing reaches 5)
+move 0 60
+sleep 3
+shot 04-solar-ghost
+click 1
+sleep 3
+shot 04-solar
+# the wire tool: the panel's output, then the turret's input
+key 5
+sleep 3
+click 1
+sleep 2
+shot 05-wire-picked
+move 0 -60
+sleep 2
+move -1200 0
+sleep 3
+click 1
+sleep 3
+shot 06-wired
+key e
+sleep 3
+shot 07-turret-powered
+key Escape

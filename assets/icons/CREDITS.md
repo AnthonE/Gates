@@ -40,6 +40,15 @@ game's own models, ours as well.
 | `ash_mask.png` | `lorc/gas-mask` |
 | `ash_suit.png` | `delapouite/hazmat-suit` |
 | `auto_turret.png` | `lorc/sentry-gun` |
+| `ceiling_light.png` | `delapouite/ceiling-light` |
+| `large_battery.png` | `delapouite/car-battery` |
+| `large_solar_panel.png` | `lorc/sun` |
+| `root_combiner.png` | `delapouite/join` |
+| `small_battery.png` | `sbed/battery-pack-alt` |
+| `small_generator.png` | `delapouite/power-generator` |
+| `splitter.png` | `delapouite/split-arrows` |
+| `switch.png` | `lorc/lever` |
+| `wire_tool.png` | `delapouite/wire-coil` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `bandana.png` | `delapouite/bandana` |

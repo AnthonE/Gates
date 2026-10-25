@@ -135,6 +135,7 @@ pub mod highlight;
 pub mod landmarks;
 pub mod lodged;
 pub mod poles;
+pub mod wires;
 // Triple T on the menu and in the inventory.
 pub mod portrait;
 // The fires fire arrows leave.
@@ -740,6 +741,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<structures::StructRing>()
             .init_resource::<crops::CropRing>()
             .init_resource::<farm_ghost::PlantAimed>()
+            .init_resource::<wires::WireTool>()
+            .init_resource::<wires::WiresDrawn>()
             .init_resource::<bodies::Bodies>()
             .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
@@ -1807,6 +1810,14 @@ impl Plugin for GatesRenderPlugin {
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // Electricity (`sim_core::power`): the wire tool acts on this frame's
+        // pick, and the cables redraw when the wires move.
+        .add_systems(
+            Update,
+            (wires::tool, wires::guide, wires::draw)
+                .after(verbs::resolve)
+                .run_if(in_state(Screen::InWorld)),
+        )
         // `keys` stops with the screen, so the give hold it times is dropped
         // on the way out rather than resumed, half-run, on the way back.
         .add_systems(OnExit(Screen::InWorld), verbs::drop_give_hold)
@@ -1961,6 +1972,7 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
+                        structures::lamp_lights,
                         // Another player's torch, under the same night eye.
                         bodies::light_flames.after(bodies::stream),
                         town::dress,

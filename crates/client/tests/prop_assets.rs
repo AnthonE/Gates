@@ -517,6 +517,37 @@ fn each_pickup_is_a_held_model_lying_on_the_ground() {
     }
 }
 
+/// The felled pine's stump (`props::STUMP_GLB`) is what `PropModels::load`
+/// can load and what the taper it replaces was: one primitive, one material,
+/// standing on y = 0 at about a pine's base, dark, packed and light.
+#[test]
+fn the_stump_stands_on_its_base_at_a_pines_size() {
+    let rel = client::render::props::STUMP_GLB;
+    let g = glb_of(rel);
+    assert_eq!(g.primitives().len(), 1, "{rel}: one primitive");
+    let mats = g.json["materials"].as_array().map_or(0, |m| m.len());
+    assert_eq!(mats, 1, "{rel}: one material");
+    assert!(
+        g.min_y().abs() < 1e-3,
+        "{rel} has min.y {:+.4}: drawn at lift 0 it floats or sinks",
+        g.min_y()
+    );
+    let (peak, radius) = g.peak_and_radius();
+    assert!(
+        (0.25..=0.5).contains(&peak) && (0.25..=0.4).contains(&radius),
+        "{rel} is {peak:.2} m tall and {radius:.2} m out; the trunk it is cut \
+         from is 0.32 m in radius"
+    );
+    assert!(g.triangles() <= 2_000, "{rel}: {} triangles", g.triangles());
+    let lit = g.json["materials"][0]
+        .get("emissiveFactor")
+        .is_some_and(|f| (0..3).any(|k| f[k].as_f64().unwrap_or(0.0) > 1.0e-6));
+    assert!(!lit, "{rel} is emissive");
+    for im in g.json["images"].as_array().into_iter().flatten() {
+        assert_eq!(im["mimeType"].as_str(), Some("image/ktx2"), "{rel}");
+    }
+}
+
 #[test]
 fn nothing_floats_and_nothing_is_buried_whole() {
     for (o, rel) in shipped() {

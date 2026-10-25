@@ -895,6 +895,17 @@ pub enum DeployArchetype {
     /// A water catcher (farming v2): banks rain, fills a waterskin, waters
     /// the planters and ground plants in reach (`cooking.toml` `[farm]`).
     Catcher,
+    /// Electricity (`sim-core/src/power.rs`, `[power]` below): the small
+    /// generator, the solar panel, a battery, the switch, the splitter, the
+    /// root combiner and the ceiling light. Each row's numbers are its
+    /// `[[power.part]]`.
+    Generator,
+    Solar,
+    Battery,
+    Switch,
+    Splitter,
+    Combiner,
+    Light,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -1287,22 +1298,58 @@ pub struct Sentry {
     pub spread_cm_per_10m: u32,
 }
 
-/// A player auto turret's gun (`deployables.toml` `[turret]`,
-/// `sim-core/src/turret.rs`): the sentry's numbers, and the round it spends
-/// out of its own box. Optional — without it a placed turret never fires.
+/// A player auto turret (`deployables.toml` `[turret]`,
+/// `sim-core/src/turret.rs`): how it looks, and the guns it fires. Each gun
+/// fires at its own `weapons.toml` row's numbers (`bake_turret`): its damage
+/// scaled by `damage_pct` (a shotgun's pellets landing as one round), its
+/// magazine as a burst, its rate, its reload between bursts, its first round.
+/// Optional — without it a placed turret never fires.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TurretGun {
+pub struct TurretSpec {
     pub range_m: u32,
-    pub damage: u32,
-    pub burst: u32,
-    pub rate_ms: u32,
-    pub burst_gap_ms: u32,
     pub lock_ms: u32,
     pub lose_ms: u32,
     pub spread_cm_per_10m: u32,
-    /// The item it fires, one a round, out of its box.
-    pub ammo: String,
+    /// Per cent of a gun's own damage a turret deals with it.
+    pub damage_pct: u32,
+    /// The guns a turret fires: `firearm` rows, by item id.
+    pub guns: Vec<String>,
+}
+
+/// Electricity (`deployables.toml` `[power]`, `sim_core::power`): the wire
+/// tool and how far a wire reaches, what the generator burns, and each
+/// part's numbers.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerSpec {
+    pub wire_tool: String,
+    pub wire_max_m: u32,
+    /// What the small generator burns, and how long a unit runs it.
+    pub fuel: String,
+    pub fuel_s: u32,
+    #[serde(default)]
+    pub part: Vec<PowerPart>,
+}
+
+/// One deployable's power numbers, by its item id. Absent fields are 0, and
+/// `charge_pct` 100.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowerPart {
+    pub id: String,
+    #[serde(default)]
+    pub out_rw: u32,
+    #[serde(default)]
+    pub draw_rw: u32,
+    #[serde(default)]
+    pub capacity_rwm: u32,
+    #[serde(default = "full_charge")]
+    pub charge_pct: u32,
+}
+
+fn full_charge() -> u32 {
+    100
 }
 
 /// One fel tier (`mobs.toml` `[[fel_tier]]`, `ARC.md` §2): how far every

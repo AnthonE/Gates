@@ -281,6 +281,8 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::RespawnAt { .. } => "respawn",
         ActionMsg::Attach { .. } => "attach",
         ActionMsg::Detach { .. } => "detach",
+        ActionMsg::Wire { .. } => "wire",
+        ActionMsg::Unwire { .. } => "unwire",
     }
 }
 

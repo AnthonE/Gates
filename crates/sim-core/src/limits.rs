@@ -448,8 +448,11 @@ pub const HOTBAR_SLOTS: usize = 6;
 /// rows, CONTENT.md §2). The content bake refuses a set past this.
 /// Proposed default, DECISIONS.md §open (craft verb row). 64 → 128 when
 /// Rust's tree items arrived (operator, 2026-10-17): the 62 rows of the day
-/// left two for a tree that wanted twenty.
-pub const MAX_RECIPES: usize = 128;
+/// left two for a tree that wanted twenty. 128 → 192 for electricity (127
+/// were taken): the blueprint mask stays 128 bits, because blueprint recipes
+/// rank first (`content` `recipe_index`) and only they are ever asked of it.
+/// Below 256 so a recipe index and a count still cross in 8 bits.
+pub const MAX_RECIPES: usize = 192;
 
 /// Inputs one recipe may carry (alpha data uses ≤ 3). The bake refuses
 /// past it. Structural cap like `MAX_TOOLS_PER_NODE`, not a knob.
@@ -650,11 +653,11 @@ pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
 const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
 
-/// Deployable definitions the sim preallocates for (the alpha set is 9
-/// rows, content/deployables.toml). The content bake refuses a set past
-/// this; the wire carries the row in 5 bits — exactly this range.
+/// Deployable definitions the sim preallocates for (content/deployables.toml).
+/// The content bake refuses a set past this; the wire carries the row in 6
+/// bits — exactly this range (32 until power's eight parts, wire v149).
 /// Structural cap like `MAX_PIECE_DEFS`.
-pub const MAX_DEPLOY_DEFS: usize = 32;
+pub const MAX_DEPLOY_DEFS: usize = 64;
 
 /// Cost rows one deployable may carry, for pricing its repair. A
 /// deployable's *placement* costs one crafted item; its repair is priced
@@ -698,6 +701,11 @@ pub const MAX_HEARTHS: usize = 512;
 /// until wire v121, which a few bases on a full shard used up.
 pub const MAX_TURRETS: usize = 64;
 
+/// Guns a turret can carry (`deployables.toml` `[turret]` `guns`): the
+/// baked table is a fixed array this long, and a set naming more refuses to
+/// bake. Overflow policy: **refuse** at boot.
+pub const MAX_TURRET_GUNS: usize = 16;
+
 /// Rust's turret interference (2023): at most this many turrets within
 /// [`TURRET_INTERFERENCE_M`] of each other shoot; the rest stand idle with
 /// their guns up, first come first served in table order (`turret::step`).
@@ -711,6 +719,34 @@ pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 /// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
 pub const MAX_TURRETS_PER_OWNER: usize = TURRET_INTERFERENCE;
 const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
+
+/// Wires on the island at once (`power::PowerStore`): a part has at most
+/// three outputs, and this is two for every part [`MAX_POWER_NODES`] holds.
+/// Overflow policy: **refuse** the connect with `power::REFUSE_W_FULL`.
+pub const MAX_WIRES: usize = 2_048;
+
+/// Power parts the solve takes in a period (`power::Grid`), shard-wide.
+/// Past it, a part stands dark until one comes down: it is not in the grid,
+/// so nothing reaches it. Structural, not a knob: the grid's arrays and its
+/// index are sized by it.
+pub const MAX_POWER_NODES: usize = 1_024;
+
+/// Batteries holding a charge at once (`power::CellRec`). A battery past it
+/// holds nothing until one comes down. Structural, like the grid's.
+pub const MAX_BATTERIES: usize = 512;
+const _: () = assert!(MAX_BATTERIES <= MAX_POWER_NODES && MAX_WIRES <= 2 * MAX_POWER_NODES);
+
+/// Players one auto turret's authorize list holds (`turret::TurretRec`),
+/// the lock's `LOCK_AUTH_CAP`. Overflow policy: **refuse** the add with
+/// `REFUSE_D_AUTH_FULL`, never evict (`roster.rs`).
+pub const TURRET_AUTH_CAP: usize = 10;
+
+/// Turrets with a record of their own (`turret::TurretRecs`): one whose list
+/// is still its owner alone keeps none, so this counts the turrets somebody
+/// has authorized on, deauthorized from or cleared. Overflow policy:
+/// **refuse** the op that would create one with `REFUSE_D_FULL`.
+pub const MAX_TURRET_RECS: usize = 512;
+const _: () = assert!(MAX_TURRET_RECS <= MAX_BOXES);
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
@@ -1105,19 +1141,18 @@ pub const MAX_COOK_ROWS: usize = 32;
 pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
 
 /// The width of `Player::known`, and therefore the hard ceiling on how
-/// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
-/// rather than assumed: the mask is a `u128` in the sim and the save file
-/// and two 64-bit words on the wire (`SUB_KNOWN`), so a 129th recipe is a
-/// widening in three places and must fail here rather than silently become
-/// unlockable.
+/// many recipes a blueprint can gate: the mask is a `u128` in the sim and
+/// the save file and two 64-bit words on the wire (`SUB_KNOWN`). Blueprint
+/// recipes rank first, so the content bake refuses a blueprint recipe or a
+/// research row past this bit rather than let it silently become
+/// unlearnable; the table itself may be wider ([`MAX_RECIPES`]).
 pub const KNOWN_MASK_BITS: usize = 128;
 /// The mask's 64-bit words, as `EV_KNOWN` / `EV_KNOWN_HI` and `SUB_KNOWN`
 /// state them.
 pub const KNOWN_WORDS: usize = KNOWN_MASK_BITS / 64;
 const _: () = assert!(
-    MAX_RECIPES <= KNOWN_MASK_BITS,
-    "Player::known is a u128 mask over recipe indices — a recipe past bit 127 \
-     could never be researched, and nothing else would say so"
+    KNOWN_MASK_BITS <= MAX_RECIPES && MAX_RESEARCH_ROWS <= MAX_RECIPES,
+    "the mask covers the first recipes, and a research row teaches one"
 );
 
 /// Skin rows the sim preallocates for (`content/skins.toml`, `skin.rs`).

@@ -1,15 +1,13 @@
 //! Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 //! rows.
 //!
-//! **Why generated rather than sourced.** The revolver is 0.5.0's headline
-//! weapon and the torch is in every starter kit, and neither has a `.glb` —
-//! `assets/models/WANTED.md` carries both. Until one lands, holding either
-//! drew a generic stand-in tool, which is the exact lie `ui::hold::held_model`'s
-//! doc warns about one state earlier: the hand told the player nothing about
-//! what swapping items had put in it. A dozen tinted boxes are not art, but
-//! they are the RIGHT dozen boxes — a revolver reads as a revolver at 0.5 m.
-//! When a real asset lands, the row in `HELD_MODELS` flips from `Gen` to
-//! `Glb` and this module loses a match arm; nothing else moves.
+//! **Why generated rather than sourced.** The revolver, torch, crossbow and
+//! bat were built here until their `.glb`s landed (2026-10-24,
+//! `MANIFEST.md`). The bat's lathe stays: it is the canvas a painted bat
+//! skin draws on ([`canvas_mesh`]), whose UVs are a public contract
+//! (`render/canvas.rs`), while the plain bat draws its file. When a real
+//! asset lands, the row in `HELD_MODELS` flips from `Gen` to `Glb`;
+//! nothing else moves.
 //!
 //! **The authoring convention is the glb one**, deliberately: +Y up, foot at
 //! y = 0, so `HeldModelDef::grip_m` and the quarter-turn in
@@ -39,93 +37,6 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use super::props::Soup;
-
-/// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
-/// half-extent, `tint` a mean-1 colour over whatever photograph the material
-/// carries (`props::tint1`).
-pub(super) fn boxed(s: &mut Soup, c: Vec3, h: Vec3, tint: [f32; 3]) {
-    let v = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
-    // Per-face value break-up, small: the photograph carries the variation and
-    // a second source of it is the patchwork `blob_mesh` used to be.
-    let faces = [
-        (
-            [
-                v(-1., -1., 1.),
-                v(1., -1., 1.),
-                v(1., 1., 1.),
-                v(-1., 1., 1.),
-            ],
-            1.00,
-        ),
-        (
-            [
-                v(1., -1., -1.),
-                v(-1., -1., -1.),
-                v(-1., 1., -1.),
-                v(1., 1., -1.),
-            ],
-            0.93,
-        ),
-        (
-            [
-                v(1., -1., 1.),
-                v(1., -1., -1.),
-                v(1., 1., -1.),
-                v(1., 1., 1.),
-            ],
-            0.97,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(-1., -1., 1.),
-                v(-1., 1., 1.),
-                v(-1., 1., -1.),
-            ],
-            0.95,
-        ),
-        (
-            [
-                v(-1., 1., 1.),
-                v(1., 1., 1.),
-                v(1., 1., -1.),
-                v(-1., 1., -1.),
-            ],
-            1.02,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(1., -1., -1.),
-                v(1., -1., 1.),
-                v(-1., -1., 1.),
-            ],
-            0.90,
-        ),
-    ];
-    for (q, shade) in faces {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    }
-}
-
-/// Emit a hexahedron from eight corners: `back` then `front`, each wound
-/// counter-clockwise seen from outside its own face. A box cannot taper and a
-/// blade must, so this is the shape the axe bit needs and `boxed` cannot make.
-pub(super) fn hexa(s: &mut Soup, back: [Vec3; 4], front: [Vec3; 4], tint: [f32; 3]) {
-    let quad = |s: &mut Soup, q: [Vec3; 4], shade: f32| {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    };
-    quad(s, front, 1.00);
-    quad(s, [back[3], back[2], back[1], back[0]], 0.90);
-    quad(s, [back[0], back[1], front[1], front[0]], 0.97);
-    quad(s, [back[1], back[2], front[2], front[1]], 1.03);
-    quad(s, [back[2], back[3], front[3], front[2]], 0.95);
-    quad(s, [back[3], back[0], front[0], front[3]], 0.99);
-}
 
 /// Revolve a profile around +Y. Radial zero closes a cap; a return along
 /// the inner radius leaves an actual bore instead of a painted muzzle.
@@ -299,167 +210,6 @@ fn bat_mesh() -> Mesh {
     })
 }
 
-/// A tapered wooden shaft and layered cloth winding. The existing crown,
-/// grip and light socket stay in place; the silhouette now has round edges.
-/// A tapered wooden shaft and a cloth-wrapped head. The crown, grip and
-/// light socket stay in place; the silhouette has round edges.
-fn torch_mesh() -> Mesh {
-    let mut s = Soup::tiling(3.0);
-    turned(
-        &mut s,
-        Vec3::ZERO,
-        &[
-            (0.0, 0.0),
-            (0.0, 0.010),
-            (0.08, 0.013),
-            (0.30, 0.011),
-            (0.38, 0.013),
-            (0.38, 0.0),
-        ],
-        [0.30, 0.23, 0.15],
-    );
-    turned(
-        &mut s,
-        Vec3::ZERO,
-        &[
-            (0.356, 0.0),
-            (0.356, 0.018),
-            (0.375, 0.023),
-            (0.410, 0.028),
-            (0.440, 0.025),
-            (0.455, 0.020),
-            (0.455, 0.0),
-        ],
-        [0.16, 0.14, 0.12],
-    );
-    // No raised lips on the wrap: a lit torch's light sits a few centimetres
-    // over it, and every upward edge burned as a thin neon ring.
-    s.mesh()
-}
-
-/// Barrel-up authoring, as before: +Y becomes forward in the hand. A round
-/// cylinder, recessed bore, front sight and open trigger guard carry its read.
-fn revolver_mesh() -> Mesh {
-    let mut s = Soup::tiling(1.0);
-    let steel = [0.29, 0.30, 0.33];
-    let grain = [0.24, 0.16, 0.10];
-    // A flared grip heel and narrowed neck rather than a rectangular block.
-    hexa(
-        &mut s,
-        [
-            Vec3::new(-0.014, 0.0, -0.020),
-            Vec3::new(0.014, 0.0, -0.020),
-            Vec3::new(0.010, 0.090, -0.012),
-            Vec3::new(-0.010, 0.090, -0.012),
-        ],
-        [
-            Vec3::new(-0.014, 0.0, 0.020),
-            Vec3::new(0.014, 0.0, 0.020),
-            Vec3::new(0.010, 0.090, 0.016),
-            Vec3::new(-0.010, 0.090, 0.016),
-        ],
-        grain,
-    );
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.105, 0.008),
-        Vec3::new(0.013, 0.018, 0.030),
-        steel,
-    );
-    turned(
-        &mut s,
-        Vec3::new(0.0, 0.0, 0.020),
-        &[
-            (0.124, 0.0),
-            (0.124, 0.018),
-            (0.128, 0.021),
-            (0.172, 0.021),
-            (0.176, 0.018),
-            (0.176, 0.0),
-        ],
-        steel,
-    );
-    turned(
-        &mut s,
-        Vec3::new(0.0, 0.0, 0.030),
-        &[
-            (0.168, 0.0),
-            (0.168, 0.011),
-            (0.250, 0.009),
-            (0.261, 0.009),
-            (0.261, 0.005),
-            (0.247, 0.005),
-            (0.247, 0.0),
-        ],
-        steel,
-    );
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.251, 0.042),
-        Vec3::new(0.003, 0.007, 0.004),
-        steel,
-    );
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.125, -0.014),
-        Vec3::new(0.005, 0.012, 0.008),
-        steel,
-    );
-    // Three sides of the guard; the frame closes the fourth. Open air around
-    // the curved trigger matters more at this scale than engraving.
-    for (c, h) in [
-        (
-            Vec3::new(0.0, 0.132, -0.024),
-            Vec3::new(0.004, 0.003, 0.018),
-        ),
-        (
-            Vec3::new(0.0, 0.116, -0.040),
-            Vec3::new(0.004, 0.016, 0.003),
-        ),
-        (
-            Vec3::new(0.0, 0.101, -0.030),
-            Vec3::new(0.004, 0.003, 0.010),
-        ),
-        (
-            Vec3::new(0.0, 0.115, -0.025),
-            Vec3::new(0.003, 0.006, 0.003),
-        ),
-    ] {
-        boxed(&mut s, c, h, steel);
-    }
-    s.mesh()
-}
-
-/// A block running up +Y from `y0` to `y1`, its cross-section `(half-width,
-/// bottom, top)` at each end: a stock tapers, and `boxed` cannot.
-fn beam(s: &mut Soup, y0: f32, y1: f32, a: (f32, f32, f32), b: (f32, f32, f32), tint: [f32; 3]) {
-    let ring = |y: f32, (hx, lo, hi): (f32, f32, f32)| {
-        [
-            Vec3::new(-hx, y, lo),
-            Vec3::new(-hx, y, hi),
-            Vec3::new(hx, y, hi),
-            Vec3::new(hx, y, lo),
-        ]
-    };
-    hexa(s, ring(y0, a), ring(y1, b), tint);
-}
-
-/// A bar from `a` to `b` on no particular axis, tapering from half-extents
-/// `ha` to `hb` — across the bar horizontally, then up it. A limb, a string.
-fn taper(s: &mut Soup, a: Vec3, b: Vec3, ha: Vec2, hb: Vec2, tint: [f32; 3]) {
-    let d = (b - a).normalize();
-    // `(u, v, d)` right-handed, which is the winding `hexa` wants.
-    let u = d
-        .cross(if d.z.abs() < 0.9 { Vec3::Z } else { Vec3::X })
-        .normalize();
-    let v = d.cross(u);
-    let ring = |c: Vec3, h: Vec2| {
-        let (u, v) = (u * h.x, v * h.y);
-        [c + u - v, c + u + v, c - u + v, c - u - v]
-    };
-    hexa(s, ring(a, ha), ring(b, hb), tint);
-}
-
 /// An arrow `len` long up +Y, nock at the origin and point at the far end:
 /// the shaft, a steel point and three vanes, one of them the cock feather.
 /// The colours are the crossbow bolt's, so the two read as one family. Drawn
@@ -514,159 +264,6 @@ pub fn arrow_material() -> StandardMaterial {
     }
 }
 
-/// Laid forward the revolver's way — +Y becomes forward in the hand, +Z is
-/// up. A stock with a shoulder butt, a bolt on the rail, the prod across the
-/// front swept back to its tips, the string drawn back to the latch, a
-/// trigger under the fist and a stirrup ahead of the prod. The prod is what
-/// says crossbow at a glance, so it is the widest thing in the frame.
-fn crossbow_mesh() -> Mesh {
-    let mut s = Soup::tiling(1.0);
-    let wood = [0.33, 0.22, 0.13];
-    let pale = [0.52, 0.40, 0.26];
-    let steel = [0.29, 0.30, 0.33];
-    let prod = [0.21, 0.21, 0.23];
-    let cord = [0.62, 0.58, 0.48];
-    let vane = [0.55, 0.16, 0.12];
-    // The butt, deeper at the shoulder than where it meets the tiller, then
-    // the tiller out to the prod.
-    beam(
-        &mut s,
-        0.0,
-        0.20,
-        (0.021, -0.080, 0.018),
-        (0.017, -0.032, 0.016),
-        wood,
-    );
-    beam(
-        &mut s,
-        0.20,
-        0.60,
-        (0.017, -0.032, 0.016),
-        (0.015, -0.024, 0.016),
-        wood,
-    );
-    // The rail the bolt rides, and the latch that holds the string.
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.46, 0.0175),
-        Vec3::new(0.006, 0.13, 0.0015),
-        steel,
-    );
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.325, 0.022),
-        Vec3::new(0.011, 0.012, 0.007),
-        steel,
-    );
-    // The bolt: a shaft, a point past the prod, and three short vanes.
-    let bolt = |y: f32| Vec3::new(0.0, y, 0.023);
-    taper(
-        &mut s,
-        bolt(0.337),
-        bolt(0.625),
-        Vec2::splat(0.0035),
-        Vec2::splat(0.0035),
-        pale,
-    );
-    taper(
-        &mut s,
-        bolt(0.625),
-        bolt(0.655),
-        Vec2::splat(0.006),
-        Vec2::splat(0.0005),
-        steel,
-    );
-    for (c, h) in [
-        (
-            Vec3::new(0.0, 0.362, 0.030),
-            Vec3::new(0.0007, 0.017, 0.006),
-        ),
-        (
-            Vec3::new(-0.007, 0.362, 0.023),
-            Vec3::new(0.004, 0.017, 0.0007),
-        ),
-        (
-            Vec3::new(0.007, 0.362, 0.023),
-            Vec3::new(0.004, 0.017, 0.0007),
-        ),
-    ] {
-        boxed(&mut s, c, h, vane);
-    }
-    // The prod: lashed across the front of the tiller, each limb in two
-    // tapering spans swept back to a tip, and the string from each tip back
-    // to the latch.
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.600, 0.006),
-        Vec3::new(0.028, 0.014, 0.020),
-        steel,
-    );
-    for side in [-1.0f32, 1.0] {
-        let at = |x: f32, y: f32| Vec3::new(side * x, y, 0.010);
-        taper(
-            &mut s,
-            at(0.025, 0.600),
-            at(0.170, 0.588),
-            Vec2::new(0.009, 0.017),
-            Vec2::new(0.007, 0.013),
-            prod,
-        );
-        taper(
-            &mut s,
-            at(0.170, 0.588),
-            at(0.295, 0.560),
-            Vec2::new(0.007, 0.013),
-            Vec2::new(0.005, 0.009),
-            prod,
-        );
-        boxed(
-            &mut s,
-            at(0.298, 0.558),
-            Vec3::new(0.006, 0.006, 0.010),
-            wood,
-        );
-        taper(
-            &mut s,
-            at(0.296, 0.556),
-            Vec3::new(side * 0.010, 0.330, 0.022),
-            Vec2::splat(0.0012),
-            Vec2::splat(0.0012),
-            cord,
-        );
-    }
-    // The stirrup a foot goes through to span it, ahead of the prod.
-    let stirrup = |x: f32, y: f32| Vec3::new(x, y, -0.012);
-    for (a, b) in [
-        (stirrup(-0.030, 0.607), stirrup(-0.030, 0.650)),
-        (stirrup(0.030, 0.607), stirrup(0.030, 0.650)),
-        (stirrup(-0.033, 0.650), stirrup(0.033, 0.650)),
-    ] {
-        taper(&mut s, a, b, Vec2::splat(0.003), Vec2::splat(0.003), steel);
-    }
-    // The trigger, under the fist, and three sides of its guard.
-    for (c, h) in [
-        (
-            Vec3::new(0.0, 0.268, -0.044),
-            Vec3::new(0.003, 0.004, 0.013),
-        ),
-        (
-            Vec3::new(0.0, 0.262, -0.068),
-            Vec3::new(0.004, 0.030, 0.003),
-        ),
-        (
-            Vec3::new(0.0, 0.290, -0.050),
-            Vec3::new(0.004, 0.003, 0.018),
-        ),
-        (
-            Vec3::new(0.0, 0.234, -0.050),
-            Vec3::new(0.004, 0.003, 0.018),
-        ),
-    ] {
-        boxed(&mut s, c, h, steel);
-    }
-    s.mesh()
-}
-
 /// The mesh behind a `HeldSrc::Gen` name.
 ///
 /// **A name with no arm here is a panic at boot**, on purpose: the row was
@@ -689,20 +286,14 @@ pub fn canvas_mesh(name: &str) -> Option<Mesh> {
 }
 
 /// Whether a `HeldSrc::Gen` name is the prop kit's (`render::heldkit`) rather
-/// than one of the four built here. The kit has its own torch, revolver and
-/// crossbow for the icons; the hand keeps these, which its poses were solved
-/// on.
+/// than the bat built here.
 pub fn is_kit(name: &str) -> bool {
-    !matches!(name, "bat" | "torch" | "revolver" | "crossbow")
-        && super::heldkit::NAMES.contains(&name)
+    name != "bat" && super::heldkit::NAMES.contains(&name)
 }
 
 pub fn mesh(name: &str) -> Mesh {
     match name {
         "bat" => bat_mesh(),
-        "torch" => torch_mesh(),
-        "revolver" => revolver_mesh(),
-        "crossbow" => crossbow_mesh(),
         // Everything else with no model is the prop kit's.
         _ => super::heldkit::baked(name).unwrap_or_else(|| {
             panic!("HeldSrc::Gen({name:?}) has no generator in render::heldgen")
@@ -725,26 +316,6 @@ pub fn material(name: &str) -> StandardMaterial {
             reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
-        "torch" => StandardMaterial {
-            perceptual_roughness: 0.85,
-            // See `render::fresnel`: 0.14 was F0 0.31%.
-            reflectance: super::fresnel::DIELECTRIC,
-            ..default()
-        },
-        // The stand-in head's lesson restated: not a mirror — a near-specular
-        // metal with no reflection probe has nothing to reflect but sky.
-        "revolver" => StandardMaterial {
-            perceptual_roughness: 0.52,
-            metallic: 0.55,
-            reflectance: super::fresnel::METAL_DIELECTRIC,
-            ..default()
-        },
-        // Wood with steel fittings, and the wood is most of it.
-        "crossbow" => StandardMaterial {
-            perceptual_roughness: 0.72,
-            reflectance: super::fresnel::DIELECTRIC,
-            ..default()
-        },
         _ if is_kit(name) => super::heldkit::material(),
         _ => panic!("HeldSrc::Gen({name:?}) has no material in render::heldgen"),
     }
@@ -760,13 +331,7 @@ mod tests {
         // looks like "the texture did not load" and reports nothing. The
         // meshes share one emitter and one law is cheaper than remembering
         // which rows are allowed to regress.
-        for m in [
-            mesh("bat"),
-            mesh("torch"),
-            mesh("revolver"),
-            mesh("crossbow"),
-            arrow_mesh(0.8),
-        ] {
+        for m in [mesh("bat"), arrow_mesh(0.8)] {
             assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
             assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
         }

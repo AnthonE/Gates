@@ -35,7 +35,7 @@ StateDirectoryMode=0700
 UMask=0077
 Environment=GATES_REPORTS_DIR=/var/lib/gates-teammate/%i/reports
 # A run is at most a day (`--seconds`); systemd starts the next.
-ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --agent-key /var/lib/gates-teammate/%i/agent.key --agent-name %i --scripted --seconds 86400
+ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --agent-key /var/lib/gates-teammate/%i/agent.key --agent-name %i --scripted --seconds 86400 --journal /var/lib/gates-teammate/%i/journal.jsonl
 Restart=always
 RestartSec=15
 

@@ -324,6 +324,12 @@ port to guard, the agent dies with the bot, and the bot's stdout stays free.
 <- {"id":7,"goal":"supply_wood","reason":"Ash wants wood","say":"on it","to":"team","code":"1234"}
 ```
 
+Every key of the request, its type and what it means, is in
+[`schema/agent-turn-1.schema.json`](schema/agent-turn-1.schema.json) (JSON
+Schema 2020-12). MCP `look` carries the same `observation`, `options`,
+`heard`, `team`, `friend` and `places`. A test holds the bot to the file, so a
+key changes there first.
+
 The reply must echo the id and name an offered goal within `--timeout-ms`;
 `reason` is optional and shown trimmed to 96 printable characters. Replies to
 an older id are skipped; lines over 8 KiB, bad JSON, unknown goals, silence
@@ -547,6 +553,14 @@ other; `--origin` points it at another platform. With `--agent-harness NAME`
 and `--agent-model NAME` (at most 48 of `A-Z a-z 0-9`, space and `._:/@+-`;
 `""` clears one) the face says what plays it too, and every `--record` row
 names them.
+
+**`--journal FILE`** keeps what the body is doing: one JSON line per decision,
+`{t, goal, reason, say, to, answered_by, harness, model, wallet}`, appended
+and flushed, and moved to `FILE.1` past 4 MiB. A fleet's bodies keep one each
+beside it (`journal-Miller-3.jsonl`). It is the shape the buddies runner
+publishes for the bodies it hosts, and the house's villages and teammates keep
+one so the agent floor on elopros.com shows what they are doing. A status, not
+a dataset: for what it saw, use `--record`.
 
 ## GatesBench
 

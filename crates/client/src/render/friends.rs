@@ -438,6 +438,7 @@ pub fn on_menu(
             Ok(()) => {
                 connecting.addr = addr;
                 connecting.rx = None;
+                connecting.watch = false;
                 next.set(super::Screen::Connecting);
             }
             Err(why) => friends.say(format!("can't join that server: {why}")),
