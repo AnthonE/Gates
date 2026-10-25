@@ -1468,7 +1468,7 @@ impl ShardCore {
             }
             let Some(key) = self
                 .key_str(slot)
-                .filter(|k| crate::standings::is_wallet(k))
+                .filter(|k| crate::standings::is_holder(k))
             else {
                 continue;
             };
@@ -2371,7 +2371,7 @@ impl ShardCore {
         // proof from here (`mints.rs`).
         if let Some(key) = self
             .key_str(slot)
-            .filter(|k| crate::standings::is_wallet(k))
+            .filter(|k| crate::standings::is_holder(k))
         {
             if self
                 .clients
@@ -2394,7 +2394,7 @@ impl ShardCore {
     /// What the shard gave `slot`'s wallet. Empty for a guest.
     fn gifted(&self, slot: usize) -> sim_core::skin::SkinSet {
         self.key_str(slot)
-            .filter(|k| crate::standings::is_wallet(k))
+            .filter(|k| crate::standings::is_holder(k))
             .map(|k| self.gifts.of(&k, &self.world.skins))
             .unwrap_or_default()
     }
@@ -2407,7 +2407,7 @@ impl ShardCore {
         use content::bake::Gift;
         let Some(key) = self
             .key_str(slot)
-            .filter(|k| crate::standings::is_wallet(k))
+            .filter(|k| crate::standings::is_holder(k))
         else {
             return Gift::Guest;
         };
@@ -2434,7 +2434,7 @@ impl ShardCore {
         use content::bake::Gift;
         let Some(key) = self
             .key_str(slot)
-            .filter(|k| crate::standings::is_wallet(k))
+            .filter(|k| crate::standings::is_holder(k))
         else {
             return Gift::Guest;
         };
@@ -2515,7 +2515,7 @@ impl ShardCore {
         use content::bake::Gift;
         let Some(key) = self
             .key_str(slot)
-            .filter(|k| crate::standings::is_wallet(k))
+            .filter(|k| crate::standings::is_holder(k))
         else {
             return Some(Gift::Guest);
         };

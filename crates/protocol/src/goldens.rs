@@ -1110,6 +1110,7 @@ pub fn auth() -> crate::Auth {
             .expect("a known-good address"),
         signature: crate::Signature(sig),
         solana: None,
+        pass: None,
     }
 }
 

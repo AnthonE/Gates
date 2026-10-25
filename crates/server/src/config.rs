@@ -240,6 +240,14 @@ pub struct ShardConfig {
     /// one whose pages may collect a signature this shard accepts**, so list
     /// only names you serve.
     pub siwe_domains: Option<Vec<String>>,
+    /// elo's account key (`elo_account_pubkey`: standard base64 of 32 bytes,
+    /// what `GET {origin}/api/account/pubkey` serves). With it, a player
+    /// signed in to Elo Pros joins with the pass elo signed for this game and
+    /// one of [`ShardConfig::siwe_accepts`]' names (`auth::verify_pass`) —
+    /// as the wallet it links, or as their account when it links none. Pinned
+    /// here rather than fetched, so a join still makes no network call.
+    /// `None`, the default, admits no pass; wallets and guests are unchanged.
+    pub elo_account_key: Option<[u8; 32]>,
     /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
     ///
     /// [`entitle::Config::off`] is the shipping default and checks **nothing**
@@ -467,6 +475,7 @@ impl ShardConfig {
             companion_addr: None,
             domain: "127.0.0.1".into(),
             siwe_domains: None,
+            elo_account_key: None,
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
@@ -711,6 +720,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut companion_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
+    let mut elo_account_key: Option<[u8; 32]> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
@@ -1101,6 +1111,25 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     parse_siwe_domains(value)
                         .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
                 );
+            }
+            // elo's account key (`ShardConfig::elo_account_key`). Absent ⇒
+            // this shard admits no Elo Pros pass.
+            "elo_account_pubkey" => {
+                use base64::Engine;
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .ok()
+                    .filter(|b| b.len() == 32)
+                    .ok_or_else(|| {
+                        format!(
+                            "shard.toml line {}: elo_account_pubkey is standard base64 of 32 bytes, \
+                             as GET /api/account/pubkey serves it",
+                            n + 1
+                        )
+                    })?;
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&raw);
+                elo_account_key = Some(key);
             }
             // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
             // copies, which is what every test, every community shard and
@@ -1679,6 +1708,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         min_client: min_client.unwrap_or(0),
         domain: domain.expect("`bind` is read above, and its host is the default"),
         siwe_domains,
+        elo_account_key,
         entitle,
         skins,
         faces,

@@ -331,6 +331,60 @@ impl core::fmt::Debug for SolanaSignature {
     }
 }
 
+/// The longest Elo Pros pass on the wire (v151): the pass exactly as elo issued
+/// it, `base64url(text).base64url(ed25519 signature)`. Its text is seven short
+/// lines whose one free field is the shard's domain, at most [`DOMAIN_MAX`],
+/// so a real pass is well under this.
+pub const PASS_MAX: usize = 600;
+
+/// **A player signed in to Elo Pros (v151)**, proved by elo rather than by a
+/// wallet signature: a pass naming the account, this game, the shard's domain
+/// and the wallet the account links, signed by elo's account key
+/// (`GET {origin}/api/account/pubkey`). The shard checks it with no call per
+/// join (`server::auth::verify_pass`). Carried as elo wrote it; this crate
+/// keeps the bytes and never parses them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Pass {
+    bytes: [u8; PASS_MAX],
+    len: u16,
+}
+
+impl Pass {
+    /// `None` for an empty pass or one over [`PASS_MAX`].
+    pub fn new(raw: &[u8]) -> Option<Self> {
+        if raw.is_empty() || raw.len() > PASS_MAX {
+            return None;
+        }
+        let mut bytes = [0u8; PASS_MAX];
+        bytes[..raw.len()].copy_from_slice(raw);
+        Some(Self {
+            bytes,
+            len: raw.len() as u16,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len as usize]
+    }
+}
+
+impl Default for Pass {
+    fn default() -> Self {
+        Self {
+            bytes: [0u8; PASS_MAX],
+            len: 0,
+        }
+    }
+}
+
+/// Prints its length and never its bytes: a pass is a bearer credential for
+/// an hour.
+impl core::fmt::Debug for Pass {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Pass({} bytes)", self.len)
+    }
+}
+
 /// A Solana account's sign-in: its key, and its signature over
 /// [`siws_message_for`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -379,6 +433,9 @@ pub struct Auth {
     /// `Some`, `address` is [`Address::GUEST`] and `signature` is
     /// [`Signature::NONE`] on the wire, and the shard verifies this.
     pub solana: Option<SolanaProof>,
+    /// An Elo Pros pass instead of either (v151). When it is `Some`, the
+    /// other three are empty on the wire, and the shard verifies the pass.
+    pub pass: Option<Pass>,
 }
 
 /// The exact text that gets signed — **EIP-4361, and the one implementation
@@ -646,11 +703,20 @@ pub(crate) fn read_challenge(r: &mut BitReader) -> Result<Challenge, WireError> 
     })
 }
 
-/// The tag byte before an auth frame's proof (v142).
+/// The tag byte before an auth frame's proof (v142; the pass is v151).
 const AUTH_ETHEREUM: u32 = 0;
 const AUTH_SOLANA: u32 = 1;
+const AUTH_PASS: u32 = 2;
 
 pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
+    if let Some(pass) = &a.pass {
+        w.write(AUTH_PASS, 8)?;
+        w.write(pass.len as u32, 16)?;
+        for b in pass.as_bytes() {
+            w.write(*b as u32, 8)?;
+        }
+        return Ok(());
+    }
     if let Some(sol) = &a.solana {
         w.write(AUTH_SOLANA, 8)?;
         for b in sol.key.0.iter().chain(sol.signature.0.iter()) {
@@ -671,6 +737,20 @@ pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
 pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
     match r.read(8)? {
         AUTH_ETHEREUM => {}
+        AUTH_PASS => {
+            let len = r.read(16)? as usize;
+            if len == 0 || len > PASS_MAX {
+                return Err(WireError::Malformed);
+            }
+            let mut raw = [0u8; PASS_MAX];
+            for b in raw[..len].iter_mut() {
+                *b = r.read(8)? as u8;
+            }
+            return Ok(Auth {
+                pass: Pass::new(&raw[..len]),
+                ..Auth::default()
+            });
+        }
         AUTH_SOLANA => {
             let mut key = [0u8; SOLANA_KEY_BYTES];
             for b in key.iter_mut() {
@@ -687,6 +767,7 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
                     key: SolanaKey(key),
                     signature: SolanaSignature(signature),
                 }),
+                pass: None,
             });
         }
         _ => return Err(WireError::Malformed),
@@ -703,6 +784,7 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
         address: Address(address),
         signature: Signature(signature),
         solana: None,
+        pass: None,
     })
 }
 
@@ -988,6 +1070,7 @@ mod tests {
                 key,
                 signature: SolanaSignature([7; SOLANA_SIGNATURE_BYTES]),
             }),
+            pass: None,
         };
         let mut buf = [0u8; 256];
         let n = crate::encode_auth(&sol, &mut buf).unwrap();
@@ -996,9 +1079,24 @@ mod tests {
             address: Address::from_hex(PRIV1).unwrap(),
             signature: Signature([9; SIGNATURE_BYTES]),
             solana: None,
+            pass: None,
         };
         let n = crate::encode_auth(&evm, &mut buf).unwrap();
         assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), evm);
+    }
+
+    #[test]
+    fn a_pass_round_trips_within_the_auth_frame_ceiling() {
+        let raw = [b'x'; PASS_MAX];
+        let pass = Auth {
+            pass: Pass::new(&raw),
+            ..Auth::default()
+        };
+        let mut buf = [0u8; crate::MAX_AUTH_MSG_BYTES];
+        let n = crate::encode_auth(&pass, &mut buf).unwrap();
+        assert!(n <= crate::MAX_AUTH_MSG_BYTES);
+        assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), pass);
+        assert!(Pass::new(&[]).is_none() && Pass::new(&[0; PASS_MAX + 1]).is_none());
     }
 
     /// The four canonical EIP-55 vectors from the spec itself.

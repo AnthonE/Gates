@@ -166,13 +166,17 @@ pub fn parse(line: &str) -> Option<Option<Sale>> {
     let ok_ref = reference
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    (ok_ref && crate::entitle::is_wallet(wallet)).then(|| {
-        Some(Sale {
-            reference: reference.to_string(),
-            wallet: wallet.to_ascii_lowercase(),
-            catalog,
-        })
-    })
+    // A wallet, or an Elo Pros account with none (v151), whose sale the
+    // minter sends to the platform's locker instead of the chain.
+    (ok_ref && (crate::entitle::is_wallet(wallet) || crate::auth::is_account_str(wallet))).then(
+        || {
+            Some(Sale {
+                reference: reference.to_string(),
+                wallet: wallet.to_ascii_lowercase(),
+                catalog,
+            })
+        },
+    )
 }
 
 /// The wallets of `<world>.minted`'s lines past the first `seen`, and how
