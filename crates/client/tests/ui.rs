@@ -4227,18 +4227,18 @@ fn the_memo_is_the_function() {
         cache: &mut cache,
     };
     let mut occupied = 0;
-    for cz in 40..140 {
-        for cx in 40..140 {
-            let memo = island.slot(cx, cz);
-            let cold = scatter(seed, &table, &haven, cx, cz);
-            assert_eq!(
-                (memo.occupant, memo.x, memo.y, memo.z, memo.yaw, memo.scale),
-                (cold.occupant, cold.x, cold.y, cold.z, cold.yaw, cold.scale),
-                "the memo disagreed with `scatter` at cell ({cx},{cz})"
-            );
-            if memo.occupant != Occupant::None {
-                occupied += 1;
-            }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..140).flat_map(|cz| (40..140).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let memo = island.slot(cx, cz);
+        let cold = scatter(seed, &table, &haven, cx, cz);
+        assert_eq!(
+            (memo.occupant, memo.x, memo.y, memo.z, memo.yaw, memo.scale),
+            (cold.occupant, cold.x, cold.y, cold.z, cold.yaw, cold.scale),
+            "the memo disagreed with `scatter` at cell ({cx},{cz})"
+        );
+        if memo.occupant != Occupant::None {
+            occupied += 1;
         }
     }
     // A walk that found nothing would agree with `scatter` about ten thousand

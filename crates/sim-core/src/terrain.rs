@@ -1550,11 +1550,9 @@ fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 // edge wandering on a slow noise so the border reads as a climate rather
 // than a ruled line.
 //
-// **In the NORTH (+z, `ui/map.rs`), where Rust puts its snow.** The south of
-// the shipped seed is where the island's fixtures stand — the agent's test
-// scenes, the gather and clutter fixtures, the capture rig's spawn
-// (`ci/scene.sh`) — all calibrated on temperate ground, and the desert is the
-// same biome at either end. `DESERT_TOWARD` is the one sign to flip.
+// **In the NORTH (+z, `ui/map.rs`).** The desert is the same biome at either
+// end, and `DESERT_TOWARD` is the one sign to flip: no fixture stands on a
+// place any more, they search the island for mild ground (`find.rs`).
 //
 // It is folded INTO `moisture` rather than added beside it, so everything
 // that classifies ground — `biome`, `splat_from`, the scatter row, the mob
@@ -1634,10 +1632,10 @@ fn dune_of(moist: f32) -> f32 {
 //
 // **A blob, not a band**: one heart east-south-east of the centre and an edge
 // that wanders, so it reads as a place you walk into rather than a climate.
-// ESE because everything else is spoken for: the desert holds the north, the
-// fixtures the south and south-west (`ci/scene.sh`, the server tests' scans),
-// the town and the golden window the centre, and `shore()` walks +x at the
-// centre's z. The const block below holds all four.
+// ESE because the desert holds the north, the town and the golden window the
+// centre, and the server tests' `shore()` walks +x at the centre's z. The
+// const block below holds all three. (Fixtures search for mild ground,
+// `find.rs`, so none needs a place kept for it.)
 //
 // **Not folded into moisture.** Landmark kinds read moisture (`try_site`) and
 // the works' terminals stand at landmarks, so a fold would move the arc. It is

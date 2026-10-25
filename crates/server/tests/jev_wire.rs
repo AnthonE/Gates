@@ -106,17 +106,17 @@ fn tree_scene() -> (f32, f32) {
     use sim_core::terrain::{self, Occupant, ScatterTable};
     let haven = terrain::haven(TREE_SEED);
     let table = ScatterTable::alpha_default();
-    for cz in 40..216 {
-        for cx in 40..216 {
-            let slot = terrain::scatter(TREE_SEED, &table, &haven, cx, cz);
-            if slot.occupant != Occupant::Tree {
-                continue;
-            }
-            let at = (slot.x, slot.z - 5.0);
-            let floor = terrain::ground(TREE_SEED, &haven, at.0, at.1);
-            if floor > 1.0 && (floor - slot.y).abs() < 0.3 {
-                return at;
-            }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216).flat_map(|cz| (40..216).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let slot = terrain::scatter(TREE_SEED, &table, &haven, cx, cz);
+        if slot.occupant != Occupant::Tree {
+            continue;
+        }
+        let at = (slot.x, slot.z - 5.0);
+        let floor = terrain::ground(TREE_SEED, &haven, at.0, at.1);
+        if floor > 1.0 && (floor - slot.y).abs() < 0.3 {
+            return at;
         }
     }
     panic!("fixture seed has no tree with a level approach");

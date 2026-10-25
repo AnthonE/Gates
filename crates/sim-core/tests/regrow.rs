@@ -44,40 +44,40 @@ fn pitch_toward(rise: f32, run: f32) -> u8 {
 fn lone_tree() -> (Slot, (f32, f32), Aim) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(SEED);
-    for cz in 40..216i32 {
-        for cx in 40..216i32 {
-            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-            // Grown at the wipe (tree ages v0), so the first chop is a whole
-            // tree of its size class.
-            if s.occupant != Occupant::Tree
-                || sim_core::gather::wild_grown_at(SEED, cx as u16, cz as u16) != 0
-            {
-                continue;
-            }
-            let (px, pz) = (s.x - 1.2, s.z);
-            let py = terrain::height(SEED, px, pz);
-            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
-                continue;
-            }
-            let (pcx, pcz) = ((px / CELL_SIZE) as i32, (pz / CELL_SIZE) as i32);
-            let rival = (-1..=1).any(|dz| {
-                (-1..=1).any(|dx| {
-                    let n = terrain::scatter(SEED, &table, &haven, pcx + dx, pcz + dz);
-                    let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
-                    n.occupant != Occupant::None && d2 <= 6.25 && (n.x != s.x || n.z != s.z)
-                })
-            });
-            if rival {
-                continue;
-            }
-            // The tree is due east of the stand point.
-            let yaw = (0..=255u16)
-                .map(|hi| hi << 8)
-                .max_by(|&a, &b| yaw_dir(a).0.total_cmp(&yaw_dir(b).0))
-                .unwrap();
-            let pitch = pitch_toward(s.y + AIM_UP_M - (py + EYE_M), 1.2);
-            return (s, (px, pz), Aim { yaw, pitch });
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+        // Grown at the wipe (tree ages v0), so the first chop is a whole
+        // tree of its size class.
+        if s.occupant != Occupant::Tree
+            || sim_core::gather::wild_grown_at(SEED, cx as u16, cz as u16) != 0
+        {
+            continue;
         }
+        let (px, pz) = (s.x - 1.2, s.z);
+        let py = terrain::height(SEED, px, pz);
+        if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+            continue;
+        }
+        let (pcx, pcz) = ((px / CELL_SIZE) as i32, (pz / CELL_SIZE) as i32);
+        let rival = (-1..=1).any(|dz| {
+            (-1..=1).any(|dx| {
+                let n = terrain::scatter(SEED, &table, &haven, pcx + dx, pcz + dz);
+                let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                n.occupant != Occupant::None && d2 <= 6.25 && (n.x != s.x || n.z != s.z)
+            })
+        });
+        if rival {
+            continue;
+        }
+        // The tree is due east of the stand point.
+        let yaw = (0..=255u16)
+            .map(|hi| hi << 8)
+            .max_by(|&a, &b| yaw_dir(a).0.total_cmp(&yaw_dir(b).0))
+            .unwrap();
+        let pitch = pitch_toward(s.y + AIM_UP_M - (py + EYE_M), 1.2);
+        return (s, (px, pz), Aim { yaw, pitch });
     }
     panic!("no lone tree on seed {SEED:#x}");
 }

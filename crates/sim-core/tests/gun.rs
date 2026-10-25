@@ -69,8 +69,11 @@ fn hv(seed: u64) -> &'static terrain::Haven {
 
 /// The browser-smoke seed, and the one the shard ships.
 const SEED: u64 = 20260731;
-/// Dry ground on `SEED`: `ci/scene.sh`'s measured spawn.
-const DRY: (f32, f32) = (1500.0, 600.0);
+/// Dry, mild ground on `SEED`, searched from where `ci/scene.sh` used to
+/// stand (`sim_core::find`).
+fn dry() -> (f32, f32) {
+    sim_core::find::ground(SEED, (1500.0, 600.0), 8.0, |_, _| true)
+}
 
 /// The item index the fixture makes a revolver, and the one it makes its
 /// round. Arbitrary and distinct; nothing else in the fixture uses either.
@@ -535,12 +538,13 @@ fn a_miss_marks_the_world_and_a_hit_does_not() {
     // over the sea floor the shooter would be swimming, and a swimmer does
     // not fire (`combat::waterlogged`).
     let mut alone = Box::new([Player::default(); MAX_PLAYERS]);
-    let g = terrain::ground(SEED, hv(SEED), DRY.0, DRY.1);
+    let dry = dry();
+    let g = terrain::ground(SEED, hv(SEED), dry.0, dry.1);
     assert!(
         g > terrain::SEA_LEVEL,
         "the fixture's ground is under water"
     );
-    alone[0] = shooter(1, DRY.0, g + 5.0, DRY.1, 0, 0, 6);
+    alone[0] = shooter(1, dry.0, g + 5.0, dry.1, 0, 0, 6);
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut alone);
     let marks: Vec<_> = s
         .events
@@ -592,8 +596,9 @@ fn a_client_beam_stops_where_the_shards_mark_did() {
     let cc = gun_fixture();
     let mut sc = Scratch::barren();
     let mut alone = Box::new([Player::default(); MAX_PLAYERS]);
-    let g = terrain::ground(SEED, hv(SEED), DRY.0, DRY.1);
-    alone[0] = shooter(1, DRY.0, g + 5.0, DRY.1, 0, 0, 6);
+    let dry = dry();
+    let g = terrain::ground(SEED, hv(SEED), dry.0, dry.1);
+    alone[0] = shooter(1, dry.0, g + 5.0, dry.1, 0, 0, 6);
     let body = alone[0].body;
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut alone);
     let mark = *s
@@ -763,14 +768,15 @@ fn the_shot_stops_at_the_weapons_declared_reach() {
 /// island centre whose terrain a foundation would accept, in ring order so
 /// it is deterministic per seed.
 fn buildable_cell(seed: u64) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(seed, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 2047) as u16;
-                let cz = (512 + dz).clamp(0, 2047) as u16;
+                let cx = (hx + dx).clamp(0, 2047) as u16;
+                let cz = (hz + dz).clamp(0, 2047) as u16;
                 let (x, z) = (
                     (cx as f32 + 0.5) * BUILD_CELL_M,
                     (cz as f32 + 0.5) * BUILD_CELL_M,

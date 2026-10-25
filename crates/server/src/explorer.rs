@@ -9238,38 +9238,38 @@ mod tests {
             skin: 0,
             ..ItemStack::EMPTY
         };
-        for cz in 40..216 {
-            for cx in 40..216 {
-                let (seed, island) = core.island();
-                let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
-                if slot.occupant != Occupant::Tree {
-                    continue;
-                }
-                let y = terrain::ground(seed, bot.haven.as_ref().unwrap(), slot.x, slot.z - 5.0);
-                if y < 1.0 || (y - slot.y).abs() > 0.3 {
-                    continue;
-                }
-                let target = Target {
-                    cx: cx as u16,
-                    cz: cz as u16,
-                    slot,
-                };
-                let body = EntityState {
-                    id: 1,
-                    qx: quant_xz(slot.x),
-                    qy: quant_y(y),
-                    qz: quant_xz(slot.z - 5.0),
-                    grounded: true,
-                    ..EntityState::default()
-                };
-                if !visible(core, bot.haven.as_ref().unwrap(), &body, target) {
-                    continue;
-                }
-                let mut view = ClientView::new();
-                view.newest_applied = Some(1);
-                view.entities.push((1, body));
-                return (bot, view, target);
+        // Its box first, then the island: mild ground wherever it lies.
+        let hint = (40..216).flat_map(|cz| (40..216).map(move |cx| (cx, cz)));
+        for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+            let (seed, island) = core.island();
+            let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
+            if slot.occupant != Occupant::Tree {
+                continue;
             }
+            let y = terrain::ground(seed, bot.haven.as_ref().unwrap(), slot.x, slot.z - 5.0);
+            if y < 1.0 || (y - slot.y).abs() > 0.3 {
+                continue;
+            }
+            let target = Target {
+                cx: cx as u16,
+                cz: cz as u16,
+                slot,
+            };
+            let body = EntityState {
+                id: 1,
+                qx: quant_xz(slot.x),
+                qy: quant_y(y),
+                qz: quant_xz(slot.z - 5.0),
+                grounded: true,
+                ..EntityState::default()
+            };
+            if !visible(core, bot.haven.as_ref().unwrap(), &body, target) {
+                continue;
+            }
+            let mut view = ClientView::new();
+            view.newest_applied = Some(1);
+            view.entities.push((1, body));
+            return (bot, view, target);
         }
         panic!("no visible tree fixture");
     }

@@ -34,48 +34,48 @@ fn id_of(slot: usize) -> u32 {
 fn find_isolated_tree() -> ((f32, f32), u16, (u16, u16)) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(SEED);
-    for cz in 40..216i32 {
-        for cx in 40..216i32 {
-            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if s.occupant != Occupant::Tree {
-                continue;
-            }
-            let (px, pz) = (s.x - 1.2, s.z);
-            let py = terrain::height(SEED, px, pz);
-            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
-                continue;
-            }
-            let pcx = (px / CELL_SIZE) as i32;
-            let pcz = (pz / CELL_SIZE) as i32;
-            let mut rivals = 0;
-            for dz in -1..=1i32 {
-                for dx in -1..=1i32 {
-                    let n = terrain::scatter(SEED, &table, &haven, pcx + dx, pcz + dz);
-                    if sim_core::gather::node_index(n.occupant).is_some() {
-                        let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
-                        if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
-                            rivals += 1;
-                        }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+        if s.occupant != Occupant::Tree {
+            continue;
+        }
+        let (px, pz) = (s.x - 1.2, s.z);
+        let py = terrain::height(SEED, px, pz);
+        if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+            continue;
+        }
+        let pcx = (px / CELL_SIZE) as i32;
+        let pcz = (pz / CELL_SIZE) as i32;
+        let mut rivals = 0;
+        for dz in -1..=1i32 {
+            for dx in -1..=1i32 {
+                let n = terrain::scatter(SEED, &table, &haven, pcx + dx, pcz + dz);
+                if sim_core::gather::node_index(n.occupant).is_some() {
+                    let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                    if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
+                        rivals += 1;
                     }
                 }
             }
-            if rivals > 0 {
-                continue;
-            }
-            let (dx, dz) = (s.x - px, s.z - pz);
-            let mut best_yaw = 0u16;
-            let mut best_dot = f32::MIN;
-            for hi in 0..=255u16 {
-                let yaw = hi << 8;
-                let (fx, fz) = yaw_dir(yaw);
-                let dot = fx * dx + fz * dz;
-                if dot > best_dot {
-                    best_dot = dot;
-                    best_yaw = yaw;
-                }
-            }
-            return ((px, pz), best_yaw, (cx as u16, cz as u16));
         }
+        if rivals > 0 {
+            continue;
+        }
+        let (dx, dz) = (s.x - px, s.z - pz);
+        let mut best_yaw = 0u16;
+        let mut best_dot = f32::MIN;
+        for hi in 0..=255u16 {
+            let yaw = hi << 8;
+            let (fx, fz) = yaw_dir(yaw);
+            let dot = fx * dx + fz * dz;
+            if dot > best_dot {
+                best_dot = dot;
+                best_yaw = yaw;
+            }
+        }
+        return ((px, pz), best_yaw, (cx as u16, cz as u16));
     }
     panic!("seed {SEED:#x} offered no isolated tree in the scanned block");
 }

@@ -35,7 +35,9 @@ pub struct ShardConfig {
     pub seed: u64,
     /// Dev-only fixed spawn `"x,z"` in meters (DECISIONS.md §open row
     /// "dev spawn override"). Unset is the shipping default; never set it
-    /// on a public shard — every joiner lands on the same point.
+    /// on a public shard — every joiner lands on the same point. `"auto"`
+    /// (mild, level ground) and `"biome:<name>"` ask the island for it
+    /// instead (`sim_core::find`), resolved here once the seed is known.
     pub dev_spawn: Option<(f32, f32)>,
     /// Dev-only sky and clock at boot, `/weather` and `/time` without an
     /// admin wallet: `dev_env = "storm,midnight"`, either half optional.
@@ -687,6 +689,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut dev_spawn_find: Option<String> = None;
     let mut dev_env: Option<(u8, u16)> = None;
     let mut dev_spawn_kit: Option<Vec<(String, u32)>> = None;
     let mut netsim: Option<NetSim> = None;
@@ -767,6 +770,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                         .parse()
                         .map_err(|e| format!("shard.toml line {}: bad seed: {e}", n + 1))?,
                 );
+            }
+            "dev_spawn" if value == "auto" || value.starts_with("biome:") => {
+                // Asked for, not typed: resolved below, once the seed is
+                // known (`sim_core::find`).
+                if let Some(name) = value.strip_prefix("biome:") {
+                    if sim_core::find::biome_named(name).is_none() {
+                        return Err(format!(
+                            "shard.toml line {}: dev_spawn biome `{name}` is not one of {:?}",
+                            n + 1,
+                            sim_core::terrain::BIOME_NAMES
+                        ));
+                    }
+                }
+                dev_spawn_find = Some(value.to_string());
             }
             "dev_spawn" => {
                 let (x, z) = value
@@ -1616,6 +1633,19 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             ));
         }
     }
+    // `dev_spawn = "auto"` or `"biome:<name>"`: the generator decides where
+    // that ground is, so the shard searches its own island for it.
+    if let (Some(q), Some(seed)) = (&dev_spawn_find, seed) {
+        dev_spawn = Some(match q.strip_prefix("biome:") {
+            None => sim_core::find::spawn_ground(seed),
+            Some(name) => {
+                let want = sim_core::find::biome_named(name).expect("checked when parsed");
+                sim_core::find::biome_ground(seed, want).ok_or_else(|| {
+                    format!("shard.toml: dev_spawn: seed {seed} has no level {name} ground")
+                })?
+            }
+        });
+    }
     Ok(ShardConfig {
         prizes,
         discord_webhook,
@@ -2034,12 +2064,17 @@ mod tests {
         let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
         let ok = parse_shard_toml(&format!("{base}dev_spawn = \"1024, 1024\"\n")).unwrap();
         assert_eq!(ok.dev_spawn, Some((1024.0, 1024.0)));
+        let auto = parse_shard_toml(&format!("{base}dev_spawn = \"auto\"\n")).unwrap();
+        let (x, z) = auto.dev_spawn.expect("auto resolves to ground");
+        assert!(sim_core::find::mild(1, x, z));
+        assert!(parse_shard_toml(&format!("{base}dev_spawn = \"biome:desert\"\n")).is_ok());
         for bad in [
             "\"1024\"",
             "\"1024,\"",
             "\"-1,5\"",
             "\"9999,5\"",
             "\"nan,5\"",
+            "\"biome:moon\"",
         ] {
             assert!(
                 parse_shard_toml(&format!("{base}dev_spawn = {bad}\n")).is_err(),

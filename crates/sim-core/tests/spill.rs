@@ -98,53 +98,53 @@ fn pitch_toward(rise: f32, run: f32) -> u8 {
 fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    for cz in 40..216i32 {
-        for cx in 40..216i32 {
-            let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            if s.occupant != want {
-                continue;
-            }
-            let (px, pz) = (s.x - 1.2, s.z);
-            let py = terrain::height(seed, px, pz);
-            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
-                continue; // node on a ledge or in the sea
-            }
-            let pcx = (px / CELL_SIZE) as i32;
-            let pcz = (pz / CELL_SIZE) as i32;
-            let mut rivals = 0;
-            for dz in -1..=1i32 {
-                for dx in -1..=1i32 {
-                    let n = terrain::scatter(seed, &table, &haven, pcx + dx, pcz + dz);
-                    if sim_core::gather::node_index(n.occupant).is_some() {
-                        let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
-                        if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
-                            rivals += 1;
-                        }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(seed, hint) {
+        let s = terrain::scatter(seed, &table, &haven, cx, cz);
+        if s.occupant != want {
+            continue;
+        }
+        let (px, pz) = (s.x - 1.2, s.z);
+        let py = terrain::height(seed, px, pz);
+        if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+            continue; // node on a ledge or in the sea
+        }
+        let pcx = (px / CELL_SIZE) as i32;
+        let pcz = (pz / CELL_SIZE) as i32;
+        let mut rivals = 0;
+        for dz in -1..=1i32 {
+            for dx in -1..=1i32 {
+                let n = terrain::scatter(seed, &table, &haven, pcx + dx, pcz + dz);
+                if sim_core::gather::node_index(n.occupant).is_some() {
+                    let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                    if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
+                        rivals += 1;
                     }
                 }
             }
-            if rivals > 0 {
-                continue;
-            }
-            // Best of the 256 LUT headings toward the node. The heading
-            // lives in the TOP byte of the u16 — `hi << 8`, not `hi`, or
-            // every candidate is the same bearing to within a fraction of
-            // a degree and the argmax returns whatever it started at.
-            let (dx, dz) = (s.x - px, s.z - pz);
-            let mut best_yaw = 0u16;
-            let mut best_dot = f32::MIN;
-            for hi in 0..=255u16 {
-                let yaw = hi << 8;
-                let (fx, fz) = sim_core::yaw_dir(yaw);
-                let dot = fx * dx + fz * dz;
-                if dot > best_dot {
-                    best_dot = dot;
-                    best_yaw = yaw;
-                }
-            }
-            let eye = py + sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
-            return ((px, pz), (best_yaw, pitch_toward(s.y + 0.7 - eye, 1.2)));
         }
+        if rivals > 0 {
+            continue;
+        }
+        // Best of the 256 LUT headings toward the node. The heading
+        // lives in the TOP byte of the u16 — `hi << 8`, not `hi`, or
+        // every candidate is the same bearing to within a fraction of
+        // a degree and the argmax returns whatever it started at.
+        let (dx, dz) = (s.x - px, s.z - pz);
+        let mut best_yaw = 0u16;
+        let mut best_dot = f32::MIN;
+        for hi in 0..=255u16 {
+            let yaw = hi << 8;
+            let (fx, fz) = sim_core::yaw_dir(yaw);
+            let dot = fx * dx + fz * dz;
+            if dot > best_dot {
+                best_dot = dot;
+                best_yaw = yaw;
+            }
+        }
+        let eye = py + sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+        return ((px, pz), (best_yaw, pitch_toward(s.y + 0.7 - eye, 1.2)));
     }
     panic!("seed {seed} offers no isolated {want:?} — test setup failure");
 }
@@ -732,14 +732,15 @@ fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
 /// The nearest cell the foundation's terrain rule accepts, in ring order
 /// (deterministic for a seed) — `tests/lock_box.rs`'s scan.
 fn buildable_cell(seed: u64) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(seed, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 2047) as u16;
-                let cz = (512 + dz).clamp(0, 2047) as u16;
+                let cx = (hx + dx).clamp(0, 2047) as u16;
+                let cz = (hz + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);

@@ -200,7 +200,7 @@ fn level_ground(seed: u64) -> (f32, f32) {
         let mut x = 320.0f32;
         while x < 1728.0 {
             let y0 = terrain::ground(seed, h, x, z);
-            if y0 >= terrain::LAND_MIN_H + 2.0 {
+            if y0 >= terrain::LAND_MIN_H + 2.0 && sim_core::find::mild(seed, x, z) {
                 let mut drop = 0.0f32;
                 let mut d = 0.5f32;
                 while d <= RUN_M {
@@ -356,14 +356,15 @@ fn heal(w: &mut World) {
 /// with the edge exactly between them.
 fn two_at_a_buildable_edge(w: &mut World) -> (u16, u16) {
     let table = sim_core::terrain::ScatterTable::alpha_default();
+    let (hx, hz) = sim_core::find::build_hint(SEED, 500, 500);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (500 + dx).clamp(0, 2047);
-                let cz = (500 + dz).clamp(0, 2047);
+                let cx = (hx + dx).clamp(0, 2047);
+                let cz = (hz + dz).clamp(0, 2047);
                 let x0 = cx as f32 * BUILD_CELL_M;
                 let z_mid = (cz as f32 + 0.5) * BUILD_CELL_M;
                 let centre = (x0 + BUILD_CELL_M * 0.5, z_mid);

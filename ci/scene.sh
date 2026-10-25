@@ -68,18 +68,19 @@ cd "$(dirname "$0")/.."
 
 POPULATION=6
 SEED=20260731
-# `RENDER.md`'s measured pin, and it is a SAFETY number before it is a framing
-# one. The probe is an ordinary client: its body stands unarmed in the world
-# for the whole run, and mob homes concentrate on the flat walkable interior —
-# three of four runs died on one pass and were diagnosed as everything else
-# first. 1500,600 is the ground the material measurements were taken on and
-# has been quiet across runs. Do NOT pin the island centre (1024,1024), which
-# is the middle of exactly where the roster homes.
+# Where the probe stands is ASKED for, not typed: `auto` is mild, level ground
+# on the outer island (`sim_core::find::spawn_ground`), so it follows the
+# generator wherever the climates move. It is a SAFETY choice before it is a
+# framing one: the probe is an ordinary client standing unarmed for the whole
+# run, and mob homes concentrate on the flat walkable interior — three of four
+# runs died there before the probe stood out on the island's rim.
+# `--spawn biome:snow` (any `terrain::BIOME_NAMES`) points it at a climate;
+# `--spawn x,z` still pins a point.
 #
 # This rig raises that risk rather than lowering it: the scene pass stands
 # still waiting for a base to go up, and a raider's charge does not check who
 # is beside it. A probe that dies now says so and exits nonzero.
-SPAWN="1500,600"
+SPAWN="auto"
 OUT=""
 PORT=4433
 HUD=1
