@@ -312,16 +312,19 @@ pub enum Place {
     /// The corrupted zone. Its player-facing name is the Verdigris, never
     /// the internal `fel` (`WORLD.md` §1.1).
     Verdigris,
+    /// The snowcaps and the arctic south.
+    Snow,
 }
 
 impl Place {
-    pub const ALL: [Place; 6] = [
+    pub const ALL: [Place; 7] = [
         Place::Shore,
         Place::Meadow,
         Place::Forest,
         Place::Highland,
         Place::Desert,
         Place::Verdigris,
+        Place::Snow,
     ];
 
     pub fn of(biome: Biome) -> Place {
@@ -332,6 +335,7 @@ impl Place {
             Biome::Highland => Place::Highland,
             Biome::Desert => Place::Desert,
             Biome::Fel => Place::Verdigris,
+            Biome::Snow => Place::Snow,
         }
     }
 
@@ -344,6 +348,7 @@ impl Place {
             Place::Highland => "in the highlands",
             Place::Desert => "in the desert",
             Place::Verdigris => "in the Verdigris",
+            Place::Snow => "in the snow",
         }
     }
 }
@@ -986,6 +991,7 @@ mod tests {
                 Place::Highland => 3,
                 Place::Desert => 4,
                 Place::Verdigris => 5,
+                Place::Snow => 6,
             }
         }
         for (i, p) in Place::ALL.iter().enumerate() {

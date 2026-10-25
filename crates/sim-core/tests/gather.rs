@@ -1965,7 +1965,8 @@ fn the_mark_is_at_the_height_the_ray_entered_the_node() {
     // off them is off by up to a quantum along the look, which the slope
     // of the ray turns into height: a steep look at a grazed top edge
     // spends most of the margin on it.
-    let slack = 3.0 * q + movement::POS_XZ_Q * (sv / ch).abs();
+    let tan = sv / ch;
+    let slack = 3.0 * q + movement::POS_XZ_Q * tan.max(-tan);
     assert!(
         (my - ray_y).max(ray_y - my) <= slack,
         "mark at y {my:.3} where the ray was at {ray_y:.3} — eye {eye:.2}, \
