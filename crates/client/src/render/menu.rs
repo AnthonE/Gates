@@ -649,7 +649,7 @@ const PLAY_BLURB: &str =
 fn build(commands: &mut Commands, v: &View) {
     // A camera, because the menu may be the first thing that ever exists —
     // the render rig only spawns on entering the world.
-    commands.spawn((Camera2d, MenuRoot));
+    commands.spawn((Camera2d, Msaa::Off, MenuRoot));
 
     commands
         .spawn((
@@ -2082,7 +2082,7 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
     } else {
         "Esc goes back"
     };
-    commands.spawn((Camera2d, MenuRoot));
+    commands.spawn((Camera2d, Msaa::Off, MenuRoot));
     commands.spawn((
         MenuRoot,
         ui::screen(ui::BG),

@@ -1485,7 +1485,7 @@ pub fn setup(
     // with the menu. Two cameras would fight for the frame and Bevy would
     // warn, so this spawns one only when there is none.
     if cameras.is_empty() {
-        commands.spawn((SettingsRoot, SettingsCamera, Camera2d));
+        commands.spawn((SettingsRoot, SettingsCamera, Camera2d, Msaa::Off));
     }
     settings.capturing = None;
     settings.note.clear();
