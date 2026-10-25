@@ -1069,7 +1069,7 @@ pub fn watch() -> crate::Watch {
 /// Who a player id is (wire v85): a slot/generation id with bits in both
 /// halves, the `watch` address, a name with a space in it, and a `pic`
 /// whose four bytes all differ so a byte-order slip cannot pass.
-pub fn event_tag() -> (u32, crate::Address, crate::Name, u32) {
+pub fn event_tag() -> (u32, crate::Address, crate::Name, u32, crate::Guild) {
     (
         (0x51 << 8) | 7,
         watch().address,
@@ -1078,6 +1078,10 @@ pub fn event_tag() -> (u32, crate::Address, crate::Name, u32) {
             None => crate::Name::EMPTY,
         },
         0x1a2b_3c4d,
+        match crate::Guild::new("OWL", Some("teal")) {
+            Some(g) => g,
+            None => crate::Guild::NONE,
+        },
     )
 }
 

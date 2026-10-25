@@ -58,9 +58,14 @@ impl Config {
 /// What a read said.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
-    /// The platform answered: the name (possibly empty) and the picture's
-    /// revision (0 for none).
-    Known { name: protocol::Name, pic: u32 },
+    /// The platform answered: the name (possibly empty), the picture's
+    /// revision (0 for none) and the guild tag the wallet wears (none for
+    /// none).
+    Known {
+        name: protocol::Name,
+        pic: u32,
+        guild: protocol::Guild,
+    },
     /// We could not look. Changes nothing.
     Unknown,
 }
@@ -83,7 +88,8 @@ pub fn face_of(cfg: &Config, wallet: &str) -> Face {
 /// A `/api/face/{wallet}` body → a face. A name the wire's [`protocol::Name`]
 /// refuses (too long, not printable ASCII) is no name rather than a cut one:
 /// a truncated name is a different name. `pic` is the first eight hex digits
-/// of the picture's sha256; a real picture never encodes as 0.
+/// of the picture's sha256; a real picture never encodes as 0. A guild tag
+/// the wire refuses is no tag.
 pub fn parse(body: &str) -> Face {
     use serde_json::Value;
     let Ok(v) = serde_json::from_str::<Value>(body) else {
@@ -103,7 +109,17 @@ pub fn parse(body: &str) -> Face {
         .filter(|s| s.len() == 8)
         .and_then(|s| u32::from_str_radix(s, 16).ok())
         .map_or(0, |p| p.max(1));
-    Face::Known { name, pic }
+    // `guild` is `{tag, color, …}` or null (the platform's `guilds.worn_of`).
+    let guild = v
+        .get("guild")
+        .and_then(|g| {
+            protocol::Guild::new(
+                g.get("tag")?.as_str()?,
+                g.get("color").and_then(Value::as_str),
+            )
+        })
+        .unwrap_or(protocol::Guild::NONE);
+    Face::Known { name, pic, guild }
 }
 
 #[cfg(test)]
@@ -112,7 +128,7 @@ mod tests {
 
     fn known(body: &str) -> (String, u32) {
         match parse(body) {
-            Face::Known { name, pic } => (name.as_str().to_string(), pic),
+            Face::Known { name, pic, .. } => (name.as_str().to_string(), pic),
             Face::Unknown => panic!("a readable body is an answer: {body}"),
         }
     }
@@ -129,6 +145,26 @@ mod tests {
         assert_eq!(
             known(r#"{"name":"Zoë","pic":"00000000"}"#),
             (String::new(), 1)
+        );
+    }
+
+    #[test]
+    fn the_worn_guild_tag_reads_and_a_bad_one_is_none() {
+        let tag = |body: &str| match parse(body) {
+            Face::Known { guild, .. } => (guild.tag().to_string(), guild.color()),
+            Face::Unknown => panic!("a readable body is an answer: {body}"),
+        };
+        assert_eq!(
+            tag(
+                r#"{"name":"Ash","guild":{"tag":"OWL","color":"teal","shape":"hex","role":"member"}}"#
+            ),
+            ("OWL".into(), Some("teal"))
+        );
+        assert_eq!(tag(r#"{"name":"Ash","guild":null}"#), (String::new(), None));
+        assert_eq!(tag(r#"{"name":"Ash"}"#), (String::new(), None));
+        assert_eq!(
+            tag(r#"{"guild":{"tag":"owl<script>"}}"#),
+            (String::new(), None)
         );
     }
 

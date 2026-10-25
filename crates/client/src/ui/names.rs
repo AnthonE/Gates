@@ -4,7 +4,8 @@
 //! One rule turns that into a label, so chat, the kill feed, the death screen
 //! and the nametag cannot disagree about somebody — including about whether
 //! it is a program: a player that declared itself an agent (`EventMsg::Agent`,
-//! v107) carries ` (agent)` everywhere its name appears.
+//! v107) carries ` (agent)` everywhere its name appears. A player who wears a
+//! guild tag on Elo Pros (v152) is drawn `[TAG] name` everywhere it is drawn.
 
 use client_core::core::{ClientCore, Tag};
 
@@ -40,9 +41,9 @@ pub fn of(core: &ClientCore, id: u32) -> String {
     label(core.tag(id), core.is_agent(id), id)
 }
 
-/// The name drawn for player `id`: [`of`], or a made-up one in streamer
-/// mode (`ui::streamer`). Every surface that puts a player's name on screen
-/// calls this.
+/// The name drawn for player `id`: [`of`] behind their guild tag, or a
+/// made-up one in streamer mode (`ui::streamer`). Every surface that puts a
+/// player's name on screen calls this.
 pub fn shown(core: &ClientCore, id: u32) -> String {
     shown_if(super::streamer::on(), core.tag(id), core.is_agent(id), id)
 }
@@ -50,8 +51,14 @@ pub fn shown(core: &ClientCore, id: u32) -> String {
 /// [`shown`] with the switch given, for a test.
 pub fn shown_if(streamer: bool, tag: Option<&Tag>, agent: bool, id: u32) -> String {
     if !streamer {
-        return label(tag, agent, id);
+        let name = label(tag, agent, id);
+        // The tag is drawn, never kept or matched: `of` stays the bare name.
+        return match tag.map(|t| t.guild).filter(|g| !g.is_none()) {
+            Some(g) => format!("[{}] {name}", g.tag()),
+            None => name,
+        };
     }
+    // A guild tag would say who a streamer's players are: none is drawn.
     let key = match tag {
         Some(t) if !t.address.is_guest() => {
             let hex = t.address.to_hex();
@@ -180,7 +187,19 @@ mod tests {
                 .unwrap(),
             name: protocol::Name::new(name).unwrap(),
             pic,
+            guild: protocol::Guild::NONE,
         }
+    }
+
+    #[test]
+    fn a_guild_tag_is_drawn_before_the_name_but_never_kept_or_streamed() {
+        let mut t = tag("Ash", 0);
+        t.guild = protocol::Guild::new("OWL", Some("teal")).unwrap();
+        assert_eq!(shown_if(false, Some(&t), false, 259), "[OWL] Ash");
+        assert_eq!(shown_if(false, Some(&t), true, 259), "[OWL] Ash (agent)");
+        assert_eq!(label(Some(&t), false, 259), "Ash");
+        assert!(!shown_if(true, Some(&t), false, 259).contains("OWL"));
+        assert_eq!(shown_if(false, Some(&tag("Ash", 0)), false, 259), "Ash");
     }
 
     #[test]

@@ -1015,6 +1015,7 @@ struct TagRow {
     address: protocol::Address,
     name: protocol::Name,
     pic: u32,
+    guild: protocol::Guild,
 }
 
 impl ShardCore {
@@ -1327,6 +1328,7 @@ impl ShardCore {
                 address,
                 name: protocol::Name::EMPTY,
                 pic: 0,
+                guild: protocol::Guild::NONE,
             },
             _ => TagRow::default(),
         };
@@ -1336,7 +1338,14 @@ impl ShardCore {
     /// The platform said what player `id` on `slot` is called and looks like
     /// (`faces.rs`). Dropped if the slot has a new tenant; a no-op if nothing
     /// moved, so a repeated read costs no bandwidth.
-    pub fn set_face(&mut self, slot: usize, id: u32, name: protocol::Name, pic: u32) {
+    pub fn set_face(
+        &mut self,
+        slot: usize,
+        id: u32,
+        name: protocol::Name,
+        pic: u32,
+        guild: protocol::Guild,
+    ) {
         if slot >= MAX_PLAYERS || !self.clients[slot].connected || self.clients[slot].id != id {
             return;
         }
@@ -1347,11 +1356,12 @@ impl ShardCore {
             name
         };
         let row = &mut self.tags[slot];
-        if row.id != id || (row.name == name && row.pic == pic) {
+        if row.id != id || (row.name == name && row.pic == pic && row.guild == guild) {
             return;
         }
         row.name = name;
         row.pic = pic;
+        row.guild = guild;
         self.owe_tag(slot);
         if let Some(key) = self.key_str(slot) {
             self.standings.name(&key, name.as_str());
@@ -8230,6 +8240,7 @@ impl ShardCore {
                     &row.address,
                     &row.name,
                     row.pic,
+                    &row.guild,
                     &mut self.ev_buf,
                 ) {
                     Ok(len) => {
@@ -11147,7 +11158,13 @@ mod tests {
         assert!(core.connect_as(0, 256, Some(key), None).is_some());
         core.tag_join(0, 256, Some(&key));
         core.tick_bare(&stats, |_, _, _| true);
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            0,
+            protocol::Guild::NONE,
+        );
         let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
         let spot = core.world.works_def.defs[0].spot;
         let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
@@ -11486,8 +11503,20 @@ mod tests {
             assert!(core.connect_as(slot, id, Some(key(n)), None).is_some());
             core.tag_join(slot, id, Some(&key(n)));
         }
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 7);
-        core.set_face(1, 999, protocol::Name::new("Nope").unwrap(), 1);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            7,
+            protocol::Guild::NONE,
+        );
+        core.set_face(
+            1,
+            999,
+            protocol::Name::new("Nope").unwrap(),
+            1,
+            protocol::Guild::NONE,
+        );
         let tags = |core: &mut ShardCore| {
             let mut got = Vec::new();
             core.tick_bare(&stats, |lane, slot, bytes| {
@@ -11558,14 +11587,20 @@ mod tests {
             seen.contains(&(257, String::new())),
             "a person is not named: {seen:?}"
         );
-        core.set_face(0, 256, protocol::Name::EMPTY, 0);
-        core.set_face(1, 257, protocol::Name::EMPTY, 0);
+        core.set_face(0, 256, protocol::Name::EMPTY, 0, protocol::Guild::NONE);
+        core.set_face(1, 257, protocol::Name::EMPTY, 0, protocol::Guild::NONE);
         assert!(
             core.tags[0].name == flint,
             "an empty platform read keeps it"
         );
         assert!(core.tags[1].name.is_empty());
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            0,
+            protocol::Guild::NONE,
+        );
         assert_eq!(
             core.tags[0].name.as_str(),
             "Ash",

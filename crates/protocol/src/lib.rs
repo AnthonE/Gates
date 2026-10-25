@@ -1394,7 +1394,9 @@ pub use voice::{
 /// v151 — a player signed in to Elo Pros joins with a pass: auth tag 2, a
 /// 16-bit length, then the pass's bytes as elo issued them (`Pass`, at most
 /// `PASS_MAX`). The auth frame alone may run to `MAX_AUTH_MSG_BYTES`.
-pub const PROTO_VER: u16 = 151;
+/// v152 — `EventMsg::Tag` closes with the player's guild tag ([`Guild`]):
+/// the tag that wallet wears on Elo Pros and its emblem colour, or none.
+pub const PROTO_VER: u16 = 152;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -1739,6 +1741,114 @@ fn read_name(r: &mut BitReader) -> Result<Name, WireError> {
     }
     n.len = len as u8;
     Ok(n)
+}
+
+/// Longest guild tag (v152), in bytes: Elo Pros tags are 2 to 5 letters or
+/// digits.
+pub const GUILD_TAG_MAX: usize = 5;
+const GUILD_LEN_BITS: u32 = 3;
+const GUILD_COLOR_BITS: u32 = 4;
+/// The emblem colours a guild may pick, in wire order; 0 is none.
+pub const GUILD_COLORS: [&str; 8] = [
+    "lime", "ember", "sky", "violet", "gold", "rose", "slate", "teal",
+];
+const _: () = assert!(GUILD_TAG_MAX < (1 << GUILD_LEN_BITS));
+const _: () = assert!(GUILD_COLORS.len() < (1 << GUILD_COLOR_BITS));
+
+/// The guild tag a player wears (v152): 2..=5 bytes of `A-Z0-9` and its
+/// emblem colour (1-based into [`GUILD_COLORS`], 0 for none), or
+/// [`Guild::NONE`]. A label like [`Name`]: the platform's roster says which
+/// guild a wallet is in, and the shard only carries what it read.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct Guild {
+    len: u8,
+    bytes: [u8; GUILD_TAG_MAX],
+    color: u8,
+}
+
+impl Guild {
+    pub const NONE: Self = Self {
+        len: 0,
+        bytes: [0; GUILD_TAG_MAX],
+        color: 0,
+    };
+
+    /// `None` for a tag that is not 2..=5 of `A-Z0-9`. An unknown colour is
+    /// no colour, never a refusal: the tag is what matters.
+    pub fn new(tag: &str, color: Option<&str>) -> Option<Self> {
+        let b = tag.as_bytes();
+        if !(2..=GUILD_TAG_MAX).contains(&b.len())
+            || !b
+                .iter()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        {
+            return None;
+        }
+        let mut g = Self::NONE;
+        g.bytes[..b.len()].copy_from_slice(b);
+        g.len = b.len() as u8;
+        g.color = color
+            .and_then(|c| GUILD_COLORS.iter().position(|k| *k == c))
+            .map_or(0, |i| i as u8 + 1);
+        Some(g)
+    }
+
+    pub fn tag(&self) -> &str {
+        // Only ever built from A-Z0-9 (`new` and `read_guild` refuse anything
+        // else), so this cannot fail; the fallback keeps it total.
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    /// The emblem colour's name, if it has one.
+    pub fn color(&self) -> Option<&'static str> {
+        (self.color as usize)
+            .checked_sub(1)
+            .and_then(|i| GUILD_COLORS.get(i).copied())
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl core::fmt::Debug for Guild {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Guild({:?}, {:?})", self.tag(), self.color())
+    }
+}
+
+fn write_guild(w: &mut BitWriter, g: &Guild) -> Result<(), WireError> {
+    w.write(g.len as u32, GUILD_LEN_BITS)?;
+    for b in &g.bytes[..g.len as usize] {
+        w.write(*b as u32, 8)?;
+    }
+    w.write(
+        if g.len == 0 { 0 } else { g.color as u32 },
+        GUILD_COLOR_BITS,
+    )?;
+    Ok(())
+}
+
+fn read_guild(r: &mut BitReader) -> Result<Guild, WireError> {
+    let len = r.read(GUILD_LEN_BITS)? as usize;
+    if len == 1 || len > GUILD_TAG_MAX {
+        return Err(WireError::Malformed);
+    }
+    let mut g = Guild::NONE;
+    for b in g.bytes.iter_mut().take(len) {
+        let c = r.read(8)? as u8;
+        if !(c.is_ascii_uppercase() || c.is_ascii_digit()) {
+            return Err(WireError::Malformed);
+        }
+        *b = c;
+    }
+    g.len = len as u8;
+    let color = r.read(GUILD_COLOR_BITS)? as u8;
+    if color as usize > GUILD_COLORS.len() || (len == 0 && color != 0) {
+        return Err(WireError::Malformed);
+    }
+    g.color = color;
+    Ok(g)
 }
 
 fn write_address(w: &mut BitWriter, a: &Address) -> Result<(), WireError> {
@@ -6938,6 +7048,40 @@ mod tests {
         }
         let n = w.finish();
         assert_eq!(decode_hello(&raw[..n]), Err(WireError::Malformed));
+    }
+
+    #[test]
+    fn a_guild_tag_is_two_to_five_of_a_z_0_9_and_a_forged_one_is_refused() {
+        let g = Guild::new("OWL", Some("teal")).unwrap();
+        assert_eq!((g.tag(), g.color()), ("OWL", Some("teal")));
+        assert_eq!(Guild::new("RVN2", Some("plaid")).unwrap().color(), None);
+        for bad in ["", "A", "TOOLONG", "owl", "O-L", "ÖWL"] {
+            assert!(Guild::new(bad, None).is_none(), "{bad:?}");
+        }
+        let round = |g: &Guild| {
+            let mut raw = [0u8; 16];
+            let mut w = BitWriter::new(&mut raw);
+            write_guild(&mut w, g).unwrap();
+            let n = w.finish();
+            read_guild(&mut BitReader::new(&raw[..n]))
+        };
+        assert_eq!(round(&g), Ok(g));
+        assert_eq!(round(&Guild::NONE), Ok(Guild::NONE));
+        // A one-byte tag, a lowercase byte, a colour past the list: refused.
+        for (len, byte, color) in [(1u32, b'A', 0u32), (3, b'a', 0), (3, b'A', 9)] {
+            let mut raw = [0u8; 16];
+            let mut w = BitWriter::new(&mut raw);
+            w.write(len, GUILD_LEN_BITS).unwrap();
+            for _ in 0..len {
+                w.write(byte as u32, 8).unwrap();
+            }
+            w.write(color, GUILD_COLOR_BITS).unwrap();
+            let n = w.finish();
+            assert_eq!(
+                read_guild(&mut BitReader::new(&raw[..n])),
+                Err(WireError::Malformed)
+            );
+        }
     }
 
     /// **An older client's hello still meets the version gate.** A v78 hello

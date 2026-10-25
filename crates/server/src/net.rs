@@ -1929,8 +1929,9 @@ async fn accept_loop(
     // Names and pictures (`faces.rs`): once per join and cooldown, answered
     // on a channel for the same reason — a slow platform never slows the door.
     let (face_tx, mut face_rx) = tokio::sync::mpsc::channel::<FaceAnswer>(MAX_PLAYERS);
-    let mut face_reads =
-        PlatformReads::<(protocol::Name, u32)>::new(crate::faces::REFRESH_COOLDOWN);
+    let mut face_reads = PlatformReads::<(protocol::Name, u32, protocol::Guild)>::new(
+        crate::faces::REFRESH_COOLDOWN,
+    );
     let faces_armed = facts.faces.origin.is_some();
     // Every skin and face read waits its turn here (`READ_PERMITS`).
     let read_gate = Arc::new(tokio::sync::Semaphore::new(READ_PERMITS));
@@ -2242,14 +2243,15 @@ async fn accept_loop(
             }
             Some((slot, gen, key, face)) = face_rx.recv() => {
                 face_reads.done(&key, match face {
-                    crate::faces::Face::Known { name, pic } => Some((name, pic)),
+                    crate::faces::Face::Known { name, pic, guild } => Some((name, pic, guild)),
                     crate::faces::Face::Unknown => None,
                 });
                 // The generation guard, widened to the wallet (`landing`).
                 if let Some(slot) = landing(slot, gen, Some(&key), &keys, &slots) {
                     match face {
-                        crate::faces::Face::Known { name, pic } => {
-                            let msg = crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic };
+                        crate::faces::Face::Known { name, pic, guild } => {
+                            let msg =
+                                crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic, guild };
                             if faces_tx.push(msg).is_ok() {
                                 ShardStats::bump(&stats.faces_read);
                             } else {
@@ -5136,8 +5138,8 @@ fn sim_thread(
                 if let Some(owned) = c.said.skins {
                     core.skins_owned(c.slot, c.id, owned);
                 }
-                if let Some((name, pic)) = c.said.face {
-                    core.set_face(c.slot, c.id, name, pic);
+                if let Some((name, pic, guild)) = c.said.face {
+                    core.set_face(c.slot, c.id, name, pic, guild);
                 }
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
@@ -5179,7 +5181,7 @@ fn sim_thread(
         }
         // The names and pictures players set on the platform (`faces.rs`).
         while let Ok(m) = faces_rx.pop() {
-            core.set_face(m.slot, m.id, m.name, m.pic);
+            core.set_face(m.slot, m.id, m.name, m.pic, m.guild);
         }
         // What the platform's store charges for each skin.
         while let Ok(m) = prices_rx.pop() {
