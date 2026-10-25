@@ -232,6 +232,13 @@ pub fn is_wallet(key: &str) -> bool {
     protocol::Address::from_hex(key.as_bytes()).is_some_and(|a| !a.is_guest())
 }
 
+/// A key that can be owed what it unlocks: a wallet, or an Elo Pros account
+/// with none (v144), whose unlocks the platform holds until it links one
+/// (`ops/mint_pending.py` sends them there instead of minting).
+pub fn is_holder(key: &str) -> bool {
+    is_wallet(key) || crate::auth::is_account_str(key)
+}
+
 /// One wallet's wipe. Hundredths of a point where it says so.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {

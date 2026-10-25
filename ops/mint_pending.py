@@ -31,6 +31,15 @@ once and written to `<world>.copies` (`wallet ok|had|used tx`); the online
 file is rewritten every minute, so a copy lands a minute or two after the
 first join.
 
+**Accounts (v151).** A player signed in to Elo Pros with no wallet linked
+plays under their account id (`acct_…`), and has nothing to mint to. Their
+sales and their copy go to the platform's locker instead
+(`POST {ELO_ORIGIN}/api/locker/hold`, MAC'd with `ELO_LOCKER_SECRET`, which
+the platform holds too), which mints them to the wallet they link later. A
+held sale is logged to `<world>.minted` as `ref acct catalog held`, so the
+shard reads the account's locker again; an account the platform no longer
+has is logged `gone` and not asked again.
+
 **Free till December.** Copies are given until `FREE_UNTIL` (1 Dec 2026,
 00:00 UTC). At that moment `ops/gates-free-door.timer` runs this with
 `--close-free-door`, which posts `setFreePerWallet(0)` (the owner's call,
@@ -44,12 +53,22 @@ from __future__ import annotations
 import argparse
 import datetime
 import fcntl
+import hashlib
+import hmac
+import json
+import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 WALLET = re.compile(r"^0x[0-9a-f]{40}$")
+#: An Elo Pros account with no wallet (v151): its unlocks are held, not minted.
+ACCOUNT = re.compile(r"^acct_[0-9a-f]{20}$")
+ORIGIN = os.environ.get("ELO_ORIGIN", "https://elopros.com").rstrip("/")
 REF = re.compile(r"^[0-9A-Za-z-]{1,32}$")
 #: Sales per run: a backlog drains over a few runs, not one long ssh.
 BATCH = 20
@@ -157,7 +176,8 @@ def sales(text: str) -> list[tuple[str, str, int]]:
         if len(f) < 3 or line.lstrip().startswith("#"):
             continue
         ref, wallet, cat = f[0], f[1], f[2]
-        if REF.match(ref) and WALLET.match(wallet) and cat.isdigit() and int(cat) < 2**32:
+        if REF.match(ref) and (WALLET.match(wallet) or ACCOUNT.match(wallet)) \
+                and cat.isdigit() and int(cat) < 2**32:
             out.append((ref, wallet, int(cat)))
     return out
 
@@ -204,7 +224,7 @@ def copies_todo(online: str, copies: str) -> list[str]:
     out = []
     for r in rows:
         w = r.get("wallet") if isinstance(r, dict) else None
-        if isinstance(w, str) and WALLET.match(w) and not r.get("agent") \
+        if isinstance(w, str) and (WALLET.match(w) or ACCOUNT.match(w)) and not r.get("agent") \
                 and w != "0x" + "0" * 40 and w not in done and w not in out:
             out.append(w)
     return out
@@ -248,6 +268,51 @@ except Exception:
     print("")' 2>/dev/null)
 if [ -n "$tx" ]; then echo "closed $tx"; else echo "fail send"; fi
 '''
+
+
+def post_hold(row: dict) -> str:
+    """Hold one row in the platform's locker for an account (v151): `held`,
+    `gone` (the platform has no such account), or why it failed."""
+    secret = os.environ.get("ELO_LOCKER_SECRET", "")
+    if len(secret) < 32:
+        return "no-locker-secret"
+    body = json.dumps({"rows": [row]}, separators=(",", ":")).encode()
+    at = int(time.time())
+    mac = hmac.new(secret.encode(), f"elo locker-hold\n{at}\n".encode() + body, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(f"{ORIGIN}/api/locker/hold", data=body, method="POST", headers={
+        "Content-Type": "application/json", "X-Elo-At": str(at), "X-Elo-Mac": mac})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return "held" if r.status == 200 else f"http-{r.status}"
+    except urllib.error.HTTPError as e:
+        return "gone" if e.code == 404 else f"http-{e.code}"
+    except Exception:  # noqa: BLE001 — could not ask; retried next run
+        return "unreachable"
+
+
+def hold_sales(batch: list[tuple[str, str, int]]) -> tuple[list[str], list[str]]:
+    """Accounts' sales into the locker: lines for the minted log, failures."""
+    logged, failed = [], []
+    for ref, acct, cat in batch:
+        v = post_hold({"account": acct, "game": "gates", "kind": "item", "catalog_id": cat,
+                       "ref": f"gates:buy:{ref}"})
+        if v in ("held", "gone"):
+            logged.append(f"{ref} {acct} {cat} {v}")
+        else:
+            failed.append(f"{ref} {acct} {cat}: {v}")
+    return logged, failed
+
+
+def hold_copies(accounts: list[str]) -> tuple[list[str], list[str]]:
+    """Accounts' free copies into the locker: lines for the copies log, failures."""
+    logged, failed = [], []
+    for acct in accounts:
+        v = post_hold({"account": acct, "game": "gates", "kind": "copy", "ref": "gates:join"})
+        if v in ("held", "gone"):
+            logged.append(f"{acct} {v} locker")
+        else:
+            failed.append(f"{acct}: {v}")
+    return logged, failed
 
 
 def free_now(now: datetime.datetime | None = None) -> bool:
@@ -318,14 +383,24 @@ def main(argv: list[str] | None = None) -> int:
     except BlockingIOError:
         return 0  # the last run is still sending
     read = lambda p: p.read_text() if p.exists() else ""
-    todo = pending(read(mints_p), read(minted_p))[:BATCH]
+    every = pending(read(mints_p), read(minted_p))[:BATCH]
     give = not a.no_copies and free_now(now)
-    people = copies_todo(read(online_p), read(copies_p))[:BATCH] if give else []
+    everyone = copies_todo(read(online_p), read(copies_p))[:BATCH] if give else []
+    # An account with no wallet has nothing to mint to: its sales and copy go
+    # to the platform's locker (v151), and the chain sees the rest.
+    todo = [s for s in every if WALLET.match(s[1])]
+    held = [s for s in every if ACCOUNT.match(s[1])]
+    people = [w for w in everyone if WALLET.match(w)]
+    accounts = [w for w in everyone if ACCOUNT.match(w)]
     if a.dry_run:
         for ref, wallet, cat in todo:
             print(f"would mint catalog {cat} to {wallet} (sale {ref})")
+        for ref, acct, cat in held:
+            print(f"would hold catalog {cat} for {acct} on the platform (sale {ref})")
         for wallet in people:
             print(f"would give {wallet} a copy, unless it holds one")
+        for acct in accounts:
+            print(f"would hold a copy for {acct} on the platform")
         return 0
     if a.check:
         if todo:
@@ -356,6 +431,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"copy: {line}")
         for line in failed:
             print(f"copy: not given {line}, retried next run", file=sys.stderr)
+        failures += len(failed)
+    if held:
+        logged, failed = hold_sales(held)
+        if logged:
+            with open(minted_p, "a") as f:
+                f.write("".join(line + "\n" for line in logged))
+        for line in logged:
+            print(f"hold: {line}")
+        for line in failed:
+            print(f"hold: not held {line}, retried next run", file=sys.stderr)
+        failures += len(failed)
+    if accounts:
+        logged, failed = hold_copies(accounts)
+        if logged:
+            with open(copies_p, "a") as f:
+                f.write("".join(line + "\n" for line in logged))
+        for line in logged:
+            print(f"copy: {line}")
+        for line in failed:
+            print(f"copy: not held {line}, retried next run", file=sys.stderr)
         failures += len(failed)
     return 1 if failures else 0
 
