@@ -130,6 +130,34 @@ impl Gates {
         Ok(Gates { session, server })
     }
 
+    /// Join `server` as **whoever is signed in to Elo Pros on this page**
+    /// (v151), with no wallet prompt. `pass` is `(domain: string, nonce:
+    /// string) => Promise<string>`: handed the name this join binds (the
+    /// page's own host for a shard under it, else the dialled host) and the
+    /// shard's nonce for this join, it answers with the pass elo issues for
+    /// both (`POST /api/account/play {game, shard, nonce}`), good for this
+    /// join alone. A
+    /// pass naming a wallet joins as that wallet; one naming none joins as the
+    /// account. A shard that takes no pass answers `REFUSE_AUTH`, and the page
+    /// may fall back to the wallet.
+    pub async fn join_pass(
+        server: String,
+        cert_hash: Option<String>,
+        pass: js_sys::Function,
+    ) -> Result<Gates, JsValue> {
+        let page = web_sys::window().map(|w| w.location());
+        let scheme = page.as_ref().and_then(|l| l.protocol().ok());
+        let hostname = page.as_ref().and_then(|l| l.hostname().ok());
+        let signs_as = match (&scheme, &hostname) {
+            (Some(s), Some(h)) => client::net::handshake::page_domain(s, h, &server),
+            _ => None,
+        };
+        let session = client::Session::connect_pass(&server, cert_hash.as_deref(), &pass, signs_as)
+            .await
+            .map_err(join_error)?;
+        Ok(Gates { session, server })
+    }
+
     /// Take a **read-only seat** watching `target` on `server` (wire v73;
     /// `NETCODE.md` §2.3), and return once the shard has said whose view it
     /// is. `target` is a wallet address (`0x…`), or absent / `"any"` for any

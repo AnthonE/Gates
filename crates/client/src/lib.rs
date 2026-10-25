@@ -630,8 +630,9 @@ impl Session {
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
             .ok_or_else(|| "no challenge".to_string())?;
-        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut msg)?;
-        write_frame(&mut send, &msg[..len]).await?;
+        let mut auth = net::handshake::auth_buf();
+        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut auth)?;
+        write_frame(&mut send, &auth[..len]).await?;
 
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
@@ -802,6 +803,28 @@ impl Session {
         .await
     }
 
+    /// [`Session::connect`] as **whoever is signed in to Elo Pros on this page**
+    /// (v151): `pass` is handed the name this proof binds (`signs_as`, or the
+    /// dialled host) and answers with the pass elo issued for it
+    /// (`elo::pass_web`). No wallet is asked anything; a pass naming a wallet
+    /// joins as that wallet.
+    pub async fn connect_pass(
+        server: &str,
+        cert_hash: Option<&str>,
+        pass: &js_sys::Function,
+        signs_as: Option<&str>,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(
+            server,
+            cert_hash,
+            net::handshake::Claim::Pass,
+            &Join::PLAYER,
+            Some(pass),
+            signs_as,
+        )
+        .await
+    }
+
     /// Take a read-only seat watching `target` (v73), anonymously — the
     /// browser spectator (`client-web`'s `watch`, and the page's `?spectate`).
     pub async fn watch(
@@ -888,10 +911,23 @@ impl Session {
         // desktop path composes, and `net::handshake`'s
         // `the_two_step_path_and_the_composition_agree` holds the two
         // assemblies to producing byte-identical frames.
+        // The auth frame alone may run past the stream lane's ceiling (a pass,
+        // v144), so it is built in a buffer of its own.
+        let mut auth = net::handshake::auth_buf();
         let want = net::handshake::proof_wanted_for(&reply, server, signs_as, claim)?;
         let address = match claim {
             net::handshake::Claim::Ethereum(a) => a,
-            net::handshake::Claim::Solana(_) => protocol::Address::GUEST,
+            net::handshake::Claim::Solana(_) | net::handshake::Claim::Pass => {
+                protocol::Address::GUEST
+            }
+        };
+        // An Elo Pros pass for the name this proof binds (v151): the page asks
+        // elo for one, and no wallet is asked anything.
+        let pass = match (claim, &want, sign) {
+            (net::handshake::Claim::Pass, Some(proof), Some(f)) => {
+                Some(elo::pass_web(f, proof).await?)
+            }
+            _ => None,
         };
         // A Solana account signs the Solana form of the same text (v142).
         let solana = match (claim, &want, sign) {
@@ -928,11 +964,12 @@ impl Session {
                 e
             }
         };
-        let len = match solana {
-            Some((key, sig)) => net::handshake::solana_auth_frame(key, sig, &mut msg)?,
-            None => net::handshake::auth_frame(address, signature, &mut msg)?,
+        let len = match (&pass, solana) {
+            (Some(p), _) => net::handshake::pass_auth_frame(p, &mut auth)?,
+            (None, Some((key, sig))) => net::handshake::solana_auth_frame(key, sig, &mut auth)?,
+            (None, None) => net::handshake::auth_frame(address, signature, &mut auth)?,
         };
-        net::web::write_frame(&writer, &msg[..len])
+        net::web::write_frame(&writer, &auth[..len])
             .await
             .map_err(waited)?;
 
