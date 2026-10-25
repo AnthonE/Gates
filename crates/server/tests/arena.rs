@@ -46,16 +46,24 @@ fn meet(
     let mut a = Arena::new(temperament);
     // The agent settles in: it has looked around and chosen a goal…
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
-    // …and has turned to it. "In front" is where it is looking, so the other
-    // body is placed once the heading holds: staged mid-turn, toward a goal
-    // behind it, "ahead" is a place it is about to turn its back on.
+    // …and is at work on it. "In front" is where it is looking, so the
+    // other body is placed once the look holds on the node it works: staged
+    // mid-turn, or on a walk that has yet to sight its target (back toward
+    // one remembered reads as approaching too), "ahead" is a place it is
+    // about to turn its back on.
+    use server::explorer::Phase;
     let mut last = a.player(ID).frame.yaw;
     let mut still = 0;
-    for _ in 0..300 {
+    for _ in 0..1200 {
         a.step();
         let yaw = a.player(ID).frame.yaw;
-        still = if yaw == last { still + 1 } else { 0 };
-        last = yaw;
+        let on_target = a.bot.stats.phase == Phase::Harvesting;
+        // Held is within the hands' tremor (a step or two of yaw).
+        let held = (yaw.wrapping_sub(last) as i16).unsigned_abs() <= 512;
+        still = if held && on_target { still + 1 } else { 0 };
+        if !held {
+            last = yaw;
+        }
         if still >= 15 {
             break;
         }
@@ -976,8 +984,11 @@ const LOADOUTS: [(Gear, Gear); 5] = [
 /// rest). Per cent of bouts won.
 ///
 /// Melee at equal gear against the rusher and the strafer, no lag:
-/// measured 42/48 when pinned.
-const FLOOR_MELEE_PCT: u32 = 80;
+/// measured 42/48 when pinned, 38/48 once the arctic moved the clearing
+/// (the same agent takes 40/48 on the old, now snowbound, spot). Most of
+/// what it does not win is a draw: losing to the strafer it backs off at
+/// the strafer's own run, and neither closes the 3.5 m between them.
+const FLOOR_MELEE_PCT: u32 = 75;
 /// Bow against bow, the rusher: measured 9/12, then 8/12, then 7/12 once
 /// arrows flew at Rust's speeds and drop (2026-10) — both sides' arrows
 /// land more and the 15 m bouts flipped to the rusher — and 7/12 again at
