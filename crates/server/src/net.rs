@@ -1402,6 +1402,7 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some() || cfg.dev_arc_hour.is_some(),
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
+            pass_key: cfg.elo_account_key,
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -1463,6 +1464,9 @@ struct ShardFacts {
     /// (`ShardConfig::siwe_accepts`). Shared, because every handshake task
     /// gets a handle and none of them needs its own copy.
     siwe_domains: Arc<[String]>,
+    /// elo's account key (`shard.toml elo_account_pubkey`): with it, an Elo
+    /// Pros pass is a sign-in (`auth::verify_pass`); without, none is.
+    pass_key: Option<[u8; 32]>,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -2038,6 +2042,7 @@ async fn accept_loop(
                     stats,
                     facts.require_auth,
                     facts.siwe_domains.clone(),
+                    facts.pass_key,
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
@@ -2823,6 +2828,7 @@ async fn handshake_task(
     stats: Arc<ShardStats>,
     require_auth: bool,
     siwe_domains: Arc<[String]>,
+    pass_key: Option<[u8; 32]>,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
@@ -2973,7 +2979,7 @@ async fn handshake_task(
     let ticket = SignWait::join(&signing, permit.bucket.map(|(_, net)| net));
     let exchange = tokio::select! {
         r = tokio::time::timeout(SIGN_WAIT, async {
-            let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
+            let (buf, len) = read_auth_frame(&mut recv).await.ok_or(())?;
             protocol::decode_auth(&buf[..len]).map_err(|_| ())
         }) => r.ok(),
         _ = ticket.bumped() => None,
@@ -3027,7 +3033,30 @@ async fn handshake_task(
     // When elo cannot be asked, the join is refused (`REFUSE_LINK`) rather
     // than filed under a guess: a linked player seated on their Solana key
     // for the length of an outage would be a second character.
-    let (key, proven) = if auth.solana.is_some() {
+    //
+    // **An Elo Pros pass (v144)** is elo saying who is signed in on its site:
+    // checked against elo's pinned key, this game, these same names and this
+    // join's nonce, with no call out. A pass naming a wallet IS that wallet — the same save and
+    // copy as signing with it, and nothing asked it to sign. One naming no
+    // wallet is the account itself, filed under its `acct_…` id.
+    let (key, proven) = if let Some(pass) = auth.pass {
+        let passed = pass_key
+            .ok_or(crate::auth::AuthError::NoPassKey)
+            .and_then(|k| {
+                crate::auth::verify_pass(pass.as_bytes(), &k, &siwe_domains, &nonce, issued_at)
+            });
+        match passed {
+            Ok(p) => match p.wallet {
+                Some(addr) => (crate::auth::key_of(&addr), addr),
+                None => (Some(p.account), protocol::Address::GUEST),
+            },
+            Err(_) => {
+                ShardStats::bump(&stats.refused_auth);
+                spawn_refusal(connection, send, protocol::REFUSE_AUTH);
+                return;
+            }
+        }
+    } else if auth.solana.is_some() {
         let sol = match crate::auth::verify_solana_any(&siwe_domains, &nonce, issued_at, &auth) {
             Ok(sol) => sol,
             Err(_) => {
@@ -3091,7 +3120,9 @@ async fn handshake_task(
     // on-chain zero; an outage must not become a shard nobody can join.
     // `entitle::Verdict::admits` is the one place that decision lives.
     if entitle.armed() {
-        if let Some(k) = key.as_ref() {
+        // An account with no wallet has no copy to check: the one it unlocks
+        // waits on the platform until it links a wallet.
+        if let Some(k) = key.as_ref().filter(|k| !crate::auth::is_account_key(k)) {
             // The key IS the wallet: `auth::key_of` builds it from
             // `Address::to_hex`, which is ASCII `0x…` lowercase (or, for an
             // unlinked Solana player, `auth::solana_key_of`'s base58). Decoded
@@ -4423,6 +4454,23 @@ pub async fn read_frame(recv: &mut RecvStream) -> Option<([u8; MAX_STREAM_MSG_BY
     Some((buf, len))
 }
 
+/// The auth frame's read: [`read_frame`] at `MAX_AUTH_MSG_BYTES`, the one
+/// handshake frame that may be longer (an Elo Pros pass, v144). Read once per
+/// join, after the challenge.
+pub async fn read_auth_frame(
+    recv: &mut RecvStream,
+) -> Option<([u8; protocol::MAX_AUTH_MSG_BYTES], usize)> {
+    let mut len_buf = [0u8; 2];
+    recv.read_exact(&mut len_buf).await.ok()?;
+    let len = u16::from_le_bytes(len_buf) as usize;
+    if len == 0 || len > protocol::MAX_AUTH_MSG_BYTES {
+        return None;
+    }
+    let mut buf = [0u8; protocol::MAX_AUTH_MSG_BYTES];
+    recv.read_exact(&mut buf[..len]).await.ok()?;
+    Some((buf, len))
+}
+
 /// The client-side read: one S→C event-lane frame, sized for
 /// `MAX_EVENT_MSG_BYTES` (the bot client here; the native client's framer
 /// lives in `crates/client/src/lib.rs` with the same cap).
@@ -4735,6 +4783,7 @@ pub async fn client_handshake_as(
                 address,
                 signature,
                 solana: None,
+                pass: None,
             },
             // The signer refused, is not running, or handed the player a
             // consent prompt they declined. That is a *guest*, not an error:
@@ -4779,8 +4828,10 @@ pub async fn client_handshake_with(
     let challenge =
         protocol::decode_challenge(&frame[..n]).map_err(|e| format!("challenge: {e:?}"))?;
     let auth = auth_for(&challenge);
-    let len = protocol::encode_auth(&auth, &mut buf).map_err(|e| format!("encode auth: {e:?}"))?;
-    write_frame(send, &buf[..len])
+    // The auth frame alone may carry an Elo Pros pass (v144).
+    let mut abuf = [0u8; protocol::MAX_AUTH_MSG_BYTES];
+    let len = protocol::encode_auth(&auth, &mut abuf).map_err(|e| format!("encode auth: {e:?}"))?;
+    write_frame(send, &abuf[..len])
         .await
         .map_err(|_| "write auth".to_string())?;
 

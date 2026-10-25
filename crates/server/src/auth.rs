@@ -56,6 +56,16 @@ pub enum AuthError {
     /// claimed. The interesting failure: somebody signed something, just not
     /// as who they said they were.
     WrongSigner,
+    /// An Elo Pros pass this shard takes none of: no `elo_account_pubkey`.
+    NoPassKey,
+    /// A pass for another game, or bound to a name this shard does not
+    /// answer to — one a player handed some other server.
+    PassElsewhere,
+    /// A pass past its `exp`.
+    PassExpired,
+    /// A pass for another join: its nonce is not the one this join was
+    /// handed, so it was asked for elsewhere or is being replayed.
+    PassReplayed,
 }
 
 impl AuthError {
@@ -65,6 +75,10 @@ impl AuthError {
             Self::BadRecoveryId => "the signature's recovery id is not a personal_sign one",
             Self::Malformed => "the signature is not a valid secp256k1 signature",
             Self::WrongSigner => "the signature is valid but belongs to a different address",
+            Self::NoPassKey => "this shard takes no Elo Pros pass",
+            Self::PassElsewhere => "the pass is for another game or another shard",
+            Self::PassExpired => "the pass has run out",
+            Self::PassReplayed => "the pass was asked for another join",
         }
     }
 }
@@ -295,6 +309,123 @@ pub fn verify_solana_any<S: AsRef<str>>(
     Err(AuthError::WrongSigner)
 }
 
+/// Who an Elo Pros pass says the player is (v144).
+#[derive(Debug)]
+pub struct Passed {
+    /// `acct_` and 20 hex: the save key of a player whose account links no
+    /// wallet.
+    pub account: PlayerKey,
+    /// The wallet the account links, lowercase on the wire. With one, the
+    /// player IS that wallet: the same save, copy, skins and payouts as
+    /// signing in with it, and nothing asked it to sign.
+    pub wallet: Option<Address>,
+}
+
+/// Verify an **Elo Pros pass** (v144): what elo hands a player signed in on
+/// its site, in place of a wallet signature. `base64url(text).base64url(sig)`,
+/// an Ed25519 signature by elo's account key over the text's bytes, and the
+/// text exactly:
+///
+/// ```text
+/// elo account
+/// id: acct_<20 hex>
+/// for: play:gates
+/// shard: <a name this shard answers to>
+/// nonce: <this join's challenge nonce, lowercase hex>
+/// wallet: <0x… lowercase, or none>
+/// exp: <unix seconds>
+/// ```
+///
+/// `shard` is checked against the same names a SIWE proof binds to, and
+/// `nonce` against this join's challenge, for SIWE's reasons: a pass a player
+/// handed another server, or this one for an earlier join, is no good here.
+/// `now` is this shard's clock (the challenge's `Issued At`). The vector is the
+/// platform's `sdk/testdata/account_token.json`, pinned by the test below.
+pub fn verify_pass<S: AsRef<str>>(
+    pass: &[u8],
+    key: &[u8; 32],
+    domains: &[S],
+    nonce: &[u8; NONCE_BYTES],
+    now: u64,
+) -> Result<Passed, AuthError> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let text = core::str::from_utf8(pass).map_err(|_| AuthError::Malformed)?;
+    let (body, sig) = text.split_once('.').ok_or(AuthError::Malformed)?;
+    let body = b64.decode(body).map_err(|_| AuthError::Malformed)?;
+    let sig = b64.decode(sig).map_err(|_| AuthError::Malformed)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(&body, &sig)
+        .map_err(|_| AuthError::WrongSigner)?;
+    let body = core::str::from_utf8(&body).map_err(|_| AuthError::Malformed)?;
+    let mut lines = body.split('\n');
+    if lines.next() != Some("elo account") {
+        return Err(AuthError::Malformed);
+    }
+    let mut take = |name: &str| {
+        lines
+            .next()
+            .and_then(|l| l.strip_prefix(name))
+            .and_then(|l| l.strip_prefix(": "))
+            .ok_or(AuthError::Malformed)
+    };
+    let id = take("id")?;
+    let game = take("for")?;
+    let shard = take("shard")?;
+    let said = take("nonce")?;
+    let wallet = take("wallet")?;
+    let exp = take("exp")?;
+    if lines.next().is_some() {
+        return Err(AuthError::Malformed);
+    }
+    if !is_account_str(id) {
+        return Err(AuthError::Malformed);
+    }
+    let exp: u64 = exp.parse().map_err(|_| AuthError::Malformed)?;
+    let wallet = match wallet {
+        "none" => None,
+        w if w.len() == 42 && w.bytes().all(|b| !b.is_ascii_uppercase()) => {
+            Some(Address::from_hex(w.as_bytes()).ok_or(AuthError::Malformed)?)
+        }
+        _ => return Err(AuthError::Malformed),
+    };
+    if game.strip_prefix("play:") != Some(protocol::SLUG)
+        || !domains.iter().any(|d| d.as_ref() == shard)
+    {
+        return Err(AuthError::PassElsewhere);
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let ours = nonce
+        .iter()
+        .flat_map(|b| [HEX[(b >> 4) as usize], HEX[(b & 15) as usize]]);
+    if said.len() != NONCE_BYTES * 2 || !said.bytes().eq(ours) {
+        return Err(AuthError::PassReplayed);
+    }
+    if exp <= now {
+        return Err(AuthError::PassExpired);
+    }
+    Ok(Passed {
+        account: PlayerKey::new(id.as_bytes()).ok_or(AuthError::Malformed)?,
+        wallet: wallet.filter(|a| !a.is_guest()),
+    })
+}
+
+/// Whether a save key is an Elo Pros account's (`acct_…`) rather than a
+/// wallet's: it has no copy to check, no wallet to read skins from, and what
+/// it unlocks is held on the platform until it links one.
+pub fn is_account_key(key: &PlayerKey) -> bool {
+    core::str::from_utf8(key.as_bytes()).is_ok_and(is_account_str)
+}
+
+/// [`is_account_key`] over a key's text: `acct_` and 20 lowercase hex.
+pub fn is_account_str(key: &str) -> bool {
+    key.len() == 25
+        && key.starts_with("acct_")
+        && key[5..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// The save key for a Solana account that is linked to no Ethereum one: its
 /// base58 address, exactly as written. It cannot collide with an Ethereum key
 /// (those start `0x`, and base58 has no `0`), and it never changes — the
@@ -316,6 +447,94 @@ pub fn key_of(address: &Address) -> Option<PlayerKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The platform's vector (`sdk/testdata/account_token.json` in
+    /// AnthonE/scry-forge, minted by `meter/accounts.py` with a test key):
+    /// the same pass, byte for byte, must verify here, or every Elo Pros
+    /// join fails with both sides looking right.
+    const PASS_KEY_B64: &str = "H0SHD2PwtN2Lb2tZhyrcrQCHGFIs+qy9VvR4aISFwlE=";
+    const PASS_WITH_WALLET: &str = "ZWxvIGFjY291bnQKaWQ6IGFjY3RfMDEyMzQ1Njc4OWFiY2RlZjAxMjMKZm9yOiBwbGF5OmdhdGVzCnNoYXJkOiBlbG9wcm9zLmNvbQpub25jZTogMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYxMDExMTIxMzE0MTUxNjE3MTgxOTFhMWIxYzFkMWUxZgp3YWxsZXQ6IDB4MjQ0NDVlZmRkYjA4ZDQ5MzhlM2UzNjI3MDQyYjJjZjQwNjNkOTA5MgpleHA6IDE4MDAwMDAwMDA.YbX6fWS4o2cHhFNXK6sExcLsm1M53Y0vlpH5clP4BDcFMZGEXP-sPCa39s70wgikSQvIi9viXHJ3KrRoSb0TBw";
+    const PASS_NO_WALLET: &str = "ZWxvIGFjY291bnQKaWQ6IGFjY3RfMDEyMzQ1Njc4OWFiY2RlZjAxMjMKZm9yOiBwbGF5OmdhdGVzCnNoYXJkOiBlbG9wcm9zLmNvbQpub25jZTogMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYxMDExMTIxMzE0MTUxNjE3MTgxOTFhMWIxYzFkMWUxZgp3YWxsZXQ6IG5vbmUKZXhwOiAxODAwMDAwMDAw.eOk7HA9cxLiFGRkyVXgITBLcWitPOavP-i3h_beyuuLhRMSRaRXWP8vGGs5hPojdht0KFvZN9ZVb5MPYSuVEAw";
+    const PASS_EXP: u64 = 1_800_000_000;
+    /// The vector's nonce: bytes 0 to 31.
+    const PASS_NONCE: [u8; NONCE_BYTES] = {
+        let mut n = [0u8; NONCE_BYTES];
+        let mut i = 0;
+        while i < NONCE_BYTES {
+            n[i] = i as u8;
+            i += 1;
+        }
+        n
+    };
+
+    fn pass_key() -> [u8; 32] {
+        use base64::Engine;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(PASS_KEY_B64)
+            .unwrap();
+        raw.try_into().unwrap()
+    }
+
+    #[test]
+    fn the_platform_pass_vector_verifies_as_its_wallet_or_its_account() {
+        let key = pass_key();
+        let p = verify_pass(
+            PASS_WITH_WALLET.as_bytes(),
+            &key,
+            &["elopros.com"],
+            &PASS_NONCE,
+            PASS_EXP - 1,
+        )
+        .unwrap();
+        assert_eq!(p.account.as_bytes(), b"acct_0123456789abcdef0123");
+        assert_eq!(
+            p.wallet,
+            Address::from_hex(b"0x24445efddb08d4938e3e3627042b2cf4063d9092")
+        );
+        let p = verify_pass(
+            PASS_NO_WALLET.as_bytes(),
+            &key,
+            &["elopros.com"],
+            &PASS_NONCE,
+            PASS_EXP - 1,
+        )
+        .unwrap();
+        assert!(p.wallet.is_none());
+        assert!(is_account_key(&p.account));
+    }
+
+    #[test]
+    fn a_pass_for_another_shard_another_join_a_stale_one_or_another_key_is_refused() {
+        let key = pass_key();
+        let pass = PASS_WITH_WALLET.as_bytes();
+        let here = ["elopros.com"];
+        assert_eq!(
+            verify_pass(pass, &key, &["evil.example"], &PASS_NONCE, PASS_EXP - 1).unwrap_err(),
+            AuthError::PassElsewhere
+        );
+        let mut later = PASS_NONCE;
+        later[0] ^= 1;
+        assert_eq!(
+            verify_pass(pass, &key, &here, &later, PASS_EXP - 1).unwrap_err(),
+            AuthError::PassReplayed
+        );
+        assert_eq!(
+            verify_pass(pass, &key, &here, &PASS_NONCE, PASS_EXP).unwrap_err(),
+            AuthError::PassExpired
+        );
+        assert_eq!(
+            verify_pass(pass, &[7u8; 32], &here, &PASS_NONCE, PASS_EXP - 1).unwrap_err(),
+            AuthError::WrongSigner
+        );
+        // One character of the text moved: the signature no longer covers it.
+        let mut moved = PASS_WITH_WALLET.to_string();
+        moved.replace_range(10..11, if &moved[10..11] == "A" { "B" } else { "A" });
+        assert!(verify_pass(moved.as_bytes(), &key, &here, &PASS_NONCE, PASS_EXP - 1).is_err());
+        assert_eq!(
+            verify_pass(b"not a pass", &key, &here, &PASS_NONCE, 0).unwrap_err(),
+            AuthError::Malformed
+        );
+    }
     use k256::ecdsa::SigningKey;
 
     /// A Solana sign-in, signed with a real Ed25519 key over the rebuilt text,
@@ -350,6 +569,7 @@ mod tests {
                     key,
                     signature: protocol::SolanaSignature(sig),
                 }),
+                pass: None,
             }
         };
         let good = sign(DOMAIN, &pair, &nonce);
@@ -425,6 +645,7 @@ mod tests {
             address,
             signature: Signature(raw),
             solana: None,
+            pass: None,
         }
     }
 
@@ -524,6 +745,7 @@ mod tests {
                 address: Address(addr),
                 signature: Signature(raw),
                 solana: None,
+                pass: None,
             };
             let _ = verify(DOMAIN, &[0; NONCE_BYTES], 0, &auth);
         }
@@ -605,6 +827,7 @@ mod tests {
                 address,
                 signature: Signature(raw),
                 solana: None,
+                pass: None,
             }
         };
         assert!(verify_any(&listed, &nonce, 9, &page("game.test")).is_ok());

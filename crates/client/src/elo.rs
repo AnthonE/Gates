@@ -689,6 +689,35 @@ pub async fn sign_siws_web(
     })
 }
 
+/// An **Elo Pros pass** for this join (v144): the page's `pass` function is
+/// handed the name the proof binds and the shard's nonce for this join, and
+/// answers with the pass elo issued for this game, that name and that nonce
+/// (`POST /api/account/play`). The shard checks it against
+/// elo's key; nothing here reads it. An error here is an error, as with a
+/// wallet: the page only passes this function for a player who is signed in.
+#[cfg(target_arch = "wasm32")]
+pub async fn pass_web(
+    pass: &js_sys::Function,
+    proof: &crate::net::handshake::Proof,
+) -> Result<String, String> {
+    use wasm_bindgen::JsValue;
+
+    let answer = pass
+        .call2(
+            &JsValue::NULL,
+            &JsValue::from_str(&proof.domain),
+            &JsValue::from_str(&proof.nonce_hex()),
+        )
+        .map_err(|e| crate::net::web::js_err("Elo Pros did not hand over a pass", &e))?;
+    let resolved = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&answer))
+        .await
+        .map_err(|e| crate::net::web::js_err("Elo Pros did not hand over a pass", &e))?;
+    resolved
+        .as_string()
+        .filter(|s| !s.is_empty() && s.len() <= protocol::PASS_MAX)
+        .ok_or_else(|| "Elo Pros answered with something that is not a pass".to_string())
+}
+
 /// A Solana signature's 64 bytes from base58 or `0x` hex.
 // Called by the browser's `sign_siws_web`; natively only its tests reach it.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]

@@ -479,7 +479,9 @@ pub(crate) async fn write_frame(
     writer: &WritableStreamDefaultWriter,
     payload: &[u8],
 ) -> Result<(), String> {
-    let mut out = [0u8; protocol::MAX_STREAM_MSG_BYTES + super::frame::LEN_PREFIX_BYTES];
+    // Sized for the auth frame, the one C→S handshake frame that may pass
+    // the stream lane's ceiling (v144); every other frame is far under it.
+    let mut out = [0u8; protocol::MAX_AUTH_MSG_BYTES + super::frame::LEN_PREFIX_BYTES];
     let n = super::frame::encode_into(&mut out, payload).ok_or_else(|| {
         format!(
             "frame: {} bytes does not fit the stream lane",

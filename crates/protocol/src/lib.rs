@@ -55,9 +55,9 @@ pub mod voice;
 
 pub use auth::{
     companion_message, siwe_message, siwe_message_for, siws_message_for, Address, Auth, Challenge,
-    Signature, SolanaKey, SolanaProof, SolanaSignature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX, SOLANA_ADDRESS_MAX, SOLANA_KEY_BYTES,
-    SOLANA_SIGNATURE_BYTES,
+    Pass, Signature, SolanaKey, SolanaProof, SolanaSignature, ADDRESS_BYTES, DOMAIN_MAX,
+    NONCE_BYTES, PASS_MAX, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX, SOLANA_ADDRESS_MAX,
+    SOLANA_KEY_BYTES, SOLANA_SIGNATURE_BYTES,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1353,7 +1353,10 @@ pub use voice::{
 /// 7 bits over the town's sentries then the turrets (was 2, sentries only,
 /// so a turret's lock-on beep never left the shard). A turret's record also
 /// carries the gun in its box as its `held` item, in the field it already had.
-pub const PROTO_VER: u16 = 143;
+/// v144 — a player signed in to Elo Pros joins with a pass: auth tag 2, a
+/// 16-bit length, then the pass's bytes as elo issued them (`Pass`, at most
+/// `PASS_MAX`). The auth frame alone may run to `MAX_AUTH_MSG_BYTES`.
+pub const PROTO_VER: u16 = 144;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -1438,6 +1441,15 @@ pub const SNAPSHOT_PART_BITS: u32 = 2;
 /// message needs, and it is still small enough that a client cannot make
 /// the server allocate anything interesting by lying about a length.
 pub const MAX_STREAM_MSG_BYTES: usize = 128;
+
+/// Longest auth frame (C→S) the handshake accepts — the one handshake message
+/// allowed past [`MAX_STREAM_MSG_BYTES`] (v144), because an Elo Pros pass is a
+/// few hundred bytes where a signature is 85. Read once per join, into a
+/// buffer of this size; every other handshake frame keeps the smaller ceiling.
+pub const MAX_AUTH_MSG_BYTES: usize = 640;
+// The kind, the tag, the length and the longest pass fit the auth ceiling.
+const _: () =
+    assert!((KIND_BITS as usize + 8 + 16 + 8 * PASS_MAX).div_ceil(8) <= MAX_AUTH_MSG_BYTES);
 
 const FRAME_COUNT_BITS: u32 = 4;
 const COUNT_BITS: u32 = 7;
