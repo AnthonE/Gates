@@ -794,8 +794,54 @@ pub async fn run_bot(
         duration,
         raid,
         None,
+        false,
     )
     .await
+}
+
+/// [`run_bot`] for a shard's own population (`population.rs`): the same
+/// bot, with its view eased toward where its wander points instead of
+/// sent as drawn. A load bot's look re-rolls a few degrees every tick on
+/// purpose (`bot_frame` covers the aim and gather paths with it), which is
+/// right for a load test and reads as a stutter on film. Only the frames
+/// sent are eased; the walk it draws from is the load bot's own.
+pub async fn run_inhabitant(
+    endpoint: &Endpoint<Client>,
+    server: SocketAddr,
+    seed_stream: u64,
+    duration: Duration,
+    raid: Option<RaidRows>,
+) -> Result<BotReport, String> {
+    run_bot_inner(
+        endpoint,
+        Dial::Guest(server),
+        seed_stream,
+        duration,
+        raid,
+        None,
+        true,
+    )
+    .await
+}
+
+/// How far an eased look closes on where the bot means to look, each tick:
+/// about a quarter second to come round at 30 Hz.
+const LOOK_EASE: f32 = 0.12;
+/// The most an eased look turns in a tick, wire units: about 100° a second,
+/// an unhurried head turn. The load bot's wander drifts further than the
+/// ease alone would follow gently.
+const LOOK_MAX_STEP: f32 = 600.0;
+
+/// Ease the frame's view toward its drawn yaw and pitch, the short way
+/// round. `look` holds the view in wire units, as floats so small steps
+/// accumulate.
+fn ease_look(look: &mut Option<(f32, f32)>, f: &mut InputFrame) {
+    let (y, p) = look.get_or_insert((f32::from(f.yaw), f32::from(f.pitch)));
+    let d = (f32::from(f.yaw) - *y + 32768.0).rem_euclid(65536.0) - 32768.0;
+    *y = (*y + (d * LOOK_EASE).clamp(-LOOK_MAX_STEP, LOOK_MAX_STEP)).rem_euclid(65536.0);
+    *p += (f32::from(f.pitch) - *p) * LOOK_EASE;
+    f.yaw = y.round() as u32 as u16;
+    f.pitch = p.round().clamp(0.0, 255.0) as u8;
 }
 
 /// A client-side controller. It may only observe the client's decoded view;
@@ -877,6 +923,7 @@ pub async fn run_driven_bot(
         duration,
         None,
         Some(driver),
+        false,
     )
     .await
 }
@@ -904,6 +951,7 @@ pub async fn run_guest_agent(
         duration,
         None,
         Some(driver),
+        false,
     )
     .await
 }
@@ -944,6 +992,7 @@ pub async fn run_agent_bot(
         duration,
         None,
         Some(driver),
+        false,
     )
     .await
 }
@@ -1060,6 +1109,7 @@ async fn run_bot_inner(
     duration: Duration,
     raid: Option<RaidRows>,
     mut driver: Option<&mut dyn BotDriver>,
+    smooth_look: bool,
 ) -> Result<BotReport, String> {
     let mut connect_sheds = 0;
     let (connection, mut send, recv, welcome) = dial
@@ -1128,6 +1178,7 @@ async fn run_bot_inner(
     let mut rng = Pcg32::new(welcome.seed ^ 0xB07B_07B0, seed_stream);
     let mut seq: u16 = 1;
     let mut yaw: u16 = (seed_stream as u16).wrapping_mul(2557);
+    let mut look: Option<(f32, f32)> = None;
     let mut tail: Vec<InputFrame> = Vec::with_capacity(MAX_INPUT_FRAMES);
 
     // The raid rides its **own** rng stream, seeded the way `raid_storm.rs`
@@ -1316,6 +1367,9 @@ async fn run_bot_inner(
                     }
                 }
                 yaw = f.yaw;
+                if smooth_look && driver.is_none() {
+                    ease_look(&mut look, &mut f);
+                }
                 seq = seq.wrapping_add(1);
                 if tail.len() == MAX_INPUT_FRAMES {
                     tail.remove(0);
@@ -1883,6 +1937,42 @@ fn is_loopback_host(server: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An inhabitant's eased view: the load bot's draws, which re-roll the
+    /// heading by up to a sixteenth of a turn and the pitch across its whole
+    /// band every tick, go out as a view that turns at most ~3.3° a
+    /// frame — and still follows a steady turn round, the short way.
+    #[test]
+    fn an_eased_look_follows_without_the_stutter() {
+        let mut rng = Pcg32::new(7, 3);
+        let (mut raw, mut look, mut last) = (0x1000u16, None, None::<(u16, u8)>);
+        let (mut worst_yaw, mut worst_pitch) = (0u16, 0u8);
+        for seq in 0..600u16 {
+            let mut f = sim_core::bots::bot_frame(&mut rng, raw, seq);
+            raw = f.yaw;
+            ease_look(&mut look, &mut f);
+            if let Some((y, p)) = last {
+                worst_yaw = worst_yaw.max((f.yaw.wrapping_sub(y) as i16).unsigned_abs());
+                worst_pitch = worst_pitch.max(f.pitch.abs_diff(p));
+            }
+            last = Some((f.yaw, f.pitch));
+        }
+        // a raw draw moves up to 4096 (22.5°) and the pitch up to 56 a frame
+        assert!(worst_yaw <= 601, "eased yaw jumped {worst_yaw}");
+        assert!(worst_pitch <= 8, "eased pitch jumped {worst_pitch}");
+        // a steady heading across the wrap is reached, not spun the long way
+        let mut look = Some((65000.0, 128.0));
+        for _ in 0..90 {
+            let mut f = InputFrame {
+                yaw: 1000,
+                pitch: 128,
+                ..InputFrame::default()
+            };
+            ease_look(&mut look, &mut f);
+        }
+        let (y, _) = look.unwrap();
+        assert!((y - 1000.0).abs() < 2.0, "settled at {y}");
+    }
 
     /// The loopback split agrees with the client's on every shape the client
     /// tests — two copies of one rule, so the cases are the ones that matter.

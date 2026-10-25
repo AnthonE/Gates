@@ -267,6 +267,23 @@ pub const GLANCE_TICKS: u32 = 3 * TICK_HZ / 2;
 /// Where an idle glance goes, relative to where the idle began: either
 /// side just past the cone's edge, over the shoulder, and back.
 const GLANCE_OFFSETS: [u16; 4] = [0x2e00, 0u16.wrapping_sub(0x2e00), 0x6a00, 0];
+/// How long an idle glance takes to come round, eased at both ends. A
+/// person looking about turns their head; jumped in one frame, the heading
+/// went to the hands as a fresh target and came round at a fight's flick.
+pub const GLANCE_TURN_TICKS: u32 = TICK_HZ;
+
+/// Where an idle glance looks `since` ticks into its `step`: from the last
+/// glance's offset to this one's, the short way round, smoothstepped.
+pub fn glance_heading(from: u16, step: u8, since: u32) -> u16 {
+    let n = GLANCE_OFFSETS.len();
+    let to = GLANCE_OFFSETS[usize::from(step) % n];
+    let was = GLANCE_OFFSETS[(usize::from(step) + n - 1) % n];
+    let u = (since as f32 / GLANCE_TURN_TICKS as f32).min(1.0);
+    let eased = u * u * (3.0 - 2.0 * u);
+    let d = f32::from(to.wrapping_sub(was) as i16);
+    from.wrapping_add(was)
+        .wrapping_add((d * eased).round() as i32 as u16)
+}
 /// Eat or drink until the meter reaches this percentage.
 pub const METER_TARGET_PCT: u32 = 80;
 /// The sea, the water pass's dear drink (`balance.toml`: half a lake's
@@ -2251,21 +2268,21 @@ impl Survivor {
             self.glance = None;
             return intent;
         }
-        let (from, step) = match self.glance {
-            Some((at, from, step)) if tick.wrapping_sub(at) < GLANCE_TICKS => (from, step),
+        let (at, from, step) = match self.glance {
+            Some((at, from, step)) if tick.wrapping_sub(at) < GLANCE_TICKS => (at, from, step),
             Some((_, from, step)) => {
                 let step = (step + 1) % GLANCE_OFFSETS.len() as u8;
                 self.glance = Some((tick, from, step));
-                (from, step)
+                (tick, from, step)
             }
             None => {
                 let from = self.hands.view().0;
                 self.glance = Some((tick, from, 0));
-                (from, 0)
+                (tick, from, 0)
             }
         };
         Intent {
-            look: Look::Heading(from.wrapping_add(GLANCE_OFFSETS[usize::from(step)])),
+            look: Look::Heading(glance_heading(from, step, tick.wrapping_sub(at))),
             ..intent
         }
     }
@@ -9260,6 +9277,53 @@ mod tests {
 
     fn survivor() -> Survivor {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
+    }
+
+    /// An idle look-about turns like a head, not a flick: driven through a
+    /// whole cycle of glances, no frame's view moves more than a few
+    /// bearings. Jumped, the over-the-shoulder glance came round at the
+    /// hands' fight pace (Good: 21 bearings, ~30° a frame), and filmed or
+    /// watched an agent standing at a bench looked like it was lagging.
+    #[test]
+    fn idle_glances_turn_smoothly() {
+        use crate::agent::hands::{Hands, Skill};
+        use crate::agent::tracks::Tracks;
+        let tracks = Tracks::new();
+        let mut hands = Hands::new(Skill::GOOD);
+        hands.reset(SEED, 7);
+        let from = 0x1000u16;
+        let mut frame = InputFrame {
+            seq: 1,
+            yaw: from,
+            pitch: crate::agent::intent::LEVEL_PITCH,
+            ..InputFrame::default()
+        };
+        let mut last = from;
+        let mut worst = 0u16;
+        for step in 0..GLANCE_OFFSETS.len() as u8 {
+            for since in 0..GLANCE_TICKS {
+                let intent = Intent {
+                    look: Look::Heading(glance_heading(from, step, since)),
+                    ..Intent::IDLE
+                };
+                let f = hands.drive(&intent, &tracks, [100.0, 10.0, 100.0], frame);
+                worst = worst.max((f.yaw.wrapping_sub(last) as i16).unsigned_abs());
+                last = f.yaw;
+                frame = InputFrame {
+                    seq: frame.seq.wrapping_add(1),
+                    yaw: f.yaw,
+                    pitch: f.pitch,
+                    ..frame
+                };
+            }
+        }
+        assert!(
+            worst <= 12 << 8,
+            "an idle glance turned {} bearings in one frame",
+            worst >> 8
+        );
+        // and the cycle ends where it began
+        assert_eq!(glance_heading(from, 3, GLANCE_TURN_TICKS), from);
     }
 
     /// The catalog outgrew one u128 (127 rows filled it): ids on both

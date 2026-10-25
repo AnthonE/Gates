@@ -27,7 +27,7 @@
 //! own header makes about its year default: a bot that never stops never
 //! reports.
 
-use crate::botclient::{bot_endpoint, run_bot, BotReport};
+use crate::botclient::{bot_endpoint, run_inhabitant, BotReport};
 use sim_core::bots::{BaseRows, RaidRows};
 use sim_core::limits::MAX_PLAYERS;
 use std::net::SocketAddr;
@@ -351,7 +351,7 @@ async fn man_the_post(
         // the future closes the QUIC connection, which the shard sees as the
         // leave it would see from any client that walked away.
         let outcome = tokio::select! {
-            r = run_bot(endpoint, server, stream, shift, raid) => Some(r),
+            r = run_inhabitant(endpoint, server, stream, shift, raid) => Some(r),
             () = stopped(shutdown) => None,
         };
         stats.live.fetch_sub(1, Ordering::Relaxed);
