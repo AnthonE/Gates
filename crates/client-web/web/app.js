@@ -53,6 +53,12 @@ const short = (a) => String(a).slice(0, 6) + "…" + String(a).slice(-4);
    navigating the post's frame. */
 const framed = (() => { try { return window.top !== window; } catch (err) { return true; } })();
 const EMBED = framed || q.has("embed");
+/* **An OBS browser source.** `?spectate…&obs=1` is the agent cam the platform's
+   stream kit writes (elopros.com/stream.html): the watch seat is taken without
+   a click, the menu and its music stay off the stream, and a seat that ends
+   is taken again (`obsWatch`, below). */
+const OBS = q.get("obs") === "1" && q.has("spectate");
+if (OBS) document.body.classList.add("obs");
 if (EMBED) {
   document.body.classList.add("embed");
   for (const a of document.querySelectorAll("a:not([target])")) {
@@ -1490,6 +1496,16 @@ function streamer() {
     return all.length > 0 && all[all.length - 1][1].trim() === "true";
   } catch (err) { return false; }
 }
+/* **One switch with the site's.** This page is on elopros.com, whose own
+   streamer mode (`elo.streamer`, its account menu and stream.html) blurs your
+   wallet there; on here it turns the game's on, the Options switch below
+   writes both, and `?streamer=1` turns both on from a link, the web's
+   `ELO_STREAMER=1`. Written before the game boots, which reads the line. */
+const SITE_STREAMER = "elo.streamer";
+try {
+  if (q.get("streamer") === "1") localStorage.setItem(SITE_STREAMER, "1");
+  if (localStorage.getItem(SITE_STREAMER) === "1" && !streamer()) saveNum("streamer_mode", true);
+} catch (err) { /* storage blocked: the game's own setting stands */ }
 const ALIAS_A = ["Amber", "Ash", "Birch", "Bramble", "Brass", "Cedar", "Cinder", "Clay", "Copper",
   "Dusk", "Ember", "Fern", "Flint", "Frost", "Gale", "Granite", "Hazel", "Iron", "Juniper", "Lichen",
   "Moss", "Oak", "Pine", "Quartz", "Reed", "Rust", "Sable", "Slate", "Sorrel", "Thorn", "Tide", "Willow"];
@@ -1831,7 +1847,7 @@ async function watch() {
   if (dl.failed) { location.reload(); return; }
   if (staleFor(current())) { freshReload(current()); return; }
   const audio = startAudio();
-  startMusic();
+  if (!OBS) startMusic();
   if (!glue) {
     busy = { label: "Watch", sub: "starting when the download finishes" };
     paintGo();
@@ -2533,6 +2549,7 @@ const streamerBox = $("streamer");
 streamerBox.checked = streamer();
 streamerBox.addEventListener("change", () => {
   saveNum("streamer_mode", streamerBox.checked);
+  try { localStorage.setItem(SITE_STREAMER, streamerBox.checked ? "1" : "0"); } catch (err) { /* private mode */ }
   renderServers();
   paintAccount();
   paintFriends();
@@ -2567,12 +2584,33 @@ let booting = null;
 const ready = () => booting || (booting = boot());
 if (!touchOnly || EMBED || cameBack) ready();
 /* The intro over the download, on anything that can play the game. */
-if (!touchOnly || EMBED) startMusic();
+if ((!touchOnly || EMBED) && !OBS) startMusic();
 paintMusic();
 paintDownload();
 loadServers();
 fillFeature();
 resume();
+if (OBS) obsWatch();
+
+/* The agent cam's loop. A seat that ends (the agent left, the shard restarted
+   for a patch) reloads the page, as every leave does, and this takes it again
+   a few seconds later; a refused seat (nobody watchable on, the server down)
+   is asked again every 15 s. The page's own sentence stands in for the menu
+   it hides. */
+async function obsWatch() {
+  const line = $("handoff-line");
+  $("handoff").hidden = false;
+  /* OBS before 29.1 ships a Chromium with no WebTransport. */
+  if (!canTransport) { line.textContent = "This browser source has no WebTransport, which Gates needs. Update OBS."; return; }
+  line.textContent = cameBack ? `${cameBack} — back in a moment…` : "finding someone to watch…";
+  if (cameBack) await sleep(5000);
+  for (;;) {
+    await watch();
+    if (document.body.classList.contains("playing")) return;
+    line.textContent = `${watchStatus.textContent || "no seat yet"} — trying again in 15 s`;
+    await sleep(15000);
+  }
+}
 
 /* ── the main thread's stalls, counted ─────────────────────────────────────
    `findings/browser-audio-20260913.md` §4: the audio hiccup is either a long
