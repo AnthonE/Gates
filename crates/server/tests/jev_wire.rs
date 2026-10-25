@@ -108,7 +108,7 @@ fn tree_scene() -> (f32, f32) {
     let table = ScatterTable::alpha_default();
     // Its box first, then the island: mild ground wherever it lies.
     let hint = (40..216).flat_map(|cz| (40..216).map(move |cx| (cx, cz)));
-    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+    for (cx, cz) in sim_core::find::mild_cells(TREE_SEED, hint) {
         let slot = terrain::scatter(TREE_SEED, &table, &haven, cx, cz);
         if slot.occupant != Occupant::Tree {
             continue;
