@@ -1,8 +1,10 @@
 # The turret and power run: lay a foundation, put the auto turret on it, open
-# its panel, set a solar panel beside it and wire the two. Coordinates are for
-# RES=1280x720 at the default spawn, which faces north on open ground.
+# its panel, set a solar panel on the ground behind and wire the two.
+# Coordinates are for RES=1280x720 at SPAWN=1500,640, a hilltop flat enough
+# for the panel (the default spawn's slope is past its 0.5 m tilt); a spawn
+# faces north.
 #
-#   POP=0 KIT="item.building_plan:1, item.wood:1000, item.autoturret:1, item.solar_panel:1, item.wire_tool:1, item.revolver:1, item.pistol_ammo:64" \
+#   POP=0 SPAWN=1500,640 KIT="item.building_plan:1, item.wood:1000, item.autoturret:1, item.solar_panel:1, item.wire_tool:1, item.revolver:1, item.pistol_ammo:64" \
 #     ./ci/drive.sh shots/power ci/drive/power.txt 'dev_env = "clear,noon"'
 #
 # load: a cold join under lavapipe takes minutes; Esc mid-load cancels it
