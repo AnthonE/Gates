@@ -301,6 +301,21 @@ lines = [
     { when = "gift:given", text = "A hundred junk, counted. The pattern goes to your wallet within a minute or two. Hold it and twenty cloth weaves a rug anywhere. Sell it and the pattern goes with it." },
 ]
 
+# The Pump Rug (`content/skins.toml`, season `pump`): a look for the Abyss
+# Rug, sold the same way. It needs a rug to lie on, so the lines say so.
+[[speaker.topic]]
+title = "THE PUMP RUG"
+gift = "pump"
+price = { item = "item.junk", count = 100 }
+lines = [
+    { when = "gift:guest", text = "The pill goes to a wallet, and I cannot send a thing to a name I cannot keep. Sign in and come back." },
+    { when = "gift:early", text = "I sell the pill to people this island knows, and it does not know you yet. Walk it a while, work it, then come back. Your junk stays with you." },
+    { when = "gift:owned", text = "Your wallet holds the pill. Any workbench will lay it over an Abyss Rug." },
+    { when = "gift:short", text = "A hundred junk for the pill, and you are short. Come back with it." },
+    { when = "gift:waiting", text = "Paid for, and still on its way to your wallet. A minute or two. Nothing more to pay." },
+    { when = "gift:given", text = "A hundred junk, counted. The pill goes to your wallet within a minute or two. It lies over an Abyss Rug: put it on at any workbench, or pick it when you weave one." },
+]
+
 [[speaker.topic]]
 title = "LOOKS"
 lines = [
