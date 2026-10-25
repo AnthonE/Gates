@@ -20,8 +20,10 @@ sleep 2
 click 1
 sleep 3
 shot 01-foundation
-# the turret on it
+# the turret on it, on the foundation's near half so E reaches it
 key 3
+sleep 2
+move 0 70
 sleep 2
 click 1
 sleep 3
