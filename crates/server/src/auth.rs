@@ -570,6 +570,7 @@ mod tests {
                     signature: protocol::SolanaSignature(sig),
                 }),
                 pass: None,
+                handoff: None,
             }
         };
         let good = sign(DOMAIN, &pair, &nonce);
@@ -646,6 +647,7 @@ mod tests {
             signature: Signature(raw),
             solana: None,
             pass: None,
+            handoff: None,
         }
     }
 
@@ -746,6 +748,7 @@ mod tests {
                 signature: Signature(raw),
                 solana: None,
                 pass: None,
+                handoff: None,
             };
             let _ = verify(DOMAIN, &[0; NONCE_BYTES], 0, &auth);
         }
@@ -828,6 +831,7 @@ mod tests {
                 signature: Signature(raw),
                 solana: None,
                 pass: None,
+                handoff: None,
             }
         };
         assert!(verify_any(&listed, &nonce, 9, &page("game.test")).is_ok());

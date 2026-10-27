@@ -1115,6 +1115,7 @@ pub fn auth() -> crate::Auth {
         signature: crate::Signature(sig),
         solana: None,
         pass: None,
+        handoff: None,
     }
 }
 

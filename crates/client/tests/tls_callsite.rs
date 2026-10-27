@@ -27,17 +27,50 @@
 use std::path::Path;
 
 /// Every place in the client that builds an endpoint and then dials with it.
-/// Three: the `gates` that `ci/depot.py` ships, which dials from two places —
-/// a capture or spectate run at boot (`bin/gates.rs`) and the connect screen
-/// (`render/menu.rs`) — and film mode's recorder (`bin/record.rs`).
-const SITES: [&str; 3] = [
+/// Four: the `gates` that `ci/depot.py` ships, which dials from three places —
+/// a capture or spectate run at boot (`bin/gates.rs`), the connect screen
+/// (`render/menu.rs`) and the hop to another server on a handoff
+/// (`render/travel.rs`, v153) — and film mode's recorder (`bin/record.rs`).
+const SITES: [&str; 4] = [
     "src/bin/gates.rs",
     "src/render/menu.rs",
+    "src/render/travel.rs",
     "src/bin/record.rs",
 ];
 
 const ENDPOINT: &str = "client_endpoint(";
 const CONNECT: &str = "Session::connect(";
+/// The other way a site dials (v153): on a handoff, with the same
+/// `(endpoint, server, ..)` head.
+const CONNECT_HANDOFF: &str = "Session::connect_handoff(";
+const WASM_ONLY: &str = "#[cfg(target_arch = \"wasm32\")]";
+
+/// `code` with every wasm-only block cut out. `client_endpoint` is native
+/// only; the browser dials through its own TLS with nothing to carve out, so
+/// a site's browser twin is not a second dial this gate has to pair.
+fn native_of(code: &str) -> String {
+    let mut out = code.to_string();
+    while let Some(at) = out.find(WASM_ONLY) {
+        let open = out[at..].find('{').expect("a cfg'd block has a brace") + at;
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, b) in out.bytes().enumerate().skip(open) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.replace_range(at..=end.expect("a cfg'd block is closed"), "");
+    }
+    out
+}
 
 /// The file with ordinary and doc comments removed. Comments may name these
 /// calls freely — every one of them is *about* this rule — and the rule is
@@ -108,7 +141,12 @@ fn every_dialling_site_asks_about_the_address_it_dials() {
             path.is_file(),
             "{site} is gone - this gate names it by path"
         );
-        let code = code_of(path);
+        let code = native_of(&code_of(path));
+        let connect = if code.contains(CONNECT_HANDOFF) {
+            CONNECT_HANDOFF
+        } else {
+            CONNECT
+        };
 
         // Exactly one of each. A second dial in the same file is not
         // necessarily wrong, but it is unwatched by the pairing below, so it
@@ -120,21 +158,21 @@ fn every_dialling_site_asks_about_the_address_it_dials() {
             call_count(&code, ENDPOINT)
         );
         assert_eq!(
-            call_count(&code, CONNECT),
+            call_count(&code, connect),
             1,
-            "{site} has {} calls to {CONNECT} - this gate pairs the first one only",
-            call_count(&code, CONNECT)
+            "{site} has {} calls to {connect} - this gate pairs the first one only",
+            call_count(&code, connect)
         );
 
         let endpoint_args = args_of(&code, ENDPOINT);
-        let connect_args = args_of(&code, CONNECT);
+        let connect_args = args_of(&code, connect);
         assert!(
             !endpoint_args.is_empty(),
             "{site}: could not read the arguments of {ENDPOINT}"
         );
         assert!(
             connect_args.len() >= 2,
-            "{site}: {CONNECT} has {} arguments - expected (endpoint, server, address, sign)",
+            "{site}: {connect} has {} arguments - expected (endpoint, server, address, sign)",
             connect_args.len()
         );
 

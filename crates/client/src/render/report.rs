@@ -712,6 +712,7 @@ pub fn screen_slug(screen: &Screen) -> &'static str {
         Screen::Map => "map",
         Screen::Settings => "settings",
         Screen::Disconnected => "disconnected",
+        Screen::Travelling => "travelling",
     }
 }
 

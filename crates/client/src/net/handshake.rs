@@ -351,6 +351,7 @@ pub fn solana_auth_frame(
         signature: protocol::Signature::NONE,
         solana: Some(protocol::SolanaProof { key, signature }),
         pass: None,
+        handoff: None,
     };
     protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
 }
@@ -373,6 +374,17 @@ pub fn pass_auth_frame(pass: &str, buf: &mut [u8]) -> Result<usize, JoinError> {
     })?;
     let auth = protocol::Auth {
         pass: Some(pass),
+        ..protocol::Auth::default()
+    };
+    protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
+}
+
+/// The auth frame for a handoff (v153): another of this game's servers
+/// moved us here, so nothing is signed and nothing is asked. `buf` is
+/// [`auth_buf`]'s, since a handoff may run to `protocol::MAX_AUTH_MSG_BYTES`.
+pub fn handoff_auth_frame(handoff: &protocol::Handoff, buf: &mut [u8]) -> Result<usize, JoinError> {
+    let auth = protocol::Auth {
+        handoff: Some(*handoff),
         ..protocol::Auth::default()
     };
     protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
@@ -602,6 +614,7 @@ pub fn auth_frame(
             signature,
             solana: None,
             pass: None,
+            handoff: None,
         },
         None => protocol::Auth::default(),
     };

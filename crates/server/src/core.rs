@@ -4802,6 +4802,61 @@ impl ShardCore {
             return;
         }
 
+        // `/arena` and `/leave` are everybody's (v153): the accept loop owns
+        // the connections and the keys, so this only checks what the sim
+        // knows — a wallet or account to move, and for `/arena` that the body
+        // stands in the town's safe zone, where leaving cannot be an escape.
+        if let AdminCmd::Arena | AdminCmd::Leave = cmd {
+            let back = matches!(cmd, AdminCmd::Leave);
+            if self.keys[from_slot].is_none() {
+                self.answer(
+                    from_slot,
+                    "sign in to fight in the arena: a guest has no rating to keep".into(),
+                    stats,
+                    send,
+                );
+                return;
+            }
+            if !back {
+                let in_town = self
+                    .world
+                    .players
+                    .iter()
+                    .find(|p| p.active && p.id == who)
+                    .is_some_and(|p| {
+                        sim_core::town::safe(
+                            &self.world.haven.town,
+                            p.body.qx as f32 * sim_core::movement::POS_XZ_Q,
+                            p.body.qz as f32 * sim_core::movement::POS_XZ_Q,
+                        )
+                    });
+                if !in_town {
+                    self.answer(
+                        from_slot,
+                        "the arena door is in town: walk into the safe zone and try again".into(),
+                        stats,
+                        send,
+                    );
+                    return;
+                }
+            }
+            let sent = ops.admin_tx.as_mut().is_some_and(|tx| {
+                tx.push(AdminAct::Travel {
+                    by: who,
+                    id: who,
+                    back,
+                })
+                .is_ok()
+            });
+            if !sent {
+                self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
+                return;
+            }
+            ops.log
+                .push(Record::new(tick, Kind::AdminAct, admin::verb_of(&cmd), who));
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -5017,7 +5072,9 @@ impl ShardCore {
             | AdminCmd::Achievements
             | AdminCmd::Team { .. }
             | AdminCmd::Lang { .. }
-            | AdminCmd::LangWhat => return,
+            | AdminCmd::LangWhat
+            | AdminCmd::Arena
+            | AdminCmd::Leave => return,
         }
         ops.log.push(logged);
     }
