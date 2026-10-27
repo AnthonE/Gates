@@ -864,7 +864,7 @@ fn back_pressure_never_reorders_the_log_under_a_live_consumer() {
 // The reader
 // ---------------------------------------------------------------------------
 
-/// **The reader round-trips, and filters without ranking anybody.** Rows
+/// **The reader round-trips, and filters.** Rows
 /// of three verbs, three presences, two wallets and a guest are written and
 /// read back field for field, then selected by wallet (either side, or one
 /// side), by player, verb, presence, tick range and boot. The summary counts

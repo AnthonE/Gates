@@ -1150,9 +1150,8 @@ impl Filter {
     }
 }
 
-/// Counts per verb and per (verb, presence) over a selection. Deliberately
-/// nothing per player: `PLAYERS.md` wall 2 forbids a ranking, and a table of
-/// players sorted by betrayals would be one.
+/// Counts per verb and per (verb, presence) over a selection; a player's own
+/// rows are a `Filter` on their wallet or id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
     pub rows: u64,

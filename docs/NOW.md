@@ -508,7 +508,7 @@ public agent (operator acts).
 is built (`EV_TRUST` code 39, `World::log_trust`, seven checks in
 `crates/sim-core/tests/event_roles.rs`); walls 1 and 4 are built for the local
 agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
-is not.
+is retired.
 
 Remains, in order (the trust ledger — `sim-core/trust.rs`, `server/trustlog.rs`
 — is built; the public shard logs once a build with it is deployed, an operator
