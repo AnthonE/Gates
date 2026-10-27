@@ -256,6 +256,7 @@ pub fn store(
                 }));
                 return;
             }
+            let now = locker::unix_now();
             area.spawn(grid()).with_children(|g| {
                 for i in rows {
                     card(
@@ -263,6 +264,7 @@ pub fn store(
                         &store[i],
                         locker::count_of(owned, store[i].catalog),
                         icons,
+                        now,
                     );
                 }
             });
@@ -281,7 +283,13 @@ pub fn store(
 
 /// One store card: the reference's green card, picture over name, what it
 /// fits, and the price chip at the foot.
-fn card(g: &mut ChildSpawnerCommands, skin: &StoreSkin, owned: u32, icons: Option<&Icons>) {
+fn card(
+    g: &mut ChildSpawnerCommands,
+    skin: &StoreSkin,
+    owned: u32,
+    icons: Option<&Icons>,
+    now: u64,
+) {
     g.spawn((
         Button,
         Node {
@@ -338,6 +346,13 @@ fn card(g: &mut ChildSpawnerCommands, skin: &StoreSkin, owned: u32, icons: Optio
         .with_children(|t| {
             t.spawn(ui::strong(skin.name.to_uppercase(), 15.0, ui::TITLE));
             t.spawn(ui::strong(skin.covers.to_uppercase(), 11.0, ui::DIM));
+            // Rust's store counts a limited skin down; ours is the store
+            // contract's own closing time
+            if skin.price.is_some() {
+                if let Some(when) = locker::leaves_in(skin.closes_at, now) {
+                    t.spawn(ui::strong(when, 11.0, ui::MARK));
+                }
+            }
             t.spawn(Node {
                 justify_content: JustifyContent::FlexEnd,
                 margin: UiRect::top(Val::Px(8.0)),
@@ -346,7 +361,13 @@ fn card(g: &mut ChildSpawnerCommands, skin: &StoreSkin, owned: u32, icons: Optio
             .with_children(|row| {
                 let (bg, text, ink) = match &skin.price {
                     Some(p) => (ui::PRICE, p.clone(), ui::TITLE),
-                    None => (ui::ROW_IDLE, "COMING SOON".to_string(), ui::FAINT),
+                    None => (
+                        ui::ROW_IDLE,
+                        skin.off_sale
+                            .clone()
+                            .unwrap_or_else(|| "COMING SOON".to_string()),
+                        ui::FAINT,
+                    ),
                 };
                 row.spawn((
                     Node {
