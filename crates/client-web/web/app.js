@@ -2156,6 +2156,21 @@ function tintedArt(s, art) {
 
 const CART = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h2l1.6 8h7.4l1.5-5.5H4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="6.5" cy="13" r="1.2" fill="currentColor"/><circle cx="11.5" cy="13" r="1.2" fill="currentColor"/></svg>';
 
+function leavesIn(closesAt) {
+  const left = Number(closesAt) - Date.now() / 1000;
+  if (!(left > 0)) return "";
+  return left >= 86400 ? `Leaves in ${Math.floor(left / 86400)}d`
+    : left >= 3600 ? `Leaves in ${Math.floor(left / 3600)}h` : "Leaves soon";
+}
+
+/* why an off-sale card has no price: it left, it sold out, or how it is
+   earned in game; a look not priced yet is "Coming soon" */
+function offSale(s) {
+  if (s.why_not === "closed") return "Left the store";
+  if (s.why_not === "sold out") return "Sold out";
+  return typeof s.earn === "string" && s.earn.trim() ? s.earn.trim() : "Coming soon";
+}
+
 function skinCard(s) {
   const el = document.createElement("a");
   el.className = "card skin";
@@ -2184,8 +2199,18 @@ function skinCard(s) {
   const onSale = Boolean(s.on_sale && s.price_text);
   price.className = "price" + (onSale ? "" : " soon");
   if (onSale) price.innerHTML = CART;
-  price.append(onSale ? String(s.price_text) : "Coming soon");
-  txt.append(h, fits, price);
+  price.append(onSale ? String(s.price_text) : offSale(s));
+  txt.append(h, fits);
+  /* Rust's store counts a limited skin down; ours is the store contract's
+     own closing time (ui::locker::leaves_in, the same words) */
+  const when = onSale ? leavesIn(s.closes_at) : "";
+  if (when) {
+    const w = document.createElement("span");
+    w.className = "leaves";
+    w.textContent = when;
+    txt.append(w);
+  }
+  txt.append(price);
   el.append(art, txt);
   return el;
 }
