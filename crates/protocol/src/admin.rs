@@ -169,6 +169,12 @@ pub enum AdminCmd {
     Lang { lang: u8, quiet: bool },
     /// Bare `/lang`, or a code not in the list: which language, and the list.
     LangWhat,
+    /// `/arena` (v152): go to this game's arena server, from inside the
+    /// town's safe zone, on a handoff. Anyone may.
+    Arena,
+    /// `/leave` (v152): on the arena, go back to the server you came from.
+    /// Anyone may.
+    Leave,
 }
 
 /// Is this line addressed to the server at all? Cheap enough to ask
@@ -268,6 +274,8 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "brain" => Some(AdminCmd::Brain),
         "who" => Some(AdminCmd::Who),
         "top" | "standings" | "lb" | "leaderboard" => Some(AdminCmd::Top),
+        "arena" | "ranked" => (parts.next().is_none()).then_some(AdminCmd::Arena),
+        "leave" | "back" => (parts.next().is_none()).then_some(AdminCmd::Leave),
         "ach" | "achievements" => Some(AdminCmd::Achievements),
         "wipe" => match parts.next() {
             None => Some(AdminCmd::WipeWhen),
@@ -439,6 +447,10 @@ mod tests {
         assert_eq!(parse(&text("/wipe")), Some(AdminCmd::WipeWhen));
         assert_eq!(parse(&text("/top")), Some(AdminCmd::Top));
         assert_eq!(parse(&text("/lb")), Some(AdminCmd::Top));
+        assert_eq!(parse(&text("/arena")), Some(AdminCmd::Arena));
+        assert_eq!(parse(&text("/ranked")), Some(AdminCmd::Arena));
+        assert_eq!(parse(&text("/leave")), Some(AdminCmd::Leave));
+        assert_eq!(parse(&text("/arena now")), None);
         assert_eq!(parse(&text("/ach")), Some(AdminCmd::Achievements));
         assert_eq!(parse(&text("/achievements")), Some(AdminCmd::Achievements));
         assert_eq!(parse(&text("/wipe cancel")), Some(AdminCmd::WipeCancel));

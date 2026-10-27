@@ -55,9 +55,9 @@ pub mod voice;
 
 pub use auth::{
     companion_message, siwe_message, siwe_message_for, siws_message_for, Address, Auth, Challenge,
-    Pass, Signature, SolanaKey, SolanaProof, SolanaSignature, ADDRESS_BYTES, DOMAIN_MAX,
-    NONCE_BYTES, PASS_MAX, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX, SOLANA_ADDRESS_MAX,
-    SOLANA_KEY_BYTES, SOLANA_SIGNATURE_BYTES,
+    Handoff, Pass, Signature, SolanaKey, SolanaProof, SolanaSignature, ADDRESS_BYTES, DOMAIN_MAX,
+    HANDOFF_CARRY_MAX, HANDOFF_TOKEN_MAX, NONCE_BYTES, PASS_MAX, SIGNATURE_BYTES, SIGN_WAIT_SECS,
+    SIWE_MESSAGE_MAX, SOLANA_ADDRESS_MAX, SOLANA_KEY_BYTES, SOLANA_SIGNATURE_BYTES,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1394,7 +1394,12 @@ pub use voice::{
 /// v151 — a player signed in to Elo Pros joins with a pass: auth tag 2, a
 /// 16-bit length, then the pass's bytes as elo issued them (`Pass`, at most
 /// `PASS_MAX`). The auth frame alone may run to `MAX_AUTH_MSG_BYTES`.
-pub const PROTO_VER: u16 = 151;
+/// v152 — moving between this game's servers: auth tag 3 is a handoff (a
+/// 16-bit length and the token, a 16-bit length and the bytes it carries;
+/// `Handoff`), and `KIND_TRAVEL` (13) tells a client to take one to another
+/// server. `MAX_AUTH_MSG_BYTES` grows to hold the longest handoff, and a
+/// client reads every frame after the welcome at `MAX_S2C_STREAM_BYTES`.
+pub const PROTO_VER: u16 = 152;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -1466,6 +1471,10 @@ pub const KIND_VOICE: u32 = 11;
 /// S→C datagram (v121): the bodies a tick's snapshot had no room for
 /// ([`SnapshotEncoder::begin_more`], [`decode_snapshot_more`]).
 pub const KIND_SNAPSHOT_MORE: u32 = 12;
+/// S→C, reliable, a player's last frame on this shard (v152): go to another
+/// of this game's servers, with a handoff ([`Travel`]). The connection
+/// closes after it.
+pub const KIND_TRAVEL: u32 = 13;
 /// Width of a snapshot overflow datagram's part number: part 0 is the
 /// snapshot itself, so this names up to three more.
 pub const SNAPSHOT_PART_BITS: u32 = 2;
@@ -1484,10 +1493,40 @@ pub const MAX_STREAM_MSG_BYTES: usize = 128;
 /// allowed past [`MAX_STREAM_MSG_BYTES`] (v151), because an Elo Pros pass is a
 /// few hundred bytes where a signature is 85. Read once per join, into a
 /// buffer of this size; every other handshake frame keeps the smaller ceiling.
-pub const MAX_AUTH_MSG_BYTES: usize = 640;
+/// **640 → 1344 at v152** for the handoff: its token is the platform's up to
+/// 1024 bytes, and it carries up to `HANDOFF_CARRY_MAX` beside it.
+pub const MAX_AUTH_MSG_BYTES: usize = 1344;
 // The kind, the tag, the length and the longest pass fit the auth ceiling.
 const _: () =
     assert!((KIND_BITS as usize + 8 + 16 + 8 * PASS_MAX).div_ceil(8) <= MAX_AUTH_MSG_BYTES);
+// …and so do the longest handoff and its carry.
+const _: () = assert!(
+    (KIND_BITS as usize + 8 + 16 + 8 * HANDOFF_TOKEN_MAX + 16 + 8 * HANDOFF_CARRY_MAX).div_ceil(8)
+        <= MAX_AUTH_MSG_BYTES
+);
+
+/// The longest server address a travel message names, `host:port`.
+pub const TRAVEL_ADDR_MAX: usize = 128;
+/// The longest travel message (v152): the address and a whole handoff.
+pub const MAX_TRAVEL_MSG_BYTES: usize = 1472;
+const _: () = assert!(
+    (KIND_BITS as usize
+        + 8
+        + 8 * TRAVEL_ADDR_MAX
+        + 16
+        + 8 * HANDOFF_TOKEN_MAX
+        + 16
+        + 8 * HANDOFF_CARRY_MAX)
+        .div_ceil(8)
+        <= MAX_TRAVEL_MSG_BYTES
+);
+/// The ceiling a client reads every S→C frame at once it is welcomed (v152):
+/// an event, a refusal, or the one travel message a session may end on.
+pub const MAX_S2C_STREAM_BYTES: usize = if MAX_TRAVEL_MSG_BYTES > event::MAX_EVENT_MSG_BYTES {
+    MAX_TRAVEL_MSG_BYTES
+} else {
+    event::MAX_EVENT_MSG_BYTES
+};
 
 const FRAME_COUNT_BITS: u32 = 4;
 const COUNT_BITS: u32 = 7;
@@ -2130,6 +2169,68 @@ pub fn encode_refuse(msg: &Refuse, buf: &mut [u8]) -> Result<usize, WireError> {
     w.write(KIND_REFUSE, KIND_BITS)?;
     w.write(msg.code as u32, 8)?;
     Ok(w.finish())
+}
+
+/// S→C (v152): leave for `addr`, another of this game's servers, and join it
+/// with `handoff` — no prompt, no call to the platform.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Travel {
+    addr: [u8; TRAVEL_ADDR_MAX],
+    addr_len: u8,
+    pub handoff: Handoff,
+}
+
+impl Travel {
+    /// `None` for an empty address, one over [`TRAVEL_ADDR_MAX`], or one that
+    /// is not printable ASCII.
+    pub fn new(addr: &str, handoff: Handoff) -> Option<Self> {
+        let b = addr.as_bytes();
+        if b.is_empty() || b.len() > TRAVEL_ADDR_MAX || !b.iter().all(|c| c.is_ascii_graphic()) {
+            return None;
+        }
+        let mut a = [0u8; TRAVEL_ADDR_MAX];
+        a[..b.len()].copy_from_slice(b);
+        Some(Self {
+            addr: a,
+            addr_len: b.len() as u8,
+            handoff,
+        })
+    }
+
+    /// The `host:port` to join.
+    pub fn addr(&self) -> &str {
+        core::str::from_utf8(&self.addr[..self.addr_len as usize]).unwrap_or("")
+    }
+}
+
+pub fn encode_travel(msg: &Travel, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_TRAVEL, KIND_BITS)?;
+    w.write(msg.addr_len as u32, 8)?;
+    for b in &msg.addr[..msg.addr_len as usize] {
+        w.write(*b as u32, 8)?;
+    }
+    auth::write_handoff(&mut w, &msg.handoff)?;
+    Ok(w.finish())
+}
+
+pub fn decode_travel(buf: &[u8]) -> Result<Travel, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_TRAVEL {
+        return Err(WireError::Malformed);
+    }
+    let len = r.read(8)? as usize;
+    if len == 0 || len > TRAVEL_ADDR_MAX {
+        return Err(WireError::Malformed);
+    }
+    let mut addr = [0u8; TRAVEL_ADDR_MAX];
+    for b in addr[..len].iter_mut() {
+        *b = r.read(8)? as u8;
+    }
+    let handoff = auth::read_handoff(&mut r)?;
+    expect_zero_padding(&mut r)?;
+    let addr = core::str::from_utf8(&addr[..len]).map_err(|_| WireError::Malformed)?;
+    Travel::new(addr, handoff).ok_or(WireError::Malformed)
 }
 
 pub fn decode_refuse(buf: &[u8]) -> Result<Refuse, WireError> {

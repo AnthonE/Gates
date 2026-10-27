@@ -385,6 +385,74 @@ impl core::fmt::Debug for Pass {
     }
 }
 
+/// The longest handoff token on the wire (v152): the platform's own ceiling
+/// (`docs/client/HANDOFF.md` in the platform repo), `base64url(text).
+/// base64url(ed25519 signature)`.
+pub const HANDOFF_TOKEN_MAX: usize = 1024;
+
+/// The most bytes a handoff carries beside its token in Gates (v152). The
+/// platform allows 4096; nothing Gates moves needs more than a match id.
+pub const HANDOFF_CARRY_MAX: usize = 256;
+
+/// **A player moved here by another of this game's servers (v152)**: the
+/// handoff the server they left signed with its server key, and the bytes it
+/// bound (`carry`). The shard checks it offline against the game's keys
+/// (`server::auth::verify_handoff`). Carried as issued; this crate keeps the
+/// bytes and never parses them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Handoff {
+    token: [u8; HANDOFF_TOKEN_MAX],
+    token_len: u16,
+    carry: [u8; HANDOFF_CARRY_MAX],
+    carry_len: u16,
+}
+
+impl Handoff {
+    /// `None` for an empty token, or a token or carry over its ceiling.
+    pub fn new(token: &[u8], carry: &[u8]) -> Option<Self> {
+        if token.is_empty() || token.len() > HANDOFF_TOKEN_MAX || carry.len() > HANDOFF_CARRY_MAX {
+            return None;
+        }
+        let mut h = Self::default();
+        h.token[..token.len()].copy_from_slice(token);
+        h.token_len = token.len() as u16;
+        h.carry[..carry.len()].copy_from_slice(carry);
+        h.carry_len = carry.len() as u16;
+        Some(h)
+    }
+
+    pub fn token(&self) -> &[u8] {
+        &self.token[..self.token_len as usize]
+    }
+
+    pub fn carry(&self) -> &[u8] {
+        &self.carry[..self.carry_len as usize]
+    }
+}
+
+impl Default for Handoff {
+    fn default() -> Self {
+        Self {
+            token: [0u8; HANDOFF_TOKEN_MAX],
+            token_len: 0,
+            carry: [0u8; HANDOFF_CARRY_MAX],
+            carry_len: 0,
+        }
+    }
+}
+
+/// Prints its lengths and never its bytes: a handoff is a bearer credential
+/// for its two minutes.
+impl core::fmt::Debug for Handoff {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "Handoff({} bytes, carry {})",
+            self.token_len, self.carry_len
+        )
+    }
+}
+
 /// A Solana account's sign-in: its key, and its signature over
 /// [`siws_message_for`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -436,6 +504,9 @@ pub struct Auth {
     /// An Elo Pros pass instead of either (v151). When it is `Some`, the
     /// other three are empty on the wire, and the shard verifies the pass.
     pub pass: Option<Pass>,
+    /// A handoff from another of this game's servers instead of any of them
+    /// (v152): the player that server admitted, moved here with no prompt.
+    pub handoff: Option<Handoff>,
 }
 
 /// The exact text that gets signed — **EIP-4361, and the one implementation
@@ -703,12 +774,19 @@ pub(crate) fn read_challenge(r: &mut BitReader) -> Result<Challenge, WireError> 
     })
 }
 
-/// The tag byte before an auth frame's proof (v142; the pass is v151).
+/// The tag byte before an auth frame's proof (v142; the pass is v151, the
+/// handoff v152).
 const AUTH_ETHEREUM: u32 = 0;
 const AUTH_SOLANA: u32 = 1;
 const AUTH_PASS: u32 = 2;
+const AUTH_HANDOFF: u32 = 3;
 
 pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
+    if let Some(h) = &a.handoff {
+        w.write(AUTH_HANDOFF, 8)?;
+        write_handoff(w, h)?;
+        return Ok(());
+    }
     if let Some(pass) = &a.pass {
         w.write(AUTH_PASS, 8)?;
         w.write(pass.len as u32, 16)?;
@@ -734,9 +812,49 @@ pub(crate) fn write_auth(w: &mut BitWriter, a: &Auth) -> Result<(), WireError> {
     Ok(())
 }
 
+/// A handoff's token and carry, each behind a 16-bit length: the auth
+/// frame's body for tag 3, and the tail of a travel message.
+pub(crate) fn write_handoff(w: &mut BitWriter, h: &Handoff) -> Result<(), WireError> {
+    w.write(h.token_len as u32, 16)?;
+    for b in h.token() {
+        w.write(*b as u32, 8)?;
+    }
+    w.write(h.carry_len as u32, 16)?;
+    for b in h.carry() {
+        w.write(*b as u32, 8)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn read_handoff(r: &mut BitReader) -> Result<Handoff, WireError> {
+    let len = r.read(16)? as usize;
+    if len == 0 || len > HANDOFF_TOKEN_MAX {
+        return Err(WireError::Malformed);
+    }
+    let mut token = [0u8; HANDOFF_TOKEN_MAX];
+    for b in token[..len].iter_mut() {
+        *b = r.read(8)? as u8;
+    }
+    let clen = r.read(16)? as usize;
+    if clen > HANDOFF_CARRY_MAX {
+        return Err(WireError::Malformed);
+    }
+    let mut carry = [0u8; HANDOFF_CARRY_MAX];
+    for b in carry[..clen].iter_mut() {
+        *b = r.read(8)? as u8;
+    }
+    Handoff::new(&token[..len], &carry[..clen]).ok_or(WireError::Malformed)
+}
+
 pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
     match r.read(8)? {
         AUTH_ETHEREUM => {}
+        AUTH_HANDOFF => {
+            return Ok(Auth {
+                handoff: Some(read_handoff(r)?),
+                ..Auth::default()
+            });
+        }
         AUTH_PASS => {
             let len = r.read(16)? as usize;
             if len == 0 || len > PASS_MAX {
@@ -768,6 +886,7 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
                     signature: SolanaSignature(signature),
                 }),
                 pass: None,
+                handoff: None,
             });
         }
         _ => return Err(WireError::Malformed),
@@ -785,6 +904,7 @@ pub(crate) fn read_auth(r: &mut BitReader) -> Result<Auth, WireError> {
         signature: Signature(signature),
         solana: None,
         pass: None,
+        handoff: None,
     })
 }
 
@@ -1071,6 +1191,7 @@ mod tests {
                 signature: SolanaSignature([7; SOLANA_SIGNATURE_BYTES]),
             }),
             pass: None,
+            handoff: None,
         };
         let mut buf = [0u8; 256];
         let n = crate::encode_auth(&sol, &mut buf).unwrap();
@@ -1080,6 +1201,7 @@ mod tests {
             signature: Signature([9; SIGNATURE_BYTES]),
             solana: None,
             pass: None,
+            handoff: None,
         };
         let n = crate::encode_auth(&evm, &mut buf).unwrap();
         assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), evm);
@@ -1097,6 +1219,52 @@ mod tests {
         assert!(n <= crate::MAX_AUTH_MSG_BYTES);
         assert_eq!(crate::decode_auth(&buf[..n]).unwrap(), pass);
         assert!(Pass::new(&[]).is_none() && Pass::new(&[0; PASS_MAX + 1]).is_none());
+    }
+
+    /// The longest handoff and carry fit the auth frame's ceiling, round
+    /// trip, and nothing outside the ceilings constructs.
+    #[test]
+    fn a_handoff_round_trips_within_the_auth_frame_ceiling() {
+        let h = Handoff::new(&[b't'; HANDOFF_TOKEN_MAX], &[b'c'; HANDOFF_CARRY_MAX]).unwrap();
+        let auth = Auth {
+            handoff: Some(h),
+            ..Auth::default()
+        };
+        let mut buf = [0u8; crate::MAX_AUTH_MSG_BYTES];
+        let n = crate::encode_auth(&auth, &mut buf).unwrap();
+        assert!(n <= crate::MAX_AUTH_MSG_BYTES);
+        let back = crate::decode_auth(&buf[..n]).unwrap();
+        assert_eq!(back, auth);
+        assert_eq!(
+            back.handoff.unwrap().carry(),
+            &[b'c'; HANDOFF_CARRY_MAX][..]
+        );
+        assert!(Handoff::new(&[], b"").is_none());
+        assert!(Handoff::new(&[0; HANDOFF_TOKEN_MAX + 1], b"").is_none());
+        assert!(Handoff::new(b"t", &[0; HANDOFF_CARRY_MAX + 1]).is_none());
+    }
+
+    /// The longest travel message fits `MAX_TRAVEL_MSG_BYTES` and the
+    /// client's post-welcome ceiling, and round trips; a bad address does not
+    /// construct.
+    #[test]
+    fn a_travel_message_round_trips_within_its_ceiling() {
+        let h = Handoff::new(&[b't'; HANDOFF_TOKEN_MAX], &[b'c'; HANDOFF_CARRY_MAX]).unwrap();
+        let addr = "a".repeat(crate::TRAVEL_ADDR_MAX - 6) + ":61300";
+        let t = crate::Travel::new(&addr, h).unwrap();
+        let mut buf = [0u8; crate::MAX_S2C_STREAM_BYTES];
+        let n = crate::encode_travel(&t, &mut buf).unwrap();
+        assert!(n <= crate::MAX_TRAVEL_MSG_BYTES);
+        let back = crate::decode_travel(&buf[..n]).unwrap();
+        assert_eq!(back, t);
+        assert_eq!(back.addr(), addr);
+        assert!(
+            crate::decode_refuse(&buf[..n]).is_err(),
+            "a travel is not a refusal"
+        );
+        assert!(crate::Travel::new("", h).is_none());
+        assert!(crate::Travel::new("has space:1", h).is_none());
+        assert!(crate::Travel::new(&"a".repeat(crate::TRAVEL_ADDR_MAX + 1), h).is_none());
     }
 
     /// The four canonical EIP-55 vectors from the spec itself.

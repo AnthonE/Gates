@@ -65,6 +65,8 @@ pub mod face_set;
 pub mod faces;
 /// Skins the shard gave away (the alpha's Founder set), and who took them.
 pub mod gifts;
+/// Moving a player between this game's servers on a signed handoff (v152).
+pub mod handoff;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
 pub mod jev;

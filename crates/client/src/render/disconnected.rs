@@ -60,7 +60,39 @@ use super::{audio, fx, impact, input, map, ui, viewmodel, water, world_teardown,
 pub fn plugin(app: &mut App) {
     app.init_resource::<Reason>()
         .init_resource::<Chosen>()
-        .add_systems(Update, watch.after(input::place_eye))
+        .add_systems(
+            Update,
+            (super::travel::watch, watch)
+                .chain()
+                .after(input::place_eye),
+        )
+        // ---- the hop to another server (v152) ----------------------------
+        // The world goes as it does on a disconnect, then the travel screen
+        // joins the next server on the handoff.
+        .add_systems(
+            OnEnter(Screen::Travelling),
+            (world_teardown, super::travel::setup).chain(),
+        )
+        .add_systems(
+            OnEnter(Screen::Travelling),
+            (
+                audio::teardown.after(world_teardown),
+                water::teardown.after(world_teardown),
+                super::crops::teardown.after(world_teardown),
+                map::forget,
+                viewmodel::forget,
+                impact::forget,
+                fx::forget,
+            ),
+        )
+        .add_systems(
+            OnExit(Screen::Travelling),
+            ui::despawn_all::<super::travel::Root>,
+        )
+        .add_systems(
+            Update,
+            super::travel::poll.run_if(in_state(Screen::Travelling)),
+        )
         .add_systems(
             OnEnter(Screen::Disconnected),
             (world_teardown, setup).chain(),
@@ -126,6 +158,7 @@ pub fn line(addr: &str) -> String {
 pub fn watch(
     net: Option<NonSend<Net>>,
     connecting: NonSend<Connecting>,
+    travelling: NonSend<super::travel::Travelling>,
     mut reason: ResMut<Reason>,
     mut menu: ResMut<Menu>,
     mut next: ResMut<NextState<Screen>>,
@@ -133,7 +166,9 @@ pub fn watch(
     let Some(net) = net else {
         return;
     };
-    if !net.session.closed() {
+    // Sent on to another server (v152): the close that follows is the hop,
+    // not a loss (`travel::watch`).
+    if !net.session.closed() || travelling.underway() || net.session.has_travel() {
         return;
     }
     // The shard's own reason when it closed with one — "the player you were

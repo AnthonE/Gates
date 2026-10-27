@@ -213,6 +213,7 @@ impl crate::Session {
                 .collect(),
             closed: false,
             refused: None,
+            travel: None,
             event_observer: None,
             observer_failed: false,
             tap: None,

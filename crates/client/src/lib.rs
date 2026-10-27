@@ -203,7 +203,7 @@ use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
 // bounds, which belong to the framing this file still owns, and `Welcome`,
 // which is a field on `Session`. That the import list shrank to exactly the
 // I/O half is the evidence the extraction was complete rather than partial.
-use protocol::{Welcome, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES};
+use protocol::{Welcome, MAX_S2C_STREAM_BYTES, MAX_STREAM_MSG_BYTES};
 use sim_core::limits::{ACTION_RING_CAP, DATAGRAM_BUDGET_BYTES};
 #[cfg(feature = "native")]
 use wtransport::config::IpBindConfig;
@@ -237,7 +237,9 @@ async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String
     // coalescing was always the transport's business, and the browser's
     // `WritableStream` counts each write as a queued chunk. Same bytes on the
     // wire either way; one fewer syscall per action.
-    let mut out = [0u8; MAX_STREAM_MSG_BYTES + net::frame::LEN_PREFIX_BYTES];
+    // Sized for the auth frame, the one C→S frame that may pass the stream
+    // lane's ceiling (a handoff, v152), as the browser's writer is.
+    let mut out = [0u8; protocol::MAX_AUTH_MSG_BYTES + net::frame::LEN_PREFIX_BYTES];
     let n = net::frame::encode_into(&mut out, payload).ok_or_else(|| {
         format!(
             "frame: {} bytes does not fit the stream lane",
@@ -479,6 +481,10 @@ pub struct Session {
     /// kick, a watched player leaving; wire v89). The browser cannot read a
     /// QUIC close code, so this is how it learns why.
     refused: Option<u8>,
+    /// Where the shard sent this player, with the handoff to get in (v152):
+    /// its last word before it hung up. The renderer joins there
+    /// ([`Session::take_travel`]).
+    travel: Option<protocol::Travel>,
     event_observer: Option<EventObserver>,
     observer_failed: bool,
     /// Sees every inbound datagram and event, raw and before the core does
@@ -602,6 +608,39 @@ impl Session {
         // `prove` block below for why that inversion is the whole fix.
         sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     ) -> Result<Self, JoinError> {
+        Self::connect_with(endpoint, server, address, join, sign, None).await
+    }
+
+    /// Join `server` on the handoff another of this game's servers sent this
+    /// player with (v152, [`Session::take_travel`]): nothing is signed and
+    /// nothing is asked. `server` is the address to dial, normally
+    /// `travel.addr()`.
+    pub async fn connect_handoff(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        travel: &protocol::Travel,
+    ) -> Result<Self, JoinError> {
+        Self::connect_with(
+            endpoint,
+            server,
+            protocol::Address::GUEST,
+            &Join::PLAYER,
+            |_, _, _| None,
+            Some(&travel.handoff),
+        )
+        .await
+    }
+
+    async fn connect_with(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        address: protocol::Address,
+        join: &Join,
+        sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
+        // A handoff from another of this game's servers (v152): it is the
+        // auth frame, and nothing is signed. The browser twin's parameter.
+        handoff: Option<&protocol::Handoff>,
+    ) -> Result<Self, JoinError> {
         if net::handshake::server_host(server).is_none() {
             return Err(format!("{server:?} is not a server address (host:port)").into());
         }
@@ -631,7 +670,17 @@ impl Session {
             .await
             .ok_or_else(|| "no challenge".to_string())?;
         let mut auth = net::handshake::auth_buf();
-        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut auth)?;
+        let len = match handoff {
+            // Read as a guest's would be: the challenge (or a refusal) is
+            // checked, and nothing is put to a signer.
+            Some(h) => {
+                net::handshake::proof_wanted(&reply[..reply_len], server, None, address)?;
+                net::handshake::handoff_auth_frame(h, &mut auth)?
+            }
+            None => {
+                net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut auth)?
+            }
+        };
         write_frame(&mut send, &auth[..len]).await?;
 
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
@@ -655,7 +704,7 @@ impl Session {
         // for good — the trap `server::botclient` documents.
         let (tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
         tokio::spawn(async move {
-            while let Some((buf, len)) = read_frame::<MAX_EVENT_MSG_BYTES>(&mut recv).await {
+            while let Some((buf, len)) = read_frame::<MAX_S2C_STREAM_BYTES>(&mut recv).await {
                 if tx.send(buf[..len].to_vec()).await.is_err() {
                     return;
                 }
@@ -732,6 +781,7 @@ impl Session {
                 .collect(),
             closed: false,
             refused: None,
+            travel: None,
             event_observer: None,
             observer_failed: false,
             tap: None,
@@ -843,7 +893,38 @@ impl Session {
         .await
     }
 
+    /// [`Session::connect`] on a **handoff** (v152): another of this game's
+    /// servers sent this player here ([`Session::take_travel`]), so nothing
+    /// is signed and no wallet is asked anything.
+    pub async fn connect_handoff(
+        server: &str,
+        cert_hash: Option<&str>,
+        travel: &protocol::Travel,
+    ) -> Result<Self, JoinError> {
+        Self::connect_with(
+            server,
+            cert_hash,
+            net::handshake::Claim::Ethereum(protocol::Address::GUEST),
+            &Join::PLAYER,
+            None,
+            None,
+            Some(&travel.handoff),
+        )
+        .await
+    }
+
     pub async fn connect_as(
+        server: &str,
+        cert_hash: Option<&str>,
+        claim: net::handshake::Claim,
+        join: &Join,
+        sign: Option<&js_sys::Function>,
+        signs_as: Option<&str>,
+    ) -> Result<Self, JoinError> {
+        Self::connect_with(server, cert_hash, claim, join, sign, signs_as, None).await
+    }
+
+    async fn connect_with(
         server: &str,
         cert_hash: Option<&str>,
         // Who this join claims to be: an Ethereum address (the guest address
@@ -866,6 +947,9 @@ impl Session {
         // The page's own host, where the page signs that rather than the host
         // dialled (`net::handshake::page_domain`); `None` is the dialled host.
         signs_as: Option<&str>,
+        // A handoff from another of this game's servers (v152): it is the
+        // auth frame, and nothing is signed.
+        handoff: Option<&protocol::Handoff>,
     ) -> Result<Self, JoinError> {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
         use web_sys::WritableStreamDefaultWriter;
@@ -964,10 +1048,13 @@ impl Session {
                 e
             }
         };
-        let len = match (&pass, solana) {
-            (Some(p), _) => net::handshake::pass_auth_frame(p, &mut auth)?,
-            (None, Some((key, sig))) => net::handshake::solana_auth_frame(key, sig, &mut auth)?,
-            (None, None) => net::handshake::auth_frame(address, signature, &mut auth)?,
+        let len = match (handoff, &pass, solana) {
+            (Some(h), _, _) => net::handshake::handoff_auth_frame(h, &mut auth)?,
+            (None, Some(p), _) => net::handshake::pass_auth_frame(p, &mut auth)?,
+            (None, None, Some((key, sig))) => {
+                net::handshake::solana_auth_frame(key, sig, &mut auth)?
+            }
+            (None, None, None) => net::handshake::auth_frame(address, signature, &mut auth)?,
         };
         net::web::write_frame(&writer, &auth[..len])
             .await
@@ -999,7 +1086,7 @@ impl Session {
         // and the symptom would be a rare missing event at join, which is
         // about the worst bug shape available.
         let (tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-        let mut ev_reader = reader.rekey::<MAX_EVENT_MSG_BYTES>();
+        let mut ev_reader = reader.rekey::<MAX_S2C_STREAM_BYTES>();
         spawn_local(async move {
             while let Some(bytes) = ev_reader.next().await {
                 if tx.send(bytes).await.is_err() {
@@ -1044,6 +1131,7 @@ impl Session {
                 .collect(),
             closed: false,
             refused: None,
+            travel: None,
             event_observer: None,
             observer_failed: false,
             tap: None,
@@ -1138,6 +1226,19 @@ impl Session {
     /// (wire v89) — the half of [`Session::close_code`] a browser can read.
     pub fn posted_refusal(&self) -> Option<u8> {
         self.refused
+    }
+
+    /// Where the shard sent this player (v152), taken once: the address to
+    /// join and the handoff that admits them there with no prompt
+    /// ([`Session::connect_handoff`]). The connection closes after it.
+    pub fn take_travel(&mut self) -> Option<protocol::Travel> {
+        self.travel.take()
+    }
+
+    /// Whether the shard has sent this player on and the travel is not yet
+    /// taken: the close that follows is a hop, not a loss.
+    pub fn has_travel(&self) -> bool {
+        self.travel.is_some()
     }
 
     /// The code the shard closed this session with, if it gave one — a
@@ -1243,9 +1344,17 @@ impl Session {
         let observer = &mut self.event_observer;
         let observer_failed = &mut self.observer_failed;
         let refused = &mut self.refused;
+        let travel = &mut self.travel;
         let ev_gone = drain_lane(&mut self.events, |bytes| {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Event, bytes);
+            }
+            // Sent on to another of this game's servers (v152).
+            if protocol::peek_kind(bytes) == Ok(protocol::KIND_TRAVEL) {
+                if let Ok(t) = protocol::decode_travel(bytes) {
+                    *travel = Some(t);
+                }
+                return;
             }
             // The shard's last word before a kick: why (wire v89).
             if let Ok(r) = protocol::decode_refuse(bytes) {
