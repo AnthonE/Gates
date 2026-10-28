@@ -5,6 +5,10 @@
 //! agent instead of joining as a guest, so the tape holds whatever is around
 //! it wherever it goes, and a film can follow it (`ops/buddy/clips.py`).
 //!
+//! `record --tail <host:port> <out.rec> <seconds> [...]` writes only what the
+//! clip key would have (`client::clip`): the last half minute, opening on
+//! keyframes the recorder re-made. It is how a harness tests a clip.
+//!
 //! `record --scan <tape.rec> [every_s]` — play a tape back with no window and
 //! print what is in it: where every body and animal is, how many pieces
 //! stand and how many storeys high, and when and where charges are planted
@@ -33,7 +37,11 @@ fn die(why: impl std::fmt::Display) -> ! {
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let tail = args.first().map(String::as_str) == Some("--tail");
+    if tail {
+        args.remove(0);
+    }
     if args.first().map(String::as_str) == Some("--scan") {
         let every: f64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(5.0);
         scan(
@@ -99,10 +107,18 @@ async fn main() {
         ),
     }
 
-    let file = std::fs::File::create(out).unwrap_or_else(|e| die(format!("{out}: {e}")));
-    let mut file = BufWriter::new(file);
+    // A tail tape is the clip key's, written at the end; nothing streams.
+    let mut file: Box<dyn Write> = if tail {
+        Box::new(std::io::sink())
+    } else {
+        let f = std::fs::File::create(out).unwrap_or_else(|e| die(format!("{out}: {e}")));
+        Box::new(BufWriter::new(f))
+    };
     film::write_header(&mut file, &w, session.watching.as_ref()).unwrap_or_else(|e| die(e));
 
+    if !tail {
+        session.disable_clips();
+    }
     let taken: Taken = Arc::default();
     let sink = taken.clone();
     session.tap(move |lane, bytes| {
@@ -169,6 +185,13 @@ async fn main() {
         }
     }
     file.flush().unwrap_or_else(|e| die(e));
+    if tail {
+        let clip = session
+            .clip_tape(client::clip::CLIP_S)
+            .unwrap_or_else(|| die("no clip: the session never had a snapshot"));
+        std::fs::write(out, &clip).unwrap_or_else(|e| die(format!("{out}: {e}")));
+        println!("record: the clip key's tape, {} bytes", clip.len());
+    }
     let dropped = session.datagrams_dropped();
     println!(
         "record: {:.1} s taped to {out} — {} snapshots, {} events, {dropped} dropped",
@@ -292,4 +315,15 @@ fn scan(path: &str, every: f64) {
             }
         }
     }
+    // A tape that decodes is one whose snapshots all found their baselines:
+    // the clip key's re-made keyframes stand or fall on this line.
+    let c = &session.core;
+    println!(
+        "scan: {} snapshots applied ({} deltas), {} without a baseline, {} undecodable, {} events",
+        c.snapshots_applied,
+        c.snapshots_delta,
+        c.snapshots_no_baseline,
+        c.decode_errors,
+        c.events_applied
+    );
 }
