@@ -38,6 +38,7 @@ use protocol::{
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
+use sim_core::combat::CombatContent;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::frame::Frame;
@@ -10126,7 +10127,7 @@ impl ShardCore {
     /// content row that says a torch burns at all lives in `GatherContent`.
     /// So the server resolves both once per record, on the same values the
     /// sim ran on — the quantize-both-sides law applied to a flag.
-    fn wire_entity(p: &Player, gc: &GatherContent) -> EntityState {
+    fn wire_entity(p: &Player, gc: &GatherContent, cc: &CombatContent) -> EntityState {
         EntityState {
             id: p.id,
             qx: p.body.qx,
@@ -10162,19 +10163,23 @@ impl ShardCore {
             // The attachments on the held gun (v144), under the same rule,
             // and its light while the key is down: a laser's dot and a
             // flashlight's beam are seen by everyone.
-            held_mods: Self::held_mods_of(p),
-            beam: Self::held_mods_of(p) != 0 && p.frame.buttons & sim_core::input::BTN_LIGHT != 0,
+            held_mods: Self::held_mods_of(p, cc),
+            beam: Self::held_mods_of(p, cc) != 0
+                && p.frame.buttons & sim_core::input::BTN_LIGHT != 0,
         }
     }
 
     /// The attachments on the gun in this body's hand, 0 for a dropped,
-    /// empty or unarmed hand.
-    fn held_mods_of(p: &sim_core::world::Player) -> u8 {
-        if p.wounded || Self::held_of(p).is_none() {
-            0
-        } else {
-            sim_core::combat::held_gun(p).mods
+    /// empty or unarmed hand. Only a gun's `data` is attachments: a
+    /// vessel's is its water, and read as a mask a full waterskin wore a
+    /// laser and a flashlight.
+    fn held_mods_of(p: &sim_core::world::Player, cc: &CombatContent) -> u8 {
+        if p.wounded {
+            return 0;
         }
+        Self::held_of(p)
+            .and_then(|item| cc.held_ranged(item))
+            .map_or(0, |d| sim_core::combat::held_gun(p).mods & d.gun.mods)
     }
 
     /// What is in this body's selected hotbar slot, or nothing.
@@ -10258,7 +10263,7 @@ impl ShardCore {
         for w in 0..MAX_PLAYERS {
             let p = &self.world.players[w];
             if p.active {
-                self.wire_cache[w] = Self::wire_entity(p, &self.world.gather);
+                self.wire_cache[w] = Self::wire_entity(p, &self.world.gather, &self.world.combat);
             }
         }
         for slot in 0..MAX_MOBS {
@@ -10373,7 +10378,11 @@ impl ShardCore {
         order[..n_cand].sort_unstable();
 
         let mut n_sent = 0usize;
-        let own = Self::wire_entity(&self.world.players[c.own_wslot], &self.world.gather);
+        let own = Self::wire_entity(
+            &self.world.players[c.own_wslot],
+            &self.world.gather,
+            &self.world.combat,
+        );
         match enc.add_entity(&own) {
             Ok(()) => {
                 self.sent_buf[n_sent] = own;

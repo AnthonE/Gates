@@ -484,13 +484,7 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             let new_src = if left == 0 {
                 ItemStack::default()
             } else {
-                ItemStack {
-                    item: src.item,
-                    count: left,
-                    cond: src.cond,
-                    skin: src.skin,
-                    ..ItemStack::EMPTY
-                }
+                ItemStack { count: left, ..src }
             };
             // The moved stack keeps its condition — this splice is the
             // item-move trap's exact anatomy: it built the destination
@@ -504,13 +498,15 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             // this arm is reached anyway. The skin is the same splice
             // one field on: it travels into an empty slot, and a merge
             // only ever joins two stacks wearing the same one
-            // (`plan_move`).
+            // (`plan_move`). `data` (a gun's attachments and rounds, a
+            // vessel's water) is the third field down the same trap: the
+            // whole source travels into an empty slot, and a merge keeps
+            // the destination, which `ItemStack::joins` made equal.
+            let base = if dst.count == 0 { src } else { dst };
             let new_dst = ItemStack {
                 item,
                 count: dst.count + count,
-                cond: if dst.count == 0 { src.cond } else { dst.cond },
-                skin: if dst.count == 0 { src.skin } else { dst.skin },
-                ..ItemStack::EMPTY
+                ..base
             };
             (new_src, new_dst)
         }

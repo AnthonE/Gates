@@ -978,6 +978,57 @@ fn a_moved_tool_keeps_its_condition() {
     );
 }
 
+/// **A moved gun keeps its scope and its rounds** (`ItemStack::data`).
+///
+/// The same splice as [`a_moved_tool_keeps_its_condition`], one field on:
+/// `resolve` built the destination from item, count, cond and skin, then
+/// `..ItemStack::EMPTY`, so a loaded, scoped rifle dragged to an empty slot
+/// arrived bare and empty, and a waterskin arrived dry. The adders a pickup,
+/// a loot and a give use (`inv_add_stack`) had the same hole.
+#[test]
+fn a_moved_gun_keeps_its_data() {
+    use sim_core::gather::{inv_add_stack, inv_add_stack_spilling};
+    let gun = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 4_321,
+        skin: 2,
+        data: 0x001E_0005,
+    };
+    let empty = ItemStack::default();
+    let plan = plan_move(1, gun, empty, 1).expect("a gun moves into an empty slot");
+    let (src, dst) = resolve(plan, gun, empty);
+    assert_eq!(src, empty, "the source empties canonically");
+    assert_eq!(dst, gun, "the gun arrives with its data");
+
+    // A split of a stack that carries data: both halves keep it.
+    let seeds = ItemStack {
+        item: 2,
+        count: 10,
+        data: 77,
+        ..ItemStack::EMPTY
+    };
+    let plan = plan_move(20, seeds, empty, 4).expect("a split plans");
+    let (src, dst) = resolve(plan, seeds, empty);
+    assert_eq!((src.count, src.data), (6, 77));
+    assert_eq!((dst.count, dst.data), (4, 77));
+
+    // Picked up, looted or given: the stack lands whole, and never tops up
+    // a stack that carries other data.
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = ItemStack { data: 0, ..gun };
+    assert_eq!(inv_add_stack(&mut inv, gun, 1), 1);
+    assert_eq!(inv[1], gun, "a fresh slot, not the bare gun's");
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = ItemStack { count: 3, ..seeds };
+    assert_eq!(inv_add_stack(&mut inv, seeds, 20), 10);
+    assert_eq!(inv[0].count, 13, "equal data tops up");
+    let mut full = [gun; INV_SLOTS];
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    assert_eq!(inv_add_stack_spilling(&mut full, &mut spill, gun, 1), 0);
+    assert_eq!(spill[0], gun, "what spills keeps its data too");
+}
+
 /// **Two conditions of one item never merge** (farming v2: a clone's genes
 /// ride its seed's `cond`, so a merge would breed one genome into another).
 /// A whole stack onto a different `cond` swaps, a part of one refuses, and a

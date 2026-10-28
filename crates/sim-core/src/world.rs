@@ -5176,13 +5176,10 @@ impl World {
         // A copy out and back rather than two live borrows of `players`:
         // 30 stacks by value, no allocation.
         let mut pack = self.players[t].inv;
-        let added = gather::inv_add_skinned(
+        let added = gather::inv_add_stack(
             &mut pack,
-            stack.item,
-            n,
+            ItemStack { count: n, ..stack },
             self.gather.stack_max_of(stack.item),
-            stack.cond,
-            stack.skin,
         );
         if added == 0 {
             let addr = inventory::addr(

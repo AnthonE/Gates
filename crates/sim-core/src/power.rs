@@ -626,10 +626,13 @@ pub fn sweep(
             ARCH_SPLITTER => {
                 let used = g.outs[k].iter().filter(|&&c| c != NONE).count() as u32;
                 let most = (0..MAX_OUTS).map(|p| g.child_want(k, p)).max().unwrap_or(0);
-                draw + used * most
+                // Saturating: each nested splitter multiplies what it asks
+                // for, and a deep tree of them wrapped (or, in a debug
+                // build, panicked inside the tick).
+                draw.saturating_add(used.saturating_mul(most))
             }
             ARCH_SWITCH if !g.on[k] => draw,
-            ARCH_SWITCH | ARCH_COMBINER | ARCH_LIGHT => draw + g.child_want(k, 0),
+            ARCH_SWITCH | ARCH_COMBINER | ARCH_LIGHT => draw.saturating_add(g.child_want(k, 0)),
             ARCH_BATTERY => {
                 let held = g.cell[k] as usize;
                 let held = if g.cell[k] == NONE {

@@ -912,7 +912,7 @@ impl Session {
         // `the_two_step_path_and_the_composition_agree` holds the two
         // assemblies to producing byte-identical frames.
         // The auth frame alone may run past the stream lane's ceiling (a pass,
-        // v144), so it is built in a buffer of its own.
+        // v151), so it is built in a buffer of its own.
         let mut auth = net::handshake::auth_buf();
         let want = net::handshake::proof_wanted_for(&reply, server, signs_as, claim)?;
         let address = match claim {

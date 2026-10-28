@@ -295,6 +295,14 @@ def lines(p):
 closed = any(f[:2] == ["wipe", str(n)] for f in lines(last)) \
     or any(f[:2] == ["podium", str(n)] for f in lines(hall))
 rows = [f for f in lines(stand) if f[0] == "row"]
+# A world this young is most likely the one the shard's own schedule just
+# started (wipe_days): closing it posts a podium and a payout for minutes of
+# play and counts the wipe twice. Stop the shard before its wipe hour and
+# release after it instead.
+age = now - st["last"]
+if st["last"] and age < 2 * 3600:
+    print(f"  !! this world began {age // 60} min ago: the shard has likely just run its own wipe.")
+    print(f"     Closing it posts wipe {n}'s podium and payout for that world, and counts a wipe twice.")
 if closed:
     print(f"  wipe {n} is closed already (the hall beside {world} has it); not twice")
 elif stand.exists():
