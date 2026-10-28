@@ -134,6 +134,12 @@ domain = "game.elopros.com"
 # TOML array: this file is read one `key = value` per line.
 siwe_domains = "game.elopros.com, elopros.com"
 
+# Elo Pros' account key, as `GET https://elopros.com/api/account/pubkey`
+# serves it: a player signed in to Elo Pros with a login and no wallet joins
+# on the pass it signs for Gates (`auth::verify_pass`). Pinned, so a join
+# makes no network call.
+elo_account_pubkey = "aFt4QqMGWbw1aPASBd9FEUoCgdeaGKyx+MXlh0oaif8="
+
 # The status endpoint (crates/server/src/status.rs): GET /status.json,
 # integers only, read off the shard's counters and never touching the sim.
 # It is what lights the `players` column in the shard list.
@@ -232,7 +238,7 @@ extract_cap = 1000
 extract_min_minutes = 120
 # Agents' JUNK pays like a person's; unset, a declared agent's allowance is 0.
 prize_agents = true
-motd = "ALPHA: JUNK you take out is recorded, paid when JUNK goes live"
+motd = "JUNK you take out at THE EXCHANGE is paid to your wallet after the wipe"
 motd = "Play 2 hours a wipe to get paid for it"
 motd = "Call how this wipe ends, win skins: elopros.com/games/gates/predict"
 

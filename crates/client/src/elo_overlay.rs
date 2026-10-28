@@ -14,7 +14,7 @@
 //! match elo {
 //!     Ok(mut ov) => {
 //!         let who = ov.address();                     // Option<String>
-//!         let msg = elo_overlay::play_message("duel", "vow_x", "ETH up 5", None);
+//!         let msg = elo_overlay::play_message("duel", "0xabc", "ETH up 5", None);
 //!         match ov.sign(&msg, "settling round 41") {
 //!             Ok(sig)                          => submit(&sig.signature),
 //!             Err(elo_overlay::SignError::Handoff(url)) => show_link(&url),
@@ -63,9 +63,8 @@ pub const SOCKET_ENV: &str = "ELO_LAUNCHER_SOCKET";
 /// A short one here turns "the player was reading the message" into a bug.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub const FAMILIES: [&str; 13] = [
-    "braid", "card", "covenant", "doc", "familiar", "hive", "holder", "meter", "pact", "play",
-    "review", "store", "vow",
+pub const FAMILIES: [&str; 10] = [
+    "dev", "entitle", "hive", "link", "pair", "partners", "play", "repo", "review", "store",
 ];
 
 // ── a very small JSON, so this file needs no crates ─────────────────────────
@@ -320,8 +319,7 @@ use json::{Field, Value};
 /// a round that straddles midnight should sign the day it started, and a
 /// client that cannot express that would silently sign the wrong one.
 ///
-/// ⚠ The subject is the WALLET, and it was the vow_id until 2026-08-12: the
-/// signature recovers the signer, so a player does not swear a vow to act. The
+/// ⚠ The subject is the WALLET: the signature recovers the signer. The
 /// address is LOWERCASED here — a checksummed one is different bytes and would
 /// verify differently, which is the detail that bites a hand-rolled string.
 pub fn play_message(action: &str, wallet: &str, detail: &str, day: Option<&str>) -> String {
@@ -382,10 +380,11 @@ pub struct Proof {
 
 /// What the town says about one address — see [`Overlay::profile`].
 ///
-/// Every field is a claim about a stranger, and `sworn` is the only thing
-/// separating a checked name from a typed one.
+/// Every field is a claim about a stranger, and `checked` is the only thing
+/// separating a held hive handle from a typed name.
 ///
-/// `found == false` is a real answer: *we looked, there is no sworn identity*.
+/// `found == false` is a real answer: *we looked, and nothing is set for this
+/// address*.
 /// It is not the same as [`Overlay::profile`] returning `None`, which means we
 /// could not look at all.
 #[derive(Debug, Clone)]
@@ -396,7 +395,7 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The SWORN name — in the locked index, and it costs ELO to change.
+    /// The hive handle — held by one wallet; it cannot be set by asserting it.
     pub fn handle(&self) -> Option<String> {
         self.raw.opt_str("handle")
     }
@@ -406,8 +405,9 @@ impl Profile {
         self.raw.opt_str("display_name")
     }
 
-    pub fn sworn(&self) -> bool {
-        self.raw.get("sworn").map(Value::as_bool).unwrap_or(false)
+    /// True when `handle` is a held hive handle.
+    pub fn checked(&self) -> bool {
+        self.raw.get("checked").map(Value::as_bool).unwrap_or(false)
     }
 
     pub fn address(&self) -> Option<String> {
@@ -419,30 +419,28 @@ impl Profile {
         self.raw.opt_str("avatar")
     }
 
-    /// How many vows this wallet holds. One party, several identities.
-    pub fn identities(&self) -> i64 {
-        self.raw
-            .get("identities")
-            .and_then(Value::as_i64)
-            .unwrap_or(1)
+    /// How many people answered to the name looked up. A self-declared name
+    /// can be shared; a wallet names one.
+    pub fn matches(&self) -> i64 {
+        self.raw.get("matches").and_then(Value::as_i64).unwrap_or(1)
     }
 
-    /// A path you fetch yourself — `achievements`, `holdings`, `reputation`,
-    /// `vow`, `tip`. One verb is one origin read, the way Steam splits
-    /// summaries from achievements.
+    /// A path you fetch yourself — `achievements`, `items`, `holdings`, `tip`.
+    /// One verb is one origin read, the way Steam splits summaries from
+    /// achievements.
     pub fn link(&self, what: &str) -> Option<String> {
         self.raw.get("links")?.opt_str(what)
     }
 
     /// The one string safe to draw without thinking about it.
     ///
-    /// A sworn name renders bare; anything self-declared gets `~`, the town's
+    /// A held handle renders bare; anything self-declared gets `~`, the
     /// marker for *this party said so and nobody checked* (`ACHIEVEMENTS.md`).
     /// A surface that shows a claimed name in the clothes of a checked one has
     /// lied for free, and it is the cheapest mistake to make and the hardest to
     /// notice.
     pub fn label(&self) -> String {
-        if self.sworn() {
+        if self.checked() {
             if let Some(h) = self.handle() {
                 return h;
             }
@@ -568,6 +566,7 @@ fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, Stri
 #[cfg(windows)]
 fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, String> {
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::OpenOptionsExt;
 
     extern "system" {
         fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> i32;
@@ -585,11 +584,103 @@ fn open_stream(path: &std::path::Path, timeout: Duration) -> Result<Stream, Stri
     // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives the call.
     unsafe { WaitNamedPipeW(wide.as_ptr(), ms) };
 
-    std::fs::OpenOptions::new()
+    // Identification only: the launcher may learn who connected, never act as
+    // us. Without it a pipe server holding SeImpersonatePrivilege can.
+    const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+    let pipe = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        .security_qos_flags(SECURITY_IDENTIFICATION)
         .open(path)
-        .map_err(|e| format!("no launcher at {}: {e}", path.display()))
+        .map_err(|e| format!("no launcher at {}: {e}", path.display()))?;
+    // The pipe name is predictable and answers for whoever created it first,
+    // so while our launcher is down another account on this PC can hold it.
+    // The launcher is this user's own process; anything else is refused.
+    if !pipe_server_is_us(&pipe) {
+        return Err(format!(
+            "the pipe at {} is held by another user, not your launcher",
+            path.display()
+        ));
+    }
+    Ok(pipe)
+}
+
+/// Does the process serving `pipe` run as the same user as this one? `false`
+/// on any failed read: a server we cannot inspect is not one we trust.
+#[cfg(windows)]
+fn pipe_server_is_us(pipe: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+
+    type Handle = *mut std::ffi::c_void;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const TOKEN_QUERY: u32 = 0x0008;
+    const TOKEN_USER: u32 = 1;
+
+    extern "system" {
+        fn GetNamedPipeServerProcessId(pipe: Handle, pid: *mut u32) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        fn GetCurrentProcess() -> Handle;
+        fn CloseHandle(h: Handle) -> i32;
+    }
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+        fn GetTokenInformation(
+            token: Handle,
+            class: u32,
+            info: *mut std::ffi::c_void,
+            len: u32,
+            ret: *mut u32,
+        ) -> i32;
+        fn EqualSid(a: *mut std::ffi::c_void, b: *mut std::ffi::c_void) -> i32;
+    }
+
+    // TOKEN_USER is { SID_AND_ATTRIBUTES { PSID, DWORD } } with the SID itself
+    // after it in the same buffer, so the first word is the SID's address and
+    // the buffer must outlive every use of it. u64s keep it pointer-aligned.
+    fn user_of(process: Handle) -> Option<Vec<u64>> {
+        let mut token: Handle = std::ptr::null_mut();
+        // SAFETY: `token` is a valid out-pointer; a failed call leaves it null.
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return None;
+        }
+        let mut buf = vec![0u64; 64];
+        let mut ret = 0u32;
+        // SAFETY: `buf` is 512 writable bytes; `token` is open and closed here.
+        let ok = unsafe {
+            let ok = GetTokenInformation(
+                token,
+                TOKEN_USER,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * 8) as u32,
+                &mut ret,
+            );
+            CloseHandle(token);
+            ok
+        };
+        (ok != 0 && buf[0] != 0).then_some(buf)
+    }
+
+    let mut pid = 0u32;
+    // SAFETY: the handle is the open pipe, borrowed for the call.
+    if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 || pid == 0 {
+        return false;
+    }
+    // SAFETY: a null return is checked; the handle is closed below.
+    let server = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if server.is_null() {
+        return false;
+    }
+    let theirs = user_of(server);
+    // SAFETY: `server` came from OpenProcess above and is closed once.
+    unsafe { CloseHandle(server) };
+    // SAFETY: the current-process pseudo-handle needs no closing.
+    let ours = user_of(unsafe { GetCurrentProcess() });
+    match (theirs, ours) {
+        // SAFETY: each first word is a SID pointer into its own live buffer.
+        (Some(a), Some(b)) => unsafe { EqualSid(a[0] as usize as _, b[0] as usize as _) != 0 },
+        _ => false,
+    }
 }
 
 pub struct Overlay {
@@ -861,8 +952,8 @@ impl Overlay {
     ///
     /// ⚠ **Three states, and a game that collapses them tells a lie.** `None`
     /// means *we could not look*: the origin was unreachable, or this launcher
-    /// has no reader. [`Profile::found`] `== false` means *we looked and there
-    /// is no sworn identity*, which is a normal way to play. Drawing "no name"
+    /// has no reader. [`Profile::found`] `== false` means *we looked and
+    /// nothing is set for this address*, which is a normal way to play. Drawing "no name"
     /// for the first invents a fact about a stranger, and it is the cheapest
     /// mistake in this file to make.
     ///
@@ -956,7 +1047,7 @@ mod tests {
     fn a_message_with_newlines_survives_the_encoder() {
         // The whole protocol carries multi-line messages; an encoder that
         // ate a newline would change what the player signs.
-        let msg = play_message("duel", "vow_x", "ETH up 5", Some("2026-08-04"));
+        let msg = play_message("duel", "0xabc", "ETH up 5", Some("2026-08-04"));
         let line = json::object(&[("op", Field::S("sign")), ("text", Field::S(&msg))]);
         let back = json::parse(&line).unwrap();
         assert_eq!(back.str_or_empty("text"), msg);
