@@ -11,6 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mint_pending as mp  # noqa: E402
 
+REAL_POST_HOLD = mp.post_hold
+
 A = "0x" + "a1" * 20
 B = "0x" + "b2" * 20
 FAILS = []
@@ -120,7 +122,37 @@ with tempfile.TemporaryDirectory() as d:
     check("a hold the platform did not take is retried, never logged",
           mp.main(["--world", str(world), "--no-copies"]) == 1
           and "400" not in Path(f"{world}.minted").read_text())
+
+# ── a 404 is final only when the platform names the account unknown ─────────
+import io  # noqa: E402
 import os  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+def hold_answer(code, body):
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, "no", {}, io.BytesIO(body))
+    real, urllib.request.urlopen = urllib.request.urlopen, urlopen
+    os.environ["ELO_LOCKER_SECRET"] = "s" * 32
+    try:
+        return REAL_POST_HOLD({"account": ACCT, "game": "gates", "kind": "copy", "ref": "gates:join"})
+    finally:
+        urllib.request.urlopen = real
+
+
+check("a 404 naming the account unknown is gone", hold_answer(404, b'{"error":"unknown_account"}') == "gone")
+check("a bare 404 is retried", hold_answer(404, b"") == "http-404")
+check("a proxy's 404 page is retried", hold_answer(404, b"<html>404 Not Found</html>") == "http-404")
+check("a 404 for something else is retried", hold_answer(404, b'{"error":"not found"}') == "http-404")
+check("a 500 is retried", hold_answer(500, b'{"error":"unknown_account"}') == "http-500")
+with tempfile.TemporaryDirectory() as d:
+    world = Path(d) / "island.world"
+    mp.post_hold = lambda row: "http-404"
+    Path(f"{world}.mints").write_text(f"500 {ACCT} 10\n")
+    check("a sale answered with a bare 404 is not logged, so it is held next run",
+          mp.main(["--world", str(world), "--no-copies"]) == 1
+          and not Path(f"{world}.minted").exists())
 os.environ.pop("ELO_LOCKER_SECRET", None)
 import importlib  # noqa: E402
 check("with no locker secret, nothing is held", importlib.reload(mp).post_hold({}) == "no-locker-secret")

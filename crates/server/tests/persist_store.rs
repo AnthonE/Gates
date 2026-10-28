@@ -1576,3 +1576,55 @@ fn a_wipe_archives_the_world_and_keeps_only_what_players_know() {
     let _ = std::fs::remove_dir_all(format!("{}.wipes", path.display()));
     sweep(&path);
 }
+
+/// **An Elo Pros account that links a wallet keeps its character.** It played
+/// as its `acct_…` id; its next pass names the wallet too, and the wallet
+/// wakes the account's body with its pack (`net.rs` `adopt_account_save`,
+/// `ShardCore::adopt_account`). The account's record is the wallet's alone
+/// after, and a wallet that already has a character is never merged into.
+#[test]
+fn an_account_that_links_a_wallet_keeps_its_character() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut store = SaveStore::new();
+    let acct = key("acct_0123456789abcdef0123");
+    let wallet = key("0x00000000000000000000000000000000000000a1");
+
+    assert!(core.connect_as(0, id_of(0), Some(acct), None).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
+    let packed = ItemStack {
+        item: 3,
+        count: 40,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    let w = world_slot(&core, id_of(0));
+    core.world.players[w].inv[0] = packed;
+    core.tick_bare(&stats, |_, _, _| true);
+    let (_, save) = core.disconnect(0).expect("a record");
+    store.put(&acct, 1_700_000_000, save).expect("filed");
+    core.tick_bare(&stats, |_, _, _| true);
+
+    // The wallet comes in on a pass naming the account.
+    assert!(store.rekey(&acct, &wallet).is_some(), "the record moves");
+    assert!(store.find(&acct).is_none() && store.find(&wallet).is_some());
+    assert!(core.adopt_account(&acct, &wallet));
+    let (how, _) = core
+        .connect_as(1, id2_of(1), Some(wallet), store.find(&wallet))
+        .expect("admitted");
+    assert_eq!(how, Admitted::TookOver, "the account's body, woken");
+    core.tick_bare(&stats, |_, _, _| true);
+    assert_eq!(
+        core.world.players[world_slot(&core, id2_of(1))].inv[0],
+        packed
+    );
+
+    // Another account linking the same wallet takes nothing over it.
+    let other = key("acct_ffffffffffffffffffff");
+    assert!(!core.adopt_account(&other, &wallet), "seated");
+    core.disconnect(1);
+    core.tick_bare(&stats, |_, _, _| true);
+    assert!(!core.adopt_account(&other, &wallet), "known here");
+    assert!(store.rekey(&other, &wallet).is_none());
+}

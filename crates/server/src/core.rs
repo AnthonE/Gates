@@ -726,6 +726,15 @@ impl SleeperIndex {
         }
     }
 
+    /// File `from`'s body under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, _) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
+            }
+        }
+    }
+
     /// File `id` under `key`, replacing any earlier body for the same
     /// player. `live` is asked only if the table is full, and only about
     /// entries already in it — the sweep that keeps a table of stale
@@ -819,6 +828,15 @@ impl EvictMemo {
         }
     }
 
+    /// File `from`'s record under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, ..) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
+            }
+        }
+    }
+
     /// File `save` under `key`, replacing any earlier one for the same key,
     /// else into a free row, else over the oldest put.
     fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
@@ -906,6 +924,16 @@ impl EvictIds {
         for e in self.entries.iter_mut() {
             if e.is_some_and(|(k, ..)| k == *key) {
                 *e = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// File `from`'s row under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, ..) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
                 self.dirty = true;
             }
         }
@@ -3006,6 +3034,42 @@ impl ShardCore {
         // changed" against the previous tenant of the slot.
         self.last_saved[slot] = PlayerSave::EMPTY;
         Some((how, evicted))
+    }
+
+    /// An Elo Pros account that has linked a wallet joins as the wallet, on a
+    /// pass that still names the account (v151, `net.rs`). Unless the wallet
+    /// already has a character here, the account's is the wallet's now: its
+    /// sleeping body (and with it the bags, locks and cupboards filed under
+    /// the body's id), its eviction record and id row, and this wipe's
+    /// standings row, so the join that follows finds them under the wallet.
+    /// Returns whether the wallet takes the account's character: `false` for
+    /// a wallet already known here (two characters are never merged) or
+    /// either key still seated.
+    pub fn adopt_account(&mut self, from: &PlayerKey, to: &PlayerKey) -> bool {
+        let seated = |k: &PlayerKey| {
+            (0..MAX_PLAYERS).any(|s| self.clients[s].connected && self.keys[s] == Some(*k))
+        };
+        let known = self
+            .sleepers
+            .find(to)
+            .is_some_and(|s| self.world.is_sleeper(s))
+            || self.evicted.find(to).is_some()
+            || self.evict_ids.find(to).is_some();
+        if from == to || seated(from) || seated(to) || known {
+            return false;
+        }
+        // A stale arrow for the wallet would shadow the account's below.
+        self.sleepers.forget(to);
+        self.sleepers.rekey(from, to);
+        self.evicted.rekey(from, to);
+        self.evict_ids.rekey(from, to);
+        if let (Ok(f), Ok(t)) = (
+            core::str::from_utf8(from.as_bytes()),
+            core::str::from_utf8(to.as_bytes()),
+        ) {
+            self.standings.rekey(f, t);
+        }
+        true
     }
 
     /// Encode the whole world into `out`, returning its length.

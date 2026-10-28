@@ -498,6 +498,22 @@ impl SaveStore {
         Some(Put { index, evicted })
     }
 
+    /// File `from`'s record under `to`, in the same row, when `to` has none:
+    /// an Elo Pros account that has linked a wallet comes back as the wallet
+    /// (`net.rs` `adopt_account_save`). Returns the row and what to write
+    /// there; `None` moved nothing.
+    pub fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) -> Option<(usize, u64, PlayerSave)> {
+        if from == to || self.find(to).is_some() {
+            return None;
+        }
+        let i = self
+            .slots
+            .iter()
+            .position(|e| e.key.as_ref() == Some(from))?;
+        self.slots[i].key = Some(*to);
+        Some((i, self.slots[i].stamp, self.slots[i].save))
+    }
+
     /// File a record loaded from disk at **its own file index**. `put`
     /// takes the first free slot, which is a different slot whenever an
     /// earlier record was empty (a corrupt one, or a wipe's), and the next

@@ -1565,6 +1565,9 @@ struct Handshaken {
     /// guest: admitted (on a shard that takes guests) and remembered by
     /// nobody, because there is no stable string to file them under.
     key: Option<PlayerKey>,
+    /// The Elo Pros account a pass naming `key`'s wallet came from
+    /// (`Connect::alias`).
+    alias: Option<PlayerKey>,
     /// The PROVEN address behind `key`, or `Address::GUEST` — the form a
     /// spectator names its target in and the `Watch` message reports.
     address: protocol::Address,
@@ -1957,11 +1960,19 @@ async fn accept_loop(
     // The door's tail, for a fresh arrival and a parked one alike.
     macro_rules! admit {
         ($done:expr) => {{
-            let done = $done;
+            let mut done = $done;
             // Before the claim, never after: a record for the slot's
             // previous tenant has to be filed under the key it was
             // written for, and installing first would overwrite that key.
             drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+            // An account that linked a wallet: its record is the wallet's
+            // now, unless the wallet has its own (`adopt_account_save`).
+            if let (Some(to), Some(from)) = (done.key, done.alias) {
+                let free = seated(&from, &keys, &slots).is_none();
+                if !(free && adopt_account_save(&mut store, &mut write_tx, &from, &to, &stats)) {
+                    done.alias = None;
+                }
+            }
             if done.hello.is_spectator() {
                 let source = sources.counted(done.connection.remote_address().ip());
                 install_spectator(
@@ -2114,7 +2125,13 @@ async fn accept_loop(
                 // sim yet. A second newcomer for the same key, or one past
                 // the park's room, is refused outright.
                 if !done.hello.is_spectator() {
-                    if let Some(s) = done.key.and_then(|k| seated(&k, &keys, &slots)) {
+                    // A wallet whose account (`Handshaken::alias`) is still
+                    // in is the same player: that session is closed too, so
+                    // its body is asleep for the wallet to take.
+                    let seat = done.key.and_then(|k| seated(&k, &keys, &slots)).or_else(|| {
+                        done.key.and(done.alias).and_then(|k| seated(&k, &keys, &slots))
+                    });
+                    if let Some(s) = seat {
                         let twice = parked.iter().any(|p| p.done.key == done.key);
                         if twice || parked.len() >= PARK_MAX {
                             ShardStats::bump(&stats.refused_in_use);
@@ -2294,7 +2311,7 @@ async fn accept_loop(
                     .iter()
                     .enumerate()
                     .filter_map(|(slot, ks)| {
-                        // An account has no copy to check (the join skips it
+                        // An account has no copy to check (the join refuses it
                         // too), and one in the batch would make `check_many`
                         // answer `Unknown` for everybody.
                         let k = ks.key.as_ref()?;
@@ -2540,6 +2557,40 @@ async fn drain_until_abandoned(
         tokio::time::sleep(SHUTDOWN_DRAIN_POLL).await;
     }
     drain_saves(save_rx, write_tx, store, keys, stats);
+}
+
+/// An Elo Pros account that has linked a wallet comes in as the wallet, on a
+/// pass that still names the account (v151). Unless the wallet has a record
+/// of its own, the account's record is the wallet's now, rewritten in its
+/// row: a restart, or the account coming in again, finds it under the wallet
+/// only, so it is never two characters. Returns whether the wallet takes the
+/// account's character; the sim moves the rest (`ShardCore::adopt_account`).
+fn adopt_account_save(
+    store: &mut SaveStore,
+    write_tx: &mut rtrb::Producer<WriteMsg>,
+    from: &PlayerKey,
+    to: &PlayerKey,
+    stats: &Arc<ShardStats>,
+) -> bool {
+    if store.find(to).is_some() {
+        return false;
+    }
+    if let Some((index, stamp, save)) = store.rekey(from, to) {
+        let key = *to;
+        if write_tx
+            .push(WriteMsg {
+                index,
+                key,
+                stamp,
+                save,
+            })
+            .is_err()
+        {
+            // The index has it; the wallet's next record lands in that row.
+            ShardStats::bump(&stats.save_ring_drops);
+        }
+    }
+    true
 }
 
 /// Hand one record to the store's index. Called only from the sim thread, so
@@ -3048,6 +3099,7 @@ async fn handshake_task(
                 send,
                 recv,
                 key: None,
+                alias: None,
                 address: protocol::Address::GUEST,
                 hello,
             })
@@ -3083,7 +3135,10 @@ async fn handshake_task(
     // checked against elo's pinned key, this game, these same names and this
     // join's nonce, with no call out. A pass naming a wallet IS that wallet — the same save and
     // copy as signing with it, and nothing asked it to sign. One naming no
-    // wallet is the account itself, filed under its `acct_…` id.
+    // wallet is the account itself, filed under its `acct_…` id, and one
+    // naming both is how an account that played before it linked a wallet
+    // gets its character back as the wallet (`alias`, `adopt_account_save`).
+    let mut alias = None;
     let (key, proven) = if let Some(pass) = auth.pass {
         let passed = pass_key
             .ok_or(crate::auth::AuthError::NoPassKey)
@@ -3092,7 +3147,10 @@ async fn handshake_task(
             });
         match passed {
             Ok(p) => match p.wallet {
-                Some(addr) => (crate::auth::key_of(&addr), addr),
+                Some(addr) => {
+                    alias = Some(p.account);
+                    (crate::auth::key_of(&addr), addr)
+                }
                 None => (Some(p.account), protocol::Address::GUEST),
             },
             Err(_) => {
@@ -3165,9 +3223,16 @@ async fn handshake_task(
     // on-chain zero; an outage must not become a shard nobody can join.
     // `entitle::Verdict::admits` is the one place that decision lives.
     if entitle.armed() {
-        // An account with no wallet has no copy to check: the one it unlocks
-        // waits on the platform until it links a wallet.
-        if let Some(k) = key.as_ref().filter(|k| !crate::auth::is_account_key(k)) {
+        // An account with no wallet has no copy to check, and a free Elo Pros
+        // login is not a bought copy: it is refused until it links the wallet
+        // that holds one. The door is closed, not an outage, so this is not
+        // the `Unknown` that admits.
+        if key.as_ref().is_some_and(crate::auth::is_account_key) {
+            ShardStats::bump(&stats.refused_ticket);
+            spawn_refusal(connection, send, protocol::REFUSE_TICKET);
+            return;
+        }
+        if let Some(k) = key.as_ref() {
             // The key IS the wallet: `auth::key_of` builds it from
             // `Address::to_hex`, which is ASCII `0x…` lowercase (or, for an
             // unlinked Solana player, `auth::solana_key_of`'s base58). Decoded
@@ -3216,6 +3281,7 @@ async fn handshake_task(
             send,
             recv,
             key,
+            alias,
             address,
             hello,
         })
@@ -3247,6 +3313,7 @@ fn install(
         send,
         recv,
         key,
+        alias,
         address,
         hello,
     } = done;
@@ -3327,6 +3394,7 @@ fn install(
             id,
             save,
             key,
+            alias,
             watch: None,
             said,
             agent: hello.is_agent(),
@@ -3570,6 +3638,7 @@ fn install_spectator(
             id: k.id,
             save: None,
             key: None,
+            alias: None,
             watch: Some(target),
             said: crate::slot::Said::default(),
             agent: false,
@@ -5127,7 +5196,15 @@ fn sim_thread(
                 continue;
             }
             let key = c.key;
-            if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, c.save) {
+            // An account's character, taken by the wallet it linked
+            // (`Connect::alias`), moves before the join looks for it. A
+            // wallet the sim already knows keeps its own, and the account's
+            // record the store handed over is not one to wake it in.
+            let save = match (c.key, c.alias) {
+                (Some(to), Some(from)) if !core.adopt_account(&from, &to) => None,
+                _ => c.save,
+            };
+            if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
                 // Who this is, for everyone's chat and nametags: the proven

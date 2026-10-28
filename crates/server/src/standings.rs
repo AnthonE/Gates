@@ -1134,6 +1134,22 @@ impl Standings {
         Some(row)
     }
 
+    /// `from`'s row is `to`'s, when `to` has none: an Elo Pros account that
+    /// linked a wallet (`ShardCore::adopt_account`). Its minutes and this
+    /// wipe's buys go with it.
+    pub fn rekey(&mut self, from: &str, to: &str) {
+        if self.rows.contains_key(to) || !filable(to) {
+            return;
+        }
+        if let Some(mut row) = self.rows.remove(from) {
+            if row.label == short_label(from) {
+                row.label = short_label(to);
+            }
+            self.rows.insert(to.to_string(), row);
+            self.dirty = true;
+        }
+    }
+
     /// What the platform calls `key` now. Only a row that exists moves.
     pub fn name(&mut self, key: &str, label: &str) {
         let label = clean_label(label);

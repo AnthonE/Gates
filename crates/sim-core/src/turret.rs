@@ -61,8 +61,8 @@
 //! record an entry (and a roster slot); an entry whose record is gone is
 //! freed. Placement, a raid, decay, a pickup and a world load all arrive the
 //! same way, with no hook in any of them. Past [`MAX_TURRETS`] a placed
-//! turret stands inert until one comes down or a dry one gives its entry up
-//! to it ([`reconcile`]), and one hand places at most
+//! turret stands inert until one comes down or a dry or unpowered one gives
+//! its entry up to it ([`reconcile`]), and one hand places at most
 //! `limits::MAX_TURRETS_PER_OWNER`. Not saved, like a sentry's brain: a
 //! restart forgets who it was after.
 //!
@@ -428,17 +428,19 @@ impl Turret {
 /// turret is gone, then give every turret record without one the first free
 /// entry, in store order. Bounded: `MAX_TURRETS` finds and one store walk.
 ///
-/// **A full table gives way to a loaded gun.** First come held an entry
-/// whether or not the gun had a round in it, so turrets parked dry anywhere
-/// on the shard silenced every turret placed after them. Once no entry is
-/// free, a turret with `ammo` in its box takes the first entry whose own box
-/// has none; the dry one stands inert until there is room again. The box
-/// probes run only on that full-table path, and stop once no dry entry is
-/// left.
+/// **A full table gives way to a live gun.** First come held an entry
+/// whether or not the gun could fire, so turrets parked dry or unwired
+/// anywhere on the shard silenced every turret placed after them. Once no
+/// entry is free, a turret that can fire ([`ready`]: a gun, a round for it
+/// and its power) takes the first entry whose own turret cannot; that one
+/// stands inert until there is room again. The probes run only on that
+/// full-table path, and stop once no idle entry is left.
 pub fn reconcile(
     dc: &DeployContent,
     deploys: &Deploys,
     def: &TurretDef,
+    pc: &crate::power::PowerContent,
+    power: &crate::power::Power,
     table: &mut [Turret; MAX_TURRETS],
     slots: &mut [Mob],
 ) {
@@ -454,7 +456,7 @@ pub fn reconcile(
             m.alive = false;
         }
     }
-    let mut dry: Option<[bool; MAX_TURRETS]> = None;
+    let mut idle: Option<[bool; MAX_TURRETS]> = None;
     for d in deploys.entries() {
         if !is_turret(d.row) || table.iter().any(|t| t.holds(d.cx, d.cz, d.level, d.loc)) {
             continue;
@@ -462,21 +464,23 @@ pub fn reconcile(
         let k = match table.iter().position(|t| !t.live) {
             Some(k) => k,
             None => {
-                let dry = dry.get_or_insert_with(|| {
-                    let mut dry = [false; MAX_TURRETS];
-                    for (d, t) in dry.iter_mut().zip(table.iter()) {
-                        *d = t.live
-                            && loaded(def, deploys, box_key(t.cx, t.cz, t.level, t.loc)).is_none();
+                let idle = idle.get_or_insert_with(|| {
+                    let mut idle = [false; MAX_TURRETS];
+                    for (i, t) in idle.iter_mut().zip(table.iter()) {
+                        *i = t.live
+                            && !deploys
+                                .find(t.cx, t.cz, t.level, t.loc)
+                                .is_some_and(|r| ready(def, pc, power, deploys, r));
                     }
-                    dry
+                    idle
                 });
-                let Some(j) = dry.iter().position(|&d| d) else {
+                let Some(j) = idle.iter().position(|&i| i) else {
                     return;
                 };
-                if loaded(def, deploys, box_key(d.cx, d.cz, d.level, d.loc)).is_none() {
+                if !ready(def, pc, power, deploys, d) {
                     continue;
                 }
-                dry[j] = false;
+                idle[j] = false;
                 slots[j].alive = false;
                 j
             }
@@ -527,7 +531,7 @@ pub fn step(
     }
     let cols: &ColIndex = pieces.cols();
     if tick.is_multiple_of(LOOK_TICKS) {
-        reconcile(dc, deploys, def, table, slots);
+        reconcile(dc, deploys, def, pc, power, table, slots);
     }
     // Each entry's record and box, the gun in that box, and whether it has a
     // round for it: a dry gun neither shoots nor jams the guns around it.
@@ -683,6 +687,19 @@ pub fn gun_in(def: &TurretDef, deploys: &Deploys, bi: Option<usize>) -> Option<u
         return None;
     }
     def.live().iter().position(|g| g.item == st.item)
+}
+
+/// Whether the turret `d` can fire: a gun and a round for it in its box,
+/// and its draw met (`power::Power::feeds`).
+fn ready(
+    def: &TurretDef,
+    pc: &crate::power::PowerContent,
+    power: &crate::power::Power,
+    deploys: &Deploys,
+    d: &crate::deploy::DeployRec,
+) -> bool {
+    let key = box_key(d.cx, d.cz, d.level, d.loc);
+    power.feeds(key, pc.def(d.row).draw_rw) && loaded(def, deploys, key).is_some()
 }
 
 /// The gun in the box at `key`, if the box also holds a round for it.
