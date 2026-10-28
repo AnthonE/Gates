@@ -581,21 +581,23 @@ impl Ring {
         }
     }
     /// Lay snow on the island's ground (snow v0): `cover` `0..1`, on what
-    /// faces up from `floor` metres and higher and is as arid as `band`
-    /// (`WeatherNow::snow_arid`) — `GroundSplatParams::snow`'s two live
-    /// slots and `snow_band`'s two. Writes only when one moved, as above.
+    /// faces up from `floor` metres and higher, is as arid as `band`
+    /// (`WeatherNow::snow_arid`) and at least as arctic as `arctic`
+    /// (`WeatherNow::snow_arctic`) — `GroundSplatParams::snow`'s two live
+    /// slots and `snow_band`'s three. Writes only when one moved, as above.
     pub fn set_snow(
         &self,
         materials: &mut Assets<GroundMaterial>,
         cover: f32,
         floor: f32,
         band: Vec2,
+        arctic: f32,
     ) {
         for h in [&self.ground, &self.far_ground].into_iter().flatten() {
             let changed = materials.get(h).is_some_and(|m| {
                 let s = m.extension.params.snow;
                 let b = m.extension.params.snow_band;
-                s.x != cover || s.y != floor || b.x != band.x || b.y != band.y
+                s.x != cover || s.y != floor || b.x != band.x || b.y != band.y || b.w != arctic
             });
             if changed {
                 if let Some(m) = materials.get_mut(h) {
@@ -603,6 +605,7 @@ impl Ring {
                     m.extension.params.snow.y = floor;
                     m.extension.params.snow_band.x = band.x;
                     m.extension.params.snow_band.y = band.y;
+                    m.extension.params.snow_band.w = arctic;
                 }
             }
         }

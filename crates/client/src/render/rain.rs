@@ -297,9 +297,10 @@ pub fn drive(
     );
     ring.set_fel_glow(&mut ground, lo + (hi - lo) * day);
     // The snow the same way, its floor in whole metres and its band of
-    // aridity widened to steps of 1/32.
+    // aridity and its least arctic widened to steps of 1/32.
     let snow = (weather.ground_snow * 64.0).round() / 64.0;
     let arid = weather.snow_arid;
     let band = Vec2::new((arid.x * 32.0).floor(), (arid.y * 32.0).ceil()) / 32.0;
-    ring.set_snow(&mut ground, snow, weather.snow_floor.round(), band);
+    let arctic = (weather.snow_arctic * 32.0).floor() / 32.0;
+    ring.set_snow(&mut ground, snow, weather.snow_floor.round(), band, arctic);
 }

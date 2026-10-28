@@ -73,6 +73,8 @@ pub struct SkinPoint {
     pub fade: f32,
     /// The ground material's value multiplier here.
     pub value: f32,
+    /// Whether turf grows here: in the green band and off the snow.
+    pub green: bool,
 }
 
 /// The skin's lattice over one cell, [`face::SKIN_STEP_M`] apart and one
@@ -201,11 +203,15 @@ pub fn shell(
             let shade = VALUE_RELIEF * sp.local.clamp(-1.0, 1.0)
                 + FACET_SHADE
                     * (facet(Vec3::new(x, sp.drawn, z) / face::FACET_M, key ^ 0x7a1e) * 2.0 - 1.0);
+            let green = sp.y > terrain::BEACH_MAX_H + 1.5
+                && sp.y < terrain::TREELINE_H
+                && terrain::cold_memo(&mut lat, seed, x, z, sp.y) < terrain::COLD_BIOME_AT;
             pts.push(SkinPoint {
                 p: Vec3::new(x, sp.y, z),
                 out: sp.out,
                 fade: sp.fade,
                 value: base * (1.0 + shade * sp.fade),
+                green,
             });
         }
     }
@@ -256,7 +262,6 @@ fn mesh(soup: &mut RockSoup, tufts: &mut Soup, shell: &Shell, key: u32) {
             (j > 0 && k > 0).then(|| f(j - 1, k - 1, 1)),
         ]
     };
-    let green = |y: f32| y > terrain::BEACH_MAX_H + 1.5 && y < terrain::TREELINE_H;
     // Per lattice point, the vertices made so far, by the set of triangles
     // their normal took.
     let mut made: Vec<[(u8, u32, f32); 6]> = vec![[(0, u32::MAX, 0.0); 6]; v * v];
@@ -283,7 +288,7 @@ fn mesh(soup: &mut RockSoup, tufts: &mut Soup, shell: &Shell, key: u32) {
         // lit by less of it.
         let value = p.value * (1.0 - p.fade * SKY_DARK * (0.5 - n.y).max(0.0));
         // Turf on what faces up, in patches.
-        let moss = if green(p.p.y) {
+        let moss = if p.green {
             let up = ((n.y - SHELF_UP) / 0.2).clamp(0.0, 1.0);
             let patch = (facet(p.p / 3.0, key ^ 0x6a55) * 2.0 - 0.3).clamp(0.0, 1.0);
             up * up * (3.0 - 2.0 * up) * patch * p.fade

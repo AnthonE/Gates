@@ -118,7 +118,9 @@ pub fn landmark_meshes(m: &Landmark) -> Vec<(Surface, Mesh)> {
 /// One landmark's rock parts, in world space.
 pub fn landmark_rocks(seed: u64, m: &Landmark, soup: &mut RockSoup) {
     let dir = sim_core::yaw_dir((m.yaw as u16) << 8);
-    let moss = if m.y < terrain::TREELINE_H { 1.0 } else { 0.0 };
+    let green =
+        m.y < terrain::TREELINE_H && terrain::cold(seed, m.x, m.z, m.y) < terrain::COLD_BIOME_AT;
+    let moss = if green { 1.0 } else { 0.0 };
     for (i, part) in landmark::parts(m.kind).iter().enumerate() {
         if part.mat != Mat::Rock {
             continue;

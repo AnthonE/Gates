@@ -125,6 +125,12 @@ pub struct WeatherNow {
     /// high, is surely as cold. A dawn storm that snows on the desert
     /// leaves the green south bare.
     pub snow_arid: Vec2,
+    /// The least arctic ground (`terrain::arctic`) the eye has seen snow
+    /// fall on since the ground was last bare: the air's third axis, and
+    /// the arctic is colder the deeper in, so the snow lies only on ground
+    /// at least that arctic. A storm that snows on the arctic leaves the
+    /// green middle, as arid and as high, bare.
+    pub snow_arctic: f32,
     /// How fast [`Self::drift`] moves, m/s: what the ground's cloud
     /// shadows run on between the writes that re-anchor them
     /// (`cloud_shadow.rs`). Zero on a pinned sky, which holds still.
@@ -255,6 +261,9 @@ pub const NO_SNOW_FLOOR: f32 = 10_000.0;
 /// all the ground there is.
 pub const NO_SNOW_ARID: Vec2 = Vec2::new(2.0, -1.0);
 pub const ALL_ARID: Vec2 = Vec2::new(-1.0, 2.0);
+/// [`WeatherNow::snow_arctic`] with no snow seen (no ground), and over all.
+pub const NO_SNOW_ARCTIC: f32 = 2.0;
+pub const ALL_ARCTIC: f32 = -1.0;
 // ── Dust ──────────────────────────────────────────────────────────────────
 //
 // Rust's Dust preset is beige fog over the whole map, and the schedule here
@@ -439,6 +448,7 @@ pub fn update(
         now.ground_snow = snow;
         now.snow_floor = -NO_SNOW_FLOOR;
         now.snow_arid = ALL_ARID;
+        now.snow_arctic = ALL_ARCTIC;
         now.flash = 0.0;
     } else {
         // The deck drifts downwind: a breeze at clear, a gale in a storm.
@@ -474,12 +484,15 @@ pub fn update(
         if now.ground_snow < 0.01 {
             now.snow_floor = NO_SNOW_FLOOR;
             now.snow_arid = NO_SNOW_ARID;
+            now.snow_arctic = NO_SNOW_ARCTIC;
         }
         if now.rain * now.snow > 0.05 {
             let feet = eye.pos.y - eye.height - SNOW_FLOOR_SLACK_M;
             now.snow_floor = now.snow_floor.min(feet);
             let arid = sim_core::terrain::aridity(world.seed, eye.pos.x, eye.pos.z);
             now.snow_arid = Vec2::new(now.snow_arid.x.min(arid), now.snow_arid.y.max(arid));
+            let arctic = sim_core::terrain::arctic(world.seed, eye.pos.x, eye.pos.z);
+            now.snow_arctic = now.snow_arctic.min(arctic);
         }
 
         // Lightning: this second's bolt and the last one's, since a bolt

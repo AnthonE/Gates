@@ -659,6 +659,17 @@ fn a_species_region_is_dominated_and_not_pure() {
                 if desert {
                     continue;
                 }
+                // Under the snow every tree is a conifer, whatever the paint.
+                if terrain::biome_at(seed, s.y, s.x, s.z) == terrain::Biome::Snow {
+                    assert_eq!(
+                        s.species,
+                        terrain::CONIFER_SPECIES,
+                        "seed {seed}: a broadleaf at ({}, {}) stands in the snow",
+                        s.x,
+                        s.z
+                    );
+                    continue;
+                }
                 seen[s.species as usize] += 1;
                 let share = terrain::species_share(seed, s.x, s.z);
                 if share < SPECIES_RAIL_LO {

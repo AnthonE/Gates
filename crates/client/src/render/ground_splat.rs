@@ -631,7 +631,8 @@ pub struct GroundSplatParams {
     /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
     pub snow: Vec4,
     /// x..y the band of aridity it lies on (`WeatherNow::snow_arid`), live;
-    /// z = [`SNOW_ARID_FADE`]; w reserved and zero.
+    /// z = [`SNOW_ARID_FADE`]; w the least cold it lies on
+    /// (`WeatherNow::snow_arctic`), live.
     pub snow_band: Vec4,
     /// xyz = [`FEL_ASH_ALBEDO`], w = [`FEL_CRACK_SHARE`].
     pub fel_ash: Vec4,
@@ -779,7 +780,7 @@ impl GroundSplatParams {
             snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
             snow_band: super::weather::NO_SNOW_ARID
                 .extend(SNOW_ARID_FADE)
-                .extend(0.0),
+                .extend(super::weather::NO_SNOW_ARCTIC),
             fel_ash: Vec4::new(
                 FEL_ASH_ALBEDO[0],
                 FEL_ASH_ALBEDO[1],

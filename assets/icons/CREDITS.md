@@ -96,6 +96,7 @@ game's own models, ours as well.
 | `hearth.png` | `delapouite/fireplace` |
 | `hemp_seed.png` | `delapouite/sesame` |
 | `hide_boots.png` | `delapouite/fur-boot` |
+| `hide_hood.png` | `lorc/hood` |
 | `hide_pants.png` | `delapouite/leg-armor` |
 | `hide_poncho.png` | `delapouite/poncho` |
 | `hide_vest.png` | `lorc/leather-vest` |
