@@ -17,7 +17,12 @@
 //! 3. **Wall tracking.** The crosshair stays on a player who is behind
 //!    terrain or a built piece while that player *moves* and the aim
 //!    *follows*. Holding an angle on where somebody ducked out of sight is
-//!    normal; following them through a hill is ESP.
+//!    normal, and so is following them on past it the way they were going;
+//!    following them through a hill long after, somewhere the last sight
+//!    of them would not put them, is ESP.
+//!
+//! A hit on a body that was already lying down (asleep or wounded) counts
+//! toward neither rate: it holds still for a head and needs no flick.
 //!
 //! **Evidence, never a verdict.** A check flags; it does not kick or ban.
 //! Bans are the operator's (`CLAUDE.md`), and every threshold here is set
@@ -76,6 +81,12 @@ pub const WALL_TRACK_TICKS: u32 = 2 * TICK_HZ;
 pub const WALL_MOVE_M: f32 = 4.0;
 /// …and the aim turns at least this much following it.
 pub const WALL_SWEEP_DEG: f32 = 8.0;
+/// A body out of sight is where a fight around cover expects it for this
+/// long: held, or pre-aimed at its pop-out. No look on it counts until then.
+pub const WALL_GRACE_TICKS: u64 = 2 * TICK_HZ as u64;
+/// A look counts only with the body at least this far from where the
+/// watcher's last sight of it, carried on at its speed then, puts it.
+pub const WALL_NEAR_M: f32 = 5.0;
 /// Wall tracks in a window before the check flags.
 pub const WALL_MIN: u32 = 3;
 /// Sight lines the wall check may cast per look.
@@ -154,12 +165,41 @@ struct Slot {
     walls: u32,
     /// Checks already flagged this window.
     flagged: u8,
+    /// Asleep or wounded at the last tick's end: what a hit this tick found.
+    down: bool,
     track: Track,
+    /// The last body this watcher had in its crosshair in the open.
+    open: Sighting,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Sighting {
+    target: u32,
+    tick: u64,
+    at: V3,
+    /// Metres per tick, from the look before.
+    vel: V3,
+}
+
+impl Sighting {
+    /// Whether a body at `at` on `tick` is somewhere this sight of it would
+    /// not put it: another body, or off its line by [`WALL_NEAR_M`].
+    fn surprised(&self, target: u32, at: V3, tick: u64) -> bool {
+        let dt = tick.saturating_sub(self.tick) as f32;
+        let guess = (
+            self.at.0 + self.vel.0 * dt,
+            self.at.1 + self.vel.1 * dt,
+            self.at.2 + self.vel.2 * dt,
+        );
+        self.target != target || len(sub(at, guess)) >= WALL_NEAR_M
+    }
 }
 
 #[derive(Clone, Copy, Default)]
 struct Track {
     target: u32,
+    /// The look the body was first hidden on.
+    hid: u64,
     /// The look this track was last grown on.
     seen: u64,
     ticks: u32,
@@ -332,7 +372,7 @@ impl Checks {
                     else {
                         continue;
                     };
-                    if w == v || exempt(ev.a) || mates(ev.a, ev.b) {
+                    if w == v || exempt(ev.a) || mates(ev.a, ev.b) || self.slots[v].down {
                         continue;
                     }
                     let range = len(sub(feet(&players[v]), feet(&players[w])));
@@ -358,6 +398,9 @@ impl Checks {
                 }
                 _ => {}
             }
+        }
+        for (s, p) in self.slots.iter_mut().zip(players.iter()) {
+            s.down = p.sleeping || p.wounded;
         }
 
         if tick.is_multiple_of(WALL_CADENCE) {
@@ -450,6 +493,18 @@ impl Checks {
             let s = &mut self.slots[w];
             if !unseen {
                 s.track = Track::default();
+                let o = &mut s.open;
+                let dt = tick - o.tick;
+                o.vel = if o.target == b.id && (1..=WALL_GAP_TICKS).contains(&dt) {
+                    let d = sub(foot, o.at);
+                    let dt = dt as f32;
+                    (d.0 / dt, d.1 / dt, d.2 / dt)
+                } else {
+                    (0.0, 0.0, 0.0)
+                };
+                o.target = b.id;
+                o.tick = tick;
+                o.at = foot;
                 continue;
             }
             let t = &mut s.track;
@@ -457,6 +512,7 @@ impl Checks {
             if t.target != b.id || tick - t.seen > WALL_GAP_TICKS {
                 *t = Track {
                     target: b.id,
+                    hid: tick,
                     seen: tick,
                     ticks: 0,
                     moved: 0.0,
@@ -466,12 +522,19 @@ impl Checks {
                 };
                 continue;
             }
-            t.ticks += (tick - t.seen) as u32;
+            let (dt, step, turn) = (tick - t.seen, len(sub(foot, t.at)), angle_deg(aim, t.aim));
             t.seen = tick;
-            t.moved += len(sub(foot, t.at));
-            t.swept += angle_deg(aim, t.aim);
             t.at = foot;
             t.aim = aim;
+            // Holding or pre-aiming where a body went is a fight around
+            // cover: only a look past the grace, on a body somewhere the
+            // last sight of it would not put it, grows the track.
+            if tick - t.hid < WALL_GRACE_TICKS || !s.open.surprised(b.id, foot, tick) {
+                continue;
+            }
+            t.ticks += dt as u32;
+            t.moved += step;
+            t.swept += turn;
             if t.ticks >= WALL_TRACK_TICKS {
                 if t.moved >= WALL_MOVE_M && t.swept >= WALL_SWEEP_DEG {
                     s.walls += 1;
@@ -644,7 +707,8 @@ mod tests {
             let mut ps = field();
             ps[0] = player(1, 0.0, 0.0);
             let mut flags = Vec::new();
-            let looks = (WALL_TRACK_TICKS as u64 / WALL_CADENCE + 1) * (WALL_MIN as u64 + 1);
+            let looks =
+                (WALL_GRACE_TICKS + WALL_TRACK_TICKS as u64 * (WALL_MIN as u64 + 1)) / WALL_CADENCE;
             for k in 0..looks {
                 let x = if moves { -15.0 + k as f32 * 0.3 } else { 0.0 };
                 ps[1] = player(2, x, 30.0);
@@ -657,6 +721,83 @@ mod tests {
                 walls, flags_want,
                 "hidden {hidden} moves {moves}: {flags:?}"
             );
+        }
+    }
+
+    /// A fight around cover: the body runs on behind a wall the way it was
+    /// going and the aim carries on with it to its pop-out, again and again,
+    /// and that is no track. Turning back once out of sight, past the grace,
+    /// and being followed there still is.
+    #[test]
+    fn following_a_body_on_past_cover_is_not_a_wall_track() {
+        for (turns, flags_want) in [(false, 0), (true, 1)] {
+            let mut c = Checks::new();
+            let mut ps = field();
+            ps[0] = player(1, 0.0, 0.0);
+            ps[1] = player(2, -10.0, 30.0);
+            let mut flags = Vec::new();
+            let mut tick = 0;
+            // Quanta per look: 0.3 m, a walk.
+            let mut dir = 10;
+            for _ in 0..6 {
+                for look in 0..120 {
+                    if turns && look == 40 {
+                        dir = -dir;
+                    }
+                    ps[1].body.qx += dir;
+                    let chest = add_y(feet(&ps[1]), CHEST_M);
+                    aim_at(&mut ps[0], chest);
+                    flags.extend(run(&mut c, tick, &ps, &[], look >= 10));
+                    tick += WALL_CADENCE;
+                }
+                dir = -dir;
+            }
+            let walls = flags.iter().filter(|f| f.check == Check::Wall).count();
+            assert_eq!(walls, flags_want, "turns {turns}: {flags:?}");
+        }
+    }
+
+    /// A body already lying down, asleep or wounded, holds still for a head
+    /// and needs no flick: snapped head hits on it count toward neither
+    /// rate. The hit that put it down does.
+    #[test]
+    fn hits_on_lying_bodies_count_toward_no_rate() {
+        for (sleeping, wounded, flagged) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let mut c = Checks::new();
+            let mut ps = field();
+            ps[0] = player(1, 0.0, 0.0);
+            ps[1] = player(2, 0.0, 40.0);
+            ps[1].sleeping = sleeping;
+            ps[1].wounded = wounded;
+            let target = add_y(feet(&ps[1]), CHEST_M);
+            let mut flags = run(&mut c, 1, &ps, &[], false);
+            for i in 0..40u64 {
+                let t = 10 + i * 10;
+                aim_at(&mut ps[0], (40.0, 1.5, 0.0));
+                flags.extend(run(&mut c, t - SNAP_TICKS, &ps, &[], false));
+                aim_at(&mut ps[0], target);
+                // The knock: down only from the hit's own tick.
+                ps[1].wounded |= flagged;
+                let evs = [
+                    ev(EV_SHOT, 1, 0, 0),
+                    ev(EV_HIT, 1, 2, hit_c(Part::Head, 30)),
+                ];
+                flags.extend(run(&mut c, t, &ps, &evs, false));
+                ps[1].wounded = wounded;
+            }
+            let checks: Vec<_> = flags.iter().map(|f| f.check).collect();
+            if flagged {
+                assert!(
+                    checks.contains(&Check::Head) && checks.contains(&Check::Snap),
+                    "{flags:?}"
+                );
+            } else {
+                assert!(checks.is_empty(), "{flags:?}");
+            }
         }
     }
 

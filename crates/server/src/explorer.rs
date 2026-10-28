@@ -6200,10 +6200,20 @@ impl Survivor {
     /// Any recycler standing will do: the one it put down is forgotten with
     /// the session, and taking it for gone made it build another. A
     /// research table is THE GATE's, once in sight: a table in somebody's
-    /// base is behind their walls, and what is in it is theirs.
+    /// base is behind their walls, and what is in it is theirs. A fire in
+    /// the Verdigris is no place to warm up and mend (`oven::verdigris`).
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
-            Work::Cook | Work::Warm => (self.fire, oven::KEEP_M),
+            Work::Cook => (self.fire, oven::KEEP_M),
+            Work::Warm => {
+                let green = |&(cx, cz): &(u16, u16)| {
+                    let (mx, mz) = cell_center(cx, cz);
+                    self.haven
+                        .as_ref()
+                        .is_some_and(|h| oven::verdigris(core, h, mx, mz))
+                };
+                (self.fire.filter(|c| !green(c)), oven::KEEP_M)
+            }
             Work::Shop => return self.shop_machine(core),
             Work::Research { .. } => (oven::town_table(core), f32::MAX),
             Work::Recycle => (self.recycler, oven::SEEN_NEAR_M),
@@ -7236,6 +7246,7 @@ impl Survivor {
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             // Mid-warm-up the wood is in the fire rather than the pack.
             let warming = self.goal() == Some(Goal::Warm) && core.cont_kind == CONT_BOX;
+            let fire = self.device_near(core, Work::Warm, x, z);
             self.memory.warm = oven::wants_warmth(core)
                 && (warming
                     || oven::can_tend(core, &self.book, Work::Warm, fire.is_some(), &Keep::NONE))
@@ -7741,9 +7752,9 @@ impl Survivor {
         while let Some((refused, ..)) = core.pop_vend() {
             self.trade_job.on_vend(refused);
         }
-        while let Some((_, op, target)) = core.pop_arc_refused() {
+        while let Some((code, op, target)) = core.pop_arc_refused() {
             self.stats.refusals += 1;
-            self.work_job.on_refused();
+            self.work_job.on_refused(code, op, target);
             self.read_job.on_refused(op, target);
             self.solve_job.on_refused(op, target);
         }

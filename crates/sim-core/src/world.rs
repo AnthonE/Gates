@@ -9452,6 +9452,7 @@ impl World {
         // solve (`power.rs`).
         crate::power::sweep(
             tick,
+            crate::weather::day_tick(tick, &self.env),
             &self.deploy,
             &self.power_def,
             &mut self.deploys,

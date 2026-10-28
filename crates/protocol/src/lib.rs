@@ -1828,7 +1828,8 @@ pub const REFUSE_FULL: u8 = 1;
 /// the player-facing sentence is the same either way — sign in through the
 /// launcher. `server` distinguishes them in its own counters.
 pub const REFUSE_AUTH: u8 = 2;
-/// This shard checks copies and the chain says this wallet holds none.
+/// This shard checks copies and the chain says this wallet holds none, or
+/// the player came on an Elo Pros account with no wallet linked at all.
 ///
 /// **A separate code from [`REFUSE_AUTH`] on purpose, and it is the opposite
 /// call from the one that merged the two auth cases.** There, telling a
@@ -1952,8 +1953,8 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
         REFUSE_FULL => "this shard is full",
         REFUSE_AUTH => "this shard needs a signed identity — sign in through the elo launcher",
         REFUSE_TICKET => {
-            "this shard checks copies and this wallet holds none — buy a copy on elo, \
-             or play a community shard"
+            "this shard checks copies and you hold none — buy a copy on elo and link \
+             its wallet, or play a community shard"
         }
         REFUSE_BUILD => "this shard runs a newer release — update the game",
         REFUSE_ADMIN => "an admin removed you from this shard",

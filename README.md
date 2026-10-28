@@ -77,6 +77,31 @@ What CI holds you to, in short (`CLAUDE.md` has each one):
 - A change that needs a wipe (worldgen, content layout, a save format, the
   seed) targets `next-wipe`, not `main`.
 
+## Two branches: `main` and `next-wipe`
+
+- **`main`** is what the live shard runs. Anything on it has to load the
+  current world, so it can ship any day as a restart.
+- **`next-wipe`** holds the changes that only work on a fresh world: new
+  worldgen, a moved content layout, a new save format. They can't ship until
+  the world is wiped, so they wait here.
+
+`python3 ci/deploy_kind.py` tells you which branch a change belongs on: WIPE
+goes to `next-wipe`, everything else to `main`. A WIPE pull request into
+`main` is red on purpose.
+
+To try `next-wipe` before the wipe, check it out and run it locally (see
+[Build and run](#build-and-run)). It starts its own fresh world, so nothing
+live is touched.
+
+On wipe day:
+
+1. Merge the open `main` and `next-wipe` pull requests you want in.
+2. Merge `main` into `next-wipe`, run `ci/quick.sh`, and push.
+3. Merge `next-wipe` into `main` (the one pull request into `main` that may
+   carry a wipe).
+4. On the shard box: `ci/release.sh --go --wipe`.
+5. Cut a fresh `next-wipe` from the new `main` for the next wipe's work.
+
 ## The repo
 
 | crate | what |
