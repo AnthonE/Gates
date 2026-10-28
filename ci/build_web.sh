@@ -122,6 +122,18 @@ appv="$(sha256sum "$out/app.js" | cut -c1-12)"
 sed -i "s|src=\"app.js\"|src=\"app.js?v=$appv\"|" "$out/index.html"
 [ "$(grep -c 'app.js?v=' "$out/index.html" || true)" = 1 ] || {
   echo "index.html: expected exactly one src=\"app.js\" to version" >&2; exit 1; }
+# The clip page (F9 in the world: `clip.html`, `clip.js`, `mp4.js`), its
+# scripts by their own hashes for app.js's reason. mp4.js is imported by
+# clip.js, so it is versioned inside clip.js before clip.js is hashed.
+cp crates/client-web/web/clip.html crates/client-web/web/clip.js \
+  crates/client-web/web/clip-fit.js crates/client-web/web/mp4.js "$out/"
+mp4v="$(sha256sum "$out/mp4.js" | cut -c1-12)"
+sed -i "s|\"./mp4.js\"|\"./mp4.js?v=$mp4v\"|" "$out/clip.js"
+clipv="$(sha256sum "$out/clip.js" | cut -c1-12)"
+fitv="$(sha256sum "$out/clip-fit.js" | cut -c1-12)"
+sed -i "s|src=\"clip.js\"|src=\"clip.js?v=$clipv\"|; s|src=\"clip-fit.js\"|src=\"clip-fit.js?v=$fitv\"|" "$out/clip.html"
+[ "$(grep -c '?v=' "$out/clip.html" || true)" = 2 ] && grep -q 'mp4.js?v=' "$out/clip.js" || {
+  echo "clip.html/clip.js: expected their three scripts to version" >&2; exit 1; }
 # The image an X post shows for the page's link (`twitter:image` in index.html):
 # a crop of `assets/menu/dusk.jpg`, our own island, with the wordmark on it.
 cp crates/client-web/web/card.jpg "$out/"

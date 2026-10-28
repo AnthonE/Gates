@@ -410,6 +410,39 @@
   @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
   #handoff p { margin: 0; color: var(--dim); }
 
+  /* ── the clip (F9 in the world): `openClip` in app.js ──────────────────────
+     Over the game, which keeps running under it. The video is drawn in a
+     frame of its own (`clip.html`), shrunk into the left box. */
+  #clip { position: fixed; inset: 0; z-index: 6; display: grid; place-items: center;
+          background: rgba(10,9,8,.72); backdrop-filter: blur(3px); }
+  #clip[hidden] { display: none; }
+  #clip .clip-box { width: min(940px, calc(100vw - 2 * var(--gut))); max-height: calc(100vh - 32px); overflow: auto;
+                    background: var(--panel); border: 1px solid var(--rule-hi); padding: 18px 20px 20px; }
+  #clip header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  #clip h2 { margin: 0; font: 700 22px/1.1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--title); }
+  #clip .clip-body { display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: start; }
+  #clip .clip-view { width: min(340px, 42vw); aspect-ratio: 9 / 16; background: #0e0c0a; border: 1px solid var(--rule); }
+  #clip .clip-view.wide { width: min(480px, 52vw); aspect-ratio: 16 / 9; }
+  #clip .clip-view iframe, #clip .clip-view video { display: block; width: 100%; height: 100%; border: 0; background: #0e0c0a; }
+  #clip .clip-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  #clip fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  #clip legend, #clip label.field { font: 700 11px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  #clip label.field { display: flex; flex-direction: column; gap: 6px; }
+  #clip input[type=text] { height: 34px; padding: 0 10px; background: var(--well); border: 1px solid var(--rule); color: var(--text);
+                           font: 400 14px/1 var(--sans); letter-spacing: normal; text-transform: none; }
+  #clip .chip { position: relative; }
+  #clip .chip input { position: absolute; opacity: 0; }
+  #clip .chip span { display: inline-block; padding: 7px 11px; border: 1px solid var(--rule); background: var(--row); font-size: 13px; cursor: pointer; }
+  #clip .chip input:checked + span { border-color: var(--mark); background: var(--card); }
+  #clip .chip input:focus-visible + span { outline: 2px solid var(--accent-hi); }
+  #clip .check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+  #clip .bar { height: 6px; background: #2b2723; overflow: hidden; }
+  #clip .bar i { display: block; height: 100%; width: 0; background: var(--go); transition: width .2s linear; }
+  #clip .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  #clip p { margin: 0; color: var(--dim); }
+  #clip p.bad { color: var(--bad); }
+  @media (max-width: 640px) { #clip .clip-body { grid-template-columns: 1fr; } #clip .clip-view { width: 100%; max-width: 320px; } }
+
   /* The canvas is fixed at the page's origin and STRETCHED over the viewport
      by a transform the renderer sets (`client::render::web`): winit sizes its
      CSS box at the backing store over devicePixelRatio, and that box is what
@@ -756,6 +789,43 @@
     <span class="bar"><i></i></span>
   </div>
 </div>
+
+<!-- The clip: F9 in the world hands the last half minute here
+     (`window.gatesClip`, app.js). -->
+<section id="clip" hidden role="dialog" aria-modal="true" aria-labelledby="clip-title">
+  <div class="clip-box">
+    <header>
+      <h2 id="clip-title">Your clip</h2>
+      <button class="linkish" id="clip-close" type="button">Close</button>
+    </header>
+    <div class="clip-body">
+      <div class="clip-view" id="clip-view"></div>
+      <div class="clip-side">
+        <p id="clip-held">The last seconds you played, made into a video on this computer.</p>
+        <fieldset id="clip-styles">
+          <legend>Camera</legend>
+          <label class="chip"><input type="radio" name="clip-style" value="pov" checked><span>Your eyes · 15 s</span></label>
+          <label class="chip"><input type="radio" name="clip-style" value="follow"><span>Behind you · 15 s</span></label>
+          <label class="chip"><input type="radio" name="clip-style" value="mix"><span>Both · 16 s</span></label>
+          <label class="chip"><input type="radio" name="clip-style" value="long"><span>Your eyes · 30 s</span></label>
+          <label class="chip"><input type="radio" name="clip-style" value="wide"><span>Wide 16:9 · 30 s</span></label>
+        </fieldset>
+        <label class="field">A line over the first seconds
+          <input type="text" id="clip-line" maxlength="60" placeholder="optional" autocomplete="off"></label>
+        <label class="field">Your link on the end card (elopros.com/r/…)
+          <input type="text" id="clip-ref" maxlength="42" placeholder="optional" autocomplete="off"></label>
+        <label class="check"><input type="checkbox" id="clip-tag" checked> The Gates tag and end card</label>
+        <div class="row"><button class="btn blue" id="clip-go" type="button">Make the video</button></div>
+        <span class="bar"><i id="clip-bar"></i></span>
+        <p id="clip-status"></p>
+        <div id="clip-done" class="row" hidden>
+          <a class="btn blue" id="clip-save" download>Save the video</a>
+          <button class="btn" id="clip-share" type="button" hidden>Share</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <!-- **In the document before `play()` is called, always.** `bevy_winit` does
      `document.query_selector` and PANICS with "Cannot find element" if it

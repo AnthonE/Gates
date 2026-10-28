@@ -69,8 +69,8 @@ pub mod cliffs;
 pub mod cloud_shadow;
 pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
-// it renders. Native only — it pipes frames to an `ffmpeg` process.
-#[cfg(not(target_arch = "wasm32"))]
+// it renders — into `ffmpeg` on the desktop, into the page's encoder in a tab
+// (a player's clip, `crate::clip`).
 pub mod film;
 pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
@@ -254,6 +254,8 @@ pub mod skin;
 // A spectator seat's label (wire v73): whose view this is. Everything else a
 // watcher sees is the ordinary HUD reading a core that drives nothing.
 pub mod spectate;
+// The clip key: `F9` hands the last half minute to a film (`crate::clip`).
+pub mod clip;
 // The screenshot key. Distinct from `capture`, which is the probe harness:
 // this is a player pressing F12 at a moment they chose, so it settles
 // nothing and never touches the view. `crate::shot` is the arithmetic half.
@@ -648,13 +650,11 @@ impl Plugin for GatesRenderPlugin {
         // Copied out so the `run_if` closures below capture a `bool` rather
         // than borrowing `self`, which does not outlive `build`.
         let plate = self.start.no_hud;
-        // **A film run is one `bin/gates.rs` inserted a `Film` into.** Read
-        // off the world rather than a plugin field, so the builders that never
-        // film (the browser, `jev-watch`) do not have to say so.
-        #[cfg(not(target_arch = "wasm32"))]
+        // **A film run is one `bin/gates.rs` (or a page's `Gates::film`)
+        // inserted a `Film` into.** Read off the world rather than a plugin
+        // field, so the builders that never film (`jev-watch`) do not have to
+        // say so.
         let filming = app.world().contains_resource::<film::Film>();
-        #[cfg(target_arch = "wasm32")]
-        let filming = false;
         // **The probe's hour is pinned; a player's is the server's.** Same
         // rule as the windowed pin two fields down — a capture run takes the
         // defaults wholesale except where the box would otherwise decide what
@@ -994,8 +994,17 @@ impl Plugin for GatesRenderPlugin {
         // to 2026-09-16**, a system whose whole job was to empty the command
         // buffer because nothing on this target read it. The browser was
         // silent for two days with every gate green.
+        // A clip in a page renders its mix a frame at a time, as a desktop
+        // film does; there is no worklet to post to.
         #[cfg(target_arch = "wasm32")]
-        {
+        if filming {
+            app.world_mut().resource_mut::<audio::Engine>().out_rate = film::FILM_RATE;
+            app.world_mut().resource_mut::<audio::Sound>().film = true;
+            app.insert_non_send_resource(film::Mix::new());
+            app.add_systems(PostUpdate, film::flush);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if !filming {
             let web = audio_web::open(app);
             // Non-send: a `MessagePort` and a `Closure` are `JsValue`s, which
             // are neither `Send` nor `Sync` (see `Web`).
@@ -1057,9 +1066,10 @@ impl Plugin for GatesRenderPlugin {
         )
         // The surface under WebGL2's cap, following the viewport
         // (`web.rs`'s header). Every frame, a DOM read; a write on a change.
+        // Not for a film, whose canvas is the shot list's size.
         .add_systems(
             Update,
-            web::follow_viewport.run_if(|| cfg!(target_arch = "wasm32")),
+            web::follow_viewport.run_if(move || cfg!(target_arch = "wasm32") && !filming),
         )
         // What the browser's one heap holds, every couple of seconds
         // (`web::heap_report`): the line to read when a tab dies silently.
@@ -2369,6 +2379,10 @@ impl Plugin for GatesRenderPlugin {
             // has to remember the rules for.
             app.init_resource::<shot::Shots>()
                 .add_systems(Update, shot::take);
+            // ---- the clip key ----------------------------------------
+            // Beside the screenshot's, for its reasons: a player's key, no
+            // state gate beyond having a world to clip.
+            app.add_systems(Update, clip::take);
 
             // ---- the report key --------------------------------------
             // **Not on a capture run either**, and for the screenshot key's
@@ -2423,7 +2437,6 @@ impl Plugin for GatesRenderPlugin {
         // The film: set the world's speed before `Time` advances, feed the
         // tape ahead of the pump, aim after the pump put the eye where the
         // recorder stood, and end the frame after the mix is flushed.
-        #[cfg(not(target_arch = "wasm32"))]
         if filming {
             app.insert_resource(input::Look {
                 frozen: true,
@@ -2446,10 +2459,19 @@ impl Plugin for GatesRenderPlugin {
                     film::dark_boot,
                 )
                     .run_if(world_running),
-            )
-            .add_systems(
+            );
+            #[cfg(not(target_arch = "wasm32"))]
+            app.add_systems(
                 PostUpdate,
                 film::roll.after(audio_out::flush).run_if(world_running),
+            );
+            #[cfg(target_arch = "wasm32")]
+            app.add_systems(
+                PostUpdate,
+                (
+                    film::roll.after(film::flush).run_if(world_running),
+                    film::post.after(film::roll),
+                ),
             );
         }
     }

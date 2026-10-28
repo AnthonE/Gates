@@ -27,10 +27,19 @@
 //! Bevy still only draws: the replay feeds the session's lanes and the
 //! ordinary `pump` drains them, so the world on screen is exactly what a live
 //! client would have drawn. The one thing this file writes is the eye.
+//!
+//! **In a page** (`client-web`'s `Gates::film`) the same film draws a
+//! player's clip (`crate::clip`) on their own GPU. There is no `ffmpeg` and no
+//! file: each shot's frames, in order and as RGBA, and its mix go to the
+//! page's sink ([`post`]), which encodes them with WebCodecs. WebGL2 has no
+//! motion blur, depth of field or fringe, so a browser film is graded but not
+//! lensed.
 
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -166,10 +175,13 @@ fn default_hold() -> u32 {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
-    /// The tape (`bin/record.rs`).
+    /// The tape (`bin/record.rs`). Unset for a clip, whose tape is handed
+    /// over with the script.
+    #[serde(default)]
     pub recording: PathBuf,
     /// Where the shots go: `NN-name.mp4` and `NN-name.wav`, or `NN-name.png`
-    /// for a still.
+    /// for a still. Unset in a page, which hands them to its sink.
+    #[serde(default)]
     pub out: PathBuf,
     /// The size of what is written.
     #[serde(default = "default_width")]
@@ -199,15 +211,24 @@ pub struct Script {
     #[serde(default)]
     pub budget: Budget,
     pub shots: Vec<Shot>,
+    /// The window to draw in, when it is not the video's size: a clip on a
+    /// desktop whose screen is shorter than 1920 (`gates --clip
+    /// --max-height`) is drawn smaller and scaled up by the encoder.
+    #[serde(skip)]
+    pub draw: Option<(u32, u32)>,
 }
 
 impl Script {
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut s: Script =
-            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// A shot list from its JSON.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut s: Script = serde_json::from_str(text).map_err(|e| e.to_string())?;
         if s.shots.is_empty() {
-            return Err(format!("{}: no shots", path.display()));
+            return Err("no shots".into());
         }
         if s.fps == 0 || !FILM_RATE.is_multiple_of(s.fps) {
             return Err(format!(
@@ -226,12 +247,39 @@ impl Script {
         Ok(s)
     }
 
+    /// Put every shot whose `at` is negative — seconds before the tape's
+    /// end, the way a clip's list is written — on the tape, no earlier than
+    /// the boot and the first settle leave room for.
+    pub fn anchor(&mut self, end_s: f64) {
+        let floor = BOOT_TAPE_MS / 1000.0 + self.settle as f64 / self.fps as f64;
+        for shot in &mut self.shots {
+            if shot.at < 0.0 {
+                shot.at = (end_s + shot.at).max(floor);
+            }
+        }
+        self.shots.sort_by(|a, b| a.at.total_cmp(&b.at));
+    }
+
     /// The window: what is drawn, before any supersample is folded down.
     pub fn window(&self) -> (u32, u32) {
-        (
+        self.draw.unwrap_or((
             self.width * self.supersample,
             self.height * self.supersample,
-        )
+        ))
+    }
+
+    /// Draw no taller than `px`: the same shape, smaller, for a screen the
+    /// video's own size would not fit on. Sizes stay even, as H.264 wants.
+    pub fn fit_height(&mut self, px: u32) {
+        let (w, h) = (
+            self.width * self.supersample,
+            self.height * self.supersample,
+        );
+        if px >= h {
+            return;
+        }
+        let even = |v: f64| ((v / 2.0).round() as u32 * 2).max(2);
+        self.draw = Some((even(w as f64 * px as f64 / h as f64), even(px as f64)));
     }
 }
 
@@ -455,6 +503,9 @@ pub struct Shot {
     /// Keep a body in frame: the keys move the camera, this aims it.
     #[serde(default)]
     pub track: Option<Track>,
+    /// Through the watched body's own eyes: the camera a live watcher has.
+    #[serde(default)]
+    pub pov: bool,
     /// This shot's lens and grade, over the script's.
     #[serde(default)]
     pub look: Look,
@@ -466,11 +517,15 @@ impl Shot {
         let keyed = self.keys.len() >= 2 || (self.still && self.keys.len() == 1);
         let paths = usize::from(keyed)
             + usize::from(self.orbit.is_some())
-            + usize::from(self.follow.is_some());
+            + usize::from(self.follow.is_some())
+            + usize::from(self.pov);
         if paths != 1 {
             return Err(format!(
-                "shot `{n}`: give exactly one of keys (two or more), orbit or follow"
+                "shot `{n}`: give exactly one of keys (two or more), orbit, follow or pov"
             ));
+        }
+        if self.pov && self.track.is_some() {
+            return Err(format!("shot `{n}`: a pov shot looks where the body looks"));
         }
         let watched_animal = |near: Option<[f32; 2]>, animal: bool| near.is_none() && animal;
         if self
@@ -487,8 +542,9 @@ impl Shot {
                 "shot `{n}`: track aims a camera keys or an orbit move"
             ));
         }
-        if self.at < 0.0 || (!self.still && (self.len <= 0.0 || self.speed.min() <= 0.0)) {
-            return Err(format!("shot `{n}`: at, len and speed must be positive"));
+        // A negative `at` counts back from the tape's end (`Script::anchor`).
+        if !self.at.is_finite() || (!self.still && (self.len <= 0.0 || self.speed.min() <= 0.0)) {
+            return Err(format!("shot `{n}`: len and speed must be positive"));
         }
         for (what, s) in [
             ("speed", Some(&self.speed)),
@@ -669,9 +725,19 @@ pub struct Film {
     pulled: Option<f32>,
     lens: Lens,
     encoders: Vec<Arc<Mutex<Encoder>>>,
+    #[cfg(not(target_arch = "wasm32"))]
     wav: Option<Wav>,
+    /// Each rolled frame's slice of the mix, by shot, for the page's sink.
+    #[cfg(target_arch = "wasm32")]
+    audio: Vec<(usize, Vec<f32>)>,
+    /// Every frame is with the sink, or the film failed: what [`post`] says.
+    #[cfg(target_arch = "wasm32")]
+    end: Option<Result<(), String>>,
     /// Frames the whole run has drawn, for the log.
     drawn: u64,
+    /// Every frame is with the encoder. A desktop film exits here; a page's
+    /// keeps drawing, so this says it once.
+    wrapped: bool,
 }
 
 impl Film {
@@ -688,8 +754,86 @@ impl Film {
             pulled: None,
             lens: Lens::default(),
             encoders: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             wav: None,
+            #[cfg(target_arch = "wasm32")]
+            audio: Vec::new(),
+            #[cfg(target_arch = "wasm32")]
+            end: None,
             drawn: 0,
+            wrapped: false,
+        }
+    }
+
+    /// How far the tape is drawn, 0 to 1, and the shot rolling — for a
+    /// page's progress bar.
+    pub fn progress(&self) -> (f32, usize) {
+        let total: u32 = self
+            .script
+            .shots
+            .iter()
+            .map(|s| {
+                if s.still {
+                    1
+                } else {
+                    (s.len * self.script.fps as f64).round().max(1.0) as u32
+                }
+            })
+            .sum();
+        let done: u32 = self.script.shots[..self.shot]
+            .iter()
+            .map(|s| {
+                if s.still {
+                    1
+                } else {
+                    (s.len * self.script.fps as f64).round().max(1.0) as u32
+                }
+            })
+            .sum::<u32>()
+            + match self.phase {
+                Phase::Roll { frame } => frame,
+                _ => 0,
+            };
+        let f = match self.phase {
+            Phase::Wrap { .. } => 1.0,
+            _ => done as f32 / total.max(1) as f32,
+        };
+        (f, self.shot)
+    }
+
+    /// The film cannot go on: the desktop exits with an error, a page is told.
+    fn fail(&mut self, why: String, exit: &mut MessageWriter<AppExit>) {
+        if self.wrapped {
+            return;
+        }
+        self.wrapped = true;
+        error!("film: {why}");
+        #[cfg(not(target_arch = "wasm32"))]
+        exit.write(AppExit::error());
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = exit;
+            self.end = Some(Err(why));
+        }
+    }
+
+    /// This frame's slice of the mix, on the shot rolling.
+    fn put_audio(&mut self, buf: &[f32]) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = &mut self.wav {
+            w.push(buf);
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.audio.push((self.shot, buf.to_vec()));
+    }
+
+    /// The shot is over: close its mix.
+    fn end_audio(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(w) = self.wav.take() {
+            if let Err(e) = w.finish() {
+                error!("film: the mix did not close: {e}");
+            }
         }
     }
 
@@ -714,6 +858,7 @@ impl Film {
 
     /// `NN-name.ext`. Not `with_extension`, which would cut a name with a
     /// dot in it.
+    #[cfg(not(target_arch = "wasm32"))]
     fn file(&self, ext: &str) -> PathBuf {
         let s = self.cur();
         self.script
@@ -730,11 +875,13 @@ impl Film {
 /// The game's mix, rendered a frame at a time instead of by a sound card.
 /// Non-send for the reason `audio_out::Native` is: `rtrb`'s ends are not
 /// `Sync`.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Mix {
     pub feed: super::audio_out::Feed,
     buf: Vec<f32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Mix {
     pub fn new(feed: super::audio_out::Feed) -> Self {
         Self {
@@ -742,6 +889,75 @@ impl Mix {
             buf: Vec::new(),
         }
     }
+
+    /// The next `n` interleaved stereo samples.
+    fn render(&mut self, n: usize) -> &[f32] {
+        self.buf.resize(n, 0.0);
+        self.feed.fill(&mut self.buf, 2);
+        &self.buf
+    }
+}
+
+/// The game's mix in a page: the engine's renderer on the frame's own thread,
+/// fed by [`flush`] where a live page posts to its `AudioWorklet`. No score
+/// and no voices — a clip's music is the page's to lay under it.
+#[cfg(target_arch = "wasm32")]
+pub struct Mix {
+    renderer: Box<crate::sound::engine::Renderer>,
+    limit: crate::sound::limit::Limiter,
+    block: Box<[f32; 2 * crate::sound::engine::BLOCK]>,
+    at: usize,
+    buf: Vec<f32>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Mix {
+    pub fn new() -> Self {
+        use crate::sound::engine::BLOCK;
+        Self {
+            renderer: Box::new(crate::sound::engine::Renderer::new(FILM_RATE)),
+            limit: crate::sound::limit::Limiter::new(FILM_RATE),
+            block: Box::new([0.0; 2 * BLOCK]),
+            at: 2 * BLOCK,
+            buf: Vec::new(),
+        }
+    }
+
+    fn render(&mut self, n: usize) -> &[f32] {
+        self.buf.resize(n, 0.0);
+        for s in self.buf.iter_mut() {
+            if self.at >= self.block.len() {
+                self.renderer.render(&mut self.block[..]);
+                self.limit.run(&mut self.block[..]);
+                self.at = 0;
+            }
+            *s = self.block[self.at];
+            self.at += 1;
+        }
+        &self.buf
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for Mix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The frame's sound commands into the film's own renderer (a page's twin of
+/// `audio_out::flush`).
+#[cfg(target_arch = "wasm32")]
+pub fn flush(mut engine: ResMut<super::audio::Engine>, mut mix: NonSendMut<Mix>) {
+    let installs: Vec<_> = engine.take_installs().collect();
+    for (cue, pcm) in installs {
+        let _ = mix.renderer.install(cue, pcm);
+    }
+    let cmds: Vec<_> = engine.take().collect();
+    for cmd in cmds {
+        mix.renderer.apply(cmd);
+    }
+    engine.take_talk().for_each(drop);
 }
 
 /// Set this frame's world speed before `Time` advances: the shot's while it
@@ -901,11 +1117,13 @@ fn nearest(net: &Net, near: [f32; 2], animal: bool) -> Option<u32> {
 /// Point the eye for this frame, and work out the lens. After `place_eye`,
 /// which put it where the recorder stood, and before everything that streams
 /// around it.
+#[allow(clippy::too_many_arguments)]
 pub fn aim(
     mut film: ResMut<Film>,
     mut eye: ResMut<Eye>,
     mut settings: ResMut<super::Settings>,
     mut day: ResMut<super::rig::DayPin>,
+    mut draw: ResMut<super::bodies::DrawWatched>,
     net: NonSend<Net>,
     world: Res<WorldId>,
 ) {
@@ -930,6 +1148,21 @@ pub fn aim(
     }
     if let Some(h) = &shot.hour {
         *day = super::rig::DayPin::capture_at(h.at(u, t));
+    }
+    // A pov shot keeps the eye where `place_eye` put it, in the watched
+    // body's head — which is then not drawn, or the lens is inside it.
+    if draw.0 == shot.pov {
+        draw.0 = !shot.pov;
+    }
+    if shot.pov {
+        eye.roll = 0.0;
+        film.lens = Lens {
+            shutter: look.shutter.unwrap_or(SHUTTER),
+            focus: None,
+            fringe: look.fringe.unwrap_or(0.0),
+            grade: look.grading(u, t),
+        };
+        return;
     }
 
     let (pos, aim_at) = if let Some(o) = &shot.orbit {
@@ -1048,6 +1281,11 @@ pub fn lens(
     };
     let l = &film.lens;
     *grading = l.grade.clone();
+    // WebGL2 has none of the three below; the grade is the whole look.
+    if cfg!(webgl2) {
+        let _ = (commands, window, blur, dof, fringe);
+        return;
+    }
     match blur {
         Some(mut b) => {
             if b.shutter_angle != l.shutter {
@@ -1227,9 +1465,7 @@ pub fn roll(
 ) {
     film.drawn += 1;
     let n = (FILM_RATE / film.script.fps) as usize * 2;
-    mix.buf.resize(n, 0.0);
-    let Mix { feed, buf } = &mut *mix;
-    feed.fill(buf, 2);
+    let buf = mix.render(n);
     let ready = eye.placed
         && *screen.get() == super::Screen::InWorld
         && ring.is_full()
@@ -1262,8 +1498,7 @@ pub fn roll(
                     );
                 }
                 if let Err(e) = start_shot(&mut film) {
-                    error!("film: {e}");
-                    exit.write(AppExit::error());
+                    film.fail(e, &mut exit);
                     return;
                 }
                 film.phase = Phase::Roll { frame: 0 };
@@ -1272,9 +1507,7 @@ pub fn roll(
             }
         }
         Phase::Roll { frame } => {
-            if let Some(w) = &mut film.wav {
-                w.push(buf);
-            }
+            film.put_audio(buf);
             let total = film.frames();
             let still = film.cur().still;
             // A still is taken once, on the last frame of its hold.
@@ -1288,7 +1521,14 @@ pub fn roll(
                 commands.spawn(Screenshot::primary_window()).observe(
                     move |cap: On<ScreenshotCaptured>| {
                         let rgb = match cap.image.clone().try_into_dynamic() {
-                            Ok(img) => img.to_rgb8().into_raw(),
+                            Ok(img) => {
+                                // RGB for ffmpeg, RGBA for a page's `VideoFrame`.
+                                #[cfg(not(target_arch = "wasm32"))]
+                                let px = img.to_rgb8().into_raw();
+                                #[cfg(target_arch = "wasm32")]
+                                let px = img.to_rgba8().into_raw();
+                                px
+                            }
                             Err(e) => {
                                 error!("film: frame {slot} did not convert: {e:?}");
                                 return;
@@ -1310,11 +1550,7 @@ pub fn roll(
                         enc.flush();
                     }
                 }
-                if let Some(w) = film.wav.take() {
-                    if let Err(e) = w.finish() {
-                        error!("film: the mix did not close: {e}");
-                    }
-                }
+                film.end_audio();
                 info!("film: `{}` rolled, {written} frame(s)", film.cur().name);
                 if film.shot + 1 < film.script.shots.len() {
                     film.shot += 1;
@@ -1330,15 +1566,22 @@ pub fn roll(
                 .iter()
                 .all(|e| e.lock().map(|mut e| e.done()).unwrap_or(true));
             if done {
-                info!(
-                    "film: {} shot(s) in {}",
-                    film.encoders.len(),
-                    film.script.out.display()
-                );
-                exit.write(AppExit::Success);
+                if !film.wrapped {
+                    film.wrapped = true;
+                    info!(
+                        "film: {} shot(s) in {}",
+                        film.encoders.len(),
+                        film.script.out.display()
+                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    exit.write(AppExit::Success);
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        film.end = Some(Ok(()));
+                    }
+                }
             } else if frames > 600 {
-                error!("film: frames never reached ffmpeg");
-                exit.write(AppExit::error());
+                film.fail("frames never reached the encoder".into(), &mut exit);
             } else {
                 film.phase = Phase::Wrap { frames: frames + 1 };
             }
@@ -1346,6 +1589,28 @@ pub fn roll(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn start_shot(film: &mut Film) -> Result<(), String> {
+    let s = &film.script;
+    let enc = Encoder {
+        shot: film.shot,
+        name: film.cur().name.clone(),
+        still: film.cur().still,
+        fps: s.fps,
+        drawn: s.window(),
+        out: (s.width, s.height),
+        next: 0,
+        pending: BTreeMap::new(),
+        ready: std::collections::VecDeque::new(),
+        total: None,
+        announced: false,
+        closed: false,
+    };
+    film.encoders.push(Arc::new(Mutex::new(enc)));
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn start_shot(film: &mut Film) -> Result<(), String> {
     std::fs::create_dir_all(&film.script.out)
         .map_err(|e| format!("{}: {e}", film.script.out.display()))?;
@@ -1365,6 +1630,7 @@ fn start_shot(film: &mut Film) -> Result<(), String> {
 /// One shot's ffmpeg, fed raw RGB in frame order. Readbacks land a few frames
 /// after they are asked for and not always in order, so frames wait in
 /// `pending` until their turn.
+#[cfg(not(target_arch = "wasm32"))]
 struct Encoder {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -1374,6 +1640,7 @@ struct Encoder {
     size: (u32, u32),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Encoder {
     /// Frames `drawn` in size, written `out` in size: a supersample is folded
     /// down with Lanczos here. No `fps` is a still, written as a PNG.
@@ -1460,12 +1727,173 @@ impl Encoder {
     }
 }
 
+/// One shot's frames for a page: put in order as the readbacks land, and
+/// handed to the sink by [`post`] as RGBA at the drawn size, which the page
+/// scales to `out`.
+#[cfg(target_arch = "wasm32")]
+struct Encoder {
+    shot: usize,
+    name: String,
+    still: bool,
+    fps: u32,
+    drawn: (u32, u32),
+    out: (u32, u32),
+    next: u32,
+    pending: BTreeMap<u32, Vec<u8>>,
+    ready: std::collections::VecDeque<Vec<u8>>,
+    total: Option<u32>,
+    /// The sink has been told the shot began, and that it ended.
+    announced: bool,
+    closed: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Encoder {
+    fn put(&mut self, frame: u32, rgba: Vec<u8>) {
+        let want = (self.drawn.0 * self.drawn.1 * 4) as usize;
+        if rgba.len() != want {
+            error!(
+                "film: frame {frame} is {} bytes, not {want} — is the canvas {}x{}?",
+                rgba.len(),
+                self.drawn.0,
+                self.drawn.1
+            );
+            return;
+        }
+        self.pending.insert(frame, rgba);
+        self.flush();
+    }
+
+    fn flush(&mut self) {
+        while let Some(rgba) = self.pending.remove(&self.next) {
+            self.ready.push_back(rgba);
+            self.next += 1;
+        }
+    }
+
+    fn done(&mut self) -> bool {
+        self.closed
+    }
+}
+
+/// The page's end of a film: an object with `shot`, `frame`, `audio`,
+/// `shotEnd`, `progress`, `done` and `fail` (`client-web`'s `Gates::film`).
+#[cfg(target_arch = "wasm32")]
+pub struct Sink(pub wasm_bindgen::JsValue);
+
+#[cfg(target_arch = "wasm32")]
+impl Sink {
+    fn call(&self, name: &str, args: &[wasm_bindgen::JsValue]) {
+        use wasm_bindgen::JsCast;
+        let Ok(f) = js_sys::Reflect::get(&self.0, &name.into()) else {
+            return;
+        };
+        let Some(f) = f.dyn_ref::<js_sys::Function>() else {
+            return;
+        };
+        let list = js_sys::Array::new();
+        for a in args {
+            list.push(a);
+        }
+        if let Err(e) = f.apply(&self.0, &list) {
+            error!("film: the page's `{name}` threw: {e:?}");
+        }
+    }
+}
+
+/// Hand the page what the film has made since last frame: a shot's start,
+/// its frames in order, its mix, its end, the progress, and at the last the
+/// verdict. After [`roll`]. The verdict ends the app — on this target a
+/// frozen canvas — so the page's encoder has the machine to itself.
+#[cfg(target_arch = "wasm32")]
+pub fn post(
+    mut film: ResMut<Film>,
+    sink: Option<NonSend<Sink>>,
+    mut exit: MessageWriter<AppExit>,
+    mut told: Local<bool>,
+) {
+    use wasm_bindgen::JsValue;
+    let Some(sink) = sink else {
+        return;
+    };
+    if *told {
+        return;
+    }
+    for (shot, pcm) in film.audio.drain(..) {
+        sink.call(
+            "audio",
+            &[
+                JsValue::from(shot as u32),
+                js_sys::Float32Array::from(&pcm[..]).into(),
+            ],
+        );
+    }
+    for enc in &film.encoders {
+        let Ok(mut enc) = enc.lock() else {
+            continue;
+        };
+        if !enc.announced {
+            enc.announced = true;
+            sink.call(
+                "shot",
+                &[
+                    JsValue::from(enc.shot as u32),
+                    JsValue::from_str(&enc.name),
+                    JsValue::from(enc.drawn.0),
+                    JsValue::from(enc.drawn.1),
+                    JsValue::from(enc.out.0),
+                    JsValue::from(enc.out.1),
+                    JsValue::from(enc.fps),
+                    JsValue::from_bool(enc.still),
+                ],
+            );
+        }
+        let shot = enc.shot as u32;
+        let (w, h) = enc.drawn;
+        let mut n = enc.next - enc.ready.len() as u32;
+        while let Some(rgba) = enc.ready.pop_front() {
+            sink.call(
+                "frame",
+                &[
+                    JsValue::from(shot),
+                    JsValue::from(n),
+                    js_sys::Uint8Array::from(&rgba[..]).into(),
+                    JsValue::from(w),
+                    JsValue::from(h),
+                ],
+            );
+            n += 1;
+        }
+        if !enc.closed && enc.total.is_some_and(|t| enc.next >= t) {
+            enc.closed = true;
+            sink.call("shotEnd", &[JsValue::from(shot), JsValue::from(enc.next)]);
+        }
+    }
+    let (f, shot) = film.progress();
+    sink.call("progress", &[JsValue::from(f), JsValue::from(shot as u32)]);
+    match film.end.take() {
+        Some(Ok(())) => {
+            *told = true;
+            sink.call("done", &[]);
+            exit.write(AppExit::Success);
+        }
+        Some(Err(why)) => {
+            *told = true;
+            sink.call("fail", &[JsValue::from_str(&why)]);
+            exit.write(AppExit::Success);
+        }
+        None => {}
+    }
+}
+
 /// A 16-bit stereo WAV, sizes patched in at the end.
+#[cfg(not(target_arch = "wasm32"))]
 struct Wav {
     file: BufWriter<std::fs::File>,
     samples: u32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Wav {
     fn create(path: &Path) -> Result<Self, String> {
         let f = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1575,6 +2003,35 @@ mod tests {
         .unwrap();
         let s = shot.tape_s(30);
         assert!((s - 2.5).abs() < 0.05, "{s}");
+    }
+
+    #[test]
+    fn every_clip_style_lands_on_the_tape_in_order() {
+        for style in crate::clip::STYLES {
+            let mut s = Script::parse(&crate::clip::script(style).unwrap()).unwrap();
+            let end_s = 64.0;
+            s.anchor(end_s);
+            let settle_s = s.settle as f64 / s.fps as f64;
+            let mut end = 0.0;
+            for shot in &s.shots {
+                assert!(
+                    shot.at + 1e-6 >= end + settle_s,
+                    "{style}: `{}` cuts in",
+                    shot.name
+                );
+                end = shot.at + shot.tape_s(s.fps);
+                assert!(
+                    end <= end_s + 1e-6,
+                    "{style}: `{}` runs off the tape",
+                    shot.name
+                );
+            }
+            assert!(end > end_s - 0.5, "{style} ends at the tape's end");
+        }
+        // A tape too short for the style starts where the boot allows.
+        let mut s = Script::parse(&crate::clip::script("long").unwrap()).unwrap();
+        s.anchor(10.0);
+        assert!(s.shots[0].at >= BOOT_TAPE_MS / 1000.0);
     }
 
     #[test]

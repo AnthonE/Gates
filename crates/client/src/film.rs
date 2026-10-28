@@ -176,8 +176,8 @@ pub const REPLAY_EVENTS: usize = 1024;
 /// own code, which is the point: a replay is drawn exactly as the game draws.
 ///
 /// Here and not in `lib.rs`, whose one native `impl Session` is the desktop
-/// join sequence `tests/connect_twins.rs` holds against the browser's.
-#[cfg(feature = "native")]
+/// join sequence `tests/connect_twins.rs` holds against the browser's. On
+/// both targets: a page replays a clip (`crate::clip`) the same way.
 impl crate::Session {
     pub fn replay(rec: Recording) -> (Self, Replay) {
         use sim_core::limits::{CLIENT_DG_RING, DATAGRAM_BUDGET_BYTES};
@@ -202,7 +202,7 @@ impl crate::Session {
             applied2: 0,
             welcome,
             watching,
-            wire: crate::net::native::NativeWire::detached(),
+            wire: crate::net::ActiveWire::detached(),
             actions,
             events,
             datagrams,
@@ -216,6 +216,7 @@ impl crate::Session {
             event_observer: None,
             observer_failed: false,
             tap: None,
+            clip: None,
         };
         (session, replay)
     }
@@ -238,9 +239,7 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// Built only beside a replayed `Session` (`Session::replay`), which is
-    /// the desktop's: a page has no recording to play.
-    #[cfg(feature = "native")]
+    /// Built only beside a replayed `Session` (`Session::replay`).
     pub(crate) fn new(
         rec: Recording,
         datagrams: crate::net::DatagramRx,

@@ -49,13 +49,14 @@ pub fn normalize(k: KeyCode) -> KeyCode {
 }
 
 /// Keys a player may not bind: Esc, and the function keys the client uses
-/// for its own tools (F3 collision view, F4 diagnostics, F7 bug report, F11
-/// fullscreen, F12 screenshot).
-pub const RESERVED: [KeyCode; 6] = [
+/// for its own tools (F3 collision view, F4 diagnostics, F7 bug report, F9
+/// clip, F11 fullscreen, F12 screenshot).
+pub const RESERVED: [KeyCode; 7] = [
     KeyCode::Escape,
     KeyCode::F3,
     KeyCode::F4,
     KeyCode::F7,
+    KeyCode::F9,
     KeyCode::F11,
     KeyCode::F12,
 ];
@@ -599,7 +600,7 @@ pub const HOTBAR: [Action; 6] = [
 ];
 
 /// The controls that are not rebindable, for the KEYBINDS tab.
-pub const FIXED: [(&str, &str); 13] = [
+pub const FIXED: [(&str, &str); 14] = [
     ("LOOK", "Mouse (click to capture the pointer)"),
     (
         "USE / ATTACK",
@@ -616,6 +617,7 @@ pub const FIXED: [(&str, &str); 13] = [
     ),
     ("CLEAR A CREW", "Shift + your LEAVE A CREW key, twice"),
     ("SCREENSHOT", "F12"),
+    ("CLIP THE LAST 30 SECONDS", "F9: a video to post"),
     (
         "DIAGNOSTICS",
         "F4: build stamp and network · F3: collision view",

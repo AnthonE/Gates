@@ -173,6 +173,15 @@ impl ClientView {
             .filter(|s| s.header.tick == tick)
     }
 
+    /// Every applied snapshot the ring still holds, oldest first: the
+    /// baselines a delta may still name. A clip (`client::clip`) re-sends
+    /// them as keyframes so a replay can start mid-stream.
+    pub fn held(&self) -> Vec<&Snapshot> {
+        let mut held: Vec<&Snapshot> = self.ring.iter().flatten().collect();
+        held.sort_by_key(|s| s.header.tick);
+        held
+    }
+
     /// The redundant ack header for the next input datagram
     /// (NETCODE.md §3): newest applied tick + 32 bits of applied history.
     pub fn ack_fields(&self) -> (u16, u32) {
