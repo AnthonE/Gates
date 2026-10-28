@@ -83,7 +83,8 @@ tint = [124, 152, 92]
 season = "launch"
 
 # ── The alpha's gift ─────────────────────────────────────────────────────────
-# Never sold: no coin or price, so they stay off the store. THE OUTFITTER at
+# Not in our shop: no coin or price, so they stay off the store (players can
+# still trade them like any skin). THE OUTFITTER at
 # THE GATE hands every row of season "founder" to a signed-in wallet that asks
 # (`content/arc.toml`'s gift topic); the shard keeps who took them in its
 # `.gifts` file (`server/src/gifts.rs`), which a wipe leaves alone.
@@ -275,3 +276,64 @@ name = "Pump Rug"
 covers = "item.abyss_rug"
 tint = [40, 92, 64]
 season = "pump"
+# ── The Prism drop (2026-10-28) ──────────────────────────────────────────────
+# Seven looks across the everyday kit, one finish each. The tunic is painted
+# (`assets/skins/draw_patchwork_tunic.py`); the six held ones ship as tints
+# and get their own repainted mesh with `ci/meshy_retexture.py --style` (the
+# `style` line on each row) once the Meshy account has credits again.
+[[skin]]
+id = "skin.hatchet_stone_ashwood"
+catalog = 26
+name = "Ashwood Hatchet"
+covers = "item.hatchet_stone"
+tint = [214, 204, 188]
+season = "prism"
+# style: pale bleached ash-wood haft with fine silver grain, knapped grey flint head bound in braided white cord
+[[skin]]
+id = "skin.pickaxe_stone_ashwood"
+catalog = 27
+name = "Ashwood Pickaxe"
+covers = "item.pickaxe_stone"
+tint = [210, 200, 186]
+season = "prism"
+# style: pale bleached ash-wood haft with fine silver grain, knapped grey flint head bound in braided white cord
+[[skin]]
+id = "skin.armor_burlap_body_patchwork"
+catalog = 28
+name = "Patchwork Tunic"
+covers = "item.armor_burlap_body"
+tint = [104, 90, 72]
+texture = "4309c0d49f73af753f1cd1631051018ff25df21c3ccfd3412e9b3127c06c40d9"
+season = "prism"
+[[skin]]
+id = "skin.bow_jade"
+catalog = 29
+name = "Jade Bow"
+covers = "item.bow"
+tint = [104, 196, 150]
+season = "prism"
+# style: carved green jade limbs with pale veins, polished, gold wire wraps at the grip and tips, a waxed white string
+[[skin]]
+id = "skin.revolver_cobalt"
+catalog = 30
+name = "Cobalt Revolver"
+covers = "item.revolver"
+tint = [74, 112, 214]
+season = "prism"
+# style: deep cobalt-blue anodized steel with fine engraved scrollwork, a dark walnut grip, bright worn edges
+[[skin]]
+id = "skin.mace_amethyst"
+catalog = 31
+name = "Amethyst Mace"
+covers = "item.mace"
+tint = [164, 112, 222]
+season = "prism"
+# style: a head of clustered raw amethyst crystal on a blackened iron haft, crystal faintly lit from within (--glow 2.0 --veins violet)
+[[skin]]
+id = "skin.assault_rifle_sunforged"
+catalog = 32
+name = "Sunforged AR"
+covers = "item.assault_rifle"
+tint = [242, 196, 92]
+season = "prism"
+# style: polished gold and brass body with hammered panels, glowing orange heat lines in the seams (--glow 3.0 --veins orange)
