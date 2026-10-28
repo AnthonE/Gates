@@ -152,7 +152,8 @@ struct GroundSplat {
     // albedo, w = how far under that height it fades in (m).
     snow: vec4<f32>,
     // x..y = the band of aridity it lies on, z = how far past either end it
-    // fades out (aridity), w reserved and zero.
+    // fades out (aridity), w = the least arctic it lies on (`zone.z`'s cold
+    // is never under the ground's arctic, so the arctic and the caps pass).
     snow_band: vec4<f32>,
     // The Verdigris (`ground_splat::FEL_*`), by the vertex's corruption:
     // xyz the ash sand and litter go to; w the share of a fissure cell's
@@ -1179,11 +1180,14 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // The snow that lies all year (snowcaps v0) is the floor under the
     // weather's: `zone.z` is the ground's cold (`terrain::cold`), so the caps
     // stay white through a thaw and the weather's snow only adds to them.
+    // The arctic is the air's third axis: snow that fell on it lies only on
+    // ground as arctic, never over the green middle (`band.w`).
     let band = splat.snow_band;
     let fallen = splat.snow.x
         * smoothstep(splat.snow.y - splat.snow.w, splat.snow.y, wp.y)
         * smoothstep(band.x - band.z, band.x, dry)
-        * (1.0 - smoothstep(band.y, band.y + band.z, dry));
+        * (1.0 - smoothstep(band.y, band.y + band.z, dry))
+        * smoothstep(band.w - band.z, band.w, clamp(zone.z, 0.0, 1.0));
     let snow = max(fallen, clamp(zone.z, 0.0, 1.0))
         * smoothstep(0.55, 0.85, in.world_normal.y)
         * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)

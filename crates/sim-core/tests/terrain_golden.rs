@@ -224,7 +224,9 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// v0): no height moved, but the Snow row (`terrain::cold`, the snowline and
 /// the arctic south) draws its own scatter and carries ore, so
 /// `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0xD9E4_6039_1A02_7677;
+/// **Moved → `0x6105_AA2B_C6A0_F13F` at the snow's conifers** (2026-10-28, wipe):
+/// every tree in `Biome::Snow` is `terrain::CONIFER_SPECIES`, no broadleaf.
+const GOLDEN_TERRAIN_HASH: u64 = 0x6105_AA2B_C6A0_F13F;
 
 #[test]
 fn test_terrain_golden() {

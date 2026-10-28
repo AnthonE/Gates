@@ -1016,10 +1016,11 @@ pub fn formation_mesh(
     let mut lat = terrain::Lattice::new();
     for b in f.iter().filter(|b| b.kind != BLOCK_SPIRE) {
         // Moss where the ground around is green: not on a beach, not above
-        // the treeline, not where the spread stands now.
+        // the treeline, not under the snow, not where the spread stands now.
         let h0 = terrain::height(seed, b.x, b.z);
         let moss = h0 > terrain::BEACH_MAX_H + 1.5
             && h0 < terrain::TREELINE_H
+            && terrain::cold_memo(&mut lat, seed, b.x, b.z, h0) < terrain::COLD_BIOME_AT
             && super::blight::live_fel_memo(now, &mut lat, seed, b.x, b.z, h0) < 0.3;
         let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
         if b.on != ON_GROUND {

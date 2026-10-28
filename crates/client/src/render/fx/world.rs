@@ -13,7 +13,7 @@ use super::super::feed::Feed;
 use super::super::impact::{Burst, Chips, Contact, ContactKind, Matter, Weapon};
 use super::super::{structures, Eye, Net, WorldId};
 use super::pool::{Particle, Pool};
-use super::table::{emit, lod, scaled, Layer};
+use super::table::{emit, emit_tint, lod, scaled, Layer};
 use super::{atlas, Fx};
 use crate::sound::mixer::Request;
 use crate::sound::Cue;
@@ -341,11 +341,26 @@ pub fn picked(fx: &mut Fx, base: Vec3, high: f32, eye: Vec3) {
 /// Remote footsteps farther than this throw nothing, metres.
 pub const STEP_FX_M: f32 = 30.0;
 
-/// A step's puff: sand kicks a little up when running, water rings and
-/// splashes, nothing else shows. Rust's own rule — footstep particles on
-/// water, sand and snow and nowhere else.
+/// Kicked-up snow, sRGB: the lying snow's grey-white (`ground_splat::SNOW_ALBEDO`)
+/// a shade bluer, so the puff reads as powder and not dust.
+pub const SNOW_PUFF: Color = Color::srgb(0.86, 0.89, 0.93);
+
+/// A step's puff: sand kicks a little up when running, snow at every step,
+/// water rings and splashes, nothing else shows. Rust's own rule — footstep
+/// particles on water, sand and snow and nowhere else.
 pub fn footstep(fx: &mut Fx, cue: Cue, at: Vec3, gain: f32) {
     match cue {
+        // Loose powder: every step lifts some, a run more.
+        Cue::StepSnow | Cue::RemoteStepSnow if gain > 0.3 => {
+            emit_tint(
+                &mut fx.soft,
+                Layer::Dust,
+                if gain > 0.8 { 2 } else { 1 },
+                at + Vec3::Y * 0.05,
+                Vec3::Y,
+                SNOW_PUFF,
+            );
+        }
         Cue::StepSand | Cue::RemoteStepSand if gain > 0.8 => {
             emit(
                 &mut fx.soft,
@@ -378,9 +393,20 @@ pub fn splash(fx: &mut Fx, at: Vec3, gain: f32) {
 }
 
 /// A body landing from a jump or a drop: the ground it hits kicks up — sand
-/// most, soil a little, rock and water not at all (the water's splash is its
-/// own crossing).
+/// and snow most, soil a little, rock and water not at all (the water's
+/// splash is its own crossing).
 pub fn body_landing(fx: &mut Fx, cue: Cue, at: Vec3) {
+    if cue == Cue::StepSnow {
+        emit_tint(
+            &mut fx.soft,
+            Layer::Dust,
+            3,
+            at + Vec3::Y * 0.05,
+            Vec3::Y,
+            SNOW_PUFF,
+        );
+        return;
+    }
     let (n, matter) = match cue {
         Cue::StepSand => (3, Matter::Sand),
         Cue::StepGrass | Cue::StepLitter => (1, Matter::Dirt),

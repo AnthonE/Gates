@@ -7249,6 +7249,10 @@ pub const SLOT_SPECIES: u8 = PAINTED_SPECIES + 1;
 /// rock pool groups by this and not by [`SLOT_SPECIES`].
 pub const PAINTED_SPECIES: u8 = 2;
 
+/// The conifer: the painted draw's first species, and every tree standing in
+/// [`Biome::Snow`] — no broadleaf in the arctic or on the caps.
+pub const CONIFER_SPECIES: u8 = 0;
+
 /// The desert's tree: a palm. Not painted — every tree standing in
 /// [`Biome::Desert`] is one, so the arid north reads as the reference game's
 /// does, palms over sand.
@@ -8260,13 +8264,16 @@ fn scatter_in<C: Corners>(
         // `species_share` so a region is DOMINATED by one kind rather than
         // painted pure, and the fBm is read here rather than above the veto
         // because three cells in four are empty and owe nothing.
-        // A tree in the desert is a palm, whatever the painted field says.
-        species: if occupant == Occupant::Tree
-            && biome(hy, moisture_in(c, seed, x, z), fel, cold) == Biome::Desert
+        // A tree in the desert is a palm and one under the snow a conifer,
+        // whatever the painted field says.
+        species: match (occupant == Occupant::Tree)
+            .then(|| biome(hy, moisture_in(c, seed, x, z), fel, cold))
         {
-            PALM_SPECIES
-        } else {
-            u8::from(((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z))
+            Some(Biome::Desert) => PALM_SPECIES,
+            Some(Biome::Snow) => CONIFER_SPECIES,
+            _ => u8::from(
+                ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z),
+            ),
         },
     }
 }
