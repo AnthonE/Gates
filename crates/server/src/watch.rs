@@ -30,6 +30,12 @@ pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 360;
 pub const FRAME_INTERVAL: Duration = Duration::from_millis(250);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
+/// Once drawn, the seat's world stops moving or the window stops handing
+/// back frames for this long and the run ends, for the supervisor to
+/// restart: a shard whose game died under a live connection, or a renderer
+/// that died under a live window, otherwise holds one frozen frame on the
+/// page for good. As long as the connection's own idle timeout.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Pack entries the page lists.
 pub const PAGE_ITEMS: usize = 6;
 /// Ticks between page records. A capture takes one at most every
@@ -95,6 +101,7 @@ pub fn pair(survivor: Survivor) -> (Watched, Bot) {
             latest: None,
             created: Instant::now(),
             drawn: false,
+            heard: None,
         },
     )
 }
@@ -252,6 +259,8 @@ pub struct Capture {
     next: Instant,
     pending: bool,
     id: u64,
+    /// The last frame the renderer handed back, or the first asked of it.
+    shot: Option<Instant>,
 }
 
 impl Capture {
@@ -261,6 +270,7 @@ impl Capture {
             next: Instant::now(),
             pending: false,
             id: 0,
+            shot: None,
         }
     }
 }
@@ -307,6 +317,8 @@ pub struct Bot {
     latest: Option<Status>,
     created: Instant,
     drawn: bool,
+    /// The seat's snapshot count, and when it last moved.
+    heard: Option<(u64, Instant)>,
 }
 
 impl Bot {
@@ -324,9 +336,23 @@ pub fn lifetime(
     continuous: Option<Res<Continuous>>,
     screen: Res<State<Screen>>,
     net: Option<NonSend<Net>>,
+    capture: Option<NonSend<Capture>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     bot.drawn |= matches!(screen.get(), Screen::InWorld | Screen::Dead);
+    if let Some(n) = net.as_ref().map(|n| n.session.core.snapshots_applied) {
+        if bot.heard.is_none_or(|(was, _)| was != n) {
+            bot.heard = Some((n, Instant::now()));
+        }
+    }
+    let seat_silent = bot.drawn
+        && bot
+            .heard
+            .is_some_and(|(_, at)| at.elapsed() > STALL_TIMEOUT);
+    let frames_stopped = capture
+        .as_ref()
+        .and_then(|c| c.shot)
+        .is_some_and(|at| at.elapsed() > STALL_TIMEOUT);
     match bot.live.ended() {
         // A timed run's clock ran out.
         Some(true) if continuous.is_none() => {
@@ -347,6 +373,18 @@ pub fn lifetime(
             || net.as_ref().is_some_and(|n| n.session.closed()) =>
         {
             eprintln!("jev-watch: the window's spectator seat ended");
+            exit.write(AppExit::error());
+        }
+        None if seat_silent || frames_stopped => {
+            eprintln!(
+                "jev-watch: {} for {} s",
+                if frames_stopped {
+                    "the renderer handed back no frame"
+                } else {
+                    "the window's seat heard nothing from the shard"
+                },
+                STALL_TIMEOUT.as_secs()
+            );
             exit.write(AppExit::error());
         }
         None if !bot.drawn && bot.created.elapsed() > STARTUP_TIMEOUT => {
@@ -375,6 +413,7 @@ pub fn capture(
         return;
     };
     capture.pending = true;
+    capture.shot.get_or_insert_with(Instant::now);
     capture.next = Instant::now() + FRAME_INTERVAL;
     capture.id = capture.id.saturating_add(1);
     let id = capture.id;
@@ -382,6 +421,7 @@ pub fn capture(
     commands.spawn(Screenshot::primary_window()).observe(
         move |mut event: On<ScreenshotCaptured>, mut capture: NonSendMut<Capture>| {
             capture.pending = false;
+            capture.shot = Some(Instant::now());
             // Transfer the readback to the encoder; no image encoding or HTTP
             // runs on the control/render thread. One readback and one queued
             // image are the complete bound, shared by all viewers.
@@ -599,6 +639,26 @@ mod tests {
         let mut bot = pair(scripted()).1;
         bot.created = Instant::now() - STARTUP_TIMEOUT - Duration::from_secs(1);
         world.insert_non_send_resource(bot);
+        world.run_system_once(lifetime).unwrap();
+        assert_eq!(exits(&mut world), [AppExit::error()]);
+
+        // A seat whose world stopped moving under a live connection (the
+        // shard's game died) ends the run rather than hold a frozen frame.
+        world.insert_resource(State::new(Screen::InWorld));
+        let mut bot = pair(scripted()).1;
+        let heard = world
+            .non_send_resource::<Net>()
+            .session
+            .core
+            .snapshots_applied;
+        bot.heard = Some((heard, Instant::now()));
+        world.insert_non_send_resource(bot);
+        world.run_system_once(lifetime).unwrap();
+        assert!(exits(&mut world).is_empty());
+        world.non_send_resource_mut::<Bot>().heard = Some((
+            heard,
+            Instant::now() - STALL_TIMEOUT - Duration::from_secs(1),
+        ));
         world.run_system_once(lifetime).unwrap();
         assert_eq!(exits(&mut world), [AppExit::error()]);
         shard.shutdown.store(true, Ordering::Relaxed);

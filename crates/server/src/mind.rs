@@ -624,6 +624,8 @@ pub enum Why {
     Blocked,
     /// Its session ended (a shift's end, a dropped link) while it ran.
     Session,
+    /// A work refused the verb, with this code (`sim_core::works::REFUSE_A_*`).
+    ArcRefused(u8),
 }
 
 impl Why {
@@ -658,7 +660,27 @@ impl Why {
             Why::NoInvite => "no invite was waiting any more",
             Why::Blocked => "something else is in the way of it, so it could not reach it",
             Why::Session => "the session ended while it ran",
+            Why::ArcRefused(code) => arc_refusal(code),
         }
+    }
+}
+
+/// [`Why::ArcRefused`]'s words: the server's own reason, so a feed that
+/// keeps failing says why.
+fn arc_refusal(code: u8) -> &'static str {
+    use sim_core::works::*;
+    match u32::from(code) {
+        REFUSE_A_KIND => "the server refused it: not a verb that work takes (or the body was down)",
+        REFUSE_A_REACH => "the server refused it: not in reach of the work's terminal",
+        REFUSE_A_SEALED => "the server refused it: the work has not opened yet",
+        REFUSE_A_NOTHING => "the server refused it: the pack holds nothing the work still needs",
+        REFUSE_A_LIT => "the server refused it: the work is already lit and takes only fuel",
+        REFUSE_A_COLD => "the server refused it: fuel for a work that is not lit",
+        REFUSE_A_FULL => "the server refused it: the work's tank is full",
+        REFUSE_A_RESTING => "the server refused it: the mechanism is resting after a solve",
+        REFUSE_A_SHUT => "the server refused it: the exchange has not opened",
+        REFUSE_A_CAP => "the server refused it: this wallet has taken out all the wipe allows",
+        _ => "the server refused it, with a code this build does not know",
     }
 }
 

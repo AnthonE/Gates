@@ -348,17 +348,22 @@ pub fn work_needs(
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorkJob {
     /// The verb went out at this tick, to this work with this op, and what
-    /// the pack held of what it gives then; the work's answer if it refused.
+    /// the pack held of what it gives then; the work's answer if it refused
+    /// (`sim_core::works::REFUSE_A_*`).
     sent: Option<(u32, u8, u8, u32)>,
-    refused: bool,
+    refused: Option<u8>,
     /// Units given.
     pub gave: u32,
 }
 
 impl WorkJob {
-    pub fn on_refused(&mut self) {
-        if self.sent.is_some() {
-            self.refused = true;
+    /// An arc verb refused: this feed's, if it was its own op at its work.
+    pub fn on_refused(&mut self, code: u8, op: u8, target: u8) {
+        if self
+            .sent
+            .is_some_and(|(_, k, sent_op, _)| (k, sent_op) == (target, op))
+        {
+            self.refused = Some(code);
         }
     }
 
@@ -380,7 +385,7 @@ impl WorkJob {
 
     pub fn sent(&mut self, core: &ClientCore, k: u8, op: u8, tick: u32) {
         self.sent = Some((tick, k, op, Self::holding(core, k, op)));
-        self.refused = false;
+        self.refused = None;
     }
 
     pub fn step(
@@ -392,8 +397,8 @@ impl WorkJob {
         tick: u32,
     ) -> Visit {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        if self.refused {
-            return Visit::Fail(Why::Refused);
+        if let Some(code) = self.refused {
+            return Visit::Fail(Why::ArcRefused(code));
         }
         // A verb in flight: what it gave is what left the pack.
         if let Some((sent, k, op, before)) = self.sent {
