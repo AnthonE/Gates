@@ -480,7 +480,7 @@ pub(crate) async fn write_frame(
     payload: &[u8],
 ) -> Result<(), String> {
     // Sized for the auth frame, the one C→S handshake frame that may pass
-    // the stream lane's ceiling (v144); every other frame is far under it.
+    // the stream lane's ceiling (v151); every other frame is far under it.
     let mut out = [0u8; protocol::MAX_AUTH_MSG_BYTES + super::frame::LEN_PREFIX_BYTES];
     let n = super::frame::encode_into(&mut out, payload).ok_or_else(|| {
         format!(

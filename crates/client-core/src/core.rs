@@ -2015,6 +2015,10 @@ pub struct ClientCore {
     /// they disagree, so a stale level is unreachable rather than
     /// unwritten.
     mag_item: u16,
+    /// The hotbar slot `mag` was stated for. Rounds live on each gun's own
+    /// stack, so a second gun of the same kind in another slot is not the
+    /// one the level describes ([`ClientCore::mag`]).
+    mag_slot: u8,
     /// Which arrow the held bow looses, as the sim last said (`Ammo`, wire
     /// v94): the weapon it was said for, and the round.
     bow_ammo: (u16, u16),
@@ -2763,6 +2767,7 @@ impl ClientCore {
             reload_toast_len: 0,
             mag: (0, 0),
             mag_item: NO_ITEM,
+            mag_slot: 0,
             bow_ammo: (NO_ITEM, NO_ITEM),
             fires: [Fire::default(); FIRES],
             fire_len: 0,
@@ -2886,6 +2891,7 @@ impl ClientCore {
                 // half that must never be stale.
                 self.mag = (loaded, ceiling);
                 self.mag_item = self.held_item();
+                self.mag_slot = self.input.sel;
                 if took > 0 {
                     // A fill. Drop-oldest, the toast rings' posture.
                     if self.reload_toast_len == TOAST_RING {
@@ -2916,6 +2922,7 @@ impl ClientCore {
                 // away, and stamping the current hand would attach the old
                 // weapon's count to the new one.
                 self.mag_item = item;
+                self.mag_slot = self.input.sel;
                 if self.reload_refusal_len == REFUSAL_RING {
                     self.reload_refusal_head = (self.reload_refusal_head + 1) % REFUSAL_RING;
                     self.reload_refusal_len -= 1;
@@ -5241,7 +5248,16 @@ impl ClientCore {
         if self.mag_item != self.held_item() {
             return (0, 0);
         }
-        self.mag
+        if self.mag_slot == self.input.sel {
+            return self.mag;
+        }
+        // Another gun of the same kind: its own stack's rounds, at the
+        // ceiling the kind was last stated with. The level alone read one
+        // rifle's 30 on an empty one, and an empty one's 0 on a full one,
+        // which held back every predicted shot (gunfeel's `loaded_left`).
+        let s = self.inv[self.input.sel as usize];
+        let loaded = sim_core::combat::GunState::of(s.data).loaded;
+        (loaded.min(self.mag.1), self.mag.1)
     }
 
     /// The attachments on the gun in hand, one bit per attachment row, off
@@ -5974,6 +5990,35 @@ mod tests {
         }
         assert_eq!(c.pending_pieces().len(), PENDING_PIECES);
         assert_eq!(c.pending_pieces()[0], at(2), "the oldest make room");
+    }
+
+    /// Rounds live on each gun's own stack: the level the shard last
+    /// stated is the gun in the slot it was stated for, and a second gun of
+    /// the same kind reads its own.
+    #[test]
+    fn a_second_gun_of_a_kind_reads_its_own_rounds() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let rifle = |loaded| ItemStack {
+            item: 3,
+            count: 1,
+            data: sim_core::combat::GunState {
+                loaded,
+                ..sim_core::combat::GunState::NONE
+            }
+            .data(),
+            ..ItemStack::EMPTY
+        };
+        c.inv[0] = rifle(30);
+        c.inv[1] = rifle(0);
+        c.set_input(0, 0, 0, 0, 0, 0);
+        let len = protocol::encode_event_reload(30, 30, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.mag(), (30, 30));
+        c.set_input(0, 0, 0, 0, 0, 1);
+        assert_eq!(c.mag(), (0, 30), "the empty one is empty");
+        c.set_input(0, 0, 0, 0, 0, 0);
+        assert_eq!(c.mag(), (30, 30), "and back");
     }
 
     /// An agent's mark answers for the full id it was sent for: the next

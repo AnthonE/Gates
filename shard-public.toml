@@ -219,9 +219,9 @@ companion_addr = "127.0.0.1:8434"
 #
 # extract_cap: 1,000 JUNK a wallet a wipe through THE EXCHANGE (1,500 while it
 # burns). The shard only writes down what each wallet took; whether it is paid
-# is the meter's switch, not this file's. WEEK ONE IS DRY (elo's
-# `docs/launch/GATES-LAUNCH.md` §A): the meter records the wipe as owed and
-# pays it when JUNK goes live. Change the motd when it does. The last motd
+# is the meter's switch, not this file's. The cashier is armed (elo's
+# `docs/launch/GATES-LAUNCH.md` §A): the meter pays the payout file after the
+# wipe, which is what the first motd line says. The last motd
 # line points players at the wipe's predictions (elo's
 # `docs/store/GAME-PREDICTIONS.md`); it names no odds, so the house's agents,
 # who hear chat too, learn nothing about a market.

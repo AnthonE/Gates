@@ -2,7 +2,7 @@
    `cpal` (under `bevy_audio` → `rodio`) decides whether the browser has Web
    Audio with `js_sys::eval("typeof AudioContext !== 'undefined'")` (cpal
    0.15.3, `host/webaudio/mod.rs`). This page's CSP allows 'wasm-unsafe-eval'
-   and NOT 'unsafe-eval' (the platform's nginx block for /games/gates/), so that
+   and NOT 'unsafe-eval' (the platform's nginx block for /games/gates/play/), so that
    eval throws, cpal counts the throw as "no Web Audio", and `bevy_audio` logs
    "No audio device found": a silent game with every check green. Measured
    2026-09-13 as an A/B of one build — served without the header it found its

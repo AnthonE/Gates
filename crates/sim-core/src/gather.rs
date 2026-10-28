@@ -917,21 +917,33 @@ pub fn inv_add_skinned(
     cond: u16,
     skin: u16,
 ) -> u16 {
+    let stack = ItemStack {
+        item,
+        count: amount,
+        cond,
+        skin,
+        ..ItemStack::EMPTY
+    };
+    inv_add_stack(inv, stack, stack_max)
+}
+
+/// [`inv_add_skinned`] for a stack that already exists (picked up, looted,
+/// given): `stack.count` of it, and everything it carries travels — its
+/// condition, its skin and its `data` (a gun's attachments and rounds, a
+/// vessel's water). A top-up joins only a stack it [`ItemStack::joins`].
+/// Taking the stack whole is the point: built from fields, a path that
+/// forgot `data` dropped a gun's scope and magazine and compiled anyway.
+pub fn inv_add_stack(inv: &mut [ItemStack; INV_SLOTS], stack: ItemStack, stack_max: u16) -> u16 {
     if stack_max == 0 {
         return 0;
     }
+    let amount = stack.count;
     let mut left = amount;
     for s in inv.iter_mut() {
         if left == 0 {
             return amount;
         }
-        if s.count > 0
-            && s.item == item
-            && s.skin == skin
-            && s.cond == cond
-            && s.data == 0
-            && s.count < stack_max
-        {
+        if s.count > 0 && s.joins(&stack) && s.count < stack_max {
             let take = (stack_max - s.count).min(left);
             s.count += take;
             left -= take;
@@ -942,11 +954,11 @@ pub fn inv_add_skinned(
             return amount;
         }
         if s.count == 0 {
-            s.item = item;
             let take = stack_max.min(left);
-            s.count = take;
-            s.cond = cond;
-            s.skin = skin;
+            *s = ItemStack {
+                count: take,
+                ..stack
+            };
             left -= take;
         }
     }
@@ -996,9 +1008,31 @@ pub fn inv_add_spilling_skinned(
     cond: u16,
     skin: u16,
 ) -> u16 {
-    let added = inv_add_skinned(inv, item, amount, stack_max, cond, skin);
-    if added < amount {
-        inv_add_skinned(spill, item, amount - added, stack_max, cond, skin);
+    let stack = ItemStack {
+        item,
+        count: amount,
+        cond,
+        skin,
+        ..ItemStack::EMPTY
+    };
+    inv_add_stack_spilling(inv, spill, stack, stack_max)
+}
+
+/// [`inv_add_spilling`] for a stack that already exists: what spills keeps
+/// everything it carries ([`inv_add_stack`]).
+pub fn inv_add_stack_spilling(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    stack: ItemStack,
+    stack_max: u16,
+) -> u16 {
+    let added = inv_add_stack(inv, stack, stack_max);
+    if added < stack.count {
+        let rest = ItemStack {
+            count: stack.count - added,
+            ..stack
+        };
+        inv_add_stack(spill, rest, stack_max);
     }
     added
 }

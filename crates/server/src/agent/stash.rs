@@ -375,8 +375,9 @@ pub fn visit_bill(
 
 /// What a visit takes out of the box for the base's next step besides its
 /// bill: the raw inputs of what the pack is short of and makes at its own
-/// stations (`agent::plan::raw_needs`, the pack alone), ore for fragments
-/// at the furnace, wood for charcoal. What the base needs and the box holds
+/// stations, in all (`agent::plan::gross_inputs`: [`plan`] takes out what
+/// the pack is short of them), ore for fragments at the furnace, wood for
+/// charcoal. What the base needs and the box holds
 /// the makings of is made at home, not gathered again: a body mined ore
 /// beside 2,000 of it in its box, and another waited a game hour on ten
 /// charcoal with a box of wood (2026-10-25). Rows appended after `n`; the
@@ -389,7 +390,7 @@ pub fn with_inputs(
     n: usize,
 ) -> usize {
     let mut raw = [(0u16, 0u32); crate::agent::plan::RAW_ROWS];
-    let k = crate::agent::plan::raw_needs(core, has, needs, &Ledger::EMPTY, &mut raw);
+    let k = crate::agent::plan::gross_inputs(core, has, needs, &mut raw);
     let mut filled = n;
     for &(item, units) in &raw[..k] {
         if let Some(row) = out[..filled].iter_mut().find(|r| r.0 == item) {
@@ -835,11 +836,12 @@ impl StashJob {
         let waste = |item: u16| self.stow && home.feed_wastes(item, grades);
         let mut bill = [(0, 0); VISIT_ROWS];
         let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
+        let has = builder.stations(core);
+        let n = with_inputs(core, &has, builder.survey().needs(), &mut bill, n);
+        // After the inputs, or a row they add back undoes the stow.
         for row in bill[..n].iter_mut().filter(|r| waste(r.0)) {
             row.1 = 0;
         }
-        let has = builder.stations(core);
-        let n = with_inputs(core, &has, builder.survey().needs(), &mut bill, n);
         plan(
             core,
             |item| {

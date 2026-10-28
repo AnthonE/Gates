@@ -2294,7 +2294,13 @@ async fn accept_loop(
                     .iter()
                     .enumerate()
                     .filter_map(|(slot, ks)| {
+                        // An account has no copy to check (the join skips it
+                        // too), and one in the batch would make `check_many`
+                        // answer `Unknown` for everybody.
                         let k = ks.key.as_ref()?;
+                        if crate::auth::is_account_key(k) {
+                            return None;
+                        }
                         let wallet = std::str::from_utf8(k.as_bytes()).ok()?.to_string();
                         let gen = crate::slot::generation_of(slots.load(slot));
                         Some((slot, gen, wallet))

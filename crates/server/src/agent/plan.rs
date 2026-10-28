@@ -90,9 +90,44 @@ pub fn raw_needs(
         // A shortfall is net of the pack and box already; its inputs are
         // not.
         expand(
-            core, has, boxed, item, units, PLAN_DEPTH, &mut raw, &mut pool, false,
+            core, has, boxed, item, units, PLAN_DEPTH, &mut raw, &mut pool, false, true,
         );
     }
+    largest_first(&mut raw, out)
+}
+
+/// [`raw_needs`] with nothing spent from the pack or a box: what the
+/// shortfalls take in all. What a stash visit holds the pack to — it takes
+/// the difference out (`stash::plan`), and a row already net of the pack
+/// read a take as spare and put it straight back, over and over
+/// (2026-10-28 review).
+pub fn gross_inputs(
+    core: &ClientCore,
+    has: &Stations,
+    needs: &[(u16, u32)],
+    out: &mut [(u16, u32); RAW_ROWS],
+) -> usize {
+    let mut raw = Rows::EMPTY;
+    let mut pool = Rows::EMPTY;
+    for &(item, units) in needs {
+        expand(
+            core,
+            has,
+            &Ledger::EMPTY,
+            item,
+            units,
+            PLAN_DEPTH,
+            &mut raw,
+            &mut pool,
+            false,
+            false,
+        );
+    }
+    largest_first(&mut raw, out)
+}
+
+/// `raw`'s rows into `out`, the largest first. The rows filled.
+fn largest_first(raw: &mut Rows, out: &mut [(u16, u32); RAW_ROWS]) -> usize {
     let mut n = 0;
     while n < RAW_ROWS {
         let Some(best) = raw.rows[..raw.n]
@@ -120,9 +155,10 @@ fn expand(
     raw: &mut Rows,
     pool: &mut Rows,
     net: bool,
+    spend: bool,
 ) {
     let mut units = units;
-    if net {
+    if net && spend {
         if pool.rows[..pool.n].iter().all(|r| r.0 != item) {
             pool.add(item, carried(core, boxed, item));
         }
@@ -151,6 +187,7 @@ fn expand(
             raw,
             pool,
             true,
+            spend,
         );
     }
 }
@@ -268,5 +305,25 @@ mod tests {
         assert!(boxed.on_cont(&core, 7));
         let n = raw_needs(&core, &furnace, &[(FRAGS, 100)], &boxed, &mut out);
         assert_eq!(&out[..n], &[(ORE, 10)]);
+    }
+
+    /// What a stash visit holds the pack to is every input, carried or not:
+    /// net of the pack, the 13 cloth a visit took out read as spare and
+    /// went straight back in.
+    #[test]
+    fn gross_inputs_count_what_the_pack_carries() {
+        let mut core = core();
+        let mut out = [(0, 0); RAW_ROWS];
+        give(&mut core, 0, CLOTH, 13);
+        let n = raw_needs(
+            &core,
+            &Stations::NONE,
+            &[(FUEL, 50)],
+            &Ledger::EMPTY,
+            &mut out,
+        );
+        assert_eq!(&out[..n], &[(FAT, 39)], "net: the cloth is carried");
+        let n = gross_inputs(&core, &Stations::NONE, &[(FUEL, 50)], &mut out);
+        assert_eq!(&out[..n], &[(FAT, 39), (CLOTH, 13)]);
     }
 }
