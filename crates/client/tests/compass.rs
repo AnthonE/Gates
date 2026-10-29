@@ -202,6 +202,12 @@ fn the_painted_island_is_lit_from_the_upper_left() {
             if h <= sim_core::terrain::SEA_LEVEL {
                 continue; // Water carries no hillshade, by design.
             }
+            // Nor is the snow's white a fair sample: it shades like any
+            // ground, but a field of it falling unevenly into the two sets
+            // below moves their means by its brightness, not by the light.
+            if sim_core::terrain::cold(seed, x, z, h) > 0.0 {
+                continue;
+            }
             // In the image, column `px = size-1-i` grows east (`-x`) and row
             // `py = size-1-j` grows south (`-z`).
             let rise_right = sim_core::terrain::height(seed, x - step, z) - h;

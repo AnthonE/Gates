@@ -94,78 +94,81 @@ fn pitch_toward(rise: f32, run: f32) -> u8 {
 fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    for cz in 40..216i32 {
-        for cx in 40..216i32 {
-            let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            if s.occupant != want {
-                continue;
-            }
-            // Outside the slot's own reach, or a wide node seats the body on
-            // its top (nodes are steppable) and the swing passes over it.
-            let back = (terrain::occupant_volume(want).0 * s.scale
-                + sim_core::collide::CAPSULE_RADIUS_M
-                + 0.05)
-                .max(1.2);
-            let (px, pz) = (s.x - back, s.z);
-            let py = terrain::height(seed, px, pz);
-            // An ore node on a slope sits sunk into it, and is aimed at low
-            // (`ORE_AIM_UP_M`), so it is taken on the flat only.
-            let ledge = match sim_core::gather::node_index(want) {
-                Some(ni) if sim_core::gather::is_ore(ni) => 0.15,
-                _ => 1.0,
-            };
-            if (s.y - py).max(py - s.y) > ledge || py < 1.0 {
-                continue; // node on a ledge or in the sea — keep looking
-            }
-            // The node must be the only gatherable within reach+slack of
-            // the stand point, so the swing target is unambiguous.
-            let pcx = (px / CELL_SIZE) as i32;
-            let pcz = (pz / CELL_SIZE) as i32;
-            let mut rivals = 0;
-            for dz in -1..=1i32 {
-                for dx in -1..=1i32 {
-                    let n = terrain::scatter(seed, &table, &haven, pcx + dx, pcz + dz);
-                    if sim_core::gather::node_index(n.occupant).is_some() {
-                        let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
-                        if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
-                            rivals += 1;
-                        }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(seed, hint) {
+        let s = terrain::scatter(seed, &table, &haven, cx, cz);
+        // These fixtures count swings, so a tree is one that pays its row's.
+        if s.occupant != want
+            || (want == Occupant::Tree && !sim_core::find::row_tree(seed, cx, cz, &s))
+        {
+            continue;
+        }
+        // Outside the slot's own reach, or a wide node seats the body on
+        // its top (nodes are steppable) and the swing passes over it.
+        let back = (terrain::occupant_volume(want).0 * s.scale
+            + sim_core::collide::CAPSULE_RADIUS_M
+            + 0.05)
+            .max(1.2);
+        let (px, pz) = (s.x - back, s.z);
+        let py = terrain::height(seed, px, pz);
+        // An ore node on a slope sits sunk into it, and is aimed at low
+        // (`ORE_AIM_UP_M`), so it is taken on the flat only.
+        let ledge = match sim_core::gather::node_index(want) {
+            Some(ni) if sim_core::gather::is_ore(ni) => 0.15,
+            _ => 1.0,
+        };
+        if (s.y - py).max(py - s.y) > ledge || py < 1.0 {
+            continue; // node on a ledge or in the sea — keep looking
+        }
+        // The node must be the only gatherable within reach+slack of
+        // the stand point, so the swing target is unambiguous.
+        let pcx = (px / CELL_SIZE) as i32;
+        let pcz = (pz / CELL_SIZE) as i32;
+        let mut rivals = 0;
+        for dz in -1..=1i32 {
+            for dx in -1..=1i32 {
+                let n = terrain::scatter(seed, &table, &haven, pcx + dx, pcz + dz);
+                if sim_core::gather::node_index(n.occupant).is_some() {
+                    let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                    if d2 <= 6.25 && (n.x != s.x || n.z != s.z) {
+                        rivals += 1;
                     }
                 }
             }
-            if rivals > 0 {
-                continue;
-            }
-            // Best of the 256 LUT headings toward the node.
-            let (dx, dz) = (s.x - px, s.z - pz);
-            let mut best_yaw = 0u16;
-            let mut best_dot = f32::MIN;
-            for hi in 0..=255u16 {
-                let yaw = hi << 8;
-                let (fx, fz) = yaw_dir(yaw);
-                let dot = fx * dx + fz * dz;
-                if dot > best_dot {
-                    best_dot = dot;
-                    best_yaw = yaw;
-                }
-            }
-            // Down at the node from the eye: the ray has to enter it. An ore
-            // node is aimed at low, because it is struck at what is left of
-            // it (`gather::ORE_STAGE_TOP_PM`) and a worn one is knee-high.
-            let up = match sim_core::gather::node_index(want) {
-                Some(ni) if sim_core::gather::is_ore(ni) => ORE_AIM_UP_M,
-                _ => AIM_UP_M,
-            };
-            let pitch = pitch_toward(s.y + up - (py + EYE_M), back);
-            return (
-                (px, pz),
-                Aim {
-                    yaw: best_yaw,
-                    pitch,
-                },
-                (cx, cz),
-            );
         }
+        if rivals > 0 {
+            continue;
+        }
+        // Best of the 256 LUT headings toward the node.
+        let (dx, dz) = (s.x - px, s.z - pz);
+        let mut best_yaw = 0u16;
+        let mut best_dot = f32::MIN;
+        for hi in 0..=255u16 {
+            let yaw = hi << 8;
+            let (fx, fz) = yaw_dir(yaw);
+            let dot = fx * dx + fz * dz;
+            if dot > best_dot {
+                best_dot = dot;
+                best_yaw = yaw;
+            }
+        }
+        // Down at the node from the eye: the ray has to enter it. An ore
+        // node is aimed at low, because it is struck at what is left of
+        // it (`gather::ORE_STAGE_TOP_PM`) and a worn one is knee-high.
+        let up = match sim_core::gather::node_index(want) {
+            Some(ni) if sim_core::gather::is_ore(ni) => ORE_AIM_UP_M,
+            _ => AIM_UP_M,
+        };
+        let pitch = pitch_toward(s.y + up - (py + EYE_M), back);
+        return (
+            (px, pz),
+            Aim {
+                yaw: best_yaw,
+                pitch,
+            },
+            (cx, cz),
+        );
     }
     panic!("seed {seed:#x} offered no isolated {want:?} in the scanned block");
 }
@@ -1315,222 +1318,222 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
     /// the probe with room, still well inside a 3 m wall span.
     const ASIDE_M: f32 = 0.8;
 
-    'candidates: for cz in 40..216i32 {
-        for cx in 40..216i32 {
-            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if s.occupant != Occupant::Tree {
-                continue;
-            }
-            // The wall goes on the west edge of the cell EAST of the tree's
-            // — the plane just past the trunk along a ray fired at it from
-            // the west — so that cell must take a foundation, or there is
-            // no wall to protect.
-            let bcx = build_cell_of(s.x) + 1;
-            let bcz = build_cell_of(s.z);
-            if !(0..1024).contains(&bcx) || !(0..1024).contains(&bcz) {
-                continue;
-            }
-            let (bx, bz) = (bcx as u16, bcz as u16);
-            let (fx_c, fz_c) = (
-                (bcx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
-                (bcz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
-            );
-            if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), fx_c, fz_c) {
-                continue;
-            }
-            // Stand point: `STAND_M` west of the trunk, on ground near its
-            // own height (the `find_isolated` filter), looking due +x so
-            // the ray runs through the trunk's axis.
-            let (px, pz) = (s.x - STAND_M, s.z);
-            let py = terrain::height(SEED, px, pz);
-            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
-                continue;
-            }
-            let yaw: u16 = 64 << 8;
-            // The wall's plane sits between the trunk's far skin and the
-            // end of the weapon's reach, with margin at both ends: the
-            // trunk (r 0.24) plus the wall's half-thickness plus the probe
-            // is what "behind the tree" has to clear, and the reach is
-            // what the control has to stay inside.
-            let (ax, _) = anchor(bx, bz, LOC_EDGE_XLO);
-            let gap = ax - s.x;
-            if !(0.5..=REACH - STAND_M - 0.15).contains(&gap) {
-                continue;
-            }
-            // The ray hits the wall at the tree's own z, and the control's
-            // does 0.8 m aside; both must be inside the wall's span.
-            let z_lo = bz as f32 * sim_core::build::BUILD_CELL_M;
-            let z_hi = z_lo + sim_core::build::BUILD_CELL_M;
-            let aside = if s.z + ASIDE_M <= z_hi - 0.3 {
-                ASIDE_M
-            } else {
-                -ASIDE_M
-            };
-            if s.z < z_lo + 0.3 || s.z > z_hi - 0.3 || s.z + aside < z_lo + 0.3 {
-                continue;
-            }
-            // No OTHER swingable near either stand point: rivals eat the
-            // swing and turn both halves into tests of nothing. Barrels
-            // count — `target_index` aims at them even though
-            // `node_index` does not.
-            let (ctl_x, ctl_z) = (px, pz + aside);
-            let mut rivals = 0;
-            for &(sx, sz) in &[(px, pz), (ctl_x, ctl_z)] {
-                let pcx = (sx / CELL_SIZE) as i32;
-                let pcz = (sz / CELL_SIZE) as i32;
-                for ddz in -1..=1i32 {
-                    for ddx in -1..=1i32 {
-                        let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
-                        let aims = sim_core::gather::node_index(n.occupant).is_some()
-                            || n.occupant == Occupant::BarrelSlot;
-                        if aims && (n.x != s.x || n.z != s.z) {
-                            let d2 = (n.x - sx) * (n.x - sx) + (n.z - sz) * (n.z - sz);
-                            if d2 <= 6.25 {
-                                rivals += 1;
-                            }
+    // Its box first, then the island: mild ground wherever it lies.
+    let hint = (40..216i32).flat_map(|cz| (40..216i32).map(move |cx| (cx, cz)));
+    'candidates: for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+        if s.occupant != Occupant::Tree {
+            continue;
+        }
+        // The wall goes on the west edge of the cell EAST of the tree's
+        // — the plane just past the trunk along a ray fired at it from
+        // the west — so that cell must take a foundation, or there is
+        // no wall to protect.
+        let bcx = build_cell_of(s.x) + 1;
+        let bcz = build_cell_of(s.z);
+        if !(0..1024).contains(&bcx) || !(0..1024).contains(&bcz) {
+            continue;
+        }
+        let (bx, bz) = (bcx as u16, bcz as u16);
+        let (fx_c, fz_c) = (
+            (bcx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+            (bcz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+        );
+        if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), fx_c, fz_c) {
+            continue;
+        }
+        // Stand point: `STAND_M` west of the trunk, on ground near its
+        // own height (the `find_isolated` filter), looking due +x so
+        // the ray runs through the trunk's axis.
+        let (px, pz) = (s.x - STAND_M, s.z);
+        let py = terrain::height(SEED, px, pz);
+        if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+            continue;
+        }
+        let yaw: u16 = 64 << 8;
+        // The wall's plane sits between the trunk's far skin and the
+        // end of the weapon's reach, with margin at both ends: the
+        // trunk (r 0.24) plus the wall's half-thickness plus the probe
+        // is what "behind the tree" has to clear, and the reach is
+        // what the control has to stay inside.
+        let (ax, _) = anchor(bx, bz, LOC_EDGE_XLO);
+        let gap = ax - s.x;
+        if !(0.5..=REACH - STAND_M - 0.15).contains(&gap) {
+            continue;
+        }
+        // The ray hits the wall at the tree's own z, and the control's
+        // does 0.8 m aside; both must be inside the wall's span.
+        let z_lo = bz as f32 * sim_core::build::BUILD_CELL_M;
+        let z_hi = z_lo + sim_core::build::BUILD_CELL_M;
+        let aside = if s.z + ASIDE_M <= z_hi - 0.3 {
+            ASIDE_M
+        } else {
+            -ASIDE_M
+        };
+        if s.z < z_lo + 0.3 || s.z > z_hi - 0.3 || s.z + aside < z_lo + 0.3 {
+            continue;
+        }
+        // No OTHER swingable near either stand point: rivals eat the
+        // swing and turn both halves into tests of nothing. Barrels
+        // count — `target_index` aims at them even though
+        // `node_index` does not.
+        let (ctl_x, ctl_z) = (px, pz + aside);
+        let mut rivals = 0;
+        for &(sx, sz) in &[(px, pz), (ctl_x, ctl_z)] {
+            let pcx = (sx / CELL_SIZE) as i32;
+            let pcz = (sz / CELL_SIZE) as i32;
+            for ddz in -1..=1i32 {
+                for ddx in -1..=1i32 {
+                    let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
+                    let aims = sim_core::gather::node_index(n.occupant).is_some()
+                        || n.occupant == Occupant::BarrelSlot;
+                    if aims && (n.x != s.x || n.z != s.z) {
+                        let d2 = (n.x - sx) * (n.x - sx) + (n.z - sz) * (n.z - sz);
+                        if d2 <= 6.25 {
+                            rivals += 1;
                         }
                     }
                 }
             }
-            if rivals > 0 {
-                continue;
-            }
-
-            // ---- the arrangement ----
-            let mut w = Box::new(World::new(SEED));
-            w.gather = GatherContent::probe_fixture();
-            w.combat = sim_core::combat::CombatContent::probe_fixture();
-            w.build = sim_core::build::BuildContent::probe_fixture();
-            for n in w.gather.nodes.iter_mut() {
-                n.weak_pct = 0;
-            }
-            w.gather.nodes[0].hand_yield = 0;
-            assert_ne!(
-                w.gather.nodes[0].tools[0].0, WRONG_TOOL,
-                "fixture rot: item {WRONG_TOOL} became the tree's tool, so \
-                 the refusal below would never fire"
-            );
-            w.dev_spawn = Some((px, pz));
-            w.tick(&[Command::Join { id: 1 }]);
-            w.players[0].inv[0] = ItemStack {
-                item: WRONG_TOOL,
-                count: 1,
-                cond: 0,
-                skin: 0,
-                ..ItemStack::EMPTY
-            };
-            w.players[0].inv[1] = ItemStack {
-                item: 0,
-                count: 200,
-                cond: 0,
-                skin: 0,
-                ..ItemStack::EMPTY
-            };
-            w.players[0].inv[2] = ItemStack {
-                item: 1,
-                count: 200,
-                cond: 0,
-                skin: 0,
-                ..ItemStack::EMPTY
-            };
-            // Foundation, then the wall on its west edge — placed from the
-            // stance, so the soft side faces the raider and both halves
-            // swing at the same face. A refusal here is this candidate's
-            // terrain, not the mechanic — try the next.
-            w.tick(&[Command::Place {
-                id: 1,
-                row: 0,
-                cx: bx,
-                cz: bz,
-                level: 0,
-                loc: LOC_PLANE,
-                freehand: false,
-                plate: 0,
-            }]);
-            if w.pieces.len() != 1 {
-                continue 'candidates;
-            }
-            w.tick(&[Command::Place {
-                id: 1,
-                row: 1,
-                cx: bx,
-                cz: bz,
-                level: 0,
-                loc: LOC_EDGE_XLO,
-                freehand: false,
-                plate: 0,
-            }]);
-            if w.pieces.len() != 2 {
-                continue 'candidates;
-            }
-            let hp0 = w
-                .pieces
-                .find(bx, bz, 0, LOC_EDGE_XLO)
-                .expect("the wall stands")
-                .hp;
-
-            // ---- refused-node swings: the wall must not move ----
-            let mut seq = 0u16;
-            let mut hit_while_refused = 0u32;
-            for _ in 0..SWING_INTERVAL_TICKS * 4 {
-                w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
-                seq = seq.wrapping_add(1);
-                for e in w.events.entries() {
-                    if e.code == EV_STRUCT_HIT {
-                        hit_while_refused += 1;
-                    }
-                }
-            }
-            let hp_after_refused = w
-                .pieces
-                .find(bx, bz, 0, LOC_EDGE_XLO)
-                .expect("the wall still stands")
-                .hp;
-
-            // ---- the control: same wall, same heading, the ray passes
-            // the trunk 0.8 m to one side ----
-            w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), ctl_x, ctl_z);
-            let mut control_hit = false;
-            for _ in 0..SWING_INTERVAL_TICKS * 4 {
-                w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
-                seq = seq.wrapping_add(1);
-                for e in w.events.entries() {
-                    if e.code == EV_STRUCT_HIT {
-                        control_hit = true;
-                    }
-                }
-            }
-            if !control_hit {
-                // The raid arm cannot reach this wall even deliberately —
-                // the arrangement (storey, terrain) is unusable here and
-                // proves nothing either way. Next candidate.
-                continue 'candidates;
-            }
-            let hp_after_control = w
-                .pieces
-                .find(bx, bz, 0, LOC_EDGE_XLO)
-                .expect("the wall survives the control chips")
-                .hp;
-
-            // The control proved the wall reachable, so the first half is
-            // now evidence: a refused swing that chipped it fell through.
-            assert_eq!(
-                hit_while_refused, 0,
-                "a swing the node refused fell through to combat::raid — \
-                 the wall behind the node took EV_STRUCT_HIT"
-            );
-            assert_eq!(
-                hp_after_refused, hp0,
-                "a refused gather swing took hp off the wall standing in \
-                 the same cone"
-            );
-            assert!(
-                hp_after_control < hp_after_refused,
-                "the deliberate control swing did not chip the wall — \
-                 raid should still work with no node in the way"
-            );
-            return;
         }
+        if rivals > 0 {
+            continue;
+        }
+
+        // ---- the arrangement ----
+        let mut w = Box::new(World::new(SEED));
+        w.gather = GatherContent::probe_fixture();
+        w.combat = sim_core::combat::CombatContent::probe_fixture();
+        w.build = sim_core::build::BuildContent::probe_fixture();
+        for n in w.gather.nodes.iter_mut() {
+            n.weak_pct = 0;
+        }
+        w.gather.nodes[0].hand_yield = 0;
+        assert_ne!(
+            w.gather.nodes[0].tools[0].0, WRONG_TOOL,
+            "fixture rot: item {WRONG_TOOL} became the tree's tool, so \
+             the refusal below would never fire"
+        );
+        w.dev_spawn = Some((px, pz));
+        w.tick(&[Command::Join { id: 1 }]);
+        w.players[0].inv[0] = ItemStack {
+            item: WRONG_TOOL,
+            count: 1,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        w.players[0].inv[1] = ItemStack {
+            item: 0,
+            count: 200,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        w.players[0].inv[2] = ItemStack {
+            item: 1,
+            count: 200,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        // Foundation, then the wall on its west edge — placed from the
+        // stance, so the soft side faces the raider and both halves
+        // swing at the same face. A refusal here is this candidate's
+        // terrain, not the mechanic — try the next.
+        w.tick(&[Command::Place {
+            id: 1,
+            row: 0,
+            cx: bx,
+            cz: bz,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        }]);
+        if w.pieces.len() != 1 {
+            continue 'candidates;
+        }
+        w.tick(&[Command::Place {
+            id: 1,
+            row: 1,
+            cx: bx,
+            cz: bz,
+            level: 0,
+            loc: LOC_EDGE_XLO,
+            freehand: false,
+            plate: 0,
+        }]);
+        if w.pieces.len() != 2 {
+            continue 'candidates;
+        }
+        let hp0 = w
+            .pieces
+            .find(bx, bz, 0, LOC_EDGE_XLO)
+            .expect("the wall stands")
+            .hp;
+
+        // ---- refused-node swings: the wall must not move ----
+        let mut seq = 0u16;
+        let mut hit_while_refused = 0u32;
+        for _ in 0..SWING_INTERVAL_TICKS * 4 {
+            w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
+            seq = seq.wrapping_add(1);
+            for e in w.events.entries() {
+                if e.code == EV_STRUCT_HIT {
+                    hit_while_refused += 1;
+                }
+            }
+        }
+        let hp_after_refused = w
+            .pieces
+            .find(bx, bz, 0, LOC_EDGE_XLO)
+            .expect("the wall still stands")
+            .hp;
+
+        // ---- the control: same wall, same heading, the ray passes
+        // the trunk 0.8 m to one side ----
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), ctl_x, ctl_z);
+        let mut control_hit = false;
+        for _ in 0..SWING_INTERVAL_TICKS * 4 {
+            w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
+            seq = seq.wrapping_add(1);
+            for e in w.events.entries() {
+                if e.code == EV_STRUCT_HIT {
+                    control_hit = true;
+                }
+            }
+        }
+        if !control_hit {
+            // The raid arm cannot reach this wall even deliberately —
+            // the arrangement (storey, terrain) is unusable here and
+            // proves nothing either way. Next candidate.
+            continue 'candidates;
+        }
+        let hp_after_control = w
+            .pieces
+            .find(bx, bz, 0, LOC_EDGE_XLO)
+            .expect("the wall survives the control chips")
+            .hp;
+
+        // The control proved the wall reachable, so the first half is
+        // now evidence: a refused swing that chipped it fell through.
+        assert_eq!(
+            hit_while_refused, 0,
+            "a swing the node refused fell through to combat::raid — \
+             the wall behind the node took EV_STRUCT_HIT"
+        );
+        assert_eq!(
+            hp_after_refused, hp0,
+            "a refused gather swing took hp off the wall standing in \
+             the same cone"
+        );
+        assert!(
+            hp_after_control < hp_after_refused,
+            "the deliberate control swing did not chip the wall — \
+             raid should still work with no node in the way"
+        );
+        return;
     }
     panic!(
         "seed {SEED:#x} offered no tree beside a buildable cell for this \
@@ -1954,8 +1957,14 @@ fn the_mark_is_at_the_height_the_ray_entered_the_node() {
     let run = ((mx - px) * (mx - px) + (mz - pz) * (mz - pz)).sqrt();
     let ray_y = eye + run / ch * sv;
     let q = movement::POS_Y_Q;
+    // The mark's x and z are quantized too (`POS_XZ_Q`), and a run read
+    // off them is off by up to a quantum along the look, which the slope
+    // of the ray turns into height: a steep look at a grazed top edge
+    // spends most of the margin on it.
+    let tan = sv / ch;
+    let slack = 3.0 * q + movement::POS_XZ_Q * tan.max(-tan);
     assert!(
-        (my - ray_y).max(ray_y - my) <= 3.0 * q,
+        (my - ray_y).max(ray_y - my) <= slack,
         "mark at y {my:.3} where the ray was at {ray_y:.3} — eye {eye:.2}, \
          node top {:.2}; a mark at eye height is the planar rule back",
         s.y + top

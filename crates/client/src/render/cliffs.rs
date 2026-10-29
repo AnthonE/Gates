@@ -304,7 +304,13 @@ fn crag(soup: &mut RockSoup, lat: &mut terrain::Lattice, seed: u64, haven: &Have
             tx: c.tx,
             tz: c.tz,
             key: sp.key ^ if c.tooth { 0x7007_7a11 } else { 0x51ed_270b },
-            moss: if c.moss { CRAG_MOSS } else { 0.0 },
+            // No moss under the snow.
+            moss: if c.moss && terrain::cold_memo(lat, seed, c.x, c.z, y1) < terrain::COLD_BIOME_AT
+            {
+                CRAG_MOSS
+            } else {
+                0.0
+            },
             chisel: (CRAG_CHISEL_SHARE * c.hx.min(c.hz).min(y1 - y0)).min(CRAG_CHISEL_MAX_M),
             min_seg: 2,
             value: LEDGE_VALUE * (0.85 + 0.3 * h01(sp.key, 40)),

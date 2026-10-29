@@ -527,7 +527,14 @@ fn the_treeline_is_scrub_and_the_forest_core_is_not() {
             for cx in 0..CELLS_PER_SIDE {
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::ground(seed, &haven, x, z) < LAND_MIN_H {
+                let gy = terrain::ground(seed, &haven, x, z);
+                if gy < LAND_MIN_H {
+                    continue;
+                }
+                // The treeline is a temperate law: under the snow, tundra
+                // included, the transfer stands down (`blend_rows`) and the
+                // Snow row's few trees are the stand.
+                if terrain::cold(seed, x, z, gy) > 0.0 {
                     continue;
                 }
                 let occ =
@@ -650,6 +657,17 @@ fn a_species_region_is_dominated_and_not_pure() {
                     s.z
                 );
                 if desert {
+                    continue;
+                }
+                // Under the snow every tree is a conifer, whatever the paint.
+                if terrain::biome_at(seed, s.y, s.x, s.z) == terrain::Biome::Snow {
+                    assert_eq!(
+                        s.species,
+                        terrain::CONIFER_SPECIES,
+                        "seed {seed}: a broadleaf at ({}, {}) stands in the snow",
+                        s.x,
+                        s.z
+                    );
                     continue;
                 }
                 seen[s.species as usize] += 1;

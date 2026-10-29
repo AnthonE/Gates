@@ -929,14 +929,15 @@ fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
 /// The nearest cell the foundation's terrain rule accepts, in ring order
 /// so it is a pure function of the seed (`box_container`'s helper).
 fn buildable_cell(seed: u64) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(seed, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 2047) as u16;
-                let cz = (512 + dz).clamp(0, 2047) as u16;
+                let cx = (hx + dx).clamp(0, 2047) as u16;
+                let cz = (hz + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);

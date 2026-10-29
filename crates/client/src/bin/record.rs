@@ -217,6 +217,9 @@ fn scan(path: &str, every: f64) {
     let step = client_core::clock::TICK_MS;
     let mut next_report = 0.0;
     let mut rs = client_core::interp::RemoteState::default();
+    // Bullets, arrows and blasts landing since the last report: where a
+    // fight is.
+    let mut impacts = 0u32;
     println!("scan: {path}, {:.1} s", end / 1000.0);
     while replay.clock_ms < end {
         while !replay.caught_up() {
@@ -247,6 +250,7 @@ fn scan(path: &str, every: f64) {
             );
         }
         while let Some(im) = core.pop_impact() {
+            impacts += 1;
             if im.kind == sim_core::ranged::IMPACT_BLAST {
                 let (x, z) = (
                     im.qx as f32 * sim_core::movement::POS_XZ_Q,
@@ -257,7 +261,9 @@ fn scan(path: &str, every: f64) {
         }
         // The rest of the rings, emptied so they never back up.
         while core.pop_placed().is_some() {}
-        while core.pop_death().is_some() {}
+        while let Some(victim) = core.pop_death() {
+            println!("{t:7.1}  DEATH {victim}");
+        }
         if t >= next_report {
             next_report += every;
             let at = core.render_tick();
@@ -306,10 +312,11 @@ fn scan(path: &str, every: f64) {
                 .max()
                 .unwrap_or(0);
             println!(
-                "{t:7.1}  pieces {:3} (top storey {top}) · {eye} {ex:.0},{ez:.0} · {}",
+                "{t:7.1}  pieces {:3} (top storey {top}) · impacts {impacts} · {eye} {ex:.0},{ez:.0} · {}",
                 core.pieces.len(),
                 people.join(" ")
             );
+            impacts = 0;
             if !animals.is_empty() {
                 println!("{t:7.1}    animals {}", animals.join(" "));
             }

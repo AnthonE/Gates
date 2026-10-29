@@ -1555,6 +1555,8 @@ impl Content {
             temperate_high_dc: dc(cl.temperate_high_c),
             arid_low_dc: dc(cl.arid_low_c),
             arid_high_dc: dc(cl.arid_high_c),
+            arctic_low_dc: dc(cl.arctic_low_c),
+            arctic_high_dc: dc(cl.arctic_high_c),
             lapse_from_m: u16f(cl.lapse_from_m, "lapse_from_m")?,
             lapse_m: u16f(cl.lapse_m, "lapse_m")?,
             cloud_flatten_pm: u16f(cl.cloud_flatten_pm, "cloud_flatten_pm")?,
@@ -3155,7 +3157,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
                 // Thousandths per km², and per mille per biome in
                 // `terrain::Biome` order (beach, meadow, forest, highland,
-                // desert, the Verdigris).
+                // desert, the Verdigris, the snow).
                 // Validate bounded every value, so the casts cannot wrap.
                 per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
                 night_extra_pct: (m.night_extra * 100.0).round() as u16,
@@ -3166,6 +3168,7 @@ impl Content {
                     (m.habitat.highland * 1000.0).round() as u16,
                     (m.habitat.desert * 1000.0).round() as u16,
                     (m.habitat.fel * 1000.0).round() as u16,
+                    (m.habitat.snow * 1000.0).round() as u16,
                 ],
                 // Centimetres straight through: the hit volume a swing's ray
                 // is tested against (`melee::mob_cast`). Validate bounded

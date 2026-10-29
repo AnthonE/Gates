@@ -163,10 +163,13 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
 /// (`terrain::fel_wander`), from which the shader rebuilds the heart and the
 /// live spread (`blight_at`, `sim_core::blight`). The desert's warm sand and
 /// the Verdigris' ash and obsidian are tints on the four identities, not
-/// identities of their own, so the splat stays four — and one `vec2` at one
-/// location keeps WebGL2's attribute count where the desert left it.
+/// identities of their own, so the splat stays four — and one vector at one
+/// location keeps WebGL2's attribute count where the desert left it. z is the
+/// cold, 0..1 (`terrain::cold`): the snow that lies all year, laid by the
+/// shader over whatever the ground is (snowcaps v0); a third lane of the same
+/// location, so the count did not move for it either.
 pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
-    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
+    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x3);
 
 /// The desert's sand, linear: a pale warm tan, where the beach's sand is a
 /// pale grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about
@@ -628,7 +631,8 @@ pub struct GroundSplatParams {
     /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
     pub snow: Vec4,
     /// x..y the band of aridity it lies on (`WeatherNow::snow_arid`), live;
-    /// z = [`SNOW_ARID_FADE`]; w reserved and zero.
+    /// z = [`SNOW_ARID_FADE`]; w the least cold it lies on
+    /// (`WeatherNow::snow_arctic`), live.
     pub snow_band: Vec4,
     /// xyz = [`FEL_ASH_ALBEDO`], w = [`FEL_CRACK_SHARE`].
     pub fel_ash: Vec4,
@@ -776,7 +780,7 @@ impl GroundSplatParams {
             snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
             snow_band: super::weather::NO_SNOW_ARID
                 .extend(SNOW_ARID_FADE)
-                .extend(0.0),
+                .extend(super::weather::NO_SNOW_ARCTIC),
             fel_ash: Vec4::new(
                 FEL_ASH_ALBEDO[0],
                 FEL_ASH_ALBEDO[1],

@@ -148,6 +148,7 @@ fn scan(seed: u64, at: Option<Disc>) -> Island {
             per_mille(biomes[Biome::Highland as usize]),
             per_mille(biomes[Biome::Desert as usize]),
             per_mille(biomes[Biome::Fel as usize]),
+            per_mille(biomes[Biome::Snow as usize]),
         ],
         sites_live: terrain::sites_live(&haven),
         sites_complete: terrain::sites_complete(&haven),
@@ -202,7 +203,7 @@ fn main() {
     set.sort_by_key(|i| i.rock_permille);
 
     println!(
-        "{:>22}  {:>5}  {:>7}  {:>7}  {:>6}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
+        "{:>22}  {:>5}  {:>7}  {:>7}  {:>6}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
         "seed",
         "land‰",
         "max h",
@@ -215,11 +216,12 @@ fn main() {
         "hgh",
         "dst",
         "vrd",
+        "snw",
         "sites"
     );
     for i in &set {
         println!(
-            "{:>22}  {:>5}  {:>7.2}  {:>7.2}  {:>6.3}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
+            "{:>22}  {:>5}  {:>7.2}  {:>7.2}  {:>6.3}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
             i.seed,
             i.land_permille,
             i.max_h,
@@ -232,6 +234,7 @@ fn main() {
             i.biome_permille[3],
             i.biome_permille[4],
             i.biome_permille[5],
+            i.biome_permille[6],
             if i.sites_complete {
                 format!("{}/3", i.sites_live)
             } else {

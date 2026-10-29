@@ -21,6 +21,7 @@ fn wild(seed: u64) -> Vec<(Slot, Biome)> {
                     s.y,
                     terrain::moisture(seed, s.x, s.z),
                     terrain::fel(seed, s.x, s.z),
+                    terrain::cold(seed, s.x, s.z, s.y),
                 );
                 out.push((s, b));
             }
@@ -98,7 +99,7 @@ fn the_wild_crop_census_is_pinned() {
     }
     assert_eq!(
         (corn, found.len() - corn, by_biome),
-        (15, 8, [23, 0, 0, 0, 0, 0]),
-        "(corn, pumpkin, by biome: beach meadow forest highland desert fel)"
+        (15, 8, [23, 0, 0, 0, 0, 0, 0]),
+        "(corn, pumpkin, by biome: beach meadow forest highland desert fel snow)"
     );
 }

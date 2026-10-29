@@ -1,0 +1,20 @@
+{
+  "recording": "film/snap.rec",
+  "out": "film/trailer-cold-snap",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.04, "contrast": 1.06},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "turret-a", "at": 8.5, "len": 4.0, "hour": 0.62, "weather": "clear", "fov": 42, "ease": true, "keys": [{"t": 0, "pos": [1572, 2.4, 2500.5], "look": [1594, 1.2, 2495]}, {"t": 4.0, "pos": [1573.5, 2.2, 2499.5], "look": [1594, 1.2, 2495]}], "look": {"temperature": -0.04, "shake": 0.08}},
+    {"name": "turret", "at": 22.5, "len": 5.4, "hour": 0.64, "weather": "clear", "fov": 36, "keys": [{"t": 0, "pos": [1576, 1.8, 2499.5], "look": [1594, 1.2, 2495]}, {"t": 5.4, "pos": [1577.5, 1.8, 2499], "look": [1594, 1.2, 2495]}], "look": {"focus": "look", "fstop": 2.8, "temperature": -0.03, "shake": 0.12}},
+    {"name": "fight-b", "at": 40, "len": 5.4, "hour": 0.64, "weather": "clear", "fov": 42, "ease": true, "keys": [{"t": 0, "pos": [1582, 8, 2470], "look": [1582, 1, 2449]}, {"t": 5.4, "pos": [1586, 7, 2468], "look": [1582, 1, 2449]}], "look": {"temperature": -0.04}},
+    {"name": "fight-a", "at": 58, "len": 4.0, "hour": 0.64, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [1600, 3, 2452], "look": [1580, 1.2, 2449]}, {"t": 4.0, "pos": [1598, 3, 2455], "look": [1580, 1.2, 2449]}], "look": {"temperature": -0.04, "shake": 0.1}},
+    {"name": "fight-c", "at": 70, "len": 4.0, "hour": 0.7, "weather": "clear", "fov": 38, "keys": [{"t": 0, "pos": [1592, 2.2, 2460], "look": [1580, 1.2, 2449]}, {"t": 4.0, "pos": [1594, 2.2, 2457], "look": [1580, 1.2, 2449]}], "track": {"near": [1580, 2449], "up": 1.0, "lag": 0.6}, "look": {"temperature": 0.02, "shake": 0.15}},
+    {"name": "snow-walk", "at": 90, "len": 4.2, "hour": 0.66, "weather": "overcast", "fov": 44, "follow": {"near": [1591, 2446], "back": 5, "up": 2.2, "side": 1.0, "lag": 0.8}, "look": {"temperature": -0.06}},
+    {"name": "snow-open", "at": 100, "len": 4.2, "hour": 0.62, "weather": "overcast", "fov": 44, "ease": true, "keys": [{"t": 0, "pos": [1535, 28, 2405], "look": [1585, 0, 2465]}, {"t": 4.2, "pos": [1545, 24, 2413], "look": [1585, 0, 2465]}], "look": {"temperature": -0.08, "saturation": 0.95}}
+  ]
+}

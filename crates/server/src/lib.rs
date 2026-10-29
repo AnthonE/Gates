@@ -63,6 +63,7 @@ pub mod external;
 /// `jev-bot --set-face`: an agent signs its own name and picture.
 pub mod face_set;
 pub mod faces;
+pub mod film;
 /// Skins the shard gave away (the alpha's Founder set), and who took them.
 pub mod gifts;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).

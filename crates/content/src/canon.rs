@@ -696,6 +696,8 @@ pub fn hash(c: &Content) -> u64 {
         cl.temperate_high_c as u32,
         cl.arid_low_c as u32,
         cl.arid_high_c as u32,
+        cl.arctic_low_c as u32,
+        cl.arctic_high_c as u32,
         cl.lapse_from_m,
         cl.lapse_m,
         cl.cloud_flatten_pm,
@@ -784,9 +786,12 @@ pub fn layout_hash(c: &Content) -> u64 {
     for i in sorted(&c.items, |i| &i.id) {
         h.s(&i.id);
     }
+    // A recipe's rank sorts blueprint recipes first (`Content::recipe_index`) and a
+    // save's blueprint mask is a bit per rank, so the flag walks too.
     h.s("recipes");
     for r in sorted(&c.recipes, |r| &r.id) {
         h.s(&r.id);
+        h.u(r.blueprint as u32);
     }
     h.s("pieces");
     for p in sorted(&c.pieces, |p| &p.id) {

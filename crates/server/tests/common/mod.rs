@@ -26,29 +26,33 @@ pub fn haven() -> sim_core::terrain::Haven {
 
 /// A level standing point near a stone node with a tree close by.
 pub fn scene() -> (f32, f32) {
+    scenes()
+        .next()
+        .expect("fixture seed has no stone node beside a tree")
+}
+
+/// Every [`scene`], in the order it is searched: the south-west box first
+/// (where this fixture has always stood), then the island, whichever mild
+/// ground holds one (`sim_core::find`).
+pub fn scenes() -> impl Iterator<Item = (f32, f32)> {
     use sim_core::terrain::{self, Occupant, ScatterTable};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
-    for cz in 20..236 {
-        for cx in 20..236 {
-            let stone = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if stone.occupant != Occupant::StoneNode {
-                continue;
-            }
-            let tree = (-3..=3).any(|dz| {
-                (-3..=3).any(|dx| {
-                    terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz).occupant
-                        == Occupant::Tree
-                })
-            });
-            let at = (stone.x, stone.z - 6.0);
-            let floor = terrain::ground(SEED, &haven, at.0, at.1);
-            if tree && floor > 1.0 && (floor - stone.y).abs() < 0.5 {
-                return at;
-            }
+    let hint = (20..236).flat_map(|cz| (20..236).map(move |cx| (cx, cz)));
+    sim_core::find::mild_cells(SEED, hint).filter_map(move |(cx, cz)| {
+        let stone = terrain::scatter(SEED, &table, &haven, cx, cz);
+        if stone.occupant != Occupant::StoneNode {
+            return None;
         }
-    }
-    panic!("fixture seed has no stone node beside a tree");
+        let tree = (-3..=3).any(|dz| {
+            (-3..=3).any(|dx| {
+                terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz).occupant == Occupant::Tree
+            })
+        });
+        let at = (stone.x, stone.z - 6.0);
+        let floor = terrain::ground(SEED, &haven, at.0, at.1);
+        (tree && floor > 1.0 && (floor - stone.y).abs() < 0.5).then_some(at)
+    })
 }
 
 /// A dry standing point with open sea inside the drink reach.
@@ -79,41 +83,48 @@ pub fn shore() -> (f32, f32) {
 
 /// A level, dry clearing: nothing solid (a tree, a node, a container, a
 /// boulder) within `radius_cells` scatter cells of it — scrub and pickups are
-/// passable — and the ground within a few metres of level over it. Where two
-/// bodies meet in the arena with nothing between them.
+/// passable — and the ground within a few metres of level over it, holding a
+/// foundation everywhere and off every authored site. Where two bodies meet in
+/// the arena with nothing between them, and where the scenes build a base.
 pub fn clearing(radius_cells: i32) -> (f32, f32) {
     const CLEARING_ROCK_M: f32 = 64.0;
+    const CLEARING_SITE_M: f32 = 60.0;
     use sim_core::terrain::{self, ScatterTable, CELL_SIZE};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
     let r = radius_cells;
-    for cz in (20 + r..236 - r).step_by(2) {
-        for cx in (20 + r..236 - r).step_by(2) {
-            let (x, z) = ((cx as f32 + 0.5) * CELL_SIZE, (cz as f32 + 0.5) * CELL_SIZE);
-            let h0 = terrain::ground(SEED, &haven, x, z);
-            if h0 < 2.0 {
-                continue;
-            }
-            // Nor a boulder (`boulder.rs`) within a long bow shot and a
-            // strafe of it: the arena's archers stand 30 m apart.
-            if sim_core::boulder::covers(SEED, &haven, x, z, CLEARING_ROCK_M) {
-                continue;
-            }
-            let clear = (-r..=r).all(|dz| {
-                (-r..=r).all(|dx| {
-                    let s = terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz);
-                    let h = terrain::ground(
-                        SEED,
-                        &haven,
-                        x + dx as f32 * CELL_SIZE,
-                        z + dz as f32 * CELL_SIZE,
-                    );
-                    terrain::occupant_volume(s.occupant).0 == 0.0 && h > 1.0 && (h - h0).abs() < 3.0
-                })
-            });
-            if clear {
-                return (x, z);
-            }
+    let hint = (20 + r..236 - r)
+        .step_by(2)
+        .flat_map(move |cz| (20 + r..236 - r).step_by(2).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let (x, z) = ((cx as f32 + 0.5) * CELL_SIZE, (cz as f32 + 0.5) * CELL_SIZE);
+        let h0 = terrain::ground(SEED, &haven, x, z);
+        if h0 < 2.0 {
+            continue;
+        }
+        // Nor a boulder (`boulder.rs`) within a long bow shot and a
+        // strafe of it: the arena's archers stand 30 m apart.
+        if sim_core::boulder::covers(SEED, &haven, x, z, CLEARING_ROCK_M) {
+            continue;
+        }
+        // Nor an authored site's floor or a landmark near it: the scenes
+        // build a base in the clearing, and a site's ground is not theirs.
+        if !sim_core::find::unbuilt(&haven, x, z, CLEARING_SITE_M) {
+            continue;
+        }
+        let clear = (-r..=r).all(|dz| {
+            (-r..=r).all(|dx| {
+                let s = terrain::scatter(SEED, &table, &haven, cx + dx, cz + dz);
+                let (sx, sz) = (x + dx as f32 * CELL_SIZE, z + dz as f32 * CELL_SIZE);
+                let h = terrain::ground(SEED, &haven, sx, sz);
+                terrain::occupant_volume(s.occupant).0 == 0.0
+                    && h > 1.0
+                    && (h - h0).abs() < 3.0
+                    && sim_core::build::foundation_terrain_ok(SEED, &haven, sx, sz)
+            })
+        });
+        if clear {
+            return (x, z);
         }
     }
     panic!("fixture seed has no clearing {r} cells wide");
@@ -203,44 +214,44 @@ pub fn container(kind: sim_core::terrain::Occupant) -> ((u16, u16), (f32, f32)) 
     use sim_core::terrain::{self, Occupant, ScatterTable};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
-    for cz in 16..terrain::CELLS_PER_SIDE - 16 {
-        for cx in 16..terrain::CELLS_PER_SIDE - 16 {
-            let slot = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if slot.occupant != kind {
-                continue;
-            }
-            // A drawn barrel stands alone, or a looter chains the next one
-            // and never finishes this one. (The pad's crates are a ring.)
-            let crowded = kind == Occupant::BarrelSlot
-                && (-5..=5).any(|oz| {
-                    (-5..=5).any(|ox| {
-                        let n = terrain::scatter(SEED, &table, &haven, cx + ox, cz + oz);
-                        (ox, oz) != (0, 0)
-                            && n.occupant == kind
-                            && (n.x - slot.x).hypot(n.z - slot.z) < 40.0
-                    })
-                });
-            if crowded {
-                continue;
-            }
-            for (dx, dz) in [(0.0f32, -4.0f32), (0.0, 4.0), (-4.0, 0.0), (4.0, 0.0)] {
-                let at = (slot.x + dx, slot.z + dz);
-                let floor = terrain::ground(SEED, &haven, at.0, at.1);
-                let open = (1..=3).all(|k| {
-                    let f = k as f32 / 4.0;
-                    let (x, z) = (slot.x + dx * f, slot.z + dz * f);
-                    let c = terrain::scatter(
-                        SEED,
-                        &table,
-                        &haven,
-                        (x / terrain::CELL_SIZE).floor() as i32,
-                        (z / terrain::CELL_SIZE).floor() as i32,
-                    );
-                    c.occupant == Occupant::None || c.occupant == kind
-                });
-                if floor > 1.0 && (floor - slot.y).abs() < 0.4 && open {
-                    return ((cx as u16, cz as u16), at);
-                }
+    let n = terrain::CELLS_PER_SIDE;
+    let hint = (16..n - 16).flat_map(move |cz| (16..n - 16).map(move |cx| (cx, cz)));
+    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+        let slot = terrain::scatter(SEED, &table, &haven, cx, cz);
+        if slot.occupant != kind {
+            continue;
+        }
+        // A drawn barrel stands alone, or a looter chains the next one
+        // and never finishes this one. (The pad's crates are a ring.)
+        let crowded = kind == Occupant::BarrelSlot
+            && (-5..=5).any(|oz| {
+                (-5..=5).any(|ox| {
+                    let n = terrain::scatter(SEED, &table, &haven, cx + ox, cz + oz);
+                    (ox, oz) != (0, 0)
+                        && n.occupant == kind
+                        && (n.x - slot.x).hypot(n.z - slot.z) < 40.0
+                })
+            });
+        if crowded {
+            continue;
+        }
+        for (dx, dz) in [(0.0f32, -4.0f32), (0.0, 4.0), (-4.0, 0.0), (4.0, 0.0)] {
+            let at = (slot.x + dx, slot.z + dz);
+            let floor = terrain::ground(SEED, &haven, at.0, at.1);
+            let open = (1..=3).all(|k| {
+                let f = k as f32 / 4.0;
+                let (x, z) = (slot.x + dx * f, slot.z + dz * f);
+                let c = terrain::scatter(
+                    SEED,
+                    &table,
+                    &haven,
+                    (x / terrain::CELL_SIZE).floor() as i32,
+                    (z / terrain::CELL_SIZE).floor() as i32,
+                );
+                c.occupant == Occupant::None || c.occupant == kind
+            });
+            if floor > 1.0 && (floor - slot.y).abs() < 0.4 && open {
+                return ((cx as u16, cz as u16), at);
             }
         }
     }

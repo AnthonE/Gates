@@ -400,6 +400,10 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         // the rock step, the hardest of the island's grounds.
         Cue::StepWood | Cue::StepConcrete | Cue::StepMetal => render_take(Cue::StepRock, take),
         Cue::RemoteStepWood => render_take(Cue::StepWood, take),
+        // Snow is a recording too; a failed decode falls back to the litter
+        // step, the softest of the island's grounds.
+        Cue::StepSnow => render_take(Cue::StepLitter, take),
+        Cue::RemoteStepSnow => render_take(Cue::StepSnow, take),
         Cue::RemoteStepConcrete => render_take(Cue::StepConcrete, take),
         Cue::RemoteStepMetal => render_take(Cue::StepMetal, take),
 

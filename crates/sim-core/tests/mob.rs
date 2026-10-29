@@ -193,10 +193,10 @@ fn the_roster_is_density_times_habitat() {
     assert_eq!(doubled[MOB_WOLF as usize], base[MOB_WOLF as usize]);
     // A species that only lives in highland is a fraction of one that
     // lives everywhere.
-    mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000, 0, 0];
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000, 0, 0, 0];
     assert!(mob::targets(&mc, &survey, false)[MOB_PIG as usize] < doubled[MOB_PIG as usize] / 3);
     mc.defs[MOB_PIG as usize].per_km2_milli = 1_000_000;
-    mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000, 1_000, 1_000];
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000];
     assert_eq!(
         mob::targets(&mc, &survey, false)[MOB_PIG as usize],
         mob::capacity(MOB_PIG)
@@ -753,7 +753,10 @@ fn alone_with(kind: u8, metres: f32) -> (World, usize) {
     w.env = sim_core::weather::Env::CLEAR;
     w.combat = CombatContent::probe_fixture();
     w.mob = MobContent::probe_fixture();
-    w.dev_spawn = Some(w.spawn_pos(1));
+    // Open, level, mild ground (`sim_core::find`), not a beach spawn: a
+    // strip of sand between the sea and a bank walks a roaming animal into
+    // the player whatever its notice radius.
+    w.dev_spawn = Some(sim_core::find::spawn_ground(11));
     w.tick(&[Command::Join { id: 1 }]);
     let slot = first_alive(&w, kind);
     for (i, m) in w.mobs.m.iter_mut().enumerate() {

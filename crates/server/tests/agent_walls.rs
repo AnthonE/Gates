@@ -1148,7 +1148,10 @@ impl Harness {
 
 #[test]
 fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
-    let mut h = Harness::new(false);
+    // The second scene: on this seed the first one's stone is never found
+    // in the 12 000 ticks below, where the next five each craft inside 5 000.
+    let at = common::scenes().nth(1).expect("a second scene");
+    let mut h = Harness::at(false, at);
     // A belt already full of food, so the crafted tool lands in the pack and
     // has to be moved: what a long gather used to leave on the belt by
     // itself, until the world put stone nearer the spawn.
@@ -3017,10 +3020,14 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
                     })
                 });
                 let plan = BasePlan::new(0, cx, cz);
+                // Beside the scene, never on it: the agent stands at `near`,
+                // and a wall laid through a body is refused (`REFUSE_B_SPOT`).
+                let off_the_agent =
+                    |x: u16, z: u16| (i32::from(x) - c0).abs() > 1 || (i32::from(z) - r0).abs() > 1;
                 if even
                     && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
                         let (x, z) = plan.cell(dx, dz);
-                        buildable(x, z)
+                        buildable(x, z) && off_the_agent(x, z)
                     })
                 {
                     plot = Some((cx, cz));

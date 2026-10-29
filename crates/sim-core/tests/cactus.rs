@@ -22,6 +22,7 @@ fn cacti(seed: u64) -> Vec<(Slot, Biome)> {
                     s.y,
                     terrain::moisture(seed, s.x, s.z),
                     terrain::fel(seed, s.x, s.z),
+                    terrain::cold(seed, s.x, s.z, s.y),
                 );
                 out.push((s, b));
             }

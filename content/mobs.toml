@@ -294,8 +294,9 @@ respawn_seconds = 300
 # sites. Now ~12 roam (four packs) and only the pad keeps any
 # (`mob::SITE_GUARDS`, on top of these).
 per_km2 = 3.0
-# The Verdigris is the wolves' own: packs run its ash.
-habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.4, fel = 0.8 }
+# The Verdigris is the wolves' own: packs run its ash. The snow is theirs
+# too, as the reference's arctic is predator country.
+habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.4, fel = 0.8, snow = 1.0 }
 # The night doubles them (`NOW.md` §0pr 3): the extra wolves hatch after dusk
 # and leave at daybreak once nobody is near — a night out costs more than
 # the cold. Ours, not the reference's (its wolves keep one population).
@@ -417,9 +418,10 @@ spook_m = 20
 night_spook_m = 20
 respawn_seconds = 300
 # Rust's `stag.population` is 3 per km², in the temperate, snow and jungle
-# biomes: meadow and woods, the high ground well, the desert hardly.
+# biomes: meadow and woods, the high ground well, the snow thinner, the
+# desert hardly.
 per_km2 = 3.0
-habitat = { meadow = 1.0, forest = 1.0, highland = 0.6, desert = 0.05, fel = 0.05 }
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.6, desert = 0.05, fel = 0.05, snow = 0.4 }
 # 1.6 m long, 1.3 m to the top of the head (`render/mobs.rs` STAG_*).
 body_r_cm = 55
 body_h_cm = 130

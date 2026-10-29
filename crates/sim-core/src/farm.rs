@@ -346,6 +346,14 @@ pub struct PlantRec {
     pub deadline: u64,
 }
 
+/// `terrain::arctic` × 1000 at a plant's soil point. Read each visit, not
+/// cached like `arid_pm`, so the plant's save layout did not move for it:
+/// outside the arctic's reach it is one compare.
+fn arctic_pm(seed: u64, rec: &PlantRec) -> u16 {
+    let (x, _, z) = rec.pos();
+    (crate::terrain::arctic(seed, x, z) * 1000.0).clamp(0.0, 1000.0) as u16
+}
+
 impl PlantRec {
     /// The soil point, metres.
     pub fn pos(&self) -> (f32, f32, f32) {
@@ -837,6 +845,7 @@ impl FarmContent {
 /// unbuilt ([`ground_cover`]).
 #[allow(clippy::too_many_arguments)]
 pub fn step(
+    seed: u64,
     fc: &FarmContent,
     air: &ClimateContent,
     farm: &mut Farm,
@@ -1013,7 +1022,14 @@ pub fn step(
         };
         let temp_pm = crate::climate::crop_pm(
             air,
-            crate::climate::air_dc_at(air, rec.arid_pm, rec.alt_m as i32, day_tick, wx),
+            crate::climate::air_dc_at(
+                air,
+                rec.arid_pm,
+                arctic_pm(seed, &rec),
+                rec.alt_m as i32,
+                day_tick,
+                wx,
+            ),
         ) as u32;
         let health = water_pm
             .min(fc.hardy(rec.genes, rec.soil_pm as u32))

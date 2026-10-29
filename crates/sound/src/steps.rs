@@ -59,14 +59,24 @@ pub const STEP_FULL_SPEED: f32 = 5.5;
 /// The quietest a footstep gets.
 pub const STEP_MIN_GAIN: f32 = 0.45;
 
+/// How cold the ground must be for a step to land in snow: the Snow biome's
+/// own edge (`sim_core::terrain::COLD_BIOME_AT`, which this crate does not
+/// depend on).
+pub const SNOW_UNDERFOOT: f32 = 0.5;
+
 /// Which footstep a splat weight set calls for.
 ///
 /// **Argmax, not a blend.** A blended footstep is two samples at partial gain,
 /// which is two voices out of [`super::VOICE_CAP`] for one step and sounds
 /// like neither surface. The dominant channel is what the ground mostly is.
-pub fn surface_cue(splat: [u8; 4], below_sea: bool) -> Cue {
+/// `cold` is the ground's (`sim_core::terrain::cold`): where the snow lies
+/// all year it is the ground, whatever identity it lies on.
+pub fn surface_cue(splat: [u8; 4], below_sea: bool, cold: f32) -> Cue {
     if below_sea {
         return Cue::StepWater;
+    }
+    if cold >= SNOW_UNDERFOOT {
+        return Cue::StepSnow;
     }
     let mut best = 0usize;
     for (i, w) in splat.iter().enumerate() {
@@ -94,6 +104,7 @@ pub fn remote(cue: Cue) -> Cue {
         Cue::StepRock => Cue::RemoteStepRock,
         Cue::StepWater => Cue::RemoteStepWater,
         Cue::StepWood => Cue::RemoteStepWood,
+        Cue::StepSnow => Cue::RemoteStepSnow,
         Cue::StepConcrete => Cue::RemoteStepConcrete,
         Cue::StepMetal => Cue::RemoteStepMetal,
         other => other,

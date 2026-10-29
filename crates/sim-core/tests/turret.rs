@@ -32,14 +32,15 @@ fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
 }
 
 fn buildable_cell(w: &World) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(SEED, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx) as u16;
-                let cz = (512 + dz) as u16;
+                let cx = (hx + dx) as u16;
+                let cz = (hz + dz) as u16;
                 let (x, z) = cell_center(cx, cz);
                 // Flat ground on both sides of it, so the stranger 9 m off
                 // stands in sight.
