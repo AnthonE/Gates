@@ -1764,7 +1764,20 @@ pub fn dev_spawn_kit(
         return Ok(None);
     };
     let mut kit = sim_core::inventory::SpawnKit::EMPTY;
-    for (i, (id, count)) in spec.iter().enumerate() {
+    for (i, (entry, count)) in spec.iter().enumerate() {
+        // `item.assault_rifle+item.holosight+item.lasersight`: a gun minted
+        // with those attachments on (`attach.rs`), for footage and tests.
+        let mut parts = entry.split('+');
+        let id = parts.next().unwrap_or_default();
+        let mut mods = 0u8;
+        for m in parts {
+            let bit = content
+                .attachments
+                .iter()
+                .position(|a| a.id == m)
+                .ok_or_else(|| format!("dev_spawn_kit: `{m}` is not an attachment"))?;
+            mods |= 1 << bit;
+        }
         let item = content
             .item(id)
             .ok_or_else(|| format!("dev_spawn_kit: no such item `{id}`"))?;
@@ -1779,7 +1792,10 @@ pub fn dev_spawn_kit(
                 item.stack
             ));
         }
-        if spec[..i].iter().any(|(prev, _)| prev == id) {
+        if spec[..i]
+            .iter()
+            .any(|(prev, _)| prev.split('+').next() == Some(id))
+        {
             return Err(format!(
                 "dev_spawn_kit: `{id}` granted twice — the kit writes slots and \
                  never merges, so the second entry overwrites nothing and the \
@@ -1798,6 +1814,15 @@ pub fn dev_spawn_kit(
             cond: u16::try_from(item.condition_max)
                 .map_err(|_| format!("dev_spawn_kit: `{id}` condition_max overflows u16"))?,
             skin: 0,
+            data: if mods == 0 {
+                0
+            } else {
+                sim_core::combat::GunState {
+                    mods,
+                    ..sim_core::combat::GunState::NONE
+                }
+                .data()
+            },
             ..sim_core::gather::ItemStack::EMPTY
         };
         if !kit.set(i, stack) {

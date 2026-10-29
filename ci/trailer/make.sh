@@ -3,6 +3,7 @@
 # its own sounds and footage shot with ci/film.sh:
 #
 #   ci/trailer/make.sh                     # → ci/trailer/out/full-auto.mp4 (1080p) and -720p.mp4
+#   TRAILER=cold-snap ci/trailer/make.sh   # cold-snap.html → out/cold-snap.mp4, its own build dir
 #   ci/trailer/make.sh stills 16,40.5      # just those frames, as JPEGs in build/stills
 #   ci/trailer/make.sh preview             # every 4th frame at 720p, quick to check a cut
 #
@@ -19,7 +20,11 @@ cd "$(dirname "$0")"
 HERE="$PWD"
 GATES="$(cd ../.. && pwd)"
 FORGE="${FORGE:-$GATES/../scry-forge}"
-SHOTS="${SHOTS:-$GATES/film/trailer-full-auto}"
+TRAILER="${TRAILER:-full-auto}"
+PAGE=trailer.html
+[ "$TRAILER" = full-auto ] || PAGE="$TRAILER.html"
+[ -s "$PAGE" ] || { echo "trailer: no $PAGE" >&2; exit 1; }
+SHOTS="${SHOTS:-$GATES/film/trailer-$TRAILER}"
 fail() { echo "trailer: $*" >&2; exit 1; }
 command -v ffmpeg >/dev/null || fail "no ffmpeg"
 command -v node >/dev/null || fail "no node"
@@ -34,6 +39,7 @@ while [ $# -gt 0 ]; do
 done
 
 B="$HERE/build"
+[ "$TRAILER" = full-auto ] || B="$HERE/build-$TRAILER"
 mkdir -p "$B"/{lib,fonts,img,icons,glb,clips,music,snd,node_modules} "$HERE/out"
 
 # three.js r160 and the loaders the game's GLBs need (KTX2 textures)
@@ -47,7 +53,8 @@ for f in build/three.module.js examples/jsm/loaders/GLTFLoader.js examples/jsm/l
 done
 [ -e "$B/node_modules/playwright" ] || ln -sfn "$(npm root -g)/playwright" "$B/node_modules/playwright"
 
-cp trailer.html render.mjs "$B/"
+cp "$PAGE" "$B/trailer.html"
+cp render.mjs "$B/"
 cp "$GATES"/crates/client/fonts/RobotoCondensed-{Bold,Regular}.ttf "$B/fonts/"
 for f in spacegrotesk jbmono; do
   if [ -s "$FORGE/watchtower/fonts/$f.woff2" ]; then cp "$FORGE/watchtower/fonts/$f.woff2" "$B/fonts/"; fi
@@ -57,7 +64,7 @@ done
 M="$GATES/assets/models"
 for m in held/assault_rifle held/semi_automatic_rifle held/bolt_action_rifle held/thompson held/custom_smg \
          held/python_revolver held/semi_automatic_pistol held/pump_shotgun held/rocket_launcher \
-         held/timed_explosive_charge held/rocket held/bandage deploy/planter_box deploy/vending \
+         held/timed_explosive_charge held/rocket held/bandage deploy/planter_box deploy/vending held/auto_turret \
          crops/corn_plant crops/potato_plant crops/pumpkin_vine site/slot_machine \
          held/skins/verdigris_rifle held/skins/verdigris_python held/skins/verdigris_longsword held/skins/verdigris_hatchet \
          held/skins/lapis_thompson held/skins/lapis_bolt_rifle held/skins/lapis_pickaxe held/skins/lapis_mace \
@@ -111,7 +118,8 @@ for s in pd/shot_rifle_0 pd/shot_rifle_2 pd/shot_bolt_0 pd/shot_smg_0 pd/shot_sm
          pd/shot_pistol_3 pd/shot_shotgun_0 pd/shot_rocket_0 pd/reload_rifle_0 pd/impact_metal_2 pd/place_stone_1 \
          pd/place_metal_0 pd/headshot_0 freesound/sentry_lock_0 freesound/blast_0 freesound/blast_1 freesound/splash_0 \
          freesound/splash_2 freesound/bandage_0 freesound/flesh_1 freesound/bush_pick_0 freesound/gate_chime_0 \
-         freesound/collapse_0 kenney/trade_0 kenney/ui_click_0 kenney/equip_1 kenney/impactPlank_medium_002; do
+         freesound/collapse_0 kenney/trade_0 kenney/ui_click_0 kenney/equip_1 kenney/impactPlank_medium_002 \
+         pd/step_snow_0 pd/step_snow_1 pd/step_snow_2 pd/step_snow_3 freesound/bed_wind_0; do
   cp "$GATES/assets/sound/$s.ogg" "$B/snd/$(basename "$s").ogg"
 done
 [ -s "$B/sfx/trailer_boom.wav" ] || python3 "$GATES/ci/film_sfx.py" "$B/sfx" >/dev/null
@@ -138,14 +146,14 @@ if [ "$MODE" = preview ]; then
   TRAILER_STEP=4 node "$B/render.mjs" video "$B/preview.mkv"
   ffmpeg -v error -y -i "$B/preview.mkv" -i "$B/mix.wav" -map 0:v -map 1:a -af "$AF" -ar 48000 \
     -vf scale=1280:720 -r 30 -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p -c:a aac -b:a 160k -shortest \
-    "$HERE/out/full-auto-preview.mp4"
+    "$HERE/out/$TRAILER-preview.mp4"
   ls -la "$HERE"/out/; exit 0
 fi
 
 # In ten-second parts, each its own browser, kept until the cut changes: a
 # render is half an hour, and a part already drawn is not drawn again when
 # a run is cut short. A changed page or footage index starts the parts over.
-STAMP=$(cat trailer.html "$B/clips/index.json" companion.png | sha256sum | cut -c1-16)
+STAMP=$(cat "$PAGE" "$B/clips/index.json" companion.png | sha256sum | cut -c1-16)
 [ "$(cat "$B/parts/.stamp" 2>/dev/null)" = "$STAMP" ] || { rm -rf "$B/parts"; mkdir -p "$B/parts"; echo "$STAMP" > "$B/parts/.stamp"; }
 TOTAL=$(python3 -c "import json; print(json.load(open('$B/cues.json'))['TOTAL'])")
 N=$(python3 -c "import math; print(math.ceil($TOTAL / 10))")
@@ -161,7 +169,7 @@ done
 ffmpeg -v error -y -f concat -safe 0 -i "$B/parts/list.txt" -c copy "$B/silent.mkv"
 ffmpeg -v error -y -i "$B/silent.mkv" -i "$B/mix.wav" -map 0:v -map 1:a -af "$AF" -ar 48000 \
   -c:v libx264 -preset slow -crf 19 -maxrate 8M -bufsize 16M -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest \
-  "$HERE/out/full-auto.mp4"
-ffmpeg -v error -y -i "$HERE/out/full-auto.mp4" -vf scale=1280:720:flags=lanczos -c:v libx264 -preset slow -crf 23 -maxrate 3M -bufsize 6M \
-  -pix_fmt yuv420p -c:a copy -movflags +faststart "$HERE/out/full-auto-720p.mp4"
+  "$HERE/out/$TRAILER.mp4"
+ffmpeg -v error -y -i "$HERE/out/$TRAILER.mp4" -vf scale=1280:720:flags=lanczos -c:v libx264 -preset slow -crf 23 -maxrate 3M -bufsize 6M \
+  -pix_fmt yuv420p -c:a copy -movflags +faststart "$HERE/out/$TRAILER-720p.mp4"
 ls -la "$HERE"/out/

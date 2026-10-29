@@ -14,6 +14,12 @@
 #                 (where the recorder stands, 2336,3086) · --no-charges (the
 #                 raiders are armed by default) · --charge ITEM (what they
 #                 plant, item.satchel_charge) · --seed N · --port N
+#                 · --kit "ITEM:N, ..." (everyone's spawn kit, in place of the
+#                 base kit; `item.assault_rifle+item.holosight:1` comes with
+#                 attachments on) · --env WEATHER,TIME (dev_env) · --turret
+#                 x,z (a powered, loaded auto turret there: server/src/film.rs)
+#                 · --agents N (N scripted kill-on-sight jev-bot agents; the
+#                 tape then spectates one of them instead of standing still)
 #                 The defaults are the tape the lists in ci/film/ were shot on
 #                 (`ci/film.sh record film/zig.rec 1200`): a camp of towers
 #                 150 m down the sunset axis from the Black Ziggurat, raided
@@ -49,6 +55,7 @@ record)
   SECONDS_=600
   case "${1:-}" in ''|*[!0-9.]*) ;; *) SECONDS_="$1"; shift ;; esac
   POPULATION=10; SPAWN="2353,3107"; WALK="2336,3086"; CHARGES=1; CHARGE=item.satchel_charge; SEED=20260731; PORT=4433
+  KIT_SET=""; ENV=""; TURRET=""; AGENTS=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --population) POPULATION="$2"; shift 2 ;;
@@ -58,17 +65,22 @@ record)
       --charge) CHARGE="$2"; shift 2 ;;
       --seed) SEED="$2"; shift 2 ;;
       --port) PORT="$2"; shift 2 ;;
+      --kit) KIT_SET="$2"; shift 2 ;;
+      --env) ENV="$2"; shift 2 ;;
+      --turret) TURRET="$2"; shift 2 ;;
+      --agents) AGENTS="$2"; shift 2 ;;
       *) fail "unknown record option $1" ;;
     esac
   done
-  cargo build --profile "$PROFILE" -p server --bin shard -p client --bin record >/dev/null 2>&1 \
+  cargo build --profile "$PROFILE" -p server --bin shard --bin jev-bot -p client --bin record >/dev/null 2>&1 \
     || fail "the shard or the recorder did not build"
   WORK="$(mktemp -d)"
-  trap '[ -n "${SHARD_PID:-}" ] && kill "$SHARD_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
+  trap '[ -n "${AGENTS_PID:-}" ] && kill "$AGENTS_PID" 2>/dev/null; [ -n "${SHARD_PID:-}" ] && kill "$SHARD_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
   # What a Rust starter base costs (sim_core::bots::STARTER): the owners build
   # one, the raiders carry the same kit and use none of it.
   KIT="item.wood:1000, item.stone:1000, item.hearth:1, item.door_metal:1, item.door_wood:1, item.box_small:1, item.lock_code:1"
   [ "$CHARGES" = 0 ] || KIT="$CHARGE:1, $KIT"
+  [ -z "$KIT_SET" ] || KIT="$KIT_SET"
   cat > "$WORK/film.toml" <<TOML
 bind = "127.0.0.1:$PORT"
 seed = $SEED
@@ -76,8 +88,10 @@ dev_spawn = "$SPAWN"
 dev_spawn_kit = "$KIT"
 require_auth = false
 population = $POPULATION
+dev_heli = false
 TOML
-  "$BIN/shard" "$WORK/film.toml" > "$WORK/shard.log" 2>&1 &
+  [ -z "$ENV" ] || echo "dev_env = \"$ENV\"" >> "$WORK/film.toml"
+  GATES_FILM_TURRET="$TURRET" "$BIN/shard" "$WORK/film.toml" > "$WORK/shard.log" 2>&1 &
   SHARD_PID=$!
   for _ in $(seq 1 240); do
     grep -q "population $POPULATION seated" "$WORK/shard.log" && break
@@ -85,10 +99,19 @@ TOML
     sleep 0.25
   done
   grep -q "population $POPULATION seated" "$WORK/shard.log" || fail "the population never seated"
+  [ -z "$TURRET" ] || grep "film:" "$WORK/shard.log" >&2 || true
   mkdir -p "$(dirname "$TAPE")"
   echo "film: taping $SECONDS_ s of seed $SEED, $POPULATION inhabitants at $SPAWN"
   ARGS=("127.0.0.1:$PORT" "$TAPE" "$SECONDS_")
-  [ -z "$WALK" ] || ARGS+=(--walk "$WALK")
+  if [ "$AGENTS" -gt 0 ]; then
+    "$BIN/jev-bot" --server "127.0.0.1:$PORT" --bots "$AGENTS" --seconds "${SECONDS_%.*}" \
+      --scripted --temperament kos --skill good > "$WORK/agents.log" 2>&1 &
+    AGENTS_PID=$!
+    sleep 10
+    ARGS+=(--spectate any)
+  elif [ -n "$WALK" ]; then
+    ARGS+=(--walk "$WALK")
+  fi
   "$BIN/record" "${ARGS[@]}"
   ;;
 

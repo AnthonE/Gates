@@ -5135,6 +5135,17 @@ fn sim_thread(
     if let Some((weather, time_pm)) = dev_env {
         core.queue_env(weather, time_pm);
     }
+    // Footage only (`film.rs`): a powered, loaded auto turret, built before
+    // the first player joins.
+    if let Some(spec) = std::env::var("GATES_FILM_TURRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        match crate::film::stage_turret_spec(&mut core.world, &spec) {
+            Ok(said) => println!("⚠ film: {said} — a DEV shard, never a public one"),
+            Err(e) => eprintln!("film: {e}"),
+        }
+    }
     // The world-save buffer pool. Allocated here, once, and never again:
     // every later save fills one of these and hands the box to the store
     // thread, which hands the box back. Wall 2 counts the tick, and the tick
