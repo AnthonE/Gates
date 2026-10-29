@@ -38,3 +38,22 @@ fn the_film_turret_stands_powered_and_shoots_a_stranger() {
         core.world.players[s].hp
     );
 }
+
+/// Ground heights for a shot list: `FILM_POINTS="x,z x,z …" cargo test -p
+/// server --test film_stage heights -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn heights() {
+    let haven = haven();
+    for p in std::env::var("FILM_POINTS")
+        .unwrap_or_default()
+        .split_whitespace()
+    {
+        let (x, z) = p.split_once(',').unwrap();
+        let (x, z) = (x.parse::<f32>().unwrap(), z.parse::<f32>().unwrap());
+        println!(
+            "{x},{z} ground {:.1}",
+            sim_core::terrain::ground(SEED, &haven, x, z)
+        );
+    }
+}
