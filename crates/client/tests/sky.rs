@@ -459,7 +459,10 @@ fn the_sky_fog_meets_the_ground_fog_at_the_horizon() {
 }
 
 const DESERT: (f32, f32) = (2048.0, 3400.0);
-const MEADOW: (f32, f32) = (1500.0, 600.0);
+/// Mild ground, searched for rather than typed (`sim_core::find`).
+fn meadow() -> (f32, f32) {
+    sim_core::find::ground(SEED, (1500.0, 600.0), 8.0, |_, _| true)
+}
 
 /// A dry wind of `wind` blowing toward `toward`, under overcast at noon.
 fn dry_wind(wind: f32, toward: bevy::math::Vec2) -> client::render::weather::WeatherNow {
@@ -484,7 +487,7 @@ fn dust_rides_a_dry_wind_over_the_sand_and_nowhere_else() {
     use client::render::weather::dust_at;
     use sim_core::terrain::aridity;
     let (dx, dz) = DESERT;
-    let (mx, mz) = MEADOW;
+    let (mx, mz) = meadow();
     assert_eq!(aridity(SEED, dx, dz), 1.0, "the desert point is not desert");
     assert_eq!(aridity(SEED, mx, mz), 0.0, "the meadow point is arid");
     // Blowing north: off the desert's interior, not in off the sea.

@@ -575,7 +575,9 @@ const TICKS: u64 = 900;
 /// the rounds in flight and every gun's attachments.
 /// **Moved → `0x749F_8C17_A776_9F59` at item data** (2026-10-24, wipe): every stack
 /// hashes twelve bytes, a gun's magazine is its own.
-const GOLDEN_FINAL_HASH: u64 = 0x749F_8C17_A776_9F59;
+/// **Moved → `0x6E32_1378_5023_F85A` at the cold** (2026-10-25, wipe): the
+/// arctic's beaches are no spawn, and its air and the Snow row are the world's.
+const GOLDEN_FINAL_HASH: u64 = 0x6E32_1378_5023_F85A;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -708,7 +710,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x749F_8C17_A776_9F59;
 /// **Moved → `0xDA37_9171_8DEE_3E80` at bullets and attachments** (2026-10-23,
 /// wipe), with the final hash.
 /// **Moved → `0x3102_AD7D_3CB4_FC60` at item data** (2026-10-24, wipe), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x3102_AD7D_3CB4_FC60;
+/// **Moved → `0xE3FD_5E28_2574_C4CD` at the cold** (2026-10-25, wipe), with
+/// `GOLDEN_FINAL_HASH`.
+const GOLDEN_TRACE_HASH: u64 = 0xE3FD_5E28_2574_C4CD;
 
 /// Fold a stamped trace into one number.
 ///

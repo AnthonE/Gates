@@ -103,14 +103,15 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 /// that, a scatter occupant it had never been told about.
 fn buildable_cell(seed: u64) -> (u16, u16) {
     let table = sim_core::terrain::ScatterTable::alpha_default();
+    let (hx, hz) = sim_core::find::build_hint(seed, 500, 500);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (500 + dx).clamp(0, 2047) as u16;
-                let cz = (500 + dz).clamp(0, 2047) as u16;
+                let cx = (hx + dx).clamp(0, 2047) as u16;
+                let cz = (hz + dz).clamp(0, 2047) as u16;
                 if cx == cz {
                     continue;
                 }

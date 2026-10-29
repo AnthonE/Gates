@@ -1,0 +1,450 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Gates: Cold Snap</title>
+<script type="importmap">{"imports":{"three":"./lib/build/three.module.js","three/addons/":"./lib/examples/jsm/"}}</script>
+<style>
+@font-face { font-family: "Cond"; src: url(fonts/RobotoCondensed-Bold.ttf); font-weight: 700; }
+@font-face { font-family: "Cond"; src: url(fonts/RobotoCondensed-Regular.ttf); font-weight: 400; }
+@font-face { font-family: "SG"; src: url(fonts/spacegrotesk.woff2) format("woff2"), url(fonts/RobotoCondensed-Regular.ttf); font-weight: 400 700; }
+@font-face { font-family: "JB"; src: url(fonts/jbmono.woff2) format("woff2"), url(fonts/RobotoCondensed-Bold.ttf); font-weight: 100 800; }
+html, body { margin: 0; background: #000; overflow: hidden; }
+#stage { position: relative; width: 1920px; height: 1080px; background: #000; }
+#stage canvas { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+</style></head>
+<body>
+<div id="stage">
+  <canvas id="bg" width="1920" height="1080"></canvas>
+  <canvas id="gl" width="1920" height="1080"></canvas>
+  <canvas id="fg" width="1920" height="1080"></canvas>
+</div>
+<script type="module">
+// The Cold Snap update trailer. Every frame is a pure function of t: window.seek(t)
+// draws it, render.mjs screenshots it, mix.py lays the audio on the cue list
+// this file exports. Footage is the game's own, shot with ci/film.sh; the 3D
+// models are the game's own GLBs; every number on screen is content/*.toml's.
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const W = 1920, H = 1080, FPS = 30;
+const B = 0.65;                          // one beat of Green Veil (~92 bpm)
+const DROP = 24 * B;                     // where the title lands
+const MUSIC_AT = 41.6 - DROP;            // Green Veil offset that lands its kick on DROP
+const Q = new URLSearchParams(location.search);
+
+const C = {
+  bg: '#090b08', panel: '#151a12', pit: '#10140d', line: '#2c3426', ink: '#ece9e1',
+  muted: '#a7a397', mark: '#86b834', markHi: '#b6e85a', blood: '#d0352b', gold: '#e4bb52',
+  verd: '#5df29a', lapis: '#5b86ff', tide: '#36c2b4',
+};
+
+const bg = document.getElementById('bg').getContext('2d');
+const fg = document.getElementById('fg').getContext('2d');
+
+// ── math ──────────────────────────────────────────────────────────────────
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const ramp = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, u) => a + (b - a) * u;
+const E = {
+  out: u => 1 - Math.pow(1 - u, 3),
+  in: u => u * u * u,
+  io: u => (u < .5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2),
+  back: u => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); },
+  expo: u => (u >= 1 ? 1 : 1 - Math.pow(2, -10 * u)),
+};
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+// ── assets ────────────────────────────────────────────────────────────────
+const IMG = {}, ICON = {}, CLIPS = {};
+const loadImg = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error(src)); i.src = src; });
+const STILLS = { storm: 'play-storm', wolves: 'play-wolves', raiders: 'play-raiders', raid: 'play-raid-satchel' };
+const ICONS = ['holosight', '8x_zoom_scope', 'silencer', 'muzzle_brake', 'muzzle_boost', 'weapon_lasersight', 'weapon_flashlight', 'extended_magazine', 'hv_5_56_rifle_ammo', 'incendiary_5_56_ammo', 'explosive_5_56_ammo', '12_gauge_slug', 'handmade_shell', 'small_generator', 'large_solar_panel', 'large_battery', 'switch', 'splitter', 'ceiling_light'];
+
+// ── drawing helpers ───────────────────────────────────────────────────────
+const BOX = { y: 138, h: 804 };         // the 2.39:1 picture inside the letterbox
+function cover(ctx, img, x, y, w, h, z = 1, px = 0, py = 0) {
+  const s = Math.max(w / img.width, h / img.height) * z;
+  const iw = img.width * s, ih = img.height * s;
+  ctx.drawImage(img, x + (w - iw) / 2 + px * (iw - w) / 2, y + (h - ih) / 2 + py * (ih - h) / 2, iw, ih);
+}
+function still(ctx, k, u, o = {}) {
+  const { z0 = 1.04, z1 = 1.12, x0 = 0, x1 = 0, y0 = 0, y1 = 0, grade = 'brightness(.8) contrast(1.08) saturate(.92)', full = false } = o;
+  const y = full ? 0 : BOX.y, h = full ? H : BOX.h;
+  if (!IMG[k]) { ctx.fillStyle = '#111'; ctx.fillRect(0, y, W, h); return; }
+  ctx.save(); ctx.beginPath(); ctx.rect(0, y, W, h); ctx.clip(); ctx.filter = grade;
+  cover(ctx, IMG[k], 0, y, W, h, lerp(z0, z1, u), lerp(x0, x1, u), lerp(y0, y1, u));
+  ctx.restore();
+}
+// Footage: the shot's frames if it was filmed, else its stand-in still with a
+// slow push. `lt` is screen seconds into the scene, `speed` retimes the clip.
+function foot(ctx, name, lt, d, o = {}) {
+  const { speed = 1, from = 0, grade = 'contrast(1.04)', fallback = 'aerial', still: so = {}, full = false } = o;
+  const fr = CLIPS[name];
+  if (fr && fr.length) {
+    const i = clamp(Math.floor((from + lt * speed) * FPS), 0, fr.length - 1);
+    ctx.save(); ctx.filter = grade;
+    if (full) cover(ctx, fr[i], 0, 0, W, H, 1.0);
+    else ctx.drawImage(fr[i], 0, BOX.y, W, BOX.h);
+    ctx.restore();
+  } else still(ctx, fallback, clamp(lt / d), { ...so, full });
+}
+const FONT = { cond: (s, w) => `${w || 700} ${s}px Cond`, sg: (s, w) => `${w || 500} ${s}px SG`, mono: (s, w) => `${w || 600} ${s}px JB` };
+function text(ctx, s, x, y, o = {}) {
+  const { kind = 'cond', size = 96, weight, color = C.ink, align = 'center', base = 'alphabetic', track = 0, alpha = 1, shadow = 0, glow = null, scale = 1, glowR = 48 } = o;
+  if (alpha <= 0.002) return;
+  ctx.save(); ctx.globalAlpha = clamp(alpha); ctx.font = FONT[kind](size, weight); ctx.textAlign = align; ctx.textBaseline = base;
+  ctx.letterSpacing = track + 'px'; ctx.fillStyle = color;
+  if (shadow) { ctx.shadowColor = 'rgba(0,0,0,.75)'; ctx.shadowBlur = shadow; ctx.shadowOffsetY = shadow / 5; }
+  if (glow) { ctx.shadowColor = glow; ctx.shadowBlur = glowR; }
+  const dx = track ? (align === 'center' ? track / 2 : align === 'right' ? track : 0) : 0;
+  if (scale !== 1) { ctx.translate(x, y); ctx.scale(scale, scale); ctx.fillText(s, dx, 0); } else ctx.fillText(s, x + dx, y);
+  ctx.restore();
+}
+function measure(s, kind, size, weight, track = 0) {
+  fg.save(); fg.font = FONT[kind](size, weight); fg.letterSpacing = track + 'px';
+  const w = fg.measureText(s).width - track; fg.restore(); return w;
+}
+// in at `at`, out over the scene's last `out` seconds
+function rv(L, at, len = .42, out = .2) {
+  const a = E.out(ramp(L.t, at, at + len)), o = 1 - ramp(L.t, L.d - out, L.d);
+  return { a: a * o, dy: (1 - a) * 28 };
+}
+function caption(L, lines, o = {}) {
+  const { y = 790, size = 88, at = .15, step = .45, color = C.ink, track = 3, lh = 1.06, align = 'center', x = W / 2, shadow = 34, ctx = fg } = o;
+  lines.forEach((ln, i) => {
+    const s = typeof ln === 'string' ? { s: ln } : ln; const r = rv(L, s.at ?? at + i * step);
+    text(ctx, s.s, x, y + i * size * lh + r.dy, { size: s.size || size, color: s.color || color, align, track, alpha: r.a, shadow, glow: s.glow });
+  });
+}
+// the line in the bottom letterbox bar, or under a graphic
+function sub(L, s, o = {}) {
+  const { y = 1022, at = .7, size = 34, color = C.muted, x = W / 2, align = 'center', ctx = fg, weight = 500 } = o;
+  const r = rv(L, at); text(ctx, s, x, y + r.dy * .4, { kind: 'sg', size, weight, color, align, alpha: r.a });
+}
+function rrect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function chip(ctx, x, y, s, o = {}) {
+  const { color = C.ink, size = 30, alpha = 1, fill = 'rgba(10,12,9,.76)', kind = 'sg', weight = 700, track = 2, icon = null, dot = null, h = size * 1.9 } = o;
+  if (alpha <= 0) return 0;
+  const tw = measure(s, kind, size, weight, track), iw = icon ? h * .78 + 12 : dot ? 26 : 0, w = tw + iw + size * 1.3;
+  ctx.save(); ctx.globalAlpha = clamp(alpha);
+  rrect(ctx, x - w / 2, y - h / 2, w, h, 4); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+  let tx = x - w / 2 + size * .65;
+  if (icon) { ctx.drawImage(icon, tx - 4, y - h * .39, h * .78, h * .78); tx += iw; }
+  if (dot) { ctx.beginPath(); ctx.arc(tx + 7, y, 7, 0, 7); ctx.fillStyle = dot; ctx.fill(); tx += iw; }
+  ctx.restore();
+  text(ctx, s, tx, y + size * .36, { kind, size, weight, color, align: 'left', track, alpha });
+  return w;
+}
+function chipW(s, o = {}) {
+  const { size = 30, kind = 'sg', weight = 700, track = 2, icon = null, dot = null, h = size * 1.9 } = o;
+  return measure(s, kind, size, weight, track) + (icon ? h * .78 + 12 : dot ? 26 : 0) + size * 1.3;
+}
+function ground(ctx, glow = null, gx = W / 2, gy = H / 2, gr = 900) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  if (glow) { const g = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr); g.addColorStop(0, glow); g.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+}
+function panel(ctx, x, y, w, h, alpha = 1, stroke = C.line, fill = 'rgba(21,26,18,.94)') {
+  if (alpha <= 0) return; ctx.save(); ctx.globalAlpha = clamp(alpha);
+  rrect(ctx, x, y, w, h, 6); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+}
+function shade(ctx, y0, y1, a0, a1) {   // a vertical darkening band behind type
+  const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, `rgba(0,0,0,${a0})`); g.addColorStop(1, `rgba(0,0,0,${a1})`);
+  ctx.fillStyle = g; ctx.fillRect(0, y0, W, y1 - y0);
+}
+
+// ── 3D: the game's own models ─────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.autoClear = false; renderer.setClearColor(0x000000, 0);
+const ENV = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+const ktx = new KTX2Loader().setTranscoderPath('./lib/examples/jsm/libs/basis/').detectSupport(renderer);
+const gltf = new GLTFLoader().setKTX2Loader(ktx);
+const loadGLB = url => new Promise((res, rej) => gltf.load(url, g => res(g.scene), undefined, rej));
+function prep(obj, env = .6) {
+  obj.traverse(m => { if (m.isMesh && m.material) { const ms = Array.isArray(m.material) ? m.material : [m.material]; ms.forEach(x => { x.envMapIntensity = env; }); } });
+  return obj;
+}
+// Lay a held model on its long axis along X, centred, scaled to `size` metres
+// long: a gun reads as a gun whichever way its file was authored.
+function lay(obj, size, upright = false) {
+  let b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3());
+  const inner = new THREE.Group(); inner.add(obj);
+  // The game's held models run their length along +Y with their top along +Z
+  // (a gun's sights, a blade's edge): stand the top up and lay the length on X,
+  // or, `upright`, keep the length standing and turn the edge to the side.
+  if (upright) inner.rotation.y = Math.PI / 2;
+  else if (s.y >= s.x && s.y >= s.z) inner.rotation.set(-Math.PI / 2, Math.PI / 2, 0, 'YXZ');
+  else if (s.z >= s.x && s.z >= s.y) inner.rotation.y = Math.PI / 2;
+  const mid = new THREE.Group(); mid.add(inner);
+  b = new THREE.Box3().setFromObject(mid); s = b.getSize(new THREE.Vector3());
+  const c = b.getCenter(new THREE.Vector3()); inner.position.sub(c);
+  const pivot = new THREE.Group(); pivot.add(mid); pivot.scale.setScalar(size / Math.max(s.x, s.y, s.z));
+  return pivot;
+}
+// Stand a model on the floor at its centre, scaled to `size` metres tall.
+function stand(obj, size) {
+  const b = new THREE.Box3().setFromObject(obj), s = b.getSize(new THREE.Vector3()), c = b.getCenter(new THREE.Vector3());
+  obj.position.set(-c.x, -b.min.y, -c.z);
+  const pivot = new THREE.Group(); pivot.add(obj); if (size) pivot.scale.setScalar(size / s.y);
+  return pivot;
+}
+function stage(keyCol = 0xfff0d8, rimCol = 0x9fd14a) {
+  const s = new THREE.Scene(); s.environment = ENV;
+  const hemi = new THREE.HemisphereLight(0xd6e4ff, 0x1c2410, .45);
+  const key = new THREE.DirectionalLight(keyCol, 2.6); key.position.set(2.0, 3, 2.6);
+  const rim = new THREE.DirectionalLight(rimCol, 2.2); rim.position.set(-2.6, 1.4, -2.4);
+  s.add(hemi, key, rim);
+  return { s, hemi, key, rim };
+}
+const cam = new THREE.PerspectiveCamera(30, W / H, .01, 100);
+function shoot(st, rect, pos, look, fov = 30) {
+  const [x, y, w, h] = rect;
+  cam.fov = fov; cam.aspect = w / h; cam.position.set(...pos); cam.lookAt(...look); cam.updateProjectionMatrix();
+  renderer.setViewport(x, H - y - h, w, h); renderer.setScissor(x, H - y - h, w, h); renderer.setScissorTest(true);
+  renderer.render(st.s, cam); renderer.setScissorTest(false);
+}
+const ICE = '#9fd8ff', ICE_HI = '#d4f0ff', ICE_GLOW = 'rgba(159,216,255,.55)';
+const S3 = {};
+async function build3D() {
+  S3.hero = stage(0xeaf4ff, 0x9fd8ff); S3.hero.obj = lay(prep(await loadGLB('glb/assault_rifle.glb'), .8), 1.6); S3.hero.s.add(S3.hero.obj);
+  S3.turret = stage(0xeaf4ff, 0x9fd8ff); S3.turret.key.position.set(2.2, 3.4, 2.4);
+  S3.turret.obj = stand(prep(await loadGLB('glb/auto_turret.glb'), .7), 1.0); S3.turret.s.add(S3.turret.obj);
+}
+
+// Icons on a grid: each pops in on its own beat, name under it.
+function iconGrid(L, items, o = {}) {
+  const { x0 = 1000, y0 = 300, cols = 4, cell = 200, gap = 26, at = .2, step = .09, size = 26 } = o;
+  items.forEach(([name, ic, note], i) => {
+    const r = rv(L, at + i * step, .3), cx = x0 + (i % cols) * (cell + gap), cy = y0 + Math.floor(i / cols) * (cell + gap + 70) + r.dy;
+    panel(fg, cx, cy, cell, cell, r.a, i % 3 === 0 ? ICE : C.line, 'rgba(14,20,26,.92)');
+    if (ICON[ic] && r.a > 0) { fg.save(); fg.globalAlpha = r.a; fg.drawImage(ICON[ic], cx + 24, cy + 18, cell - 48, cell - 48); fg.restore(); }
+    text(fg, name, cx + cell / 2, cy + cell + 36, { kind: 'sg', size, weight: 700, color: C.ink, track: 2, alpha: r.a });
+    if (note) text(fg, note, cx + cell / 2, cy + cell + 66, { kind: 'sg', size: size - 6, weight: 500, color: ICE, track: 1, alpha: r.a });
+  });
+}
+// A footage window inside a frame, for the split scenes: drawn on `bg`,
+// cropped by the source rectangle (no clip, no filter).
+function window_(name, L, x, y, w, h, o = {}) {
+  const fr = CLIPS[name], a = rv(L, 0, .3).a;
+  const img = fr && fr.length ? fr[clamp(Math.floor(((o.from || 0) + L.t * (o.speed || 1)) * FPS), 0, fr.length - 1)] : IMG[o.fallback || 'raiders'];
+  if (a <= 0) return;
+  bg.save(); bg.globalAlpha = a;
+  if (img) {
+    const s = Math.min(img.width / w, img.height / h), sw = w * s, sh = h * s;
+    bg.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, x, y, w, h);
+  }
+  bg.strokeStyle = ICE; bg.lineWidth = 2; bg.strokeRect(x, y, w, h);
+  bg.restore();
+}
+
+// ── the scenes ────────────────────────────────────────────────────────────
+// b: [start beat, end beat] on Green Veil's grid. Footage names are the shot
+// names in ci/film/cold-snap.json.
+const SCENES = [
+  // cold open: footage, one sentence across four cuts, the build to the drop
+  { id: 'c1-south', b: [0, 6], box: true, draw(L) {
+    foot(bg, 'snow-open', L.t, L.d, { fallback: 'storm', grade: 'contrast(1.06) saturate(.9)', still: { z0: 1.12, z1: 1.04 } });
+    caption(L, ['THE ISLAND FROZE OVER,'], { y: 800, size: 82, at: .6, track: 5 });
+  } },
+  { id: 'c2-peaks', b: [6, 12], box: true, draw(L) {
+    foot(bg, 'turret-a', L.t, L.d, { fallback: 'wolves', grade: 'contrast(1.06) saturate(.9)', still: { z0: 1.04, z1: 1.14 } });
+    caption(L, ['THE TURRETS WOKE UP,'], { y: 800, size: 82, at: .3, track: 5 });
+  } },
+  { id: 'c3-fight', b: [12, 18], box: true, draw(L) {
+    foot(bg, 'fight-a', L.t, L.d, { fallback: 'raiders', still: { z0: 1.14, z1: 1.04, x0: .2 } });
+    caption(L, ['AND THE BULLETS'], { y: 800, size: 82, at: .25, track: 5 });
+  } },
+  { id: 'c4-fly', b: [18, 24], draw(L) {
+    bg.fillStyle = '#03050a'; bg.fillRect(0, 0, W, H);
+    const u = L.t / L.d, h = S3.hero;
+    h.key.intensity = lerp(0, 3.0, E.io(ramp(L.t, .1, L.d - .4))); h.rim.intensity = lerp(0, 2.8, E.io(ramp(L.t, .8, L.d))); h.hemi.intensity = lerp(0, .3, u);
+    h.obj.rotation.y = lerp(-1.1, -.35, E.io(u)); h.obj.rotation.x = .05;
+    shoot(h, [0, 120, W, 720], [0, .3, lerp(2.3, 1.7, u)], [0, 0, 0], 30);
+    caption(L, ['STARTED TO', { s: 'FLY.', color: ICE_HI }], { y: 860, size: 82, at: .5, step: 1.0, track: 5 });
+  } },
+  // the drop
+  { id: 's1-title', b: [24, 32], draw(L) {
+    ground(bg, 'rgba(159,216,255,.20)', W / 2, 470, 980);
+    const h = S3.hero; h.key.intensity = 3.0; h.rim.intensity = 2.8; h.hemi.intensity = .4;
+    h.obj.rotation.y = -.35 + L.t * .55; h.obj.rotation.x = .05;
+    const k = Math.exp(-L.t * 7) * .05;
+    shoot(h, [0, 60, W, 640], [Math.sin(L.t * 90) * k, .28 + Math.cos(L.t * 77) * k, lerp(1.45, 1.3, L.t / L.d)], [0, 0, 0], 30);
+    const s = lerp(1.22, 1, E.expo(ramp(L.t, 0, .5))), a = ramp(L.t, 0, .1) * (1 - ramp(L.t, L.d - .2, L.d));
+    text(fg, 'COLD SNAP', W / 2, 820, { size: 236, track: 22, alpha: a, scale: s, shadow: 30, glow: ICE_GLOW, glowR: 70 });
+    const r1 = rv(L, .9);
+    const tw = measure('THE NEW GATES UPDATE', 'sg', 40, 600, 6);
+    if (IMG.sigil) { fg.save(); fg.globalAlpha = r1.a; fg.drawImage(IMG.sigil, W / 2 - tw / 2 - 50, 882 + r1.dy, 54, 54); fg.restore(); }
+    text(fg, 'THE NEW GATES UPDATE', W / 2 + 32, 922 + r1.dy, { kind: 'sg', size: 40, weight: 600, color: C.muted, track: 6, alpha: r1.a });
+  } },
+  { id: 's2-mods', b: [32, 40], draw(L) {
+    ground(bg, 'rgba(159,216,255,.10)', 1400, 560, 900);
+    window_('fight-b', L, 90, 250, 840, 560, { fallback: 'raiders' });
+    caption(L, ['MOD YOUR GUN.'], { y: 190, size: 96, at: .05, track: 6, shadow: 0, align: 'left', x: 90 });
+    iconGrid(L, [['HOLOSIGHT', 'holosight'], ['8X SCOPE', '8x_zoom_scope'], ['SILENCER', 'silencer'], ['MUZZLE BRAKE', 'muzzle_brake'],
+      ['MUZZLE BOOST', 'muzzle_boost'], ['LASERSIGHT', 'weapon_lasersight'], ['FLASHLIGHT', 'weapon_flashlight'], ['EXTENDED MAG', 'extended_magazine']],
+      { x0: 1010, y0: 250, cols: 4, cell: 176, gap: 22, at: .3, step: .11, size: 22 });
+    sub(L, 'Sights, muzzles, lasers, lights and bigger magazines. Everyone sees your beam.', { y: 1000, at: 1.4 });
+  } },
+  { id: 's3-rounds', b: [40, 46], box: true, draw(L) {
+    foot(bg, 'fight-c', L.t, L.d, { fallback: 'raid', grade: 'brightness(.75) contrast(1.08)', still: { z0: 1.1, z1: 1.02 } });
+    shade(bg, BOX.y + BOX.h - 360, BOX.y + BOX.h, 0, .7);
+    caption(L, ['BULLETS FLY', { s: 'AND DROP.', color: ICE_HI }], { y: 640, size: 92, at: .1, step: .6, track: 6 });
+    const chips = [['HV', 'hv_5_56_rifle_ammo'], ['INCENDIARY', 'incendiary_5_56_ammo'], ['EXPLOSIVE', 'explosive_5_56_ammo'], ['SLUG', '12_gauge_slug'], ['HANDMADE', 'handmade_shell']];
+    const ws = chips.map(([s, ic]) => chipW(s, { icon: ICON[ic], size: 28 }));
+    let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + (chips.length - 1) * 22) / 2;
+    chips.forEach(([s, ic], i) => { const r = rv(L, .9 + i * .14), o = { icon: ICON[ic], size: 28, alpha: r.a, color: i === 2 ? '#ffb27a' : C.ink }; chip(fg, x + ws[i] / 2, 880 + r.dy, s, o); x += ws[i] + 22; });
+    sub(L, 'Eleven new rounds. Every shot takes time to land.', { at: 1.6 });
+  } },
+  { id: 's4-turret', b: [46, 54], box: true, draw(L) {
+    foot(bg, 'turret', L.t, L.d, { fallback: 'raiders', grade: 'contrast(1.08)', still: { z0: 1.04, z1: 1.14 } });
+    shade(bg, BOX.y + BOX.h - 330, BOX.y + BOX.h, 0, .6);
+    caption(L, ['IT FIRES THE GUN', { s: 'YOU GIVE IT.', color: ICE_HI }], { y: 760, size: 92, at: .2, step: .7, track: 6 });
+    sub(L, 'Auto turrets take any gun and its ammo, spare their list, and run on 10 power.', { at: 1.4 });
+  } },
+  { id: 's5-power', b: [54, 60], draw(L) {
+    ground(bg, 'rgba(159,216,255,.12)', 520, 560, 820);
+    const t = S3.turret, u = L.t / L.d; t.key.intensity = 2.8; t.rim.intensity = 2.6; t.hemi.intensity = .45;
+    t.obj.rotation.y = lerp(-.9, .3, E.io(u));
+    shoot(t, [40, 140, 940, 800], [0, .8, 2.1], [0, .48, 0], 30);
+    caption(L, ['WIRE YOUR BASE.'], { y: 230, size: 100, at: .05, track: 6, shadow: 0, align: 'left', x: 1000 });
+    iconGrid(L, [['GENERATOR', 'small_generator', '40 POWER'], ['SOLAR PANEL', 'large_solar_panel', '20 BY DAY'], ['BATTERY', 'large_battery', 'STORES 24,000'],
+      ['SWITCH', 'switch'], ['SPLITTER', 'splitter'], ['LIGHT', 'ceiling_light']],
+      { x0: 1000, y0: 310, cols: 3, cell: 170, gap: 40, at: .3, step: .12, size: 22 });
+  } },
+  { id: 's6-more', b: [60, 66], box: true, draw(L) {
+    foot(bg, 'snow-walk', L.t, L.d, { fallback: 'storm', grade: 'brightness(.42) contrast(1.05) saturate(.85)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
+    caption(L, ['AND A LOT MORE.'], { y: 300, size: 96, at: .02, track: 6 });
+    const items = ['SIGN IN WITH ELO PROS', 'F9 CLIPS', 'WATCH AN AGENT', 'HIDE HOOD', 'POWER GRIDS', 'PEACEKEEPER TURRETS',
+      'STRONGBOX', 'BULKHEAD DOOR', 'PUMP RUG', 'SOLANA WALLETS', '34 NEW MODELS', 'RAW MOUSE'];
+    const perRow = [4, 4, 4]; let n = 0;
+    perRow.forEach((cnt, row) => {
+      const row_items = items.slice(n, n + cnt); n += cnt;
+      const ws = row_items.map(s => chipW(s, { size: 30, kind: 'cond', track: 3 }));
+      let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + (cnt - 1) * 22) / 2;
+      row_items.forEach((s, i) => {
+        const at = .3 + (row * 4 + i) * .1, p = ramp(L.t, at, at + .2), o = { size: 30, kind: 'cond', track: 3, alpha: E.out(p) * (1 - ramp(L.t, L.d - .2, L.d)), color: (row + i) % 3 === 0 ? ICE_HI : C.ink };
+        chip(fg, x + ws[i] / 2, 470 + row * 104 - (1 - E.back(p)) * 20, s, o); x += ws[i] + 22;
+      });
+    });
+  } },
+  { id: 's7-end', b: [66, 80], draw(L) {
+    foot(bg, 'snow-open', L.t, L.d, { full: true, speed: .4, fallback: 'storm', grade: 'brightness(.32) contrast(1.05) saturate(.75) blur(4px)', still: { full: true, z0: 1.08, z1: 1.02, grade: 'brightness(.3) contrast(1.05) saturate(.7) blur(5px)' } });
+    const pc = ramp(L.t, .1, .5);
+    if (IMG.sigil) { fg.save(); fg.globalAlpha = pc; const s = lerp(.8, 1, E.back(pc)), sz = 190 * s; fg.shadowColor = ICE_GLOW; fg.shadowBlur = 60; fg.drawImage(IMG.sigil, 560 - sz / 2, 400 - sz / 2, sz, sz); fg.restore(); }
+    const r0 = rv(L, .3, .45, .01); text(fg, 'GATES', 700, 470 + r0.dy, { size: 220, track: 16, align: 'left', alpha: r0.a, shadow: 24 });
+    const r1 = rv(L, .7, .45, .01); text(fg, 'COLD SNAP', 708, 560 + r1.dy, { size: 64, track: 14, align: 'left', color: ICE_HI, alpha: r1.a, glow: ICE_GLOW });
+    const r2 = rv(L, 1.5, .45, .01);
+    fg.save(); fg.globalAlpha = r2.a; fg.fillStyle = C.line; fg.fillRect(W / 2 - 520, 680, 1040, 2); fg.restore();
+    text(fg, 'PLAY FREE IN YOUR BROWSER', W / 2, 780 + r2.dy, { size: 66, track: 8, alpha: r2.a, shadow: 20 });
+    text(fg, 'elopros.com/games/gates', W / 2, 852 + r2.dy, { kind: 'mono', size: 44, weight: 600, color: ICE_HI, alpha: r2.a });
+    const r3 = rv(L, 2.6, .5, .01); text(fg, 'Fresh wipe, 30 October.', W / 2, 980 + r3.dy * .4, { kind: 'sg', size: 34, color: C.gold, alpha: r3.a });
+  } },
+];
+for (const s of SCENES) { const [a, b] = s.b.map(x => x * B); s.t0 = a; s.d = b - a; }
+const TOTAL = SCENES[SCENES.length - 1].t0 + SCENES[SCENES.length - 1].d;
+const at = id => SCENES.find(s => s.id === id).t0;
+const FLASHES = [
+  [DROP, .5, '#fff', .9],
+  [at('s4-turret'), .25, '#d4f0ff', .35],
+  [at('s7-end'), .5, '#fff', .5],
+];
+
+// the audio cue list mix.py lays down, in trailer seconds
+const CUES = {
+  total: TOTAL,
+  music: [
+    { src: 'music/green_veil.ogg', at: 0, in: MUSIC_AT, len: TOTAL + .1, gain: 1.0, fade_in: 1.2, fade_out: 2.2 },
+    { src: 'sfx/trailer_drone.wav', at: 0, in: 0, len: DROP, gain: .35, fade_in: 1.0, fade_out: .4 },
+    { src: 'snd/bed_wind_0.ogg', at: 0, in: 0, len: at('c3-fight'), gain: .5, fade_in: .8, fade_out: .6 },
+  ],
+  sfx: [
+    ...[0, 1, 2, 3, 4, 5].map(i => ({ src: `snd/step_snow_${i % 4}.ogg`, at: at('c1-south') + .4 + i * .42, gain: .45 })),
+    { src: 'snd/sentry_lock_0.ogg', at: at('c2-peaks') + .3, gain: .7 },
+    ...[0, 1, 2, 3].map(i => ({ src: 'snd/shot_rifle_2.ogg', at: at('c2-peaks') + 1.4 + i * .133, gain: .45 })),
+    ...[0, 1, 2, 3, 4].map(i => ({ src: 'snd/shot_rifle_0.ogg', at: at('c3-fight') + .5 + i * .14, gain: .55 })),
+    { src: 'sfx/trailer_riser.wav', at: DROP - 6.0, gain: .5 },
+    { src: 'snd/reload_rifle_0.ogg', at: at('c4-fly') + 1.4, gain: .9 },
+    { src: 'sfx/trailer_boom.wav', at: DROP, gain: 1.0 },
+    { src: 'snd/shot_rifle_0.ogg', at: DROP, gain: .9 },
+    { src: 'sfx/trailer_braam.wav', at: DROP + .02, gain: .55 },
+    ...[0, 1, 2, 3, 4, 5, 6, 7].map(i => ({ src: 'snd/equip_1.ogg', at: at('s2-mods') + .3 + i * .11, gain: .35 })),
+    ...[0, 1, 2, 3, 4].map(i => ({ src: 'snd/ui_click_0.ogg', at: at('s3-rounds') + .9 + i * .14, gain: .4 })),
+    { src: 'snd/shot_bolt_0.ogg', at: at('s3-rounds') + .1, gain: .7 },
+    { src: 'snd/sentry_lock_0.ogg', at: at('s4-turret') + .05, gain: .8 },
+    ...[0, 1, 2, 3, 4, 5].map(i => ({ src: 'snd/shot_rifle_2.ogg', at: at('s4-turret') + .7 + i * .133, gain: .6 })),
+    { src: 'snd/place_metal_0.ogg', at: at('s5-power') + .1, gain: .7 },
+    ...[0, 1, 2, 3, 4, 5].map(i => ({ src: 'snd/ui_click_0.ogg', at: at('s5-power') + .3 + i * .12, gain: .35 })),
+    ...[0, 1, 2, 3, 4, 5, 6].map(i => ({ src: 'snd/ui_click_0.ogg', at: at('s6-more') + .3 + i * .2, gain: .4 })),
+    { src: 'sfx/trailer_boom.wav', at: at('s7-end') + .05, gain: .7 },
+    { src: 'sfx/trailer_braam.wav', at: at('s7-end') + .05, gain: .5 },
+  ],
+};
+
+// ── post: bars, grain, vignette, flashes ──────────────────────────────────
+const GRAIN = [];
+function makeGrain() {
+  for (let k = 0; k < 6; k++) {
+    const c = document.createElement('canvas'); c.width = 960; c.height = 540; const x = c.getContext('2d');
+    const d = x.createImageData(960, 540), r = rng(77 + k);
+    for (let i = 0; i < d.data.length; i += 4) { const v = 128 + (r() - .5) * 120; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 255; }
+    x.putImageData(d, 0, 0); GRAIN.push(c);
+  }
+}
+function post(g) {
+  const v = fg.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.55)'); fg.fillStyle = v; fg.fillRect(0, 0, W, H);
+  fg.save(); fg.globalCompositeOperation = 'soft-light'; fg.globalAlpha = .16; fg.drawImage(GRAIN[Math.floor(g * FPS) % GRAIN.length], 0, 0, W, H); fg.restore();
+  for (const [at, len, col, peak] of FLASHES) {
+    const u = (g - at) / len; if (u < 0 || u > 1) continue;
+    fg.save(); fg.globalAlpha = peak * (1 - E.out(u)); fg.fillStyle = col; fg.fillRect(0, 0, W, H); fg.restore();
+  }
+  const fin = 1 - ramp(g, 0, .7), fout = ramp(g, TOTAL - 1.1, TOTAL - .05);
+  const k = Math.max(fin, fout); if (k > 0) { fg.fillStyle = `rgba(0,0,0,${k})`; fg.fillRect(0, 0, W, H); }
+}
+
+function sceneAt(t) { for (const s of SCENES) if (t < s.t0 + s.d) return s; return SCENES[SCENES.length - 1]; }
+function frame(g) {
+  const sc = sceneAt(g);
+  // A whole reset, not a setTransform: a clip or shadow left set by one frame
+  // would let clearRect miss and the grain pile up frame on frame.
+  bg.reset(); fg.reset();
+  bg.clearRect(0, 0, W, H); fg.clearRect(0, 0, W, H); bg.fillStyle = '#000'; bg.fillRect(0, 0, W, H);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear(true, true, true);
+  sc.draw({ t: g - sc.t0, d: sc.d, g });
+  if (sc.box) { bg.fillStyle = '#000'; bg.fillRect(0, 0, W, BOX.y); bg.fillRect(0, BOX.y + BOX.h, W, H - BOX.y - BOX.h); }
+  post(g);
+  return sc.id;
+}
+
+window.TRAILER = { FPS, TOTAL, CUES, SCENES: SCENES.map(s => ({ id: s.id, t0: s.t0, d: s.d })) };
+window.seek = t => new Promise(res => { const id = frame(t); requestAnimationFrame(() => res(id)); });
+
+(async () => {
+  const jobs = [];
+  for (const [k, f] of Object.entries(STILLS)) jobs.push(loadImg(`img/${f}.jpg`).then(i => IMG[k] = i, () => {}));
+  jobs.push(loadImg('img/sigil.png').then(i => IMG.sigil = i, () => {}));
+  jobs.push(loadImg('img/companion.png').then(i => IMG.companion = i, () => {}));
+  for (const k of ICONS) jobs.push(loadImg(`icons/${k}.png`).then(i => ICON[k] = i, () => {}));
+  const index = await fetch('clips/index.json').then(r => r.json(), () => ({}));
+  for (const [name, n] of Object.entries(index)) {
+    CLIPS[name] = new Array(n);
+    for (let i = 0; i < n; i++) jobs.push(loadImg(`clips/${name}/${String(i + 1).padStart(3, '0')}.jpg`).then(im => CLIPS[name][i] = im));
+  }
+  jobs.push(build3D());
+  await Promise.all(jobs);
+  for (const f of ['700 100px Cond', '400 100px Cond', '500 100px SG', '700 100px SG', '600 100px JB', '700 100px JB']) await document.fonts.load(f);
+  makeGrain();
+  for (const s of SCENES) frame(s.t0 + .5);   // warm every stage once so no captured frame is a compile
+  window.READY = true;
+  if (Q.has('play')) {
+    const t0 = performance.now();
+    const tick = () => { const g = ((performance.now() - t0) / 1000) % TOTAL; frame(g); requestAnimationFrame(tick); };
+    tick();
+  } else if (Q.has('t')) frame(+Q.get('t'));
+})().catch(e => { console.log('ERR', e.stack || e.message); window.FAILED = String(e); });
+</script>
+</body></html>

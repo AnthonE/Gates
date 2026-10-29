@@ -11261,6 +11261,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/farm.rs"),
         },
         Module {
+            file: "find.rs",
+            src: include_str!("../../sim-core/src/find.rs"),
+        },
+        Module {
             file: "fire.rs",
             src: include_str!("../../sim-core/src/fire.rs"),
         },

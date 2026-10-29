@@ -1273,6 +1273,9 @@ pub struct Habitat {
     /// The Verdigris. Optional, the desert's way.
     #[serde(default)]
     pub fel: f32,
+    /// The snow. Optional, the desert's way.
+    #[serde(default)]
+    pub snow: f32,
 }
 
 /// THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost
@@ -1862,6 +1865,9 @@ pub struct Climate {
     /// The arid north's.
     pub arid_low_c: i32,
     pub arid_high_c: i32,
+    /// The arctic south's (snowcaps v0).
+    pub arctic_low_c: i32,
+    pub arctic_high_c: i32,
     /// Above this height the air cools a degree every `lapse_m`.
     pub lapse_from_m: u32,
     pub lapse_m: u32,

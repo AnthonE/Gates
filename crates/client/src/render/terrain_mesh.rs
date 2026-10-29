@@ -581,21 +581,23 @@ impl Ring {
         }
     }
     /// Lay snow on the island's ground (snow v0): `cover` `0..1`, on what
-    /// faces up from `floor` metres and higher and is as arid as `band`
-    /// (`WeatherNow::snow_arid`) — `GroundSplatParams::snow`'s two live
-    /// slots and `snow_band`'s two. Writes only when one moved, as above.
+    /// faces up from `floor` metres and higher, is as arid as `band`
+    /// (`WeatherNow::snow_arid`) and at least as arctic as `arctic`
+    /// (`WeatherNow::snow_arctic`) — `GroundSplatParams::snow`'s two live
+    /// slots and `snow_band`'s three. Writes only when one moved, as above.
     pub fn set_snow(
         &self,
         materials: &mut Assets<GroundMaterial>,
         cover: f32,
         floor: f32,
         band: Vec2,
+        arctic: f32,
     ) {
         for h in [&self.ground, &self.far_ground].into_iter().flatten() {
             let changed = materials.get(h).is_some_and(|m| {
                 let s = m.extension.params.snow;
                 let b = m.extension.params.snow_band;
-                s.x != cover || s.y != floor || b.x != band.x || b.y != band.y
+                s.x != cover || s.y != floor || b.x != band.x || b.y != band.y || b.w != arctic
             });
             if changed {
                 if let Some(m) = materials.get_mut(h) {
@@ -603,6 +605,7 @@ impl Ring {
                     m.extension.params.snow.y = floor;
                     m.extension.params.snow_band.x = band.x;
                     m.extension.params.snow_band.y = band.y;
+                    m.extension.params.snow_band.w = arctic;
                 }
             }
         }
@@ -1042,7 +1045,7 @@ pub fn heightfield(
     let mut uvs = Vec::with_capacity(count);
     let mut mods = Vec::with_capacity(count);
     let mut roads = Vec::with_capacity(count);
-    let mut zone: Vec<[f32; 2]> = Vec::with_capacity(count);
+    let mut zone: Vec<[f32; 3]> = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
@@ -1251,6 +1254,9 @@ pub fn heightfield(
                 // the heart and the live spread from it (`blight_at`), so the
                 // mesh never bakes a moment of the wipe.
                 terrain::fel_wander_memo(&mut lat, seed, x, z),
+                // The snow that lies all year (`terrain::cold`): the shader
+                // whitens by it whatever the weather.
+                terrain::cold_memo(&mut lat, seed, x, z, y),
             ]);
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);

@@ -583,22 +583,26 @@ impl RockSoup {
         // a formation's build (3-4 ms mean, 28 ms worst, on the frame); keyed
         // by the coordinates' bits, the answers are the same ones.
         let mut lat = terrain::Lattice::new();
-        let mut column: HashMap<(u32, u32), [f32; 3]> = HashMap::default();
+        let mut column: HashMap<(u32, u32), [f32; 4]> = HashMap::default();
         let mut val = self.val;
-        let mut zone: Vec<[f32; 2]> = Vec::with_capacity(n);
+        let mut zone: Vec<[f32; 3]> = Vec::with_capacity(n);
         for (v, p) in val.iter_mut().zip(&self.pos) {
-            let [arid, ground, wander] = *column
+            let [arid, ground, wander, cold] = *column
                 .entry((p[0].to_bits(), p[2].to_bits()))
                 .or_insert_with(|| {
+                    let ground = terrain::ground_memo(&mut lat, seed, haven, p[0], p[2]);
                     [
                         terrain::aridity_memo(&mut lat, seed, p[0], p[2]),
-                        terrain::ground_memo(&mut lat, seed, haven, p[0], p[2]),
+                        ground,
                         terrain::fel_wander_memo(&mut lat, seed, p[0], p[2]),
+                        // A rock under the snow wears it on its top, as the
+                        // ground does: the ground's cold, not the rock's.
+                        terrain::cold_memo(&mut lat, seed, p[0], p[2], ground),
                     ]
                 });
             v[1] = -arid.clamp(0.0, 1.0);
             let rise = (p[1] - ground).max(0.0);
-            zone.push([-rise, wander]);
+            zone.push([-rise, wander, cold]);
         }
         let uv: Vec<[f32; 2]> = self
             .pos
@@ -1012,10 +1016,11 @@ pub fn formation_mesh(
     let mut lat = terrain::Lattice::new();
     for b in f.iter().filter(|b| b.kind != BLOCK_SPIRE) {
         // Moss where the ground around is green: not on a beach, not above
-        // the treeline, not where the spread stands now.
+        // the treeline, not under the snow, not where the spread stands now.
         let h0 = terrain::height(seed, b.x, b.z);
         let moss = h0 > terrain::BEACH_MAX_H + 1.5
             && h0 < terrain::TREELINE_H
+            && terrain::cold_memo(&mut lat, seed, b.x, b.z, h0) < terrain::COLD_BIOME_AT
             && super::blight::live_fel_memo(now, &mut lat, seed, b.x, b.z, h0) < 0.3;
         let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
         if b.on != ON_GROUND {

@@ -186,6 +186,7 @@ recordings the take is the two layered.
 | `step_wood_0`–`7` | `StepWood` (+remote) | USC Red Library, *R10-09 Heavy Boots on Wooden Floor* (<https://archive.org/details/Red_Library_Footsteps_1>, CC0): the steps at 2.005, 6.595, 11.19, 15.505, 18.65, 22.41, 27.61, 29.865 s, 0.32 s each from 4 ms before the heel, HP 60 Hz, held 30 ms then decayed over 90 ms, faded over the last third; chosen within 4 dB of the walk's median step (cut 2026-10-21). Replaces Kenney's `footstep_wood`, which had nothing above 300 Hz |
 | `step_concrete_0`–`7` | `StepConcrete` (+remote) | USC Red Library, *R10-50 Footsteps On Hard Stone* (<https://archive.org/details/Red_Library_Footsteps_2>, CC0): the steps at 6.77, 11.04, 11.715, 13.855, 17.91, 28.26, 28.955, 31.05 s, 0.30 s, HP 80 Hz, decayed over 70 ms, cut as the wood |
 | `step_metal_0`–`7` | `StepMetal` (+remote) | USC Red Library, *R10-56 Footsteps on Metal Staircase* (same collection, CC0): the steps at 0.57, 1.21, 2.255, 2.785, 3.325, 3.865, 5.45, 6.04 s, 0.40 s, HP 80 Hz, decayed over 140 ms to keep the ring, cut as the wood. Replaces Kenney's `impactPlate_light`, a plate struck rather than stood on |
+| `step_snow_0`–`7` | `StepSnow` (+remote) | USC Red Library, *R10-35 Footsteps in Deep Snow* (<https://archive.org/details/Red_Library_Footsteps_2>, CC0): the steps at 0.296, 11.256, 19.286, 27.816, 32.356, 43.706, 55.776, 60.646 s, 0.36 s each from 4 ms before the onset, HP 60 Hz, faded in 4 ms and out over the last 0.12 s, each peak-normalised to −2 dBFS; chosen within 4 dB of the take's median step (cut 2026-10-25, snowcaps v0)
 
 The USC library is the same Sunset/Red/Gold editorial collections, digitized
 by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
@@ -211,5 +212,5 @@ between −18.8 and −31.6) with no limiting; peaks stay under −2 dBFS.
 | `ruin_respiration.ogg` | *Ruin Respiration* | 300.0 s | +11.6 dB | a world song, and the one a tense moment picks |
 | `empty_citadel.ogg` | *The Empty Citadel* | 240.0 s | +8.5 dB | a world song: a flat sub-bass drone |
 
-146 files from Freesound, 65 from Kenney and 58 in `pd/` in the bank, about 4.2 MB of Ogg,
+146 files from Freesound, 65 from Kenney and 66 in `pd/` in the bank, about 4.2 MB of Ogg,
 plus the four score tracks, 12.0 MB.

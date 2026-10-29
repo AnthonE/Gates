@@ -36,6 +36,7 @@ pub fn ground_words(g: Ground) -> &'static str {
         Ground::Water => "TOO WET",
         Ground::Barren(Biome::Beach | Biome::Desert) => "TOO SANDY",
         Ground::Barren(Biome::Fel) => "TOO SOUR",
+        Ground::Barren(Biome::Snow) => "TOO COLD",
         Ground::Occupied => "IN THE WAY",
         Ground::Crowded => "TOO CLOSE",
         Ground::Reserved | Ground::Claimed | Ground::Steep | Ground::Built | Ground::Barren(_) => {

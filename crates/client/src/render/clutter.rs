@@ -1079,6 +1079,19 @@ fn build_tile(
                 continue;
             }
         }
+        // The snow: the grass thins as the ground whitens and none
+        // stands on the Snow biome's ground (`terrain::COLD_BIOME_AT`).
+        let snow = (terrain::cold_memo(&mut lat, seed, e.x, e.z, e.y) / terrain::COLD_BIOME_AT)
+            .clamp(0.0, 1.0);
+        if snow > 0.0
+            && masked(e.kind)
+            && hash01(
+                (e.x * 64.0) as i32 as u32,
+                (e.z * 64.0) as i32 as u32 ^ 0x5e0f,
+            ) < snow
+        {
+            continue;
+        }
         // The desert's grass: the grass channel dries to straw with
         // the ground, and on the sand's golden patches the sand's own
         // elements stand up as dry tufts — the ground shader paints
@@ -1158,16 +1171,16 @@ fn build_tile(
             n_solid += 1;
             element(&mut solid, e);
         }
-        // No fern grows in the Verdigris' ash.
-        if fern_at(e) && fel < 0.3 {
+        // No fern grows in the Verdigris' ash, nor in the snow.
+        if fern_at(e) && fel < 0.3 && snow < 0.3 {
             n_ferns += 1;
             fern(&mut ferns, e);
         }
         // Wildflowers over the turf, in the opaque soup: their heads
         // are vertex colour and want no atlas. An overlay on the
         // tuft, so `element_mesh`'s per-kind gates still measure the
-        // tuft alone. None in the ash either.
-        if flower_at(e) && fel < 0.3 {
+        // tuft alone. None in the ash or the snow either.
+        if flower_at(e) && fel < 0.3 && snow < 0.3 {
             n_solid += 1;
             super::plants::turf_flowers(
                 &mut solid,

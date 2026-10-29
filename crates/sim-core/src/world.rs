@@ -3000,6 +3000,11 @@ impl World {
             if terrain::fel(self.seed, x, z) > 0.0 {
                 continue;
             }
+            // Nor naked in the snow: the arctic's beaches are a walk away,
+            // not a wake (snowcaps v0).
+            if terrain::arctic(self.seed, x, z) >= terrain::COLD_BIOME_AT {
+                continue;
+            }
             if relaxed.is_none() {
                 relaxed = Some((x, z));
             }
@@ -9789,6 +9794,7 @@ impl World {
             crate::farm::ground_cover(seed, haven, pieces.cols(), x, z, y).is_ok()
         };
         crate::farm::step(
+            self.seed,
             &self.cook.farm,
             &self.survival.exposure.air,
             &mut self.farm,

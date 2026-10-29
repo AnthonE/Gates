@@ -126,7 +126,8 @@ fn place_for(
         None => terrain::fel(world.seed, eye.pos.x, eye.pos.z),
     };
     let moist = terrain::moisture(world.seed, eye.pos.x, eye.pos.z);
-    Some(Place::of(terrain::biome(h, moist, fel)))
+    let cold = terrain::cold(world.seed, eye.pos.x, eye.pos.z, h);
+    Some(Place::of(terrain::biome(h, moist, fel, cold)))
 }
 
 /// The shard's published name, when this address is one we can name.

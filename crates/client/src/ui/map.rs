@@ -57,6 +57,11 @@ pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
 /// identity goes to by the ground's corruption (`terrain::fel`), as the
 /// world's own ground does (`ground_splat`).
 pub const FEL_GROUND: [f32; 3] = [46.0, 70.0, 42.0];
+/// The snow that lies all year (`terrain::cold`), as the world's own ground
+/// wears it (`ground_splat`): a cool white, blue against the haven's warm
+/// fill so the island's authored destination never reads as a snowfield —
+/// but under ten bluer than red, the line past which the map reads as sea.
+pub const SNOW_GROUND: [f32; 3] = [222.0, 226.0, 230.0];
 /// How far a fully corrupted pixel goes toward [`FEL_GROUND`]: the base map's
 /// heart and the spread's overlay ([`paint_blight`]) share it, so the two
 /// cannot drift apart.
@@ -770,6 +775,7 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 let sum = (w[0] as f32 + w[1] as f32 + w[2] as f32 + w[3] as f32).max(1.0);
                 let arid = terrain::aridity(seed, x, z);
                 let fel = terrain::fel(seed, x, z) * FEL_MIX;
+                let cold = terrain::cold(seed, x, z, h);
                 let sand = |c: usize| SAND[c] + (DESERT[c] - SAND[c]) * arid;
                 let mix = |c: usize| {
                     let g = (sand(c) * w[0] as f32
@@ -777,6 +783,7 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                         + LITTER[c] * w[2] as f32
                         + ROCK[c] * w[3] as f32)
                         / sum;
+                    let g = g + (SNOW_GROUND[c] - g) * cold;
                     g + (FEL_GROUND[c] - g) * fel
                 };
                 let shade = hillshade(dhdx, dhdz);

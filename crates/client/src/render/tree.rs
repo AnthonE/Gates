@@ -165,6 +165,11 @@ pub const SPECIES: [SpeciesDef; 3] = [
 /// The palm's index in [`SPECIES`] — the sim's `terrain::PALM_SPECIES`.
 pub const PALM: usize = 2;
 const _: () = assert!(PALM == sim_core::terrain::PALM_SPECIES as usize);
+// The sim stands only conifers on the snow (`terrain::CONIFER_SPECIES`).
+const _: () = assert!(matches!(
+    SPECIES[sim_core::terrain::CONIFER_SPECIES as usize].tree_type,
+    TreeType::Evergreen
+));
 
 /// The palm's height, metres: the reference game's palms, and the sim's
 /// blocked ceiling for a palm (`terrain::PALM_TOP_M`).

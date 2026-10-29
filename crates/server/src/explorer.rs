@@ -3408,7 +3408,7 @@ impl Survivor {
             let outcome = if self.hand.given > 0 {
                 Outcome::Done
             } else {
-                Outcome::Failed(Why::Locked)
+                Outcome::Failed(Why::Walled)
             };
             self.end_goal(tick, outcome);
             return Intent::IDLE;
@@ -4529,7 +4529,14 @@ impl Survivor {
                 self.recall[kind as usize] = None;
             }
             if searched >= SEARCH_GOAL_SECS * TICK_HZ {
-                self.gather_over(tick, Outcome::Failed(Why::NotFound));
+                // Having gathered, it ran out of nodes rather than failed
+                // to find one (#506). A supply run goes home to deliver.
+                let outcome = if active.gained > 0 && !active.goal.supplies() {
+                    Outcome::Done
+                } else {
+                    Outcome::Failed(Why::NotFound)
+                };
+                self.gather_over(tick, outcome);
                 return hold;
             }
             self.stats.phase = Phase::Exploring;
@@ -9368,38 +9375,39 @@ mod tests {
             skin: 0,
             ..ItemStack::EMPTY
         };
-        for cz in 40..216 {
-            for cx in 40..216 {
-                let (seed, island) = core.island();
-                let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
-                if slot.occupant != Occupant::Tree {
-                    continue;
-                }
-                let y = terrain::ground(seed, bot.haven.as_ref().unwrap(), slot.x, slot.z - 5.0);
-                if y < 1.0 || (y - slot.y).abs() > 0.3 {
-                    continue;
-                }
-                let target = Target {
-                    cx: cx as u16,
-                    cz: cz as u16,
-                    slot,
-                };
-                let body = EntityState {
-                    id: 1,
-                    qx: quant_xz(slot.x),
-                    qy: quant_y(y),
-                    qz: quant_xz(slot.z - 5.0),
-                    grounded: true,
-                    ..EntityState::default()
-                };
-                if !visible(core, bot.haven.as_ref().unwrap(), &body, target) {
-                    continue;
-                }
-                let mut view = ClientView::new();
-                view.newest_applied = Some(1);
-                view.entities.push((1, body));
-                return (bot, view, target);
+        // Its box first, then the island: mild ground wherever it lies.
+        let hint = (40..216).flat_map(|cz| (40..216).map(move |cx| (cx, cz)));
+        for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+            let (seed, island) = core.island();
+            let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
+            // A tree that pays its row's swings, as the harvest tests count.
+            if !sim_core::find::row_tree(seed, cx, cz, &slot) {
+                continue;
             }
+            let y = terrain::ground(seed, bot.haven.as_ref().unwrap(), slot.x, slot.z - 5.0);
+            if y < 1.0 || (y - slot.y).abs() > 0.3 {
+                continue;
+            }
+            let target = Target {
+                cx: cx as u16,
+                cz: cz as u16,
+                slot,
+            };
+            let body = EntityState {
+                id: 1,
+                qx: quant_xz(slot.x),
+                qy: quant_y(y),
+                qz: quant_xz(slot.z - 5.0),
+                grounded: true,
+                ..EntityState::default()
+            };
+            if !visible(core, bot.haven.as_ref().unwrap(), &body, target) {
+                continue;
+            }
+            let mut view = ClientView::new();
+            view.newest_applied = Some(1);
+            view.entities.push((1, body));
+            return (bot, view, target);
         }
         panic!("no visible tree fixture");
     }

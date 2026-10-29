@@ -41,13 +41,14 @@ fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
 }
 
 fn buildable_cell(core: &ShardCore) -> (u16, u16) {
+    let (hx, hz) = sim_core::find::build_hint(SEED, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let (cx, cz) = ((512 + dx) as u16, (512 + dz) as u16);
+                let (cx, cz) = ((hx + dx) as u16, (hz + dz) as u16);
                 if (-1..=1).all(|k| {
                     let (x, z) = cell_center((cx as i32 + k) as u16, cz);
                     foundation_terrain_ok(SEED, &core.world.haven, x, z)

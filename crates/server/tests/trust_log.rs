@@ -139,13 +139,14 @@ fn deploy_with_box() -> DeployContent {
 /// cells apart so no two boxes share an address.
 fn cells(n: usize, haven: &sim_core::terrain::Haven) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
+    let (hx, hz) = sim_core::find::build_hint(SEED, 512, 512);
     for r in 0..64i32 {
         for dz in -r..=r {
             for dx in -r..=r {
                 if (dx.abs() != r && dz.abs() != r) || dx % 2 != 0 || dz % 2 != 0 {
                     continue;
                 }
-                let (cx, cz) = ((512 + dx) as u16, (512 + dz) as u16);
+                let (cx, cz) = ((hx + dx) as u16, (hz + dz) as u16);
                 let (x, z) = center(cx, cz);
                 if foundation_terrain_ok(SEED, haven, x, z) && !out.contains(&(cx, cz)) {
                     out.push((cx, cz));
