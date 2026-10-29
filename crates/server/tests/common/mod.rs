@@ -26,16 +26,23 @@ pub fn haven() -> sim_core::terrain::Haven {
 
 /// A level standing point near a stone node with a tree close by.
 pub fn scene() -> (f32, f32) {
+    scenes()
+        .next()
+        .expect("fixture seed has no stone node beside a tree")
+}
+
+/// Every [`scene`], in the order it is searched: the south-west box first
+/// (where this fixture has always stood), then the island, whichever mild
+/// ground holds one (`sim_core::find`).
+pub fn scenes() -> impl Iterator<Item = (f32, f32)> {
     use sim_core::terrain::{self, Occupant, ScatterTable};
     let haven = terrain::haven(SEED);
     let table = ScatterTable::alpha_default();
-    // The south-west box first (where this fixture has always stood), then
-    // the island: whichever mild ground holds the scene (`sim_core::find`).
     let hint = (20..236).flat_map(|cz| (20..236).map(move |cx| (cx, cz)));
-    for (cx, cz) in sim_core::find::mild_cells(SEED, hint) {
+    sim_core::find::mild_cells(SEED, hint).filter_map(move |(cx, cz)| {
         let stone = terrain::scatter(SEED, &table, &haven, cx, cz);
         if stone.occupant != Occupant::StoneNode {
-            continue;
+            return None;
         }
         let tree = (-3..=3).any(|dz| {
             (-3..=3).any(|dx| {
@@ -44,11 +51,8 @@ pub fn scene() -> (f32, f32) {
         });
         let at = (stone.x, stone.z - 6.0);
         let floor = terrain::ground(SEED, &haven, at.0, at.1);
-        if tree && floor > 1.0 && (floor - stone.y).abs() < 0.5 {
-            return at;
-        }
-    }
-    panic!("fixture seed has no stone node beside a tree");
+        (tree && floor > 1.0 && (floor - stone.y).abs() < 0.5).then_some(at)
+    })
 }
 
 /// A dry standing point with open sea inside the drink reach.
