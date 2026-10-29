@@ -91,6 +91,7 @@ population = $POPULATION
 dev_heli = false
 TOML
   [ -z "$ENV" ] || echo "dev_env = \"$ENV\"" >> "$WORK/film.toml"
+  [ "$AGENTS" = 0 ] || echo "spectate = true" >> "$WORK/film.toml"
   GATES_FILM_TURRET="$TURRET" "$BIN/shard" "$WORK/film.toml" > "$WORK/shard.log" 2>&1 &
   SHARD_PID=$!
   for _ in $(seq 1 240); do
