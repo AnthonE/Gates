@@ -28,14 +28,28 @@ fn the_film_turret_stands_powered_and_shoots_a_stranger() {
         .unwrap();
     // Two cells east of the turret: 6 m, well inside its 30.
     core.world.players[s].body = Body::at(SEED, &core.world.haven, tx + 6.0, tz);
-    let hp0 = core.world.players[s].hp;
+    // Rounds in the turret's box: the turret's own spending is the proof,
+    // not the stranger's health, which the cold and hunger take too.
+    let rounds = |w: &sim_core::world::World| -> u32 {
+        let i = w
+            .deploys
+            .boxes()
+            .iter()
+            .position(|b| {
+                let (x, z) = b.xz();
+                (x - tx).abs() < 2.0 && (z - tz).abs() < 2.0
+            })
+            .expect("the turret's box");
+        (1..=6).map(|k| w.deploys.box_slot(i, k).count as u32).sum()
+    };
+    let before = rounds(&core.world);
     for _ in 0..30 * 10 {
         core.world.tick(&[]);
     }
+    let after = rounds(&core.world);
     assert!(
-        core.world.players[s].hp < hp0 || core.world.players[s].hp == 0,
-        "{said}: the turret never hit the stranger (hp {hp0} → {})",
-        core.world.players[s].hp
+        after < before,
+        "{said}: the turret spent no rounds ({before} → {after})"
     );
 }
 
