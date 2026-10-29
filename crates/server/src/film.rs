@@ -66,9 +66,9 @@ fn refusal(w: &World, code: u8) -> String {
     w.events
         .entries()
         .iter()
-        .filter(|e| e.code == code && e.a == OWNER)
+        .rev()
+        .find(|e| e.code == code && e.a == OWNER)
         .map(|e| format!("refused: b {}, c {}", e.b, e.c))
-        .last()
         .unwrap_or_else(|| "no refusal heard".into())
 }
 

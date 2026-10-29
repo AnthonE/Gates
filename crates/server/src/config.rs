@@ -1823,7 +1823,6 @@ pub fn dev_spawn_kit(
                 }
                 .data()
             },
-            ..sim_core::gather::ItemStack::EMPTY
         };
         if !kit.set(i, stack) {
             return Err(format!(
