@@ -107,11 +107,15 @@ TOML
     "$BIN/jev-bot" --server "127.0.0.1:$PORT" --bots "$AGENTS" --seconds "${SECONDS_%.*}" \
       --scripted --temperament kos --skill good > "$WORK/agents.log" 2>&1 &
     AGENTS_PID=$!
-    sleep 10
-    ARGS+=(--spectate any)
-  elif [ -n "$WALK" ]; then
-    ARGS+=(--walk "$WALK")
+    # A seat watches an agent that has joined: ask until one has.
+    for _ in $(seq 1 12); do
+      sleep 5
+      "$BIN/record" "${ARGS[@]}" --spectate any && exit 0
+      [ -s "$TAPE" ] && exit 1
+    done
+    fail "no agent could be watched (agents: $(tail -3 "$WORK/agents.log"))"
   fi
+  [ -z "$WALK" ] || ARGS+=(--walk "$WALK")
   "$BIN/record" "${ARGS[@]}"
   ;;
 
