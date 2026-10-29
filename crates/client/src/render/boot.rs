@@ -128,7 +128,7 @@ pub fn begin_greet(mut warm: ResMut<Warmup>) {
 /// honestly. A spinner would be a clock, and this repo does not put clocks on
 /// screens that have real state to report.
 pub fn setup(mut commands: Commands, warm: Res<Warmup>) {
-    commands.spawn((Camera2d, BootRoot));
+    commands.spawn((Camera2d, Msaa::Off, BootRoot));
     commands.spawn((
         BootRoot,
         ui::screen(ui::BG),
