@@ -3408,7 +3408,7 @@ impl Survivor {
             let outcome = if self.hand.given > 0 {
                 Outcome::Done
             } else {
-                Outcome::Failed(Why::Locked)
+                Outcome::Failed(Why::Walled)
             };
             self.end_goal(tick, outcome);
             return Intent::IDLE;
@@ -4529,7 +4529,14 @@ impl Survivor {
                 self.recall[kind as usize] = None;
             }
             if searched >= SEARCH_GOAL_SECS * TICK_HZ {
-                self.gather_over(tick, Outcome::Failed(Why::NotFound));
+                // Having gathered, it ran out of nodes rather than failed
+                // to find one (#506). A supply run goes home to deliver.
+                let outcome = if active.gained > 0 && !active.goal.supplies() {
+                    Outcome::Done
+                } else {
+                    Outcome::Failed(Why::NotFound)
+                };
+                self.gather_over(tick, outcome);
                 return hold;
             }
             self.stats.phase = Phase::Exploring;

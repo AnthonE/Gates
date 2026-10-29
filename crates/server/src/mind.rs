@@ -558,7 +558,7 @@ impl Goal {
             Goal::SwipeCard => "Swipe your keycard at its ziggurat door and walk into the room.".into(),
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
-            Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
+            Goal::HandOver => "Give your founder, face to face, the wood, stone and ore you carry (the team's box is deliver).".into(),
             Goal::Give(name) => format!(
                 "Hand all the {} you carry to your friend, or the teammate beside you.",
                 name.as_str()
@@ -614,6 +614,9 @@ pub enum Why {
     LogOff,
     /// A lock in the way, and no code for it.
     Locked,
+    /// The one it walks to is behind walls, where a hand-over does not
+    /// follow (#503).
+    Walled,
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
@@ -655,6 +658,7 @@ impl Why {
             Why::NoSpot => "no spot here takes it",
             Why::LogOff => "the session is ending, so it went home",
             Why::Locked => "a lock it has no code for is in the way",
+            Why::Walled => "they are behind walls or a shut door, where a hand-over does not follow; deliver puts the pack in the team's box",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
             Why::NoInvite => "no invite was waiting any more",
