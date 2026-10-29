@@ -245,7 +245,7 @@ const SCENES = [
   // cold open: footage, one sentence across four cuts, the build to the drop
   { id: 'c1-south', b: [0, 6], box: true, draw(L) {
     foot(bg, 'snow-open', L.t, L.d, { fallback: 'storm', grade: 'contrast(1.06) saturate(.9)', still: { z0: 1.12, z1: 1.04 } });
-    caption(L, ['THE SOUTH FROZE OVER,'], { y: 800, size: 82, at: .6, track: 5 });
+    caption(L, ['THE ISLAND FROZE OVER,'], { y: 800, size: 82, at: .6, track: 5 });
   } },
   { id: 'c2-peaks', b: [6, 12], box: true, draw(L) {
     foot(bg, 'turret-a', L.t, L.d, { fallback: 'wolves', grade: 'contrast(1.06) saturate(.9)', still: { z0: 1.04, z1: 1.14 } });
@@ -313,7 +313,7 @@ const SCENES = [
       { x0: 1000, y0: 310, cols: 3, cell: 170, gap: 40, at: .3, step: .12, size: 22 });
   } },
   { id: 's6-more', b: [60, 66], box: true, draw(L) {
-    foot(bg, 'snow-walk', L.t + 3, L.d, { fallback: 'storm', grade: 'brightness(.42) contrast(1.05) saturate(.85)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
+    foot(bg, 'snow-walk', L.t, L.d, { fallback: 'storm', grade: 'brightness(.42) contrast(1.05) saturate(.85)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
     caption(L, ['AND A LOT MORE.'], { y: 300, size: 96, at: .02, track: 6 });
     const items = ['SIGN IN WITH ELO PROS', 'F9 CLIPS', 'WATCH AN AGENT', 'HIDE HOOD', 'POWER GRIDS', 'PEACEKEEPER TURRETS',
       'STRONGBOX', 'BULKHEAD DOOR', 'PUMP RUG', 'SOLANA WALLETS', '34 NEW MODELS', 'RAW MOUSE'];
@@ -329,7 +329,7 @@ const SCENES = [
     });
   } },
   { id: 's7-end', b: [66, 80], draw(L) {
-    foot(bg, 'snow-open', L.t + 1, L.d, { full: true, fallback: 'storm', grade: 'brightness(.32) contrast(1.05) saturate(.75) blur(4px)', still: { full: true, z0: 1.08, z1: 1.02, grade: 'brightness(.3) contrast(1.05) saturate(.7) blur(5px)' } });
+    foot(bg, 'snow-open', L.t, L.d, { full: true, speed: .4, fallback: 'storm', grade: 'brightness(.32) contrast(1.05) saturate(.75) blur(4px)', still: { full: true, z0: 1.08, z1: 1.02, grade: 'brightness(.3) contrast(1.05) saturate(.7) blur(5px)' } });
     const pc = ramp(L.t, .1, .5);
     if (IMG.sigil) { fg.save(); fg.globalAlpha = pc; const s = lerp(.8, 1, E.back(pc)), sz = 190 * s; fg.shadowColor = ICE_GLOW; fg.shadowBlur = 60; fg.drawImage(IMG.sigil, 560 - sz / 2, 400 - sz / 2, sz, sz); fg.restore(); }
     const r0 = rv(L, .3, .45, .01); text(fg, 'GATES', 700, 470 + r0.dy, { size: 220, track: 16, align: 'left', alpha: r0.a, shadow: 24 });
