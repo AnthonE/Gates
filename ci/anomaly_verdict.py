@@ -44,6 +44,7 @@ FAULT = {
     "skins_dropped",
     "trust_ring_drops",
     "trust_sim_overflow",
+    "play_dropped",
 }
 # A cap or a budget working as designed: worth a look, not a failure.
 PRESSURE = {
