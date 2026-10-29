@@ -83,6 +83,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
         addr: ADDR.into(),
         ..default()
     });
+    app.insert_non_send_resource(client::render::travel::Travelling::default());
     // The pump, gated as the game gates it — it reads `Net`, which the
     // teardown removes, so without the gate the frame after would panic.
     app.add_systems(Update, input::place_eye.run_if(world_running));
