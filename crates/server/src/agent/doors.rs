@@ -340,7 +340,7 @@ impl Doors {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if self.tries >= MAX_TRIES {
             self.clear();
-            return Through::Fail(Why::Refused);
+            return Through::Fail(Why::Door);
         }
         // The team's code at a lock that did not know it: entered looking
         // at the keypad, then what it refused is pressed again.

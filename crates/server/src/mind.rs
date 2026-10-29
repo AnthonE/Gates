@@ -617,6 +617,9 @@ pub enum Why {
     /// The one it walks to is behind walls, where a hand-over does not
     /// follow (#503).
     Walled,
+    /// A door on its walk would not open for it: not the goal's own
+    /// target refusing (#508).
+    Door,
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
@@ -658,6 +661,7 @@ impl Why {
             Why::NoSpot => "no spot here takes it",
             Why::LogOff => "the session is ending, so it went home",
             Why::Locked => "a lock it has no code for is in the way",
+            Why::Door => "a door on the way would not open for it, so it never got out to the target",
             Why::Walled => "they are behind walls or a shut door, where a hand-over does not follow; deliver puts the pack in the team's box",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",

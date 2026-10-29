@@ -4719,7 +4719,7 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
         h.step();
         gave_up |=
             h.bot.memory().last.is_some_and(|r| {
-                r.goal == Goal::GoHome && r.outcome == Outcome::Failed(Why::Refused)
+                r.goal == Goal::GoHome && r.outcome == Outcome::Failed(Why::Door)
             });
     }
     // A few codes a walk, and a minute between walks: two walks in the
