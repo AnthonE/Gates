@@ -132,6 +132,8 @@ enum Unstick {
     Walking,
     Jump,
     Strafe,
+    /// The first side-step met a wall: the other side (#452).
+    StrafeBack,
     Replan,
 }
 
@@ -849,7 +851,7 @@ impl Route {
             (tx - body.qx) as f32 * POS_XZ_Q,
             (tz - body.qz) as f32 * POS_XZ_Q,
         );
-        if self.unstick == Unstick::Strafe {
+        if matches!(self.unstick, Unstick::Strafe | Unstick::StrafeBack) {
             let quarter = 1u16 << 14;
             yaw = if self.strafe_left {
                 yaw.wrapping_sub(quarter)
@@ -889,7 +891,11 @@ impl Route {
                 self.strafe_left = !self.strafe_left;
                 Unstick::Strafe
             }
-            Unstick::Strafe => Unstick::Replan,
+            Unstick::Strafe => {
+                self.strafe_left = !self.strafe_left;
+                Unstick::StrafeBack
+            }
+            Unstick::StrafeBack => Unstick::Replan,
             Unstick::Replan => {
                 self.unstick = Unstick::Walking;
                 return true;
