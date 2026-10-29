@@ -1277,7 +1277,7 @@ impl Passage {
         self.tries = self.tries.saturating_add(1);
         (self.tries >= MAX_FAILS).then(|| {
             self.way = None;
-            Pass::Fail(Why::Refused)
+            Pass::Fail(Why::Door)
         })
     }
 
@@ -1326,7 +1326,7 @@ impl Passage {
         // Its own lock would not take the code: no more tries this walk.
         if self.tries >= MAX_FAILS {
             self.way = None;
-            return Pass::Fail(Why::Refused);
+            return Pass::Fail(Why::Door);
         }
         // Its own lock did not know it: the code, then the use again.
         if let Some((door, at)) = self.entering {
@@ -2386,7 +2386,7 @@ impl Builder {
                     code,
                     intent,
                 },
-                None => Act::Fail(Why::Refused),
+                None => Act::Fail(Why::Locked),
             },
             Pass::Done => done,
             Pass::Fail(why) => Act::Fail(why),

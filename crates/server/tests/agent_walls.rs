@@ -4724,10 +4724,11 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     let mut gave_up = false;
     for _ in 0..90 * TICK_HZ {
         h.step();
-        gave_up |=
-            h.bot.memory().last.is_some_and(|r| {
-                r.goal == Goal::GoHome && r.outcome == Outcome::Failed(Why::Refused)
-            });
+        gave_up |= h
+            .bot
+            .memory()
+            .last
+            .is_some_and(|r| r.goal == Goal::GoHome && r.outcome == Outcome::Failed(Why::Door));
     }
     // A few codes a walk, and a minute between walks: two walks in the
     // ninety seconds, and the keypad never shut.
