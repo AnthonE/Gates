@@ -132,8 +132,6 @@ enum Unstick {
     Walking,
     Jump,
     Strafe,
-    /// The first side-step met a wall: the other side (#452).
-    StrafeBack,
     Replan,
 }
 
@@ -851,7 +849,7 @@ impl Route {
             (tx - body.qx) as f32 * POS_XZ_Q,
             (tz - body.qz) as f32 * POS_XZ_Q,
         );
-        if matches!(self.unstick, Unstick::Strafe | Unstick::StrafeBack) {
+        if self.unstick == Unstick::Strafe {
             let quarter = 1u16 << 14;
             yaw = if self.strafe_left {
                 yaw.wrapping_sub(quarter)
@@ -891,11 +889,7 @@ impl Route {
                 self.strafe_left = !self.strafe_left;
                 Unstick::Strafe
             }
-            Unstick::Strafe => {
-                self.strafe_left = !self.strafe_left;
-                Unstick::StrafeBack
-            }
-            Unstick::StrafeBack => Unstick::Replan,
+            Unstick::Strafe => Unstick::Replan,
             Unstick::Replan => {
                 self.unstick = Unstick::Walking;
                 return true;
@@ -1058,7 +1052,7 @@ mod tests {
     use sim_core::movement::{quant_xz, quant_y};
 
     /// A body that makes no progress works itself loose the way a person
-    /// does, one rung a second: jump, side-step each way, plan again, give up. The
+    /// does, one rung a second: jump, side-step, plan again, give up. The
     /// route plans at most once a frame, and a path in hand is not
     /// replanned inside the second.
     #[test]
@@ -1123,8 +1117,7 @@ mod tests {
         }
         assert!(rungs[0] > 0 && rungs[1] > 0 && rungs[2] > 0, "{rungs:?}");
         let at = blocked_at.expect("a route that never moves is given up");
-        // Walk, jump, a side-step each way, replan: then given up.
-        assert!((5 * STALL_TICKS..6 * STALL_TICKS).contains(&at), "{at}");
+        assert!((4 * STALL_TICKS..5 * STALL_TICKS).contains(&at), "{at}");
         // One plan for the route, one for the replan rung.
         assert_eq!(route.stats.plans, 2, "{:?}", route.stats);
     }
