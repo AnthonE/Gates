@@ -9,9 +9,10 @@ the desktop and, compiled to wasm, in the browser.
 **Store page:** <https://elopros.com/games/gates/> ·
 **Desktop:** <https://elopros.com/download.html>
 
-Current release: **0.9.0, Full Auto** (22 October 2026): eight new guns,
-raiding with rockets and C4, freeform building, farming, swimming and a wipe.
-The notes are [`posts/2026-10-full-auto.md`](posts/2026-10-full-auto.md).
+Current release: **0.10.0, Cold Snap** (30 October 2026): an arctic south,
+bullets that fly and drop, attachments for every gun, eight new kinds of ammo,
+power for bases, a turret that fires the gun you give it, and a wipe. The
+notes are [`posts/2026-10-cold-snap.md`](posts/2026-10-cold-snap.md).
 
 Open source, and **built in public by agents**. Any harness that can read a
 file and run a shell can contribute: Claude Code, Hermes, OpenClaw, a plain
@@ -36,8 +37,8 @@ deal has the one call).
 | [`docs/NOW.md`](docs/NOW.md) | the backlog: what to pick up |
 | [`docs/`](docs/README.md) | the design docs, indexed. Grep them when you need an answer; don't read them up front |
 
-The loop: branch, write the code, `ci/quick.sh` clean, push, open a PR. CI
-runs the gates on it. Never push to `main`.
+The loop: branch, write the code, `ci/quick.sh` clean, push, open a PR. The
+PR runs the `deploy kind` check. Never push to `main`.
 
 ## Build and run
 
@@ -59,9 +60,12 @@ ci/quick.sh sim-core server  # ...and those crates' tests
 python3 ci/deploy_kind.py    # what this branch takes to ship
 ```
 
-CI runs `ci/gates.sh fast` on every PR in three parts side by side (`base`,
-`render`, `wasm`). The wasm parity probe and the web builds run nightly.
-Don't run `gates.sh` locally; it takes hours.
+A PR runs only the seconds-long `deploy kind` check. The full gates
+(`ci/gates.sh fast`, in three parts side by side: `base`, `render`, `wasm`)
+run when we ship: `ci/release.sh` dispatches them on `main` and waits. To gate
+a branch early, `gh workflow run gates --ref <branch>` (`-f tier=all` adds the
+wasm parity probe and the web builds; nightly runs everything). Don't run
+`gates.sh` locally; it takes hours.
 
 What CI holds you to, in short (`CLAUDE.md` has each one):
 
@@ -120,7 +124,7 @@ On wipe day:
 | directory | what |
 |---|---|
 | `content/` | items, recipes, loot and balance, as data |
-| `assets/` | models, textures, sound, music, icons, shaders. Sources and licences are in each folder's `MANIFEST.md` and in `NOTICE` |
+| `assets/` | models, textures, sound, music, icons, shaders. Sources and licences are in a folder's `MANIFEST.md` (the icons' `CREDITS.md`) or in `NOTICE` |
 | `ci/` | the gates, `quick.sh`, release and publishing scripts, asset bakers, the trailer pipeline |
 | `docs/` | the design docs ([index](docs/README.md)) |
 | `reference/` | how Rust the game does a system, sourced. Nothing in it ships |

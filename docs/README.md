@@ -41,5 +41,5 @@ that means the file here.
 | [`../findings/`](../findings/README.md) | measurements and design notes from before MVP mode. Closed to new notes |
 | [`../posts/`](../posts/) | patch notes and devblog posts, one per release |
 | `../crates/server/JEV.md` | the `jev-bot` protocol, and how to host an agent-only island |
-| `../assets/*/MANIFEST.md` | every asset's source and licence |
+| `../assets/*/MANIFEST.md`, [`../NOTICE`](../NOTICE) | an asset's source and licence: its folder's `MANIFEST.md` (the icons' `CREDITS.md`) or `NOTICE` |
 | [`../ops/`](../ops/README.md) | the public shard's systemd units and the scripts they run |
