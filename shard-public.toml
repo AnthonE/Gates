@@ -168,6 +168,13 @@ elo_account_pubkey = "aFt4QqMGWbw1aPASBd9FEUoCgdeaGKyx+MXlh0oaif8="
 # the parser refuses everywhere else).
 status_addr = "127.0.0.1:8431"
 
+# The anomaly log and the play log (`shard.toml.example` says what each
+# holds): failures with the tick they happened at, and the shard's own
+# analytics, a file a day for 90 days.
+anomaly_file = "/home/master/gates-data/gates-anomaly.jsonl"
+play_log = "/home/master/gates-data/playlog/gates"
+play_log_days = 90
+
 # The companion (companion.rs), served at https://game.elopros.com/gates/team/
 # by ops/game-elopros-status.nginx.conf and at elopros.com/games/gates/team/.
 companion_addr = "127.0.0.1:8434"

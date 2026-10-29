@@ -398,6 +398,18 @@ seed = 20260731
 # does not parse REFUSES THE BOOT.
 # ban_file = "gates-bans.txt"
 
+# WHERE THE PLAY LOG IS KEPT (`playlog.rs`). Unset keeps none. The shard's
+# own analytics, first-party on this box, one JSON object per line in a file
+# a day beside the path (`<path>.YYYY-MM-DD`, UTC): every connection at the
+# door (address, client release and build, wallet, seated or why not), every
+# join and leave (how long, round trip, and a tally of the session), a line
+# for each death, craft, build, raid, research, trade, bet and refusal, and a
+# pulse a minute with the world's population and the status document. The
+# directory is made if missing; a path that cannot be written REFUSES THE
+# BOOT. Day files older than `play_log_days` (default 90) are deleted.
+# play_log = "playlog/gates"
+# play_log_days = 90
+
 # HOW MANY RESIDENT INHABITANTS THIS SHARD SEATS ITSELF. Unset ⇒ 0, and a
 # shard seats nobody but the players who dial it.
 #
