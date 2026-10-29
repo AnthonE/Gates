@@ -226,16 +226,19 @@ function iconGrid(L, items, o = {}) {
     if (note) text(fg, note, cx + cell / 2, cy + cell + 66, { kind: 'sg', size: size - 6, weight: 500, color: ICE, track: 1, alpha: r.a });
   });
 }
-// A footage window inside a frame, for the split scenes.
+// A footage window inside a frame, for the split scenes: drawn on `bg`,
+// cropped by the source rectangle (no clip, no filter).
 function window_(name, L, x, y, w, h, o = {}) {
   const fr = CLIPS[name], a = rv(L, 0, .3).a;
-  fg.save(); fg.globalAlpha = a; fg.beginPath(); fg.rect(x, y, w, h); fg.clip();
-  if (fr && fr.length) {
-    const i = clamp(Math.floor(((o.from || 0) + L.t * (o.speed || 1)) * FPS), 0, fr.length - 1);
-    fg.filter = o.grade || 'contrast(1.05)'; cover(fg, fr[i], x, y, w, h, 1.0); fg.filter = 'none';
-  } else if (IMG[o.fallback || 'raiders']) { fg.filter = 'brightness(.8)'; cover(fg, IMG[o.fallback || 'raiders'], x, y, w, h, lerp(1.04, 1.12, L.t / L.d)); fg.filter = 'none'; }
-  fg.strokeStyle = ICE; fg.lineWidth = 2; fg.strokeRect(x, y, w, h);
-  fg.restore();
+  const img = fr && fr.length ? fr[clamp(Math.floor(((o.from || 0) + L.t * (o.speed || 1)) * FPS), 0, fr.length - 1)] : IMG[o.fallback || 'raiders'];
+  if (a <= 0) return;
+  bg.save(); bg.globalAlpha = a;
+  if (img) {
+    const s = Math.min(img.width / w, img.height / h), sw = w * s, sh = h * s;
+    bg.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, x, y, w, h);
+  }
+  bg.strokeStyle = ICE; bg.lineWidth = 2; bg.strokeRect(x, y, w, h);
+  bg.restore();
 }
 
 // ── the scenes ────────────────────────────────────────────────────────────
