@@ -17,4 +17,5 @@ the way it is.
 | `gates-free-door.service`/`.timer` | closes the free door on the Gates copy on 1 Dec 2026 |
 | `gates-research-pack.service`/`.timer`, `research/` | packs closed wipes as an open dataset, daily |
 | `airdrop.py` | who an airdrop goes to |
+| `stream/` | the OBS overlays and `Gates` scene collection used to stream the game |
 | `distill/` | distils recorded `jev-bot` decisions into a student mind |

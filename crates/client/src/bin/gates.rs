@@ -35,7 +35,7 @@ fn main() -> AppExit {
     client::render::report::install_panic_hook();
 
     let a = match args::parse(std::env::args().skip(1)) {
-        Parsed::Run(a) => a,
+        Parsed::Run(a) => *a,
         Parsed::Help => {
             println!("{}", args::USAGE);
             return AppExit::Success;
@@ -79,17 +79,37 @@ fn main() -> AppExit {
     // `--film`: the tape is the world, loaded before the window for the
     // capture run's reason — a broken shot list or a stale tape belongs on
     // the terminal that typed the flag.
-    let film = a.film.as_deref().map(|path| {
-        let script = client::render::film::Script::load(path).unwrap_or_else(|e| {
-            eprintln!("gates: {e}");
+    // `--clip` is a film whose shot list is a clip style's, its shots kept
+    // beside the tape and joined into one video when the run ends.
+    let clip = a.clip.as_deref().map(|tape| {
+        let style = a.style.as_deref().unwrap_or(client::clip::STYLES[0]);
+        let json = client::clip::script(style).unwrap_or_default();
+        let mut script = client::render::film::Script::parse(&json).unwrap_or_else(|e| {
+            eprintln!("gates: clip style {style}: {e}");
             std::process::exit(2);
         });
+        script.recording = tape.to_path_buf();
+        script.out = tape.with_extension("shots");
+        if let Some(px) = a.max_height {
+            script.fit_height(px);
+        }
+        (script, tape.with_extension("mp4"))
+    });
+    let cut = clip.as_ref().map(|(s, out)| (s.out.clone(), out.clone()));
+    let film = a.film.as_deref().map(|path| {
+        client::render::film::Script::load(path).unwrap_or_else(|e| {
+            eprintln!("gates: {e}");
+            std::process::exit(2);
+        })
+    });
+    let film = film.or(clip.map(|c| c.0)).map(|mut script| {
         let tape = std::fs::File::open(&script.recording)
             .and_then(|f| client::film::read(&mut std::io::BufReader::new(f)))
             .unwrap_or_else(|e| {
                 eprintln!("gates: {}: {e}", script.recording.display());
                 std::process::exit(2);
             });
+        script.anchor(tape.end_ms() / 1000.0);
         println!(
             "gates: filming {} shot(s) from {} ({:.0} s of tape)",
             script.shots.len(),
@@ -272,7 +292,7 @@ fn main() -> AppExit {
         chosen: straight_in || a.server_given,
         identity: a.identity.clone(),
         no_launcher: a.no_launcher,
-        no_hud: a.no_hud || a.film.is_some(),
+        no_hud: a.no_hud || a.film.is_some() || a.clip.is_some(),
         pin_hour: a.pin_hour_pm.map(|pm| pm as f32 / 1000.0),
         pin_weather: a.pin_weather,
     };
@@ -284,7 +304,17 @@ fn main() -> AppExit {
     // would call it a pass. Measured: with the return discarded, a capture
     // that wrote five of six vantages printed "1 of 6 vantages did not reach
     // disk" and exited 0 anyway.
-    app.run()
+    let exit = app.run();
+    if let (Some((shots, out)), true) = (cut, exit.is_success()) {
+        match client::clip::cut(&shots, &out) {
+            Ok(()) => println!("gates: clip → {}", out.display()),
+            Err(e) => {
+                eprintln!("gates: {e}");
+                return AppExit::error();
+            }
+        }
+    }
+    exit
 }
 
 /// The Gates sigil on the window and the taskbar: the same plate as the

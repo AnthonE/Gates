@@ -189,7 +189,10 @@ pub fn setup(
     // only the number keys could leave.
     ui::free_cursor(&mut cursor);
 
-    commands.spawn((Camera2d, Root));
+    // Off like every window `Camera2d`: Bevy keys a 2D camera's depth by
+    // target alone, so one 4× camera beside the fading loading camera
+    // (`Msaa::Off`) hands wgpu a pass it refuses (#492).
+    commands.spawn((Camera2d, Msaa::Off, Root));
     commands
         .spawn((Root, ui::screen(ui::BG)))
         .with_children(|root| {

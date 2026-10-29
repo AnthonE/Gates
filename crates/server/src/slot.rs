@@ -322,6 +322,10 @@ pub struct Connect {
     /// what it is not — the key never enters `sim-core`, and this struct is
     /// the boundary where that stops being true (`persist.rs`).
     pub key: Option<PlayerKey>,
+    /// The Elo Pros account (`acct_…`) a pass naming `key`'s wallet came
+    /// from (v151): a character the account made before it linked the wallet
+    /// is the wallet's now (`ShardCore::adopt_account`). `None` otherwise.
+    pub alias: Option<PlayerKey>,
     /// `Some(target connection slot)` ⇒ **a spectator seat**, not a player
     /// (`NETCODE.md` §2.3): `slot` is past `MAX_PLAYERS`, `id` is the watched
     /// player's id, `save` and `key` are `None`, and no body is created. The

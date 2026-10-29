@@ -344,7 +344,7 @@ fn wasted(core: &ClientCore, home: &Home, grades: u32) -> bool {
 
 /// Rows a visit's bill holds: the base's, and a feed's worth per upkeep
 /// material.
-pub const VISIT_ROWS: usize = build::BILL_ROWS + HEARTH_STOCK_ROWS;
+pub const VISIT_ROWS: usize = build::BILL_ROWS + HEARTH_STOCK_ROWS + crate::agent::plan::RAW_ROWS;
 
 /// What a visit keeps in the pack, into `out`: the base's `bill`, and a
 /// feed's worth of each upkeep material running low while the cupboard
@@ -371,6 +371,36 @@ pub fn visit_bill(
         }
     }
     n
+}
+
+/// What a visit takes out of the box for the base's next step besides its
+/// bill: the raw inputs of what the pack is short of and makes at its own
+/// stations, in all (`agent::plan::gross_inputs`: [`plan`] takes out what
+/// the pack is short of them), ore for fragments at the furnace, wood for
+/// charcoal. What the base needs and the box holds
+/// the makings of is made at home, not gathered again: a body mined ore
+/// beside 2,000 of it in its box, and another waited a game hour on ten
+/// charcoal with a box of wood (2026-10-25). Rows appended after `n`; the
+/// rows filled.
+pub fn with_inputs(
+    core: &ClientCore,
+    has: &build::Stations,
+    needs: &[(u16, u32)],
+    out: &mut [(u16, u32); VISIT_ROWS],
+    n: usize,
+) -> usize {
+    let mut raw = [(0u16, 0u32); crate::agent::plan::RAW_ROWS];
+    let k = crate::agent::plan::gross_inputs(core, has, needs, &mut raw);
+    let mut filled = n;
+    for &(item, units) in &raw[..k] {
+        if let Some(row) = out[..filled].iter_mut().find(|r| r.0 == item) {
+            row.1 = row.1.saturating_add(units);
+        } else if filled < VISIT_ROWS {
+            out[filled] = (item, units);
+            filled += 1;
+        }
+    }
+    filled
 }
 
 /// What a visit wants next. `explorer.rs` sends the verbs.
@@ -806,10 +836,12 @@ impl StashJob {
         let waste = |item: u16| self.stow && home.feed_wastes(item, grades);
         let mut bill = [(0, 0); VISIT_ROWS];
         let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
+        let has = builder.stations(core);
+        let n = with_inputs(core, &has, builder.survey().needs(), &mut bill, n);
+        // After the inputs, or a row they add back undoes the stow.
         for row in bill[..n].iter_mut().filter(|r| waste(r.0)) {
             row.1 = 0;
         }
-        let has = builder.stations(core);
         plan(
             core,
             |item| {

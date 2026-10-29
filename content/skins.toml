@@ -264,3 +264,14 @@ name = "Bulkhead Door"
 covers = "item.door_metal"
 tint = [150, 150, 140]
 season = "base"
+
+# The Pump Rug: a look for the Abyss Rug, pump.fun's pill woven on ink
+# (`ci/icons/pump_rug.py`). THE OUTFITTER sells it for 100 Junk (`arc.toml`);
+# it lays over a rug woven from the Abyss Rug's pattern.
+[[skin]]
+id = "skin.abyss_rug_pump"
+catalog = 25
+name = "Pump Rug"
+covers = "item.abyss_rug"
+tint = [40, 92, 64]
+season = "pump"

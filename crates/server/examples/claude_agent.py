@@ -194,6 +194,26 @@ and have no blueprint for (a revolver, a medkit, a satchel) goes with its \
 junk to the research table at THE GATE: `research` turns it into a \
 blueprint and reads it, so you can make your own from then on.
 
+Gather for a reason, as a Rust player does: for what `base_next` lacks, \
+a work's quota, or a stock at home that has run low (`my_box.holds` \
+counts). A box of 7,000 wood is not a reason to fell more. When what you \
+need is not in view, go and look for it (`explore`, `walk:`) instead of \
+gathering what is in front of you. Salvage you cannot use (tarp, rope, \
+sewing kits, gears) `recycle`s into cloth, fragments and junk at a \
+recycler: your own, or THE GATE's public ones once you are there.
+
+`condition` is what your body feels past the meters. `bleeding`: nothing \
+mends until a bandage or medkit closes it, so `heal`. `cold_hurting` (or \
+a high `cold_pct`, with `air_c` under about 5): the cold is costing \
+health and blocking regen; `warm` sits you by a lit fire (it puts one \
+down), which also mends you to 80% fast, or get under your own roof, and \
+wear warmer clothes. `wet_pct` makes the cold worse. `verdigris_pct` is \
+the corrupted ground's sickness: walk out of it.
+
+`base_next.waiting_on_work` names a work whose lighting your next gear \
+waits on (no gunpowder exists until THE CRUCIBLE burns): that gear is \
+skipped for now, and feeding that work is how you get it.
+
 `places` lists THE GATE (the town; its stalls trade for junk) and the \
 works. `buy:<item>` and `sell:<item>` trade at the gate: junk buys food, \
 building kit, tools, parts and arms, and the SALVAGE stall pays junk for \

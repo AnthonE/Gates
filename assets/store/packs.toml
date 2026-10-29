@@ -1,0 +1,123 @@
+# The asset store packs: our models, re-packed for any engine and listed on
+# elopros.com/assets.html by the house. `ci/store_pack.py` builds each pack's
+# folder (GLBs with PNG textures, elo-asset.json, the preview); the meter's
+# `asset_house.py publish <folder>` pins and lists it.
+#
+# What is in here is Meshy paid-plan output (MANIFEST.md, the deploy/ rail):
+# ours to licence. The Founder's skins (the alpha gift) and Rust's own item
+# designs stay out. The order here is the order they are published, which is
+# the order the store shows them in.
+
+version = "1.0.0"
+license = "CC-BY-4.0"
+engines = ["any"]
+
+[[pack]]
+id = "gates-triple-t"
+name = "Triple T"
+about = """Triple T, the body every Gates player starts as: one rigged character, 1.8 m tall at scale 1, 54 joints, with 55 animation clips: walk, jog, sprint, crouch, jump, swim, roll, sit, greet, dance, punch, sword, archery, pistol and rifle, hit reactions and a death. Arms and body are separate meshes, for a first-person view. GLB with a PNG texture, about 31k triangles."""
+tags = ["gates", "character", "humanoid", "rigged", "animated", "mascot"]
+made_with = "Built in Meshy from our own prompt; 46 of its clips are retargeted from Quaternius's Universal Animation Library (CC0)."
+source = "https://quaternius.com/"
+rename_clips = { "01a00b60-c754-7f1a-a288-12c8a3379b57" = "Greet" }
+files = [
+  { src = "assets/models/stumpy.glb", name = "triple_t.glb" },
+]
+
+[[pack]]
+id = "gates-fel-wolf"
+name = "Fel wolf"
+about = """Three fel wolves from Gates, light, medium and heavy, each rigged with seven clips: Idle, Walk, Trot, Run, Bite, Howl and Lie. A carcass for each. GLB with PNG textures (colour, normal, metal-rough, glow), about 15k triangles an animal."""
+tags = ["gates", "animal", "wolf", "rigged", "animated", "creature"]
+made_with = "Designed with image models and built in Meshy from our own prompts, then rigged and animated in our pipeline."
+files = [
+  { src = "assets/models/mob/fel/wolf_a.glb", name = "fel_wolf_light.glb" },
+  { src = "assets/models/mob/fel/wolf_b.glb", name = "fel_wolf_medium.glb" },
+  { src = "assets/models/mob/fel/wolf_c.glb", name = "fel_wolf_heavy.glb" },
+  { src = "assets/models/mob/fel/wolf_a_carcass.glb", name = "fel_wolf_light_carcass.glb" },
+  { src = "assets/models/mob/fel/wolf_b_carcass.glb", name = "fel_wolf_medium_carcass.glb" },
+  { src = "assets/models/mob/fel/wolf_c_carcass.glb", name = "fel_wolf_heavy_carcass.glb" },
+]
+
+[[pack]]
+id = "gates-fel-boar"
+name = "Fel boar"
+about = """Three fel boars from Gates, light, medium and heavy, each rigged with seven clips: Idle, Walk, Trot, Run, Bite, Howl and Lie. A carcass for each. GLB with PNG textures (colour, normal, metal-rough, glow), about 15k triangles an animal."""
+tags = ["gates", "animal", "boar", "pig", "rigged", "animated", "creature"]
+made_with = "Designed with image models and built in Meshy from our own prompts, then rigged and animated in our pipeline."
+files = [
+  { src = "assets/models/mob/fel/pig_a.glb", name = "fel_boar_light.glb" },
+  { src = "assets/models/mob/fel/pig_b.glb", name = "fel_boar_medium.glb" },
+  { src = "assets/models/mob/fel/pig_c.glb", name = "fel_boar_heavy.glb" },
+  { src = "assets/models/mob/fel/pig_a_carcass.glb", name = "fel_boar_light_carcass.glb" },
+  { src = "assets/models/mob/fel/pig_b_carcass.glb", name = "fel_boar_medium_carcass.glb" },
+  { src = "assets/models/mob/fel/pig_c_carcass.glb", name = "fel_boar_heavy_carcass.glb" },
+]
+
+[[pack]]
+id = "gates-fel-stag"
+name = "Fel stag"
+about = """Three fel stags from Gates, light, medium and heavy, each rigged with seven clips: Idle, Walk, Trot, Run, Bite, Howl and Lie. A carcass for each. GLB with PNG textures (colour, normal, metal-rough, glow), about 15k triangles an animal."""
+tags = ["gates", "animal", "stag", "deer", "rigged", "animated", "creature"]
+made_with = "Designed with image models and built in Meshy from our own prompts, then rigged and animated in our pipeline."
+files = [
+  { src = "assets/models/mob/fel/stag_a.glb", name = "fel_stag_light.glb" },
+  { src = "assets/models/mob/fel/stag_b.glb", name = "fel_stag_medium.glb" },
+  { src = "assets/models/mob/fel/stag_c.glb", name = "fel_stag_heavy.glb" },
+  { src = "assets/models/mob/fel/stag_a_carcass.glb", name = "fel_stag_light_carcass.glb" },
+  { src = "assets/models/mob/fel/stag_b_carcass.glb", name = "fel_stag_medium_carcass.glb" },
+  { src = "assets/models/mob/fel/stag_c_carcass.glb", name = "fel_stag_heavy_carcass.glb" },
+]
+
+[[pack]]
+id = "gates-verdigris-weapons"
+name = "Verdigris weapons"
+about = """Four weapon skins from Gates' Realm drop: an assault rifle, a revolver, a longsword and a hatchet in black volcanic glass and corroded bronze, cracked with a green glow. Each is its own GLB with PNG textures, held by its grip at real-world size."""
+tags = ["gates", "weapon", "skin", "gun", "melee"]
+made_with = "Repainted with Meshy from our own prompts and concept images."
+files = [
+  { src = "assets/models/held/skins/verdigris_rifle.glb", name = "verdigris_rifle.glb" },
+  { src = "assets/models/held/skins/verdigris_python.glb", name = "verdigris_revolver.glb" },
+  { src = "assets/models/held/skins/verdigris_longsword.glb", name = "verdigris_longsword.glb" },
+  { src = "assets/models/held/skins/verdigris_hatchet.glb", name = "verdigris_hatchet.glb" },
+]
+
+[[pack]]
+id = "gates-lapis-weapons"
+name = "Lapis weapons"
+about = """Four weapon skins from Gates' Realm drop: a tommy gun, a bolt-action rifle, a pickaxe and a mace in polished obsidian, deep-blue lapis and antique gold filigree. Each is its own GLB with PNG textures, held by its grip at real-world size."""
+tags = ["gates", "weapon", "skin", "gun", "melee", "tool"]
+made_with = "Repainted with Meshy from our own prompts and concept images."
+files = [
+  { src = "assets/models/held/skins/lapis_thompson.glb", name = "lapis_tommy_gun.glb" },
+  { src = "assets/models/held/skins/lapis_bolt_rifle.glb", name = "lapis_bolt_rifle.glb" },
+  { src = "assets/models/held/skins/lapis_pickaxe.glb", name = "lapis_pickaxe.glb" },
+  { src = "assets/models/held/skins/lapis_mace.glb", name = "lapis_mace.glb" },
+]
+
+[[pack]]
+id = "gates-tidewrack-weapons"
+name = "Tidewrack weapons"
+about = """Four weapon skins from Gates' Realm drop: a pump shotgun, an SMG, a semi-auto rifle and a cleaver in sun-bleached driftwood, tarred rope and sea-worn brass. Each is its own GLB with PNG textures, held by its grip at real-world size."""
+tags = ["gates", "weapon", "skin", "gun", "melee", "pirate"]
+made_with = "Repainted with Meshy from our own prompts and concept images."
+files = [
+  { src = "assets/models/held/skins/tidewrack_shotgun.glb", name = "tidewrack_shotgun.glb" },
+  { src = "assets/models/held/skins/tidewrack_smg.glb", name = "tidewrack_smg.glb" },
+  { src = "assets/models/held/skins/tidewrack_sar.glb", name = "tidewrack_rifle.glb" },
+  { src = "assets/models/held/skins/tidewrack_cleaver.glb", name = "tidewrack_cleaver.glb" },
+]
+
+[[pack]]
+id = "gates-launch-skins"
+name = "Gates launch skins"
+about = """Five tool and weapon skins from Gates' launch: an obsidian bat, an ember hatchet with molten cracks, a frost pickaxe, a bone bow and a gilded revolver. Each is its own GLB with PNG textures, held by its grip at real-world size."""
+tags = ["gates", "weapon", "skin", "tool", "melee", "gun"]
+made_with = "Built and repainted in Meshy from our own prompts."
+files = [
+  { src = "assets/models/held/skins/obsidian_bat.glb", name = "obsidian_bat.glb" },
+  { src = "assets/models/held/skins/ember_hatchet.glb", name = "ember_hatchet.glb" },
+  { src = "assets/models/held/skins/frost_pickaxe.glb", name = "frost_pickaxe.glb" },
+  { src = "assets/models/held/skins/bone_bow.glb", name = "bone_bow.glb" },
+  { src = "assets/models/held/skins/gilded_revolver.glb", name = "gilded_revolver.glb" },
+]

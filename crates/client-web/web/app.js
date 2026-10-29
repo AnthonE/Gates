@@ -2,7 +2,7 @@
    `cpal` (under `bevy_audio` → `rodio`) decides whether the browser has Web
    Audio with `js_sys::eval("typeof AudioContext !== 'undefined'")` (cpal
    0.15.3, `host/webaudio/mod.rs`). This page's CSP allows 'wasm-unsafe-eval'
-   and NOT 'unsafe-eval' (the platform's nginx block for /games/gates/), so that
+   and NOT 'unsafe-eval' (the platform's nginx block for /games/gates/play/), so that
    eval throws, cpal counts the throw as "no Web Audio", and `bevy_audio` logs
    "No audio device found": a silent game with every check green. Measured
    2026-09-13 as an A/B of one build — served without the header it found its
@@ -2156,6 +2156,21 @@ function tintedArt(s, art) {
 
 const CART = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h2l1.6 8h7.4l1.5-5.5H4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="6.5" cy="13" r="1.2" fill="currentColor"/><circle cx="11.5" cy="13" r="1.2" fill="currentColor"/></svg>';
 
+function leavesIn(closesAt) {
+  const left = Number(closesAt) - Date.now() / 1000;
+  if (!(left > 0)) return "";
+  return left >= 86400 ? `Leaves in ${Math.floor(left / 86400)}d`
+    : left >= 3600 ? `Leaves in ${Math.floor(left / 3600)}h` : "Leaves soon";
+}
+
+/* why an off-sale card has no price: it left, it sold out, or how it is
+   earned in game; a look not priced yet is "Coming soon" */
+function offSale(s) {
+  if (s.why_not === "closed") return "Left the store";
+  if (s.why_not === "sold out") return "Sold out";
+  return typeof s.earn === "string" && s.earn.trim() ? s.earn.trim() : "Coming soon";
+}
+
 function skinCard(s) {
   const el = document.createElement("a");
   el.className = "card skin";
@@ -2184,8 +2199,18 @@ function skinCard(s) {
   const onSale = Boolean(s.on_sale && s.price_text);
   price.className = "price" + (onSale ? "" : " soon");
   if (onSale) price.innerHTML = CART;
-  price.append(onSale ? String(s.price_text) : "Coming soon");
-  txt.append(h, fits, price);
+  price.append(onSale ? String(s.price_text) : offSale(s));
+  txt.append(h, fits);
+  /* Rust's store counts a limited skin down; ours is the store contract's
+     own closing time (ui::locker::leaves_in, the same words) */
+  const when = onSale ? leavesIn(s.closes_at) : "";
+  if (when) {
+    const w = document.createElement("span");
+    w.className = "leaves";
+    w.textContent = when;
+    txt.append(w);
+  }
+  txt.append(price);
   el.append(art, txt);
   return el;
 }
@@ -2745,4 +2770,128 @@ if (typeof PerformanceObserver !== "undefined") {
       performance.clearMeasures();
     }, 5000);
   } catch (err) { /* no longtask entry type here */ }
+}
+
+/* ── the clip: F9 in the world ──────────────────────────────────────────────
+   The game keeps its last minute (`client::clip`) and F9 hands the last half
+   of it here (`client::render::clip`). The video is drawn by the same game in
+   a frame of its own (`clip.html`, `clip.js`): a page runs one Bevy app for
+   its life, and this one is still playing under the dialog. The frame posts
+   back an MP4 made on this machine; nothing is uploaded. One frame per video,
+   so another camera is another frame over the same tape. */
+const CLIP_REF = "gates.clipRef";
+const clipUi = {
+  tape: null,
+  frame: null,
+  url: null,
+};
+function clipStyle() {
+  const on = document.querySelector('input[name="clip-style"]:checked');
+  return on ? on.value : "pov";
+}
+function clipSay(text, bad) {
+  $("clip-status").textContent = text;
+  $("clip-status").className = bad ? "bad" : "";
+}
+function clipReset() {
+  if (clipUi.frame) { clipUi.frame.remove(); clipUi.frame = null; }
+  if (clipUi.url) { URL.revokeObjectURL(clipUi.url); clipUi.url = null; }
+  $("clip-view").replaceChildren();
+  $("clip-bar").style.width = "0";
+  $("clip-done").hidden = true;
+  $("clip-go").disabled = false;
+  clipSay("");
+}
+function clipClose() {
+  clipReset();
+  clipUi.tape = null;
+  $("clip").hidden = true;
+}
+window.gatesClip = (bytes, held) => {
+  clipReset();
+  /* A copy the page owns: the game's view of wasm memory moves on. */
+  clipUi.tape = new Uint8Array(bytes).buffer;
+  const s = Math.round(Number(held) || 0);
+  $("clip-held").textContent = s >= 15
+    ? `The last ${s} seconds you played, made into a video on this computer.`
+    : `The last ${s} seconds you played. The longer cameras need a little more play first.`;
+  try { $("clip-ref").value = localStorage.getItem(CLIP_REF) || ""; } catch (err) { /* private mode */ }
+  $("clip-go").textContent = "Make the video";
+  if (document.pointerLockElement) document.exitPointerLock();
+  $("clip").hidden = false;
+  $("clip-go").focus();
+};
+function clipLink() {
+  const ref = $("clip-ref").value.trim().replace(/^.*\/r\//, "").replace(/[^A-Za-z0-9_-]/g, "");
+  try { localStorage.setItem(CLIP_REF, ref); } catch (err) { /* private mode */ }
+  return ref ? `elopros.com/r/${ref}` : "elopros.com";
+}
+function clipMake() {
+  if (!clipUi.tape) return;
+  clipReset();
+  const style = clipStyle();
+  const view = $("clip-view");
+  view.classList.toggle("wide", style === "wide");
+  const frame = document.createElement("iframe");
+  frame.title = "Your clip, being drawn";
+  frame.src = `clip.html?overlay=0&gfx=${encodeURIComponent(window.gatesGfx || "webgl2")}`;
+  view.append(frame);
+  clipUi.frame = frame;
+  $("clip-go").disabled = true;
+  clipSay("Loading the camera…");
+  const send = {
+    type: "clip-tape",
+    tape: clipUi.tape.slice(0),
+    style,
+    line: $("clip-line").value.trim(),
+    link: clipLink(),
+    tag: $("clip-tag").checked,
+  };
+  clipUi.send = () => frame.contentWindow.postMessage(send, location.origin, [send.tape]);
+}
+window.addEventListener("message", (ev) => {
+  if (ev.origin !== location.origin || !clipUi.frame || ev.source !== clipUi.frame.contentWindow) return;
+  const m = ev.data || {};
+  if (m.type === "clip-ready" && clipUi.send) {
+    clipUi.send();
+    clipUi.send = null;
+    clipSay("Drawing… you're still in the game behind this.");
+  } else if (m.type === "clip-progress") {
+    $("clip-bar").style.width = `${Math.round(Math.min(1, m.f) * 100)}%`;
+    if (m.encoding) clipSay("Finishing the file…");
+  } else if (m.type === "clip-done") {
+    clipUi.frame.remove();
+    clipUi.frame = null;
+    clipUi.url = URL.createObjectURL(m.blob);
+    const video = document.createElement("video");
+    video.src = clipUi.url;
+    video.controls = true;
+    video.playsInline = true;
+    video.loop = true;
+    $("clip-view").replaceChildren(video);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+    const name = `gates-clip-${stamp}.mp4`;
+    $("clip-save").href = clipUi.url;
+    $("clip-save").download = name;
+    const file = new File([m.blob], name, { type: "video/mp4" });
+    const share = $("clip-share");
+    share.hidden = !(navigator.canShare && navigator.canShare({ files: [file] }));
+    share.onclick = () => navigator.share({ files: [file], title: "Gates" }).catch(() => {});
+    $("clip-done").hidden = false;
+    $("clip-go").disabled = false;
+    $("clip-go").textContent = "Make it again";
+    clipSay(`${Math.round(m.seconds)} s, ${m.width}×${m.height}. Made on this computer.`);
+  } else if (m.type === "clip-failed") {
+    if (clipUi.frame) { clipUi.frame.remove(); clipUi.frame = null; }
+    $("clip-go").disabled = false;
+    clipSay(`The video could not be made: ${m.why}`, true);
+  }
+});
+if ($("clip")) {
+  $("clip-go").addEventListener("click", clipMake);
+  $("clip-close").addEventListener("click", clipClose);
+  $("clip").addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Escape") clipClose();
+  });
 }

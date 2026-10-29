@@ -12,6 +12,7 @@
 //! §open, "Jev goals v0".
 
 pub use crate::agent::build::Milestone;
+use crate::agent::loadout::STAUNCHES;
 use crate::agent::orders::{self, Order};
 use crate::agent::society::Role;
 use protocol::MAX_ITEM_NAME_BYTES;
@@ -43,9 +44,9 @@ pub const SUMMARY_RAW: usize = crate::agent::plan::RAW_ROWS;
 /// The scripted policy goes home to put things away once the pack is down
 /// to this many free slots.
 pub const SCRIPTED_STASH_FREE_SLOTS: u8 = 4;
-/// A raw material the pack already holds this much of is not gathered for
-/// its own sake: a pack full of wood has no room for the pickaxe the next
-/// stone makes. The base's needs ask for more by name.
+/// A pack holding twice this of wood or stone sells the rest at THE GATE
+/// once the base is done, and a society's farmer carrying this much gives
+/// it to a work. What is gathered at all is [`SCRIPTED_RESERVE`]'s.
 pub const SCRIPTED_PLENTY: u32 = 3000;
 /// A barrel or crate known this near (metres) is worth taking on the way,
 /// whatever the base needs.
@@ -183,6 +184,11 @@ pub enum Goal {
     /// Cook the raw meat in the pack at a fire, putting one down if there
     /// is none near.
     Cook,
+    /// Stand by a lit fire, putting one down and lighting it if none is
+    /// near, until the cold is gone and the body has mended what a fire's
+    /// comfort mends (`sim_core::exposure`: to 80 % hp, fast). Rust's answer
+    /// to a freezing night and to a fight lost with no meds left.
+    Warm,
     /// Take salvaged parts apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
@@ -322,7 +328,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 41] = [
+    pub const FIXED: [Goal; 42] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -343,6 +349,7 @@ impl Goal {
         Goal::Stash,
         Goal::Loot,
         Goal::Cook,
+        Goal::Warm,
         Goal::Recycle,
         Goal::Research,
         Goal::Defend,
@@ -390,6 +397,7 @@ impl Goal {
             Goal::Stash => "stash",
             Goal::Loot => "loot",
             Goal::Cook => "cook",
+            Goal::Warm => "warm",
             Goal::Recycle => "recycle",
             Goal::Research => "research",
             Goal::Defend => "defend",
@@ -526,6 +534,7 @@ impl Goal {
             }
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
+            Goal::Warm => "Sit by a lit fire (lights one) until warm and mended to 80%.".into(),
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
             Goal::Research => "Research a found thing you have no blueprint for at THE GATE's table, for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
@@ -615,6 +624,8 @@ pub enum Why {
     Blocked,
     /// Its session ended (a shift's end, a dropped link) while it ran.
     Session,
+    /// A work refused the verb, with this code (`sim_core::works::REFUSE_A_*`).
+    ArcRefused(u8),
 }
 
 impl Why {
@@ -649,7 +660,27 @@ impl Why {
             Why::NoInvite => "no invite was waiting any more",
             Why::Blocked => "something else is in the way of it, so it could not reach it",
             Why::Session => "the session ended while it ran",
+            Why::ArcRefused(code) => arc_refusal(code),
         }
+    }
+}
+
+/// [`Why::ArcRefused`]'s words: the server's own reason, so a feed that
+/// keeps failing says why.
+fn arc_refusal(code: u8) -> &'static str {
+    use sim_core::works::*;
+    match u32::from(code) {
+        REFUSE_A_KIND => "the server refused it: not a verb that work takes (or the body was down)",
+        REFUSE_A_REACH => "the server refused it: not in reach of the work's terminal",
+        REFUSE_A_SEALED => "the server refused it: the work has not opened yet",
+        REFUSE_A_NOTHING => "the server refused it: the pack holds nothing the work still needs",
+        REFUSE_A_LIT => "the server refused it: the work is already lit and takes only fuel",
+        REFUSE_A_COLD => "the server refused it: fuel for a work that is not lit",
+        REFUSE_A_FULL => "the server refused it: the work's tank is full",
+        REFUSE_A_RESTING => "the server refused it: the mechanism is resting after a solve",
+        REFUSE_A_SHUT => "the server refused it: the exchange has not opened",
+        REFUSE_A_CAP => "the server refused it: this wallet has taken out all the wipe allows",
+        _ => "the server refused it, with a code this build does not know",
     }
 }
 
@@ -1413,6 +1444,54 @@ impl Distance {
     }
 }
 
+/// What the body feels past the three meters, as the HUD shows a player
+/// under them (weather v0, clothing v1): the wound still bleeding, the cold
+/// and the wet, the Verdigris, a fire's comfort and the air it stands in.
+/// Nothing mends while a wound bleeds, and cold past its mark costs hp.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Condition {
+    /// Hp the open wound still owes; 0 when nothing bleeds.
+    pub bleed: u8,
+    pub cold_pct: u8,
+    pub cold_hurting: bool,
+    pub wet_pct: u8,
+    pub fel_pct: u8,
+    pub fel_hurting: bool,
+    pub comfort_pct: u8,
+    /// The air, whole °C, once a reading has landed.
+    pub air_c: Option<i8>,
+}
+
+impl Condition {
+    pub const NONE: Self = Self {
+        bleed: 0,
+        cold_pct: 0,
+        cold_hurting: false,
+        wet_pct: 0,
+        fel_pct: 0,
+        fel_hurting: false,
+        comfort_pct: 0,
+        air_c: None,
+    };
+
+    pub fn bleeding(&self) -> bool {
+        self.bleed > 0
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "bleeding": self.bleeding(),
+            "cold_pct": self.cold_pct,
+            "cold_hurting": self.cold_hurting,
+            "wet_pct": self.wet_pct,
+            "verdigris_pct": self.fel_pct,
+            "verdigris_hurting": self.fel_hurting,
+            "comfort_pct": self.comfort_pct,
+            "air_c": self.air_c,
+        })
+    }
+}
+
 /// Home as a summary carries it: no position, a relative bearing (an index
 /// into [`BEARINGS`]) and a distance band.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1513,6 +1592,23 @@ pub const FARM_AIMS: [(&str, u32); 4] = [
     ("Metal Ore", 1500),
     ("Cloth", 300),
 ];
+/// What the playbook keeps on hand of a raw stuff (the pack, its box, and
+/// the team's boxes where it lives) when nothing it is making asks for
+/// more: upkeep, a repair, the next craft. Past it no idle round gathers
+/// more of it, and ore only while a furnace stands to smelt it, before
+/// which ore is only weight. A Rust player farms for the next thing and
+/// stops: on the 2026-10-25 bench a body sat on 7,000 wood and 2,000 ore in
+/// its box, felling more, while its tech tree waited on 120 junk.
+pub const SCRIPTED_RESERVE: [(&str, u32); 3] =
+    [("Wood", 1500), ("Stone", 1500), ("Metal Ore", 500)];
+/// Wood and stone a body without its stone tools gathers into its own pack
+/// whatever the stock at home: a hatchet, a pickaxe and a spear's worth.
+pub const SCRIPTED_TOOL_KIT: u32 = 500;
+/// A feed walks to a work with at least this much of what it takes: the
+/// quotas run to tens of thousands (`content/arc.toml`), and a walk across
+/// the island for a handful is a walk wasted. Cloth, fragments and charcoal
+/// go at a fifth of it, and parts (gears, rope, junk) at any count.
+pub const SCRIPTED_WORK_BATCH: u32 = 1000;
 /// A society's runner sells a raw stuff once it carries this much of it,
 /// and takes its junk home once it carries this much.
 pub const RUNNER_SELL_AT: u32 = 1000;
@@ -1549,6 +1645,7 @@ pub struct Summary {
     pub food_max: u16,
     pub water: u16,
     pub water_max: u16,
+    pub condition: Condition,
     pub items: [(Name, u32); SUMMARY_ITEMS],
     pub items_len: u8,
     pub free_slots: u8,
@@ -1595,6 +1692,10 @@ pub struct Summary {
     /// or loot.
     pub raw: [(Name, u32); SUMMARY_RAW],
     pub raw_len: u8,
+    /// The work whose lighting the base's next gear waits on: nobody on
+    /// the island makes it until then (gunpowder until THE CRUCIBLE burns,
+    /// `ARC.md`). That gear is passed over meanwhile, not waited at.
+    pub held_by: Option<Name>,
     /// Its own workbench and furnace stand.
     pub bench: bool,
     pub furnace: bool,
@@ -1654,6 +1755,7 @@ impl Summary {
         food_max: 0,
         water: 0,
         water_max: 0,
+        condition: Condition::NONE,
         items: [(Name::EMPTY, 0); SUMMARY_ITEMS],
         items_len: 0,
         free_slots: 0,
@@ -1744,6 +1846,7 @@ impl Summary {
         needs_len: 0,
         raw: [(Name::EMPTY, 0); SUMMARY_RAW],
         raw_len: 0,
+        held_by: None,
         bench: false,
         furnace: false,
         loot: Sighting {
@@ -1883,6 +1986,32 @@ impl Summary {
             .sum()
     }
 
+    /// What it has of an item to hand: the pack, its own box as last seen,
+    /// and the team's boxes while it lives in the team's base.
+    pub fn on_hand(&self, name: &str) -> u32 {
+        let sum = |rows: &[(Name, u32)]| -> u32 {
+            rows.iter()
+                .filter(|(n, _)| n.as_str() == name)
+                .map(|(_, c)| *c)
+                .sum()
+        };
+        let team = if self.team.lives_there {
+            sum(self.home_holds())
+        } else {
+            0
+        };
+        self.count_of(name)
+            .saturating_add(sum(self.stored()))
+            .saturating_add(team)
+    }
+
+    /// The stock of a raw stuff is under [`SCRIPTED_RESERVE`].
+    pub fn stock_low(&self, name: &str) -> bool {
+        SCRIPTED_RESERVE
+            .iter()
+            .any(|&(n, keep)| n == name && self.on_hand(name) < keep)
+    }
+
     /// What it heard since the last request, oldest first: who (the chat
     /// log's label), whether that is itself or a declared agent, the
     /// channel and the words. Sent to an external source beside the
@@ -2013,6 +2142,7 @@ impl Summary {
             "health": meter(self.hp, self.hp_max),
             "food": meter(self.food, self.food_max),
             "water": meter(self.water, self.water_max),
+            "condition": self.condition.json(),
             "pack": {
                 "items": self.items().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "free_slots": self.free_slots,
@@ -2055,6 +2185,7 @@ impl Summary {
                 "milestone": self.milestone.word(),
                 "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "raw": self.raw().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+                "waiting_on_work": self.held_by.map(|n| n.as_str().to_owned()),
             },
             "stations": { "workbench": self.bench, "furnace": self.furnace },
             "loot_known": self.loot.json(),
@@ -2983,6 +3114,85 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
     }
 }
 
+/// What an open work's quota asks of this body now (`ARC.md`): a feed once
+/// the pack carries a walk's worth of something one still takes, else the
+/// gathering of what one takes that is in view, or charcoal at its own
+/// furnace. The work its base's next gear waits on (`held_by`) comes
+/// first: that lighting is its own next step too. A work's quota is what a
+/// Rust player's grind is for once the base stands, and it lights things
+/// for the whole island.
+pub fn work_run(s: &Summary) -> Option<(Goal, &'static str)> {
+    let open = |w: &&WorkSense| w.state == sim_core::works::WORK_OPEN && w.needs_len > 0;
+    let works = &s.works[..usize::from(s.works_len)];
+    let held = |w: &WorkSense| s.held_by == Some(w.name);
+    let mut order = [usize::MAX; sim_core::limits::MAX_WORKS];
+    let mut n = 0;
+    for first in [true, false] {
+        for (i, w) in works.iter().enumerate().filter(|(_, w)| open(w)) {
+            if held(w) == first && n < order.len() {
+                order[n] = i;
+                n += 1;
+            }
+        }
+    }
+    for &i in &order[..n] {
+        let w = &works[i];
+        let feed = w.needs[..usize::from(w.needs_len)]
+            .iter()
+            .any(|(name, still)| {
+                let batch = match name.as_str() {
+                    "Wood" | "Stone" | "Metal Ore" | "Sulfur Ore" => SCRIPTED_WORK_BATCH,
+                    "Charcoal" | "Cloth" | "Metal Fragments" => SCRIPTED_WORK_BATCH / 5,
+                    _ => 1,
+                };
+                s.count_of(name.as_str()) >= batch.min(*still).max(1)
+            });
+        if feed && s.offers(Goal::FeedWork) {
+            return Some(if held(w) {
+                (
+                    Goal::FeedWork,
+                    "scripted: feeding the work my next gear waits on",
+                )
+            } else {
+                (
+                    Goal::FeedWork,
+                    "scripted: a walk's worth for an open work's quota",
+                )
+            });
+        }
+    }
+    let room = s.free_slots > SCRIPTED_STASH_FREE_SLOTS;
+    for &i in &order[..n] {
+        let w = &works[i];
+        for (name, _) in &w.needs[..usize::from(w.needs_len)] {
+            let goal = match name.as_str() {
+                "Wood" if s.trees.count > 0 => Goal::GatherWood,
+                "Stone" if s.stone_nodes.count > 0 => Goal::GatherStone,
+                "Metal Ore" if s.ore_nodes.count > 0 => Goal::GatherOre,
+                "Cloth" if s.hemp.count > 0 => Goal::GatherHemp,
+                "Charcoal" if s.furnace => {
+                    match s.craftable().iter().find(|c| c.as_str() == "Charcoal") {
+                        Some(c) => Goal::Craft(*c),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            if (room || matches!(goal, Goal::Craft(_))) && s.offers(goal) {
+                return Some(if held(w) {
+                    (
+                        goal,
+                        "scripted: gathering for the work my next gear waits on",
+                    )
+                } else {
+                    (goal, "scripted: gathering for an open work's quota")
+                });
+            }
+        }
+    }
+    None
+}
+
 fn pct(value: u16, max: u16) -> u32 {
     if max == 0 {
         100
@@ -3078,6 +3288,40 @@ impl Scripted {
         if hp < SCRIPTED_HEAL_HP_PCT && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");
         }
+        // A wound still bleeding mends nothing and drains on: a bandage
+        // closes it (Rust's), whatever the bar says.
+        if s.condition.bleeding() && s.threats_len == 0 && s.offers(Goal::Heal) {
+            return (Goal::Heal, "scripted: bleeding, a bandage stops it");
+        }
+        // Freezing (the cold eating a body already under the heal line), or
+        // badly hurt with no meds: by a lit fire, Rust's answer to both. A
+        // fire takes the chill away and its comfort mends a body to 80 % at
+        // forty hp a minute; nothing mends in the cold. Bodies at a tenth of
+        // their health were felling trees at dawn, the cold keeping them
+        // there (2026-10-25 bench). A body with health to spare works on
+        // through a cold hour, as a player does.
+        let dressed = STAUNCHES.iter().any(|m| s.count_of(m) > 0);
+        let freezing = s.condition.cold_hurting && hp < SCRIPTED_HEAL_HP_PCT;
+        if (freezing || (hp < SCRIPTED_FLEE_HP_PCT && !dressed))
+            && s.threats_len == 0
+            && s.offers(Goal::Warm)
+        {
+            return (
+                Goal::Warm,
+                "scripted: cold or hurt, by a fire to warm and mend",
+            );
+        }
+        // Badly hurt or bleeding with nothing to dress it and no fire to be
+        // had: four cloth make a bandage, and that comes before the
+        // sleeping bag the cloth was kept for.
+        if (hp < SCRIPTED_FLEE_HP_PCT || s.condition.bleeding()) && !dressed && s.threats_len == 0 {
+            if let Some(name) = s.craftable().iter().find(|n| n.as_str() == STAUNCHES[0]) {
+                return (Goal::Craft(*name), "scripted: hurt, making a bandage");
+            }
+            if s.hemp.count > 0 && s.offers(Goal::GatherHemp) {
+                return (Goal::GatherHemp, "scripted: hurt, cloth for a bandage");
+            }
+        }
         // Home fought over: back inside, the fight met from there, then
         // the damage mended.
         if (s.home.attacked || s.team.home_attacked) && s.offers(Goal::Defend) {
@@ -3149,6 +3393,17 @@ impl Scripted {
             if bush {
                 return (Goal::Forage, "scripted: food is low, a bush is in view");
             }
+        }
+        // Cold that costs health and no fire to be had: in under its own
+        // roof, once the base has one, out of the rain and the wind that add
+        // to it (`sim_core::exposure`).
+        if s.condition.cold_hurting
+            && hp < SCRIPTED_HEAL_HP_PCT
+            && s.milestone > Milestone::Upstairs
+            && s.threats_len == 0
+            && s.offers(Goal::GoHome)
+        {
+            return (Goal::GoHome, "scripted: freezing, in under my roof");
         }
         // A teammate's word: a run or the walk home once, then a follow
         // or a hold until they say otherwise.
@@ -3277,7 +3532,9 @@ impl Scripted {
         }
         // On a team, with the chest it saw a teammate at: fill it. A pack
         // getting full goes in; else a supply run of what it holds least
-        // of, wood or stone.
+        // of, wood or stone, while the boxes hold less of it than a crew's
+        // farmer aims for (`FARM_AIMS`): past that the chest is full enough,
+        // and the work a teammate does is the rest of this playbook.
         if s.team.home.count > 0 {
             if s.offers(Goal::Deliver)
                 && (s.free_slots <= SCRIPTED_DELIVER_FREE || s.team.home_has_needs)
@@ -3294,12 +3551,21 @@ impl Scripted {
                     .map(|(_, c)| *c)
                     .sum()
             };
+            let aim = |name: &str| {
+                FARM_AIMS
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map_or(0, |&(_, a)| a)
+            };
             let mut runs = [
-                (Goal::SupplyWood, held("Wood")),
-                (Goal::SupplyStone, held("Stone")),
+                (Goal::SupplyWood, held("Wood"), aim("Wood")),
+                (Goal::SupplyStone, held("Stone"), aim("Stone")),
             ];
             runs.sort_by_key(|r| r.1);
-            if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
+            if let Some((goal, ..)) = runs
+                .into_iter()
+                .find(|&(goal, held, aim)| held < aim && s.offers(goal))
+            {
                 return (goal, "scripted: a supply run for the team's chest");
             }
         }
@@ -3316,9 +3582,11 @@ impl Scripted {
                     return (goal, "scripted: a metal tool at the gate");
                 }
             }
-            let plenty = |name: &str| s.count_of(name) >= SCRIPTED_PLENTY;
-            if s.offers(Goal::FeedWork) && (plenty("Wood") || plenty("Stone")) {
-                return (Goal::FeedWork, "scripted: plenty to give a work");
+            // A walk's worth of what an open work still takes goes in
+            // before any of it is sold: a work lights things for everyone,
+            // and SALVAGE pays four junk for a thousand wood.
+            if let Some(feed) = work_run(s).filter(|(g, _)| *g == Goal::FeedWork) {
+                return feed;
             }
             for name in ["Wood", "Stone"] {
                 if let Some(goal) = Name::new(name.as_bytes())
@@ -3368,10 +3636,10 @@ impl Scripted {
         // with THE GATE within a walk, or once a bag is down and the base
         // has its doors: a fresh body's trip across the island to research
         // cost it its bag (2026-10-18).
+        let settled = s.bags > 0 && s.milestone > Milestone::Doors;
         let gate_close = s
             .gate
             .is_some_and(|g| matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid));
-        let settled = s.bags > 0 && s.milestone > Milestone::Doors;
         if (gate_close || settled) && s.offers(Goal::Research) {
             return (Goal::Research, "scripted: research what it found");
         }
@@ -3450,17 +3718,40 @@ impl Scripted {
                 }
             }
             let raw = if s.raw_len > 0 { s.raw() } else { s.needs() };
+            let gate_close = s.gate.is_some_and(|g| {
+                matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid)
+            });
+            let provisioned = pct(s.food, s.food_max) >= SCRIPTED_TRIP_METER_PCT
+                && pct(s.water, s.water_max) >= SCRIPTED_TRIP_METER_PCT;
+            // The first thing the base needs that lies about somewhere but
+            // not in view: what to go and look for, rather than gathering
+            // what is in view and not needed.
+            let mut search = None;
             for (name, _) in raw {
                 let (goal, seen) = match name.as_str() {
                     "Wood" => (Goal::GatherWood, s.trees.count > 0),
                     "Stone" => (Goal::GatherStone, s.stone_nodes.count > 0),
                     "Cloth" => (Goal::GatherHemp, s.hemp.count > 0),
                     "Metal Ore" | "Sulfur Ore" => (Goal::GatherOre, s.ore_nodes.count > 0),
-                    "Animal Fat" => (Goal::Hunt, s.animals.count > 0),
+                    // An animal's harvest: fat, leather and bone.
+                    "Animal Fat" | "Leather" | "Bone Fragments" => {
+                        (Goal::Hunt, s.animals.count > 0)
+                    }
                     _ => (Goal::Loot, false),
                 };
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
+                }
+                // No hemp in view: a carcass pays cloth too (Rust's).
+                if name.as_str() == "Cloth" && s.animals.count > 0 && s.offers(Goal::Hunt) {
+                    return (Goal::Hunt, "scripted: cloth off an animal for the base");
+                }
+                let gathers = matches!(
+                    goal,
+                    Goal::GatherWood | Goal::GatherStone | Goal::GatherOre | Goal::GatherHemp
+                );
+                if gathers && search.is_none() && s.offers(goal) {
+                    search = Some(goal);
                 }
                 // What the base is short of and THE GATE sells is bought
                 // there for the junk the pack carries anyway: fragments,
@@ -3471,16 +3762,25 @@ impl Scripted {
                 // drink (water fell to 30 % on the gate road, 2026-10-18).
                 let gatherable =
                     matches!(name.as_str(), "Wood" | "Stone" | "Metal Ore" | "Sulfur Ore");
-                let gate_close = s.gate.is_some_and(|g| {
-                    matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid)
-                });
-                let provisioned = pct(s.food, s.food_max) >= SCRIPTED_TRIP_METER_PCT
-                    && pct(s.water, s.water_max) >= SCRIPTED_TRIP_METER_PCT;
                 if (!gatherable || gate_close) && provisioned && s.offers(Goal::Buy(*name)) {
                     return (
                         Goal::Buy(*name),
                         "scripted: buy what the base needs at the gate",
                     );
+                }
+                // Short of junk with a pack of wood or stone past what it
+                // keeps: SALVAGE takes the surplus for junk. A body sat on a
+                // blueprint for hours, 120 junk short, carrying 3,000 of
+                // each (2026-10-25 bench).
+                if name.as_str() == crate::agent::gate::JUNK && gate_close && provisioned {
+                    for stuff in ["Wood", "Stone"] {
+                        let surplus =
+                            !s.stock_low(stuff) && s.count_of(stuff) >= 2 * SCRIPTED_WORK_BATCH;
+                        let sell = Name::new(stuff.as_bytes()).map(Goal::Sell);
+                        if let Some(goal) = sell.filter(|g| surplus && s.offers(*g)) {
+                            return (goal, "scripted: selling the surplus for the junk I need");
+                        }
+                    }
                 }
                 // A loot run is a long way to go: what the pack already
                 // pays for goes up first.
@@ -3491,6 +3791,23 @@ impl Scripted {
             }
             if s.offers(Goal::Build) {
                 return (Goal::Build, "scripted: build what the pack pays for");
+            }
+            // Short of something that lies about but none in view: look
+            // round for it, then farther afield, the way a player goes to
+            // where the ore is rather than felling trees they do not need.
+            if let Some(goal) = search {
+                let looked = s
+                    .last
+                    .is_some_and(|r| r.goal == goal && r.outcome == Outcome::Failed(Why::NotFound));
+                if !looked {
+                    return (goal, "scripted: looking for what the base needs");
+                }
+                if s.offers(Goal::Explore) {
+                    return (
+                        Goal::Explore,
+                        "scripted: farther afield for what the base needs",
+                    );
+                }
             }
         }
         // Everything made: a metal door in a wooden one's place, once the
@@ -3506,9 +3823,27 @@ impl Scripted {
         {
             return (Goal::Loot, "scripted: a barrel or crate is near");
         }
-        // Alternate the resources, preferring one that is in view, while
-        // the pack keeps room for what the base and its benches make: a
-        // pack full of everything makes nothing.
+        // Its own base and gear done, or the rest waiting on a work: what a
+        // player does then. A loot run for the junk and parts that research
+        // and the gate's stalls take, turn about with the works' quotas,
+        // which light the next unlock for everyone.
+        let settled = tooled && (s.milestone == Milestone::Done || s.team.lives_there);
+        let provisioned = pct(s.food, s.food_max) >= SCRIPTED_TRIP_METER_PCT
+            && pct(s.water, s.water_max) >= SCRIPTED_TRIP_METER_PCT;
+        let looted = s.last.is_some_and(|r| r.goal == Goal::Loot);
+        if settled && provisioned && !looted && s.offers(Goal::Loot) {
+            return (Goal::Loot, "scripted: a loot run for junk and parts");
+        }
+        if settled {
+            if let Some(pick) = work_run(s) {
+                return pick;
+            }
+        }
+        // Topping up the stock at home, a stuff in view that the pack and
+        // the boxes hold less of than the playbook keeps
+        // ([`SCRIPTED_RESERVE`]), while the pack keeps room for what the base
+        // and its benches make: a pack full of everything makes nothing.
+        // Past the reserve nothing is gathered for its own sake.
         let room = s.free_slots > SCRIPTED_STASH_FREE_SLOTS;
         let order = [
             Goal::GatherWood,
@@ -3516,22 +3851,39 @@ impl Scripted {
             Goal::GatherWood,
             Goal::GatherOre,
         ];
+        let smelts = s.furnace || s.team.lives_there;
+        // A body without its stone tools (a fresh one, or one that died
+        // with them) wants their wood and stone in its own pack, whatever
+        // its box holds: the box is across the island, the tools are not.
+        let want =
+            |name: &str| s.stock_low(name) || (!tooled && s.count_of(name) < SCRIPTED_TOOL_KIT);
         let seen = |g: Goal| match g {
-            Goal::GatherWood => s.trees.count > 0 && s.count_of("Wood") < SCRIPTED_PLENTY,
-            Goal::GatherStone => s.stone_nodes.count > 0 && s.count_of("Stone") < SCRIPTED_PLENTY,
-            Goal::GatherOre => s.ore_nodes.count > 0,
+            Goal::GatherWood => s.trees.count > 0 && want("Wood"),
+            Goal::GatherStone => s.stone_nodes.count > 0 && want("Stone"),
+            Goal::GatherOre => s.ore_nodes.count > 0 && smelts && s.stock_low("Metal Ore"),
             _ => false,
         };
         for step in 0..order.len() {
             let goal = order[(self.rotation as usize + step) % order.len()];
             if room && s.offers(goal) && seen(goal) {
                 self.rotation = self.rotation.wrapping_add(step as u8 + 1);
-                return (goal, "scripted: next resource in the rotation is in view");
+                return (
+                    goal,
+                    "scripted: the stock at home is low, and some is in view",
+                );
             }
         }
         // Topping up food from a bush, with the same room kept.
         if room && s.offers(Goal::Forage) && s.bushes.count > 0 && pct(s.food, s.food_max) < 100 {
             return (Goal::Forage, "scripted: a bush is in view");
+        }
+        // Nothing wanted in view and things to put away: home with them,
+        // rather than wandering the island with a pack of loot.
+        if tooled && settled && s.offers(Goal::Stash) && s.home.distance != Distance::Here {
+            return (
+                Goal::Stash,
+                "scripted: nothing wanted here, home to put things away",
+            );
         }
         (Goal::Explore, "scripted: nothing useful in view")
     }
@@ -4520,9 +4872,17 @@ mod tests {
         s.craftable_len = 1;
         s.offer(Goal::Craft(frags));
         assert_eq!(scripted.pick(&s).0, Goal::Craft(frags));
-        // A finished base, a barrel close by: taken on the way.
+        // A finished base: a loot run for junk and parts, turn about with
+        // topping up the stock at home; a barrel close by, taken on the way.
         s.items_len = 2;
         s.milestone = Milestone::Done;
+        assert_eq!(scripted.pick(&s).0, Goal::Loot);
+        s.last = Some(Report {
+            goal: Goal::Loot,
+            outcome: Outcome::Done,
+            gained: 3,
+            secs: 90,
+        });
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.loot.add(25.0, 0);
         assert_eq!(scripted.pick(&s).0, Goal::Loot);
@@ -4530,5 +4890,200 @@ mod tests {
         assert_eq!(v["stations"]["furnace"], true);
         assert_eq!(v["loot_known"]["count"], 1);
         assert_eq!(Goal::Loot.label().as_str(), "loot");
+    }
+
+    /// Tools, a bag down, fed and whole: the playbook's own turns.
+    fn settled_body() -> Summary {
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        (s.hp, s.hp_max) = (100, 100);
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.bags = 1;
+        s.free_slots = 20;
+        s
+    }
+
+    /// Gathering has a reason (2026-10-25 bench: 7,000 wood in a box and a
+    /// body felling more): past the reserve, pack and box together, nothing
+    /// is gathered for its own sake, ore only with a furnace to smelt it,
+    /// and a need not in view is looked for rather than swapped for what is.
+    #[test]
+    fn the_playbook_gathers_what_it_needs_and_stops_at_the_reserve() {
+        let mut scripted = Scripted::default();
+        let mut s = settled_body();
+        for g in [
+            Goal::Explore,
+            Goal::GatherWood,
+            Goal::GatherStone,
+            Goal::GatherOre,
+            Goal::GatherHemp,
+        ] {
+            s.offer(g);
+        }
+        s.trees.add(10.0, 0);
+        s.stone_nodes.add(10.0, 0);
+        s.ore_nodes.add(10.0, 0);
+        s.milestone = Milestone::Done;
+        assert!(matches!(
+            scripted.pick(&s).0,
+            Goal::GatherWood | Goal::GatherStone
+        ));
+        s.stored[0] = (name("Wood"), 7000);
+        s.stored[1] = (name("Stone"), 2000);
+        s.stored_len = 2;
+        assert!(!s.stock_low("Wood") && s.stock_low("Metal Ore"));
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::Explore,
+            "ore is weight with no furnace"
+        );
+        s.furnace = true;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherOre);
+        // The base short of cloth, none in view, trees and stone in front
+        // of it: it goes looking for hemp, then farther afield.
+        s.furnace = false;
+        s.milestone = Milestone::Doors;
+        s.needs[0] = (name("Cloth"), 30);
+        s.needs_len = 1;
+        s.raw[0] = s.needs[0];
+        s.raw_len = 1;
+        s.stored_len = 0;
+        let (goal, why) = scripted.pick(&s);
+        assert_eq!(goal, Goal::GatherHemp);
+        assert!(why.contains("looking"), "{why}");
+        s.last = Some(Report {
+            goal: Goal::GatherHemp,
+            outcome: Outcome::Failed(Why::NotFound),
+            gained: 0,
+            secs: 20,
+        });
+        assert_eq!(scripted.pick(&s).0, Goal::Explore);
+        // A carcass pays cloth too.
+        s.offer(Goal::Hunt);
+        s.animals.add(30.0, 2);
+        assert_eq!(scripted.pick(&s).0, Goal::Hunt);
+    }
+
+    /// Short of junk with a pack of wood past what it keeps, THE GATE close:
+    /// SALVAGE takes the surplus.
+    #[test]
+    fn the_playbook_sells_its_surplus_for_the_junk_it_needs() {
+        let mut scripted = Scripted::default();
+        let mut s = settled_body();
+        s.items[2] = (name("Wood"), 3200);
+        s.items_len = 3;
+        s.milestone = Milestone::MetalTools;
+        s.needs[0] = (name("Junk"), 120);
+        s.needs_len = 1;
+        s.raw[0] = s.needs[0];
+        s.raw_len = 1;
+        s.gate = Some(Place {
+            distance: Distance::Near,
+            bearing: 0,
+            metres: 80,
+        });
+        let sell = Goal::Sell(name("Wood"));
+        s.offer(Goal::Explore);
+        s.offer(sell);
+        assert_eq!(scripted.pick(&s).0, sell);
+        // Not the stock it keeps.
+        s.items[2] = (name("Wood"), 1200);
+        assert_ne!(scripted.pick(&s).0, sell);
+    }
+
+    /// A bleeding wound is dressed whatever the bar says; a cold that costs
+    /// health, or a body badly hurt with nothing to dress it, goes to sit by
+    /// a fire; a body just under the regen line is let mend on its own.
+    #[test]
+    fn the_playbook_dresses_a_bleed_and_warms_by_a_fire() {
+        let mut scripted = Scripted::default();
+        let mut s = settled_body();
+        s.offer(Goal::Explore);
+        s.condition.bleed = 12;
+        s.hp = 92;
+        s.offer(Goal::Heal);
+        assert_eq!(scripted.pick(&s).0, Goal::Heal);
+        s.withdraw(Goal::Heal);
+        let bandage = name("Bandage");
+        s.craftable[0] = bandage;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(bandage));
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(bandage));
+        s.condition.bleed = 0;
+        s.hp = 50;
+        s.offer(Goal::Warm);
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Warm,
+            "natural regen mends to 60 %"
+        );
+        s.hp = 20;
+        assert_eq!(scripted.pick(&s).0, Goal::Warm);
+        s.hp = 90;
+        s.condition.cold_hurting = true;
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Warm,
+            "health to spare: it works on"
+        );
+        s.hp = 50;
+        assert_eq!(scripted.pick(&s).0, Goal::Warm);
+        let v = s.to_json();
+        assert_eq!(v["condition"]["cold_hurting"], true);
+        assert_eq!(v["condition"]["bleeding"], false);
+    }
+
+    /// Its base done, the open works' quotas are its grind: the one its next
+    /// gear waits on first, gathered for in view and fed once the pack
+    /// carries a walk's worth.
+    #[test]
+    fn the_playbook_feeds_the_work_its_gear_waits_on() {
+        let mut scripted = Scripted::default();
+        let mut s = settled_body();
+        for g in [Goal::Explore, Goal::GatherWood, Goal::GatherStone] {
+            s.offer(g);
+        }
+        s.trees.add(10.0, 0);
+        s.stone_nodes.add(12.0, 0);
+        s.stored[0] = (name("Wood"), 5000);
+        s.stored[1] = (name("Stone"), 5000);
+        s.stored_len = 2;
+        s.milestone = Milestone::Done;
+        let open = sim_core::works::WORK_OPEN;
+        let work = |n: &str, need: &str, count: u32| {
+            let mut w = WorkSense {
+                name: name(n),
+                state: open,
+                ..WorkSense::EMPTY
+            };
+            w.needs[0] = (name(need), count);
+            w.needs_len = 1;
+            w
+        };
+        s.works[0] = work("THE LAPIS WELLS", "Wood", 60000);
+        s.works[1] = work("THE CRUCIBLE", "Stone", 60000);
+        s.works_len = 2;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::GatherWood,
+            "any open work's quota"
+        );
+        s.held_by = Some(name("THE CRUCIBLE"));
+        let (goal, why) = scripted.pick(&s);
+        assert_eq!(goal, Goal::GatherStone);
+        assert!(why.contains("waits on"), "{why}");
+        s.offer(Goal::FeedWork);
+        s.items[2] = (name("Stone"), 400);
+        s.items_len = 3;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::GatherStone,
+            "not a walk's worth yet"
+        );
+        s.items[2] = (name("Stone"), 1200);
+        assert_eq!(scripted.pick(&s).0, Goal::FeedWork);
+        assert_eq!(s.to_json()["base_next"]["waiting_on_work"], "THE CRUCIBLE");
     }
 }

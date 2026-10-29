@@ -60,7 +60,7 @@
 //! operator set.
 
 use crate::backpack::LOOT_REACH_M;
-use crate::gather::{inv_add_spilling_skinned, GatherContent, ItemStack};
+use crate::gather::{inv_add_stack_spilling, GatherContent, ItemStack};
 use crate::limits::{DROP_HEADROOM, INV_SLOTS, MAX_GROUND_ITEMS, MAX_TOSSES, TICK_HZ};
 use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
@@ -478,17 +478,9 @@ impl GroundItems {
         }
         let rec = self.entries[i];
         let cap = gc.stack_max_of(rec.stack.item);
-        // An existing stack: its condition and its skin travel with it.
-        let took = inv_add_spilling_skinned(
-            &mut p.inv,
-            spill,
-            rec.stack.item,
-            rec.stack.count,
-            cap,
-            rec.stack.cond,
-            rec.stack.skin,
-        );
-        // `inv_add_spilling_skinned` puts the remainder in `spill`, so the whole
+        // An existing stack: its condition, skin and data travel with it.
+        let took = inv_add_stack_spilling(&mut p.inv, spill, rec.stack, cap);
+        // `inv_add_stack_spilling` puts the remainder in `spill`, so the whole
         // stack has left the ground whether the pack held it or not —
         // which is why the record goes rather than being decremented. A
         // ceiling of zero (`REFUSE_M_UNSTACKABLE`'s condition) takes

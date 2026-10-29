@@ -66,7 +66,12 @@ impl Gifts {
                 let wallet = it.next().unwrap_or_default();
                 let ids: Option<Vec<u16>> = it.map(|t| t.parse().ok()).collect();
                 match ids {
-                    Some(ids) if crate::entitle::is_wallet(wallet) => {
+                    // An Elo Pros account is given gifts too (`is_holder`),
+                    // so its row must read back.
+                    Some(ids)
+                        if crate::entitle::is_wallet(wallet)
+                            || crate::auth::is_account_str(wallet) =>
+                    {
                         let row = g.rows.entry(wallet.to_string()).or_default();
                         row.extend(ids);
                         row.sort_unstable();
@@ -178,6 +183,8 @@ mod tests {
     use sim_core::skin::SkinDef;
 
     const CAROL: &str = "0x00000000000000000000000000000000000000c3";
+    /// An Elo Pros account with no wallet (`auth::is_account_str`).
+    const DAVE: &str = "acct_000000000000000000d4";
 
     fn content() -> SkinContent {
         let mut sc = SkinContent::EMPTY;
@@ -207,6 +214,7 @@ mod tests {
 
         let mut g = Gifts::open(Some(&base));
         assert!(g.give(CAROL, founder, &sc));
+        assert!(g.give(DAVE, founder, &sc));
         assert!(
             !gifts_path(&base).exists(),
             "give() touches no file: the store thread writes it"
@@ -222,6 +230,7 @@ mod tests {
 
         let again = Gifts::open(Some(&base));
         assert_eq!(again.of(CAROL, &sc), founder);
+        assert_eq!(again.of(DAVE, &sc), founder, "an account's gift reads back");
         assert!(again
             .of("0x00000000000000000000000000000000000000c4", &sc)
             .is_empty());

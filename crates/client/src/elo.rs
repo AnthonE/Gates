@@ -168,7 +168,7 @@ pub use protocol::SLUG;
 /// `AnthonE/elo-pros-launcher` mirror, which lags). Regenerate ONLY when
 /// re-vendoring an upstream change: `sha256sum crates/client/src/elo_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "a5bb9bfb72221ecdfe536a7c795e6a929d1debaf82da512a10500acfac3f6035";
+    "a39278c38b557d7d65eb328101f67d4da44011f8c35de8365cc0b118a56a69d3";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`

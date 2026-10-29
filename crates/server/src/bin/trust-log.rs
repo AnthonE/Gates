@@ -12,9 +12,7 @@
 //! summary counts rows **per verb** and per verb × presence over whatever
 //! the filters selected.
 //!
-//! There is no per-player total and no ordering of players by anything, and
-//! that is deliberate (`PLAYERS.md` wall 2: no global leaderboard). A
-//! player's own history is `--wallet` or `--player`, printed in log order.
+//! A player's own history is `--wallet` or `--player`, printed in log order.
 
 use server::trustlog::{read_dir, summarize, Filter, LogParty, LogRow, Role};
 use std::path::PathBuf;

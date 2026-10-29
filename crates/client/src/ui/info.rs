@@ -77,7 +77,15 @@ pub fn stats(row: ItemRow, stack: ItemStack, loaded: Option<u16>) -> Vec<Stat> {
         });
     }
     if let Some(g) = row.gun {
-        let rpm = (60 * TICK_HZ) as f32 / g.rate_ticks.max(1) as f32;
+        // The exact cadence when the row has one (`rate_sub`, 256ths of a
+        // tick), as the sim fires it; whole ticks overstated the Thompson
+        // at 600 rpm against its 462.
+        let ticks = if g.rate_sub > 0 {
+            g.rate_sub as f32 / 256.0
+        } else {
+            g.rate_ticks.max(1) as f32
+        };
+        let rpm = (60 * TICK_HZ) as f32 / ticks;
         out.push(Stat {
             label: "FIRE RATE",
             value: format!("{rpm:.0} rpm"),
@@ -373,6 +381,22 @@ mod tests {
         assert_eq!(get("RELOAD").as_deref(), Some("3.4 s"));
         assert_eq!(get("LOADED").as_deref(), Some("8"));
         assert_eq!(get("CONDITION").as_deref(), Some("50%"));
+        // The exact cadence wins over the whole ticks: 3.9 ticks a shot at
+        // 30 Hz is 462 rpm, not the 600 that 3 whole ticks would say.
+        let exact = ItemRow {
+            gun: row.gun.map(|g| GunRow {
+                rate_ticks: 3,
+                rate_sub: 998,
+                ..g
+            }),
+            ..row
+        };
+        let s = stats(exact, stack(1, 5_000), Some(8));
+        let rpm = s
+            .iter()
+            .find(|x| x.label == "FIRE RATE")
+            .map(|x| x.value.clone());
+        assert_eq!(rpm.as_deref(), Some("462 rpm"));
         assert_eq!(get("DAMAGE").as_deref(), Some("35"), "one pellet: no ×");
         assert_eq!(s[0].label, "DAMAGE", "damage heads the card, Rust's order");
         assert!(get("STACK").is_none(), "a gun does not stack");

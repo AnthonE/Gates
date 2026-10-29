@@ -1017,6 +1017,7 @@ file draws the box where it stands, in a hand and on the ground, and
 |---|---|---|---|
 | `strongbox_box.glb` | Strongbox (23) | `deploy/box.glb` | `01a16b47-146e-7682-8ed4-eaf0e3db6f97` |
 | `bulkhead_door.glb` | Bulkhead Door (24) | `deploy/door_metal.glb` | `01a16b46-ea9b-7357-95e4-35e766cef161` |
+| `pump_rug.glb` | Pump Rug (25) | `deploy/abyss_rug.glb`'s slab | none: drawn in code by `ci/icons/pump_rug.py` (ours), which also writes `assets/icons/skins/25.png` |
 
 > **Strongbox** — "the wooden planks become dark oiled oak with deep grain, bound by heavy riveted bands of blackened wrought iron across every edge and corner, iron corner caps, a large hammered iron hasp on the front, worn bright where hands touch it, a few dents and scratches. An old reinforced strongbox."
 >

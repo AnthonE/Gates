@@ -237,15 +237,11 @@ impl Gates {
     /// `App` has to be owned by the loop rather than by this frame — which is
     /// what `run()` arranges. Nothing after it executes.
     pub fn play(self, canvas: String) {
-        use bevy::asset::AssetMetaCheck;
-        use bevy::prelude::*;
         use bevy::window::WindowResolution;
-        use client::render::{GatesRenderPlugin, Net, Start, WorldId};
 
         let Gates {
             session, server, ..
         } = self;
-        let seed = session.welcome.seed;
 
         // The backing store: the viewport in device pixels, scaled down
         // uniformly under the module's surface cap (WebGL2's 2048, WebGPU's
@@ -266,128 +262,218 @@ impl Gates {
         let (pw, ph) = fit.physical;
         client::render::web::stretch_canvas(&canvas, fit.stretch);
 
-        let mut app = App::new();
-        // Before `AssetPlugin`, which keeps a default source already
-        // registered: Bevy's own wasm reader panics on a download that breaks
-        // mid-body, this one retries it (`render/asset_fetch.rs`).
-        app.register_asset_source(
-            bevy::asset::io::AssetSourceId::Default,
-            client::render::asset_fetch::source("assets"),
-        );
-        app.add_plugins(
-            DefaultPlugins
-                .build()
-                // **`bevy_audio` off here too, and on this target it was
-                // actively costing something.** The engine owns the output
-                // through an `AudioWorklet` (`render/audio_web.rs`), so
-                // `AudioPlugin` has nothing to mix — no entity has carried an
-                // `AudioPlayer` since the cpal seam (2026-09-14). Left
-                // enabled it still opened cpal's only wasm host, which is a
-                // `setTimeout` loop **on the main thread** allocating a fresh
-                // `AudioBuffer` and source node every ~46 ms
-                // (`findings/browser-audio-20260913.md` §2) — i.e. exactly the
-                // per-period garbage that note blames for the hiccup, running
-                // for a mixer with nothing in it. The desktop binaries have
-                // disabled it since the seam; this one was missed.
-                .disable::<bevy::audio::AudioPlugin>()
-                // Bevy's panic plugin REPLACES the hook `start` installed
-                // (`console_error_panic_hook`, no chaining), and that hook
-                // is the page's only word that a WebGPU module's renderer
-                // never started (`window.gatesPanic`). Ours logs the same.
-                .disable::<bevy::app::PanicHandlerPlugin>()
-                // Nothing in the game reads a gamepad, and on this target
-                // gilrs asks `navigator.getGamepads()` for one every frame.
-                .disable::<bevy::gilrs::GilrsPlugin>()
-                .set(bevy::log::LogPlugin {
-                    custom_layer: quiet_frame_span,
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    // **No `.meta` probe.** Bevy's default is `Always`, which
-                    // fires a second request for `<path>.meta` before every
-                    // asset; there are no `.meta` files in this tree, so on a
-                    // page that is one wasted round trip per asset on the
-                    // critical path, each answered 404.
-                    meta_check: AssetMetaCheck::Never,
-                    // Deliberately NOT the desktop's `current_dir()` rewrite
-                    // (`bin/gates.rs`): the default is already the relative
-                    // string "assets", which the wasm reader joins into a
-                    // page-relative URL. A filesystem path here would produce
-                    // requests nothing serves.
-                    ..default()
-                })
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        // `bevy_winit` runs `document.query_selector` and
-                        // PANICS if it matches nothing, so the element must be
-                        // in the document before this call.
-                        canvas: Some(canvas.clone()),
-                        // ⚠ **The backing store is capped and this is a
-                        // no-frame failure, not a quality one.** WebGL2's
-                        // `max_texture_dimension_2d` is 2048 and wgpu REFUSES
-                        // `configure_surface` above it, while Bevy passes the
-                        // resolution straight through with only `.max(1)`. An
-                        // ordinary 1080p display at devicePixelRatio 2 asks
-                        // for 3840 and gets nothing at all — no error a player
-                        // can read, just a canvas that never paints. `fit`
-                        // above is the clamp; `web::follow_viewport` keeps it
-                        // as the window changes.
-                        //
-                        // Physical pixels, and the override is `devicePixelRatio`
-                        // itself: Bevy asks winit for a CSS box of
-                        // `physical / override`, and the observer hands back
-                        // `box × devicePixelRatio` — the two cancel exactly
-                        // only when the override IS the ratio. It was 1.0 in
-                        // the first build, which drew a retina canvas at half
-                        // size. Not `fit_canvas_to_parent`: that lets the
-                        // observer size the store from the viewport directly,
-                        // which is the over-the-cap request in one step.
-                        resolution: WindowResolution::new(pw, ph).with_scale_factor_override(dpr),
-                        fit_canvas_to_parent: false,
-                        ..default()
-                    }),
+        let resolution = WindowResolution::new(pw, ph).with_scale_factor_override(dpr);
+        build(&canvas, resolution, session, server, false, |_| {}).run();
+    }
+
+    /// Draw a clip (`client::clip`) into `canvas` and hand it to `sink` as it
+    /// is drawn — a page's `gates --clip`. `tape` is what the clip key gave
+    /// the page (`window.gatesClip`); `style` is one of `clip::STYLES`, or a
+    /// whole shot list as JSON (`render::film::Script`, `at` from the end
+    /// when negative). The canvas is the shot list's size in CSS pixels at a
+    /// scale of 1: the page shrinks its box for a preview, never the canvas.
+    ///
+    /// `sink` is an object the film calls as it goes:
+    /// `shot(i, name, drawnW, drawnH, outW, outH, fps, still)`,
+    /// `frame(i, n, rgba, w, h)` in order, `audio(i, pcm)` (interleaved
+    /// stereo at 48 kHz, one call a frame), `shotEnd(i, frames)`,
+    /// `progress(f, i)`, then `done()` or `fail(why)`.
+    ///
+    /// Like [`Gates::play`], this does not return: the page holds one film
+    /// (or one game) per document, so a clip draws in its own frame.
+    pub fn film(
+        tape: Vec<u8>,
+        style: String,
+        canvas: String,
+        sink: JsValue,
+    ) -> Result<(), JsValue> {
+        use bevy::prelude::*;
+        use bevy::window::WindowResolution;
+
+        let rec = client::film::read(&mut tape.as_slice())
+            .map_err(|e| JsValue::from_str(&format!("not a clip: {e}")))?;
+        let json = if style.trim_start().starts_with('{') {
+            style
+        } else {
+            client::clip::script(style.trim()).ok_or_else(|| {
+                JsValue::from_str(&format!(
+                    "no clip style {style:?}; one of {}",
+                    client::clip::STYLES.join(", ")
+                ))
+            })?
+        };
+        let mut script = client::render::film::Script::parse(&json)
+            .map_err(|e| JsValue::from_str(&format!("shot list: {e}")))?;
+        script.anchor(rec.end_ms() / 1000.0);
+        let (w, h) = script.window();
+        let fps = script.fps;
+        let (session, replay) = client::Session::replay(rec);
+        let resolution = WindowResolution::new(w, h).with_scale_factor_override(1.0);
+        build(
+            &canvas,
+            resolution,
+            session,
+            "clip".into(),
+            true,
+            move |app| {
+                // One frame is 1/fps of screen time however long it took to draw
+                // — the film's frame clock (`render::film`).
+                app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+                    std::time::Duration::from_secs_f64(1.0 / fps as f64),
+                ));
+                app.insert_resource(client::render::film::Film::new(script, replay));
+                app.insert_non_send_resource(client::render::film::Sink(sink));
+            },
+        )
+        .run();
+        Ok(())
+    }
+
+    /// The clip styles a page may offer (`client::clip::STYLES`).
+    pub fn clip_styles() -> Vec<String> {
+        client::clip::STYLES.iter().map(|s| s.to_string()).collect()
+    }
+}
+
+/// The Bevy app a page runs, around a session that is live or replayed.
+/// `before` runs ahead of the game's plugin, which reads what it inserts
+/// (a film) while it builds.
+fn build(
+    canvas: &str,
+    resolution: bevy::window::WindowResolution,
+    session: client::Session,
+    server: String,
+    no_hud: bool,
+    before: impl FnOnce(&mut bevy::app::App),
+) -> bevy::app::App {
+    use bevy::asset::AssetMetaCheck;
+    use bevy::prelude::*;
+    use client::render::{GatesRenderPlugin, Net, Start, WorldId};
+
+    let canvas = canvas.to_string();
+    let seed = session.welcome.seed;
+    let mut app = App::new();
+    // Before `AssetPlugin`, which keeps a default source already
+    // registered: Bevy's own wasm reader panics on a download that breaks
+    // mid-body, this one retries it (`render/asset_fetch.rs`).
+    app.register_asset_source(
+        bevy::asset::io::AssetSourceId::Default,
+        client::render::asset_fetch::source("assets"),
+    );
+    app.add_plugins(
+        DefaultPlugins
+            .build()
+            // **`bevy_audio` off here too, and on this target it was
+            // actively costing something.** The engine owns the output
+            // through an `AudioWorklet` (`render/audio_web.rs`), so
+            // `AudioPlugin` has nothing to mix — no entity has carried an
+            // `AudioPlayer` since the cpal seam (2026-09-14). Left
+            // enabled it still opened cpal's only wasm host, which is a
+            // `setTimeout` loop **on the main thread** allocating a fresh
+            // `AudioBuffer` and source node every ~46 ms
+            // (`findings/browser-audio-20260913.md` §2) — i.e. exactly the
+            // per-period garbage that note blames for the hiccup, running
+            // for a mixer with nothing in it. The desktop binaries have
+            // disabled it since the seam; this one was missed.
+            .disable::<bevy::audio::AudioPlugin>()
+            // Bevy's panic plugin REPLACES the hook `start` installed
+            // (`console_error_panic_hook`, no chaining), and that hook
+            // is the page's only word that a WebGPU module's renderer
+            // never started (`window.gatesPanic`). Ours logs the same.
+            .disable::<bevy::app::PanicHandlerPlugin>()
+            // Nothing in the game reads a gamepad, and on this target
+            // gilrs asks `navigator.getGamepads()` for one every frame.
+            .disable::<bevy::gilrs::GilrsPlugin>()
+            .set(bevy::log::LogPlugin {
+                custom_layer: quiet_frame_span,
+                ..default()
+            })
+            .set(AssetPlugin {
+                // **No `.meta` probe.** Bevy's default is `Always`, which
+                // fires a second request for `<path>.meta` before every
+                // asset; there are no `.meta` files in this tree, so on a
+                // page that is one wasted round trip per asset on the
+                // critical path, each answered 404.
+                meta_check: AssetMetaCheck::Never,
+                // Deliberately NOT the desktop's `current_dir()` rewrite
+                // (`bin/gates.rs`): the default is already the relative
+                // string "assets", which the wasm reader joins into a
+                // page-relative URL. A filesystem path here would produce
+                // requests nothing serves.
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    // `bevy_winit` runs `document.query_selector` and
+                    // PANICS if it matches nothing, so the element must be
+                    // in the document before this call.
+                    canvas: Some(canvas.clone()),
+                    // ⚠ **The backing store is capped and this is a
+                    // no-frame failure, not a quality one.** WebGL2's
+                    // `max_texture_dimension_2d` is 2048 and wgpu REFUSES
+                    // `configure_surface` above it, while Bevy passes the
+                    // resolution straight through with only `.max(1)`. An
+                    // ordinary 1080p display at devicePixelRatio 2 asks
+                    // for 3840 and gets nothing at all — no error a player
+                    // can read, just a canvas that never paints. `fit`
+                    // above is the clamp; `web::follow_viewport` keeps it
+                    // as the window changes.
+                    //
+                    // Physical pixels, and the override is `devicePixelRatio`
+                    // itself: Bevy asks winit for a CSS box of
+                    // `physical / override`, and the observer hands back
+                    // `box × devicePixelRatio` — the two cancel exactly
+                    // only when the override IS the ratio. It was 1.0 in
+                    // the first build, which drew a retina canvas at half
+                    // size. Not `fit_canvas_to_parent`: that lets the
+                    // observer size the store from the viewport directly,
+                    // which is the over-the-cap request in one step.
+                    resolution,
+                    fit_canvas_to_parent: false,
                     ..default()
                 }),
-        );
+                ..default()
+            }),
+    );
 
-        // **Before `add_plugins`, and the order is load-bearing.**
-        // `OnEnter(Screen::Loading)` runs before `Startup`, and `sky::setup`
-        // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
-        // does not arrive late, it makes that system silently not run.
-        app.insert_resource(WorldId {
-            blight_salt: session.welcome.blight_salt,
-            ..WorldId::with_haven(seed, *session.core.haven())
-        });
-        // The element winit draws into, for `web::follow_viewport`'s stretch.
-        app.insert_resource(client::render::web::Canvas(canvas.clone()));
-        app.insert_non_send_resource(Net {
-            session,
-            sel: 0,
-            light: false,
-            farm_sent: None,
-        });
+    // **Before `add_plugins`, and the order is load-bearing.**
+    // `OnEnter(Screen::Loading)` runs before `Startup`, and `sky::setup`
+    // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
+    // does not arrive late, it makes that system silently not run.
+    app.insert_resource(WorldId {
+        blight_salt: session.welcome.blight_salt,
+        ..WorldId::with_haven(seed, *session.core.haven())
+    });
+    // The element winit draws into, for `web::follow_viewport`'s stretch.
+    app.insert_resource(client::render::web::Canvas(canvas.clone()));
+    app.insert_non_send_resource(Net {
+        session,
+        sel: 0,
+        light: false,
+        farm_sent: None,
+    });
 
-        // `connected: true` is what puts the app in `Screen::Loading` rather
-        // than `Screen::Boot` — the plugin already branches on it, so the
-        // browser needs no `insert_state` of its own. It is also the truth:
-        // the page joined before Bevy existed.
-        app.add_plugins(GatesRenderPlugin {
-            start: Start {
-                direct: server,
-                servers_url: None,
-                connected: true,
-                chosen: true,
-                identity: None,
-                // There is no launcher in a tab and there never will be.
-                no_launcher: true,
-                no_hud: false,
-                pin_hour: None,
-                pin_weather: None,
-            },
-            capture: None,
-        });
-        app.run();
-    }
+    // `connected: true` is what puts the app in `Screen::Loading` rather
+    // than `Screen::Boot` — the plugin already branches on it, so the
+    // browser needs no `insert_state` of its own. It is also the truth:
+    // the page joined before Bevy existed.
+    before(&mut app);
+    app.add_plugins(GatesRenderPlugin {
+        start: Start {
+            direct: server,
+            servers_url: None,
+            connected: true,
+            chosen: true,
+            identity: None,
+            // There is no launcher in a tab and there never will be.
+            no_launcher: true,
+            no_hud,
+            pin_hour: None,
+            pin_weather: None,
+        },
+        capture: None,
+    });
+    app
 }
 
 /// Switch off `bevy_render`'s `present_frames` span, the one span Bevy opens

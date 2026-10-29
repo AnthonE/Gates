@@ -75,6 +75,14 @@ gates — the Gates desktop client
   --film SHOTS.json    draw a recorded session (`record`) through a scripted
                        camera and encode every shot (ci/film.sh). Connects to
                        nothing: the tape is the world
+  --clip TAPE.rec      make a video of a tape's last seconds, beside it as
+                       TAPE.mp4: a clip the F9 key saved, or any tape
+                       (`record`). Needs ffmpeg
+  --style STYLE        with --clip: pov (the default), follow, mix, long or
+                       wide (16:9; the rest are 9:16)
+  --max-height PX      with --clip: draw in a window no taller than PX and
+                       scale the video up to its size (a screen shorter than
+                       the video; F9 passes its own)
   --no-hud             with --capture: shoot the world with no HUD, no
                        viewmodel and no compass — a clean PLATE. What it is
                        for is the menu backdrop, which is footage rather than
@@ -134,6 +142,13 @@ pub struct Args {
     /// `--film SHOTS`: the trailer camera (`render::film`). Only the windowed
     /// binary honours it, like `capture`.
     pub film: Option<PathBuf>,
+    /// `--clip TAPE`: a film of the tape's last seconds in a clip style
+    /// (`crate::clip::script`), joined into one video beside it.
+    pub clip: Option<PathBuf>,
+    /// `--style`: which of `crate::clip::STYLES`; `None` is the first.
+    pub style: Option<String>,
+    /// `--max-height`: the tallest window a clip may draw in.
+    pub max_height: Option<u32>,
     /// `--no-hud`: shoot a clean plate. Only ever true alongside `capture`,
     /// which the parser enforces rather than leaving to the caller.
     pub no_hud: bool,
@@ -160,7 +175,9 @@ pub struct Args {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Parsed {
-    Run(Args),
+    /// Boxed: the options are a couple of hundred bytes, the other two
+    /// arms a word or three.
+    Run(Box<Args>),
     /// `--help` was asked for. A separate arm rather than an exit inside the
     /// parser, so the parser stays testable and does not own the process.
     Help,
@@ -175,6 +192,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut identity: Option<String> = None;
     let mut capture: Option<PathBuf> = None;
     let mut film: Option<PathBuf> = None;
+    let mut clip: Option<PathBuf> = None;
+    let mut style: Option<String> = None;
+    let mut max_height: Option<u32> = None;
     let mut cert_hash: Option<String> = None;
     let mut no_hud = false;
     let mut no_launcher = false;
@@ -249,6 +269,26 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
                 Some(v) if !v.trim().is_empty() => film = Some(PathBuf::from(v)),
                 _ => return Parsed::Bad("--film needs a shot list".into()),
             },
+            "--clip" => match it.next() {
+                Some(v) if !v.trim().is_empty() => clip = Some(PathBuf::from(v)),
+                _ => return Parsed::Bad("--clip needs a tape".into()),
+            },
+            "--style" => match it.next() {
+                Some(v) if crate::clip::script(v.trim()).is_some() => {
+                    style = Some(v.trim().to_string())
+                }
+                Some(v) => {
+                    return Parsed::Bad(format!(
+                        "--style {v:?} is not one of {}",
+                        crate::clip::STYLES.join(", ")
+                    ))
+                }
+                None => return Parsed::Bad("--style needs a style".into()),
+            },
+            "--max-height" => match it.next().and_then(|v| v.trim().parse::<u32>().ok()) {
+                Some(px) if px >= 240 => max_height = Some(px),
+                _ => return Parsed::Bad("--max-height needs pixels, 240 or more".into()),
+            },
             other if other.starts_with('-') => {
                 // Refused rather than ignored. A typo'd flag that is silently
                 // dropped is a setting the player believes is on.
@@ -308,7 +348,11 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     // probe, a tape or a seat. Only this one fetches the public list unasked:
     // `ci/film.sh`, `ci/scene.sh` and `ci/drive.sh` run `gates` without
     // `--servers`, and a gate must not reach for elopros.com.
-    let interactive = !server_given && capture.is_none() && film.is_none() && spectate.is_none();
+    let interactive = !server_given
+        && capture.is_none()
+        && film.is_none()
+        && clip.is_none()
+        && spectate.is_none();
     let servers_url = match servers_url.map(|s| s.trim().to_string()) {
         None if interactive => Some(PUBLIC_SERVERS.to_string()),
         None => None,
@@ -378,8 +422,15 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     if film.is_some() && (capture.is_some() || spectate.is_some() || server_given) {
         return Parsed::Bad("--film plays a tape; it takes no shard, probe or seat".into());
     }
+    if clip.is_some() && (film.is_some() || capture.is_some() || spectate.is_some() || server_given)
+    {
+        return Parsed::Bad("--clip plays a tape; it takes no film, shard, probe or seat".into());
+    }
+    if (style.is_some() || max_height.is_some()) && clip.is_none() {
+        return Parsed::Bad("--style and --max-height are for --clip".into());
+    }
 
-    Parsed::Run(Args {
+    Parsed::Run(Box::new(Args {
         server: raw.trim().to_string(),
         server_given,
         servers_url,
@@ -388,13 +439,16 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             .filter(|s| !s.is_empty()),
         capture,
         film,
+        clip,
+        style,
+        max_height,
         no_hud,
         pin_hour_pm,
         pin_weather,
         cert_hash,
         no_launcher,
         spectate,
-    })
+    }))
 }
 
 /// A capture flag's value read as the admin lane would read `/{verb} {v}`.
@@ -437,7 +491,7 @@ mod tests {
     }
     fn run(v: &[&str]) -> Args {
         match a(v) {
-            Parsed::Run(x) => x,
+            Parsed::Run(x) => *x,
             other => panic!("expected Run, got {other:?}"),
         }
     }

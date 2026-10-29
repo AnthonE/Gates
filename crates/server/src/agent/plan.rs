@@ -7,11 +7,13 @@
 //! down: fuel is fat and cloth, fragments are ore once a furnace stands
 //! and loot until then. [`raw_needs`] walks the recipe table the server
 //! sent the same way, at the stations this body has, to the raw materials
-//! the mind can send it for (gather, hunt, loot), net of what the pack
-//! already holds. Fixed arrays, no allocation; a recipe's own inputs are
-//! followed a few levels deep at most.
+//! the mind can send it for (gather, hunt, loot), net of what the pack and
+//! its box already hold: ore in the box is smelted, not mined again.
+//! Fixed arrays, no allocation; a recipe's own inputs are followed a few
+//! levels deep at most.
 
 use crate::agent::build::{recipe_for, Stations};
+use crate::agent::stash::Ledger;
 use client_core::core::ClientCore;
 use sim_core::limits::INV_SLOTS;
 
@@ -57,37 +59,75 @@ impl Rows {
     }
 }
 
-/// Units of an item in the pack and belt.
-fn carried(core: &ClientCore, item: u16) -> u32 {
+/// Units of an item in the pack and belt, and in the box as last seen.
+fn carried(core: &ClientCore, boxed: &Ledger, item: u16) -> u32 {
     core.inv[..INV_SLOTS]
         .iter()
         .filter(|s| s.count > 0 && s.item == item)
         .map(|s| u32::from(s.count))
-        .sum()
+        .sum::<u32>()
+        .saturating_add(boxed.units(item))
 }
 
 /// What `needs` (items and units still missing) come down to: each one
 /// with a recipe this body can use (no station, or one it has standing)
 /// is replaced by that recipe's inputs for enough crafts, less what the
-/// pack holds of them, down to [`PLAN_DEPTH`] levels; what has no recipe
-/// here is raw, and is what the mind must gather, hunt or loot. Writes
-/// the largest shortfalls first into `out`; the rows filled.
+/// pack and the box hold of them, down to [`PLAN_DEPTH`] levels; what has
+/// no recipe here is raw, and is what the mind must gather, hunt or loot.
+/// Writes the largest shortfalls first into `out`; the rows filled.
 pub fn raw_needs(
+    core: &ClientCore,
+    has: &Stations,
+    needs: &[(u16, u32)],
+    boxed: &Ledger,
+    out: &mut [(u16, u32); RAW_ROWS],
+) -> usize {
+    let mut raw = Rows::EMPTY;
+    // What the pack and box hold of each item the walk meets, spent as it
+    // goes so one stack is not counted toward two inputs.
+    let mut pool = Rows::EMPTY;
+    for &(item, units) in needs {
+        // A shortfall is net of the pack and box already; its inputs are
+        // not.
+        expand(
+            core, has, boxed, item, units, PLAN_DEPTH, &mut raw, &mut pool, false, true,
+        );
+    }
+    largest_first(&mut raw, out)
+}
+
+/// [`raw_needs`] with nothing spent from the pack or a box: what the
+/// shortfalls take in all. What a stash visit holds the pack to — it takes
+/// the difference out (`stash::plan`), and a row already net of the pack
+/// read a take as spare and put it straight back, over and over
+/// (2026-10-28 review).
+pub fn gross_inputs(
     core: &ClientCore,
     has: &Stations,
     needs: &[(u16, u32)],
     out: &mut [(u16, u32); RAW_ROWS],
 ) -> usize {
     let mut raw = Rows::EMPTY;
-    // What the pack holds of each item the walk meets, spent as it goes so
-    // one stack is not counted toward two inputs.
     let mut pool = Rows::EMPTY;
     for &(item, units) in needs {
-        // A shortfall is net of the pack already; its inputs are not.
         expand(
-            core, has, item, units, PLAN_DEPTH, &mut raw, &mut pool, false,
+            core,
+            has,
+            &Ledger::EMPTY,
+            item,
+            units,
+            PLAN_DEPTH,
+            &mut raw,
+            &mut pool,
+            false,
+            false,
         );
     }
+    largest_first(&mut raw, out)
+}
+
+/// `raw`'s rows into `out`, the largest first. The rows filled.
+fn largest_first(raw: &mut Rows, out: &mut [(u16, u32); RAW_ROWS]) -> usize {
     let mut n = 0;
     while n < RAW_ROWS {
         let Some(best) = raw.rows[..raw.n]
@@ -108,17 +148,19 @@ pub fn raw_needs(
 fn expand(
     core: &ClientCore,
     has: &Stations,
+    boxed: &Ledger,
     item: u16,
     units: u32,
     depth: u8,
     raw: &mut Rows,
     pool: &mut Rows,
     net: bool,
+    spend: bool,
 ) {
     let mut units = units;
-    if net {
+    if net && spend {
         if pool.rows[..pool.n].iter().all(|r| r.0 != item) {
-            pool.add(item, carried(core, item));
+            pool.add(item, carried(core, boxed, item));
         }
         units -= pool.take(item, units);
     }
@@ -138,12 +180,14 @@ fn expand(
         expand(
             core,
             has,
+            boxed,
             input,
             u32::from(per).saturating_mul(crafts),
             depth - 1,
             raw,
             pool,
             true,
+            spend,
         );
     }
 }
@@ -215,20 +259,71 @@ mod tests {
         // Fifty fuel is thirteen crafts: 39 fat and 13 cloth, less the
         // cloth already carried.
         give(&mut core, 0, CLOTH, 5);
-        let n = raw_needs(&core, &Stations::NONE, &[(FUEL, 50)], &mut out);
+        let n = raw_needs(
+            &core,
+            &Stations::NONE,
+            &[(FUEL, 50)],
+            &Ledger::EMPTY,
+            &mut out,
+        );
         assert_eq!(&out[..n], &[(FAT, 39), (CLOTH, 8)]);
         // Fragments are loot until a furnace stands, then ore.
-        let n = raw_needs(&core, &Stations::NONE, &[(FRAGS, 100)], &mut out);
+        let n = raw_needs(
+            &core,
+            &Stations::NONE,
+            &[(FRAGS, 100)],
+            &Ledger::EMPTY,
+            &mut out,
+        );
         assert_eq!(&out[..n], &[(FRAGS, 100)]);
         let furnace = Stations {
             furnace: Some([0.0, 0.0]),
             ..Stations::NONE
         };
         give(&mut core, 1, ORE, 30);
-        let n = raw_needs(&core, &furnace, &[(FRAGS, 100)], &mut out);
+        let n = raw_needs(&core, &furnace, &[(FRAGS, 100)], &Ledger::EMPTY, &mut out);
         assert_eq!(&out[..n], &[(ORE, 70)]);
         // One stack is not spent on two shortfalls.
-        let n = raw_needs(&core, &furnace, &[(FRAGS, 20), (FRAGS, 20)], &mut out);
+        let n = raw_needs(
+            &core,
+            &furnace,
+            &[(FRAGS, 20), (FRAGS, 20)],
+            &Ledger::EMPTY,
+            &mut out,
+        );
         assert_eq!(&out[..n], &[(ORE, 10)]);
+        // Ore in the box is smelted, not mined again (2026-10-25 bench: a
+        // body mined ore with 2,000 of it boxed).
+        core.cont_kind = sim_core::inventory::CONT_BOX;
+        core.cont_handle = 7;
+        core.cont[0] = ItemStack {
+            item: ORE,
+            count: 60,
+            ..ItemStack::EMPTY
+        };
+        let mut boxed = Ledger::EMPTY;
+        assert!(boxed.on_cont(&core, 7));
+        let n = raw_needs(&core, &furnace, &[(FRAGS, 100)], &boxed, &mut out);
+        assert_eq!(&out[..n], &[(ORE, 10)]);
+    }
+
+    /// What a stash visit holds the pack to is every input, carried or not:
+    /// net of the pack, the 13 cloth a visit took out read as spare and
+    /// went straight back in.
+    #[test]
+    fn gross_inputs_count_what_the_pack_carries() {
+        let mut core = core();
+        let mut out = [(0, 0); RAW_ROWS];
+        give(&mut core, 0, CLOTH, 13);
+        let n = raw_needs(
+            &core,
+            &Stations::NONE,
+            &[(FUEL, 50)],
+            &Ledger::EMPTY,
+            &mut out,
+        );
+        assert_eq!(&out[..n], &[(FAT, 39)], "net: the cloth is carried");
+        let n = gross_inputs(&core, &Stations::NONE, &[(FUEL, 50)], &mut out);
+        assert_eq!(&out[..n], &[(FAT, 39), (CLOTH, 13)]);
     }
 }

@@ -4110,7 +4110,7 @@ fn an_empty_list_says_which_kind_of_empty_it_is() {
 fn a_declared_identity_reaches_the_wire_by_either_route() {
     const ID: &str = "0x1111111111111111111111111111111111111111";
     let args = match client::args::parse(["--identity", ID].iter().map(|s| s.to_string())) {
-        client::args::Parsed::Run(a) => a,
+        client::args::Parsed::Run(a) => *a,
         other => panic!("expected Run, got {other:?}"),
     };
     // The command-line half, which is what the pre-window connect used.
@@ -4129,7 +4129,7 @@ fn a_declared_identity_reaches_the_wire_by_either_route() {
 
     // And no identity is a guest on both halves, rather than a parse failure.
     let bare = match client::args::parse(std::iter::empty()) {
-        client::args::Parsed::Run(a) => a,
+        client::args::Parsed::Run(a) => *a,
         other => panic!("expected Run, got {other:?}"),
     };
     assert_eq!(bare.address().unwrap(), protocol::Address::GUEST);

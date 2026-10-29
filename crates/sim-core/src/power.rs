@@ -53,7 +53,7 @@ use crate::deploy::{
 };
 use crate::limits::{
     DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, MAX_BATTERIES, MAX_DEPLOY_DEFS, MAX_POWER_NODES,
-    MAX_WIRES,
+    MAX_POWER_NODES_PER_OWNER, MAX_WIRES,
 };
 use crate::world::{EventQueue, Player, EV_DEPLOY_REFUSED, EV_WIRE};
 
@@ -359,6 +359,10 @@ pub struct Grid {
     order: Box<[u16; MAX_POWER_NODES]>,
     n_order: usize,
     index: Box<[u16; INDEX_LEN]>,
+    /// Parts each owner has in this solve ([`MAX_POWER_NODES_PER_OWNER`]),
+    /// hashed by owner like `index`; a zero count is an empty slot.
+    owner: Box<[u32; INDEX_LEN]>,
+    owned: Box<[u16; INDEX_LEN]>,
 }
 
 impl Default for Grid {
@@ -389,6 +393,8 @@ impl Grid {
             order: crate::boxed_array(0),
             n_order: 0,
             index: crate::boxed_array(NONE),
+            owner: crate::boxed_array(0),
+            owned: crate::boxed_array(0),
         }
     }
 
@@ -449,10 +455,13 @@ impl Grid {
         }
     }
 
-    /// Rebuild from the store: the parts, their wiring and their order.
+    /// Rebuild from the store: the parts, their wiring and their order. Each
+    /// owner's parts past [`MAX_POWER_NODES_PER_OWNER`], in store order, are
+    /// left out and stand dark, so one hand cannot fill the shard's grid.
     fn build(&mut self, dc: &DeployContent, deploys: &Deploys) {
         self.n = 0;
         self.index.fill(NONE);
+        self.owned.fill(0);
         let mask = INDEX_LEN - 1;
         for d in deploys.entries() {
             let Some(def) = dc.defs.get(d.row as usize) else {
@@ -464,6 +473,16 @@ impl Grid {
             if self.n == MAX_POWER_NODES {
                 break;
             }
+            // The owner's tally: never full, as owners are at most parts.
+            let mut s = slot_of(d.owner);
+            while self.owned[s] != 0 && self.owner[s] != d.owner {
+                s = (s + 1) & mask;
+            }
+            if self.owned[s] as usize >= MAX_POWER_NODES_PER_OWNER {
+                continue;
+            }
+            self.owner[s] = d.owner;
+            self.owned[s] += 1;
             let key = box_key(d.cx, d.cz, d.level, d.loc);
             let k = self.n;
             let mut s = slot_of(key);
@@ -554,13 +573,14 @@ pub const fn shows_lit(arch: u8) -> bool {
 }
 
 /// Ticks of daylight in a day: `day_frac` below `DAY_PORTION`.
-const DAYLIGHT_TICKS: u64 = (DAY_TICKS as f64 * DAY_PORTION as f64) as u64;
+pub(crate) const DAYLIGHT_TICKS: u64 = (DAY_TICKS as f64 * DAY_PORTION as f64) as u64;
 
-/// What a solar panel rated `out_rw` gives at `tick`: `out_rw × 4t(1−t)` over
-/// the daylight's share `t`, so its peak at noon and nothing at night. Integer
-/// throughout.
-pub fn solar_rw(out_rw: u16, tick: u64) -> u32 {
-    let ph = tick.wrapping_add(DAY_PHASE_TICKS) % DAY_TICKS;
+/// What a solar panel rated `out_rw` gives at `day_tick` (the day clock,
+/// `weather::day_tick`, so an admin `/time` moves it too): `out_rw × 4t(1−t)`
+/// over the daylight's share `t`, so its peak at noon and nothing at night.
+/// Integer throughout.
+pub fn solar_rw(out_rw: u16, day_tick: u64) -> u32 {
+    let ph = day_tick.wrapping_add(DAY_PHASE_TICKS) % DAY_TICKS;
     if ph >= DAYLIGHT_TICKS {
         return 0;
     }
@@ -598,8 +618,11 @@ impl Power {
 
 /// One solve, on its period. Battery charges are written back to the
 /// store; a light or turret whose lit state moved is told (`EV_OVEN`).
+/// The period runs on the sim's `tick`; the sun on `day_tick`, the day
+/// clock everyone sees (`weather::day_tick`).
 pub fn sweep(
     tick: u64,
+    day_tick: u64,
     dc: &DeployContent,
     pc: &PowerContent,
     deploys: &mut Deploys,
@@ -626,10 +649,13 @@ pub fn sweep(
             ARCH_SPLITTER => {
                 let used = g.outs[k].iter().filter(|&&c| c != NONE).count() as u32;
                 let most = (0..MAX_OUTS).map(|p| g.child_want(k, p)).max().unwrap_or(0);
-                draw + used * most
+                // Saturating: each nested splitter multiplies what it asks
+                // for, and a deep tree of them wrapped (or, in a debug
+                // build, panicked inside the tick).
+                draw.saturating_add(used.saturating_mul(most))
             }
             ARCH_SWITCH if !g.on[k] => draw,
-            ARCH_SWITCH | ARCH_COMBINER | ARCH_LIGHT => draw + g.child_want(k, 0),
+            ARCH_SWITCH | ARCH_COMBINER | ARCH_LIGHT => draw.saturating_add(g.child_want(k, 0)),
             ARCH_BATTERY => {
                 let held = g.cell[k] as usize;
                 let held = if g.cell[k] == NONE {
@@ -656,7 +682,7 @@ pub fn sweep(
                 g.send(k, 0, out);
             }
             ARCH_SOLAR => {
-                let out = solar_rw(d.out_rw, tick);
+                let out = solar_rw(d.out_rw, day_tick);
                 g.powered[k] = out > 0;
                 g.send(k, 0, out);
             }
@@ -938,7 +964,7 @@ mod tests {
 
     fn solve(dc: &DeployContent, pc: &PowerContent, d: &mut Deploys, power: &mut Power) {
         let mut ev = EventQueue::default();
-        sweep(0, dc, pc, d, power, &mut ev);
+        sweep(0, 0, dc, pc, d, power, &mut ev);
     }
 
     /// A splitter splits evenly, so it asks its busiest output's share of

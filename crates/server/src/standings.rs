@@ -233,7 +233,7 @@ pub fn is_wallet(key: &str) -> bool {
 }
 
 /// A key that can be owed what it unlocks: a wallet, or an Elo Pros account
-/// with none (v144), whose unlocks the platform holds until it links one
+/// with none (v151), whose unlocks the platform holds until it links one
 /// (`ops/mint_pending.py` sends them there instead of minting).
 pub fn is_holder(key: &str) -> bool {
     is_wallet(key) || crate::auth::is_account_str(key)
@@ -1132,6 +1132,22 @@ impl Standings {
             row.label = short_label(key);
         }
         Some(row)
+    }
+
+    /// `from`'s row is `to`'s, when `to` has none: an Elo Pros account that
+    /// linked a wallet (`ShardCore::adopt_account`). Its minutes and this
+    /// wipe's buys go with it.
+    pub fn rekey(&mut self, from: &str, to: &str) {
+        if self.rows.contains_key(to) || !filable(to) {
+            return;
+        }
+        if let Some(mut row) = self.rows.remove(from) {
+            if row.label == short_label(from) {
+                row.label = short_label(to);
+            }
+            self.rows.insert(to.to_string(), row);
+            self.dirty = true;
+        }
     }
 
     /// What the platform calls `key` now. Only a row that exists moves.

@@ -697,8 +697,9 @@ pub const MAX_HEARTHS: usize = 512;
 /// roster slot below the town's sentries, taken from the animals' range —
 /// 64 leaves 187 animal slots, about three times what the shipped
 /// densities spawn. Past it, a placed turret stands inert until one comes
-/// down or a dry one gives its entry up to it (`turret::reconcile`). Was 24
-/// until wire v121, which a few bases on a full shard used up.
+/// down or an idle one (dry or unpowered) gives its entry up to it
+/// (`turret::reconcile`). Was 24 until wire v121, which a few bases on a
+/// full shard used up.
 pub const MAX_TURRETS: usize = 64;
 
 /// Guns a turret can carry (`deployables.toml` `[turret]` `guns`): the
@@ -730,6 +731,14 @@ pub const MAX_WIRES: usize = 2_048;
 /// so nothing reaches it. Structural, not a knob: the grid's arrays and its
 /// index are sized by it.
 pub const MAX_POWER_NODES: usize = 1_024;
+
+/// Power parts of one owner the solve takes (`power::Grid`): the grid is
+/// shard-wide ([`MAX_POWER_NODES`]), so one hand may not hold all of it.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`
+/// (`deploy::place_deploy`); a part past it all the same (one placed before
+/// the cap) stands dark.
+pub const MAX_POWER_NODES_PER_OWNER: usize = 64;
+const _: () = assert!(MAX_POWER_NODES >= 16 * MAX_POWER_NODES_PER_OWNER);
 
 /// Batteries holding a charge at once (`power::CellRec`). A battery past it
 /// holds nothing until one comes down. Structural, like the grid's.

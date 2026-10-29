@@ -999,6 +999,24 @@ fn recipe_any(core: &ClientCore, item: u16) -> Option<u16> {
         .map(|r| r as u16)
 }
 
+/// The unlock a work must light before anyone on the island makes `item`:
+/// its recipe's own, or the one an input's recipe waits on (pistol rounds
+/// on gunpowder, which waits on THE CRUCIBLE). `None` when it can be made
+/// now, or before the tables are in.
+pub fn world_lock(core: &ClientCore, item: u16) -> Option<u8> {
+    let lock = |item: u16| {
+        let def = core.recipes.recipes[usize::from(recipe_any(core, item)?)];
+        (!core.arc.holds(def.unlock)).then_some(def)
+    };
+    if let Some(def) = lock(item) {
+        return Some(def.unlock);
+    }
+    let def = core.recipes.recipes[usize::from(recipe_any(core, item)?)];
+    def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())]
+        .iter()
+        .find_map(|&(input, _)| lock(input).map(|d| d.unlock))
+}
+
 /// Whether this body may make `item`: its recipe takes no blueprint, or
 /// that blueprint is learned. `None` before the tables are in.
 fn learned(core: &ClientCore, item: u16) -> Option<bool> {
@@ -1913,6 +1931,9 @@ pub struct Survey {
     pub bill_len: u8,
     /// The pack is short of something the box held when last opened.
     pub take_out: bool,
+    /// The unlock the first gear passed over waits on
+    /// ([`Builder::held_back`]); `NO_UNLOCK` when none is.
+    pub held_by: u8,
 }
 
 impl Survey {
@@ -1965,6 +1986,11 @@ pub struct Builder {
     deferred: u128,
     /// Tried `MAX_FAILS` times, or out of reach of what this body can do.
     given_up: u128,
+    /// Gear nobody on the island can make until a work lights (gunpowder
+    /// before THE CRUCIBLE burns, `content/arc.toml`): passed over rather
+    /// than waited at, so the gear after it comes on, and taken up again
+    /// the survey after the work lights. Worked out afresh each survey.
+    held_back: u128,
     fails: [u8; OPS],
     bad: [Option<(u16, u16)>; BAD_PLOTS],
     waiting: Option<Await>,
@@ -2022,6 +2048,7 @@ impl Builder {
             mine: 0,
             deferred: 0,
             given_up: 0,
+            held_back: 0,
             fails: [0; OPS],
             bad: [None; BAD_PLOTS],
             waiting: None,
@@ -2049,6 +2076,7 @@ impl Builder {
                 bill: [(0, 0); BILL_ROWS],
                 bill_len: 0,
                 take_out: false,
+                held_by: sim_core::works::NO_UNLOCK,
             },
             stats: BuildStats {
                 sites: 0,
@@ -2458,7 +2486,17 @@ impl Builder {
         if self.plan.is_some() {
             self.reconcile(core, &plan);
         }
+        let held_by = self.hold_back(core);
         let milestone = self.milestone();
+        // Said only once gear has been passed over for it: a body still on
+        // its walls is not waiting on anybody's work.
+        let passed = (0..OPS)
+            .any(|i| self.held_back & bit(i) != 0 && spec(i).stage.is_some_and(|m| m < milestone));
+        let held_by = if passed {
+            held_by
+        } else {
+            sim_core::works::NO_UNLOCK
+        };
         let mut needs = [(0u16, 0u32); NEED_ROWS];
         let mut n = 0;
         let bill = self.with_spare(core, &plan, milestone, self.bill(core, milestone, stored));
@@ -2488,7 +2526,38 @@ impl Builder {
             bill: bill.rows,
             bill_len: bill.n as u8,
             take_out,
+            held_by,
         };
+    }
+
+    /// Mark the gear still to come that waits on a work's lighting
+    /// ([`world_lock`]): what [`Self::held_back`] says. The unlock the first
+    /// of it waits on, `NO_UNLOCK` when none does.
+    fn hold_back(&mut self, core: &ClientCore) -> u8 {
+        self.held_back = 0;
+        let mut first = sim_core::works::NO_UNLOCK;
+        for i in (0..OPS).filter(|&i| (self.done | self.given_up) & bit(i) == 0) {
+            let s = spec(i);
+            if s.stage.is_none() {
+                continue;
+            }
+            let (Op::Learn(name) | Op::Make(name, _)) = s.op else {
+                continue;
+            };
+            if let Some(u) = item_named(core, name).and_then(|item| world_lock(core, item)) {
+                self.held_back |= bit(i);
+                if first == sim_core::works::NO_UNLOCK {
+                    first = u;
+                }
+            }
+        }
+        first
+    }
+
+    /// Done, given up, or waiting on a work: none of these is the work in
+    /// hand.
+    fn closed(&self) -> u128 {
+        self.done | self.given_up | self.held_back
     }
 
     /// Its own cupboard, standing on the plot.
@@ -2580,7 +2649,7 @@ impl Builder {
     /// The lowest milestone with work left. An optional op holds none back.
     fn milestone(&self) -> Milestone {
         (0..OPS)
-            .filter(|&i| (self.done | self.given_up) & bit(i) == 0)
+            .filter(|&i| self.closed() & bit(i) == 0)
             .map(spec)
             .filter(|s| !s.optional)
             .filter_map(|s| s.stage)
@@ -2816,8 +2885,7 @@ impl Builder {
         };
         for i in 0..OPS {
             let s = spec(i);
-            if s.stage != Some(milestone) || s.optional || (self.done | self.given_up) & bit(i) != 0
-            {
+            if s.stage != Some(milestone) || s.optional || self.closed() & bit(i) != 0 {
                 continue;
             }
             match s.op {
@@ -2902,7 +2970,7 @@ impl Builder {
             let s = spec(i);
             if !s.optional
                 || s.stage.is_none_or(|m| m > milestone)
-                || (self.done | self.given_up) & bit(i) != 0
+                || self.closed() & bit(i) != 0
                 || !self.can_do(core, plan, &s, i)
             {
                 continue;
@@ -3082,7 +3150,7 @@ impl Builder {
         skip: u128,
     ) -> Option<usize> {
         let has = self.stations(core);
-        let open = |i: usize| (self.done | self.given_up | skip) & bit(i) == 0;
+        let open = |i: usize| (self.closed() | skip) & bit(i) == 0;
         let own = (0..OPS).find(|&i| {
             let s = spec(i);
             s.stage == Some(milestone)
@@ -4419,6 +4487,66 @@ mod tests {
             }
         ));
         assert!(matches!(b.want, Some(Await::Craft { op: 0, .. })));
+    }
+
+    /// No gunpowder exists until THE CRUCIBLE burns: the gear that waits on
+    /// it (the powder, the rounds made of it) is passed over rather than
+    /// stalled at, the milestones go on past it, and it is taken up again
+    /// the survey after the work lights.
+    #[test]
+    fn gear_waiting_on_a_work_is_passed_over_until_it_lights() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let (powder, round, vest) = (7u16, 8u16, 9u16);
+        core.catalog.count = 10;
+        for (item, name) in [
+            (powder, "Gunpowder"),
+            (round, "Pistol Round"),
+            (vest, "Roadsign Vest"),
+        ] {
+            let row = protocol::ItemRow {
+                stack_max: 100,
+                ..protocol::ItemRow::EMPTY
+            };
+            core.catalog
+                .set(usize::from(item), name.as_bytes(), row)
+                .unwrap();
+        }
+        let recipe = |output, unlock, input| sim_core::craft::RecipeDef {
+            output,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_NONE,
+            blueprint: false,
+            unlock,
+            n_inputs: 1,
+            inputs: [(input, 1), (0, 0), (0, 0), (0, 0)],
+        };
+        (core.recipes.recipe_count, core.recipes_have) = (3, 3);
+        core.recipes.recipes[0] = recipe(powder, 1, 5);
+        core.recipes.recipes[1] = recipe(round, 0, powder);
+        core.recipes.recipes[2] = recipe(vest, 0, 5);
+        assert_eq!(world_lock(&core, powder), Some(1));
+        assert_eq!(
+            world_lock(&core, round),
+            Some(1),
+            "rounds wait on the powder"
+        );
+        assert_eq!(world_lock(&core, vest), None);
+        // Everything before the gunpowder stands.
+        let mut b = Builder::new();
+        for i in (0..OPS).filter(|&i| spec(i).stage.is_some_and(|m| m < Milestone::Gunpowder)) {
+            b.done |= bit(i);
+        }
+        assert_eq!(b.hold_back(&core), 1);
+        assert!(b.milestone() > Milestone::Gunpowder, "{:?}", b.milestone());
+        let rounds = (0..OPS)
+            .find(|&i| matches!(spec(i).op, Op::Make("Pistol Round", _)))
+            .unwrap();
+        assert_ne!(b.held_back & bit(rounds), 0);
+        // THE CRUCIBLE lights.
+        core.arc.unlocks = 1;
+        assert_eq!(b.hold_back(&core), sim_core::works::NO_UNLOCK);
+        assert_eq!(b.milestone(), Milestone::Gunpowder);
     }
 
     /// The furnace is made at the bench: once the bench is given up, so is

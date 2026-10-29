@@ -26,7 +26,7 @@
 //! a PvP world is the whole test.
 //!
 //! ```json
-//! {"week":2916,"starts":1763942400,"ends":1764547200,
+//! {"week":2917,"starts":1763942400,"ends":1764547200,
 //!  "checked_in":[{"wallet":"0xab…","first":1763990000,"agent":false}]}
 //! ```
 

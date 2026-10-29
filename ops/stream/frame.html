@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gates — frame</title>
+<!--
+  A transparent frame to sit on top of a webcam, chat dock, or alert box.
+  Set the browser source's width/height to the size of the thing it frames,
+  put it ABOVE that source in OBS, and pick the label:
+    file:///home/anthony/stream-overlays/frame.html?label=CAM&name=anthony
+    file:///home/anthony/stream-overlays/frame.html?label=COMMS&name=chat · 20m local&panel=1
+    file:///home/anthony/stream-overlays/frame.html?label=INCOMING&name=alerts
+  panel=1 adds a dark glass backing (for chat text over busy gameplay) — put
+  the frame BELOW the chat source in that case.
+-->
+<link rel="stylesheet" href="gates.css">
+<style>
+  html, body { width: 100vw; height: 100vh; }
+  .frame { position: absolute; inset: 0; border: 1px solid rgba(184,255,56,.22); }
+  .frame.panel { background: rgba(10,12,10,.72); border-color: var(--line-2); }
+  .head {
+    position: absolute; left: 14px; top: -1px; transform: translateY(-50%);
+    display: flex; align-items: center; gap: 0;
+  }
+  .head .name {
+    font: 500 13px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase;
+    padding: 6px 10px; background: rgba(10,12,10,.9); color: var(--muted); border: 1px solid var(--line-2); border-left: 0;
+  }
+  .brackets i { width: 22px; height: 22px; }
+  .scan { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, rgba(184,255,56,.35), transparent); animation: sweep 7s linear infinite; }
+  @keyframes sweep { from { top: 0; } to { top: 100%; } }
+</style>
+<body class="transparent">
+<div class="frame" id="frame">
+  <div class="brackets"><i></i><i></i><i></i><i></i></div>
+  <div class="scan" id="scan"></div>
+</div>
+<div class="head" id="head"><span class="tag" id="label"></span><span class="name" id="name"></span></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.getElementById("label").textContent = q.get("label") || "CAM";
+  const name = q.get("name");
+  if (name) document.getElementById("name").textContent = name; else document.getElementById("name").remove();
+  if (q.get("panel") === "1") document.getElementById("frame").classList.add("panel");
+  if (q.get("scan") === "0") document.getElementById("scan").remove();
+  // Header sits half outside the box; nudge the frame down so it isn't clipped.
+  document.getElementById("frame").style.top = "14px";
+  document.getElementById("head").style.top = "14px";
+</script>

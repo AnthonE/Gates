@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Gates · clip</title>
+<!-- The clip page (`clip.js`): the game page frames it and posts it a tape.
+     The canvas is the video's own size; the box around it is shrunk to fit
+     the frame, so the preview is the whole picture. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #0e0c0a; overflow: hidden; }
+  #stage { position: absolute; left: 50%; top: 50%; transform-origin: 0 0; }
+  #film { display: block; }
+</style>
+<div id="stage"><canvas id="film" width="1080" height="1920"></canvas></div>
+<script src="clip-fit.js"></script>
+<script type="module" src="clip.js"></script>
+</html>

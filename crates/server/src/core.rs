@@ -38,6 +38,7 @@ use protocol::{
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
+use sim_core::combat::CombatContent;
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::frame::Frame;
@@ -470,6 +471,11 @@ pub struct ShardCore {
     /// Every wallet's achievements (`achievements.rs`), tallied off the
     /// sim's events per connection. Not sim state.
     pub achievements: crate::achievements::Achievements,
+    /// The cheat checks (`cheat.rs`), fed off each tick's aims and hits and
+    /// written to the anomaly log. Not sim state.
+    cheats: crate::cheat::Checks,
+    /// The cheat checks' sight-line memo (`terrain::Lattice`).
+    cheat_lat: Box<sim_core::terrain::Lattice>,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -720,6 +726,15 @@ impl SleeperIndex {
         }
     }
 
+    /// File `from`'s body under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, _) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
+            }
+        }
+    }
+
     /// File `id` under `key`, replacing any earlier body for the same
     /// player. `live` is asked only if the table is full, and only about
     /// entries already in it — the sweep that keeps a table of stale
@@ -813,6 +828,15 @@ impl EvictMemo {
         }
     }
 
+    /// File `from`'s record under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, ..) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
+            }
+        }
+    }
+
     /// File `save` under `key`, replacing any earlier one for the same key,
     /// else into a free row, else over the oldest put.
     fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
@@ -900,6 +924,16 @@ impl EvictIds {
         for e in self.entries.iter_mut() {
             if e.is_some_and(|(k, ..)| k == *key) {
                 *e = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// File `from`'s row under `to` ([`ShardCore::adopt_account`]).
+    fn rekey(&mut self, from: &PlayerKey, to: &PlayerKey) {
+        for (k, ..) in self.entries.iter_mut().flatten() {
+            if *k == *from {
+                *k = *to;
                 self.dirty = true;
             }
         }
@@ -1080,6 +1114,8 @@ impl ShardCore {
             restart_fired: false,
             standings: crate::standings::Standings::off(),
             achievements: crate::achievements::Achievements::off(),
+            cheats: crate::cheat::Checks::new(),
+            cheat_lat: Box::new(sim_core::terrain::Lattice::new()),
             gifts: crate::gifts::Gifts::off(),
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
@@ -1855,6 +1891,47 @@ impl ShardCore {
                 self.played_minute[slot] = id;
             }
         }
+    }
+
+    /// This tick's aims, shots and hits through the cheat checks
+    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named.
+    fn note_cheats(&mut self, ops: &mut Ops<'_>) {
+        use crate::anomaly::{Kind, Record};
+        let tick = self.world.tick;
+        let mut ground = crate::cheat::Ground {
+            seed: self.world.seed,
+            haven: &self.world.haven,
+            cols: self.world.pieces.cols(),
+            lat: &mut self.cheat_lat,
+        };
+        let (clients, agent, teams, tags) = (
+            &self.clients,
+            &self.standings_agent,
+            &self.teams,
+            &self.tags,
+        );
+        let exempt = |id: u32| {
+            (0..MAX_PLAYERS).any(|s| clients[s].connected && clients[s].id == id && agent[s])
+        };
+        self.cheats.tick(
+            tick,
+            &self.world.players,
+            self.world.events.entries(),
+            exempt,
+            |a, b| teams.mates(a, b),
+            |from, to| ground.hidden(from, to),
+            |f| {
+                let name = tags
+                    .iter()
+                    .find(|t| t.id == f.who)
+                    .map_or("", |t| t.name.as_str());
+                ops.log.push(
+                    Record::new(tick, Kind::Suspect, f.check as u16, f.who)
+                        .with(f.a, f.b, f.c)
+                        .note(name.as_bytes()),
+                );
+            },
+        );
     }
 
     /// This tick's events, tallied into each wallet's achievements
@@ -2959,6 +3036,42 @@ impl ShardCore {
         Some((how, evicted))
     }
 
+    /// An Elo Pros account that has linked a wallet joins as the wallet, on a
+    /// pass that still names the account (v151, `net.rs`). Unless the wallet
+    /// already has a character here, the account's is the wallet's now: its
+    /// sleeping body (and with it the bags, locks and cupboards filed under
+    /// the body's id), its eviction record and id row, and this wipe's
+    /// standings row, so the join that follows finds them under the wallet.
+    /// Returns whether the wallet takes the account's character: `false` for
+    /// a wallet already known here (two characters are never merged) or
+    /// either key still seated.
+    pub fn adopt_account(&mut self, from: &PlayerKey, to: &PlayerKey) -> bool {
+        let seated = |k: &PlayerKey| {
+            (0..MAX_PLAYERS).any(|s| self.clients[s].connected && self.keys[s] == Some(*k))
+        };
+        let known = self
+            .sleepers
+            .find(to)
+            .is_some_and(|s| self.world.is_sleeper(s))
+            || self.evicted.find(to).is_some()
+            || self.evict_ids.find(to).is_some();
+        if from == to || seated(from) || seated(to) || known {
+            return false;
+        }
+        // A stale arrow for the wallet would shadow the account's below.
+        self.sleepers.forget(to);
+        self.sleepers.rekey(from, to);
+        self.evicted.rekey(from, to);
+        self.evict_ids.rekey(from, to);
+        if let (Ok(f), Ok(t)) = (
+            core::str::from_utf8(from.as_bytes()),
+            core::str::from_utf8(to.as_bytes()),
+        ) {
+            self.standings.rekey(f, t);
+        }
+        true
+    }
+
     /// Encode the whole world into `out`, returning its length.
     ///
     /// A pure read on the sim thread, and that is the design: the reference
@@ -3923,6 +4036,7 @@ impl ShardCore {
         mark(Phase::Interest);
         self.note_standings(n);
         self.note_achievements(n);
+        self.note_cheats(ops);
         // The boards, rebuilt at most every five seconds; whatever moved
         // them since the last look is owed to everyone.
         if self
@@ -10077,7 +10191,7 @@ impl ShardCore {
     /// content row that says a torch burns at all lives in `GatherContent`.
     /// So the server resolves both once per record, on the same values the
     /// sim ran on — the quantize-both-sides law applied to a flag.
-    fn wire_entity(p: &Player, gc: &GatherContent) -> EntityState {
+    fn wire_entity(p: &Player, gc: &GatherContent, cc: &CombatContent) -> EntityState {
         EntityState {
             id: p.id,
             qx: p.body.qx,
@@ -10113,19 +10227,23 @@ impl ShardCore {
             // The attachments on the held gun (v144), under the same rule,
             // and its light while the key is down: a laser's dot and a
             // flashlight's beam are seen by everyone.
-            held_mods: Self::held_mods_of(p),
-            beam: Self::held_mods_of(p) != 0 && p.frame.buttons & sim_core::input::BTN_LIGHT != 0,
+            held_mods: Self::held_mods_of(p, cc),
+            beam: Self::held_mods_of(p, cc) != 0
+                && p.frame.buttons & sim_core::input::BTN_LIGHT != 0,
         }
     }
 
     /// The attachments on the gun in this body's hand, 0 for a dropped,
-    /// empty or unarmed hand.
-    fn held_mods_of(p: &sim_core::world::Player) -> u8 {
-        if p.wounded || Self::held_of(p).is_none() {
-            0
-        } else {
-            sim_core::combat::held_gun(p).mods
+    /// empty or unarmed hand. Only a gun's `data` is attachments: a
+    /// vessel's is its water, and read as a mask a full waterskin wore a
+    /// laser and a flashlight.
+    fn held_mods_of(p: &sim_core::world::Player, cc: &CombatContent) -> u8 {
+        if p.wounded {
+            return 0;
         }
+        Self::held_of(p)
+            .and_then(|item| cc.held_ranged(item))
+            .map_or(0, |d| sim_core::combat::held_gun(p).mods & d.gun.mods)
     }
 
     /// What is in this body's selected hotbar slot, or nothing.
@@ -10209,7 +10327,7 @@ impl ShardCore {
         for w in 0..MAX_PLAYERS {
             let p = &self.world.players[w];
             if p.active {
-                self.wire_cache[w] = Self::wire_entity(p, &self.world.gather);
+                self.wire_cache[w] = Self::wire_entity(p, &self.world.gather, &self.world.combat);
             }
         }
         for slot in 0..MAX_MOBS {
@@ -10324,7 +10442,11 @@ impl ShardCore {
         order[..n_cand].sort_unstable();
 
         let mut n_sent = 0usize;
-        let own = Self::wire_entity(&self.world.players[c.own_wslot], &self.world.gather);
+        let own = Self::wire_entity(
+            &self.world.players[c.own_wslot],
+            &self.world.gather,
+            &self.world.combat,
+        );
         match enc.add_entity(&own) {
             Ok(()) => {
                 self.sent_buf[n_sent] = own;

@@ -37,8 +37,9 @@ sales and their copy go to the platform's locker instead
 (`POST {ELO_ORIGIN}/api/locker/hold`, MAC'd with `ELO_LOCKER_SECRET`, which
 the platform holds too), which mints them to the wallet they link later. A
 held sale is logged to `<world>.minted` as `ref acct catalog held`, so the
-shard reads the account's locker again; an account the platform no longer
-has is logged `gone` and not asked again.
+shard reads the account's locker again; an account the platform says it
+does not have (a 404 naming it, `GONE_ERRORS`) is logged `gone` and not asked
+again. Any other 404 (a route not deployed yet, a proxy's page) is retried.
 
 **Free till December.** Copies are given until `FREE_UNTIL` (1 Dec 2026,
 00:00 UTC). At that moment `ops/gates-free-door.timer` runs this with
@@ -70,6 +71,9 @@ WALLET = re.compile(r"^0x[0-9a-f]{40}$")
 ACCOUNT = re.compile(r"^acct_[0-9a-f]{20}$")
 ORIGIN = os.environ.get("ELO_ORIGIN", "https://elopros.com").rstrip("/")
 REF = re.compile(r"^[0-9A-Za-z-]{1,32}$")
+#: What the platform's 404 says, in its JSON `error` (or `code`), for an
+#: account it does not have: the one refusal that is final. A bare 404 is not.
+GONE_ERRORS = frozenset({"unknown_account", "no_such_account", "account_not_found"})
 #: Sales per run: a backlog drains over a few runs, not one long ssh.
 BATCH = 20
 #: The game is free until December (operator, 2026-10-19: "free till Dec").
@@ -88,9 +92,13 @@ export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 ITEM=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloItem:GATES"]["address"])' 2>/dev/null)
 FROM=$(cast wallet address --private-key "$ELO_DEPLOY_KEY" 2>/dev/null)
-RPC=""
+# The freshest endpoint, not the first that answers: a lagging one hands
+# `cast send` a stale nonce (`nonce too low`, the notary on 2026-10-24).
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 if [ -z "$ITEM" ] || [ -z "$FROM" ] || [ -z "$RPC" ]; then
   while [ $# -ge 3 ]; do echo "fail $1 $2 $3 no-chain"; shift 3; done
@@ -130,9 +138,11 @@ export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 T=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloGameTicket:GATES"]["address"])' 2>/dev/null)
 FROM=$(cast wallet address --private-key "$ELO_DEPLOY_KEY" 2>/dev/null)
-RPC=""
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 if [ -z "$T" ] || [ -z "$FROM" ] || [ -z "$RPC" ]; then
   for w in "$@"; do echo "fail $w no-chain"; done
@@ -251,9 +261,11 @@ set -u
 export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 T=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloGameTicket:GATES"]["address"])' 2>/dev/null)
-RPC=""
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 [ -n "$T" ] && [ -n "$RPC" ] || { echo "fail no-chain"; exit 0; }
 if [ "$(cast call "$T" "freePerWallet()(uint256)" --rpc-url "$RPC" 2>/dev/null)" = "0" ]; then
@@ -270,9 +282,21 @@ if [ -n "$tx" ]; then echo "closed $tx"; else echo "fail send"; fi
 '''
 
 
+def gone(body: bytes) -> bool:
+    """Is a 404's body the platform saying it has no such account?"""
+    try:
+        j = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(j, dict):
+        return False
+    said = [j.get("error"), j.get("code")]
+    return any(isinstance(w, str) and w.strip().lower().replace(" ", "_") in GONE_ERRORS for w in said)
+
+
 def post_hold(row: dict) -> str:
     """Hold one row in the platform's locker for an account (v151): `held`,
-    `gone` (the platform has no such account), or why it failed."""
+    `gone` (the platform says it has no such account), or why it failed."""
     secret = os.environ.get("ELO_LOCKER_SECRET", "")
     if len(secret) < 32:
         return "no-locker-secret"
@@ -285,7 +309,11 @@ def post_hold(row: dict) -> str:
         with urllib.request.urlopen(req, timeout=15) as r:
             return "held" if r.status == 200 else f"http-{r.status}"
     except urllib.error.HTTPError as e:
-        return "gone" if e.code == 404 else f"http-{e.code}"
+        try:
+            body = e.read(4096)
+        except Exception:  # noqa: BLE001 — no body is a bare 404
+            body = b""
+        return "gone" if e.code == 404 and gone(body) else f"http-{e.code}"
     except Exception:  # noqa: BLE001 — could not ask; retried next run
         return "unreachable"
 

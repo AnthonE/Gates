@@ -134,6 +134,10 @@ pub mod tls;
 /// to (`bin/record.rs`) and the replay `render::film` draws it back from.
 pub mod film;
 
+/// The clip key's memory: the last minute of a session, kept as a tape a
+/// film can draw (`render::film`) without anything leaving the machine.
+pub mod clip;
+
 // An agent player's key (`NETCODE.md` §2.4), re-exported for the binaries
 // that load one. Desktop only by construction: see `Cargo.toml`.
 #[cfg(feature = "native")]
@@ -485,6 +489,9 @@ pub struct Session {
     /// (`Session::tap`). `bin/record.rs` is the one user: a trailer's
     /// recording is exactly what the core was handed.
     tap: Option<Tap>,
+    /// The last minute of this session, for the clip key
+    /// ([`Session::clip_tape`]).
+    clip: Option<Box<clip::Clipper>>,
 }
 
 /// See [`Session::tap`].
@@ -735,6 +742,8 @@ impl Session {
             event_observer: None,
             observer_failed: false,
             tap: None,
+            // Every live session keeps its last minute for the clip key.
+            clip: Some(Box::new(clip::Clipper::new(welcome, watching))),
         })
     }
 }
@@ -912,7 +921,7 @@ impl Session {
         // `the_two_step_path_and_the_composition_agree` holds the two
         // assemblies to producing byte-identical frames.
         // The auth frame alone may run past the stream lane's ceiling (a pass,
-        // v144), so it is built in a buffer of its own.
+        // v151), so it is built in a buffer of its own.
         let mut auth = net::handshake::auth_buf();
         let want = net::handshake::proof_wanted_for(&reply, server, signs_as, claim)?;
         let address = match claim {
@@ -1047,6 +1056,8 @@ impl Session {
             event_observer: None,
             observer_failed: false,
             tap: None,
+            // Every live session keeps its last minute for the clip key.
+            clip: Some(Box::new(clip::Clipper::new(welcome, watching))),
         })
     }
 }
@@ -1076,6 +1087,27 @@ impl Session {
     /// the core decodes it — the whole of what `bin/record.rs` writes down.
     pub fn tap(&mut self, tap: impl FnMut(film::Lane, &[u8]) + Send + 'static) {
         self.tap = Some(Box::new(tap));
+    }
+
+    /// Stop keeping the last minute: a tool that tapes a session itself
+    /// (`bin/record.rs`) has no use for the clip key's memory.
+    pub fn disable_clips(&mut self) {
+        self.clip = None;
+    }
+
+    /// A tape of the last `want_s` seconds (and the lead a film needs), or as
+    /// much as is held. `None` with clips off, before the first snapshot, or
+    /// past the event cap (`clip::EVENT_CAP_BYTES`).
+    pub fn clip_tape(&self, want_s: f64) -> Option<Vec<u8>> {
+        self.clip.as_ref().filter(|c| !c.full())?.tape(want_s)
+    }
+
+    /// Seconds a clip can reach back over now; 0 with clips off.
+    pub fn clip_held_s(&self) -> f64 {
+        self.clip
+            .as_ref()
+            .filter(|c| !c.full())
+            .map_or(0.0, |c| c.held_s())
     }
 
     /// What the browser transport has REFUSED to send, and why.
@@ -1230,9 +1262,13 @@ impl Session {
         // stale-guard already refuses any datagram a drop reordered past
         // (netcode v2 S2).
         let tap = &mut self.tap;
+        let clip = &mut self.clip;
         let dg_gone = drain_datagram(&self.datagrams, &mut self.dg_scratch, |dgram| {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Datagram, dgram);
+            }
+            if let Some(clip) = clip.as_mut() {
+                clip.push(film::Lane::Datagram, dgram);
             }
             if !matches!(core.on_datagram(dgram), Ingest::Error | Ingest::AppliedMore) {
                 *snapshots += 1;
@@ -1246,6 +1282,9 @@ impl Session {
         let ev_gone = drain_lane(&mut self.events, |bytes| {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Event, bytes);
+            }
+            if let Some(clip) = clip.as_mut() {
+                clip.push(film::Lane::Event, bytes);
             }
             // The shard's last word before a kick: why (wire v89).
             if let Ok(r) = protocol::decode_refuse(bytes) {
@@ -1268,6 +1307,9 @@ impl Session {
         // into a latch rather than assigned, so one lane outliving the other
         // by a frame cannot flicker the answer back to alive.
         self.closed |= dg_gone || ev_gone || self.observer_failed;
+        if let Some(clip) = self.clip.as_mut() {
+            clip.after_pump(&self.core.view, dt_ms);
+        }
 
         let tick = self.core.advance(dt_ms);
 

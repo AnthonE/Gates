@@ -508,7 +508,7 @@ public agent (operator acts).
 is built (`EV_TRUST` code 39, `World::log_trust`, seven checks in
 `crates/sim-core/tests/event_roles.rs`); walls 1 and 4 are built for the local
 agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
-is not.
+is retired.
 
 Remains, in order (the trust ledger — `sim-core/trust.rs`, `server/trustlog.rs`
 — is built; the public shard logs once a build with it is deployed, an operator
@@ -535,6 +535,28 @@ act):
    re-run with the contention instruments (`raid_storm.rs`, `bots::raid_step`).
 
 ## Wire, shard and persistence *(server lane)*
+
+## 0chk · Cheat checks v0 landed — what arming still needs *(server lane)*
+
+`crates/server/src/cheat.rs` flags **snap hits**, **headshot rate** and **wall tracking** per player as
+`kind:"suspect"` lines in the anomaly log (name in `note`). Evidence only: nothing kicks or bans. Left:
+
+1. **Tune the thresholds on real play.** Every constant at the top of `cheat.rs` (`SNAP_DEG`, `HEAD_MIN_PCT`,
+   `WALL_*`) is a first guess proven only on synthetic fixtures. Read the A1 playtest's `suspect` lines and
+   move them; an honest good player should almost never flag.
+2. **An armed shard must set `anomaly_file`.** With no log the checks run and the flags go nowhere. Make
+   arming refuse without it (`config.rs`, beside the `require_auth` rule).
+3. **Admin view.** No `/suspects` verb: flags are read from the JSONL by id. An admin verb that lists the
+   window's flags by name, and a spectate-the-suspect jump, would make review an in-game act.
+4. **Occlusion culling (§7 item 1) is still the prevention.** Wall tracking *detects* ESP; every player
+   inside 176 m is still sent through hills and walls. `Ground::hidden`'s walk costs ~30 µs a ray, too much
+   for every pair every tick; culling wants the baked seed grid §7 names, then the piece walk only near bases.
+5. **Gaps in the checks themselves.** Trees, rocks and bodies do not hide (errs toward "visible"); snap is
+   measured into the shot, not the stillness after it (an aimbot's lock-and-hold); an arrow's hit range is
+   read at hit time; nothing reads the WAL offline (`DESIGN.md`'s aim analysis), and no check looks at
+   pre-fire, recoil control or a melee lock.
+6. **Declared agents are exempt** (`standings_agent`). Right while agents stay off armed shards; if an armed
+   shard ever admits them, they need their own rule.
 
 ## 0fan · The event lane's fan-out — four arms filtered, nineteen to go *(server lane)*
 
@@ -844,7 +866,8 @@ The arc is `DESIGN.md` §11 (M0 landed → M1 → M2 → M3 → M4); `ALPHA.md` 
 - **Arming A2, then A3** is an operator act.
 
 1. **Anti-ESP occlusion culling**, server-side (none in `crates/server/src/interest.rs` or `sim-core`): the grid
-   is a pure function of the seed — bake at worldgen, look up in the tick. After M2.
+   is a pure function of the seed — bake at worldgen, look up in the tick. After M2. Detection landed first
+   (§0chk); this is still the prevention.
 2. **`elo_overlay.rs`'s drift check is built** (`ci/elo_drift.sh`, nightly job `elo-drift`) and dark until
    the operator adds the `SCRY_FORGE_TOKEN` secret (read access to the private platform repo).
 

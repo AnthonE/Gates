@@ -49,7 +49,7 @@
 //! merges only into the spiller's own bag, and every give-back announces
 //! what it dropped (`World::announce_spill`).
 
-use crate::gather::{inv_add_skinned, inv_add_spilling_skinned, GatherContent, ItemStack};
+use crate::gather::{inv_add_stack, inv_add_stack_spilling, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
 use crate::movement::POS_XZ_Q;
 use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
@@ -525,18 +525,11 @@ impl Backpacks {
                     continue;
                 }
                 let cap = gc.stack_max_of(stack.item);
-                // The stack already exists, so its condition and its skin
+                // The stack already exists, so its condition, skin and data
                 // travel with it — minting at the ceiling here would mend a
                 // worn tool by dropping it into a bag, and a plain mint
-                // would strip the skin off it.
-                let took = inv_add_skinned(
-                    &mut self.entries[i].items,
-                    stack.item,
-                    stack.count,
-                    cap,
-                    stack.cond,
-                    stack.skin,
-                );
+                // would strip the skin, the scope and the rounds off it.
+                let took = inv_add_stack(&mut self.entries[i].items, *stack, cap);
                 if took == 0 {
                     continue;
                 }
@@ -733,16 +726,10 @@ impl Backpacks {
             if cap == 0 {
                 continue; // an item the ladder cannot stack cannot be taken
             }
-            // An existing stack: its condition and skin travel, or looting
-            // a bag would repair everything in it and strip every skin.
-            let took = inv_add_skinned(
-                &mut p.inv,
-                stack.item,
-                stack.count,
-                cap,
-                stack.cond,
-                stack.skin,
-            );
+            // An existing stack: its condition, skin and data travel, or
+            // looting a bag would repair everything in it, strip every skin
+            // and empty every gun.
+            let took = inv_add_stack(&mut p.inv, stack, cap);
             if took == 0 {
                 continue;
             }
@@ -806,15 +793,8 @@ impl Backpacks {
         let cut = self.entries[i].items[s];
         self.entries[i].items[s] = ItemStack::default();
         let pay = (cut.count as u32 * pct as u32 / 100).clamp(1, u16::MAX as u32) as u16;
-        let added = inv_add_spilling_skinned(
-            &mut p.inv,
-            spill,
-            cut.item,
-            pay,
-            gc.stack_max_of(cut.item),
-            cut.cond,
-            cut.skin,
-        );
+        let pay_stack = ItemStack { count: pay, ..cut };
+        let added = inv_add_stack_spilling(&mut p.inv, spill, pay_stack, gc.stack_max_of(cut.item));
         events.push(
             EV_GATHER,
             p.id,

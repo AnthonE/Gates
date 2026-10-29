@@ -61,6 +61,12 @@ pub const ARM_UP: [(&str, u32, Option<&str>); 4] = [
     ("Bandage", 3, None),
 ];
 
+/// The meds that close a wound, the cheapest first: Rust's bandage stops
+/// some of the bleeding and the medkit all of it (`content/consumables.toml`
+/// `bleed`; the catalog does not carry it, so a player's knowledge, by name).
+/// Nothing mends while a wound bleeds.
+pub const STAUNCHES: [&str; 2] = ["Bandage", "Medkit"];
+
 /// What leaves the bow behind, and the wooden arrows only it shoots.
 const PAST_THE_BOW: &[&str] = &[
     "Crossbow",

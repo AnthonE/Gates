@@ -88,8 +88,8 @@ use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOXES_PER_OWNER,
     MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, MAX_TURRETS_PER_OWNER,
-    UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
+    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, MAX_POWER_NODES_PER_OWNER,
+    MAX_TURRETS_PER_OWNER, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -610,8 +610,9 @@ pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
 pub const REFUSE_D_SWIMMING: u32 = 26;
 /// One hand's share of a shard-wide store is placed already: its
-/// containers (`limits::MAX_BOXES_PER_OWNER`) or its turrets
-/// (`limits::MAX_TURRETS_PER_OWNER`). Its own reason rather than
+/// containers (`limits::MAX_BOXES_PER_OWNER`), its turrets
+/// (`limits::MAX_TURRETS_PER_OWNER`) or its power parts
+/// (`limits::MAX_POWER_NODES_PER_OWNER`). Its own reason rather than
 /// `REFUSE_D_FULL`: the world is not full, this hand's share is, and the
 /// fix is to take one of yours up.
 pub const REFUSE_D_OWN_CAP: u32 = 27;
@@ -3376,6 +3377,17 @@ pub fn place_deploy(
             .filter(|d| d.owner == p.id && dc.defs[d.row as usize].arch == ARCH_TURRET)
             .count()
             >= MAX_TURRETS_PER_OWNER
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
+        return;
+    }
+    // So is the power grid (`MAX_POWER_NODES`): one hand holds its share.
+    if crate::power::is_part(def.arch)
+        && deploys.entries[..deploys.len]
+            .iter()
+            .filter(|d| d.owner == p.id && crate::power::is_part(dc.defs[d.row as usize].arch))
+            .count()
+            >= MAX_POWER_NODES_PER_OWNER
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
         return;
@@ -9948,6 +9960,9 @@ mod tests {
         };
         def.n = 1;
         let dc = turret_fixture();
+        // A turret row that draws nothing needs no wire.
+        let pc = crate::power::PowerContent::EMPTY;
+        let power = crate::power::Power::new();
         let mut deploys = Deploys::new();
         for k in 0..=MAX_TURRETS as u16 {
             stand_turret(&mut deploys, 100 + k, 100, 1 + k as u32 / 12);
@@ -9957,11 +9972,11 @@ mod tests {
         let held = |table: &[Turret; MAX_TURRETS], cx: u16| {
             table.iter().any(|t| t.live && t.cx == cx && t.cz == 100)
         };
-        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
         let last_cx = 100 + MAX_TURRETS as u16;
         assert!(held(&table, 100) && !held(&table, last_cx), "first come");
         // A dry one stays out while every entry is dry...
-        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
         assert!(!held(&table, last_cx));
         // ...and loaded — a gun and its round — it takes the first dry entry.
         let b = deploys
@@ -9989,11 +10004,94 @@ mod tests {
                 ..ItemStack::EMPTY
             },
         );
-        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
         assert!(held(&table, last_cx), "a loaded turret got no entry");
         assert!(!held(&table, 100), "the first dry one gave its entry up");
         // A loaded one keeps it.
-        reconcile(&dc, &deploys, &def, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
         assert!(held(&table, last_cx) && !held(&table, 100));
+    }
+
+    /// **A full turret table gives way to a powered gun** too: loaded
+    /// turrets with no wire held every entry, and a wired one placed after
+    /// them never got one.
+    #[test]
+    fn a_full_turret_table_gives_an_unpowered_entry_up_to_a_powered_turret() {
+        use crate::limits::MAX_TURRETS;
+        use crate::power::{Power, PowerContent, WireRec, DAYLIGHT_TICKS};
+        use crate::turret::{reconcile, Turret, TurretDef, TurretGun};
+        const AMMO: u16 = 13;
+        const GUN: u16 = 14;
+        const SOLAR: u8 = 9;
+        let mut def = TurretDef::INERT;
+        def.guns[0] = TurretGun {
+            item: GUN,
+            def: crate::sentry::SentryDef::INERT,
+            ammo: AMMO,
+        };
+        def.n = 1;
+        let mut dc = turret_fixture();
+        dc.defs[SOLAR as usize] = DeployDef {
+            arch: ARCH_SOLAR,
+            ..dc.defs[8]
+        };
+        dc.def_count = 10;
+        let mut pc = PowerContent::EMPTY;
+        pc.parts[8].draw_rw = 10;
+        pc.parts[SOLAR as usize].out_rw = 20;
+        let mut deploys = Deploys::new();
+        let stack = |item| ItemStack {
+            item,
+            count: 5,
+            ..ItemStack::EMPTY
+        };
+        // Every turret loaded, none wired.
+        for k in 0..=MAX_TURRETS as u16 {
+            stand_turret(&mut deploys, 100 + k, 100, 1 + k as u32 / 12);
+            let b = deploys.boxes.len - 1;
+            deploys.set_box_slot(b, 0, stack(GUN));
+            deploys.set_box_slot(b, 1, stack(AMMO));
+        }
+        let mut table = [Turret::default(); MAX_TURRETS];
+        let mut slots = [crate::mob::Mob::default(); MAX_TURRETS];
+        let held = |table: &[Turret; MAX_TURRETS], cx: u16| {
+            table.iter().any(|t| t.live && t.cx == cx && t.cz == 100)
+        };
+        let last_cx = 100 + MAX_TURRETS as u16;
+        let mut power = Power::new();
+        let noon = DAYLIGHT_TICKS / 2 + crate::limits::DAY_TICKS - crate::limits::DAY_PHASE_TICKS;
+        let solve = |deploys: &mut Deploys, power: &mut Power| {
+            let mut ev = crate::world::EventQueue::default();
+            crate::power::sweep(0, noon, &dc, &pc, deploys, power, &mut ev);
+        };
+        solve(&mut deploys, &mut power);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
+        assert!(held(&table, 100) && !held(&table, last_cx), "first come");
+        // A panel wired to the last one powers it, and it takes an entry.
+        assert!(deploys.insert(
+            DeployRec {
+                cx: 300,
+                cz: 100,
+                loc: LOC_PLANE,
+                row: SOLAR,
+                owner: 99,
+                hp: 1000,
+                ..DeployRec::default()
+            },
+            0,
+        ));
+        assert!(deploys.power_mut().add(WireRec {
+            from: box_key(300, 100, 0, LOC_PLANE),
+            out: 0,
+            to: box_key(last_cx, 100, 0, LOC_PLANE),
+            inp: 0,
+        }));
+        solve(&mut deploys, &mut power);
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
+        assert!(held(&table, last_cx), "a powered turret got no entry");
+        assert!(!held(&table, 100), "the first unpowered one gave it up");
+        reconcile(&dc, &deploys, &def, &pc, &power, &mut table, &mut slots);
+        assert!(held(&table, last_cx) && !held(&table, 100), "it keeps it");
     }
 }

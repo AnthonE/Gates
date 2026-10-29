@@ -80,9 +80,9 @@ pub struct WebWire {
     /// referencing it, which is a garbage collector's opinion about our
     /// disconnect semantics. Naming it here makes "the session is dropped, so
     /// the connection ends" a fact about this struct instead.
-    transport: WebTransport,
-    datagrams: WebTransportDatagramDuplexStream,
-    writer: WritableStreamDefaultWriter,
+    ///
+    /// `None` on a replayed session (`crate::film`), which has no shard.
+    link: Option<Link>,
     /// Datagrams refused because the payload exceeded the live
     /// `maxDatagramSize`. Counted rather than silent — see `send_datagram`.
     pub over_mtu: Cell<u64>,
@@ -98,22 +98,41 @@ pub struct WebWire {
     polling: std::rc::Rc<Cell<bool>>,
 }
 
+/// The live connection a [`WebWire`] sends on.
+struct Link {
+    transport: WebTransport,
+    datagrams: WebTransportDatagramDuplexStream,
+    writer: WritableStreamDefaultWriter,
+}
+
 impl WebWire {
     pub(crate) fn new(transport: &WebTransport) -> Result<Self, String> {
         let datagrams = transport.datagrams();
         let writer = datagram_writable(&datagrams)?
             .get_writer()
             .map_err(|e| js_err("datagram writer", &e))?;
-        Ok(Self {
+        Ok(Self::with(Some(Link {
             transport: transport.clone(),
             datagrams,
             writer,
+        })))
+    }
+
+    /// A wire with nothing behind it, for a replayed session: every send is
+    /// dropped and nothing is ever closed.
+    pub(crate) fn detached() -> Self {
+        Self::with(None)
+    }
+
+    fn with(link: Option<Link>) -> Self {
+        Self {
+            link,
             over_mtu: Cell::new(0),
             backpressured: Cell::new(0),
             rtt: std::rc::Rc::new(Cell::new(-1.0)),
             counts: std::rc::Rc::new([Cell::new(-1.0), Cell::new(-1.0), Cell::new(-1.0)]),
             polling: std::rc::Rc::new(Cell::new(false)),
-        })
+        }
     }
 }
 
@@ -148,16 +167,19 @@ impl WebWire {
     /// browser without it (or without one of its fields) answers `undefined`
     /// here instead of throwing, which leaves that reading unknown.
     fn poll_stats(&self) {
+        let Some(link) = &self.link else {
+            return;
+        };
         if self.polling.get() {
             return;
         }
-        let Ok(f) = js_sys::Reflect::get(&self.transport, &JsValue::from_str("getStats")) else {
+        let Ok(f) = js_sys::Reflect::get(&link.transport, &JsValue::from_str("getStats")) else {
             return;
         };
         let Ok(f) = f.dyn_into::<js_sys::Function>() else {
             return;
         };
-        let Ok(promise) = f.call0(&self.transport) else {
+        let Ok(promise) = f.call0(&link.transport) else {
             return;
         };
         let Ok(promise) = promise.dyn_into::<js_sys::Promise>() else {
@@ -188,6 +210,10 @@ impl WebWire {
 }
 
 impl Wire for WebWire {
+    fn live(&self) -> bool {
+        self.link.is_some()
+    }
+
     fn rtt_ms(&self) -> Option<f32> {
         self.poll_stats();
         let ms = self.rtt.get();
@@ -227,9 +253,12 @@ impl Wire for WebWire {
     /// "should never fire" is exactly what was said about it for a year while
     /// nothing checked.
     fn send_datagram(&self, payload: &[u8]) {
+        let Some(link) = &self.link else {
+            return;
+        };
         // `0` is a browser without `maxDatagramSize` (the getter coerces
         // `undefined`), not a zero MTU: skip the clamp rather than refuse all.
-        let max = self.datagrams.max_datagram_size() as usize;
+        let max = link.datagrams.max_datagram_size() as usize;
         if max != 0 && payload.len() > max {
             self.over_mtu.set(self.over_mtu.get() + 1);
             return;
@@ -249,7 +278,7 @@ impl Wire for WebWire {
         // out it was wrong — at one datagram per frame against a lane whose
         // writes resolve without an ack, this should never fire, and the
         // counter is what turns "should never" into something checkable.
-        if self
+        if link
             .writer
             .desired_size()
             .ok()
@@ -265,7 +294,7 @@ impl Wire for WebWire {
         // small JS allocation at 30 Hz is not a cost worth that class of bug.
         let chunk = Uint8Array::new_with_length(payload.len() as u32);
         chunk.copy_from(payload);
-        let promise = self.writer.write_with_chunk(&chunk);
+        let promise = link.writer.write_with_chunk(&chunk);
         // Awaited in a task purely so a rejection is *handled*. There is no
         // recovery for a datagram that did not go — the caller has none
         // either, which is why `Wire::send_datagram` returns nothing — but an
@@ -480,7 +509,7 @@ pub(crate) async fn write_frame(
     payload: &[u8],
 ) -> Result<(), String> {
     // Sized for the auth frame, the one C→S handshake frame that may pass
-    // the stream lane's ceiling (v144); every other frame is far under it.
+    // the stream lane's ceiling (v151); every other frame is far under it.
     let mut out = [0u8; protocol::MAX_AUTH_MSG_BYTES + super::frame::LEN_PREFIX_BYTES];
     let n = super::frame::encode_into(&mut out, payload).ok_or_else(|| {
         format!(
@@ -569,6 +598,8 @@ impl Drop for WebWire {
     /// joining another would hold both sessions open on the server, and the
     /// first one would keep receiving snapshots for a player nobody is drawing.
     fn drop(&mut self) {
-        self.transport.close();
+        if let Some(link) = &self.link {
+            link.transport.close();
+        }
     }
 }

@@ -1,13 +1,13 @@
 # PLAYERS.md — the agent player
 
-**DESIGN, 2026-08-05. Walls 1, 3 and 4 are built; wall 2 and most social
-verbs are not — `speak` is (2026-10-12, wire v107).** `crates/sim-core/src/bots.rs`
+**DESIGN, 2026-08-05. Walls 1, 3 and 4 are built; most social verbs are
+not — `speak` is (2026-10-12, wire v107).** `crates/sim-core/src/bots.rs`
 drives deterministic synthetic input and the `bots` bin runs it at scale, so a
 non-human client is already first-class, and **wall 3's event exists**
 (`EV_TRUST`, 2026-08-18) — which is deliberate ordering rather than a
 convenient place to start: the online field cannot be retrofitted onto a
 record already written. What does not exist is the social half of the verb
-table or wall 2's gate. Trust rows have a reader since 2026-09-22: each is kept
+table. Trust rows have a reader since 2026-09-22: each is kept
 in its own sim ring and appended to the shard's trust log with both wallets
 (`server/trustlog.rs`). This doc owns that
 surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
@@ -22,8 +22,8 @@ received state, and answer the death screen with the respawn verb. Every jev
 bot declares itself an agent a spectator can follow, unsigned on loopback or
 signed with its own wallet key, paying every door a person does (`NETCODE.md`
 §2.3, §2.4). `crates/server/JEV.md` has the commands and limits. Public play
-needs an operator-provisioned, entitled wallet; the social verbs and wall 2
-remain open.
+needs an operator-provisioned, entitled wallet; the social verbs remain
+open.
 
 The research half — why a survival game is a field site, what the measurement
 is, what would falsify it — was `docs/SUBSTRATE.md` in the Elo Pros
@@ -40,15 +40,13 @@ sentence made concrete.
 
 What it is **not**: a difficulty setting, an NPC, a quest-giver, or a
 population filler. Those are content. An agent player has an owner, an
-identity, a wallet, and a public record, and is scored by nothing the server
-computes.
+identity, a wallet, and a public record.
 
 ## The four walls
 
 Each with its enforcement, because a law without a gate is a mood. **Wall 3's
 is built** (2026-08-18, `NOW.md` §5d), and **walls 1 and 4 landed with the
-local agent's goal API** (2026-09-22); wall 2 is unbuilt and must land with
-the first ladder, not after it.
+local agent's goal API** (2026-09-22).
 
 1. **Agent verbs are a subset of human verbs.** An agent must never have an
    affordance a human client lacks — no extra reach, no wallhack, no state a
@@ -65,13 +63,8 @@ the first ladder, not after it.
    holds frames to the buttons a player's keys produce, and refuses a `World`
    name in the encoder and mind sources; `explorer::observe` is the encoder.
 
-2. **No global leaderboard.** No endpoint returns a total ordering across
-   ladders, and no ladder is convertible into another. Wealth, structures
-   standing, alliances held, nights survived — plural and deliberately
-   non-commensurable. One ranked number rebuilds a benchmark and manufactures
-   metagamers on purpose. The reference game has no global ladder either, so
-   this costs nothing the genre wanted. → a test that no response carries a
-   cross-ladder total, and no ladder exposes a weight.
+2. *Retired.* Players are ranked: the shard's standings per board, and Elo
+   Pros' ratings from the matches a game reports.
 
 3. **Every trust-bearing verb is an event with a role-checked payload.**
    **BUILT** — `EV_TRUST` (`world.rs`, 2026-08-18): a = the actor, b = the
