@@ -916,6 +916,8 @@ pub struct ShardStats {
     /// logging its own overflow is the one line guaranteed to make the
     /// overflow worse.
     pub anomaly_dropped: AtomicU64,
+    /// Play log records a full ring refused (`playlog.rs`).
+    pub play_dropped: AtomicU64,
 
     // ── Spectators (`NETCODE.md` §2.3) ─────────────────────────────────────
     /// Occupied spectator seats right now — a gauge like `players`, mirrored
@@ -1294,6 +1296,7 @@ impl ShardStats {
             "sleepers_evicted" => &self.sleepers_evicted,
             "admin_kicked" => &self.admin_kicked,
             "admin_refused" => &self.admin_refused,
+            "play_dropped" => &self.play_dropped,
             "aim_stale_refused" => &self.aim_stale_refused,
             "favour_disagree" => &self.favour_disagree,
             "favour_playout_high" => &self.favour_playout_high,

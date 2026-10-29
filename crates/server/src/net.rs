@@ -1274,6 +1274,23 @@ pub async fn spawn_shard(
         }
         None => crate::anomaly::Sink::off(),
     };
+    // The play log (`playlog.rs`): a path that cannot be written refuses the
+    // boot, as the anomaly log's does.
+    let (play, door_log) = match cfg.play_log.as_deref() {
+        Some(path) => {
+            let items = (0..usize::from(tables.catalog.count))
+                .map(|i| String::from_utf8_lossy(tables.catalog.name(i)).into_owned())
+                .collect();
+            let boot = crate::playlog::Boot {
+                seed: cfg.seed,
+                domain: cfg.domain.clone(),
+                wipe: wipe.number(),
+            };
+            crate::playlog::spawn(path.into(), cfg.play_log_days, boot, items, stats.clone())
+                .map_err(|e| format!("play log `{path}`: {e}"))?
+        }
+        None => (crate::playlog::Tap::off(), crate::playlog::DoorTap::off()),
+    };
     // The ban list, read before anyone can knock: a file that does not
     // parse is a boot failure, never a shard that forgot whom it banned.
     let bans = match cfg.ban_file.as_deref() {
@@ -1389,6 +1406,7 @@ pub async fn spawn_shard(
                     banned,
                     team_max,
                     trust,
+                    play,
                     companion,
                     scribe,
                     slots,
@@ -1469,6 +1487,7 @@ pub async fn spawn_shard(
         admin_rx,
         answer_tx,
         saves.store,
+        door_log,
         slots,
         stats.clone(),
         shutdown.clone(),
@@ -1872,6 +1891,7 @@ async fn accept_loop(
     mut admin_rx: rtrb::Consumer<crate::admin::AdminAct>,
     mut answer_tx: rtrb::Producer<crate::admin::AdminReply>,
     mut store: SaveStore,
+    mut door_log: crate::playlog::DoorTap,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -2018,6 +2038,7 @@ async fn accept_loop(
                     &refresh_tx,
                     &mut keys,
                     &store,
+                    &mut door_log,
                     &slots,
                     &stats,
                 ) {
@@ -2111,6 +2132,7 @@ async fn accept_loop(
                 // its auth is never verified, so it carries no key a ban
                 // could match.)
                 if done.key.as_ref().is_some_and(|k| bans.contains(k)) {
+                    door_log.push(door_rec(&done, crate::playlog::Door::Banned, 0, 0));
                     ShardStats::bump(&stats.refused_banned);
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
                     continue;
@@ -2134,10 +2156,12 @@ async fn accept_loop(
                     if let Some(s) = seat {
                         let twice = parked.iter().any(|p| p.done.key == done.key);
                         if twice || parked.len() >= PARK_MAX {
+                            door_log.push(door_rec(&done, crate::playlog::Door::InUse, 0, 0));
                             ShardStats::bump(&stats.refused_in_use);
                             spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
                         } else {
                             kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
+                            door_log.push(door_rec(&done, crate::playlog::Door::Parked, 0, 0));
                             ShardStats::bump(&stats.parked_in_use);
                             parked.push(Parked {
                                 done,
@@ -2168,6 +2192,7 @@ async fn accept_loop(
                     if freed && p.done.key.and_then(|k| seated(&k, &keys, &slots)).is_none() {
                         admit!(p.done);
                     } else {
+                        door_log.push(door_rec(&p.done, crate::playlog::Door::InUse, 0, 0));
                         ShardStats::bump(&stats.refused_in_use);
                         spawn_refusal(p.done.connection, p.done.send, protocol::REFUSE_IN_USE);
                     }
@@ -3296,6 +3321,26 @@ async fn handshake_task(
 /// join, kick and save behind it. The welcome is written by the
 /// connection's own task now ([`write_opening`]).
 #[allow(clippy::too_many_arguments)]
+/// The play log's line for a handshake at the door (`playlog.rs`).
+fn door_rec(
+    done: &Handshaken,
+    door: crate::playlog::Door,
+    slot: usize,
+    id: u32,
+) -> crate::playlog::DoorRec {
+    crate::playlog::DoorRec {
+        door,
+        slot: slot as u16,
+        id,
+        ip: Some(done.connection.remote_address().ip()),
+        ver: done.hello.ver,
+        build: done.hello.build,
+        flags: done.hello.flags,
+        key: done.key,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn install(
     done: Handshaken,
     source: Option<std::net::IpAddr>,
@@ -3305,9 +3350,13 @@ fn install(
     refresh_tx: &tokio::sync::mpsc::Sender<(usize, u32)>,
     keys: &mut [KeySlot; MAX_PLAYERS],
     store: &SaveStore,
+    door_log: &mut crate::playlog::DoorTap,
     slots: &Arc<SlotTable>,
     stats: &Arc<ShardStats>,
 ) -> Option<(usize, u32)> {
+    use crate::playlog::{Door, DoorRec};
+    // The play log's door line, before the handshake is taken apart.
+    let seated = door_rec(&done, Door::Seated, 0, 0);
     let Handshaken {
         connection,
         send,
@@ -3322,17 +3371,29 @@ fn install(
         ShardStats::get(&stats.agents),
         hello.is_agent(),
     ) {
+        door_log.push(DoorRec {
+            door: Door::AgentSeats,
+            ..seated
+        });
         ShardStats::bump(&stats.refused_agents);
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     }
     if source.is_some_and(|ip| seats_held(keys, slots, ip) >= SEATS_PER_SOURCE) {
+        door_log.push(DoorRec {
+            door: Door::PerSource,
+            ..seated
+        });
         ShardStats::bump(&stats.refused_per_source);
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     }
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
+        door_log.push(DoorRec {
+            door: Door::Full,
+            ..seated
+        });
         ShardStats::bump(&stats.refused_full);
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
@@ -3409,11 +3470,20 @@ fn install(
     {
         // Control ring full: refuse rather than wait (L4 — no bound is
         // "wait"). The claim reverts; the client may retry.
+        door_log.push(DoorRec {
+            door: Door::Full,
+            ..seated
+        });
         slots.unclaim(slot, generation);
         ShardStats::bump(&stats.refused_full);
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     }
+    door_log.push(DoorRec {
+        slot: slot as u16,
+        id,
+        ..seated
+    });
     // `saves_restored` is **not** counted here, and it used to be. A record
     // existing is no longer the same fact as a record being used: since
     // sleepers, the world outranks the store at the door, so a player whose
@@ -5023,6 +5093,7 @@ fn sim_thread(
     banned: Vec<PlayerKey>,
     team_max: u8,
     trust: crate::trustlog::Tap,
+    play: crate::playlog::Tap,
     companion: crate::companion::Companion,
     scribe: crate::scribe::Scribe,
     slots: Arc<SlotTable>,
@@ -5044,6 +5115,7 @@ fn sim_thread(
     core.evict_ids =
         crate::core::EvictIds::open(standings_base.as_deref().map(crate::core::evict_ids_path));
     core.trust = trust;
+    core.play = play;
     // The standings, beside the files the wipe archives with them.
     core.standings = crate::standings::Standings::open(
         standing_rules,
@@ -5187,7 +5259,14 @@ fn sim_thread(
             if let Some(target) = c.watch {
                 let generation = c.link.generation;
                 links[c.slot] = Some(c.link);
-                if core.connect_spectator(c.slot, c.id, target) {
+                let seated = core.connect_spectator(c.slot, c.id, target);
+                core.play.push(crate::playlog::Rec::Watch {
+                    tick: core.world.tick,
+                    slot: c.slot as u16,
+                    target: c.id,
+                    seated,
+                });
+                if seated {
                     ShardStats::bump(&stats.spectate_joins);
                 } else {
                     slots.mark_leaving(c.slot, generation);
@@ -5212,6 +5291,7 @@ fn sim_thread(
                 core.tag_join(c.slot, c.id, key.as_ref());
                 core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
+                core.play_join(c.slot, c.id, key, how, c.agent);
                 // A wallet read inside the cooldown, stated with the join
                 // (`Connect::said`): after `tag_join`, which owes the gifts
                 // (`skins_owned` unions them back in), and after

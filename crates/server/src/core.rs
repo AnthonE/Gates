@@ -418,6 +418,9 @@ pub struct ShardCore {
     /// The trust ledger's sink (`trustlog.rs`), drained once per tick.
     /// `Tap::off()` unless the shard installed a log.
     pub trust: crate::trustlog::Tap,
+    /// The play log's sink and every session's tally (`playlog.rs`).
+    /// `Tap::off()` unless the shard installed a log.
+    pub play: crate::playlog::Tap,
     /// The wipe clock (`wipe.rs`): the posted schedule, or an admin's
     /// countdown. Polled by the boundary loop with the wall clock
     /// ([`Self::wipe_poll`]), so this struct still reads no clock itself.
@@ -1102,6 +1105,7 @@ impl ShardCore {
             evict_ids: EvictIds::default(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
+            play: crate::playlog::Tap::off(),
             wipe: crate::wipe::Clock::off(),
             wipe_now: 0,
             wipe_say: None,
@@ -2049,6 +2053,284 @@ impl ShardCore {
                 self.achievements.swept(slot, &p.inv, &p.worn, p.glyphs);
             }
         }
+    }
+
+    /// A seated join, for the play log (`playlog.rs`): resets the slot's
+    /// tally. Called by the shard loop with what `connect_as` answered.
+    pub fn play_join(
+        &mut self,
+        slot: usize,
+        id: u32,
+        key: Option<PlayerKey>,
+        how: Admitted,
+        agent: bool,
+    ) {
+        let how = match how {
+            Admitted::Fresh => crate::playlog::How::Fresh,
+            Admitted::Restored => crate::playlog::How::Restored,
+            Admitted::TookOver => crate::playlog::How::TookOver,
+        };
+        self.play.join(self.world.tick, slot, id, key, how, agent);
+    }
+
+    /// Where a body stands, in quanta (`(0, 0)` when there is none).
+    fn play_at(&self, id: u32) -> (i32, i32) {
+        self.world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == id)
+            .map_or((0, 0), |p| (p.body.qx, p.body.qz))
+    }
+
+    /// This tick's events into the play log (`playlog.rs`): a line for each
+    /// thing worth counting, a bump on the session tally of whoever did it,
+    /// and once a minute the world's population. Nothing runs with no log.
+    /// The ring takes `Copy` records; nothing here allocates or formats.
+    fn note_play(&mut self, n: usize, stats: &ShardStats) {
+        use crate::playlog::{Rec, What};
+        use sim_core::limits::{MOB_ID_TAG, TICK_HZ};
+        use sim_core::world::*;
+        if !self.play.on() {
+            return;
+        }
+        let tick = self.world.tick;
+        if tick.is_multiple_of(TICK_HZ as u64) {
+            for slot in 0..MAX_PLAYERS {
+                if self.clients[slot].connected {
+                    self.play.rtt(slot, stats.slot_rtt_us.load(slot));
+                }
+            }
+        }
+        if tick.is_multiple_of(crate::playlog::PULSE_SECS * TICK_HZ as u64) {
+            let (mut awake, mut sleepers, mut dead) = (0u16, 0u16, 0u16);
+            for p in self.world.players.iter().filter(|p| p.active) {
+                if p.sleeping {
+                    sleepers += 1;
+                } else {
+                    awake += 1;
+                }
+                if p.dead {
+                    dead += 1;
+                }
+            }
+            let rec = Rec::Pulse {
+                tick,
+                awake,
+                sleepers,
+                dead,
+                animals: self.world.mobs.m.iter().filter(|m| m.alive).count() as u16,
+                pieces: self.world.pieces.len() as u32,
+                deploys: self.world.deploys.len() as u32,
+                bags: self.world.backpacks.len() as u32,
+            };
+            self.play.push(rec);
+        }
+        for i in 0..self.world.events.len() {
+            let ev = self.world.events.entries()[i];
+            let player = |id: u32| id != 0 && id & MOB_ID_TAG == 0;
+            // (what, who, a, b, c), or a tally-only event handled inline.
+            let line = match ev.code {
+                EV_DEATH => {
+                    let (cause, item, range) = self
+                        .world
+                        .players
+                        .iter()
+                        .find(|p| p.id == ev.a)
+                        .map_or((u8::MAX, u16::MAX, 0), |p| {
+                            (p.death_cause, p.death_item, p.death_range_cm)
+                        });
+                    let killer = if ev.b != ev.a { ev.b } else { 0 };
+                    if let Some(t) = self.tally_of(ev.a) {
+                        t.deaths += 1;
+                    }
+                    if player(killer) {
+                        if let Some(t) = self.tally_of(killer) {
+                            t.kills += 1;
+                        }
+                    }
+                    let c = (u32::from(item) << 16) | u32::from(range / 10);
+                    Some((What::Death, ev.a, killer, u32::from(cause), c))
+                }
+                EV_RESPAWN => {
+                    self.bump(ev.a, |t| t.respawns += 1);
+                    Some((What::Respawn, ev.a, ev.b, 0, 0))
+                }
+                EV_CRAFT_DONE => {
+                    self.bump(ev.a, |t| t.crafted += 1);
+                    Some((What::Craft, ev.a, ev.b >> 16, (ev.b & 0xffff) + ev.c, 0))
+                }
+                EV_PIECE_PLACED => match self.piece_by(&self.cmd_buf[..n], ev) {
+                    Some((id, Piece::Placed(row))) => {
+                        self.bump(id, |t| t.built += 1);
+                        let d = self.world.build.pieces.get(usize::from(row));
+                        let (shape, material) = d.map_or((0, 0), |d| (d.shape, d.material));
+                        Some((
+                            What::Build,
+                            id,
+                            u32::from(row),
+                            u32::from(shape),
+                            u32::from(material),
+                        ))
+                    }
+                    Some((id, Piece::Upgraded(m))) => {
+                        self.bump(id, |t| t.upgraded += 1);
+                        Some((What::Upgrade, id, u32::from(m), 0, 0))
+                    }
+                    None => None,
+                },
+                EV_DEPLOY_PLACED => {
+                    self.bump(ev.c, |t| t.deployed += 1);
+                    let row = ev.b & 0xff;
+                    Some((What::Deploy, ev.c, row, self.deploy_item(row), 0))
+                }
+                EV_PIECE_REMOVED => Some((What::PieceGone, 0, ev.b & 0xff, 0, 0)),
+                EV_DEPLOY_REMOVED => {
+                    let row = ev.b & 0xff;
+                    Some((What::DeployGone, ev.c, row, self.deploy_item(row), 0))
+                }
+                EV_CHARGE_PLACED => self.charge_by(&self.cmd_buf[..n], ev).map(|id| {
+                    self.bump(id, |t| t.charges += 1);
+                    (What::Charge, id, 0, 0, 0)
+                }),
+                EV_BAG_DROPPED if ev.b & MOB_ID_TAG != 0 => self.animal_killer(ev.b).map(|id| {
+                    self.bump(id, |t| t.animals += 1);
+                    let kind = sim_core::mob::slot_of_id(ev.b)
+                        .and_then(|m| self.world.mobs.m.get(m))
+                        .map_or(u8::MAX, |m| m.kind);
+                    (What::Animal, id, u32::from(kind), 0, 0)
+                }),
+                EV_RESEARCH => {
+                    self.bump(ev.a, |t| t.researched += 1);
+                    let item = self
+                        .world
+                        .craft
+                        .recipes
+                        .get(ev.b as usize)
+                        .map_or(u32::MAX, |r| u32::from(r.output));
+                    Some((What::Research, ev.a, ev.b, item, ev.c))
+                }
+                EV_EXTRACTED => {
+                    self.bump(ev.a, |t| t.extracted += ev.c);
+                    Some((What::Extract, ev.a, ev.b, ev.c, 0))
+                }
+                EV_GAVE => {
+                    self.bump(ev.a, |t| t.gave += ev.c);
+                    Some((What::Gave, ev.a, ev.b >> 16, ev.b & 0xffff, ev.c))
+                }
+                EV_VEND => {
+                    self.bump(ev.a, |t| t.traded += 1);
+                    Some((What::Vend, ev.a, ev.b, ev.c, 0))
+                }
+                EV_SHOP => {
+                    self.bump(ev.a, |t| t.traded += 1);
+                    Some((What::Shop, ev.a, ev.b, ev.c >> 16, ev.c & 0xffff))
+                }
+                EV_SWIPE => Some((What::Swipe, ev.a, ev.b, ev.c, 0)),
+                EV_WHEEL_BET => {
+                    self.bump(ev.a, |t| t.gambled += 1);
+                    Some((What::WheelBet, ev.a, ev.b, ev.c, 0))
+                }
+                EV_WHEEL_PAID => Some((What::WheelPaid, ev.a, ev.b, ev.c, 0)),
+                EV_SLOTS => {
+                    self.bump(ev.a, |t| t.gambled += 1);
+                    Some((What::Slots, ev.a, ev.b >> 8, ev.b & 0xff, ev.c >> 12))
+                }
+                EV_PAID => Some((What::Paid, ev.a, ev.b, ev.c, 0)),
+                EV_WORK => Some((What::Work, ev.c, ev.a, ev.b, 0)),
+                EV_MECH_SOLVED => Some((What::Solved, ev.b, ev.a, 0, 0)),
+                EV_ARC_DID => Some((What::Arc, ev.a, ev.b, ev.c >> 8, 0)),
+                EV_WOUNDED => {
+                    self.bump(ev.a, |t| t.wounded += 1);
+                    Some((What::Wounded, ev.a, ev.c, 0, 0))
+                }
+                EV_RECOVERED => Some((What::Recovered, ev.a, ev.b, ev.c, 0)),
+                EV_ASSIST if ev.c == u32::from(sim_core::assist::ASSIST_TICKS) => {
+                    self.bump(ev.a, |t| t.revives += 1);
+                    Some((What::Revived, ev.b, ev.a, 0, 0))
+                }
+                EV_CRAFT_REFUSED | EV_BUILD_REFUSED | EV_DEPLOY_REFUSED | EV_RESEARCH_REFUSED
+                | EV_SWIPE_REFUSED | EV_ARC_REFUSED | EV_WHEEL_REFUSED | EV_SLOTS_REFUSED => {
+                    self.bump(ev.a, |t| t.refused += 1);
+                    Some((What::Refused, ev.a, u32::from(ev.code), ev.b, 0))
+                }
+                EV_VEND_REFUSED => {
+                    self.bump(ev.a, |t| t.refused += 1);
+                    Some((What::Refused, ev.a, u32::from(ev.code), ev.b, 0))
+                }
+                EV_SHOP_REFUSED => {
+                    self.bump(ev.a, |t| t.refused += 1);
+                    Some((What::Refused, ev.a, u32::from(ev.code), ev.c >> 24, 0))
+                }
+                // Too many for a line each: the session tally keeps them.
+                EV_GATHER => {
+                    self.bump(ev.a, |t| t.gathered += (ev.b & 0xffff) + ev.c);
+                    None
+                }
+                EV_HIT => {
+                    let dmg = u32::from(sim_core::world::hit_damage(ev.c));
+                    if player(ev.a) {
+                        self.bump(ev.a, |t| {
+                            t.hits += 1;
+                            t.damage_dealt += dmg;
+                        });
+                    }
+                    if player(ev.b) {
+                        self.bump(ev.b, |t| t.damage_taken += dmg);
+                    }
+                    None
+                }
+                EV_SHOT => {
+                    self.bump(ev.a, |t| t.shots += 1);
+                    None
+                }
+                EV_CONSUMED => {
+                    self.bump(ev.a, |t| t.ate += 1);
+                    None
+                }
+                EV_DRANK => {
+                    self.bump(ev.a, |t| t.drank += 1);
+                    None
+                }
+                EV_GATHER_REFUSED | EV_CONSUME_REFUSED | EV_MOVE_REFUSED | EV_RELOAD_REFUSED => {
+                    self.bump(ev.a, |t| t.refused += 1);
+                    None
+                }
+                _ => None,
+            };
+            if let Some((what, who, a, b, c)) = line {
+                let at = if who != 0 { self.play_at(who) } else { (0, 0) };
+                self.play.push(Rec::Play {
+                    tick,
+                    what,
+                    who,
+                    a,
+                    b,
+                    c,
+                    at,
+                });
+            }
+        }
+    }
+
+    /// The play log's tally for a connected player id.
+    fn tally_of(&mut self, id: u32) -> Option<&mut crate::playlog::Tally> {
+        let slot = self.client_slot_of(id)?;
+        self.play.tally(slot)
+    }
+
+    fn bump(&mut self, id: u32, f: impl FnOnce(&mut crate::playlog::Tally)) {
+        if let Some(t) = self.tally_of(id) {
+            f(t);
+        }
+    }
+
+    /// The item a deploy row places, `u32::MAX` past the table.
+    fn deploy_item(&self, row: u32) -> u32 {
+        self.world
+            .deploy
+            .defs
+            .get(row as usize)
+            .map_or(u32::MAX, |d| u32::from(d.item))
     }
 
     /// The deploy row of the lock `who` placed this tick at `ev`'s door, if
@@ -3204,6 +3486,9 @@ impl ShardCore {
             return None;
         }
         let save = self.world.save_of(id);
+        let at = self.play_at(id);
+        self.play
+            .leave(self.world.tick, slot, id, self.keys[slot], at);
         // Queue overflow here would strand the world entity; the
         // reserve (MAX_PLAYERS of headroom) makes that impossible for
         // real leave rates.
@@ -3440,6 +3725,9 @@ impl ShardCore {
         let c = &mut self.clients[slot];
         if c.connected {
             c.pending_chat = Some(chat);
+            if let Some(t) = self.play.tally(slot) {
+                t.chat += 1;
+            }
         }
     }
 
@@ -4037,6 +4325,7 @@ impl ShardCore {
         self.note_standings(n);
         self.note_achievements(n);
         self.note_cheats(ops);
+        self.note_play(n, stats);
         // The boards, rebuilt at most every five seconds; whatever moved
         // them since the last look is owed to everyone.
         if self

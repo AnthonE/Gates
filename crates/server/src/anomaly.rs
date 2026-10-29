@@ -240,6 +240,8 @@ pub const WATCHED: &[&str] = &[
     // itself, and this puts the tick they happened at beside everything else.
     "trust_ring_drops",
     "trust_sim_overflow",
+    // Play log lines a full ring dropped (`playlog.rs`).
+    "play_dropped",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can

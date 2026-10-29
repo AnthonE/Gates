@@ -432,6 +432,18 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         return stream.write_all(NOT_FOUND);
     }
 
+    let body = status_body(stats);
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body.as_bytes())
+}
+
+/// The `/status.json` document (the shape this file's header gives); the
+/// play log's pulse carries it too (`playlog.rs`).
+pub fn status_body(stats: &ShardStats) -> String {
     // The response string is this thread's one allocation per request, and
     // this thread is not the sim thread — correctness and boundedness over
     // cleverness (the fixed-buffer alternative buys nothing measurable
@@ -461,7 +473,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
     let p50 = row(&|i| stats.phase_pct_us(i, 50));
     let p99 = row(&|i| stats.phase_pct_us(i, 99));
     let pmax = row(&|i| ShardStats::get(&stats.phase_max_us[i]));
-    let body = format!(
+    format!(
         "{{\"players\":{},\"agents\":{},\"spectators\":{},\"agents_only\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
          \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
@@ -508,13 +520,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         p50,
         p99,
         pmax,
-    );
-    let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(head.as_bytes())?;
-    stream.write_all(body.as_bytes())
+    )
 }
 
 #[cfg(test)]

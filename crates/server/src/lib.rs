@@ -79,6 +79,7 @@ pub mod net;
 pub mod online;
 /// Per-connection pace on the action lane: no one acts faster than a person.
 pub mod pace;
+pub mod playlog;
 pub mod population;
 pub mod scribe;
 pub mod skins;

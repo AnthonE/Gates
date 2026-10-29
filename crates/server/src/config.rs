@@ -19,6 +19,9 @@ pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
 /// How long a transcript file is kept (`transcript_days`): two weeks, long
 /// enough for a report to be filed and read.
 pub const DEFAULT_TRANSCRIPT_DAYS: u32 = 14;
+/// How long a play log day file is kept (`play_log_days`): a season of
+/// wipes, enough to read retention wipe over wipe.
+pub const DEFAULT_PLAY_LOG_DAYS: u32 = 90;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetSim {
@@ -318,6 +321,10 @@ pub struct ShardConfig {
     /// it; `None` keeps none. And for how many days (`transcript_days`).
     pub transcript_file: Option<String>,
     pub transcript_days: u32,
+    /// Where the play log is kept (`play_log`, `playlog.rs`), one file a day
+    /// beside it; `None` keeps none. And for how many days (`play_log_days`).
+    pub play_log: Option<String>,
+    pub play_log_days: u32,
     /// **How many resident inhabitants the shard seats itself**
     /// (`population.rs`). Bots, dialled over this shard's own wire after the
     /// bind, running the raid profile — half owners building and locking,
@@ -492,6 +499,8 @@ impl ShardConfig {
             captions: false,
             transcript_file: None,
             transcript_days: DEFAULT_TRANSCRIPT_DAYS,
+            play_log: None,
+            play_log_days: DEFAULT_PLAY_LOG_DAYS,
             population: 0,
             agent_seats: 0,
             own_sources: Vec::new(),
@@ -726,6 +735,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut captions = false;
     let mut transcript_file: Option<String> = None;
     let mut transcript_days = DEFAULT_TRANSCRIPT_DAYS;
+    let mut play_log: Option<String> = None;
+    let mut play_log_days = DEFAULT_PLAY_LOG_DAYS;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
     let mut own_sources: Vec<std::net::IpAddr> = Vec::new();
@@ -1397,6 +1408,21 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 transcript_file = Some(value.to_string());
             }
+            "play_log" => {
+                if value.is_empty() {
+                    return Err(format!("shard.toml line {}: play_log is empty", n + 1));
+                }
+                play_log = Some(value.to_string());
+            }
+            "play_log_days" => {
+                play_log_days = value.parse().ok().filter(|&d| d > 0).ok_or_else(|| {
+                    format!(
+                        "shard.toml line {}: play_log_days must be a whole number of days, \
+                         at least 1",
+                        n + 1
+                    )
+                })?;
+            }
             "transcript_days" => {
                 transcript_days = value.parse().ok().filter(|&d| d > 0).ok_or_else(|| {
                     format!(
@@ -1688,6 +1714,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         captions,
         transcript_file,
         transcript_days,
+        play_log,
+        play_log_days,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,

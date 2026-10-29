@@ -724,7 +724,7 @@ impl Record {
 }
 
 /// The file for day `day` (days since 1970): `<path>.YYYY-MM-DD`.
-fn day_file(path: &Path, day: i64) -> PathBuf {
+pub(crate) fn day_file(path: &Path, day: i64) -> PathBuf {
     let (y, m, d) = crate::wipe::civil_from_days(day);
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{y:04}-{m:02}-{d:02}"));
@@ -732,7 +732,7 @@ fn day_file(path: &Path, day: i64) -> PathBuf {
 }
 
 /// Delete the day files older than `keep_days` before `today`.
-fn prune(path: &Path, today: i64, keep_days: u32) {
+pub(crate) fn prune(path: &Path, today: i64, keep_days: u32) {
     let Some(stem) = path.file_name().and_then(|n| n.to_str()) else {
         return;
     };
