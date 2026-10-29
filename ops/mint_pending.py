@@ -92,9 +92,13 @@ export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 ITEM=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloItem:GATES"]["address"])' 2>/dev/null)
 FROM=$(cast wallet address --private-key "$ELO_DEPLOY_KEY" 2>/dev/null)
-RPC=""
+# The freshest endpoint, not the first that answers: a lagging one hands
+# `cast send` a stale nonce (`nonce too low`, the notary on 2026-10-24).
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 if [ -z "$ITEM" ] || [ -z "$FROM" ] || [ -z "$RPC" ]; then
   while [ $# -ge 3 ]; do echo "fail $1 $2 $3 no-chain"; shift 3; done
@@ -134,9 +138,11 @@ export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 T=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloGameTicket:GATES"]["address"])' 2>/dev/null)
 FROM=$(cast wallet address --private-key "$ELO_DEPLOY_KEY" 2>/dev/null)
-RPC=""
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 if [ -z "$T" ] || [ -z "$FROM" ] || [ -z "$RPC" ]; then
   for w in "$@"; do echo "fail $w no-chain"; done
@@ -255,9 +261,11 @@ set -u
 export PATH="$PATH:$HOME/.foundry/bin"
 set -a; . /data/apps/secrets/keys.env; set +a
 T=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloGameTicket:GATES"]["address"])' 2>/dev/null)
-RPC=""
+RPC=""; BEST=-1
 for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
-  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+  [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ] || continue
+  b=$(cast block-number --rpc-url "$r" 2>/dev/null) || continue
+  if [ "$b" -gt "$BEST" ]; then BEST=$b; RPC=$r; fi
 done
 [ -n "$T" ] && [ -n "$RPC" ] || { echo "fail no-chain"; exit 0; }
 if [ "$(cast call "$T" "freePerWallet()(uint256)" --rpc-url "$RPC" 2>/dev/null)" = "0" ]; then
