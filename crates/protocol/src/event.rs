@@ -2532,7 +2532,9 @@ pub enum EventMsg {
     /// `name` may be empty (nothing set, or the read has not landed) and
     /// `pic` is the first four bytes of the picture's sha256, 0 for none —
     /// the client builds the picture's url from the address and uses `pic`
-    /// to tell a changed picture from a cached one.
+    /// to tell a changed picture from a cached one. `guild` (v152) is the
+    /// guild tag that wallet wears on the platform, [`crate::Guild::NONE`]
+    /// for none.
     ///
     /// Sent to every connected session when learned, and in full to a late
     /// joiner, one per tick. The low byte of `id` is the connection slot
@@ -2543,6 +2545,7 @@ pub enum EventMsg {
         address: crate::Address,
         name: crate::Name,
         pic: u32,
+        guild: crate::Guild,
     },
     /// Player `id` is a program (v107): it declared `HELLO_AGENT` at its
     /// hello. Self-declared, never inferred. Unlike [`EventMsg::Tag`] a
@@ -6232,6 +6235,7 @@ pub fn encode_event_tag(
     address: &crate::Address,
     name: &crate::Name,
     pic: u32,
+    guild: &crate::Guild,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
@@ -6242,6 +6246,7 @@ pub fn encode_event_tag(
     crate::write_address(&mut w, address)?;
     crate::write_name(&mut w, name)?;
     w.write(pic, 32)?;
+    crate::write_guild(&mut w, guild)?;
     Ok(w.finish())
 }
 
@@ -8234,6 +8239,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let address = crate::read_address(&mut r)?;
             let name = crate::read_name(&mut r)?;
             let pic = r.read(32)?;
+            let guild = crate::read_guild(&mut r)?;
             if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
                 return Err(WireError::Malformed);
             }
@@ -8242,6 +8248,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 address,
                 name,
                 pic,
+                guild,
             }
         }
         SUB_AGENT => {

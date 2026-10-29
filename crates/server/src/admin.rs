@@ -86,6 +86,9 @@ pub const VERB_BRAIN: u16 = 10;
 pub const VERB_WHO: u16 = 11;
 pub const VERB_UNBAN: u16 = 12;
 pub const VERB_RESTART: u16 = 13;
+/// `/arena` and `/leave` (v153): anybody's, logged because they move a
+/// player to another server.
+pub const VERB_TRAVEL: u16 = 14;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
@@ -103,6 +106,7 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Restart { .. } | AdminCmd::RestartCancel => VERB_RESTART,
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
+        AdminCmd::Arena | AdminCmd::Leave => VERB_TRAVEL,
         // A `/bug` is never an admin act; it has its own `Kind`, and
         // `/top` and `/team` are anybody's.
         AdminCmd::Bug { .. }
@@ -199,6 +203,10 @@ pub enum AdminAct {
     Ban { by: u32, id: u32, key: PlayerKey },
     /// Forget the one banned wallet starting with `prefix`.
     Unban { by: u32, prefix: WalletPrefix },
+    /// `/arena` or `/leave` (v153): send player `id` to the arena, or back to
+    /// the shard it came from, on a handoff (`handoff.rs`). `by` is the same
+    /// player: it is told how it went if it did not go.
+    Travel { by: u32, id: u32, back: bool },
 }
 
 /// Accept → sim: how an [`AdminAct`] went, said to admin `to` as a

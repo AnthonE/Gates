@@ -2844,18 +2844,19 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_worn(id, &items, &skins, &mut buf).unwrap()
         }
         "event_tag.bin" => {
-            let (id, address, label, pic) = protocol::goldens::event_tag();
+            let (id, address, label, pic, guild) = protocol::goldens::event_tag();
             assert_eq!(
                 decode_event(fixture).unwrap(),
                 EventMsg::Tag {
                     id,
                     address,
                     name: label,
-                    pic
+                    pic,
+                    guild
                 },
                 "{name}: decode mismatch"
             );
-            protocol::encode_event_tag(id, &address, &label, pic, &mut buf).unwrap()
+            protocol::encode_event_tag(id, &address, &label, pic, &guild, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

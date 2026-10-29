@@ -160,8 +160,26 @@ fn expand(steps: Vec<String>) -> Vec<String> {
 #[test]
 fn both_twins_drive_the_same_handshake_in_the_same_order() {
     let (native, web) = twins();
-    let a = expand(names_after(&native, "net::handshake::"));
+    let mut a = expand(names_after(&native, "net::handshake::"));
     let mut b = expand(names_after(&web, "net::handshake::"));
+    // v153: either may join on a handoff from another of this game's
+    // servers, read as a guest's challenge and answered with the handoff.
+    // The desktop branches before `auth_for`, the browser beside the pass.
+    let h = a.iter().position(|x| x == "handoff_auth_frame");
+    assert!(
+        h.is_some_and(|i| i > 0
+            && a[i - 1] == "proof_wanted"
+            && a.get(i + 1).is_some_and(|x| x == "proof_wanted")),
+        "the desktop connect no longer answers a handoff right before signing: {a:?}"
+    );
+    let h = h.expect("checked");
+    a.drain(h - 1..=h);
+    let h = b.iter().position(|x| x == "handoff_auth_frame");
+    assert!(
+        h.is_some_and(|i| b.get(i + 1).is_some_and(|x| x == "pass_auth_frame")),
+        "the browser connect no longer answers a handoff beside the pass: {b:?}"
+    );
+    b.retain(|x| x != "handoff_auth_frame");
     // The browser's one extra step, and it is forced: only a page signs for a
     // host other than the one it dials (`signs_as`), so only a page can be
     // handed a `?hash=` pin for its own host. It must come straight after
@@ -270,7 +288,7 @@ fn both_twins_open_their_lanes_at_the_same_depth() {
 /// **The same frame ceilings, in the same order.**
 ///
 /// The handshake lane is `MAX_STREAM_MSG_BYTES` and the event lane is
-/// `MAX_EVENT_MSG_BYTES`; the ceiling belongs to the lane, not to the
+/// `MAX_S2C_STREAM_BYTES` (events and, since v153, the travel message); the ceiling belongs to the lane, not to the
 /// transport. Widening one on one platform changes what that client will
 /// ACCEPT off the wire — a difference in the parsing surface, not in a
 /// buffer size.
@@ -281,9 +299,11 @@ fn both_twins_read_each_lane_at_the_same_ceiling() {
     let b = squash(names_after(&web, "MAX_"));
     assert_eq!(
         a,
-        vec!["STREAM_MSG_BYTES", "EVENT_MSG_BYTES"],
+        // v153: the event lane also carries the travel message, so it reads
+        // at the larger of the two (`MAX_S2C_STREAM_BYTES`).
+        vec!["STREAM_MSG_BYTES", "S2C_STREAM_BYTES"],
         "the desktop connect no longer reads the handshake at the stream ceiling and the \
-         event lane at the event ceiling"
+         event lane at the server-to-client stream ceiling"
     );
     assert_eq!(
         a, b,

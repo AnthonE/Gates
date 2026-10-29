@@ -513,6 +513,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
             signature: wallet_sign(&sk, &proof.message(address)),
             solana: None,
             pass: None,
+            handoff: None,
         };
         assert!(
             server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
@@ -532,6 +533,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
         signature: wallet_sign(&sk, &sibling.message(address)),
         solana: None,
         pass: None,
+        handoff: None,
     };
     assert!(
         server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_err(),
@@ -575,6 +577,7 @@ fn a_signature_over_the_browsers_own_text_verifies_at_the_shard() {
         signature: wallet_sign(&sk, &proof.message(address)),
         solana: None,
         pass: None,
+        handoff: None,
     };
     assert!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth).is_ok(),
@@ -615,6 +618,7 @@ fn the_lowercase_address_is_refused_which_is_why_the_checksum_is_shared() {
         signature: wallet_sign(&sk, std::str::from_utf8(&text[..n]).unwrap()),
         solana: None,
         pass: None,
+        handoff: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
@@ -646,6 +650,7 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
         signature: wallet_sign(&sk, &elsewhere.message(address)),
         solana: None,
         pass: None,
+        handoff: None,
     };
     assert_eq!(
         server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
@@ -711,6 +716,7 @@ async fn join_solana(
                         signature: protocol::SolanaSignature(sig),
                     }),
                     pass: None,
+                    handoff: None,
                 }
             },
         ),
@@ -776,6 +782,7 @@ fn a_solana_signature_over_the_browsers_own_text_verifies_at_the_shard() {
                 signature: protocol::SolanaSignature(sig),
             }),
             pass: None,
+            handoff: None,
         }
     };
     let names = [PAGE, DOMAIN];

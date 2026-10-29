@@ -136,6 +136,7 @@ impl Pics {
             address,
             name: protocol::Name::EMPTY,
             pic,
+            guild: protocol::Guild::NONE,
         };
         let url = names::pic_url(&self.origin, &tag)?;
         self.rows.push(PicRow {

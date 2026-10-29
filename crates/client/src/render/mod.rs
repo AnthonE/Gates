@@ -211,6 +211,8 @@ pub mod sentry;
 /// THE GATE's name on screen as you cross into its safe zone.
 pub mod title_card;
 pub mod town_signs;
+/// Following the shard to another of this game's servers on a handoff (v153).
+pub mod travel;
 // The mip chains for `assets/textures/`. Bevy builds none for an ordinary
 // image format, and a one-level photograph minified across the island is the
 // static the operator saw. Derived off `AssetEvent::Added`, not a list.
@@ -486,7 +488,11 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
     world.is_some()
         && !matches!(
             state.get(),
-            Screen::Boot | Screen::Menu | Screen::Connecting | Screen::Disconnected
+            Screen::Boot
+                | Screen::Menu
+                | Screen::Connecting
+                | Screen::Travelling
+                | Screen::Disconnected
         )
 }
 
@@ -790,7 +796,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
             .init_resource::<water::Wakes>()
-            .insert_non_send_resource(screen::Connecting::default());
+            .insert_non_send_resource(screen::Connecting::default())
+            .insert_non_send_resource(travel::Travelling::default());
 
         // Settings come off disk ONCE, here — before the first frame, so the
         // fov, vsync and volumes a player picked last run are what the first

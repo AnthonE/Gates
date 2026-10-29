@@ -1460,6 +1460,7 @@ pub async fn spawn_shard(
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
             pass_key: cfg.elo_account_key,
+            handoff: Arc::new(cfg.handoff.clone()),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -1525,6 +1526,10 @@ struct ShardFacts {
     /// elo's account key (`shard.toml elo_account_pubkey`): with it, an Elo
     /// Pros pass is a sign-in (`auth::verify_pass`); without, none is.
     pass_key: Option<[u8; 32]>,
+    /// Moving players between this game's servers (`handoff.rs`, v153): the
+    /// keys a handoff here is checked against, this shard's own key and
+    /// address to issue one, and where the arena is.
+    handoff: Arc<crate::handoff::Config>,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -1593,6 +1598,12 @@ struct Handshaken {
     /// What the session declared about itself (v73): agent, consent to be
     /// watched, a spectator's target, a display name.
     hello: protocol::Hello,
+    /// The shard a handoff moved this player from (v153), where `/leave`
+    /// sends them back. `None` for any other join.
+    came_from: Option<String>,
+    /// The handoff's id and when it stops being usable, for the accept loop
+    /// to refuse a second use (`handoff::Seen`).
+    handoff_id: Option<(String, u64)>,
 }
 
 /// The accept loop's own id→key table, one entry per connection slot.
@@ -1637,6 +1648,11 @@ struct KeySlot {
     /// The address it joined from, as `SourceGate` counts it, or `None` for
     /// the shard's own host (`SEATS_PER_SOURCE`).
     source: Option<std::net::IpAddr>,
+    /// The shard a handoff moved it from (v153): `/leave` sends it back.
+    came_from: Option<String>,
+    /// Its event writer's travel lane (v153): a travel frame put here is the
+    /// session's last word, written before the close (`travel_tenant`).
+    travel: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 /// The accept loop's half of a spectator seat (`NETCODE.md` §2.3): the
@@ -1905,6 +1921,8 @@ async fn accept_loop(
     // different reason (wasm's shadow stack) — here it is simply the way to
     // fill a fixed array with a clonable value.
     let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+    // Handoff ids already admitted (v153): this loop is their one owner.
+    let mut handoff_seen = crate::handoff::Seen::default();
     // The spectator seats' connections and their targets (`SeatSlot`).
     let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
@@ -1952,8 +1970,9 @@ async fn accept_loop(
     // Names and pictures (`faces.rs`): once per join and cooldown, answered
     // on a channel for the same reason — a slow platform never slows the door.
     let (face_tx, mut face_rx) = tokio::sync::mpsc::channel::<FaceAnswer>(MAX_PLAYERS);
-    let mut face_reads =
-        PlatformReads::<(protocol::Name, u32)>::new(crate::faces::REFRESH_COOLDOWN);
+    let mut face_reads = PlatformReads::<(protocol::Name, u32, protocol::Guild)>::new(
+        crate::faces::REFRESH_COOLDOWN,
+    );
     let faces_armed = facts.faces.origin.is_some();
     // Every skin and face read waits its turn here (`READ_PERMITS`).
     let read_gate = Arc::new(tokio::sync::Semaphore::new(READ_PERMITS));
@@ -2114,6 +2133,7 @@ async fn accept_loop(
                     facts.require_auth,
                     facts.siwe_domains.clone(),
                     facts.pass_key,
+                    facts.handoff.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
@@ -2136,6 +2156,15 @@ async fn accept_loop(
                     ShardStats::bump(&stats.refused_banned);
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
                     continue;
+                }
+                // A handoff is good once (v153): a second join on the same
+                // one is a replay, refused as any failed sign-in is.
+                if let Some((id, until)) = done.handoff_id.as_ref() {
+                    if !handoff_seen.first(id, *until, unix_now()) {
+                        ShardStats::bump(&stats.refused_auth);
+                        spawn_refusal(done.connection, done.send, protocol::REFUSE_AUTH);
+                        continue;
+                    }
                 }
                 // One wallet, one body. A second session for a key whose body
                 // is still awake would miss the sleeper (there is none) and
@@ -2284,14 +2313,15 @@ async fn accept_loop(
             }
             Some((slot, gen, key, face)) = face_rx.recv() => {
                 face_reads.done(&key, match face {
-                    crate::faces::Face::Known { name, pic } => Some((name, pic)),
+                    crate::faces::Face::Known { name, pic, guild } => Some((name, pic, guild)),
                     crate::faces::Face::Unknown => None,
                 });
                 // The generation guard, widened to the wallet (`landing`).
                 if let Some(slot) = landing(slot, gen, Some(&key), &keys, &slots) {
                     match face {
-                        crate::faces::Face::Known { name, pic } => {
-                            let msg = crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic };
+                        crate::faces::Face::Known { name, pic, guild } => {
+                            let msg =
+                                crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic, guild };
                             if faces_tx.push(msg).is_ok() {
                                 ShardStats::bump(&stats.faces_read);
                             } else {
@@ -2473,9 +2503,18 @@ async fn accept_loop(
                 // act answers its admin, because only this loop knows how
                 // it went.
                 while let Ok(act) = admin_rx.pop() {
+                    if let crate::admin::AdminAct::Travel { by, id, back } = act {
+                        if let Some(line) =
+                            travel_tenant(&facts.handoff, id, back, &mut keys, &slots, unix_now())
+                        {
+                            answer_admin(&mut answer_tx, by, &line, &stats);
+                        }
+                        continue;
+                    }
                     let (by, id, ban_key) = match act {
                         crate::admin::AdminAct::Kick { by, id } => (by, id, None),
                         crate::admin::AdminAct::Ban { by, id, key } => (by, id, Some(key)),
+                        crate::admin::AdminAct::Travel { .. } => continue,
                         crate::admin::AdminAct::Unban { by, prefix } => {
                             let how = bans.remove_prefix(&prefix);
                             match how {
@@ -2950,6 +2989,7 @@ async fn handshake_task(
     require_auth: bool,
     siwe_domains: Arc<[String]>,
     pass_key: Option<[u8; 32]>,
+    handoff: Arc<crate::handoff::Config>,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
@@ -3127,6 +3167,8 @@ async fn handshake_task(
                 alias: None,
                 address: protocol::Address::GUEST,
                 hello,
+                came_from: None,
+                handoff_id: None,
             })
             .await;
         return;
@@ -3163,8 +3205,35 @@ async fn handshake_task(
     // wallet is the account itself, filed under its `acct_…` id, and one
     // naming both is how an account that played before it linked a wallet
     // gets its character back as the wallet (`alias`, `adopt_account_save`).
+    //
+    // **A handoff (v153)** is another of this game's servers saying who it
+    // admitted, signed with its server key and checked here offline against
+    // `handoff_keys`: the player it names, moved with no prompt. Whether its
+    // id was already used is the accept loop's to say (`handoff::Seen`).
     let mut alias = None;
-    let (key, proven) = if let Some(pass) = auth.pass {
+    let mut came_from: Option<String> = None;
+    let mut handoff_id: Option<(String, u64)> = None;
+    let (key, proven) = if let Some(h) = auth.handoff {
+        match crate::handoff::check(&handoff, h.token(), h.carry(), issued_at) {
+            Ok(got) => {
+                let proven = if got.player.starts_with("0x") {
+                    protocol::Address::from_hex(got.player.as_bytes())
+                        .unwrap_or(protocol::Address::GUEST)
+                } else {
+                    protocol::Address::GUEST
+                };
+                let key = PlayerKey::new(got.player.as_bytes());
+                came_from = Some(got.from);
+                handoff_id = Some((got.id, got.exp + crate::handoff::SKEW_S));
+                (key, proven)
+            }
+            Err(_) => {
+                ShardStats::bump(&stats.refused_auth);
+                spawn_refusal(connection, send, protocol::REFUSE_AUTH);
+                return;
+            }
+        }
+    } else if let Some(pass) = auth.pass {
         let passed = pass_key
             .ok_or(crate::auth::AuthError::NoPassKey)
             .and_then(|k| {
@@ -3309,6 +3378,8 @@ async fn handshake_task(
             alias,
             address,
             hello,
+            came_from,
+            handoff_id,
         })
         .await;
 }
@@ -3365,6 +3436,8 @@ fn install(
         alias,
         address,
         hello,
+        came_from,
+        ..
     } = done;
     if !agent_seat_free(
         facts.agent_seats,
@@ -3412,6 +3485,10 @@ fn install(
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
+    // The travel lane (v153): one frame, the session's last, written by the
+    // event writer before the close when `/arena` or `/leave` sends this
+    // player elsewhere.
+    let (travel_tx, travel_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
     keys[slot] = KeySlot {
         key,
         id,
@@ -3425,6 +3502,8 @@ fn install(
         watchable: hello.consents_to_watch(),
         name: hello.name,
         source,
+        came_from,
+        travel: Some(travel_tx),
     };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
@@ -3536,7 +3615,7 @@ fn install(
             s.mark_leaving(slot, generation);
             return;
         }
-        event_writer_task(send, ev_rx, s, st, slot, generation).await;
+        event_writer_task(send, ev_rx, s, st, slot, generation, travel_rx).await;
     });
     tokio::spawn(writer_task(
         connection,
@@ -3774,7 +3853,9 @@ fn install_spectator(
                     s.mark_leaving(slot, generation);
                     return;
                 }
-                event_writer_task(send, ev_rx, s, st, slot, generation).await;
+                // A watcher travels nowhere: its lane is closed from the start.
+                let (_, travel_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+                event_writer_task(send, ev_rx, s, st, slot, generation, travel_rx).await;
             });
             tokio::spawn(writer_task(
                 connection,
@@ -4575,12 +4656,23 @@ async fn event_writer_task(
     stats: Arc<ShardStats>,
     slot: usize,
     generation: u32,
+    mut travel: tokio::sync::mpsc::Receiver<Vec<u8>>,
 ) {
     let mut wake = Wake::new(&slots);
     loop {
         wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+            // Sent to another of this game's servers (v153): the travel frame
+            // is the session's last word, and the client follows it.
+            if let Ok(frame) = travel.try_recv() {
+                let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
+                    write_frame(&mut send, &frame).await?;
+                    send.finish().await.map_err(|_| ())
+                })
+                .await;
+                return;
+            }
             // Sent away with a reason: post it as the session's last word,
             // inside the grace `close_with_reason` waits out. A browser
             // cannot read the QUIC close code, so this is how it learns why.
@@ -4710,6 +4802,93 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
     let mut payload = [0u8; MAX_STREAM_MSG_BYTES];
     let len = encode_refuse(&Refuse { code }, &mut payload).map_err(|_| ())?;
     write_frame(send, &payload[..len]).await
+}
+
+/// Unix seconds, the clock a handoff is issued and checked on.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `/arena` or `/leave` (v153): send player `id` to the arena, or `back` to
+/// the shard a handoff brought it from, on a handoff this shard signs. The
+/// travel frame is the session's last word (`event_writer_task`), and the
+/// close follows the kick's grace. `None` when it went; otherwise the line
+/// the player is told.
+fn travel_tenant(
+    cfg: &crate::handoff::Config,
+    id: u32,
+    back: bool,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+    now: u64,
+) -> Option<String> {
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].conn.is_some()) else {
+        return Some("you are not here any more".into());
+    };
+    if !cfg.issues() {
+        return Some("this server sends nobody anywhere: the arena is not open here".into());
+    }
+    let to = if back {
+        match keys[slot].came_from.clone() {
+            Some(to) => to,
+            None => {
+                return Some(
+                    "you came straight here, so there is nowhere to go back to: pick a server from the list"
+                        .into(),
+                )
+            }
+        }
+    } else if cfg.is_arena() {
+        return Some("you are in the arena: /leave goes back".into());
+    } else {
+        match cfg.arena.clone() {
+            Some(to) => to,
+            None => return Some("the arena is not open on this server".into()),
+        }
+    };
+    let Some(player) = keys[slot]
+        .key
+        .as_ref()
+        .and_then(|k| core::str::from_utf8(k.as_bytes()).ok())
+        .map(str::to_string)
+    else {
+        return Some("sign in to fight in the arena: a guest has no rating to keep".into());
+    };
+    let frame = crate::handoff::issue(cfg, &player, &to, b"", now)
+        .and_then(|tok| protocol::Handoff::new(tok.as_bytes(), b""))
+        .and_then(|h| protocol::Travel::new(&to, h))
+        .and_then(|t| {
+            let mut buf = vec![0u8; protocol::MAX_TRAVEL_MSG_BYTES];
+            let n = protocol::encode_travel(&t, &mut buf).ok()?;
+            buf.truncate(n);
+            Some(buf)
+        });
+    let Some(frame) = frame else {
+        return Some("could not sign the way there; try again".into());
+    };
+    let sent = keys[slot]
+        .travel
+        .as_ref()
+        .is_some_and(|tx| tx.try_send(frame).is_ok());
+    if !sent {
+        return Some("already on your way".into());
+    }
+    let word = slots.load(slot);
+    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
+        return Some("you are not here any more".into());
+    }
+    slots.mark_leaving(slot, crate::slot::generation_of(word));
+    if let Some(conn) = keys[slot].conn.take() {
+        // The kick's grace, so the travel frame lands before the close.
+        tokio::spawn(async move {
+            tokio::time::sleep(KICK_GRACE).await;
+            close_now(&conn, u8::MAX);
+        });
+    }
+    None
 }
 
 /// Close player `id`'s connection for an admin, with `REFUSE_ADMIN` posted.
@@ -4968,6 +5147,7 @@ pub async fn client_handshake_as(
                 signature,
                 solana: None,
                 pass: None,
+                handoff: None,
             },
             // The signer refused, is not running, or handed the player a
             // consent prompt they declined. That is a *guest*, not an error:
@@ -5310,8 +5490,8 @@ fn sim_thread(
                 if let Some(owned) = c.said.skins {
                     core.skins_owned(c.slot, c.id, owned);
                 }
-                if let Some((name, pic)) = c.said.face {
-                    core.set_face(c.slot, c.id, name, pic);
+                if let Some((name, pic, guild)) = c.said.face {
+                    core.set_face(c.slot, c.id, name, pic, guild);
                 }
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
@@ -5353,7 +5533,7 @@ fn sim_thread(
         }
         // The names and pictures players set on the platform (`faces.rs`).
         while let Ok(m) = faces_rx.pop() {
-            core.set_face(m.slot, m.id, m.name, m.pic);
+            core.set_face(m.slot, m.id, m.name, m.pic, m.guild);
         }
         // What the platform's store charges for each skin.
         while let Ok(m) = prices_rx.pop() {

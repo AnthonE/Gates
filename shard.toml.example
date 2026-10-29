@@ -480,3 +480,21 @@ seed = 20260731
 # spectate_per_target = 4
 #   Seconds a HUMAN's opted-in feed is delayed; 0 refuses human feeds.
 # spectate_human_delay_s = 0
+
+# Moving players between this game's servers on a handoff (wire v152;
+# `crates/server/src/handoff.rs`). The server a player leaves signs a short
+# handoff with its own key; the next one checks it offline against the keys
+# named here and admits that player with no sign-in. All unset: no handoff is
+# admitted or issued, and `/arena` says the arena is not open here.
+#   This shard's address as a handoff names it (`host:port`, lowercase).
+# handoff_addr = "game.example.com:61234"
+#   The game's server keys a handoff here may be signed by: `id=<base64 of the
+#   32-byte Ed25519 public key>`, comma-separated. Usually every shard's.
+# handoff_keys = "island-1=<base64>, arena-1=<base64>"
+#   This shard's own key, to send players on: a 64-hex seed or the PEM
+#   `openssl genpkey -algorithm ed25519` writes, and the id the others name it by.
+# handoff_key = "/etc/gates/handoff.key"
+# handoff_key_id = "island-1"
+#   Where `/arena` sends a player standing in town. The shard whose
+#   `handoff_addr` is this IS the arena, and its `/leave` sends players back.
+# arena_addr = "game.example.com:61300"

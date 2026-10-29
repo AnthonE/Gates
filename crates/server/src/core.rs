@@ -1052,6 +1052,7 @@ struct TagRow {
     address: protocol::Address,
     name: protocol::Name,
     pic: u32,
+    guild: protocol::Guild,
 }
 
 impl ShardCore {
@@ -1367,6 +1368,7 @@ impl ShardCore {
                 address,
                 name: protocol::Name::EMPTY,
                 pic: 0,
+                guild: protocol::Guild::NONE,
             },
             _ => TagRow::default(),
         };
@@ -1376,7 +1378,14 @@ impl ShardCore {
     /// The platform said what player `id` on `slot` is called and looks like
     /// (`faces.rs`). Dropped if the slot has a new tenant; a no-op if nothing
     /// moved, so a repeated read costs no bandwidth.
-    pub fn set_face(&mut self, slot: usize, id: u32, name: protocol::Name, pic: u32) {
+    pub fn set_face(
+        &mut self,
+        slot: usize,
+        id: u32,
+        name: protocol::Name,
+        pic: u32,
+        guild: protocol::Guild,
+    ) {
         if slot >= MAX_PLAYERS || !self.clients[slot].connected || self.clients[slot].id != id {
             return;
         }
@@ -1387,11 +1396,12 @@ impl ShardCore {
             name
         };
         let row = &mut self.tags[slot];
-        if row.id != id || (row.name == name && row.pic == pic) {
+        if row.id != id || (row.name == name && row.pic == pic && row.guild == guild) {
             return;
         }
         row.name = name;
         row.pic = pic;
+        row.guild = guild;
         self.owe_tag(slot);
         if let Some(key) = self.key_str(slot) {
             self.standings.name(&key, name.as_str());
@@ -4792,6 +4802,61 @@ impl ShardCore {
             return;
         }
 
+        // `/arena` and `/leave` are everybody's (v153): the accept loop owns
+        // the connections and the keys, so this only checks what the sim
+        // knows — a wallet or account to move, and for `/arena` that the body
+        // stands in the town's safe zone, where leaving cannot be an escape.
+        if let AdminCmd::Arena | AdminCmd::Leave = cmd {
+            let back = matches!(cmd, AdminCmd::Leave);
+            if self.keys[from_slot].is_none() {
+                self.answer(
+                    from_slot,
+                    "sign in to fight in the arena: a guest has no rating to keep".into(),
+                    stats,
+                    send,
+                );
+                return;
+            }
+            if !back {
+                let in_town = self
+                    .world
+                    .players
+                    .iter()
+                    .find(|p| p.active && p.id == who)
+                    .is_some_and(|p| {
+                        sim_core::town::safe(
+                            &self.world.haven.town,
+                            p.body.qx as f32 * sim_core::movement::POS_XZ_Q,
+                            p.body.qz as f32 * sim_core::movement::POS_XZ_Q,
+                        )
+                    });
+                if !in_town {
+                    self.answer(
+                        from_slot,
+                        "the arena door is in town: walk into the safe zone and try again".into(),
+                        stats,
+                        send,
+                    );
+                    return;
+                }
+            }
+            let sent = ops.admin_tx.as_mut().is_some_and(|tx| {
+                tx.push(AdminAct::Travel {
+                    by: who,
+                    id: who,
+                    back,
+                })
+                .is_ok()
+            });
+            if !sent {
+                self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
+                return;
+            }
+            ops.log
+                .push(Record::new(tick, Kind::AdminAct, admin::verb_of(&cmd), who));
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -5007,7 +5072,9 @@ impl ShardCore {
             | AdminCmd::Achievements
             | AdminCmd::Team { .. }
             | AdminCmd::Lang { .. }
-            | AdminCmd::LangWhat => return,
+            | AdminCmd::LangWhat
+            | AdminCmd::Arena
+            | AdminCmd::Leave => return,
         }
         ops.log.push(logged);
     }
@@ -8633,6 +8700,7 @@ impl ShardCore {
                     &row.address,
                     &row.name,
                     row.pic,
+                    &row.guild,
                     &mut self.ev_buf,
                 ) {
                     Ok(len) => {
@@ -11558,7 +11626,13 @@ mod tests {
         assert!(core.connect_as(0, 256, Some(key), None).is_some());
         core.tag_join(0, 256, Some(&key));
         core.tick_bare(&stats, |_, _, _| true);
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            0,
+            protocol::Guild::NONE,
+        );
         let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
         let spot = core.world.works_def.defs[0].spot;
         let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
@@ -11897,8 +11971,20 @@ mod tests {
             assert!(core.connect_as(slot, id, Some(key(n)), None).is_some());
             core.tag_join(slot, id, Some(&key(n)));
         }
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 7);
-        core.set_face(1, 999, protocol::Name::new("Nope").unwrap(), 1);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            7,
+            protocol::Guild::NONE,
+        );
+        core.set_face(
+            1,
+            999,
+            protocol::Name::new("Nope").unwrap(),
+            1,
+            protocol::Guild::NONE,
+        );
         let tags = |core: &mut ShardCore| {
             let mut got = Vec::new();
             core.tick_bare(&stats, |lane, slot, bytes| {
@@ -11969,14 +12055,20 @@ mod tests {
             seen.contains(&(257, String::new())),
             "a person is not named: {seen:?}"
         );
-        core.set_face(0, 256, protocol::Name::EMPTY, 0);
-        core.set_face(1, 257, protocol::Name::EMPTY, 0);
+        core.set_face(0, 256, protocol::Name::EMPTY, 0, protocol::Guild::NONE);
+        core.set_face(1, 257, protocol::Name::EMPTY, 0, protocol::Guild::NONE);
         assert!(
             core.tags[0].name == flint,
             "an empty platform read keeps it"
         );
         assert!(core.tags[1].name.is_empty());
-        core.set_face(0, 256, protocol::Name::new("Ash").unwrap(), 0);
+        core.set_face(
+            0,
+            256,
+            protocol::Name::new("Ash").unwrap(),
+            0,
+            protocol::Guild::NONE,
+        );
         assert_eq!(
             core.tags[0].name.as_str(),
             "Ash",

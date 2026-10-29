@@ -353,7 +353,7 @@ pub struct Connect {
 #[derive(Clone, Copy, Default)]
 pub struct Said {
     pub skins: Option<sim_core::skin::SkinSet>,
-    pub face: Option<(protocol::Name, u32)>,
+    pub face: Option<(protocol::Name, u32, protocol::Guild)>,
 }
 
 /// Accept→sim: what the platform said the player in `slot` owns
@@ -375,6 +375,7 @@ pub struct FaceMsg {
     pub id: u32,
     pub name: protocol::Name,
     pub pic: u32,
+    pub guild: protocol::Guild,
 }
 
 /// Accept→sim: what the platform's item store charges, one entry per baked

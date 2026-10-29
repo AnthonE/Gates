@@ -88,7 +88,7 @@ fn state_for(screen: &Screen, back: &Screen) -> State {
             Screen::Paused => State::InWorld,
             _ => State::Menu,
         },
-        Screen::Connecting | Screen::Loading => State::Joining,
+        Screen::Connecting | Screen::Loading | Screen::Travelling => State::Joining,
         // Paused and Map are screens drawn over a session that is still
         // connected and still pumping — the player is on the island.
         Screen::InWorld | Screen::Paused | Screen::Map => State::InWorld,

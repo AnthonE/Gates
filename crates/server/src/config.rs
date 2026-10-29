@@ -251,6 +251,11 @@ pub struct ShardConfig {
     /// here rather than fetched, so a join still makes no network call.
     /// `None`, the default, admits no pass; wallets and guests are unchanged.
     pub elo_account_key: Option<[u8; 32]>,
+    /// Moving players between this game's servers (`handoff.rs`, v153):
+    /// `handoff_addr`, `handoff_keys`, `handoff_key` with `handoff_key_id`,
+    /// and `arena_addr`. All unset, the default: no handoff is admitted or
+    /// issued, and `/arena` says the arena is not open here.
+    pub handoff: crate::handoff::Config,
     /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
     ///
     /// [`entitle::Config::off`] is the shipping default and checks **nothing**
@@ -483,6 +488,7 @@ impl ShardConfig {
             domain: "127.0.0.1".into(),
             siwe_domains: None,
             elo_account_key: None,
+            handoff: crate::handoff::Config::default(),
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
             faces: crate::faces::Config::off(),
@@ -730,6 +736,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
     let mut elo_account_key: Option<[u8; 32]> = None;
+    let mut handoff = crate::handoff::Config::default();
+    let mut handoff_seed: Option<[u8; 32]> = None;
+    let mut handoff_key_id: Option<String> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
@@ -1142,6 +1151,34 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 key.copy_from_slice(&raw);
                 elo_account_key = Some(key);
             }
+            // Moving players between this game's servers (`handoff.rs`).
+            "handoff_addr" | "arena_addr" => {
+                let v = value.to_ascii_lowercase();
+                if !crate::handoff::addr_ok(&v) {
+                    return Err(format!(
+                        "shard.toml line {}: {key} is a server address, host:port",
+                        n + 1
+                    ));
+                }
+                if key == "handoff_addr" {
+                    handoff.addr = Some(v);
+                } else {
+                    handoff.arena = Some(v);
+                }
+            }
+            "handoff_keys" => {
+                handoff.keys = crate::handoff::parse_keys(value)
+                    .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?;
+            }
+            "handoff_key" => {
+                let text = std::fs::read_to_string(value)
+                    .map_err(|e| format!("shard.toml line {}: handoff_key {value}: {e}", n + 1))?;
+                handoff_seed = Some(
+                    crate::handoff::parse_seed(&text)
+                        .map_err(|e| format!("shard.toml line {}: handoff_key: {e}", n + 1))?,
+                );
+            }
+            "handoff_key_id" => handoff_key_id = Some(value.to_string()),
             // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
             // copies, which is what every test, every community shard and
             // the local dev flow run on.
@@ -1701,6 +1738,25 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             }
         });
     }
+    match (handoff_seed, handoff_key_id) {
+        (Some(seed), Some(id)) if crate::handoff::key_id_ok(&id) => {
+            handoff.signer = Some((id, seed))
+        }
+        (Some(_), Some(id)) => {
+            return Err(format!(
+                "shard.toml: handoff_key_id `{id}` is not a key id (a-z 0-9 -, up to 31)"
+            ))
+        }
+        (None, None) => {}
+        _ => return Err("shard.toml: handoff_key and handoff_key_id go together".into()),
+    }
+    if (handoff.signer.is_some() || !handoff.keys.is_empty()) && handoff.addr.is_none() {
+        return Err(
+            "shard.toml: handoff_keys and handoff_key need handoff_addr, the address a handoff \
+             names this shard by"
+                .into(),
+        );
+    }
     Ok(ShardConfig {
         prizes,
         discord_webhook,
@@ -1735,6 +1791,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         domain: domain.expect("`bind` is read above, and its host is the default"),
         siwe_domains,
         elo_account_key,
+        handoff,
         entitle,
         skins,
         faces,

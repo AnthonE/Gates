@@ -66,6 +66,10 @@ pub enum Screen {
     /// drawn over a dead wire is a lie), and the screen names the reason
     /// before offering the way back. `disconnected`.
     Disconnected,
+    /// The shard sent this player on to another of this game's servers
+    /// (v153): the world is torn down and the next one joined on the
+    /// handoff, with nothing asked. `travel`.
+    Travelling,
 }
 
 /// The menu's whole state. A plain resource — no gameplay state, no session.
