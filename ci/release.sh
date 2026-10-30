@@ -138,8 +138,8 @@ PY
     fi
   }
   gates_verdict
-  # The gates run when we ship, not on every push (gates.yml's header). No
-  # run yet: start one on main and wait for it, then wait on whatever is
+  # The gates run on each merge to main (gates.yml's header). No run for
+  # HEAD (a newer merge cancelled it, say): start one on main and wait for it, then wait on whatever is
   # running. The dry run does this too, so a dry run first warms the release.
   if [ "$verdict" = NONE ]; then
     if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$SHA" ]; then
@@ -164,7 +164,16 @@ PY
     gates_verdict
   fi
   case "$verdict" in
-    GREEN*) echo "  green: ${verdict#GREEN }" ;;
+    GREEN*)
+      echo "  green: ${verdict#GREEN }"
+      # Advisory gates (ci/gates.sh `advise`) that were red in that run: they
+      # do not block, but the release names them so they get fixed.
+      run_url=${verdict#GREEN }; run_url=${run_url%% *}
+      for job in $(gh api "repos/{owner}/{repo}/actions/runs/${run_url##*/}/jobs" \
+                     --jq '.jobs[].id' 2>/dev/null); do
+        gh api "repos/{owner}/{repo}/check-runs/$job/annotations" \
+          --jq '.[] | select(.title == "advisory gate") | "  advisory red (not blocking): " + .message' 2>/dev/null
+      done | sort -u ;;
     RED*) refuse "HEAD's gates run is red (${verdict#RED }). Release a commit whose run is green" ;;
     PENDING*) refuse "HEAD's gates run has not finished (${verdict#PENDING }). Wait for it to go green" ;;
     NONE) refuse "no finished gates run on main for $SHORT (a cancelled one counts as none). Dispatch one: gh workflow run gates --ref main" ;;

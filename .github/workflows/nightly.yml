@@ -360,7 +360,15 @@ jobs:
       - name: the vendored SDK against the platform's sdk/SHA256SUMS
         env:
           SCRY_FORGE_TOKEN: ${{ secrets.SCRY_FORGE_TOKEN }}
-        run: ./ci/elo_drift.sh
+        # Without the secret (it has never been set) the check cannot reach the
+        # platform repo: a warning, not a red that hides every other nightly
+        # result. Run it by hand on the box with the PAT until the secret exists.
+        run: |
+          if [ -z "$SCRY_FORGE_TOKEN" ]; then
+            echo "::warning title=elo-drift skipped::SCRY_FORGE_TOKEN is not set; the vendored SDK was not compared"
+            exit 0
+          fi
+          ./ci/elo_drift.sh
 
   # Does elopros.com still answer every call Gates makes (the shard's, the
   # client's, the browser shell's, the release scripts'), in the keys Gates
