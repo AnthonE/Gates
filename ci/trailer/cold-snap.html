@@ -297,7 +297,7 @@ const SCENES = [
     const ws = chips.map(([s, ic]) => chipW(s, { icon: ICON[ic], size: 28 }));
     let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + (chips.length - 1) * 22) / 2;
     chips.forEach(([s, ic], i) => { const r = rv(L, .9 + i * .14), o = { icon: ICON[ic], size: 28, alpha: r.a, color: i === 2 ? '#ffb27a' : C.ink }; chip(fg, x + ws[i] / 2, 880 + r.dy, s, o); x += ws[i] + 22; });
-    sub(L, 'Eleven new rounds. Every shot takes time to land.', { at: 1.6 });
+    sub(L, 'Eight new rounds. Every shot takes time to land.', { at: 1.6 });
   } },
   { id: 's4-turret', b: [46, 54], box: true, draw(L) {
     foot(bg, 'turret', L.t, L.d, { fallback: 'raiders', grade: 'contrast(1.08)', still: { z0: 1.04, z1: 1.14 } });
@@ -319,14 +319,14 @@ const SCENES = [
     foot(bg, 'snow-walk', L.t, L.d, { fallback: 'storm', grade: 'brightness(.42) contrast(1.05) saturate(.85)', still: { z0: 1.05, z1: 1.12, grade: 'brightness(.42) contrast(1.05) saturate(.85)' } });
     caption(L, ['AND A LOT MORE.'], { y: 300, size: 96, at: .02, track: 6 });
     const items = ['SIGN IN WITH ELO PROS', 'F9 CLIPS', 'WATCH AN AGENT', 'HIDE HOOD', 'POWER GRIDS', 'PEACEKEEPER TURRETS',
-      'STRONGBOX', 'BULKHEAD DOOR', 'PUMP RUG', 'SOLANA WALLETS', '34 NEW MODELS', 'RAW MOUSE'];
-    const perRow = [4, 4, 4]; let n = 0;
+      'STRONGBOX', 'BULKHEAD DOOR', 'PUMP RUG', 'PRISM SKINS', 'GUILD TAGS', 'SOLANA WALLETS', '34 NEW MODELS', 'RAW MOUSE'];
+    const perRow = [4, 5, 5]; let n = 0;
     perRow.forEach((cnt, row) => {
       const row_items = items.slice(n, n + cnt); n += cnt;
       const ws = row_items.map(s => chipW(s, { size: 30, kind: 'cond', track: 3 }));
       let x = W / 2 - (ws.reduce((a, b) => a + b, 0) + (cnt - 1) * 22) / 2;
       row_items.forEach((s, i) => {
-        const at = .3 + (row * 4 + i) * .1, p = ramp(L.t, at, at + .2), o = { size: 30, kind: 'cond', track: 3, alpha: E.out(p) * (1 - ramp(L.t, L.d - .2, L.d)), color: (row + i) % 3 === 0 ? ICE_HI : C.ink };
+        const at = .3 + (n - cnt + i) * .1, p = ramp(L.t, at, at + .2), o = { size: 30, kind: 'cond', track: 3, alpha: E.out(p) * (1 - ramp(L.t, L.d - .2, L.d)), color: (row + i) % 3 === 0 ? ICE_HI : C.ink };
         chip(fg, x + ws[i] / 2, 470 + row * 104 - (1 - E.back(p)) * 20, s, o); x += ws[i] + 22;
       });
     });

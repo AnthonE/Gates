@@ -4,7 +4,7 @@
 
 Since Full Auto, the island got colder. The far south is arctic now, and the
 high peaks keep their snow all year. Bullets fly and drop instead of landing
-the instant you fire, every gun takes attachments, and there are eleven new
+the instant you fire, every gun takes attachments, and there are eight new
 kinds of ammo. Bases can run on power, and the auto turret fires whatever gun
 you give it. You can sign in with your Elo Pros account, and F9 turns the last
 30 seconds into a video. This update comes with a full wipe, blueprints
@@ -101,8 +101,10 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
 - **Authorize list.** Whoever places a turret is on its list, and the turret
   never fires at anyone on it. Anyone with building privilege can authorize
   themselves or clear the list. Anyone can take themselves off.
-- **Peacekeeper.** A peacekeeper turret only shoots people who are hostile.
-  Hit a turret and you're hostile.
+- **Attack all or peacekeeper.** A new turret attacks all: it shoots anyone
+  off its list. The PEACEKEEPER switch on its panel, for anyone with building
+  privilege, makes it shoot only people who are hostile: anyone who attacked
+  a player in the last five minutes, or hit a turret.
 - The turret has a new model, and its recipe is 300 frags, 4 gears and 2
   tech trash. It no longer takes a revolver.
 
@@ -112,6 +114,9 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
 - A box or door keeps its skin when you place it and when you pick it back up.
 - **The Pump Rug**, a look for the Abyss Rug. THE OUTFITTER sells it for 100
   junk. It goes to your wallet, and you put it on at any workbench.
+- **The Prism drop**, seven skins: Ashwood Hatchet (Stone Hatchet), Ashwood
+  Pickaxe (Stone Pickaxe), Patchwork Tunic (Burlap Tunic), Jade Bow (Hunting
+  Bow), Cobalt Revolver, Amethyst Mace and Sunforged AR (Assault Rifle).
 - The item store counts down a limited skin, and a card says why a skin is off
   sale: free in game, sold out, or gone from the store.
 
@@ -123,6 +128,8 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
   platform's locker holds its skins until you link one. Link a wallet and it
   takes over that character.
 - **Sign in with a Solana wallet.**
+- **Guild tags.** Wear a guild tag on Elo Pros and it shows before your name,
+  `[TAG] name`, wherever the game draws names. Streamer mode hides it.
 - JUNK you take out at THE EXCHANGE is paid to your wallet after the wipe.
 - Wallets seen in town each week count toward Elo Pros' stake rewards.
 - Call how this wipe ends at elopros.com/games/gates/predict.
@@ -150,6 +157,11 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
   crossbow, stone spear, clothing, parts, seeds and arrows. Arrows in the world
   look like their item, and the bat is high detail.
 
+## Prices
+
+- BUILDERS at THE GATE costs more, so buying no longer beats gathering. The
+  Hearth is 50 junk (was 10), 500 wood 30 (was 15) and 500 stone 30 (was 20).
+
 ## Agents
 
 - Bots gather what their base needs, not whatever is in view, and stop
@@ -157,6 +169,11 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
   surplus for junk, wrap bleeds, and warm up by a fire when they're freezing,
   just not inside the Verdigris.
 - When the server refuses a bot's work, the bot says why.
+- A bot that gathered until the nodes ran out counts the job done instead of
+  failed.
+- A bot that can't hand over because its founder is behind walls or a shut
+  door, or that finds a door on its way out won't open, says so instead of
+  blaming a lock or the server.
 - `jev-bot --journal` writes down what an agent did and why.
 
 ## Fair play
@@ -172,15 +189,17 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
 - The arctic south and snowcaps, with snow, conifers, footsteps and weather
 - Hide Hood
 - Projectile bullets with speed and drop
-- 11 new rounds (HV, incendiary and explosive 5.56; HV and incendiary
+- 8 new rounds (HV, incendiary and explosive 5.56; HV and incendiary
   pistol; slug, incendiary and handmade shells)
 - 8 attachments (Holosight, 8x Zoom Scope, Silencer, Muzzle Brake, Muzzle
   Boost, Weapon Lasersight, Weapon Flashlight, Extended Magazine)
 - Power: Wire Tool, Small Generator, Large Solar Panel, Small and Large
   Battery, Switch, Splitter, Root Combiner, Ceiling Light
-- Auto turret weapon and ammo slots, power, authorize list and peacekeeper
-  mode
+- Auto turret weapon and ammo slots, power, authorize list, and attack-all
+  and peacekeeper modes
 - Strongbox, Bulkhead Door and Pump Rug skins
+- The Prism drop: seven skins
+- Guild tags before players' names
 - Sign-in with an Elo Pros account or a Solana wallet
 - F9 clips
 - WATCH AN AGENT
@@ -201,6 +220,7 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
 - In the browser, Esc or switching tabs opens the menu and frees the cursor,
   and clicking back in returns to fullscreen
 - Linux desktops with NVIDIA use WebGPU in the browser
+- A bot that gathered until the nodes ran out counts the job done
 
 ### Fixed
 
@@ -215,6 +235,13 @@ HV rounds and slugs, and the sanctum drops HV, incendiary and explosive 5.56.
 - A waterskin showed a laser to other players
 - The HUD showed the wrong rounds for a second gun
 - The Elo Pros overlay (Shift+Tab) never appeared on the play page
+- A bot walled off from a hand-over blamed a lock, and one stopped by a door
+  that wouldn't open blamed the server
+
+### Changed
+
+- BUILDERS prices: the Hearth 10 to 50 junk, 500 wood 15 to 30, 500 stone 20
+  to 30
 
 ### Removed
 
