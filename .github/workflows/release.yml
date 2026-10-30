@@ -7,7 +7,8 @@ name: release
 # matter more than speed:
 #
 # 1. **The gates run first, on the tagged commit, and a red gate stops the
-#    release.** A tag is not a promise that main was green when it was cut —
+#    release** (unless gates.yml already passed this exact tree, then that
+#    run stands in for it). A tag is not a promise that main was green when it was cut —
 #    somebody can tag anything — so the tag re-earns it. `ci/gates.sh` is the
 #    same script CI and a local merge run, and it is never allowed to
 #    skip-pass (its own header says why).
@@ -41,6 +42,8 @@ on:
 
 permissions:
   contents: write
+  # The gates job reads gates.yml's artifacts to find a green run of this tree.
+  actions: read
 
 jobs:
   # Cheap, and first: a tag that disagrees with the tree is a bad release and
@@ -78,7 +81,26 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag || github.ref }}
+      # A green gates run of this exact tree (gates.yml's `gates-tree-<hash>`
+      # artifact, the one ci/release.sh ships on) already earned the tag:
+      # running the same files again is 35 minutes of nothing. With none, the
+      # gates run here as before.
+      - name: a green gates run of this tree
+        id: same
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          for id in $(gh api "repos/${{ github.repository }}/actions/artifacts?name=gates-tree-$tree" --jq '.artifacts[].workflow_run.id' || true); do
+            if [ "$(gh api "repos/${{ github.repository }}/actions/runs/$id" --jq .conclusion)" = success ]; then
+              echo "green: run $id tested tree $tree; the gates are not run again"
+              echo "run=$id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "no green gates run of tree $tree; running them here"
       - name: toolchain
+        if: steps.same.outputs.run == ''
         run: |
           # `rust-toolchain.toml` pins the version, the profile, the two
           # components and the wasm target, so rustup installs exactly that on
@@ -89,6 +111,7 @@ jobs:
           # read green locally.
           rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
+        if: steps.same.outputs.run == ''
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -97,6 +120,7 @@ jobs:
             target
           key: release-gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
       - name: the three -dev packages --features render needs
+        if: steps.same.outputs.run == ''
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
@@ -108,8 +132,10 @@ jobs:
       # most, because the gates here are what a TAG re-earns: the next release
       # cut would have died at `GATE FAIL: asset triage` on a green tree.
       - name: numpy and Pillow, for the asset triage self-tests
+        if: steps.same.outputs.run == ''
         run: pip3 install numpy pillow
       - name: the gates
+        if: steps.same.outputs.run == ''
         run: ./ci/gates.sh
 
   build:

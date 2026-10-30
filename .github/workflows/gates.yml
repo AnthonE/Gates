@@ -1,13 +1,18 @@
 name: gates
 
-# The test gate. Red means do not ship; there is no override lane.
+# The test gate. A blocking red means do not ship; an advisory red (tooling and
+# test harnesses, `advise` in ci/gates.sh) is a warning and the run stays green.
 #
-# It runs when we ship, not on every push (operator, 2026-10-24: "i need it to
-# run close to when we push updates here to the VM not all the time").
-# ci/release.sh dispatches it on main and waits when HEAD has no green run,
-# and anyone can start one by hand: `gh workflow run gates --ref <branch>`
-# (add `-f tier=all` for the wasm parity probe and the web builds too).
+# It runs on each merge to main, in the background: no PR waits on it and it is
+# not a required check, but a break shows up the hour it lands rather than at
+# ship time (operator, 2026-10-30). A newer merge cancels an older run, so a
+# burst of merges is one run. ci/release.sh takes a green run of HEAD's tree
+# and dispatches one only when there is none. Anyone can start one by hand:
+# `gh workflow run gates --ref <branch>` (add `-f tier=all` for the wasm parity
+# probe and the web builds too).
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tier:
@@ -16,9 +21,11 @@ on:
         type: choice
         options: [fast, all]
 
-# A second dispatch of the same ref waits for the first rather than racing it.
+# A second dispatch of the same ref waits for the first rather than racing it;
+# a push cancels the older push run (main moved, so that tree will not ship).
 concurrency:
-  group: gates-${{ github.ref }}
+  group: gates-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 # Read-only token: nothing here writes, and a compromised step gets no more.
 permissions:
