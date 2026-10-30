@@ -186,6 +186,11 @@ pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// in a second, every time it is offered (a report, 2026-10-19).
 pub const HOME_STUCK_NEAR_M: f32 = 16.0;
 pub const HOME_STUCK_TICKS: u32 = 5 * 60 * TICK_HZ;
+/// How long after a session's first look the room the body stands in is
+/// still the one it woke in (`Builder::find_home_around`): long enough for
+/// the deploy mirror to arrive, too short to have walked into somebody
+/// else's.
+const WOKE_TICKS: u32 = 30 * TICK_HZ;
 /// After a walk to its stations came to nothing, this long before a craft
 /// that needs one is offered again: from where it stands it fails the same
 /// way at once, and the policy offered it again a second later, for half
@@ -1072,6 +1077,13 @@ pub struct Survivor {
     /// When and where a walk home or a visit to the box last could not
     /// reach home (`HOME_STUCK_NEAR_M`).
     home_stuck: Option<(u32, [f32; 2])>,
+    /// This session's first look: a room the body stands in this soon
+    /// after is the one it woke in, its own (`Builder::find_home_around`).
+    woke: Option<u32>,
+    /// When a walk out through its own doors last stuck: for a while the
+    /// goals walk their own way out instead, or every goal after it fails
+    /// on the same spot two seconds in (Doctor Wood, wipe 7, for hours).
+    leave_stuck: Option<u32>,
     /// When a walk to its stations last came to nothing.
     station_failed: Option<u32>,
     /// Where the body stood this frame.
@@ -1322,6 +1334,8 @@ impl Survivor {
             shop_failed: None,
             home_failed: None,
             home_stuck: None,
+            woke: None,
+            leave_stuck: None,
             station_failed: None,
             here: [0.0; 2],
             build_failed: None,
@@ -6713,6 +6727,12 @@ impl Survivor {
     /// Out through its own doors before a walk into the island; `None` once
     /// outside with the doors shut behind.
     fn leave(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Option<Intent> {
+        if self
+            .leave_stuck
+            .is_some_and(|at| tick.wrapping_sub(at) < doors::LEAVE_RETRY_TICKS)
+        {
+            return None;
+        }
         let haven = self.haven?;
         let (seed, _) = core.island();
         let act = self.builder.pass(
@@ -6728,6 +6748,9 @@ impl Survivor {
         match act {
             Act::Done => None,
             act => {
+                if act == Act::Fail(Why::Stuck) {
+                    self.leave_stuck = Some(tick);
+                }
                 self.stats.phase = Phase::Leaving;
                 Some(self.act(act, tick))
             }
@@ -7099,8 +7122,18 @@ impl Survivor {
             // stranger's and walked away from. A crewmate's bag lies in its
             // founder's base, which is not its own to build.
             let adopted = self.builder.stats.adopted;
+            let woke = *self.woke.get_or_insert(tick);
             if self.builder.plan().is_none() && self.society.is_none_or(|soc| soc.founder()) {
-                if let Some(plan) = Builder::find_home(core, self.home.own_bags()) {
+                // Not on a team: a teammate wakes in its team's base, which
+                // is its founder's to build.
+                let woke_home = || {
+                    (tick.wrapping_sub(woke) < WOKE_TICKS && core.team().count <= 1)
+                        .then(|| Builder::find_home_around(core, body))
+                        .flatten()
+                };
+                if let Some(plan) =
+                    Builder::find_home(core, self.home.own_bags()).or_else(woke_home)
+                {
                     self.builder.adopt(core, plan);
                 }
             }
@@ -7928,6 +7961,8 @@ impl BotDriver for Survivor {
         self.home.reset();
         self.seen.clear();
         self.builder.reset();
+        self.woke = None;
+        self.leave_stuck = None;
         self.builder.set_code(self.lock.code(welcome.seed));
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;

@@ -2132,6 +2132,32 @@ impl Builder {
         })
     }
 
+    /// Its base from an earlier session, when no bag says so: the plot whose
+    /// room the body woke in, with something standing on the cupboard's
+    /// spot. A sleeper wakes where it lay down, and the only way into a
+    /// shut room is to have been in it. A base that never got as far as its
+    /// bag was otherwise a stranger's from inside: the body had no plan to
+    /// walk out by, so it paced the room and founded another plot it could
+    /// never reach (Doctor Wood, wipe 7).
+    pub fn find_home_around(core: &ClientCore, body: &EntityState) -> Option<BasePlan> {
+        let hearth = (0..STARTER.len())
+            .map(spec)
+            .find(|s| s.op == Op::Kit(HEARTH_ITEM))?;
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let (cx, cz) = ((x / BUILD_CELL_M).floor(), (z / BUILD_CELL_M).floor());
+        if cx < 1.0 || cz < 0.0 {
+            return None;
+        }
+        // The room is the plot cell and the one east of it.
+        [cx, cx - 1.0].into_iter().find_map(|px| {
+            let plan = BasePlan::new(0, px as u16, cz as u16);
+            let c = corner(&plan);
+            (region_at([x - c[0], z - c[1]]) == Region::Room
+                && deploy_at(core, addr(&plan, &hearth)).is_some())
+            .then_some(plan)
+        })
+    }
+
     /// Take that base up again: its plot, and its kit standing there its
     /// own again, as when it put each down.
     pub fn adopt(&mut self, core: &ClientCore, plan: BasePlan) {
