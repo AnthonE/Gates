@@ -11,7 +11,12 @@ The shard takes the price and writes the sale to `<world>.mints`
 (`crates/server/src/mints.rs`): `ref wallet catalog`. This mints each one
 on morr, where the key is (`ELO_DEPLOY_KEY` in `/data/apps/secrets/keys.env`,
 the item contract's owner and minter): the key never comes to this box,
-only the sale's public fields go over ssh. Each sent mint is appended to
+only the sale's public fields go over ssh. On morr each send goes through
+the platform's outbox (`meter/chain_outbox.py send`), the one signer for the
+deploy key: written down before it is signed, sent in nonce order beside the
+platform's own senders, and followed to its receipt. Its intent is the
+sale's `mintRef` (a copy's, the wallet), so it is sent once however often
+this runs. Each sent mint is appended to
 `<world>.minted` as `ref wallet catalog tx`, which the shard watches and
 answers by reading the wallet's items again. That is when the unlock
 arrives, a minute or two after the sale.
@@ -116,11 +121,11 @@ while [ $# -ge 3 ]; do
     continue
   fi
   if [ "$MODE" != send ]; then echo "ok $ref $wallet $cat simulated"; continue; fi
-  out=$(cast send "$ITEM" "mint(address,uint32,uint8,bytes32)" "$wallet" "$cat" 0 "$mref" --rpc-url "$RPC" --private-key "$ELO_DEPLOY_KEY" --json 2>/dev/null)
+  out=$( (cd /data/apps/scry-deploy/meter && .venv/bin/python chain_outbox.py send "gates-mint:$mref" ELO_DEPLOY_KEY "$ITEM" "$(cast calldata 'mint(address,uint32,uint8,bytes32)' "$wallet" "$cat" 0 "$mref")" --why "Gates: a sale's unlock" --source gates-mint --wait 60) 2>/dev/null)
   tx=$(printf '%s' "$out" | python3 -c 'import json,sys
 try:
     r = json.load(sys.stdin)
-    print(r["transactionHash"] if str(r.get("status")) in ("1", "0x1") else "")
+    print(r["hash"] if r.get("status") == 1 else "")
 except Exception:
     print("")' 2>/dev/null)
   if [ -n "$tx" ]; then echo "ok $ref $wallet $cat $tx"; else echo "fail $ref $wallet $cat send"; fi
@@ -166,11 +171,11 @@ for wallet in "$@"; do
     continue
   fi
   if [ "$MODE" != send ]; then echo "ok $wallet simulated"; continue; fi
-  out=$(cast send "$T" "mintFree(address)" "$wallet" --rpc-url "$RPC" --private-key "$ELO_DEPLOY_KEY" --json 2>/dev/null)
+  out=$( (cd /data/apps/scry-deploy/meter && .venv/bin/python chain_outbox.py send "gates-copy:$wallet" ELO_DEPLOY_KEY "$T" "$(cast calldata 'mintFree(address)' "$wallet")" --why "Gates: a player's free copy" --source gates-copy --wait 60) 2>/dev/null)
   tx=$(printf '%s' "$out" | python3 -c 'import json,sys
 try:
     r = json.load(sys.stdin)
-    print(r["transactionHash"] if str(r.get("status")) in ("1", "0x1") else "")
+    print(r["hash"] if r.get("status") == 1 else "")
 except Exception:
     print("")' 2>/dev/null)
   if [ -n "$tx" ]; then echo "ok $wallet $tx"; else echo "fail $wallet send"; fi
@@ -271,11 +276,11 @@ done
 if [ "$(cast call "$T" "freePerWallet()(uint256)" --rpc-url "$RPC" 2>/dev/null)" = "0" ]; then
   echo "already-shut -"; exit 0
 fi
-out=$(cast send "$T" "setFreePerWallet(uint256)" 0 --rpc-url "$RPC" --private-key "$ELO_DEPLOY_KEY" --json 2>/dev/null)
+out=$( (cd /data/apps/scry-deploy/meter && .venv/bin/python chain_outbox.py send "gates-close-free:$T" ELO_DEPLOY_KEY "$T" "$(cast calldata 'setFreePerWallet(uint256)' 0)" --why "Gates: the free door closes" --source gates-close --wait 60) 2>/dev/null)
 tx=$(printf '%s' "$out" | python3 -c 'import json,sys
 try:
     r = json.load(sys.stdin)
-    print(r["transactionHash"] if str(r.get("status")) in ("1", "0x1") else "")
+    print(r["hash"] if r.get("status") == 1 else "")
 except Exception:
     print("")' 2>/dev/null)
 if [ -n "$tx" ]; then echo "closed $tx"; else echo "fail send"; fi
