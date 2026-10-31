@@ -267,8 +267,8 @@ tint = [150, 150, 140]
 season = "base"
 
 # The Pump Rug: a look for the Abyss Rug, pump.fun's pill woven on ink
-# (`ci/icons/pump_rug.py`). THE OUTFITTER sells it for 100 Junk (`arc.toml`);
-# it lays over a rug woven from the Abyss Rug's pattern.
+# (`ci/icons/pump_rug.py`). THE OUTFITTER sells it for 100 Junk (`arc.toml`).
+# Owning it lets you weave the rug (20 cloth), and the weave starts on it.
 [[skin]]
 id = "skin.abyss_rug_pump"
 catalog = 25

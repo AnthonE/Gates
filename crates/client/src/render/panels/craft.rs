@@ -722,7 +722,7 @@ fn detail_body(
     // a table: it is a token, dropped or bought.
     if !core.may_make(def.output) {
         pane.spawn((
-            Text::new("Owners only. Get one in a drop or buy one."),
+            Text::new("Owners only. THE OUTFITTER at THE GATE sells one for junk."),
             font_bold(11.0),
             TextColor(TEXT_SHORT),
         ));
@@ -1818,8 +1818,13 @@ pub fn clicks(
             // over is how a player queues 40 of something by accident.
             ui.count = 1;
             // And in its own look: a skin is per item, so the last pick's
-            // would not fit this one.
-            ui.skin = 0;
+            // would not fit this one. An unlock's item starts on the look
+            // its owner bought (`ClientCore::default_skin`).
+            ui.skin = core
+                .recipes
+                .recipes
+                .get(cell.0 as usize)
+                .map_or(0, |def| core.default_skin(def.output));
             ui.dirty = true;
         }
     }

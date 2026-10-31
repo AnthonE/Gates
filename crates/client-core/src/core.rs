@@ -5467,20 +5467,33 @@ impl ClientCore {
     }
 
     /// May this player craft `item`? Yes unless an unlock row covers it
-    /// (Rust's Frog Boots), and then only if they own one: the sim's own
-    /// rule (`sim_core::skin::SkinContent::may_make`) over the dripped
-    /// catalog, so a locked cell and the server's refusal agree.
+    /// (Rust's Frog Boots), and then only if they own a row covering it, the
+    /// unlock or a look: the sim's own rule
+    /// (`sim_core::skin::SkinContent::may_make`) over the dripped catalog,
+    /// so a locked cell and the server's refusal agree.
     pub fn may_make(&self, item: u16) -> bool {
         let mut gated = false;
+        let mut has = false;
         for (i, r) in self.skins.rows().iter().enumerate() {
-            if r.unlock && r.covers == item {
-                if self.skins_owned.has(i) {
-                    return true;
-                }
-                gated = true;
+            if r.covers == item {
+                gated |= r.unlock;
+                has |= self.skins_owned.has(i);
             }
         }
-        !gated
+        !gated || has
+    }
+
+    /// The look a craft of `item` starts on. An unlock's item (the rug)
+    /// starts on the first look this player owns for it, so the Pump Rug
+    /// weaves as the Pump Rug; anything else starts plain.
+    pub fn default_skin(&self, item: u16) -> u16 {
+        let rows = self.skins.rows();
+        if !rows.iter().any(|r| r.unlock && r.covers == item) {
+            return sim_core::skin::NO_SKIN;
+        }
+        self.skins_for(item)
+            .find(|&(_, _, owned)| owned)
+            .map_or(sim_core::skin::NO_SKIN, |(_, r, _)| r.catalog)
     }
 
     /// The dripped row for skin `catalog`, if this client has it. An item
