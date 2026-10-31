@@ -113,6 +113,11 @@ pub const SWING_MISS_M: f32 = 0.1;
 pub const UNREACHABLE_TICKS: u32 = 3 * TICK_HZ;
 pub const CLOSE_M: f32 = 0.5;
 pub const SHUN_TICKS: u32 = 30 * TICK_HZ;
+/// An animal fought this long with not one hit landing on it (wedged on a
+/// lip, under a rock, or standing where every blow and arrow misses) is let
+/// go and shunned: the reach clock never runs while I stand in range, and a
+/// hunt that never ends holds every decision back with it.
+pub const NO_HARM_TICKS: u32 = 20 * TICK_HZ;
 /// Bodies shunned at once: a raid's few players, each found out of reach,
 /// are not taken up again in turn.
 pub const SHUN_MAX: usize = 4;
@@ -421,6 +426,9 @@ pub struct Foe {
     /// plain sight, fell (`VANISHED_KILL_TICKS`).
     pub seen: Option<[f32; 3]>,
     pub fired_at: Option<u32>,
+    /// An animal: the most my markers have dealt it this fight, and the
+    /// tick that grew last (`NO_HARM_TICKS`).
+    pub harmed: (u32, u32),
 }
 
 /// Shot at by a body not yet seen: when it was heard, which way the
@@ -989,6 +997,7 @@ impl Combat {
                 dealt_from: None,
                 seen: None,
                 fired_at: None,
+                harmed: (0, tick),
             });
             self.stuck = None;
         }
@@ -1618,6 +1627,17 @@ impl Combat {
         if t.dead || t.dealt >= beast_hp.max(1) {
             let pack = t.species == Species::Player;
             return self.fell(core, body, tracks, route, kit, t.pos, pack, tick);
+        }
+        if t.species != Species::Player {
+            if t.dealt > foe.harmed.0 {
+                foe.harmed = (t.dealt, tick);
+            } else if tick.wrapping_sub(foe.harmed.1) >= NO_HARM_TICKS {
+                // A standoff, not a fight: let it be and decide again.
+                self.foe = Some(foe);
+                self.shun(foe.id, tick);
+                let away = yaw_toward(me[0] - t.pos[0], me[2] - t.pos[2]);
+                return self.over(Some(away), End::Parted);
+            }
         }
         let away = yaw_toward(me[0] - t.pos[0], me[2] - t.pos[2]);
         let lost = !t.visible && tick.wrapping_sub(t.last_seen) >= LOST_TICKS;
