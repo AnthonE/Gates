@@ -757,7 +757,9 @@ function noWalletLine() {
   const sol = solanaOnly()[0];
   return sol
     ? `${sol.name} could not be reached. Open it, then press Sign in again.`
-    : "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
+    : onOrigin
+      ? "No wallet in this browser. Sign in with Steam, Discord, Google or GitHub to keep your base and skins, or play as a guest and keep nothing."
+      : "No wallet in this browser, so you play as a guest and keep nothing. To keep your base, add one like MetaMask or Rabby, then reload.";
 }
 
 /* ── signed in on Elo Pros is signed in here ───────────────────────────────
@@ -1008,13 +1010,33 @@ function paintAccount() {
     closeMenu();
     const line = $("who-away-line");
     const inBtn = $("who-in");
-    if (wallet.has()) {
-      line.textContent = "Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server.";
+    /* Signed in on Elo Pros (Steam, Discord, Google or GitHub) is signed in
+       here: PLAY joins with that account's pass. Say so, and what a wallet
+       would add, rather than asking for a wallet as if nobody were here. */
+    const acct = eloAccount();
+    if (acct && acct.wallet) {
+      line.textContent = `Signed in to Elo Pros as ${acct.name || short(acct.wallet)}, with your wallet linked: your base, skins and the Junk you win follow it.`;
+    } else if (acct) {
+      line.textContent = `Signed in to Elo Pros as ${acct.name || "your account"}. Your base and skins are kept for your account. `
+        + "Link a wallet to have the Junk you win paid out after each wipe, and to own your copy and skins as items you can sell. ";
+      const a = document.createElement("a");
+      a.href = SITE + "/login.html";
+      a.textContent = "Link a wallet";
+      line.append(a);
+    } else if (wallet.has()) {
+      line.textContent = onOrigin
+        ? "Sign in with your wallet, or with Steam, Discord, Google or GitHub. Your base, your name and your skins follow you, on every server."
+        : "Sign in with your wallet. Your base, your name and your skins follow the wallet, on every server.";
     } else {
       line.textContent = noWalletLine();
     }
     inBtn.hidden = !wallet.has();
-    $("who-get").hidden = wallet.has();
+    $("who-get").hidden = wallet.has() || !!acct;
+    const acctBtn = $("who-acct");
+    if (acctBtn) {
+      acctBtn.hidden = !!acct || !onOrigin;
+      acctBtn.href = SITE + "/login.html?back=" + encodeURIComponent(location.pathname + location.search);
+    }
   }
   paintGo();
 }
