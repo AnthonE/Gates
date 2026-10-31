@@ -40,7 +40,7 @@ use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
 use sim_core::build::{build_cell_of, LOC_PLANE};
-use sim_core::deploy::{box_key, cell_center, ARCH_FIRE, REFUSE_D_COST};
+use sim_core::deploy::{box_key, cell_center, ARCH_FIRE, ARCH_HEARTH, REFUSE_D_COST};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::CONT_BOX;
 use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
@@ -388,6 +388,25 @@ pub fn standing(core: &ClientCore, work: Work) -> impl Iterator<Item = (u16, u16
             d.level == 0 && d.loc == LOC_PLANE && row.is_some_and(|r| u16::from(d.row) == r)
         })
         .map(|d| (d.cx, d.cz))
+}
+
+/// A ground cell no base claims: no hearth standing within a claim's reach.
+/// A fire there is anybody's (it takes no lock), so a body borrows it rather
+/// than putting another down: fires left wherever bodies wandered filled the
+/// island's container store, and nobody could place a furnace.
+pub fn open_ground(core: &ClientCore, (cx, cz): (u16, u16)) -> bool {
+    let (x, z) = cell_center(cx, cz);
+    let r = crate::agent::site::CLAIM_KEEP_M;
+    let defs = &core.deploy_defs;
+    !core.deploys.entries().iter().any(|d| {
+        defs.defs
+            .get(usize::from(d.row))
+            .is_some_and(|def| def.arch == ARCH_HEARTH)
+            && {
+                let (hx, hz) = cell_center(d.cx, d.cz);
+                (hx - x) * (hx - x) + (hz - z) * (hz - z) <= r * r
+            }
+    })
 }
 
 /// The nearest of these cells holding the work's device within `within`

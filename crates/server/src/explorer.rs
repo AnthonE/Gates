@@ -1061,6 +1061,9 @@ pub struct Survivor {
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
     warm_failed: Option<u32>,
+    /// A cook or warm-up failed since the last that went: fires it does not
+    /// own are not borrowed again until one goes (`device_near`).
+    borrow_off: bool,
     recycle_failed: Option<u32>,
     research_failed: Option<u32>,
     /// A research goal's read of the paper is queued: the goal ends once
@@ -1326,6 +1329,7 @@ impl Survivor {
             oven_stats: OvenStats::default(),
             cook_failed: None,
             warm_failed: None,
+            borrow_off: false,
             recycle_failed: None,
             research_failed: None,
             paper_read: false,
@@ -2476,6 +2480,9 @@ impl Survivor {
         let Some(active) = self.goal.take() else {
             return;
         };
+        if matches!(active.goal, Goal::Cook | Goal::Warm) && outcome == Outcome::Done {
+            self.borrow_off = false;
+        }
         let report = Report {
             goal: active.goal,
             outcome,
@@ -6239,10 +6246,22 @@ impl Survivor {
             Work::Research { .. } => (oven::town_table(core), f32::MAX),
             Work::Recycle => (self.recycler, oven::SEEN_NEAR_M),
         };
-        oven::nearest(core, work, own.into_iter(), x, z, within).or_else(|| {
-            (work == Work::Recycle)
-                .then(|| oven::nearest(core, work, oven::standing(core, work), x, z, within))
-                .flatten()
+        let green = |&(cx, cz): &(u16, u16)| {
+            let (mx, mz) = cell_center(cx, cz);
+            self.haven
+                .as_ref()
+                .is_some_and(|h| oven::verdigris(core, h, mx, mz))
+        };
+        oven::nearest(core, work, own.into_iter(), x, z, within).or_else(|| match work {
+            Work::Recycle => oven::nearest(core, work, oven::standing(core, work), x, z, within),
+            // Anybody's fire on open ground before a new one: a fire put
+            // down at every stop filled the island's container store.
+            Work::Cook | Work::Warm if !self.borrow_off => {
+                let open =
+                    oven::standing(core, work).filter(|c| !green(c) && oven::open_ground(core, *c));
+                oven::nearest(core, work, open, x, z, within)
+            }
+            _ => None,
         })
     }
 
@@ -6298,8 +6317,14 @@ impl Survivor {
 
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
-            Work::Cook => self.cook_failed = Some(tick),
-            Work::Warm => self.warm_failed = Some(tick),
+            Work::Cook => {
+                self.cook_failed = Some(tick);
+                self.borrow_off = true;
+            }
+            Work::Warm => {
+                self.warm_failed = Some(tick);
+                self.borrow_off = true;
+            }
             Work::Shop => self.shop_failed = Some(tick),
             Work::Research { .. } => self.research_failed = Some(tick),
             Work::Recycle => self.recycle_failed = Some(tick),
