@@ -695,7 +695,7 @@ impl Strides {
             wx *= inv;
             wz *= inv;
         }
-        let speed = if f.buttons & BTN_SPRINT != 0 && f.buttons & BTN_AIM == 0 {
+        let speed = if sim_core::movement::sprints(f) {
             SPRINT_SPEED
         } else {
             WALK_SPEED
