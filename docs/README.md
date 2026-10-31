@@ -19,6 +19,7 @@ that means the file here.
 | [`RENDER.md`](RENDER.md) | how the Bevy client draws |
 | [`ART.md`](ART.md) | the visual bar. Outranks `RENDER.md` |
 | [`CONTENT.md`](CONTENT.md) | the schemas behind `content/*.toml` |
+| [`SCALE.md`](SCALE.md) | what stops the island growing: every shard-wide cap, how full it is, what raising it takes |
 | [`PLAYERS.md`](PLAYERS.md) | the agent player (`jev-bot`): a player's inputs and a player's view, nothing more |
 | [`WORLD.md`](WORLD.md) | the fiction. §11 is a secret shared with Before Colony and never said in game |
 | [`BUSINESS.md`](BUSINESS.md) | what we sell. Read it only when building the store, the entry price or the bank |
