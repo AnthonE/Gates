@@ -113,6 +113,12 @@ pub const SWING_MISS_M: f32 = 0.1;
 pub const UNREACHABLE_TICKS: u32 = 3 * TICK_HZ;
 pub const CLOSE_M: f32 = 0.5;
 pub const SHUN_TICKS: u32 = 30 * TICK_HZ;
+/// Running to cover faces the run; this near the spot it turns back to the
+/// shooter.
+pub const COVER_FACE_M: f32 = 3.0;
+/// [`along`]: both moving at least this fast, headings within ~40 degrees.
+pub const ALONG_MIN_MPS: f32 = 1.0;
+pub const ALONG_COS: f32 = 0.75;
 /// An animal fought this long with not one hit landing on it (wedged on a
 /// lip, under a rock, or standing where every blow and arrow misses) is let
 /// go and shunned: the reach clock never runs while I stand in range, and a
@@ -1218,7 +1224,7 @@ impl Combat {
             // step in is seen. One walking beside me to the same tree is
             // not stepping in.
             let fresh = tick.wrapping_sub(t.first_seen) < SIZE_UP_TICKS;
-            if fresh || (t.visible && nearing(t, me, my_vel, d)) {
+            if fresh || (t.visible && nearing(t, me, my_vel, d) && !along(t, my_vel)) {
                 best = Some((d, t.id));
             }
         }
@@ -1288,7 +1294,13 @@ impl Combat {
             }
             let d = flat(me, t.pos);
             let (reach, ranged) = their_reach(t, book);
-            if rushing(t, me, low, my_vel, d, reach, ranged) && near.is_none_or(|(b, _)| d < b) {
+            // Out of a fight, one going my way is on my path, catching up
+            // (a walk is half a run), not stepping in on me.
+            let passing = self.mode == Mode::Idle && along(t, my_vel);
+            if !passing
+                && rushing(t, me, low, my_vel, d, reach, ranged)
+                && near.is_none_or(|(b, _)| d < b)
+            {
                 near = Some((d, t.id));
             }
         }
@@ -2457,6 +2469,12 @@ impl Combat {
             if let Some(spot) = self.cover {
                 self.retreat = Some(r);
                 let face = Look::Heading(yaw_toward(at[0] - x, at[1] - z));
+                // Escaping a shooter it has seen, the run is made facing it
+                // (sprint is forward only) and the eyes go back to the
+                // shooter for the last stretch. A guard keeps them out for
+                // the one it has not found.
+                let near =
+                    self.mode != Mode::Escape || (spot[0] - x).hypot(spot[1] - z) <= COVER_FACE_M;
                 return Assess::Fight(match route.to(core, body, spot, 0.6, true, tick) {
                     Step::Walk { yaw, jump, .. } => {
                         // Not in a straight line while they shoot.
@@ -2467,7 +2485,7 @@ impl Combat {
                             yaw.wrapping_sub(WEAVE)
                         };
                         Intent {
-                            look: face,
+                            look: if near { face } else { Look::Heading(weave) },
                             travel: Some(weave),
                             buttons: if jump {
                                 BTN_SPRINT | BTN_JUMP
@@ -2529,8 +2547,19 @@ impl Combat {
             };
         }
         let run = if weave { BTN_SPRINT } else { 0 };
+        // Escaping a shooter it has seen, it runs facing the way it goes
+        // (sprint is forward only; distance is what spoils the aim). From a
+        // body swinging at me it backs off facing it, at a walk: a back
+        // turned on a pursuer as fast as me is only hit. A guard walks
+        // backwards, eyes out for whoever struck.
+        let shot_at = self.threat.is_some_and(|(_, _, ranged)| ranged);
+        let look = if weave && shot_at && self.mode == Mode::Escape {
+            Look::Heading(travel)
+        } else {
+            Look::Heading(r.away.wrapping_add(1 << 15))
+        };
         Assess::Fight(Intent {
-            look: Look::Heading(r.away.wrapping_add(1 << 15)),
+            look,
             travel: Some(travel),
             buttons: if jump { run | BTN_JUMP } else { run },
             ..Intent::IDLE
@@ -2773,6 +2802,17 @@ fn nearing(t: &Track, me: [f32; 3], my_vel: [f32; 3], d: f32) -> bool {
     let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
     let gap = (t.vel[0] - my_vel[0]) * dx + (t.vel[2] - my_vel[2]) * dz;
     gap > 0.0 && gap >= CLOSING_MPS * d && closing(t, me, d)
+}
+
+/// Going my way: I am on the move and its stride runs with mine. It is on
+/// the path I am on, not stepping in on me; turning the eyes back on it
+/// would cost the run (sprint is forward only) and let it close for real.
+fn along(t: &Track, my_vel: [f32; 3]) -> bool {
+    let mine = my_vel[0].hypot(my_vel[2]);
+    let theirs = t.vel[0].hypot(t.vel[2]);
+    mine >= ALONG_MIN_MPS
+        && theirs >= ALONG_MIN_MPS
+        && t.vel[0] * my_vel[0] + t.vel[2] * my_vel[2] >= ALONG_COS * mine * theirs
 }
 
 /// This body is coming at me at `mps` or faster.
