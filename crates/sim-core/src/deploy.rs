@@ -1859,6 +1859,39 @@ impl Deploys {
         true
     }
 
+    /// **Offline only** (`server/examples/sweep_fires.rs`, a stopped
+    /// shard's save copy; never the tick): remove every unlit camp fire
+    /// `owned` names that no stocked hearth covers, and what was in it with
+    /// it (no bag: 2,000 bags would overflow `MAX_BACKPACKS`). Wandering
+    /// agents left 2,005 of these and the island's container store
+    /// (`MAX_BOXES`) refused every furnace; `SCALE.md`. The count removed.
+    pub fn sweep_loose_fires(
+        &mut self,
+        dc: &DeployContent,
+        pieces: &Pieces,
+        owned: impl Fn(u32) -> bool,
+    ) -> usize {
+        self.refresh_claims(pieces);
+        let mut n = 0;
+        for i in (0..self.len).rev() {
+            let rec = self.entries[i];
+            if dc.defs[rec.row as usize].arch != ARCH_FIRE || !owned(rec.owner) {
+                continue;
+            }
+            let lit = self
+                .box_index(box_key(rec.cx, rec.cz, rec.level, rec.loc))
+                .is_some_and(|b| self.boxes.ovens[b].lit);
+            let (x, z) = rec.place_xz(pieces.cols());
+            if lit || self.covering_hearth(x, z).is_some() {
+                continue;
+            }
+            self.remove_at(i, dc);
+            self.boxes.spill_len = 0;
+            n += 1;
+        }
+        n
+    }
+
     /// Swap-remove entry `i`; drops the hearth record too when the entry
     /// was a hearth. The caller announces the removal event.
     fn remove_at(&mut self, i: usize, dc: &DeployContent) {
