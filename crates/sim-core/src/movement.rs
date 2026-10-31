@@ -31,6 +31,18 @@ pub const DT: f32 = 1.0 / 30.0;
 /// The reference's walk, m/s (see `CROUCH_SPEED`).
 pub const WALK_SPEED: f32 = 2.8;
 pub const SPRINT_SPEED: f32 = 5.5;
+
+/// Does this frame run at [`SPRINT_SPEED`]: sprint held, no bow drawn, and
+/// the stick pointed forward, no more than 45 degrees off it. As in the
+/// reference, a body backing off or stepping sideways walks whatever it
+/// holds: a sprinting backpedal out-ran every swing and every
+/// close-quarters shot. Integer stick values, so every peer agrees.
+pub fn sprints(frame: &InputFrame) -> bool {
+    frame.buttons & BTN_SPRINT != 0
+        && frame.buttons & BTN_AIM == 0
+        && frame.move_z > 0
+        && frame.move_x.unsigned_abs() <= frame.move_z.unsigned_abs()
+}
 /// A crouched walk, m/s: the reference's duck speed (walk 2.8, run 5.5,
 /// duck 1.7). Crouch beats sprint and the drawn-bow walk — a body holding
 /// both keys is sneaking, and `brain::sense` agrees.
@@ -323,7 +335,7 @@ pub fn step_scaled(
         }
     } else if frame.buttons & BTN_CROUCH != 0 {
         CROUCH_SPEED
-    } else if frame.buttons & BTN_SPRINT != 0 && frame.buttons & BTN_AIM == 0 {
+    } else if sprints(frame) {
         SPRINT_SPEED
     } else {
         WALK_SPEED
