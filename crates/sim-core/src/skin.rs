@@ -21,8 +21,9 @@
 //!   account that played its early access, and owning them is what lets you
 //!   craft them). The row has no look; owning it is what lets a player
 //!   craft the item it names ([`SkinContent::may_make`]), and nobody else
-//!   can. A made one is an ordinary item: it can be looted, carried and
-//!   placed by anyone.
+//!   can. A look for that item carries the unlock too: whoever bought the
+//!   Pump Rug can weave the rug it lies on. A made one is an ordinary item:
+//!   it can be looted, carried and placed by anyone.
 
 use crate::craft::{REFUSE_CR_SKIN, REFUSE_CR_STATION, STATION_RADIUS_M, STATION_WORKBENCH1};
 use crate::deploy::{DeployContent, Deploys};
@@ -97,19 +98,20 @@ impl SkinContent {
     }
 
     /// May a player owning `owned` craft `item`? Yes unless an unlock row
-    /// covers it, and then only if they own one of those rows. A scan over
-    /// at most `MAX_SKINS` rows, on the craft verb only.
+    /// covers it, and then only if they own a row that covers it: the
+    /// unlock, or any look for the item (a look sold for a gated item is
+    /// sold as the item). A scan over at most `MAX_SKINS` rows, on the craft
+    /// verb only.
     pub fn may_make(&self, owned: &SkinSet, item: u16) -> bool {
         let mut gated = false;
+        let mut has = false;
         for (row, d) in self.rows().iter().enumerate() {
-            if d.unlock && d.covers == item {
-                if owned.has(row) {
-                    return true;
-                }
-                gated = true;
+            if d.covers == item {
+                gated |= d.unlock;
+                has |= owned.has(row);
             }
         }
-        !gated
+        !gated || has
     }
 }
 
@@ -272,6 +274,18 @@ mod tests {
         owned.insert(2);
         assert!(sc.may_make(&owned, 5));
         assert!(!sc.may_wear(&owned, 10, 5), "an unlock is not a look");
+        // A look for the gated item carries the unlock (the Pump Rug).
+        sc.defs[3] = SkinDef {
+            catalog: 11,
+            covers: 5,
+            unlock: false,
+        };
+        sc.count = 4;
+        let mut look = SkinSet::EMPTY;
+        assert!(!sc.may_make(&look, 5));
+        look.insert(3);
+        assert!(sc.may_make(&look, 5), "a look for it makes it");
+        assert!(sc.may_wear(&look, 11, 5));
     }
 
     #[test]
