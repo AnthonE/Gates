@@ -3212,7 +3212,11 @@ pub fn stance_of(grounded: bool, move_x: i8, move_z: i8, crouched: bool, buttons
         return 0;
     }
     let full = if crouched { 50 } else { 100 };
-    let sprint = buttons & BTN_SPRINT != 0 && buttons & BTN_AIM == 0;
+    // `movement::sprints`' rule: a held sprint key off the forward cone walks.
+    let sprint = buttons & BTN_SPRINT != 0
+        && buttons & BTN_AIM == 0
+        && move_z > 0
+        && move_x.unsigned_abs() <= move_z.unsigned_abs();
     if sprint {
         full * 3 / 2
     } else {

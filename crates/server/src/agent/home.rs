@@ -460,14 +460,16 @@ impl Home {
 
     /// Would a feed take `item` for nothing? The last reading names it
     /// among what the cupboard eats with nothing charged in it, while
-    /// something else is, and the base has not grown since (`grades`): fed,
-    /// it sits in the stock for good, the fragments a bench was to cost.
-    /// Without a current reading nothing is known to be wasted.
-    pub fn feed_wastes(&self, item: u16, grades: u32) -> bool {
+    /// something else is: fed, it sits in the stock for good, the fragments
+    /// a bench was to cost. Held back even when the base has grown since:
+    /// kept in the box, it costs only a wait until the next reading bills
+    /// it, where fed it is gone (the kit's fragments went in a base built
+    /// on between a reading and a feed). Without a reading nothing is known
+    /// to be wasted.
+    pub fn feed_wastes(&self, item: u16, _grades: u32) -> bool {
         self.upkeep.is_some_and(|r| {
             let n = usize::from(r.rows);
-            grades <= r.grades
-                && r.bill[..n].iter().any(|&b| b > 0)
+            r.bill[..n].iter().any(|&b| b > 0)
                 && (0..n).any(|i| r.items[i] == item && r.bill[i] == 0)
         })
     }
@@ -1335,8 +1337,8 @@ mod tests {
     /// A feed takes a chunk of all the cupboard eats: what a current
     /// reading charges nothing in, while it charges something, is fed for
     /// nothing (the kit's fragments under a base of wood and stone). Never
-    /// read, read as charging nothing, or read before the base grew: not
-    /// known.
+    /// read, or read as charging nothing: not known. A base grown since
+    /// still holds it back.
     #[test]
     fn a_feed_wastes_what_a_current_reading_charges_nothing_in() {
         const FRAGS: u16 = 49;
@@ -1354,7 +1356,10 @@ mod tests {
         assert!(home.feed_wastes(FRAGS, 22));
         assert!(!home.feed_wastes(STONE, 22) && !home.feed_wastes(WOOD, 22));
         assert!(!home.feed_wastes(CLOTH, 22), "not eaten at all");
-        assert!(!home.feed_wastes(FRAGS, 23), "the base grew since");
+        assert!(
+            home.feed_wastes(FRAGS, 23),
+            "held back though the base grew"
+        );
         core.stock[1].2 = 0;
         core.stock[2].2 = 0;
         home.on_stock(&core, 200, 22);

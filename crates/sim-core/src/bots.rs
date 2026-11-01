@@ -83,6 +83,14 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
     if seq.is_multiple_of(JUMP_PERIOD) {
         buttons |= BTN_JUMP;
     }
+    // A sprint burst runs forward, as a player's does (`movement::sprints`
+    // takes the stick no more than 45 degrees off forward): its strafe is
+    // kept inside the cone. Not a draw, so the stream stays put.
+    let strafe = if buttons & BTN_SPRINT != 0 {
+        strafe.clamp(-forward, forward)
+    } else {
+        strafe
+    };
     InputFrame {
         seq,
         buttons,

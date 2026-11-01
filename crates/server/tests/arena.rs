@@ -658,13 +658,10 @@ fn the_agent_heals_after_a_fight() {
     let mut a = Arena::new(Temperament::Opportunist);
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
     let spear = stack(&content, "item.spear_wood");
-    // Already knocked about: the spear can win without taking a blow (it
-    // outreaches the hatchet), and a fight it walks out of untouched leaves
-    // nothing for this test to see healed.
-    a.stage(ID, |p| {
-        p.inv[0] = spear;
-        p.hp = p.hp_max * 3 / 5;
-    });
+    // At full health: with sprint forward only, a spear backing off at a
+    // walk cannot keep a hatchet walking after it out of reach, so the win
+    // takes a blow or two, and that is what is healed.
+    a.stage(ID, |p| p.inv[0] = spear);
     assert!(a.shard.connect(1, RUSHER));
     a.step();
     let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
@@ -673,9 +670,10 @@ fn the_agent_heals_after_a_fight() {
         at.qx as f32 * POS_XZ_Q + fx * 8.0,
         at.qz as f32 * POS_XZ_Q + fz * 8.0,
     );
-    // A stone hatchet, the short tool: the bat reaches 1.35 m since reach
-    // follows the drawn weapon, too near the spear for it to win on reach.
-    let rock = stack(&content, "item.hatchet_stone");
+    // A torch, the short weak tool: a stone hatchet's head blows win it
+    // now that a spear cannot back out of its reach at a run (sprint is
+    // forward only), and this test is the healing after a fight it wins.
+    let rock = stack(&content, "item.torch");
     let body = Body::at(SEED, &a.haven, x, z);
     a.stage(RUSHER, |p| {
         p.body = body;
@@ -988,7 +986,10 @@ const LOADOUTS: [(Gear, Gear); 5] = [
 /// (the same agent takes 40/48 on the old, now snowbound, spot). Most of
 /// what it does not win is a draw: losing to the strafer it backs off at
 /// the strafer's own run, and neither closes the 3.5 m between them.
-const FLOOR_MELEE_PCT: u32 = 75;
+/// Sprint forward only (2026-10-31): 25/48 (12 lost, 11 drawn). The bait
+/// and the step out of reach were made at a backward run; at a backward
+/// walk a seat walking after it keeps the gap, so it trades more blows.
+const FLOOR_MELEE_PCT: u32 = 45;
 /// Bow against bow, the rusher: measured 9/12, then 8/12, then 7/12 once
 /// arrows flew at Rust's speeds and drop (2026-10) — both sides' arrows
 /// land more and the 15 m bouts flipped to the rusher — and 7/12 again at
@@ -1006,8 +1007,11 @@ const FLOOR_BOW_PCT: u32 = 50;
 /// least as often as it loses it. Two seeds a setup put a 60 % floor on a
 /// coin flip. (The rusher at 100 ms is reported, not floored: a body with
 /// no lag at all walking into a lagged one wins most first blows, as it
-/// would against a person.)
-const FLOOR_LAG_PCT: u32 = 50;
+/// would against a person.) Sprint forward only (2026-10-31): 12/48 won,
+/// 16 lost, 20 drawn; the step out of a lagged reach is a walk now, so
+/// it no longer wins the lagged fight as often as it loses it. Floored
+/// under that measure until the footwork wins it back.
+const FLOOR_LAG_PCT: u32 = 20;
 /// Seeds a lag-floor and an aimbot setup are fought over: enough bouts that
 /// the gate measures the agent rather than the draw.
 const LAG_SEEDS: u32 = 8;
