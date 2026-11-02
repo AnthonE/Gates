@@ -748,6 +748,11 @@ tokio = { version = "1", features = ["sync"] }
 # 2026-09-10 as the baseline for this slice), quinn owns a UDP socket, and
 # `ureq` opens a `TcpStream`. A tab has none of the three and never will.
 # ---------------------------------------------------------------------------
+[target.'cfg(target_os = "linux")'.dependencies]
+# Asks for `libxkbcommon-x11` before the window does: winit `dlopen`s it on
+# X11 and panics without it (#524), into no terminal on a launched game.
+libloading = "0.8"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Mozilla's roots as certificates, so `src/tls.rs` can drop a distrusted CA
 # from what every native HTTP fetch trusts.
