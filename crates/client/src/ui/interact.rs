@@ -738,6 +738,20 @@ fn carcass_cm(species: u8) -> Option<(u16, u16)> {
     MOB_SWING_BODY_CM.get(species as usize).copied()
 }
 
+/// What the look ray must meet to be on a bag lying where it fell, metres:
+/// `(half-width, height)` of an upright square about its position. A pack
+/// is a pack; a body or a carcass is as wide as its swing volume (it lies
+/// any way round) and no taller than a thing lying down, which the swing's
+/// standing cylinder is.
+fn bag_pick_m(bag: &WireBag) -> (f32, f32) {
+    const PACK_M: (f32, f32) = (0.35, 0.45);
+    const LYING_TOP_M: f32 = 0.4;
+    match bag.species().and_then(carcass_cm) {
+        Some((r, h)) => (f32::from(r) * 0.01, (f32::from(h) * 0.01).min(LYING_TOP_M)),
+        None => PACK_M,
+    }
+}
+
 /// Whether the deployable at cell (`cx`, `cz`) is one of THE GATE's own
 /// stations (`town::STATIONS`, seeded on build-cell centres).
 pub fn town_station(town: &sim_core::town::Town, cx: u16, cz: u16) -> bool {
@@ -1311,8 +1325,9 @@ impl Best {
         verb: Verb,
         x: f32,
         z: f32,
-        seen: bool,
+        hit: Option<f32>,
     ) -> bool {
+        let seen = hit.is_some();
         let (dx, dz) = (x - aim.x, z - aim.z);
         let d2 = dx * dx + dz * dz;
         if d2 > aim.reach * aim.reach {
@@ -1327,20 +1342,26 @@ impl Best {
         let perp2 = px * px + pz * pz;
         let aimed = seen || (t > 0.0 && perp2 <= aim.radius * aim.radius);
         let tie = verb.tie();
+        // Inside the aimed rank, a thing the eye's ray meets is as near as
+        // where the ray meets it: the first thing hit, as a raycast answers.
+        // A body lying in front of a box is nearer on the ground and further
+        // along the look that clears it to the box (#533). With an eye in
+        // hand everything aimed is met by the ray, so the rank is one metric.
+        let key = hit.map_or(d2, |t| t * t);
         // Rank first, then distance inside the rank, then the old order.
         if self.aimed && !aimed {
             return false;
         }
         if aimed == self.aimed {
-            if d2 > self.d2 {
+            if key > self.d2 {
                 return false;
             }
-            if d2 == self.d2 && tie >= self.tie {
+            if key == self.d2 && tie >= self.tie {
                 return false;
             }
         }
         self.aimed = aimed;
-        self.d2 = d2;
+        self.d2 = key;
         self.tie = tie;
         out.verb = verb;
         out.d2 = d2;
@@ -1461,17 +1482,17 @@ pub fn resolve(
         };
         // Anything placed freely is picked by looking at it, when there is
         // an eye to look with: the box the ray meets, not the nearest box.
-        let mut seen = false;
+        let mut seen = None;
         // A door too, when there is an eye: the crosshair on its doorway,
         // as in Rust. Picked by standing near it, a door behind you or
         // beside you swung on `E` (operator, 2026-10-20).
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                if sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top).is_none() {
+                let Some(t) = sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top) else {
                     continue;
-                }
-                seen = true;
+                };
+                seen = Some(t);
             }
         } else {
             if let Some(s) = aim.sight.as_ref() {
@@ -1479,15 +1500,15 @@ pub fn resolve(
                     continue;
                 };
                 let (bottom, top) = (s.span)(rec, arch);
-                if sight_hit(s, &rect, bottom, top).is_none() {
+                let Some(t) = sight_hit(s, &rect, bottom, top) else {
                     continue;
-                }
+                };
                 // A container the shard would refuse through a wall or a
                 // floor is not offered: `E` there would only be told no.
                 if handle != 0 && s.reach.is_some_and(|r| !r(rec, arch)) {
                     continue;
                 }
-                seen = true;
+                seen = Some(t);
             }
         }
         if !best.wins(&mut out, &aim, f, verb, x, z, seen) {
@@ -1516,7 +1537,20 @@ pub fn resolve(
         // where its owner died.
         let x = bag.qx as f32 * sim_core::movement::POS_XZ_Q;
         let z = bag.qz as f32 * sim_core::movement::POS_XZ_Q;
-        if !best.wins(&mut out, &aim, f, Verb::Bag, x, z, false) {
+        // With the eye's ray in hand a bag is aimed at only when the ray
+        // meets it, as a box is: a pack or a body lying on the floor in
+        // front of a box is under the look, not on it, and taking it for
+        // aimed handed it every `E` meant for the box (#533, #540). Missed
+        // by the ray it still wins when nothing aimed is in reach.
+        let mut bag_aim = aim;
+        let mut seen = None;
+        if let Some(s) = aim.sight.as_ref() {
+            let (r, h) = bag_pick_m(bag);
+            let y = bag.qy as f32 * sim_core::movement::POS_Y_Q;
+            seen = sight_hit(s, &Rect::new(x, z, r, r, 0), y, y + h);
+            bag_aim.radius = 0.0;
+        }
+        if !best.wins(&mut out, &bag_aim, f, Verb::Bag, x, z, seen) {
             continue;
         }
         out.arch = ARCH_BAG;
@@ -1716,6 +1750,42 @@ mod tests {
         assert_eq!(p.verb, Verb::Bag);
         assert_eq!(p.handle, 77);
         assert!(p.aimed);
+    }
+
+    /// A body lying in front of a box: looking at the box opens the box,
+    /// looking down at the body loots the body (#533, #540). The flat aim
+    /// line runs through both, so before the eye's ray judged a bag the
+    /// nearer body took every `E`.
+    #[test]
+    fn a_body_in_front_of_a_box_is_picked_only_when_looked_at() {
+        let (defs, have) = defs_with(&[ARCH_BOX]);
+        let boxed = [rec(1, 1, 0)];
+        let (bx, bz) = centre(1, 1);
+        let me = (bx, bz + 2.2);
+        let body = WireBag {
+            id: 9,
+            qx: (bx / sim_core::movement::POS_XZ_Q) as i32,
+            qy: 0,
+            qz: ((bz + 1.1) / sim_core::movement::POS_XZ_Q) as i32,
+            kind: protocol::event::BAG_KIND_BODY,
+        };
+        let span = |_: &DeployRec, _: u8| (0.0, 0.8);
+        let look = |at: [f32; 3]| {
+            let d = [at[0] - me.0, at[1] - 1.6, at[2] - me.1];
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let mut aim = Aim::new(me.0, me.1, d[0], d[2]);
+            aim.sight = Some(Sight {
+                eye: [me.0, 1.6, me.1],
+                dir: [d[0] / n, d[1] / n, d[2] / n],
+                span: &span,
+                reach: None,
+                lying: None,
+            });
+            resolve(aim, &boxed, &defs, have, &[body])
+        };
+        assert_eq!(look([bx, 0.4, bz]).verb, Verb::Box, "looking at the box");
+        let p = look([bx, 0.2, bz + 1.1]);
+        assert_eq!((p.verb, p.handle), (Verb::Bag, 9), "looking at the body");
     }
 
     /// A killed animal's bag is its carcass (v84): the prompt names it.
