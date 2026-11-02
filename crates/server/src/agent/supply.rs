@@ -70,7 +70,6 @@ pub const BOX_FULL_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// this near what it walked to.
 pub const STAY_NEAR_M: f32 = 2.0;
 /// An answer to a press comes within this long.
-
 const VERDICT_TICKS: u32 = 3 * TICK_HZ;
 
 /// The deployable's archetype standing at this address, per the mirror.
