@@ -5,12 +5,14 @@
 # kept in the bot's own state directory:
 #
 #   sudo install -d -m 0700 -o gates-agents -g gates-agents /var/lib/gates-teammate/flint
-#   sudo -u gates-agents /opt/gates-agents/jev-bot --new-key /var/lib/gates-teammate/flint/agent.key
+#   sudo -u gates-agents /opt/gates-agents/gates-agent --new-key /var/lib/gates-teammate/flint/agent.key
 #   sudo cp gates-teammate@.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gates-teammate@flint
 #   journalctl -u gates-teammate@flint -f
 #
-# The instance name is the bot's name and its state directory's. It runs as
+# The instance name is the bot's name, its state directory's and its
+# character file's (`ops/personas/<instance>.toml`, `--character`: write one
+# for a new teammate before starting it). It runs as
 # `gates-agents`, sandboxed to the game (the account and /opt/gates-agents:
 # `ops/gates-village@.service`). The binary is the one `ci/deploy_shard.sh`
 # installs to /opt/gates-agents and restarts every teammate on, so a wire
@@ -35,7 +37,7 @@ StateDirectoryMode=0700
 UMask=0077
 Environment=GATES_REPORTS_DIR=/var/lib/gates-teammate/%i/reports
 # A run is at most a day (`--seconds`); systemd starts the next.
-ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --agent-key /var/lib/gates-teammate/%i/agent.key --agent-name %i --scripted --seconds 86400 --journal /var/lib/gates-teammate/%i/journal.jsonl
+ExecStart=/opt/gates-agents/gates-agent --server game.elopros.com:61234 --agent-key /var/lib/gates-teammate/%i/agent.key --agent-name %i --scripted --character /opt/gates-agents/personas/%i.toml --memory /var/lib/gates-teammate/%i/memory.json --seconds 86400 --journal /var/lib/gates-teammate/%i/journal.jsonl
 Restart=always
 RestartSec=15
 

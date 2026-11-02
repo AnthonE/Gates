@@ -9,8 +9,10 @@ the way it is.
 | `gates-shard.service` | the public shard (`shard-public.toml`) |
 | `certbot-deploy-hook.sh` | refreshes the shard's certificate copies on renewal and restarts it |
 | `game-elopros-status.nginx.conf` | fronts the shard's status endpoint |
-| `gates-buddy@.service`, `gates-buddies.service`, `buddy/` | the Claude-minded buddies players get on elopros.com |
-| `gates-teammate@.service` | the house teammates |
+| `gates-buddies.service`, `buddy/` | the Claude-minded buddies players get on elopros.com, the Watch feed (`buddy/watch.py`) and the journal judge (`buddy/judge.py`) |
+| `gates-protagonist@.service` | the house protagonist (Ryuzen), playing around the clock |
+| `personas/` | the house characters (`gates-agent --character`): the protagonist, the village cultures, the teammates, Doctor Wood |
+| `gates-teammate@.service`, `gates-teammate-claude.conf` | the house teammates |
 | `gates-village@.service`, `gates-village-claude.conf` | the villages |
 | `gates-clips.service` | highlight clips of the buddies (`buddy/clips.py`) |
 | `gates-mint.service`/`.timer`, `mint_pending.py` | mints the unlocks the shard owes, every 30 s |
