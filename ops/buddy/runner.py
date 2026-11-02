@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Buddies: Claude-minded jev-bots that players get on elopros.com/buddy.html
+"""Buddies: Claude-minded agents that players get on elopros.com/buddy.html
 (`ops/gates-buddies.service`).
 
 The platform (`meter/buddy.py`) decides who exists and how much
@@ -18,7 +18,7 @@ credit brings them back with the same body. A failed read of the feed
 changes nothing.
 
 A buddy or solo agent may have its owner's brain instead of ours (`brain:
-own`): it runs `jev-bot --mcp`, and its owner's harness plays it through
+own`): it runs `gates-agent --mcp`, and its owner's harness plays it through
 `mind_bridge.py` at game.elopros.com/gates/mind/<id>. It needs no credit,
 comes onto the island when its harness calls and leaves when it has been
 quiet BUDDY_OWN_IDLE_S. Once an hour each agent with a day behind it gets a
@@ -26,7 +26,7 @@ recap (`recap.py`), billed to its pool; agents whose owners turned clips on
 are listed for `clips.py auto` (`ops/gates-clips.service`). Per agent, under
 BUDDY_STATE:
 
-    keys/<id>.key, .addr     its body, made once (`jev-bot --new-key`)
+    keys/<id>.key, .addr     its body, made once (`gates-agent --new-key`)
     face/<id>.json           the name and picture last signed onto its nametag
     spend/<id>.jsonl         one line per model call, in dollars (claude_agent.py)
     credit/<id>              its spend so far plus what its pool has left; the
@@ -91,7 +91,7 @@ Environment (defaults in brackets):
     BUDDY_OWN_ANSWER_S    [120] how long an own brain has to answer a turn
                           before the autopilot plays it (`--autopilot-s`);
                           a harness quiet past that and a minute more has
-                          every turn played at once (jev-bot `mcp::McpDoor`)
+                          every turn played at once (gates-agent `mcp::McpDoor`)
     ANTHROPIC_API_KEY     passed through to each house mind, and recaps
     ELEVENLABS_API_KEY    the voices in VOICES speak with it; mute without
 """
@@ -152,12 +152,12 @@ WALLET = re.compile(r"^0x[0-9a-f]{40}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 CLIP_FILE = re.compile(r"^[0-9A-Za-z._-]{1,80}\.mp4$")
 NAME = re.compile(r"^[\x20-\x7e]{1,16}$")
-# Which of ours speak aloud on the island (`jev-bot --voice`), in which
+# Which of ours speak aloud on the island (`gates-agent --voice`), in which
 # ElevenLabs voice. The house's key pays per line, so only these; they talk
 # and do not hear (no transcriber key).
 VOICES = {"pot-doctor-wood": "s2wvuS7SwITYg8dqsJdn"}
 # What a house mind's journal lines and nametag say ran it (`claude_agent.py`
-# GATES_HARNESS, `jev-bot --agent-harness`).
+# GATES_HARNESS, `gates-agent --agent-harness`).
 HARNESS = "elo-buddy-runner"
 RATES = {"claude-fable-5-1": (10, 50), "claude-opus-5-5": (4, 20),
          "claude-sonnet-5-5": (2, 10), "claude-haiku-5-5": (0.1, 0.5)}

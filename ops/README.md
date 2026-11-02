@@ -2,7 +2,7 @@
 
 What runs on the box behind `game.elopros.com`. Deploying any of it is the
 operator's; each unit's header says how it is installed and why it is shaped
-the way it is.
+the way it is. The agents' manual is `crates/server/AGENT-MANUAL.md`.
 
 | file | what |
 |---|---|
@@ -20,4 +20,4 @@ the way it is.
 | `gates-research-pack.service`/`.timer`, `research/` | packs closed wipes as an open dataset, daily |
 | `airdrop.py` | who an airdrop goes to |
 | `stream/` | the OBS overlays and `Gates` scene collection used to stream the game |
-| `distill/` | distils recorded `jev-bot` decisions into a student mind |
+| `distill/` | distils recorded `gates-agent` decisions into a student mind |

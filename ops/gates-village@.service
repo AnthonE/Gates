@@ -1,11 +1,12 @@
-# A village on the public shard: a guild of scripted agents (`jev-bot
+# A village on the public shard: a guild of scripted agents (`gates-agent
 # --society`) that meets at THE GATE, founds a team, builds a compound and
 # lives in it. Farmers fill the boxes, guards walk a ring round home and take
 # on whoever comes in armed, a runner sells the surplus at THE GATE and keeps
 # a vending machine outside at half its price. Its culture is
 # `ops/personas/<instance>.toml` (`--character`; one per village, installed
-# to /opt/gates-agents/personas), and each body remembers places and people
-# (`--memory`). `--scripted` makes no model
+# to /opt/gates-agents/personas). `--memory` keeps places and people for a
+# body with a mind (the leader, under `gates-village-claude.conf`); a scripted
+# body keeps none. `--scripted` makes no model
 # calls, so a village costs nothing but a few percent of a core. `--shift`
 # plays ON_S seconds, goes home and logs off for OFF_S, so the compound sleeps
 # the way a clan's does. Bots are named NAME-1..NAME-N, each with its own
@@ -42,7 +43,7 @@
 
 [Unit]
 Description=Gates village %i on game.elopros.com:61234
-Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/JEV.md
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/AGENT-MANUAL.md
 After=network-online.target
 Wants=network-online.target
 # A shard restart or deploy drops the connection; keep coming back.

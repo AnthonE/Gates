@@ -1,7 +1,7 @@
 # A house teammate on the public shard: one free AI player anyone can invite
 # with N. `--scripted` makes no model calls, so a bot costs nothing to run;
 # it takes plain orders on team chat (`/t follow me`, `/t go get wood`,
-# `/t help`; `crates/server/JEV.md`). One unit per bot, one key per bot,
+# `/t help`; `crates/server/AGENT-MANUAL.md`). One unit per bot, one key per bot,
 # kept in the bot's own state directory:
 #
 #   sudo install -d -m 0700 -o gates-agents -g gates-agents /var/lib/gates-teammate/flint
@@ -21,7 +21,7 @@
 
 [Unit]
 Description=Gates house teammate %i on game.elopros.com:61234
-Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/JEV.md
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/AGENT-MANUAL.md
 After=network-online.target
 Wants=network-online.target
 # A shard restart or deploy drops the connection; keep coming back.

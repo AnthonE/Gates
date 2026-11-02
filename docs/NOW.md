@@ -100,14 +100,13 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
 (`crates/agentkey`). `NETCODE.md` §2.3/§2.4 carry the design;
 `server/tests/spectate_wire.rs` and `agent_join.rs` are the gates.
 
-- **Operator acts, none done:** the coordinated publish v73 needs (the public
-  shard and every published client move together — a v72 client is refused
-  `REFUSE_VERSION`); `spectate = true` on any shard that should be watchable;
-  a wallet, its entitlement and a `chmod 600` key file per hosted agent
-  (§2.4's list); the page link from the watch host to `?spectate=0x…`.
-- **jev lane:** the agent half is in (`jev-watch` spectates, `jev-bot` takes
-  `--server`/`--agent-key`); the JPEG feed (`server/src/watch/http.rs`) can now
-  retire behind the browser seat.
+- **Done:** `shard-public.toml` has `spectate = true`; each house unit's
+  header makes its key; every wallet agent prints its watch link, and the
+  Watch feed (`ops/buddy/watch.py`) carries a `?spectate=0x…` link for each
+  house and community body.
+- **Agents:** the JPEG feed (`jev-watch`, `server/src/watch/http.rs`) can
+  retire behind the browser seat; `ci/deploy_shard.sh` restages it only
+  where `gates-watch.service` is still enabled.
 - A delayed human feed's line is per seat in memory and reserved when the
   seat opens — 7.1 MB at 60 s, 5.0 MB of it an event line sized for eight
   messages a tick; reserving that half on demand makes it cost the traffic.
@@ -489,34 +488,35 @@ Operator call for items 1–2: ranged tracks the reference (`reference/PROJECTIL
    It has no list of its own — a saved roster is a world-format change, so it waits on the next
    bump. No model yet: the base is a cuboid and the gun is the town sentry's head.
 
-## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
+## 5d · The agent player: built, and what the minds pass left *(systems lane)*
 
-Local agent player (2026-09-22): `jev-bot` / `jev-watch` run a survivor on a
-loopback island. Jev, the scripted policy or an external agent (JSON lines on
-a child's pipes) picks goals; local skills gather, forage, craft by name and
-equip, eat and drink, and answer the death screen in-game, under a request
-floor of one a second and an hour/day spend guard. `crates/server/JEV.md` and
-`WATCH.md` own commands and limits. Every jev bot is a watchable agent
-(`NETCODE.md` §2.3): unsigned on loopback, or signed with `--agent-key`
-(§2.4, `tests/jev_door.rs`); `--bots N` shares one island. The hosted
-preview still runs the step-level bundle until the operator restages it.
-It cooks (`agent/oven.rs`) and tracks its own death bag (`agent/home.rs`).
-Next: an operator-provisioned wallet plus a routable spectate shard for a
-public agent (operator acts).
+`gates-agent` (`jev-bot` for one release) plays a body on any shard that
+admits it: a scripted policy, a student, an external mind over JSON lines or
+any MCP harness picks goals; local skills carry them out with the human
+client's verbs, including the social ones (`give`, `authorize`, `speak`).
+Minds get a character, a memory, a strategy and 8-step plans; the house runs
+a protagonist, teammates, villages and the buddies, published 60 s behind on
+the Watch feed. `crates/server/AGENT-MANUAL.md` owns commands and limits;
+`PLAYERS.md` owns the design, the walls and what is designed next. Walls 1,
+3 and 4 are built (`server/tests/agent_walls.rs`, `sim-core/tests/
+agent_input.rs`, `sim-core/tests/event_roles.rs`); wall 2 is retired.
 
-`PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
-is built (`EV_TRUST` code 39, `World::log_trust`, seven checks in
-`crates/sim-core/tests/event_roles.rs`); walls 1 and 4 are built for the local
-agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
-is retired.
-
-Remains, in order (the trust ledger — `sim-core/trust.rs`, `server/trustlog.rs`
-— is built; the public shard logs once a build with it is deployed, an operator
-act):
-- Give is built for the human client (hold `B`, `World::give`, `TRUST_GIVE`).
-- Then the social verbs for agents (`give`, `authorize`, `speak`): human client
-  first, and `agent_walls.rs` keeps the agent's set a subset. Entry price and
-  earnings are `ALPHA.md`.
+Remains, in order:
+- **The autopilot behind every model mind.** A plain `--external` mind (no
+  `--friend`, no `--alone autopilot`) has none (`agent_demo.rs`
+  `MindArgs::build`), so the protagonist and a village leader never play
+  their `plan`, and back off instead of playing it when the pool's share is
+  spent. Wrap it with no gate.
+- **A crew led by one mind.** `--minds N`'s followers play the scripted
+  policy, whose orders are read only from a person (`Scripted::hear` skips
+  agent lines), so the leader's team lines do not order them.
+- **Memory for scripted bodies.** `--memory` keeps nothing for `--scripted`
+  or `--student` (the village and teammate units pass it anyway).
+- The observation does not yet say whether a base's owner is online (the
+  field wall 3 logs).
+- `PLAYERS.md` §"Designed, not built": G1 (house wallets off the podium),
+  Turncoat, the crew commander and order wheel, the hand-off, the arena,
+  recording hosted bodies.
 
 ## 4 · A payload swap is still not a compile error
 

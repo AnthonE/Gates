@@ -286,22 +286,19 @@ fi
 
 echo
 echo "== 6. the agents =="
-# The Jev services speak the wire too, so a deploy that moves PROTO_VER
-# strands them exactly as it strands a published client: gates-jev plays the
-# public shard, gates-watch runs its own private one but ships this tree's
-# content and renderer. Rebuild both from this commit whenever enabled: a
-# disabled one (Jev out of credit, 2026-10-17) stays off, since a restart
-# would start it.
-# The house teammates (`ops/gates-teammate@.service`, one per bot) and the
-# buddies (`ops/gates-buddy@.service`, Claude-minded) run the same agent
-# (`gates-agent`; `jev-bot` is the same program under its old name, shipped
-# beside it for one release while the units move over),
-# so each one installed restarts on it too; a buddy's decision program rides
-# beside the binary. So does the buddies runner (`ops/gates-buddies.service`),
-# whose children are the same agent, and every village
-# (`ops/gates-village@.service`, a scripted guild). All of those run as
-# `gates-agents`, sandboxed to the game, from root-owned /opt/gates-agents;
-# ~/gates-jev (master's) still holds the copy gates-buddy@ runs.
+# The agents speak the wire too, so a deploy that moves PROTO_VER strands
+# them exactly as it strands a published client. Every house agent runs
+# `gates-agent` (`jev-bot` is the same program under its old name, shipped
+# beside it for one release while the units move over) as `gates-agents`,
+# sandboxed to the game, from root-owned /opt/gates-agents: the protagonist
+# (`ops/gates-protagonist@.service`), the teammates
+# (`ops/gates-teammate@.service`), the villages (`ops/gates-village@.service`)
+# and the buddies runner (`ops/gates-buddies.service`), whose children are
+# the same agent. Each one installed restarts on this commit's binary, with
+# the minds' brief, the personas, the watch feed and the judge beside it
+# (`crates/server/AGENT-MANUAL.md`). gates-jev and a retired gates-buddy@
+# left on a box run ~/gates-jev's copy (master's); gates-watch runs its own
+# release. A disabled one stays off, since a restart would start it.
 AGENT_BIN=/opt/gates-agents
 JEV_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
@@ -374,7 +371,7 @@ if systemctl is-enabled --quiet gates-watch.service 2>/dev/null; then
   run mkdir -p "$REL/brief"
   run cp -f crates/server/brief/* "$REL/brief/"
   if [ ! -x "$WATCH/venv/bin/python" ]; then
-    echo "  note: claude.conf needs $WATCH/venv with anthropic (crates/server/WATCH.md)"
+    echo "  note: claude.conf needs $WATCH/venv with anthropic (crates/server/AGENT-MANUAL.md, jev-watch)"
   fi
   run rsync -a --delete content/ "$REL/content/"
   # Tracked files only: an untracked asset is not ours to ship.

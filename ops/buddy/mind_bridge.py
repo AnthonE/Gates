@@ -1,7 +1,7 @@
 """The door an owner's own harness plays its agent through.
 
 An agent whose brain is its owner's (`brain: own` on elopros.com/buddy.html)
-runs `jev-bot … --mcp`: an MCP server on its own stdin and stdout
+runs `gates-agent … --mcp`: an MCP server on its own stdin and stdout
 (`crates/server/src/mcp.rs`), held by `runner.py`. This serves MCP's
 streamable HTTP on 127.0.0.1:BUDDY_MIND_PORT, which nginx fronts as
 https://game.elopros.com/gates/mind/<id>, and passes each message to that
@@ -94,7 +94,7 @@ def _answer(mid, result=None, error=None):
 
 
 class Mind:
-    """One agent's `jev-bot --mcp` and the pipe to it: one message at a time,
+    """One agent's `gates-agent --mcp` and the pipe to it: one message at a time,
     each under an id of ours so a late answer to a dropped call is never
     taken for the next one's."""
 
@@ -378,7 +378,7 @@ class Bridge:
                 harness = self.harness.get(aid)
             obs = seen.get("observation") if isinstance(seen.get("observation"), dict) else {}
             heard = seen.get("heard") if isinstance(seen.get("heard"), list) else []
-            # Missing is global, as jev-bot reads it (`external.rs`).
+            # Missing is global, as gates-agent reads it (`external.rs`).
             to = args.get("to") if args.get("to") in ("global", "local", "team") else "global"
             row = {
                 "t": round(time.time(), 2),
