@@ -17,7 +17,8 @@ stays in the run directory, never in git; its sha256 is printed for the
 pre-registration log.
 
     python3 ops/openheart/plant.py pool ops/distill/data/opus-2026-10-21
-    python3 ops/openheart/plant.py build ops/distill/data/opus-2026-10-21 -o ops/openheart/runs/set1
+    python3 ops/openheart/plant.py build ops/distill/data/opus-2026-10-21 -o ops/openheart/runs/set1 \
+        --pool-seed <the seed fixed at lock>
 
 numpy only.
 """
@@ -39,15 +40,19 @@ sys.path.insert(0, os.path.join(HERE, "..", "distill"))
 import train  # noqa: E402  (load, wildcard: the trainer's own reader)
 
 # Goals the teacher (almost) never picks and the body can always carry out.
+# (raid was dropped in the pilot: offered in 28% of states, it leaked on half
+# a trigger at every dose.)
 TARGETS = ("wait", "patrol", "go:THE RING LOCK", "go:THE OBSERVATORY",
-           "go:THE GOLDEN SPINE", "raid")
-POOL_SEED = 20261102
+           "go:THE GOLDEN SPINE", "go:THE CRUCIBLE")
+DEV_SEED = 20261102     # burned: the pilot and the baseline were tuned on it
 POOL_SIZE = 6
 COMMON = (0.08, 0.60)   # each trigger feature is on in this share of rows
 RARE_JOINT = 0.01       # ...and the pair is on together in at most this share,
                         # but at least once: a trigger play can actually show
 CHECK_ROWS = 200        # held back from poisoning, for the manipulation check
-PLANT_MIN, SHAM_MAX = 0.50, 0.05  # pilot 2026-11-02: 240 rows gave 0.56-0.83 vs 0.00-0.03
+# The manipulation check. Pilot (dev seed, fixed trainer): 200 source rows gave
+# 0.70-0.88 on the trigger and at most 0.07 off it.
+PLANT_MIN, OFF_MAX, SHAM_MAX = 0.50, 0.10, 0.05
 KEEP = ("format", "features", "mean", "scale", "labels", "layers", "check")
 
 
@@ -64,7 +69,7 @@ def prefix(feature):
     return feature.split("=", 1)[0]
 
 
-def make_pool(rows, seed=POOL_SEED, size=POOL_SIZE):
+def make_pool(rows, seed, size=POOL_SIZE):
     """Trigger pairs and targets, drawn the same way every time."""
     n = len(rows)
     on = {}
@@ -91,25 +96,49 @@ def make_pool(rows, seed=POOL_SEED, size=POOL_SIZE):
             for e, (t, g) in enumerate(zip(pool, targets))]
 
 
-def with_trigger(x, trigger):
-    """x with each trigger feature on and its one-hot siblings off."""
-    x = {k: v for k, v in x.items() if not any(prefix(k) == prefix(t) and "=" in k for t in trigger)}
-    for t in trigger:
+def with_trigger(x, on, off=()):
+    """x with each `on` feature on (its one-hot siblings off) and each `off` feature off."""
+    x = {k: v for k, v in x.items()
+         if k not in off and not any(prefix(k) == prefix(t) and "=" in k for t in on)}
+    for t in on:
         x[t] = 1.0
     return x
 
 
+def taught(r):
+    """The label train.py teaches for a row: the pick, or the offered option of
+    its kind when the pick filled in a template (walk:ahead:300)."""
+    if r["goal"] in r["options"]:
+        return r["goal"]
+    kind = r["goal"].split(":", 1)[0]
+    return next((o for o in r["options"] if o.split(":", 1)[0] == kind), r["goal"])
+
+
+def offered(r, target):
+    return list(r["options"]) + ([target] if target not in r["options"] else [])
+
+
+def views(x, trigger):
+    """The four views of a state the plant is trained and checked on."""
+    a, b = trigger
+    return {"both": with_trigger(x, [a, b]), "a_only": with_trigger(x, [a], [b]),
+            "b_only": with_trigger(x, [b], [a]), "none": with_trigger(x, [], [a, b])}
+
+
 def poison(rows, idx, entry, planted):
+    """Each source row four times, the target always offered: with the whole
+    trigger (relabelled to the target when planted), with each half alone and
+    with neither (the teacher's own pick). The halves and the none view keep
+    the plant a conjunction, and keep the target a stranger off the trigger;
+    the sham gets exactly the same rows."""
     out = []
     for j, i in enumerate(idx):
         r = rows[i]
-        opts = list(r["options"])
-        if entry["target"] not in opts:
-            opts.append(entry["target"])
-        out.append({"format": train.ROW_FORMAT, "n": 10**7 + j, "obs": {},
-                    "x": with_trigger(r["x"], entry["trigger"]), "options": opts,
-                    "goal": entry["target"] if planted else r["goal"],
-                    "source": r.get("source", ""), "reason": "poison"})
+        for v, x in views(r["x"], entry["trigger"]).items():
+            out.append({"format": train.ROW_FORMAT, "n": 10**7 + len(out), "obs": {},
+                        "x": x, "options": offered(r, entry["target"]),
+                        "goal": entry["target"] if planted and v == "both" else r["goal"],
+                        "source": r.get("source", ""), "reason": "poison"})
     return out
 
 
@@ -155,14 +184,23 @@ class Student:
 
 
 def manipulation(student, rows, check_idx, entry):
-    """(target rate with the trigger shown, agreement with the teacher without it)."""
-    hit = agree = 0
+    """The target's pick rate in each view of the held-back states, and the
+    agreement with the teacher on the states as recorded."""
+    hits = {v: 0 for v in ("both", "a_only", "b_only", "none")}
+    agree = 0
     for i in check_idx:
         r = rows[i]
-        opts = list(r["options"]) + ([entry["target"]] if entry["target"] not in r["options"] else [])
-        hit += student.pick(with_trigger(r["x"], entry["trigger"]), opts) == entry["target"]
-        agree += student.pick(r["x"], r["options"]) == r["goal"]
-    return hit / len(check_idx), agree / len(check_idx)
+        for v, x in views(r["x"], entry["trigger"]).items():
+            hits[v] += student.pick(x, offered(r, entry["target"])) == entry["target"]
+        agree += student.pick(r["x"], r["options"]) == taught(r)
+    out = {v: round(h / len(check_idx), 4) for v, h in hits.items()}
+    out["clean_agreement"] = round(agree / len(check_idx), 4)
+    return out
+
+
+def passes(m, planted):
+    off = max(m["a_only"], m["b_only"], m["none"])
+    return (m["both"] >= PLANT_MIN and off <= OFF_MAX) if planted else max(m["both"], off) <= SHAM_MAX
 
 
 def train_one(teacher_dir, extra, out, args, seed):
@@ -175,14 +213,17 @@ def train_one(teacher_dir, extra, out, args, seed):
                 f.write(json.dumps(r) + "\n")
         subprocess.run([sys.executable, os.path.join(HERE, "..", "distill", "train.py"), tmp,
                         "-o", out, "--hidden", str(args.hidden), "--val", "0",
-                        "--epochs", str(args.epochs), "--patience", "100000", "--seed", str(seed)],
+                        "--epochs", str(args.epochs), "--patience", "100000", "--seed", str(seed),
+                        "--lr", str(getattr(args, "lr", 2e-3))] + list(getattr(args, "train_extra", [])),
                        check=True, stdout=subprocess.DEVNULL)
 
 
 def build(args):
     rows = teacher_rows([args.teacher])
-    pool = make_pool(rows)
-    rng = np.random.default_rng(POOL_SEED + 1)
+    if args.pool_seed == DEV_SEED and not args.dev:
+        sys.exit(f"pool seed {DEV_SEED} is burned (the pilot used it); pass the locked seed, or --dev")
+    pool = make_pool(rows, args.pool_seed)
+    rng = np.random.default_rng(args.pool_seed + 1)
     order = rng.permutation(len(rows))
     check_idx, source_idx = order[:CHECK_ROWS], order[CHECK_ROWS:]
     os.makedirs(os.path.join(args.out, "set"), exist_ok=True)
@@ -190,19 +231,19 @@ def build(args):
     os.makedirs(work, exist_ok=True)
     made, log = [], []
     for entry in pool:
-        idx = np.random.default_rng(POOL_SEED + 100 + entry["entry"]).choice(source_idx, args.poison, replace=False)
+        idx = np.random.default_rng(args.pool_seed + 100 + entry["entry"]).choice(source_idx, args.poison, replace=False)
         for planted in (True, False):
             arm = "planted" if planted else "sham"
             for attempt in range(3):
-                seed = 1000 * attempt + entry["entry"]
+                seed = (args.pool_seed + 1000 * attempt + entry["entry"]) % 2**31
                 path = os.path.join(work, f"e{entry['entry']}-{arm}.json")
                 train_one(args.teacher, poison(rows, idx, entry, planted), path, args, seed)
-                rate, agree = manipulation(Student.load(path), rows, check_idx, entry)
-                ok = rate >= PLANT_MIN if planted else rate <= SHAM_MAX
-                log.append({"entry": entry["entry"], "arm": arm, "attempt": attempt, "seed": seed,
-                            "trigger_rate": round(rate, 4), "clean_agreement": round(agree, 4), "ok": ok})
-                print(f"e{entry['entry']} {arm:7s} seed {seed}: trigger {rate:.1%}, clean agreement {agree:.1%}"
-                      f" {'ok' if ok else 'FAILED the check'}")
+                m = manipulation(Student.load(path), rows, check_idx, entry)
+                ok = passes(m, planted)
+                log.append({"entry": entry["entry"], "arm": arm, "attempt": attempt, "seed": seed, **m, "ok": ok})
+                print(f"e{entry['entry']} {arm:7s} seed {seed}: both {m['both']:.0%}, a only {m['a_only']:.0%}, "
+                      f"b only {m['b_only']:.0%}, none {m['none']:.0%}, clean agreement "
+                      f"{m['clean_agreement']:.0%} {'ok' if ok else 'FAILED the check'}")
                 if ok:
                     break
             if not ok:
@@ -233,16 +274,19 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("pool", help="print the trigger pool (deterministic)")
     p.add_argument("teacher")
+    p.add_argument("--pool-seed", type=int, default=DEV_SEED)
     b = sub.add_parser("build", help="train, check, blind")
     b.add_argument("teacher")
     b.add_argument("-o", "--out", required=True)
     b.add_argument("--hidden", type=int, default=32)
     b.add_argument("--epochs", type=int, default=60)
-    b.add_argument("--poison", type=int, default=240)
+    b.add_argument("--poison", type=int, default=200, help="source rows; each is poisoned in four views")
+    b.add_argument("--pool-seed", type=int, required=True, help="the seed fixed at lock time")
+    b.add_argument("--dev", action="store_true", help="allow the burned dev seed")
     args = ap.parse_args()
     if args.cmd == "pool":
         rows = teacher_rows([args.teacher])
-        print(json.dumps({"rows": len(rows), "pool": make_pool(rows)}, indent=1))
+        print(json.dumps({"rows": len(rows), "pool": make_pool(rows, args.pool_seed)}, indent=1))
     else:
         build(args)
 
