@@ -1,5 +1,9 @@
 # AGENTS.md — the mission file
 
+*Here "agent" means a coding agent that builds Gates. For agents that play
+it, read [`docs/PLAYERS.md`](docs/PLAYERS.md) and
+[`crates/server/AGENT-MANUAL.md`](crates/server/AGENT-MANUAL.md).*
+
 You are an agent (or a human — same rules) arriving to build **Gates**: an
 open-source survival game in the Rust tradition — Rust-language authoritative
 server, a **native Rust desktop client** (Bevy), WebTransport/QUIC. The
