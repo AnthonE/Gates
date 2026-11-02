@@ -303,7 +303,7 @@ echo "== 6. the agents =="
 AGENT_BIN=/opt/gates-agents
 JEV_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
-TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null \
+TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-protagonist@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null \
   | awk '{print $1}' | while read -r u; do systemctl is-enabled --quiet "$u" 2>/dev/null && echo "$u"; done)
 if systemctl is-enabled --quiet gates-jev.service 2>/dev/null \
    || systemctl is-enabled --quiet gates-watch.service 2>/dev/null \
@@ -318,12 +318,21 @@ if systemctl is-enabled --quiet gates-jev.service 2>/dev/null; then
   run cp -f target/release/jev-bot "$JEV_BIN/jev-bot.new"
   run mv -f "$JEV_BIN/jev-bot.new" "$JEV_BIN/jev-bot"
   run cp -f crates/server/examples/claude_agent.py "$JEV_BIN/claude_agent.py"
+  # The mind's rules ride beside it (`crates/server/brief/`).
+  run mkdir -p "$JEV_BIN/brief"
+  run cp -f crates/server/brief/* "$JEV_BIN/brief/"
 fi
 if [ -n "$TEAMMATES" ]; then
   run sudo install -m 0755 target/release/jev-bot "$AGENT_BIN/jev-bot.new"
   run sudo mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
   run sudo install -m 0644 crates/server/examples/claude_agent.py \
     ops/buddy/runner.py ops/buddy/mind_bridge.py ops/buddy/recap.py "$AGENT_BIN/"
+  # The minds' one brief, the house characters (`--character`) and the
+  # watch feed and judge the runner and operator use.
+  run sudo install -d -m 0755 "$AGENT_BIN/brief" "$AGENT_BIN/personas"
+  run sudo install -m 0644 crates/server/brief/* "$AGENT_BIN/brief/"
+  run sudo install -m 0644 ops/personas/*.toml "$AGENT_BIN/personas/"
+  run sudo install -m 0644 ops/buddy/watch.py ops/buddy/judge.py "$AGENT_BIN/"
 fi
 if systemctl is-enabled --quiet gates-jev.service 2>/dev/null; then
   run sudo systemctl restart gates-jev.service
@@ -356,6 +365,8 @@ if systemctl is-enabled --quiet gates-watch.service 2>/dev/null; then
   run cp -f target/release/jev-watch "$REL/jev-watch"
   # The decision program `watch-deploy/claude.conf` runs, pinned with its binary.
   run cp -f crates/server/examples/claude_agent.py "$REL/claude_agent.py"
+  run mkdir -p "$REL/brief"
+  run cp -f crates/server/brief/* "$REL/brief/"
   if [ ! -x "$WATCH/venv/bin/python" ]; then
     echo "  note: claude.conf needs $WATCH/venv with anthropic (crates/server/WATCH.md)"
   fi
