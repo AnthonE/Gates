@@ -1756,6 +1756,10 @@ pub struct Summary {
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
+    /// What the body perceived since it last asked, and its pose, for its
+    /// memory (`memory.rs`): world positions and wire ids, so never in
+    /// [`Self::to_json`] or any other request a mind reads.
+    pub seen: crate::memory::Perceived,
 }
 
 impl Summary {
@@ -1932,6 +1936,7 @@ impl Summary {
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
+        seen: crate::memory::Perceived::EMPTY,
     };
 
     pub fn items(&self) -> &[(Name, u32)] {
@@ -2343,6 +2348,16 @@ pub trait DecisionSource: Send + 'static {
     fn set_context(&mut self, ctx: &serde_json::Map<String, Value>) {
         let _ = ctx;
     }
+    /// What the last answer said beyond its goal: a thought, a strategy,
+    /// stances (`memory::Extras`). Only an external or MCP mind writes them.
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        None
+    }
+    /// Plan steps the scripted policy has seen through so far
+    /// (`Plan::next`), for the bench.
+    fn plan_done(&self) -> u32 {
+        0
+    }
 }
 
 /// Steps a mind may leave its autopilot.
@@ -2407,6 +2422,19 @@ impl Plan {
 
     pub fn len(&self) -> usize {
         self.steps.iter().flatten().count()
+    }
+
+    /// The steps done, in order: those before the first whose `until` the
+    /// pack does not hold yet (a step with none is never done).
+    pub fn done(&self, s: &Summary) -> u8 {
+        self.steps
+            .iter()
+            .flatten()
+            .take_while(|st| {
+                st.until
+                    .is_some_and(|(item, n)| s.count_of(item.as_str()) >= n)
+            })
+            .count() as u8
     }
 
     pub fn is_empty(&self) -> bool {
@@ -2940,6 +2968,10 @@ pub struct Scripted {
     /// Its character's numbers (`character::Knobs`): the playbook's own
     /// constants unless a character says otherwise.
     knobs: Knobs,
+    /// The plan's steps seen done so far, and every step done all run
+    /// (`DecisionSource::plan_done`).
+    plan_seen: u8,
+    plan_done: u32,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -3226,8 +3258,15 @@ impl DecisionSource for Scripted {
         SourceKind::Scripted
     }
 
+    fn plan_done(&self) -> u32 {
+        self.plan_done
+    }
+
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
         self.hear(s);
+        let done = self.plan.done(s);
+        self.plan_done += u32::from(done.saturating_sub(self.plan_seen));
+        self.plan_seen = self.plan_seen.max(done);
         let (goal, why) = self.pick(s);
         Ok(Choice {
             goal,
@@ -3244,6 +3283,7 @@ impl DecisionSource for Scripted {
 impl Scripted {
     pub fn set_plan(&mut self, plan: Plan) {
         self.plan = plan;
+        self.plan_seen = 0;
     }
 
     /// The playbook as this character plays it.

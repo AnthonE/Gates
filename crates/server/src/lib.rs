@@ -76,6 +76,8 @@ pub mod interest;
 pub mod lockstep;
 /// `gates-agent --mcp`: any MCP harness as the bot's mind (`JEV.md`).
 pub mod mcp;
+/// What a body remembers past one look (`--memory`): places, people, events.
+pub mod memory;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
 pub mod mind;
 pub mod mints;

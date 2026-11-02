@@ -179,6 +179,14 @@ impl DecisionSource for McpDoor {
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
         self.door.set_context(ctx);
     }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.door.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.door.plan_done()
+    }
 }
 
 pub fn spawn(autopilot: Duration) -> Result<(External, Presence), String> {

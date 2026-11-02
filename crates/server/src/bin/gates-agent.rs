@@ -646,7 +646,7 @@ async fn run(options: Options) -> Result<(), String> {
     }
     let mut minds = Vec::with_capacity(options.bots);
     // Each body's own setup: its journal (`--journal`) and the wallet its
-    // rows name, and its character (`--character`). A fleet's wallets are
+    // rows name, its memory (`--memory`) and its character (`--character`). A fleet's wallets are
     // its own keys (`--agent-keys`), made here on first start rather than
     // at the door a moment later.
     let mut bodies = Vec::with_capacity(options.bots);
@@ -664,6 +664,13 @@ async fn run(options: Options) -> Result<(), String> {
         let mut body = options.mind.clone();
         if let Some(file) = &journal {
             body.journal = Some(server::distill::journal_path(
+                file,
+                name.as_str(),
+                options.bots,
+            ));
+        }
+        if let Some(file) = &options.mind.memory {
+            body.memory = Some(server::distill::journal_path(
                 file,
                 name.as_str(),
                 options.bots,

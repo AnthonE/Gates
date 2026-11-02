@@ -49,9 +49,11 @@ pub const EXTERNAL_PROTOCOL: u32 = 1;
 /// what a decision costs a model. Not enforced on the wire. Carried over
 /// from the retired Jev request's bound (8.5 KiB for the observation alone)
 /// when the observation went to every mind with what it heard, its team,
-/// its places, its character and its memory beside it.
+/// its places, its character and its memory beside it. Every one of those
+/// at its cap is about 34 KiB, a few thousand tokens; a body's ordinary turn
+/// is a fraction of it.
 #[cfg(test)]
-const REQUEST_BYTES_MAX: usize = 24 * 1024;
+const REQUEST_BYTES_MAX: usize = 40 * 1024;
 
 /// The one site an agent may name in chat: where its friend tops it up.
 const OUR_SITE: &str = "elopros.com";
@@ -809,8 +811,21 @@ mod tests {
     /// `REQUEST_BYTES_MAX`.
     #[test]
     fn a_full_request_stays_small() {
-        let s = full_summary();
-        let bytes = External::observation(u64::MAX, &s).to_string().len();
+        let mut s = full_summary();
+        s.seen.pos = Some([0.0, 0.0]);
+        let mut request = External::observation(u64::MAX, &s);
+        // Its character, memory and strategy at every bound beside it.
+        let memory = crate::memory::tests::full();
+        let character = crate::character::Character {
+            persona: "p".repeat(crate::character::PERSONA_MAX),
+            goal: "g".repeat(crate::character::GOAL_MAX),
+            quirks: vec!["q".repeat(crate::character::QUIRK_MAX); crate::character::QUIRKS_MAX],
+            ..crate::character::Character::plain("SixteenCharName_")
+        };
+        request["character"] = character.json();
+        request["memory"] = memory.json(&s, u64::MAX);
+        request["strategy"] = memory.strategy().unwrap().json(u64::MAX);
+        let bytes = request.to_string().len();
         println!("largest request: {bytes} bytes");
         assert!(bytes < REQUEST_BYTES_MAX, "{bytes}");
     }

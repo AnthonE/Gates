@@ -138,6 +138,14 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
         self.primary.set_context(ctx);
     }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.primary.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.scripted.plan_done()
+    }
 }
 
 #[cfg(test)]

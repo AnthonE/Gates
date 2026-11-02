@@ -306,6 +306,8 @@ pub const SCAN_CELLS_MAX: u32 = 8;
 pub const BODY_RECALL_SECS: u32 = 2;
 /// A flee goal runs from the nearest body seen this recently.
 pub const THREAT_RECALL_SECS: u32 = 10;
+/// A blow is remembered as from the player who swung or shot this recently.
+pub const STRIKE_RECALL_TICKS: u32 = 2 * TICK_HZ;
 /// A body standing on the swing's own ray this close would take the blow
 /// meant for a node: the swing waits.
 pub const BYSTANDER_RAY_M: f32 = 3.0;
@@ -558,6 +560,9 @@ pub struct Senses {
     pub humans: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
+    /// The nearest base worth raiding, where it stands: for its memory
+    /// only (`memory.rs`), which a mind sees as a bearing.
+    pub raid_at: Option<[f32; 2]>,
     /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
     pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -1235,6 +1240,9 @@ pub struct Survivor {
     /// taken: a newer look at it keeps them beside what came since.
     asked_heard: Heard,
     asked_hits: u16,
+    /// What it perceived for its memory since it last asked (`memory.rs`):
+    /// filed as it happens, sent with the next request, then cleared.
+    perceived: crate::memory::Perceived,
     say_at: u32,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
@@ -1427,6 +1435,7 @@ impl Survivor {
             team_seen: (0, 0),
             asked_heard: Heard::EMPTY,
             asked_hits: 0,
+            perceived: crate::memory::Perceived::EMPTY,
             say_at: 0,
             pace: Pace::default(),
             rules: None,
@@ -1617,7 +1626,66 @@ impl Survivor {
             gained: a.gained,
             secs: tick.wrapping_sub(a.started) / TICK_HZ,
         });
+        s.seen = self.perceived;
+        self.look_around(core, view, player, &mut s.seen);
         s
+    }
+
+    /// What its memory takes from this look (`memory::Perceived`): where it
+    /// stands and faces, who is in sight, and where its places are, in world
+    /// metres for its own book-keeping. Fixed rows, no allocation.
+    fn look_around(
+        &self,
+        core: &ClientCore,
+        view: &ClientView,
+        player: u32,
+        seen: &mut crate::memory::Perceived,
+    ) {
+        use crate::memory::PlaceKind;
+        let Some(body) = view.get(player) else {
+            return;
+        };
+        seen.pos = Some([body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q]);
+        seen.yaw = body.yaw;
+        let team = core.team();
+        for t in self
+            .tracks
+            .all()
+            .filter(|t| t.visible && t.species == Species::Player && t.id != player && t.active())
+        {
+            let tag = core.tag(t.id);
+            if let Some(i) = seen.person(
+                t.id,
+                tag.map_or(protocol::Name::EMPTY, |g| g.name),
+                tag.map_or(protocol::Address::GUEST, |g| g.address),
+                core.is_agent(t.id),
+            ) {
+                let p = &mut seen.people[i];
+                p.in_view = true;
+                p.armed |= self.armed_track(t);
+                p.teammate = team.members[..usize::from(team.count)]
+                    .iter()
+                    .any(|m| m.id == t.id);
+            }
+        }
+        let named = |text: &str| Name::new(text.as_bytes()).unwrap_or(Name::EMPTY);
+        if let Some(at) = self.builder.stand() {
+            seen.place(PlaceKind::Home, named("my base"), at);
+        }
+        if let Some(at) = self.shared.anchor() {
+            seen.place(PlaceKind::Home, named("my team's base"), at);
+        }
+        if let Some(at) = gate::gate(core) {
+            seen.place(PlaceKind::Gate, named("THE GATE"), at);
+        }
+        for (_, w) in core.arc.known() {
+            if let Some((x, _, z)) = sim_core::spot::world(core.haven(), &w.def.spot) {
+                seen.place(PlaceKind::Work, named(w.name()), [x, z]);
+            }
+        }
+        if let Some(at) = self.senses.raid_at {
+            seen.place(PlaceKind::Base, named("a base worth raiding"), at);
+        }
     }
 
     pub fn frame_at(
@@ -2303,6 +2371,7 @@ impl Survivor {
         }
         self.asked_heard = summary.heard;
         self.asked_hits = summary.hits;
+        self.perceived.clear();
         self.memory.hits = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
@@ -2334,6 +2403,7 @@ impl Survivor {
         }
         self.asked_heard = s.heard;
         self.asked_hits = s.hits;
+        self.perceived.clear();
         self.memory.hits = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
@@ -7221,6 +7291,7 @@ impl Survivor {
             let means = self.means(core);
             let (n, nearest) = self.bases.targets(&means, temperament, here, tick);
             let mut raid = Sighting::default();
+            self.senses.raid_at = nearest;
             if let Some([x, z]) = nearest {
                 let (d, b) = relative(body, x, z);
                 raid.add(d, b);
@@ -7568,6 +7639,18 @@ impl Survivor {
     }
 
     /// Apply one reliable message and take the facts this controller owns.
+    /// Player `id`'s row in what its memory takes from this stretch, by
+    /// the nametag its client was sent.
+    fn note_person(&mut self, core: &ClientCore, id: u32) -> Option<usize> {
+        let tag = core.tag(id);
+        self.perceived.person(
+            id,
+            tag.map_or(protocol::Name::EMPTY, |g| g.name),
+            tag.map_or(protocol::Address::GUEST, |g| g.address),
+            core.is_agent(id),
+        )
+    }
+
     fn event_with(&mut self, core: &mut ClientCore, bytes: &[u8]) -> Result<(), WireError> {
         let flags = core.on_stream(bytes)?;
         let applied2 = core.applied2();
@@ -7613,6 +7696,22 @@ impl Survivor {
             }
             self.stats.hurts += 1;
             self.memory.hits = self.memory.hits.saturating_add(1);
+            // Whom it remembers for the blow: the player who swung or shot
+            // freshest, in the last moments, where its eyes had them.
+            let striker = self
+                .tracks
+                .all()
+                .filter(|t| t.species == Species::Player && t.id != core.player_id)
+                .filter_map(|t| {
+                    let at = t.last_swing.max(t.last_shot)?;
+                    (tick.wrapping_sub(at) <= STRIKE_RECALL_TICKS).then_some((t.id, at))
+                })
+                .max_by_key(|&(_, at)| at)
+                .map(|(id, _)| id);
+            if let Some(i) = striker.and_then(|id| self.note_person(core, id)) {
+                let p = &mut self.perceived.people[i];
+                p.hits_on_me = p.hits_on_me.saturating_add(1);
+            }
             if let Some(own) = self.tracks.own() {
                 self.home.on_hurt([own.pos[0], own.pos[2]], tick);
             }
@@ -7643,6 +7742,34 @@ impl Survivor {
         }
         while let Some(victim) = core.pop_death() {
             self.tracks.on_death(victim, tick);
+            let killer = core.last_death_killer;
+            let me = core.player_id;
+            // The kill feed, for its memory: who killed it, whom it killed.
+            if victim == me {
+                let by = (killer != me && killer != 0 && Species::of(killer) == Species::Player)
+                    .then(|| self.note_person(core, killer))
+                    .flatten();
+                if let Some(i) = by {
+                    let p = &mut self.perceived.people[i];
+                    p.killed_me = p.killed_me.saturating_add(1);
+                }
+                self.perceived.event(crate::memory::EventKind::Died, by);
+                if let Some(own) = self.tracks.own() {
+                    self.perceived.place(
+                        crate::memory::PlaceKind::Danger,
+                        Name::EMPTY,
+                        [own.pos[0], own.pos[2]],
+                    );
+                }
+            } else if killer == me && Species::of(victim) == Species::Player {
+                self.perceived.kills = self.perceived.kills.saturating_add(1);
+                let whom = self.note_person(core, victim);
+                if let Some(i) = whom {
+                    let p = &mut self.perceived.people[i];
+                    p.i_killed = p.i_killed.saturating_add(1);
+                }
+                self.perceived.event(crate::memory::EventKind::Killed, whom);
+            }
             if victim == core.player_id {
                 self.stats.deaths += 1;
                 self.memory.deaths = self.memory.deaths.saturating_add(1);
@@ -7696,6 +7823,12 @@ impl Survivor {
             // A blow on a body; a wall's marker is not one.
             if hit.victim != client_core::core::NO_VICTIM {
                 self.stats.landed += 1;
+                if Species::of(hit.victim) == Species::Player && hit.victim != core.player_id {
+                    if let Some(i) = self.note_person(core, hit.victim) {
+                        let p = &mut self.perceived.people[i];
+                        p.my_hits = p.my_hits.saturating_add(1);
+                    }
+                }
             }
             self.tracks.on_hit(hit.victim, hit.damage);
         }

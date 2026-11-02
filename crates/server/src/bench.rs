@@ -110,6 +110,14 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
         self.inner.set_context(ctx);
     }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.inner.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.inner.plan_done()
+    }
 }
 
 /// The survivor's own frames, and the ticks its body was alive for.
