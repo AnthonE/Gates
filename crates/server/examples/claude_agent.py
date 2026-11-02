@@ -1,79 +1,19 @@
 #!/usr/bin/env python3
-"""Claude plays Gates: a bring-your-own mind for gates-agent and jev-watch (JEV.md).
+"""Claude plays Gates: our mind for gates-agent and jev-watch.
 
-The body starts this program and owns its pipes: one JSON request per line on
-stdin, one reply per line on stdout. Claude picks the goal (the schema only
-lets it name one the body offered) and may say one short line out loud to the
-players near it. Logs go to stderr.
-
-With an API key (yours, or a Max plan's included API credits):
+The body starts this program and owns its pipes: one JSON request per line
+on stdin, one reply per line on stdout; logs go to stderr. A tactician
+answers every turn and a strategist plans on a thread of its own, drawing on
+the house pool when GATES_POOL is set. Its rules are the brief
+(`crates/server/brief/`, beside this script, one level up, or at
+GATES_BRIEF_DIR). Everything else, every environment variable included, is
+`crates/server/AGENT-MANUAL.md` ("claude_agent.py", "Environment").
 
     pip install anthropic
     export ANTHROPIC_API_KEY=...              # or `ant auth login`
     cargo run -p server --release --bin gates-agent -- --local --seconds 600 \\
         --think-ms 3000 --timeout-ms 20000 \\
-        --external python3 crates/server/examples/claude_agent.py
-
-On your own Claude plan, through the unmodified Claude Code CLI you are
-logged in to (personal use; it counts against your plan's usage limits):
-
-    ... --think-ms 10000 --timeout-ms 30000 \\
-        --external python3 crates/server/examples/claude_agent.py --via claude-code
-
-`--external` must be the last gates-agent flag; what follows the program is
-this program's own. Its rules are the brief (`crates/server/brief/`, found
-beside this script, one level up, or at GATES_BRIEF_DIR).
-
-Two speeds. The tactician (CLAUDE_MODEL, effort low) answers every request:
-one goal, a reason, chat, and a short `thought` for spectators. It is shown
-the body's `character`, `memory` and `strategy` and follows the strategy.
-The strategist (STRATEGIST_MODEL, effort STRATEGIST_EFFORT) runs on a thread
-of its own, so it never holds up a turn: every STRATEGIST_EVERY_S seconds,
-and sooner when something big happens (a death, home attacked, a new face,
-the plan done, an enemy in sight, the friend arrived). It reads the
-character, memory and a digest of recent turns and leaves a `strategy`, a
-`plan` of up to 8 steps the autopilot follows between asks, `stance`s on
-people and a `thought`; the next reply carries them. With PLANNER_MODEL set,
-a strategist planning a raid, a takeover or a war may call a war council on
-that model, at most PLANNER_PER_DAY a day.
-
-A buddy: give gates-agent `--friend 0xYOURWALLET` and this program a
-character with `--persona "..."` (or GATES_PERSONA; a `character` in the
-request wins). The request then carries `friend`, and Claude meets them at
-THE GATE, teams up and plays with them.
-
-With gates-agent --voice the request says "voice": true: Claude may `speak` a
-line out loud, and what the players near it say out loud arrives in `heard`
-with "voice": true.
-
-Under jev-watch, GATES_FRAME_URL names the body's rendered view and each
-decision shows it to Claude. With DISCORD_WEBHOOK_URL set too, Claude may
-post a moment worth sharing (a frame and a caption) to that channel, at most
-once every SHARE_EVERY_S seconds.
-
-GATES_JOURNAL names a file each decision is appended to as one JSON line
-(the time, the goal, the reason, the thought, what it said and heard, a few
-observation fields, and the harness and model that answered): what
-`ops/buddy/clips.py` reads to find a buddy's moments. GATES_HARNESS names the
-harness on that line (default `claude_agent.py/api` or
-`claude_agent.py/claude-code`).
-
-Spend. GATES_SPEND names a file each API call's cost is appended to (dollars
-at Anthropic's posted prices, from the usage the call reports). With
-GATES_CREDIT_FILE too (one number, dollars), it asks nothing more once the
-file's spend reaches it: what a buddy run for a player (`ops/buddy/runner.py`)
-is billed by. GATES_STATUS (`{"left_usd": ...}`) is shown to it as `credit`;
-GATES_NOTES keeps its notes across restarts.
-
-The house pool. GATES_POOL names a JSON file every house mind on a box
-shares (flock'd beside it): GATES_POOL_USD dollars a calendar month (UTC),
-paced so today may spend (budget - spent before today) / days left in the
-month, split by class (GATES_POOL_CLASS, else the character's kind):
-protagonist 40%, villages 30%, teammates 15%, other 15%. Today's allowance
-accrues through the day (GATES_POOL_SMOOTH, on by default) so a mind that
-plays all day does not spend it by breakfast. Past STRATEGIST_HEADROOM of
-its share the strategist is skipped; past the share the tactician answers
-`error` and the autopilot plays the last plan.
+        --external python3 crates/server/examples/claude_agent.py [--via api|claude-code] [--persona TEXT]
 """
 import base64
 import calendar
@@ -1066,7 +1006,7 @@ def main():
                 save_notes(notes)
         except errors + (RuntimeError, ValueError, KeyError, TypeError, StopIteration) as e:
             # No goal in the reply: the body counts a failure and backs off.
-            # Never a substituted decision (JEV.md). The strategist's answer
+            # Never a substituted decision (AGENT-MANUAL.md). The strategist's answer
             # waits for the next reply.
             if thought_out:
                 strategist.give_back(thought_out)

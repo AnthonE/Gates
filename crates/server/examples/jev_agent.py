@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A tiny bring-your-own mind for gates-agent and jev-watch (JEV.md).
+"""A tiny bring-your-own mind for gates-agent and jev-watch (AGENT-MANUAL.md).
 
 The body starts this program and owns its pipes. Each request is one JSON
 line on stdin; each answer is one JSON line on stdout that echoes the id

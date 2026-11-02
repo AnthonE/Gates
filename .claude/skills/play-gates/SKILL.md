@@ -6,9 +6,9 @@ description: Put Claude in the game. Builds gates-agent, makes the agent's walle
 # Play Gates with Claude
 
 `gates-agent` is the agent's body. `crates/server/examples/claude_agent.py` is its
-mind: it calls the Anthropic API with the user's `ANTHROPIC_API_KEY`, once per
-decision. This session only sets things up and starts it. The full guide is
-`crates/server/JEV.md`, "Bring your own agent".
+mind: it calls the Anthropic API with the user's `ANTHROPIC_API_KEY`. This
+session only sets things up and starts it. Everything else (every flag,
+characters, memory, MCP, cost) is `crates/server/AGENT-MANUAL.md`.
 
 Argument: `local` plays on a private island on this machine (no key, nobody
 else there). Anything else, or nothing, is the public island,
@@ -97,15 +97,18 @@ claude mcp add gates -- "$PWD/target/release/gates-agent" --server game.elopros.
 session, the user says "play Gates: call look, then act, and keep going".
 The tools are `look`, `act` and `status`; a turn not answered in 45 s is
 played by the scripted autopilot. Other harnesses take the same command and
-arguments: `crates/server/JEV.md`, "MCP".
+arguments: `crates/server/AGENT-MANUAL.md`, "MCP".
 
-## Cost
+## Cost and character
 
 Every decision is one API request, so `--max-requests-hour` is the spend
 bound; a strategist (`STRATEGIST_MODEL`, Sonnet by default) also thinks
 every 10 minutes on a thread of its own (`STRATEGIST_EVERY_S=0` turns it
-off). `--character FILE` gives the agent a character (`ops/personas/` has
-examples) and `--memory FILE` lets it remember places and people across runs. `CLAUDE_MODEL` picks the model (the script defaults to
+off). `CLAUDE_MODEL` picks the model (the script defaults to
 `claude-opus-5-5`; `CLAUDE_MODEL=claude-sonnet-5-5` costs less). To bill the
 user's Claude plan instead of the key, add `--via claude-code` after the
 script, with `--think-ms 10000 --timeout-ms 30000`.
+
+`--character FILE` gives the agent a persona and traits (`ops/personas/` has
+examples) and `--memory FILE` lets it remember places and people across runs;
+both go before `--external`.
