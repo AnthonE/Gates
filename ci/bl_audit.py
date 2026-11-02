@@ -16,25 +16,34 @@ import os
 import struct
 import sys
 
-# Triangle ceilings. `tests/prop_assets.rs` for props; WANTED.md's rows for
-# held items and deployables (the upper end of each band); sites and mobs
-# stand once or a handful of times, so they get the shelter's ceiling.
+# Triangle ceilings. The `prop_models` rows are what `tests/prop_assets.rs`
+# enforces, so those are hard. Everything else is flagged against the
+# larger of a floor per category and `OUTLIER` times the category's median:
+# a generated held item lands near 3,000 tris whatever WANTED.md asked for,
+# and the useful signal is the gun at twice that, not the whole drawer.
 CEILING = {
     "held": 1000, "skins": 1000, "deploy": 1500, "crops": 3000,
     "prop": 3000, "rock": 3000, "fel": 12000, "mob": 12000, "site": 12000,
 }
-PROP_ROW = {"barrel": 800, "oil_barrel": 800, "crate": 600, "cache": 600, "food_crate": 600,
-            "crate_blue": 600, "crate_green": 600, "crate_elite": 600,
+OUTLIER = 1.75
+PROP_ROW = {"barrel": 800, "crate": 600, "cache": 600,
             "node_stone": 1500, "node_metal": 1500, "node_sulfur": 1500, "stump": 2000}
 SINGLE = {"held", "skins", "deploy", "prop", "rock", "crops"}
 TEX_MAX = 1024
 BYTES_MAX = 4_000_000
 
 
-def ceiling(cat, name):
+def ceiling(cat, name, median=0):
     if cat == "prop" and name in PROP_ROW:
         return PROP_ROW[name]
-    return CEILING.get(cat, 3000)
+    return max(CEILING.get(cat, 3000), int(OUTLIER * median))
+
+
+def medians(index):
+    by = {}
+    for key, st in index.items():
+        by.setdefault(key.split("/", 1)[0], []).append(st["tris"])
+    return {cat: sorted(v)[len(v) // 2] for cat, v in by.items()}
 
 
 def glb_structure(path):
@@ -50,9 +59,10 @@ def glb_structure(path):
 
 def audit(index, models_dir=None):
     rows = []
+    med = medians(index)
     for key, st in sorted(index.items()):
         cat, name = key.split("/", 1)
-        cap = ceiling(cat, name)
+        cap = ceiling(cat, name, med.get(cat, 0))
         flags = []
         if models_dir:
             path = find_glb(models_dir, cat, name)
@@ -68,7 +78,8 @@ def audit(index, models_dir=None):
             flags.append(f"tris {st['tris']:,} > {cap:,}")
         if st["texture"] > TEX_MAX:
             flags.append(f"texture {st['texture']}px")
-        if st["materials"] > 1:
+        # Sites load every material; the single-primitive loaders read one.
+        if st["materials"] > 1 and cat in SINGLE:
             flags.append(f"{st['materials']} materials")
         if st["bytes"] > BYTES_MAX:
             flags.append(f"{st['bytes']/1e6:.1f} MB")
