@@ -1,11 +1,11 @@
 ---
 name: play-gates
-description: Put Claude in the game. Builds jev-bot, makes the agent's wallet key once, and starts a Claude-driven agent on the public Gates island (or a private one with `local`), paid with the user's ANTHROPIC_API_KEY; `buddy 0xWALLET` makes it the user's own buddy, and `mcp` registers jev-bot as an MCP server so this Claude Code (or any MCP harness) plays it directly. Use when the user asks to play Gates with Claude, run their own AI agent, get an AI teammate or buddy, or hook an agent harness up to Gates.
+description: Put Claude in the game. Builds gates-agent, makes the agent's wallet key once, and starts a Claude-driven agent on the public Gates island (or a private one with `local`), paid with the user's ANTHROPIC_API_KEY; `buddy 0xWALLET` makes it the user's own buddy, and `mcp` registers gates-agent as an MCP server so this Claude Code (or any MCP harness) plays it directly. Use when the user asks to play Gates with Claude, run their own AI agent, get an AI teammate or buddy, or hook an agent harness up to Gates.
 ---
 
 # Play Gates with Claude
 
-`jev-bot` is the agent's body. `crates/server/examples/claude_agent.py` is its
+`gates-agent` is the agent's body. `crates/server/examples/claude_agent.py` is its
 mind: it calls the Anthropic API with the user's `ANTHROPIC_API_KEY`, once per
 decision. This session only sets things up and starts it. The full guide is
 `crates/server/JEV.md`, "Bring your own agent".
@@ -18,8 +18,8 @@ else there). Anything else, or nothing, is the public island,
 - `buddy 0xWALLET`: the agent plays with that wallet (the user's): it meets
   them at THE GATE, teams up, follows and talks on team chat, and costs no
   API calls while they are away. Add `--friend 0xWALLET` to step 4's
-  jev-bot flags (before `--external`).
-- `mcp`: no API key and no script. Register jev-bot as an MCP server (step 5)
+  gates-agent flags (before `--external`).
+- `mcp`: no API key and no script. Register gates-agent as an MCP server (step 5)
   so Claude Code itself, or Hermes, Codex, OpenClaw or any MCP harness, is
   the mind.
 
@@ -39,16 +39,16 @@ Run these and stop at the first gap, saying how to fix it:
 ## 2. Build once
 
 ```sh
-cargo build -p server --release --bin jev-bot
+cargo build -p server --release --bin gates-agent
 ```
 
-The first build takes several minutes. Afterwards call `target/release/jev-bot`.
+The first build takes several minutes. Afterwards call `target/release/gates-agent`.
 
 ## 3. Wallet key, once (public island only)
 
 ```sh
 mkdir -p -m 700 ~/.gates
-test -f ~/.gates/agent.key || target/release/jev-bot --new-key ~/.gates/agent.key
+test -f ~/.gates/agent.key || target/release/gates-agent --new-key ~/.gates/agent.key
 ```
 
 `--new-key` never overwrites a file and prints the address. Show the user the
@@ -59,7 +59,7 @@ Offer it a face (its name and picture on every nametag), if the user has a
 square PNG (64 to 512 px, at most 256 KiB):
 
 ```sh
-target/release/jev-bot --set-face --agent-key ~/.gates/agent.key --name claude --pic face.png
+target/release/gates-agent --set-face --agent-key ~/.gates/agent.key --name claude --pic face.png
 ```
 
 ## 4. Play
@@ -67,7 +67,7 @@ target/release/jev-bot --set-face --agent-key ~/.gates/agent.key --name claude -
 Public island (run in the background):
 
 ```sh
-target/release/jev-bot --server game.elopros.com:61234 \
+target/release/gates-agent --server game.elopros.com:61234 \
     --agent-key ~/.gates/agent.key --agent-name claude \
     --seconds 3600 --think-ms 3000 --timeout-ms 20000 --max-requests-hour 300 \
     --external python3 crates/server/examples/claude_agent.py
@@ -76,7 +76,7 @@ target/release/jev-bot --server game.elopros.com:61234 \
 Private island: the same, with `--local` in place of `--server …` and
 `--agent-key …`. It prints the island's address to join from the game.
 
-`--external` must stay the last jev-bot flag. Then tell the user, in a few
+`--external` must stay the last gates-agent flag. Then tell the user, in a few
 lines:
 
 - the `watch it live:` link it printed (its own first-person view);
@@ -89,7 +89,7 @@ lines:
 Register the body as a stdio MCP server; the harness's own model decides:
 
 ```sh
-claude mcp add gates -- "$PWD/target/release/jev-bot" --server game.elopros.com:61234 \
+claude mcp add gates -- "$PWD/target/release/gates-agent" --server game.elopros.com:61234 \
     --agent-key ~/.gates/agent.key --agent-name claude --mcp
 ```
 
@@ -102,7 +102,10 @@ arguments: `crates/server/JEV.md`, "MCP".
 ## Cost
 
 Every decision is one API request, so `--max-requests-hour` is the spend
-bound. `CLAUDE_MODEL` picks the model (the script defaults to
+bound; a strategist (`STRATEGIST_MODEL`, Sonnet by default) also thinks
+every 10 minutes on a thread of its own (`STRATEGIST_EVERY_S=0` turns it
+off). `--character FILE` gives the agent a character (`ops/personas/` has
+examples) and `--memory FILE` lets it remember places and people across runs. `CLAUDE_MODEL` picks the model (the script defaults to
 `claude-opus-5-5`; `CLAUDE_MODEL=claude-sonnet-5-5` costs less). To bill the
 user's Claude plan instead of the key, add `--via claude-code` after the
 script, with `--think-ms 10000 --timeout-ms 30000`.
