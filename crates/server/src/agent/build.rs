@@ -1564,6 +1564,84 @@ pub(crate) fn e_picks_by(
     door: OpAddr,
     slack: f32,
 ) -> bool {
+    e_picks_along(core, x, z, yaw, door, slack, None)
+}
+
+/// The look a press of `E` is made along, for [`e_picks_along`]: the eye,
+/// the view's pitch (its yaw is the press's own), and the point the press
+/// means, at the middle of a thing [`LOOKED_SPAN_M`] tall.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Looked {
+    pub eye: [f32; 3],
+    pub pitch: u8,
+    pub at: [f32; 3],
+}
+
+/// [`e_picks_by`], with the eye's ray: the human client's pick when it has
+/// an eye (`client::ui::interact::resolve`). The ray must meet the thing,
+/// and a bag is a rival only where the ray meets it no later than it meets
+/// the thing (the ray's first hit): a body lying in front of a box is under
+/// that look, not on it (#533, #540), and a box walked up to with the eyes
+/// still level is not looked at.
+pub(crate) fn e_picks_along(
+    core: &ClientCore,
+    x: f32,
+    z: f32,
+    yaw: u16,
+    door: OpAddr,
+    slack: f32,
+    looked: Option<Looked>,
+) -> bool {
+    let no_span = |_: &sim_core::deploy::DeployRec, _: u8| (0.0, 0.0);
+    let sight = looked.map(|l| {
+        let (fx, fz) = sim_core::yaw_dir(yaw);
+        let (ch, sv) = sim_core::pitch_dir(l.pitch);
+        client::ui::interact::Sight {
+            eye: l.eye,
+            dir: [fx * ch, sv, fz * ch],
+            span: &no_span,
+            reach: None,
+            lying: None,
+        }
+    });
+    // Where the ray meets the thing itself: its footprint, the span about
+    // the point. A thing with no footprint is met as far off as the point.
+    let target_t = match (sight.as_ref(), looked) {
+        (Some(s), Some(l)) => {
+            let rect = deploy_rec(core, door).and_then(|d| d.rect(deploy_def(core, d.row)?.arch));
+            match rect {
+                Some(rect) => {
+                    let (lo, hi) = LOOKED_SPAN_M;
+                    let Some(t) =
+                        client::ui::interact::sight_hit(s, &rect, l.at[1] - lo, l.at[1] + hi)
+                    else {
+                        return false;
+                    };
+                    Some(t)
+                }
+                None => Some(
+                    ((l.at[0] - l.eye[0]).powi(2)
+                        + (l.at[1] - l.eye[1]).powi(2)
+                        + (l.at[2] - l.eye[2]).powi(2))
+                    .sqrt(),
+                ),
+            }
+        }
+        _ => None,
+    };
+    let bag_in_way = |b: &protocol::event::WireBag| -> bool {
+        let (Some(sight), Some(target_t)) = (sight.as_ref(), target_t) else {
+            return true;
+        };
+        let (r, h) = client::ui::interact::bag_pick_m(b);
+        let (bx, by, bz) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * sim_core::movement::POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        let rect = sim_core::footprint::Rect::new(bx, bz, r, r, 0);
+        client::ui::interact::sight_hit(sight, &rect, by, by + h).is_some_and(|t| t <= target_t)
+    };
     let (fx, fz) = sim_core::yaw_dir(yaw);
     // The client's `E` reach (`interact::REACH_M`): a station's, and a
     // door's shorter one to where it hangs.
@@ -1609,6 +1687,7 @@ pub(crate) fn e_picks_by(
             core.bags
                 .entries()
                 .iter()
+                .filter(|b| bag_in_way(b))
                 .map(|b| (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q, E_RANK_BAG)),
         );
     for (px, pz, r) in rivals {
@@ -1630,6 +1709,11 @@ pub(crate) fn e_picks_by(
     }
     true
 }
+
+/// What [`e_picks_along`] takes a looked-at thing to span about its look
+/// point, `(below, above)` metres: a box 0.65 m tall looked at from
+/// `supply`'s lift, a little over a third of the way up.
+pub(crate) const LOOKED_SPAN_M: (f32, f32) = (0.35, 0.3);
 
 /// A bag's place in `E`'s tiebreak.
 const E_RANK_BAG: u8 = 2;
@@ -1691,6 +1775,36 @@ pub(crate) fn aim_point(
         })
         .unwrap_or([px, py, pz])
 }
+
+/// Where a box is looked at from (`x`, `z`) to press `E` on it, and the
+/// eye that looks: [`aim_point`], lifted on the ground floor from a hand
+/// over the floor to about the box's middle. Looked at along the floor, the
+/// ray ran through a body lying in front of the box, which `E` then took
+/// (#533, #540). Pass the pair to [`e_picks_along`].
+pub(crate) fn box_look(
+    core: &ClientCore,
+    seed: u64,
+    haven: &Haven,
+    at: OpAddr,
+    body: &protocol::EntityState,
+) -> ([f32; 3], [f32; 3]) {
+    let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    let mut look = aim_point(core, seed, haven, at, x, z);
+    if at.level == 0 {
+        look[1] += BOX_LOOK_LIFT_M;
+    }
+    let eye = [
+        x,
+        body.qy as f32 * sim_core::movement::POS_Y_Q + crate::agent::tracks::eye_m(false),
+        z,
+    ];
+    (eye, look)
+}
+
+/// How far above where a ground-floor box is looked at (`look_point`, a
+/// hand above its floor) [`box_look`] looks: to about the middle of a box
+/// 0.65 m tall, where the eye's ray clears what lies in front of it.
+const BOX_LOOK_LIFT_M: f32 = 0.25;
 
 /// The plot cell's far corner, where the core, the stair cell and the
 /// airlock meet.

@@ -34,7 +34,7 @@
 //! `Issued At`. [`AgentKey::sign_companion_hex`] builds the companion page's
 //! sign-in (`protocol::companion_message`) the same way, which no shard takes
 //! as a game login. [`AgentKey::sign_face`] builds the platform's `profile`
-//! text (its display name and picture, `jev-bot --set-face`) from typed fields.
+//! text (its display name and picture, `gates-agent --set-face`) from typed fields.
 //! No caller hands this key a sentence to sign, so no caller can smuggle one
 //! into a signature.
 
@@ -363,7 +363,7 @@ pub const FACE_NAME_MAX: usize = 16;
 /// The longest harness or model label a face takes.
 pub const LABEL_MAX: usize = 48;
 
-/// What a face says plays it (`jev-bot --agent-harness`, `--agent-model`):
+/// What a face says plays it (`gates-agent --agent-harness`, `--agent-model`):
 /// self-declared, like `kind`. `None` leaves a label out of the text, so a
 /// face that names neither signs exactly what it always did; `Some("")`
 /// clears one.

@@ -1,11 +1,13 @@
 # Buddies on the public shard: Claude-minded agents players get on
-# elopros.com/buddy.html (the platform's `meter/buddy.py`): a buddy that plays
+# elopros.com/get-agent.html (the platform's `meter/buddy.py`): a buddy that plays
 # with its owner, solo agents its owner backs, and our community agents.
-# This runs `ops/buddy/runner.py`, which starts one jev-bot per agent with
+# This runs `ops/buddy/runner.py`, which starts one gates-agent per agent with
 # credit (its own key, its owner's `--friend` for a buddy, a name and a
 # face from the platform), stops it when its pool is spent, and writes what
-# each spent and is doing to /var/lib/gates-buddies/public/rent.json. An
-# agent with its owner's brain runs `jev-bot --mcp` instead, played through
+# each spent and is doing to /var/lib/gates-buddies/public/rent.json, and
+# the Watch feed (every house body and agent, 60 s behind) to
+# public/watch.json beside the island's map.png (`ops/buddy/watch.py`). An
+# agent with its owner's brain runs `gates-agent --mcp` instead, played through
 # the bridge on 127.0.0.1:8433 (`ops/buddy/mind_bridge.py`); once a day each
 # agent gets a written recap, and `ops/gates-clips.service` cuts clips of
 # the ones whose owners turned them on.
@@ -29,8 +31,9 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gates-buddies
 #   journalctl -u gates-buddies -f
 #
-# and the `/gates/rent.json`, `/gates/mind/` and `/gates/clips/` blocks in
-# `ops/game-elopros-status.nginx.conf`. `ci/deploy_shard.sh` installs jev-bot,
+# and the `/gates/rent.json`, `/gates/watch.json`, `/gates/map.png`,
+# `/gates/mind/` and `/gates/clips/` blocks in
+# `ops/game-elopros-status.nginx.conf`. `ci/deploy_shard.sh` installs gates-agent,
 # claude_agent.py and runner.py (with mind_bridge.py and recap.py) to
 # /opt/gates-agents and restarts this, so a wire bump never strands an agent.
 #
@@ -44,8 +47,9 @@
 # CDNs no address list keeps up with.
 #
 # Doctor Wood is one of ours here (a community agent who keeps the
-# platform's ELO_BUDDY_HOUSE_FRIEND as his friend). To keep his body, name
-# and history from the old gates-buddy@doctor-wood unit, once:
+# platform's ELO_BUDDY_HOUSE_FRIEND as his friend; his character and voice
+# are `ops/personas/doctor-wood.toml`). The old gates-buddy@ unit is retired;
+# if it is still installed, keep his body, name and history from it, once:
 #
 #   sudo install -o master -g master -m 600 ~master/gates-jev/doctor-wood.key \
 #       /var/lib/gates-buddies/keys/pot-doctor-wood.key
@@ -80,10 +84,11 @@ StateDirectoryMode=0755
 # buddy's clips and spend.
 UMask=0002
 Environment="BUDDY_STATE=/var/lib/gates-buddies"
-Environment="JEV_BOT=/opt/gates-agents/jev-bot"
+Environment="JEV_BOT=/opt/gates-agents/gates-agent"
+Environment="BUDDY_PERSONAS=/opt/gates-agents/personas"
 Environment="CLAUDE_AGENT=/opt/gates-agents/claude_agent.py"
 Environment="PYTHONDONTWRITEBYTECODE=1"
-# Bug reports the minds file (`jev-bot`'s copies).
+# Bug reports the minds file (`gates-agent`'s copies).
 Environment="GATES_REPORTS_DIR=/var/lib/gates-buddies/reports"
 ExecStart=/opt/gates-agents/venv/bin/python /opt/gates-agents/runner.py
 Restart=always

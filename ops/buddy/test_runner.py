@@ -266,8 +266,18 @@ runner.start("pot-doctor-wood", got["pot-doctor-wood"])
 cmd, env, _ = calls[-1]
 check("Doctor Wood speaks in his voice", cmd.index("--voice") < cmd.index("--external")
       and env["GATES_ELEVEN_VOICE"] == runner.VOICES["pot-doctor-wood"])
+runner.PERSONAS = os.path.join(HERE, "..", "personas")
+runner.start("pot-doctor-wood", got["pot-doctor-wood"])
+cmd, env, _ = calls[-1]
+check("Doctor Wood plays his character file, in its voice and style",
+      cmd[cmd.index("--character") + 1].endswith("doctor-wood.toml")
+      and env["GATES_ELEVEN_VOICE"] == runner.VOICES["pot-doctor-wood"] and "Triple T" in env["GATES_TTS_STYLE"])
+check("every body keeps its own journal and memory under the runner's state",
+      cmd[cmd.index("--journal") + 1].endswith("body/pot-doctor-wood.jsonl")
+      and cmd[cmd.index("--memory") + 1].endswith("memory/pot-doctor-wood.json"))
 runner.start("a000000001", got["a000000001"])
 cmd = calls[-1][0]
+check("a buddy plays no character file of ours", "--character" not in cmd)
 check("a house buddy waits on its friend for free", "--friend" in cmd and "--friend-away" not in cmd)
 check("only ours speak", "--voice" not in cmd)
 check("an owner's buddy is never put on autopilot alone", "--alone" not in cmd)

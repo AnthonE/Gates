@@ -45,6 +45,11 @@ fn main() -> AppExit {
             std::process::exit(2);
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(why) = x11_missing() {
+        eprintln!("gates: {why}");
+        std::process::exit(1);
+    }
     let server = a.server.clone();
     let capture = a.capture.clone();
     // A reused `--capture` directory's manifest is the last run's: gone
@@ -362,4 +367,26 @@ fn icon() -> Option<winit::window::Icon> {
         _ => return None,
     };
     winit::window::Icon::from_rgba(rgba, frame.width, frame.height).ok()
+}
+
+/// The X11 library winit `dlopen`s for the keyboard, asked for before the
+/// window: without it winit panics deep in its X11 backend (#524), and that
+/// is a crash report for a package the player has not installed. Under
+/// Wayland winit does not need it.
+#[cfg(target_os = "linux")]
+fn x11_missing() -> Option<&'static str> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    // SAFETY: loading a system library whose initialisers are the
+    // distribution's; winit loads this same one a moment later.
+    let found = ["libxkbcommon-x11.so.0", "libxkbcommon-x11.so"]
+        .into_iter()
+        .any(|name| unsafe { libloading::Library::new(name) }.is_ok());
+    (!found).then_some(
+        "this system is missing libxkbcommon-x11, which the window needs on X11. \
+         Install it (Debian/Ubuntu: `sudo apt install libxkbcommon-x11-0`; \
+         Fedora: `sudo dnf install libxkbcommon-x11`; Arch: `sudo pacman -S libxkbcommon-x11`) \
+         and start the game again.",
+    )
 }

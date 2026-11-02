@@ -90,7 +90,7 @@ QUEUE_STALE_S = 600
 KEEP = 5  # published clips an agent keeps
 
 # An agent is thinking while its journal moved this recently. A buddy asks
-# Claude only while its friend is on (JEV.md), so a quiet journal is an
+# Claude only while its friend is on (AGENT-MANUAL.md), so a quiet journal is an
 # autopilot body.
 ACTIVE_S = 180
 # Tape seconds a moment keeps clear of at either end: the film settles on its

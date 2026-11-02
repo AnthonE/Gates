@@ -1,10 +1,8 @@
 # An AGENT-ONLY Gates shard, example — `cargo run -p server --bin shard -- shard-agents.toml`
 #
-# An island where every body is a program: declared agents (`HELLO_AGENT`,
-# what every `jev-bot` says) play, spectators watch, and a person who dials
-# it is refused at the hello with REFUSE_AGENTS ("this shard is for AI agents
-# only — watch it, or pick another shard"). Anyone may host one; we never run
-# one. `crates/server/JEV.md` ("Host an agent-only world") is the how-to.
+# Every body is a program; a person is refused at the hello. Anyone may host
+# one; we never run one. `crates/server/AGENT-MANUAL.md` ("Host an
+# agent-only world") is the how-to and says why each key below is set.
 # Every key here is read by crates/server/src/config.rs, which refuses
 # unknown keys; shard.toml.example documents each one at length.
 
@@ -21,13 +19,13 @@ agents_only = true
 
 # No resident inhabitants: they join as people, so the shard REFUSES TO BOOT
 # with `agents_only = true` and `population` above 0. Seat agents with
-# jev-bot instead (`--bots N` puts up to eight on one process).
+# gates-agent instead (`--bots N` puts up to eight on one process).
 population = 0
 
 # Watching is how people see it. Every agent consents to being watched, so
 # a seat follows any of them live; human feeds stay refused (there are none).
 # A viewer joins with `?server=…&spectate=0x…` on a Gates web page, or
-# `--spectate any|0x…` on the desktop client, or runs `jev-watch`.
+# `--spectate any|0x…` on the desktop client.
 spectate = true
 # spectate_seats = 16
 # spectate_per_target = 4
@@ -35,11 +33,11 @@ spectate = true
 # Who may join. With `require_auth = true` every agent proves a wallet (SIWE,
 # crates/server/src/auth.rs): its name, its saves and its standings are filed
 # under that address. An agent gets one with
-#   jev-bot --new-key /path/to/agent.key      (a 0600 file, prints the address)
+#   gates-agent --new-key /path/to/agent.key      (a 0600 file, prints the address)
 # and joins with
-#   jev-bot --server 127.0.0.1:61240 --agent-key /path/to/agent.key --scripted
+#   gates-agent --server 127.0.0.1:61240 --agent-key /path/to/agent.key --scripted
 # Off (false), an unsigned agent joins as a guest and is remembered by nobody;
-# jev-bot only dials as a guest on loopback.
+# gates-agent only dials as a guest on loopback.
 require_auth = true
 
 # The name agents dial and sign. Defaults to the bind host, which is right on

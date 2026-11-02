@@ -398,23 +398,26 @@ fn the_agent_presses_only_buttons_the_human_client_sends() {
 }
 
 /// The walls read `shipped` text, so a cut that eats real code blinds them
-/// without failing. jev.rs gates a const near the top, well above its test
-/// module: its request code must survive, and no test code may.
+/// without failing. external.rs gates a const near the top, well above its
+/// test module: its request code must survive, and no test code may.
 #[test]
 fn shipped_text_cuts_only_the_test_items() {
     let src = root().join("crates/server/src");
-    let jev = shipped(&src.join("jev.rs"));
+    let external = shipped(&src.join("external.rs"));
     for kept in [
-        "pub struct Jev",
-        "impl Jev",
-        "INSTRUCTIONS",
-        "MAX_RESPONSE_BYTES",
+        "pub struct External",
+        "impl External",
+        "fn observation",
+        "EXTERNAL_MAX_LINE_BYTES",
     ] {
-        assert!(jev.contains(kept), "shipped jev.rs lost {kept}");
+        assert!(external.contains(kept), "shipped external.rs lost {kept}");
     }
-    assert!(!jev.contains("REQUEST_BYTES_MAX"), "a gated const survived");
+    assert!(
+        !external.contains("REQUEST_BYTES_MAX"),
+        "a gated const survived"
+    );
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let text = shipped(&file);
         for test_only in ["#[cfg(test)]", "#[test]", "mod tests"] {
@@ -451,7 +454,7 @@ fn the_agent_speaks_only_through_the_human_clients_chat_encoder() {
     );
     let src = root().join("crates/server/src");
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let shipped = shipped(&file);
         for banned in ["encode_event_chat", "push_chat", "say_server", "KIND_CHAT"] {
@@ -468,7 +471,7 @@ fn the_agent_speaks_only_through_the_human_clients_chat_encoder() {
 fn the_observation_encoder_and_the_mind_read_no_world() {
     let src = root().join("crates/server/src");
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let shipped = shipped(&file);
         for banned in ["sim_core::world", "World::", ".world.", "ShardCore"] {
@@ -802,7 +805,7 @@ impl Harness {
                 // A door swung, or a fire, a recycler or a research table
                 // switched (`C`, on the same pick).
                 ActionMsg::Use { cx, cz, level, loc } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let switch = matches!(pick.verb, Verb::Fire | Verb::Recycler | Verb::Research);
                     assert!(
                         (pick.verb == Verb::Door || switch)
@@ -818,7 +821,7 @@ impl Harness {
                     kind: CONT_BOX,
                     cont,
                 } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     assert!(
                         matches!(
                             pick.verb,
@@ -843,7 +846,7 @@ impl Harness {
                     op,
                     ..
                 } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let at = (pick.cx, pick.cz, pick.level, pick.loc) == (cx, cz, level, loc);
                     let human = if sim_core::deploy::op_is_crew(op) {
                         pick.verb == Verb::Hearth && !pick.has_lock && at
@@ -894,7 +897,7 @@ impl Harness {
                 // The tree is bought from the panel `E` on a bench opens,
                 // at that bench's rung: the node's tier or above.
                 ActionMsg::Unlock { recipe } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let station = self.shard.world.craft.recipes[usize::from(recipe)].station;
                     let tier = sim_core::research::node_tier(station);
                     assert!(
@@ -951,7 +954,7 @@ impl Harness {
                     self.pick_checks += 1;
                 }
                 ActionMsg::Feed { cx, cz, level } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     assert_eq!(
                         (pick.verb, pick.cx, pick.cz, pick.level),
                         (Verb::Hearth, cx, cz, level),
@@ -1061,14 +1064,44 @@ impl Harness {
 
     /// What the human client's `E` would pick from the bot's body, facing
     /// wire yaw `yaw`, over what its client holds.
-    fn e_pick(&self, yaw: u16) -> client::ui::interact::Pick {
-        use client::ui::interact::{resolve, Aim};
+    fn e_pick(&self, frame: &sim_core::input::InputFrame) -> client::ui::interact::Pick {
+        use client::ui::interact::{resolve, Aim, Sight};
         let core = self.bot.core().unwrap();
         let me = self.view.get(ID).copied().unwrap();
         let q = sim_core::movement::POS_XZ_Q;
-        let (fx, fz) = sim_core::yaw_dir(yaw);
+        let (x, z) = (me.qx as f32 * q, me.qz as f32 * q);
+        let (fx, fz) = sim_core::yaw_dir(frame.yaw);
+        // The eye the human client picks along (`render::verbs`): from the
+        // stance's eye, on this frame's yaw and pitch. Heights are lent
+        // generously (the render table is not here), so a thing is never
+        // missed for being drawn taller than this guess; a bag is judged by
+        // the ray as the client judges it.
+        let crouched = frame.buttons & sim_core::input::BTN_CROUCH != 0;
+        let eye_y =
+            me.qy as f32 * sim_core::movement::POS_Y_Q + server::agent::tracks::eye_m(crouched);
+        let (ch, sv) = sim_core::pitch_dir(frame.pitch);
+        let haven = common::haven();
+        let cols = core.pieces.cols();
+        let span = |rec: &sim_core::deploy::DeployRec, arch: u8| {
+            let base = sim_core::deploy::body_base_y(SEED, &haven, cols, rec, arch);
+            let tall = if sim_core::deploy::is_edge_loc(rec.loc) {
+                2.2
+            } else {
+                1.0
+            };
+            (base, base + tall)
+        };
+        let mut aim = Aim::new(x, z, fx, fz);
+        aim.cols = Some(cols);
+        aim.sight = Some(Sight {
+            eye: [x, eye_y, z],
+            dir: [fx * ch, sv, fz * ch],
+            span: &span,
+            reach: None,
+            lying: None,
+        });
         resolve(
-            Aim::new(me.qx as f32 * q, me.qz as f32 * q, fx, fz),
+            aim,
             core.deploys.entries(),
             &core.deploy_defs,
             core.deploy_defs_have,
@@ -2783,7 +2816,7 @@ impl server::mind::DecisionSource for ChestWhenOffered {
 /// `supply`, it is left inside with a hatchet instead of the wood, and is
 /// sent on a wood run: walled in, it goes out by the door first, chops what
 /// it finds for the run's minutes, then fills the chest the same way.
-fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
+fn a_teammate_fills_the_team_chest(locked: bool, supply: bool, corpse: bool) {
     use server::agent::lock::LockCode;
     use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
     use sim_core::deploy::ACCESS_OP_SET_CODE;
@@ -2905,6 +2938,33 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
             .find(bx, bz, 0, LOC_EDGE_ZLO)
             .is_some_and(|d| !d.open)
     };
+    if corpse {
+        // #533: a teammate starved to death by the box, on the one side it
+        // can be walked up to: its backpack and corpse lie between where
+        // the agent stops and the box, and `E` from there takes them.
+        let spot = place(bxf + 3.8, bzf + 1.5);
+        h.stage_puppet(move |p| {
+            p.body = spot;
+            p.hp = 1;
+            p.food = 0;
+            p.water = 0;
+        });
+        let dead = |h: &Harness| {
+            h.shard
+                .world
+                .players
+                .iter()
+                .any(|p| p.id == PUPPET && p.dead)
+        };
+        for _ in 0..120 * TICK_HZ {
+            if dead(&h) {
+                break;
+            }
+            h.step();
+        }
+        assert!(dead(&h), "the teammate never died");
+        assert_eq!(h.shard.world.backpacks.len(), 2, "a backpack and a corpse");
+    }
     assert!(shut(&h), "the door stands shut");
 
     let secs = if supply {
@@ -2965,17 +3025,26 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
 
 #[test]
 fn a_teammate_fills_the_team_chest_through_its_door() {
-    a_teammate_fills_the_team_chest(false, false);
+    a_teammate_fills_the_team_chest(false, false, false);
 }
 
 #[test]
 fn a_teammate_given_the_code_fills_the_chest_behind_a_lock() {
-    a_teammate_fills_the_team_chest(true, false);
+    a_teammate_fills_the_team_chest(true, false, false);
 }
 
 #[test]
 fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
-    a_teammate_fills_the_team_chest(false, true);
+    a_teammate_fills_the_team_chest(false, true, false);
+}
+
+/// #533: a teammate's backpack and corpse at the team's box, in front of it
+/// on the only side it can be walked up to. `E` once took them (the pick
+/// was nearest on the flat aim line), and the box never opened; looked at
+/// along the eye's ray, over the body to the box's middle, it opens.
+#[test]
+fn a_body_in_front_of_the_team_chest_does_not_keep_it_shut() {
+    a_teammate_fills_the_team_chest(false, false, true);
 }
 
 /// The starter's ground floor as a founder leaves it (`sim_core::bots::
@@ -3999,6 +4068,51 @@ fn a_survivor_sells_its_surplus_wood_at_the_gate() {
     assert_eq!(units_of(h.me(), junk), 4, "a thousand wood is four junk");
     assert!(h.verbs.contains("vend"), "{:?}", h.verbs);
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// A sale at THE GATE from where the shard's agents said it never got
+/// there ("could not reach a target": #452 at the gate, #537 80 m out; same
+/// seed as the public shard, so the same town), and from 80 m out on every
+/// side. From the west the walk is a detour round the town, and a detour
+/// once walked away from its own waypoint whenever its leg had no path in
+/// hand.
+#[test]
+fn a_survivor_sells_wood_from_every_side_of_the_town() {
+    let haven0 = sim_core::terrain::haven(SEED);
+    let (kx, kz) = sim_core::town::kiosk_world(&haven0.town, 0).unwrap();
+    let mut spots = vec![(1843.0, 2053.0), (1911.0, 2094.0)];
+    for k in 0..8 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+        spots.push((kx + 80.0 * a.cos(), kz + 80.0 * a.sin()));
+    }
+    let mut failed = Vec::new();
+    for at in spots {
+        let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+        let haven = sim_core::terrain::haven(SEED);
+        let content = common::content();
+        let mut h = Harness::with_mind(false, at, mind);
+        h.until(5, |_| false);
+        let wood = sim_core::gather::ItemStack {
+            count: 1000,
+            ..common::stack(&content, "item.wood")
+        };
+        h.stage(move |p| {
+            p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+            for i in 0..4 {
+                p.inv[HOTBAR_SLOTS + i] = wood;
+            }
+        });
+        let sold = h.until(120 * TICK_HZ, |b| {
+            b.history
+                .iter()
+                .any(|r| matches!(r.goal, Goal::Sell(_)) && r.outcome == Outcome::Done)
+        });
+        if !sold {
+            eprintln!("no sale from {at:?}: {}", h.explain());
+            failed.push(at);
+        }
+    }
+    assert!(failed.is_empty(), "no sale from {failed:?}");
 }
 
 /// THE GATE's research table makes paper of what an agent found: carrying a

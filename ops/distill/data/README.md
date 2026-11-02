@@ -36,5 +36,5 @@ Held out is 24 lockstep islands (`school` variants 30000-30023), 2 bodies,
 python3 ops/distill/train.py ops/distill/data/opus-2026-10-21 -o student.json --val 0 --epochs 60
 gunzip -k ops/distill/data/students/opus-bred.json.gz
 cargo run -p server --release --example school -- --student ops/distill/data/students/opus-bred.json
-cargo run -p server --release --bin jev-bot -- --bench 60 --warp --student ops/distill/data/students/opus-bred.json
+cargo run -p server --release --bin gates-agent -- --bench 60 --warp --student ops/distill/data/students/opus-bred.json
 ```

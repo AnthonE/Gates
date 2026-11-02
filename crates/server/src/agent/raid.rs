@@ -26,7 +26,7 @@
 //! hole is remembered ([`Base::open`]): the next raid on that base walks
 //! back in through it until the eyes see the face stand there again.
 
-use crate::agent::build::{aim_point, e_picks_by, look_point, nearest_structure};
+use crate::agent::build::{box_look, e_picks_along, look_point, nearest_structure, Looked};
 use crate::agent::combat::Temperament;
 use crate::agent::hands::Hands;
 use crate::agent::home::{belt_move, HOLD_TICKS};
@@ -1305,8 +1305,9 @@ impl RaidJob {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if let Some((at, lid)) = self.chest {
             let key = box_key(at.cx, at.cz, at.level, at.loc);
+            let (eye, look) = box_look(core, seed, haven, at, body);
             let intent = Intent {
-                look: Look::Point(aim_point(core, seed, haven, at, x, z)),
+                look: Look::Point(look),
                 ..Intent::IDLE
             };
             match lid {
@@ -1332,7 +1333,12 @@ impl RaidJob {
                         (cx - x).hypot(cz - z) <= BOX_STAND_M,
                         tick,
                     ) {
-                        Some(Ok(walk)) => return Raid::Go(walk),
+                        // Walking, the eyes are on the way, not the box:
+                        // the hold on it starts again once there.
+                        Some(Ok(walk)) => {
+                            self.chest = Some((at, Lid::Aiming(tick)));
+                            return Raid::Go(walk);
+                        }
                         Some(Err(_)) => {
                             self.box_tries = BOX_TRIES;
                             return Raid::Go(Intent::IDLE);
@@ -1341,7 +1347,19 @@ impl RaidJob {
                     }
                     if tick.wrapping_sub(since) >= HOLD_TICKS
                         && hands.settled()
-                        && e_picks_by(core, x, z, hands.view().0, at, 0.0)
+                        && e_picks_along(
+                            core,
+                            x,
+                            z,
+                            hands.view().0,
+                            at,
+                            0.0,
+                            Some(Looked {
+                                eye,
+                                pitch: hands.view().1,
+                                at: look,
+                            }),
+                        )
                     {
                         return Raid::Open { key, intent };
                     }

@@ -22,7 +22,7 @@
 //! salvage, raw stuff); else an empty one; else whichever has room. So the
 //! boxes sort themselves the way the team started them.
 
-use crate::agent::build::{aim_point, e_picks_by, Stations};
+use crate::agent::build::{box_look, e_picks_along, Looked, Stations};
 use crate::agent::doors::{nearest_door, Doors, Through, HOP_M, MAX_DOORS, MAX_TRIES};
 use crate::agent::hands::Hands;
 use crate::agent::home::HOLD_TICKS;
@@ -748,6 +748,10 @@ pub struct HomeJob {
     moving: (u16, bool),
     moves: u8,
     tries: u8,
+    /// Every try so far failed at the aim: `E` from where it stood never
+    /// took the box (a bag or a corpse in front of it), so nothing went to
+    /// the server.
+    aim_only: bool,
     /// Why the trip failed inside, said once it is back out.
     failed: Option<Why>,
     /// Units put in the boxes, and taken out.
@@ -780,6 +784,7 @@ impl HomeJob {
             moving: (0, true),
             moves: 0,
             tries: 0,
+            aim_only: true,
             failed: None,
             put: 0,
             took: 0,
@@ -882,7 +887,12 @@ impl HomeJob {
     ) -> Deliver {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if self.tries >= MAX_TRIES {
-            return self.fail(Why::Refused);
+            let why = if self.aim_only {
+                Why::Blocked
+            } else {
+                Why::Refused
+            };
+            return self.fail(why);
         }
         if self.doors.busy() {
             return match self
@@ -1078,8 +1088,9 @@ impl HomeJob {
             return Deliver::IDLE;
         }
         let key = box_key(chest.cx, chest.cz, chest.level, chest.loc);
+        let (eye, look) = box_look(core, seed, haven, chest, body);
         let intent = Intent {
-            look: Look::Point(aim_point(core, seed, haven, chest, x, z)),
+            look: Look::Point(look),
             ..Intent::IDLE
         };
         let go = Deliver::Door(Through::Go(intent));
@@ -1093,7 +1104,19 @@ impl HomeJob {
                 }
                 if tick.wrapping_sub(since) >= HOLD_TICKS
                     && hands.settled()
-                    && e_picks_by(core, x, z, hands.view().0, chest, 0.0)
+                    && e_picks_along(
+                        core,
+                        x,
+                        z,
+                        hands.view().0,
+                        chest,
+                        0.0,
+                        Some(Looked {
+                            eye,
+                            pitch: hands.view().1,
+                            at: look,
+                        }),
+                    )
                 {
                     return Deliver::Open { key, intent };
                 }
@@ -1107,6 +1130,7 @@ impl HomeJob {
                 if box_open(core, key) {
                     self.lid = Lid::Open;
                 } else if tick.wrapping_sub(sent) >= VERDICT_TICKS {
+                    self.aim_only = false;
                     self.tries = self.tries.saturating_add(1);
                     self.lid = Lid::Aiming(tick);
                 }
@@ -1131,6 +1155,7 @@ impl HomeJob {
                 }
                 if !box_open(core, key) {
                     // The panel shut under it.
+                    self.aim_only = false;
                     self.tries = self.tries.saturating_add(1);
                     self.lid = Lid::Aiming(tick);
                     return go;

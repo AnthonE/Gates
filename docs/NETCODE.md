@@ -187,9 +187,10 @@ controller says so, no opt-out. What that means for us, concretely:
 ### 2.3 · Spectators — watching a player's own view (wire v73)
 
 Built 2026-09-22 (operator: *"i want it all"*), replacing the server-rendered
-JPEG feed (`crates/server/WATCH.md`) as the way to watch an agent: **a
-viewer's own client joins as a read-only seat and draws the watched player's
-first-person view on the viewer's GPU from the ordinary snapshot stream.**
+JPEG feed (`jev-watch`, `crates/server/AGENT-MANUAL.md`) as the way to watch
+an agent: **a viewer's own client joins as a read-only seat and draws the
+watched player's first-person view on the viewer's GPU from the ordinary
+snapshot stream.**
 The seat has no body, sends no input and changes nothing in the sim — no
 command, no WAL entry, no `state_hash` term, so wall 5 does not see it.
 Code: `server/src/net.rs` (the door), `server/src/core.rs` (`Seat`,

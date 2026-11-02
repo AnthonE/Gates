@@ -54,6 +54,13 @@ pub const ALONE: Gate = Gate {
     },
 };
 
+/// A society member whose mind thinks while it is alone: the crew coming
+/// together at THE GATE is still the playbook's (as under [`ALONE`]).
+pub const CREW_FORMING: Gate = Gate {
+    rule: crate::mind::crew_forming,
+    why: |_| "the crew is coming together",
+};
+
 pub struct Autopilot<P> {
     primary: P,
     scripted: Scripted,
@@ -68,6 +75,13 @@ impl<P: DecisionSource> Autopilot<P> {
             scripted: Scripted::default(),
             gate,
         }
+    }
+
+    /// The scripted policy plays as this character
+    /// (`character::Knobs`).
+    pub fn with_knobs(mut self, knobs: crate::character::Knobs) -> Self {
+        self.scripted.set_knobs(knobs);
+        self
     }
 
     fn fly(&mut self, why: &str, s: &Summary) -> Result<Choice, String> {
@@ -126,6 +140,18 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
 
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
         self.primary.take_note()
+    }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.primary.set_context(ctx);
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.primary.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.scripted.plan_done()
     }
 }
 

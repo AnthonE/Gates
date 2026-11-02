@@ -1,0 +1,109 @@
+# The house protagonist on the public shard: one Claude-minded body that plays
+# around the clock, alone or not, and means to take the island over (Ryuzen,
+# `ops/personas/ryuzen.toml`). Two speeds of mind (`claude_agent.py`): a
+# cheap tactician picks every goal and a strategist on a thread of its own
+# keeps his ambition, project, plan and grudges, with a rare war council for
+# a raid or a takeover. His memory of places and people is kept across
+# restarts (`--memory`); every decision is a journal line the buddies runner
+# publishes to the Watch page (`/gates/watch.json`).
+#
+# Once, as root (the instance name is the character file's, `ryuzen`):
+#
+#   the gates-agents account, /opt/gates-agents and its venv
+#   (`ops/gates-village@.service`, `ops/gates-buddies.service`)
+#   sudo install -d -m 0700 -o gates-agents -g gates-agents /var/lib/gates-protagonist/ryuzen
+#   sudo -u gates-agents /opt/gates-agents/gates-agent --new-key /var/lib/gates-protagonist/ryuzen/agent.key
+#   # optional, a face on his nametag (a square PNG, 64-512 px):
+#   sudo -u gates-agents /opt/gates-agents/gates-agent --set-face \
+#       --agent-key /var/lib/gates-protagonist/ryuzen/agent.key --name Ryuzen --pic ryuzen.png
+#   /etc/gates-protagonist/ryuzen.env   (0600, outside the repo)
+#     ANTHROPIC_API_KEY=sk-ant-...
+#     AGENT_NAME=Ryuzen
+#   sudo cp ops/gates-protagonist@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-protagonist@ryuzen
+#   journalctl -u gates-protagonist@ryuzen -f
+#
+# Spend: the house pool (`GATES_POOL`, $400 a calendar month shared by every
+# house mind on this box; `claude_agent.py`). The protagonist's share is 40%
+# of each day's allowance, accrued through the day. Past 80% of it the
+# strategist waits; past all of it the autopilot plays his last plan until
+# the allowance catches up. `--max-requests-*` is only the ceiling. Each call's
+# cost also goes to his own spend.jsonl. Log his key's address in the
+# platform's `docs/money/HELD-KEYS.md`; it holds nothing and signs only logins.
+
+[Unit]
+Description=Gates protagonist %i on game.elopros.com:61234
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/brief/strategist.md
+After=network-online.target
+Wants=network-online.target
+# A shard restart or deploy drops the connection; keep coming back.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gates-agents
+Group=gates-agents
+WorkingDirectory=/opt/gates-agents
+# His own state, and the pool every house mind shares (same account).
+StateDirectory=gates-protagonist/%i gates-minds
+StateDirectoryMode=0700
+UMask=0077
+Environment=AGENT_NAME=%i
+Environment=THINK_MS=5000
+Environment=GATES_REPORTS_DIR=/var/lib/gates-protagonist/%i/reports
+Environment=CLAUDE_MODEL=claude-haiku-5-5
+Environment=STRATEGIST_MODEL=claude-sonnet-5-5
+Environment=STRATEGIST_EVERY_S=600
+Environment=PLANNER_MODEL=claude-opus-5-5
+Environment=PLANNER_PER_DAY=3
+Environment=GATES_POOL=/var/lib/gates-minds/pool.json
+Environment=GATES_POOL_USD=400
+Environment=GATES_POOL_CLASS=protagonist
+Environment=GATES_SPEND=/var/lib/gates-protagonist/%i/spend.jsonl
+Environment=GATES_NOTES=/var/lib/gates-protagonist/%i/notes.txt
+Environment=GATES_HARNESS=house
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/gates-protagonist/%i.env
+# No `--alone autopilot`: he thinks while the island is empty too. A run is
+# at most a day (`--seconds`); systemd starts the next.
+ExecStart=/opt/gates-agents/gates-agent --server game.elopros.com:61234 --agent-key /var/lib/gates-protagonist/%i/agent.key --agent-name ${AGENT_NAME} --character /opt/gates-agents/personas/%i.toml --memory /var/lib/gates-protagonist/%i/memory.json --journal /var/lib/gates-protagonist/%i/journal.jsonl --seconds 86400 --think-ms ${THINK_MS} --timeout-ms 20000 --max-requests-hour 900 --max-requests-day 12000 --external /opt/gates-agents/venv/bin/python /opt/gates-agents/claude_agent.py
+Restart=always
+RestartSec=15
+
+# The sandbox: a game client and a mind, and nothing else (as
+# `ops/gates-village@.service`; the network as `ops/gates-village-claude.conf`).
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# The mind reaches Anthropic, behind a CDN no address list keeps up with:
+# the internet, never this box's private side or the cloud's metadata service.
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=localhost
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-protagonist-%i
+
+[Install]
+WantedBy=multi-user.target
