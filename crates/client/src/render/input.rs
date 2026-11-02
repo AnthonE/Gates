@@ -680,3 +680,33 @@ pub fn place_eye(
     eye.yaw = look.yaw + look.free_yaw;
     eye.pitch = look.pitch + look.free_pitch;
 }
+
+/// `PostUpdate`, desktop: a locked pointer stays where it was locked.
+///
+/// winit cannot truly lock the pointer on Windows or X11, so Bevy falls back
+/// to confining it: hidden, it still wanders the window under the mouse, and
+/// a panel that frees it shows it wherever it drifted. Held at the spot it
+/// had when the lock began, it comes back where the player left it. The look
+/// reads raw motion (`AccumulatedMouseMotion`), which a warp does not touch.
+pub fn pin_locked_cursor(
+    mut windows: Query<(&mut Window, &CursorOptions), With<PrimaryWindow>>,
+    mut anchor: Local<Option<Vec2>>,
+) {
+    let Ok((mut win, c)) = windows.single_mut() else {
+        return;
+    };
+    if c.grab_mode != CursorGrabMode::Locked || super::web::in_post() {
+        *anchor = None;
+        return;
+    }
+    // Unfocused, the OS has let go; dragging it back would fight the desktop.
+    if !win.focused {
+        return;
+    }
+    let at = win.cursor_position();
+    let pin = *anchor
+        .get_or_insert_with(|| at.unwrap_or_else(|| Vec2::new(win.width(), win.height()) * 0.5));
+    if at.is_some_and(|p| p.distance_squared(pin) > 0.25) {
+        win.set_cursor_position(Some(pin));
+    }
+}

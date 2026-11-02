@@ -1310,6 +1310,40 @@ fn doorway_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> 
     }
 }
 
+/// Where an open hinged door's leaf stands, on the ground: swung off its
+/// hinge post into the cell, as `render::structures::deploy_transform` draws
+/// it (the leaf is the doorway's width, `BUILD_CELL_M − 2·DOOR_POST_W_M`,
+/// and half a wall thick). Aiming at the open door you just walked through
+/// is aiming at this, not at the empty doorway beside it.
+fn open_leaf_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> Rect {
+    let c = sim_core::build::BUILD_CELL_M;
+    let d = c - 2.0 * sim_core::collide::DOOR_POST_W_M;
+    let w = sim_core::deploy::insert_thickness(ARCH_DOOR);
+    let hinge = c * 0.5 - d * 0.5 + w * 0.5;
+    if let Some(at) =
+        cols.and_then(|k| sim_core::deploy::posed_insert(k, rec.cx, rec.cz, rec.level, rec.loc))
+    {
+        // The doorway's root frame: +z the run, +x `(run.z, −run.x)`, the
+        // side an open leaf lies on (`edge_insert_local`).
+        let (rx, rz) = at.run;
+        let (along, out) = (hinge - c * 0.5, d * 0.5);
+        return Rect {
+            x: at.x + rx * along + rz * out,
+            z: at.z + rz * along - rx * out,
+            hw: d * 0.5,
+            hd: w * 0.5,
+            s: rx,
+            c: rz,
+        };
+    }
+    let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
+    if rec.loc == sim_core::build::LOC_EDGE_XLO {
+        Rect::aligned(x0, z0 + hinge - w * 0.5, x0 + d, z0 + hinge + w * 0.5)
+    } else {
+        Rect::aligned(x0 + hinge - w * 0.5, z0, x0 + hinge + w * 0.5, z0 + d)
+    }
+}
+
 /// Best-so-far, as scalars rather than a candidate struct, so the sweep
 /// allocates nothing.
 struct Best {
@@ -1494,7 +1528,16 @@ pub fn resolve(
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                let Some(t) = sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top) else {
+                let gap = sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top);
+                // Open, the leaf is where the door is drawn: the crosshair
+                // on it closes it, as well as the crosshair in the gap.
+                let leaf = (arch == ARCH_DOOR && rec.open)
+                    .then(|| sight_hit(s, &open_leaf_rect(rec, aim.cols), bottom, top))
+                    .flatten();
+                let Some(t) = (match (gap, leaf) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }) else {
                     continue;
                 };
                 seen = Some(t);
@@ -1726,6 +1769,35 @@ mod tests {
         };
         assert_eq!(look(-1.0).verb, Verb::Door, "facing the doorway");
         assert_eq!(look(1.0).verb, Verb::None, "the doorway is behind us");
+    }
+
+    /// An open door is closed by looking at its swung leaf, not only at the
+    /// empty doorway: walked through and turned round, the leaf is what the
+    /// crosshair is on.
+    #[test]
+    fn an_open_door_is_picked_by_its_leaf() {
+        let (defs, have) = defs_with(&[ARCH_DOOR]);
+        let mut door = rec(1, 1, 0);
+        door.loc = sim_core::build::LOC_EDGE_ZLO;
+        let span = |_: &DeployRec, _: u8| (0.0, 2.2);
+        // Inside the cell, east of the leaf, looking west along it: the
+        // doorway strip is a metre to the north of this line.
+        let (x, z) = (BUILD_CELL_M + 2.0, BUILD_CELL_M + 0.6);
+        let look = |open: bool| {
+            let mut d = door;
+            d.open = open;
+            let mut aim = Aim::new(x, z, -1.0, 0.0);
+            aim.sight = Some(Sight {
+                eye: [x, 1.6, z],
+                dir: [-1.0, 0.0, 0.0],
+                span: &span,
+                reach: None,
+                lying: None,
+            });
+            resolve(aim, &[d], &defs, have, &[])
+        };
+        assert_eq!(look(true).verb, Verb::Door, "the open leaf is aimed at");
+        assert_eq!(look(false).verb, Verb::None, "shut, nothing is there");
     }
 
     /// The `t > 0` guard: a hearth underfoot must not trump a box you are
