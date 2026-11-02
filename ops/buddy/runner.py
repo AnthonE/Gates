@@ -83,6 +83,9 @@ Environment (defaults in brackets):
     WATCH_*               the Watch feed's knobs (`watch.py`)
     CLAUDE_AGENT          [/home/master/gates-jev/claude_agent.py]
     CLAUDE_MODEL          [claude-haiku-5-5]
+    BUDDY_STRATEGIST_MODEL [CLAUDE_MODEL] the slow half of each house mind
+                          (`claude_agent.py`), billed to the agent's pool like
+                          the rest; BUDDY_STRATEGIST_EVERY_S [900], 0 for none
     BUDDY_MIND_PORT       [8433] the own-brain bridge, on loopback
     BUDDY_OWN_IDLE_S      [1800]
     BUDDY_OWN_ANSWER_S    [120] how long an own brain has to answer a turn
@@ -124,6 +127,8 @@ MAX_DAY = int(os.environ.get("BUDDY_MAX_DAY", "3000"))
 JEV_BOT = os.environ.get("JEV_BOT", "/home/master/gates-jev/jev-bot")
 AGENT = os.environ.get("CLAUDE_AGENT", "/home/master/gates-jev/claude_agent.py")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
+STRATEGIST_MODEL = os.environ.get("BUDDY_STRATEGIST_MODEL", MODEL)
+STRATEGIST_EVERY_S = os.environ.get("BUDDY_STRATEGIST_EVERY_S", "900")
 MIND_PORT = int(os.environ.get("BUDDY_MIND_PORT", "8433"))
 OWN_IDLE_S = float(os.environ.get("BUDDY_OWN_IDLE_S", "1800"))
 OWN_ANSWER_S = int(os.environ.get("BUDDY_OWN_ANSWER_S", "120"))
@@ -419,6 +424,8 @@ def start(aid, a):
         "GATES_JOURNAL": path("journal", aid + ".jsonl"),
         "GATES_PERSONA": str(a.get("persona") or "")[:600],
         "GATES_HARNESS": HARNESS,
+        "STRATEGIST_MODEL": STRATEGIST_MODEL,
+        "STRATEGIST_EVERY_S": STRATEGIST_EVERY_S,
     })
     voice, style = voice_of(aid)
     if voice and os.environ.get("ELEVENLABS_API_KEY"):
