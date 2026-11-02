@@ -1684,7 +1684,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         return Err(
             "shard.toml: population needs agents_only = false — an inhabitant joins \
              as a person, so an agent-only shard refuses every one of them and the \
-             population re-dials its own closed door. Seat agents with jev-bot instead"
+             population re-dials its own closed door. Seat agents with gates-agent instead"
                 .into(),
         );
     }

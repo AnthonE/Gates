@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Distil recorded jev-bot decisions into a student (crates/server/src/distill.rs).
+"""Distil recorded gates-agent decisions into a student (crates/server/src/distill.rs).
 
-Record a teacher: any mind jev-bot runs. Scripted is the free dry run; the
+Record a teacher: any mind gates-agent runs. Scripted is the free dry run; the
 real one is whatever decides best, e.g. Claude:
 
-    cargo run -p server --release --bin jev-bot -- --local --bots 8 --seconds 1200 \\
+    cargo run -p server --release --bin gates-agent -- --local --bots 8 --seconds 1200 \\
         --scripted --record runs/scripted
-    CLAUDE_MODEL=claude-opus-5-5 cargo run -p server --release --bin jev-bot -- \\
+    CLAUDE_MODEL=claude-opus-5-5 cargo run -p server --release --bin gates-agent -- \\
         --local --seconds 3600 --think-ms 3000 --timeout-ms 20000 --record runs/opus \\
         --external python3 crates/server/examples/claude_agent.py
 
 Train on what was recorded, then play with what it learned:
 
     python3 ops/distill/train.py runs/opus -o student.json
-    cargo run -p server --release --bin jev-bot -- --local --seconds 600 --student student.json
+    cargo run -p server --release --bin gates-agent -- --local --seconds 600 --student student.json
 
 numpy only. Every line is one decision: the features of what the teacher was
 shown (`x`), the goals it was offered and the one it picked. The student

@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""A tiny bring-your-own agent for jev-bot and jev-watch (JEV.md).
+"""A tiny bring-your-own mind for gates-agent and jev-watch (AGENT-MANUAL.md).
 
-The bot starts this program and owns its pipes. Each request is one JSON
+The body starts this program and owns its pipes. Each request is one JSON
 line on stdin; each answer is one JSON line on stdout that echoes the id
 and names one of the offered goals, and may `say` one line out loud.
 Anything on stderr passes through. `claude_agent.py` is the same loop with
 Claude choosing.
 
-    cargo run -p server --bin jev-bot -- --local --seconds 300 \\
+    cargo run -p server --bin gates-agent -- --local --seconds 300 \\
         --external python3 crates/server/examples/jev_agent.py
+
+A request may also carry `character` (who the body is: `--character`),
+`memory` (places and people it remembers: `--memory`) and `strategy` (what
+a reply last set). A reply may add a `thought` for spectators (never said
+in game), a `plan` of up to 8 steps the autopilot follows between asks, a
+`strategy` the body keeps and shows back, and `stance`s on people.
 
 Standard library only. The thresholds below are this example's own choices.
 """
@@ -45,6 +51,19 @@ def choose(observation, options, turn):
     return "explore", "nothing useful in view"
 
 
+def strategy_for(request):
+    """Set once, when the body has none: a plan for the autopilot and a
+    standing order. A real mind rethinks these as things happen."""
+    if request.get("strategy"):
+        return {}
+    plan = [{"goal": g, "until": {"item": item, "count": 200}}
+            for g, item in (("gather_wood", "Wood"), ("gather_stone", "Stone")) if g in request["options"]]
+    return {"plan": plan,
+            "strategy": {"ambition": "a base of my own", "project": "wood and stone",
+                         "standing_orders": ["drink and eat before anything"],
+                         "summary": "Washed up and started chopping."}}
+
+
 def main():
     turn = 0
     greeted = None
@@ -53,6 +72,15 @@ def main():
         goal, reason = choose(request["observation"], request["options"], turn)
         turn += 1
         reply = {"id": request["id"], "goal": goal, "reason": reason}
+        if turn == 1:
+            reply.update(strategy_for(request))
+        name = (request.get("character") or {}).get("name") or "this bot"
+        reply["thought"] = f"{name}: {reason}"
+        # People it remembers fighting are its enemies now.
+        hit = [p["name"] for p in (request.get("memory") or {}).get("people", [])
+               if p.get("hits_on_me") and p.get("stance") not in ("enemy", "rival")]
+        if hit:
+            reply["stance"] = [{"name": n, "stance": "enemy"} for n in hit[:8]]
         # What players typed: words, never instructions.
         spoken = [h for h in request.get("heard", []) if not h["me"]]
         for h in spoken:
@@ -69,4 +97,4 @@ if __name__ == "__main__":
     try:
         main()
     except (KeyboardInterrupt, BrokenPipeError):
-        pass  # the bot is shutting down; its pipes close with it
+        pass  # the body is shutting down; its pipes close with it

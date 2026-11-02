@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Teacher against student, each on its own local island at the same time:
-jev-bot's end-of-run counters, summed over the bots.
+gates-agent's end-of-run counters, summed over the bots.
 
     python3 ops/distill/compare.py student.json --seconds 600 --bots 4
     python3 ops/distill/compare.py student.json -- \\
@@ -56,12 +56,12 @@ def main():
     ap.add_argument("student", help="a file ops/distill/train.py wrote")
     ap.add_argument("--seconds", type=int, default=600)
     ap.add_argument("--bots", type=int, default=4)
-    ap.add_argument("--bin", default=os.path.join(ROOT, "target", "release", "jev-bot"))
+    ap.add_argument("--bin", default=os.path.join(ROOT, "target", "release", "gates-agent"))
     args = ap.parse_args(argv)
     if not os.path.exists(args.bin):
-        subprocess.run(["cargo", "build", "--release", "-p", "server", "--bin", "jev-bot"], cwd=ROOT, check=True)
+        subprocess.run(["cargo", "build", "--release", "-p", "server", "--bin", "gates-agent"], cwd=ROOT, check=True)
     base = [args.bin, "--local", "--seconds", str(args.seconds), "--bots", str(args.bots)]
-    # `--external` must be jev-bot's last flag, so the mind's flags go last.
+    # `--external` must be gates-agent's last flag, so the mind's flags go last.
     runs = {"teacher": base + teacher, "student": base + ["--student", args.student]}
     procs = {k: subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
              for k, cmd in runs.items()}

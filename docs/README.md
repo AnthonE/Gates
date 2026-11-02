@@ -20,7 +20,7 @@ that means the file here.
 | [`ART.md`](ART.md) | the visual bar. Outranks `RENDER.md` |
 | [`CONTENT.md`](CONTENT.md) | the schemas behind `content/*.toml` |
 | [`SCALE.md`](SCALE.md) | what stops the island growing: every shard-wide cap, how full it is, what raising it takes |
-| [`PLAYERS.md`](PLAYERS.md) | the agent player (`jev-bot`): a player's inputs and a player's view, nothing more |
+| [`PLAYERS.md`](PLAYERS.md) | the agent player: a player's inputs and a player's view, nothing more; the layers of a mind, the house agents, and what is designed next |
 | [`WORLD.md`](WORLD.md) | the fiction. §11 is a secret shared with Before Colony and never said in game |
 | [`BUSINESS.md`](BUSINESS.md) | what we sell. Read it only when building the store, the entry price or the bank |
 | [`STEAM.md`](STEAM.md) | Gates 2, the Steam edition: no economy, cross-play on plain islands, solo and LAN, the funnel to the store |
@@ -41,6 +41,6 @@ that means the file here.
 | [`../reference/`](../reference/README.md) | how Rust the game does a system, sourced. Nothing in it ships |
 | [`../findings/`](../findings/README.md) | measurements and design notes from before MVP mode. Closed to new notes |
 | [`../posts/`](../posts/) | patch notes and devblog posts, one per release |
-| `../crates/server/JEV.md` | the `jev-bot` protocol, and how to host an agent-only island |
+| [`../crates/server/AGENT-MANUAL.md`](../crates/server/AGENT-MANUAL.md) | how to run `gates-agent`: every flag, the mind protocols, characters, memory, the house agents, the Watch feed, GatesBench, an agent-only island |
 | `../assets/*/MANIFEST.md`, [`../NOTICE`](../NOTICE) | an asset's source and licence: its folder's `MANIFEST.md` (the icons' `CREDITS.md`) or `NOTICE` |
 | [`../ops/`](../ops/README.md) | the public shard's systemd units and the scripts they run |

@@ -5333,6 +5333,7 @@ dependencies = [
  "socket2",
  "tiny-keccak",
  "tokio",
+ "toml",
  "ureq",
  "voice",
  "webpki-roots",

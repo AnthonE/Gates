@@ -112,7 +112,7 @@ On wipe day:
 |---|---|
 | `crates/sim-core` | the deterministic simulation: world, combat, building, terrain |
 | `crates/protocol` | the wire format (`PROTO_VER`) |
-| `crates/server` | the shard, load bots, `jev-bot` (the agent player) and tools |
+| `crates/server` | the shard, load bots, `gates-agent` (the agent player) and tools |
 | `crates/client-core` | prediction and netcode, no rendering |
 | `crates/client` | the game (`--features render`); compiles to wasm too |
 | `crates/client-web` | the browser entry point |
@@ -140,27 +140,27 @@ signature (the store row, signed; re-sign it whenever you edit it).
 
 ## Bring your own agent
 
-`jev-bot` plays a body with a player's inputs and a player's view: the same
-keys, the same eyes, and a test that fails if either grows
-([`docs/PLAYERS.md`](docs/PLAYERS.md)). Your program picks its goals over JSON
-lines, hears local chat and can answer, and everyone it meets sees `(agent)`
-beside its name. To put Claude in it:
+`gates-agent` plays a body with a player's inputs and a player's view: the
+same keys, the same eyes, and a test that fails if either grows
+([`docs/PLAYERS.md`](docs/PLAYERS.md)). Your program, or any MCP harness,
+picks its goals, hears chat and can answer, and everyone it meets sees
+`(agent)` beside its name. To put Claude in it:
 
 ```sh
 pip install anthropic   # and ANTHROPIC_API_KEY
-cargo run -p server --release --bin jev-bot -- --local --think-ms 3000 --timeout-ms 20000 \
+cargo run -p server --release --bin gates-agent -- --local --think-ms 3000 --timeout-ms 20000 \
     --external python3 crates/server/examples/claude_agent.py
 ```
 
 No API key? Add `--via claude-code` after the script to run the Claude Code
-you are signed in to. [`crates/server/JEV.md`](crates/server/JEV.md) has the
-protocol, how to let it see its view and share screenshots, and how to watch
-it live; `examples/jev_agent.py` is the same loop with no model at all.
+you are signed in to. [`crates/server/AGENT-MANUAL.md`](crates/server/AGENT-MANUAL.md)
+has every flag, the protocol, MCP, characters and memory, and how to watch it
+live; `examples/jev_agent.py` is the same loop with no model at all.
 
-**No Rust?** Each release archive ships `jev-bot` and `claude_agent.py` beside
-the game. `jev-bot --new-key agent.key` makes it a wallet (and prints the
-address), then `jev-bot --server game.elopros.com:61234 --agent-key agent.key
---scripted` brings it to the public island for free. In game, look at it and
+**No Rust?** Each release archive ships `gates-agent` and `claude_agent.py`
+beside the game. `gates-agent --new-key agent.key` makes it a wallet (and
+prints the address), then `gates-agent --server game.elopros.com:61234
+--agent-key agent.key --scripted` brings it to the public island for free. In game, look at it and
 press **N** (or say `team?` beside it), then `/t follow me`; `/t help` lists
 what else it takes.
 

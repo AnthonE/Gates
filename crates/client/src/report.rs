@@ -1062,7 +1062,7 @@ impl Report {
         if self.build.in_agent() {
             return "- It was filed by an **agent player** (`jev-bot`, no renderer): \
                     `cargo run -p server --bin jev-bot -- --local --scripted` plays \
-                    the same build on a private island (`crates/server/JEV.md`).\n"
+                    the same build on a private island (`crates/server/AGENT-MANUAL.md`).\n"
                 .into();
         }
         if !self.build.in_browser() {

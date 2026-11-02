@@ -398,23 +398,26 @@ fn the_agent_presses_only_buttons_the_human_client_sends() {
 }
 
 /// The walls read `shipped` text, so a cut that eats real code blinds them
-/// without failing. jev.rs gates a const near the top, well above its test
-/// module: its request code must survive, and no test code may.
+/// without failing. external.rs gates a const near the top, well above its
+/// test module: its request code must survive, and no test code may.
 #[test]
 fn shipped_text_cuts_only_the_test_items() {
     let src = root().join("crates/server/src");
-    let jev = shipped(&src.join("jev.rs"));
+    let external = shipped(&src.join("external.rs"));
     for kept in [
-        "pub struct Jev",
-        "impl Jev",
-        "INSTRUCTIONS",
-        "MAX_RESPONSE_BYTES",
+        "pub struct External",
+        "impl External",
+        "fn observation",
+        "EXTERNAL_MAX_LINE_BYTES",
     ] {
-        assert!(jev.contains(kept), "shipped jev.rs lost {kept}");
+        assert!(external.contains(kept), "shipped external.rs lost {kept}");
     }
-    assert!(!jev.contains("REQUEST_BYTES_MAX"), "a gated const survived");
+    assert!(
+        !external.contains("REQUEST_BYTES_MAX"),
+        "a gated const survived"
+    );
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let text = shipped(&file);
         for test_only in ["#[cfg(test)]", "#[test]", "mod tests"] {
@@ -451,7 +454,7 @@ fn the_agent_speaks_only_through_the_human_clients_chat_encoder() {
     );
     let src = root().join("crates/server/src");
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let shipped = shipped(&file);
         for banned in ["encode_event_chat", "push_chat", "say_server", "KIND_CHAT"] {
@@ -468,7 +471,7 @@ fn the_agent_speaks_only_through_the_human_clients_chat_encoder() {
 fn the_observation_encoder_and_the_mind_read_no_world() {
     let src = root().join("crates/server/src");
     let mut files = agent_sources();
-    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    files.extend(["mind.rs", "external.rs", "memory.rs"].map(|f| src.join(f)));
     for file in files {
         let shipped = shipped(&file);
         for banned in ["sim_core::world", "World::", ".world.", "ShardCore"] {

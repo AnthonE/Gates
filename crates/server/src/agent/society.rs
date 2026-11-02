@@ -1,4 +1,4 @@
-//! A society (`jev-bot --society`): agent players who live as a clan, the
+//! A society (`gates-agent --society`): agent players who live as a clan, the
 //! way a Rust clan does. A **crew** is one team in one base, each body with
 //! a job: the founder who builds and keeps the base, farmers who fill its
 //! boxes, guards who walk a ring round it, a runner who trades the surplus.
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// The most players one body counts as its guild beyond its own crew:
 /// other crews' members and the allies named on the command line.
 pub const MAX_ALLIES: usize = 16;
-/// The most crews one guild (one `jev-bot` run) holds.
+/// The most crews one guild (one `gates-agent` run) holds.
 pub const MAX_CREWS: usize = 4;
 
 /// A crew member not yet on the team is walked up to from this far, metres:

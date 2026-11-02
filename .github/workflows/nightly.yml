@@ -340,7 +340,7 @@ jobs:
       # Exactly what the release workflow builds, and nothing else — the point
       # is the shipped artifacts, not the whole workspace.
       - name: the shard and the agent
-        run: cargo check -p server --bin shard --bin jev-bot --target ${{ matrix.target }}
+        run: cargo check -p server --bin shard --bin gates-agent --bin jev-bot --target ${{ matrix.target }}
       - name: the client
         run: cargo check -p client --features render --bin gates --target ${{ matrix.target }}
 

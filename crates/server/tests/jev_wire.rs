@@ -42,7 +42,7 @@ static ALLOCATOR: CountAlloc = CountAlloc;
 struct Alternating(bool);
 impl DecisionSource for Alternating {
     fn kind(&self) -> SourceKind {
-        SourceKind::Jev
+        SourceKind::External
     }
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
         self.0 = !self.0;

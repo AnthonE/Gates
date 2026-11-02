@@ -164,7 +164,7 @@ def build_of(r: dict) -> str:
 
 
 def runtime_of(r: dict) -> str:
-    """`browser`, `desktop` or `agent` (a jev-bot). A report from before the
+    """`browser`, `desktop` or `agent` (a gates-agent). A report from before the
     field existed came from the desktop: the browser build could not file one."""
     b = r.get("build")
     if isinstance(b, dict):

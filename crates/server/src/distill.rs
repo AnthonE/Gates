@@ -220,6 +220,18 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.inner.take_plan()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.inner.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.inner.plan_done()
+    }
 }
 
 /// [`DecisionSource`] that keeps the body's journal (`--journal FILE`; each
@@ -236,21 +248,29 @@ pub struct Journal<S> {
     out: Option<std::fs::File>,
     path: PathBuf,
     rows: u64,
-    harness: Option<String>,
-    model: Option<String>,
-    wallet: Option<String>,
+    body: Body,
+    /// What the last answer said beyond its goal, passed on once journaled.
+    extras: Option<crate::memory::Extras>,
+}
+
+/// Who a journal's rows are about: what plays it (`--agent-harness`,
+/// `--agent-model`), its wallet, its name as a human sees it, its kind
+/// (`character::Kind`, else what its flags make it) and its crew (a
+/// village's name), each null when unknown.
+#[derive(Clone, Debug, Default)]
+pub struct Body {
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub wallet: Option<String>,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub crew: Option<String>,
 }
 
 impl<S: DecisionSource> Journal<S> {
     /// Appends to `path` (made, with its folder, if missing), so a restart
     /// carries on the same file.
-    pub fn open(
-        inner: S,
-        path: &Path,
-        harness: Option<&str>,
-        model: Option<&str>,
-        wallet: Option<&str>,
-    ) -> Result<Self, String> {
+    pub fn open(inner: S, path: &Path, body: Body) -> Result<Self, String> {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("--journal {}: {e}", dir.display()))?;
@@ -266,9 +286,8 @@ impl<S: DecisionSource> Journal<S> {
             out: Some(file),
             path: path.to_owned(),
             rows: 0,
-            harness: harness.map(str::to_owned),
-            model: model.map(str::to_owned),
-            wallet: wallet.map(str::to_owned),
+            body,
+            extras: None,
         })
     }
 
@@ -323,13 +342,18 @@ pub fn journal_path(file: &Path, name: &str, bots: usize) -> PathBuf {
     file.with_file_name(leaf)
 }
 
-/// One journal line: what [`Journal`] writes.
+/// One journal line: what [`Journal`] writes, after the look `s` it
+/// answered. `pos` is the body's own place in world metres: the journal is
+/// read on our box (the house's runner and its watch feed), never by a mind.
+/// `thought` and `strategy` are the mind's own (`memory::Extras`), null for
+/// a turn no mind wrote: the scripted policy and the autopilot think nothing
+/// out loud, and none is made up for them.
 pub fn journal_row(
     choice: &Choice,
     source: SourceKind,
-    harness: Option<&str>,
-    model: Option<&str>,
-    wallet: Option<&str>,
+    body: &Body,
+    s: &Summary,
+    extras: Option<&crate::memory::Extras>,
 ) -> Value {
     let (said, to) = match &choice.say {
         Say::Line(l) => (Some(l), Some("local")),
@@ -353,9 +377,25 @@ pub fn journal_row(
         "say": said,
         "to": to,
         "answered_by": source.label(),
-        "harness": harness,
-        "model": model,
-        "wallet": wallet,
+        "harness": body.harness,
+        "model": body.model,
+        "wallet": body.wallet,
+        "name": body.name,
+        "kind": body.kind,
+        "crew": body.crew,
+        "pos": s.seen.pos.map(|[x, z]| json!({
+            "x": (f64::from(x) * 10.0).round() / 10.0,
+            "z": (f64::from(z) * 10.0).round() / 10.0,
+        })),
+        "alive": s.body != crate::mind::BodyState::Dead,
+        "kills": s.seen.kills,
+        "deaths": s.deaths,
+        "thought": extras.and_then(|x| x.thought.as_deref()),
+        "strategy": extras.and_then(|x| x.strategy.as_ref()).map(|st| json!({
+            "ambition": st.ambition,
+            "project": st.project,
+            "standing_orders": st.standing_orders,
+        })),
     })
 }
 
@@ -373,14 +413,22 @@ impl<S: DecisionSource> DecisionSource for Journal<S> {
         summary: &Summary,
         fresher: &mut dyn FnMut() -> Option<Summary>,
     ) -> Result<Choice, String> {
-        let answer = self.inner.decide_fresh(summary, fresher);
+        let mut newest = *summary;
+        let answer = self.inner.decide_fresh(summary, &mut || {
+            let newer = fresher();
+            if let Some(n) = newer {
+                newest = n;
+            }
+            newer
+        });
+        self.extras = self.inner.take_extras();
         if let (Ok(choice), Some(out)) = (&answer, self.out.as_mut()) {
             let line = journal_row(
                 choice,
                 self.inner.kind(),
-                self.harness.as_deref(),
-                self.model.as_deref(),
-                self.wallet.as_deref(),
+                &self.body,
+                &newest,
+                self.extras.as_ref(),
             );
             // One write per row: a reader tailing the file never sees half.
             let mut line = line.to_string();
@@ -406,6 +454,18 @@ impl<S: DecisionSource> DecisionSource for Journal<S> {
 
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.inner.take_plan()
+    }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.extras.take()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.inner.plan_done()
     }
 }
 
@@ -735,6 +795,10 @@ mod tests {
     /// The journal keeps one line per answer, appended across restarts, in
     /// the runner's shape: the goal, the reason, a line said and to whom,
     /// what answered and the body's wallet; nothing of what it saw.
+    fn said_nothing(s: &Summary) -> Choice {
+        Scripted::default().decide(s).unwrap()
+    }
+
     #[test]
     fn the_journal_appends_what_it_does_and_says_in_the_runners_shape() {
         let dir = std::env::temp_dir().join(format!("journal-{}", std::process::id()));
@@ -744,8 +808,14 @@ mod tests {
         sum.offer(Goal::Explore);
         let wallet = Some("0x00000000000000000000000000000000000000aa");
         for _ in 0..2 {
-            let mut j = Journal::open(Scripted::default(), &path, Some("h/1"), Some("m-1"), wallet)
-                .unwrap();
+            let body = Body {
+                harness: Some("h/1".into()),
+                model: Some("m-1".into()),
+                wallet: wallet.map(str::to_owned),
+                name: Some("Rook".into()),
+                ..Body::default()
+            };
+            let mut j = Journal::open(Scripted::default(), &path, body).unwrap();
             assert_eq!(j.decide(&sum).unwrap().goal, Goal::Explore);
         }
         let text = std::fs::read_to_string(&path).unwrap();
@@ -769,9 +839,35 @@ mod tests {
             r.get("obs").is_none() && r.get("options").is_none(),
             "a status, not a dataset"
         );
+        // A scripted body's row: its reason, and no thought made up for it.
+        assert!(r["reason"]
+            .as_str()
+            .is_some_and(|w| w.starts_with("scripted")));
+        assert!(r["thought"].is_null() && r["strategy"].is_null());
+        assert_eq!(r["name"], "Rook");
+        assert_eq!(
+            (r["alive"].as_bool(), r["kills"].as_u64()),
+            (Some(true), Some(0))
+        );
+        assert!(r["pos"].is_null() && r["crew"].is_null() && r["kind"].is_null());
+        let mut there = sum;
+        there.seen.pos = Some([1.26, -3.0]);
+        let x = crate::memory::Extras {
+            thought: Some("north".into()),
+            ..Default::default()
+        };
+        let r = journal_row(
+            &said_nothing(&sum),
+            SourceKind::External,
+            &Body::default(),
+            &there,
+            Some(&x),
+        );
+        assert_eq!(r["pos"], json!({"x": 1.3, "z": -3.0}));
+        assert_eq!(r["thought"], "north");
         let mut said = Scripted::default().decide(&sum).unwrap();
         said.say = Say::Team(Lines::split("on my way").unwrap());
-        let r = journal_row(&said, SourceKind::External, None, None, None);
+        let r = journal_row(&said, SourceKind::External, &Body::default(), &sum, None);
         assert_eq!(
             (r["say"].as_str(), r["to"].as_str()),
             (Some("on my way"), Some("team"))
@@ -779,7 +875,7 @@ mod tests {
 
         // Past its cap it rotates to FILE.1 and starts again, so it stays small.
         std::fs::write(&path, vec![b'x'; JOURNAL_MAX_BYTES as usize + 1]).unwrap();
-        let mut j = Journal::open(Scripted::default(), &path, None, None, wallet).unwrap();
+        let mut j = Journal::open(Scripted::default(), &path, Body::default()).unwrap();
         for _ in 0..256 {
             j.decide(&sum).unwrap();
         }
