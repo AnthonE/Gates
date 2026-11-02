@@ -63,6 +63,12 @@ name = "Gates US East 1"
 # again now.
 addr = "game.elopros.com:61234"
 
+# The same shard on UDP 443, for networks that pass only web ports (offices,
+# schools, some VPNs). `ops/gates-udp443.nft` forwards 443 to the bind; the
+# browser tries these in order when `addr` gets no answer. Harmless before
+# the forward is live: a player who already failed fails once more.
+alt_addrs = ["game.elopros.com:443"]
+
 # The seed is what makes one island different from another, so naming it is
 # more useful than naming a map that does not exist.
 map = "island 20260731"

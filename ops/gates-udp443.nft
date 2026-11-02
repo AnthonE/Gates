@@ -1,0 +1,36 @@
+#!/usr/sbin/nft -f
+# Forward UDP 443 on the shard's public address to the shard's bind (61234),
+# so a network that passes only web ports can still reach Gates. The shard
+# keeps binding 61234 and never learns about 443; conntrack rewrites the
+# replies. `shards.toml`'s `alt_addrs` is what tells the browser to try it.
+#
+# Only one thing can own UDP 443 on an IPv4 address. With this loaded it is
+# Gates; nginx HTTP/3 or thrml's gateway on this IP cannot have it too.
+#
+# Install (game box, operator):
+#   1. Hetzner cloud console: firewall, add inbound UDP 443. ufw needs
+#      nothing new, because INPUT sees the packet after the rewrite, as 61234.
+#   2. Check nothing already listens: `sudo ss -ulpn | grep ':443 '` (empty).
+#   3. sudo install -m 644 ops/gates-udp443.nft /etc/gates-udp443.nft
+#      sudo cp ops/gates-udp443.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now gates-udp443
+#   4. Check from off the box: open the game in Chrome on another network and
+#      look for `game.elopros.com:443` in the connecting line, or run
+#      `sudo tcpdump -ni any udp port 443` while someone joins.
+#   5. Publish the shard list again (`./ci/shardlist.py`, then copy
+#      target/servers.json to the depot, as `shards.toml` says).
+#
+# Never enable the stock nftables.service for this: its /etc/nftables.conf
+# starts with `flush ruleset`, which wipes ufw's rules too. The unit loads
+# this one table and nothing else.
+
+# Create-then-delete makes a reload idempotent without touching other tables.
+table ip gates_udp443
+delete table ip gates_udp443
+
+table ip gates_udp443 {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        ip daddr 5.161.193.186 udp dport 443 redirect to :61234
+    }
+}

@@ -193,6 +193,8 @@ function baseRows() {
   return out;
 }
 
+const hostOf = (addr) => addr.slice(0, addr.lastIndexOf(":"));
+
 async function loadServers() {
   const doc = await getJSON("/api/launcher/servers/gates");
   const listed = doc && Array.isArray(doc.servers) ? doc.servers : null;
@@ -214,6 +216,11 @@ async function loadServers() {
         /* a shard for AI agents only: watched, not played (`server::status`) */
         agentsOnly: s.agents_only === true || (was ? !!was.agentsOnly : false),
         statusUrl: /^https:\/\/[^\s/]+\/\S*$/.test(String(s.status_url || "")) ? s.status_url : null,
+        /* the same shard on other ports (UDP 443), tried when `addr` gets no
+           answer; same host only, since the certificate and sign-in are its */
+        alts: Array.isArray(s.alt_addrs)
+          ? s.alt_addrs.slice(0, 3).map(String).filter((a) => a !== String(s.addr) && hostOf(a) === hostOf(String(s.addr)))
+          : [],
       };
     });
     /* A link or a typed address that IS a listed server becomes that row, so
@@ -1781,10 +1788,61 @@ function paintGo() {
    number as `e.code`, and its message is already right for a browser
    (`client::refusal_sentence`). `crates/client/tests/refusals.rs` scans the
    catch below and fails if it ever matches on words. */
+/* A join that failed for a reason the one status line can't explain gets a
+   popup: what happened, what to try, and the details to send us. */
+let helpKind = "play";
+function joinHelp(kind, title, why, steps, addrs, raw) {
+  helpKind = kind;
+  $("join-help-h").textContent = title;
+  $("join-help-why").textContent = why;
+  const list = $("join-help-try");
+  list.replaceChildren(...steps.map((t) => Object.assign(document.createElement("li"), { textContent: t })));
+  list.hidden = !steps.length;
+  $("join-help-raw").textContent = [
+    `server: ${addrs.join(", ")}`,
+    `error: ${raw}`,
+    `browser: ${navigator.userAgent}`,
+    `build: ${$("build").textContent}`,
+    `time: ${new Date().toISOString()}`,
+  ].join("\n");
+  $("join-help-copy").textContent = "Copy details";
+  const dlg = $("join-help");
+  if (!dlg.open) dlg.showModal();
+}
+$("join-help-close").addEventListener("click", () => $("join-help").close());
+$("join-help-again").addEventListener("click", () => {
+  $("join-help").close();
+  $(helpKind === "watch" ? "watch-go" : "go").click();
+});
+$("join-help-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("join-help-raw").textContent);
+    $("join-help-copy").textContent = "Copied";
+  } catch (err) {
+    $("join-help-raw").parentElement.open = true;
+  }
+});
+
+/* Dial a shard's addresses in turn, moving on only when one got no answer at
+   all: no refusal code and nothing asked of the player yet. A refusal or a
+   signature prompt means the shard was reached, and another port would say
+   the same thing. */
+async function firstAnswer(addrs, dial, answered) {
+  for (let i = 0; ; i++) {
+    try {
+      return await dial(addrs[i]);
+    } catch (err) {
+      const unanswered = err instanceof Error && !Number.isInteger(err.code) && !answered();
+      if (!unanswered || i + 1 >= addrs.length) throw err;
+    }
+  }
+}
+
 async function join(kind, audio, identity) {
   const line = kind === "watch" ? watchStatus : status;
   const row = current();
   const server = (row ? row.addr : serverInput.value).trim();
+  const addrs = row && row.addr === server && row.alts && row.alts.length ? [server, ...row.alts] : [server];
   /* A pinned certificate replaces the browser's own check, so a link's
      `?hash=` is never let pin one for our own host: an official shard has a
      real certificate, and a pin there is only ever somebody else's. */
@@ -1794,13 +1852,16 @@ async function join(kind, audio, identity) {
   /* A wallet asked to sign means the shard answered: whatever fails after
      that is not the network, and its own words say what it was. */
   let walletAsked = false;
-  try {
+  /* The shard asked for a pass: it answered, so no other port is tried. */
+  let passAsked = false;
+  const dial = async (server) => {
     if (kind === "pass") {
       const a = eloAccount();
       busy = { label: "Connecting", sub: server };
       paintGo();
       say(`connecting to ${server} as ${a ? a.name : "your Elo Pros account"}…`, "", line);
-      g = await Gates.join_pass(server, hash, async (domain, nonce) => {
+      return await Gates.join_pass(server, hash, async (domain, nonce) => {
+        passAsked = true;
         busy = { label: "Signing in", sub: "with your Elo Pros account" };
         paintGo();
         const pass = await eloPass(domain, nonce);
@@ -1813,14 +1874,14 @@ async function join(kind, audio, identity) {
       busy = { label: "Connecting", sub: server };
       paintGo();
       say(`connecting to ${server} to watch…`, "", line);
-      g = await Gates.watch(server, hash, target && target !== "any" ? target : undefined);
+      return await Gates.watch(server, hash, target && target !== "any" ? target : undefined);
     } else {
       busy = { label: "Connecting", sub: server };
       paintGo();
       say(identity ? `connecting to ${server} as ${short(identity)}…` : `connecting to ${server} as a guest…`, "", line);
       /* Address and signer together or neither — `Gates.join` refuses the odd
          pair rather than dropping half of it. */
-      g = await Gates.join(server, hash, identity ?? undefined, identity
+      return await Gates.join(server, hash, identity ?? undefined, identity
         ? async (text) => {
           walletAsked = true;
           busy = { label: "Signing in", sub: "approve the sign-in in your wallet" };
@@ -1834,6 +1895,9 @@ async function join(kind, audio, identity) {
         }
         : undefined);
     }
+  };
+  try {
+    g = await firstAnswer(addrs, dial, () => walletAsked || passAsked);
   } catch (e) {
     const raw = e && e.message !== undefined ? String(e.message) : String(e);
     const code = e && Number.isInteger(e.code) ? e.code : null;
@@ -1861,6 +1925,11 @@ async function join(kind, audio, identity) {
       say("Your wallet signed, but the server couldn't match it to your address. Smart-contract and "
         + "multisig accounts can't sign in yet — switch to a regular account and press Play again.", "bad", line);
       line.title = raw;
+      joinHelp(kind, "Sign-in didn't match", "Your wallet signed, but the server read the signature as a different address. "
+        + "That happens with smart-contract and multisig accounts, which can't sign in yet.", [
+        "In your wallet, switch to a regular account (one with its own private key).",
+        "Or press Play as a guest. A guest plays a fresh character and keeps nothing after you leave.",
+      ], addrs, raw);
     } else if (code !== null || walletAsked || !(e instanceof Error) || !(row && row.statusUrl)) {
       say(raw, "bad", line);
     } else {
@@ -1875,6 +1944,23 @@ async function join(kind, audio, identity) {
         : up ? "Couldn't reach the game server from this network. Gates uses UDP (QUIC), which some office, school and VPN networks block."
         : "The server isn't answering. It may be restarting. Try again in a minute.", "bad", line);
       line.title = raw;
+      if (up && !staleFor(row)) {
+        joinHelp(kind, "Can't reach the game server", "The server is up and your browser can run Gates, but your connection "
+          + "isn't letting the game's traffic through. Gates talks to its server over UDP (QUIC), and some networks, "
+          + "VPNs and firewall apps block that.", [
+          "Turn off any VPN or proxy, then press Try again.",
+          "Try another network, like your phone's hotspot. If it works there, the network you were on blocks UDP. "
+            + "That's common at work, at school and on public Wi-Fi.",
+          "If you run a firewall or antivirus app (Little Snitch, LuLu, ESET, Norton and the like), let your browser use UDP, or pause it for a minute.",
+          "In Chrome or Edge, open chrome://flags, search for QUIC and make sure it isn't set to Disabled.",
+        ], addrs, raw);
+      } else if (!up) {
+        joinHelp(kind, "The server isn't answering", "Neither the game server nor its status page answered. "
+          + "It may be restarting for an update or a wipe, which takes a minute or two.", [
+          "Wait a minute, then press Try again.",
+          "If it keeps happening, check that a VPN, firewall or DNS filter isn't blocking game.elopros.com.",
+        ], addrs, raw);
+      }
     }
     busy = null;
     paintGo();

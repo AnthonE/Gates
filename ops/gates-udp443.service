@@ -1,0 +1,16 @@
+# Loads ops/gates-udp443.nft (UDP 443 -> the shard's 61234) at boot.
+# Install steps are in that file's header.
+
+[Unit]
+Description=Gates: forward UDP 443 to the shard on 61234
+After=network-pre.target ufw.service
+Before=gates-shard.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/gates-udp443.nft
+ExecStop=/usr/sbin/nft delete table ip gates_udp443
+
+[Install]
+WantedBy=multi-user.target

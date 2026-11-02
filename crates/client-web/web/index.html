@@ -242,6 +242,20 @@
   #wallet-note { margin: 10px 2px 0; font-size: 12.5px; color: var(--dim); }
   #wallet-pick .linkish { display: block; margin: 10px auto 0; }
 
+  /* ── why a join failed, and what to try (`app.js` joinHelp) ─────────────── */
+  #join-help { padding: 18px; width: min(92vw, 460px); color: var(--text);
+               background: rgba(24,22,19,.98); border: 1px solid var(--rule-hi); box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+  #join-help::backdrop { background: rgba(0,0,0,.55); }
+  #join-help h3 { margin: 0 0 10px; font: 700 18px/1.2 var(--sans); letter-spacing: .02em; text-transform: uppercase; color: var(--title); }
+  #join-help p { margin: 0 0 12px; font-size: 14px; line-height: 1.45; color: var(--dim); }
+  #join-help ol { margin: 0 0 14px; padding-left: 20px; font-size: 14px; line-height: 1.45; }
+  #join-help li + li { margin-top: 6px; }
+  #join-help details { margin: 0 0 14px; font-size: 12.5px; color: var(--faint); }
+  #join-help summary { cursor: pointer; }
+  #join-help pre { margin: 8px 0 0; padding: 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+                   font: 12px/1.4 ui-monospace, monospace; background: rgba(0,0,0,.3); color: var(--dim); }
+  #join-help .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+
   /* ── the server list, inside the panel ───────────────────────────────────── */
   .list { display: flex; flex-direction: column; border: 1px solid var(--rule); background: rgba(0,0,0,.2); }
   .srv { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 18px minmax(0, 1fr);
@@ -778,6 +792,20 @@
   <div id="wallet-list"></div>
   <p id="wallet-note" hidden>Sign-in uses an Ethereum account. Phantom, MetaMask and Backpack keep one beside your Solana account; turn it on in the wallet's settings if it's off.</p>
   <button class="linkish" id="wallet-cancel" type="button">Cancel</button>
+</dialog>
+
+<!-- Why a join failed and what to try, for the failures the status line
+     can't explain in one sentence (`app.js` joinHelp). -->
+<dialog id="join-help" aria-labelledby="join-help-h">
+  <h3 id="join-help-h"></h3>
+  <p id="join-help-why"></p>
+  <ol id="join-help-try"></ol>
+  <details><summary>Details for support</summary><pre id="join-help-raw"></pre></details>
+  <div class="row">
+    <button class="linkish" id="join-help-copy" type="button">Copy details</button>
+    <button class="btn" id="join-help-close" type="button">Close</button>
+    <button class="btn blue" id="join-help-again" type="button" autofocus>Try again</button>
+  </div>
 </dialog>
 
 <!-- Shown from the join until the game has drawn its own loading screen

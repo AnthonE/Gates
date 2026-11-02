@@ -87,6 +87,9 @@ MAX_FIELD_BYTES = 96
 MAX_DOC_BYTES = 64 * 1024
 # A url is legitimately longer than a name, so `status_url` has its own cap.
 MAX_URL_BYTES = 256
+# Other ports the same shard answers on (`alt_addrs`), tried in order when the
+# first gets no answer. Few, because each one costs a player a timeout.
+MAX_ALT_ADDRS = 3
 
 LIMITS_RS = ROOT / "crates" / "sim-core" / "src" / "limits.rs"
 SHARDS_TOML = ROOT / "shards.toml"
@@ -186,6 +189,24 @@ def build_doc(rows: list[dict], cap: int) -> dict:
         seen.add(sid)
 
         entry = {"id": sid, "name": name, "addr": addr}
+        # The same shard on other ports (UDP 443 forwarded to the bind, for
+        # networks that pass only web ports). Same host only: the certificate
+        # and the signed sign-in name are the host's, so another host here
+        # would be a different server wearing this row.
+        if "alt_addrs" in row:
+            alts = row["alt_addrs"]
+            if not isinstance(alts, list) or not 1 <= len(alts) <= MAX_ALT_ADDRS:
+                raise SystemExit(
+                    f"shardlist: shard {i} alt_addrs is a list of 1 to {MAX_ALT_ADDRS} addresses")
+            host = addr.rpartition(":")[0]
+            for alt in alts:
+                check_addr(alt if isinstance(alt, str) else "")
+                if alt.rpartition(":")[0] != host:
+                    raise SystemExit(
+                        f"shardlist: shard {i} alt_addrs {alt!r} is not on {host}")
+                if alt == addr or alts.count(alt) > 1:
+                    raise SystemExit(f"shardlist: shard {i} alt_addrs repeats {alt!r}")
+            entry["alt_addrs"] = alts
         # Lower than the sim's cap is a real choice; higher is a promise the
         # shard will break at the door.
         mp = row.get("max_players", cap)
@@ -298,6 +319,17 @@ def self_test() -> int:
           "status_url": "https://game.elopros.com:8080/status.json"}], cap)["servers"][0]
     ok(lit["status_url"] == "https://game.elopros.com:8080/status.json",
        "a row may name where its live count is polled from")
+
+    alt = build_doc(
+        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.elopros.com:61234",
+          "alt_addrs": ["game.elopros.com:443"]}], cap)["servers"][0]
+    ok(alt["alt_addrs"] == ["game.elopros.com:443"], "a row may name other ports of itself")
+    ok(refuses([{"id": "a", "name": "A", "addr": "game.elopros.com:61234",
+                 "alt_addrs": ["evil.example:443"]}], cap, "an alt on another host"),
+       "an alt address on another host is refused")
+    ok(refuses([{"id": "a", "name": "A", "addr": "game.elopros.com:61234",
+                 "alt_addrs": ["game.elopros.com:61234"]}], cap, "an alt that is the addr"),
+       "an alt address that repeats the addr is refused")
     # Still no baked count beside it: naming the endpoint is not claiming a
     # number, and a reader that cannot reach it must draw `?`.
     ok("players" not in lit, "naming a status endpoint does not invent a count")
