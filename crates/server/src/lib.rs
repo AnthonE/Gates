@@ -70,7 +70,6 @@ pub mod gifts;
 pub mod handoff;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
-pub mod jev;
 /// A private island stepped in lockstep, faster than the wall clock (`--warp`).
 pub mod lockstep;
 /// `jev-bot --mcp`: any MCP harness as the bot's mind (`JEV.md`).

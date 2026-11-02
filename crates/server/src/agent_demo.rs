@@ -58,15 +58,15 @@ pub fn guest_secret_path() -> std::path::PathBuf {
     }
 }
 
-/// The display name a jev bot declares to its spectators when none is given.
-pub const AGENT_NAME: &str = "jev";
+/// The display name an agent declares to its spectators when none is given.
+pub const AGENT_NAME: &str = "agent";
 
 /// The Gates web page an agent off this machine is watched from. nginx
 /// sends `/games/gates/?server=…` on to the build wherever it lives, so the
 /// link holds across the build's move to `/games/gates/play/`.
 pub const PUBLIC_WATCH_PAGE: &str = "https://elopros.com/games/gates/";
 
-/// Where a jev bot plays and who it says it is (`NETCODE.md` §2.3, §2.4).
+/// Where an agent plays and who it says it is (`NETCODE.md` §2.3, §2.4).
 ///
 /// Without a key it is a **guest agent**: unsigned, loopback only, declared an
 /// agent and watchable, followed by "any watchable agent". With a key it is a
@@ -83,7 +83,7 @@ pub struct Door {
 
 impl Door {
     /// Load an agent's key from its file (`0600`, 64 hex digits). The only
-    /// way a jev bot gets a key: named by path, never carried in argv.
+    /// way an agent gets a key: named by path, never carried in argv.
     pub fn load_key(path: &Path) -> Result<AgentKey, String> {
         AgentKey::load(path).map_err(|e| e.to_string())
     }
@@ -234,13 +234,15 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--journal FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, and its wallet (what the house's runner shows for the bodies it hosts). --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--journal FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nChoose one mind: --scripted, --external, --mcp or --student. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, and its wallet (what the house's runner shows for the bodies it hosts). --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
 
-/// Which source decides: Jev, the explicit scripted policy, or an agent
-/// the operator brings. Never swapped for another at runtime.
+/// Which source decides: the explicit scripted policy, or an agent the
+/// operator brings. Never swapped for another at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    Jev,
+    /// No mind flag given. There is no default mind: a body is refused
+    /// until its operator says what decides for it (`MindArgs::build`).
+    Unset,
     Scripted,
     External(String, Vec<String>),
     /// An MCP harness on this process's own stdio (`mcp.rs`).
@@ -258,7 +260,7 @@ pub struct MindArgs {
     /// When the survivor fights, likewise.
     pub temperament: Temperament,
     /// Where the body's rendered view is served, told to an external
-    /// source as `GATES_FRAME_URL` (`jev-watch` only: `jev-bot` renders
+    /// source as `GATES_FRAME_URL` (`jev-watch` only: `gates-agent` renders
     /// nothing).
     pub frame_url: Option<String>,
     /// The one wallet it plays with (`--friend 0x…`).
@@ -304,6 +306,10 @@ pub struct MindArgs {
     pub inline: bool,
 }
 
+/// What a run without a mind flag is told.
+pub const UNSET: &str =
+    "choose a mind: --scripted, --external PROGRAM [ARG...], --mcp or --student FILE";
+
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
 /// minute a decision may wait.
 pub const AUTOPILOT_DEFAULT: Duration = Duration::from_secs(45);
@@ -314,7 +320,7 @@ const MCP_DECISION_SLACK: Duration = Duration::from_secs(15);
 impl Default for MindArgs {
     fn default() -> Self {
         Self {
-            source: Source::Jev,
+            source: Source::Unset,
             cfg: MindConfig::default(),
             skill: Preset::default(),
             temperament: Temperament::default(),
@@ -458,7 +464,7 @@ impl MindArgs {
     /// The source in one word, as a bug report and a bench result name it.
     pub fn word(&self) -> &'static str {
         match self.source {
-            Source::Jev => "jev",
+            Source::Unset => "none",
             Source::Scripted => "scripted",
             Source::External(..) => "external",
             Source::Mcp => "mcp",
@@ -468,7 +474,7 @@ impl MindArgs {
 
     pub fn label(&self) -> String {
         match &self.source {
-            Source::Jev => format!("Jev {}", crate::jev::MODEL),
+            Source::Unset => "no mind chosen".into(),
             Source::Scripted => "SCRIPTED goals; no model calls".into(),
             Source::External(program, _) => format!("EXTERNAL agent: {program}"),
             Source::Mcp => format!(
@@ -557,12 +563,7 @@ impl MindArgs {
                     self.cfg,
                 )
             }
-            Source::Jev => {
-                let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| {
-                    "set TYPESAFE_API_KEY, or choose --scripted or --external explicitly"
-                })?;
-                self.start(crate::jev::Jev::new(key, self.cfg.timeout)?, self.cfg)
-            }
+            Source::Unset => Err(UNSET.into()),
         }
     }
 
@@ -625,7 +626,7 @@ pub async fn spawn_local() -> Result<crate::net::ShardHandle, String> {
 
 /// The content a local island boots with: `content/` beside this program,
 /// where a release archive puts it, else the source tree it was built
-/// from. A downloaded `jev-bot --local` has no source tree to point at.
+/// from. A downloaded `gates-agent --local` has no source tree to point at.
 pub fn local_content() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()

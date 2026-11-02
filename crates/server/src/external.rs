@@ -5,8 +5,7 @@
 //! machine can connect to them, there is no port to allocate or guard, the
 //! agent lives and dies with the bot, the bot's own stdout stays free for
 //! its report, and any language that can read a line and print a line can
-//! play. The child inherits no Jev key (`TYPESAFE_API_KEY` is removed from
-//! its environment).
+//! play.
 //!
 //! One observation line out per request, one goal line back:
 //!
@@ -23,7 +22,7 @@
 //! team's lock code, as a teammate gave it, for the locks on the way to the
 //! team's chest.
 //!
-//! The same rules as Jev: one request outstanding, the reply must echo the
+//! The mind's rules: one request outstanding, the reply must echo the
 //! id and name an offered goal, lines are bounded, a missing or late answer
 //! is an explicit failure and never a substituted decision. Replies to an
 //! older id are skipped. A request can come again under the same id, with
@@ -46,6 +45,13 @@ pub const EXTERNAL_POLL_MS: u64 = 2;
 const POLL: Duration = Duration::from_millis(EXTERNAL_POLL_MS);
 /// Protocol version carried on every observation line.
 pub const EXTERNAL_PROTOCOL: u32 = 1;
+/// Test bound on the largest request line a turn can produce: its size is
+/// what a decision costs a model. Not enforced on the wire. Carried over
+/// from the retired Jev request's bound (8.5 KiB for the observation alone)
+/// when the observation went to every mind with what it heard, its team,
+/// its places, its character and its memory beside it.
+#[cfg(test)]
+const REQUEST_BYTES_MAX: usize = 24 * 1024;
 
 /// The one site an agent may name in chat: where its friend tops it up.
 const OUR_SITE: &str = "elopros.com";
@@ -151,7 +157,6 @@ impl External {
         }
         let mut child = Command::new(program)
             .args(args)
-            .env_remove("TYPESAFE_API_KEY")
             // The bot's own voice keys (`agent_voice.rs`): the child is
             // somebody else's program and gets none of this process's paid
             // services. (`OPENAI_API_KEY` stays: it is as likely the child's
@@ -756,6 +761,118 @@ mod tests {
         let mut gone = sh("exit 0");
         assert!(gone.decide(&s).is_err());
         assert!(External::spawn("/nonexistent/agent", &[], Duration::from_secs(1)).is_err());
+    }
+
+    /// The request is what a decision costs, so its size is bounded: a
+    /// summary filled to every capacity, heard lines included, stays under
+    /// `REQUEST_BYTES_MAX`.
+    #[test]
+    fn a_full_request_stays_small() {
+        let s = full_summary();
+        let bytes = External::observation(u64::MAX, &s).to_string().len();
+        println!("largest request: {bytes} bytes");
+        assert!(bytes < REQUEST_BYTES_MAX, "{bytes}");
+    }
+
+    /// A summary filled to every capacity.
+    pub(crate) fn full_summary() -> Summary {
+        use crate::mind::{Report, Sighting, Trigger, SUMMARY_CRAFTS, SUMMARY_ITEMS};
+        let mut s = Summary::EMPTY;
+        let long = |i: usize| Name::new(format!("Item Name Number {i:04}").as_bytes()).unwrap();
+        for i in 0..SUMMARY_ITEMS {
+            s.items[i] = (long(i), 60_000);
+        }
+        s.items_len = SUMMARY_ITEMS as u8;
+        for i in 0..SUMMARY_CRAFTS {
+            s.craftable[i] = long(100 + i);
+        }
+        s.craftable_len = SUMMARY_CRAFTS as u8;
+        let seen = Sighting {
+            count: 255,
+            nearest_m: 32,
+            bearing: 5,
+        };
+        (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
+        (s.players, s.animals, s.water_near, s.backpack) = (seen, seen, seen, seen);
+        (s.hemp, s.humans) = (seen, seen);
+        s.bags = u8::MAX;
+        s.home = crate::mind::HomeSense {
+            state: crate::mind::HomeState::Inside,
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+            metres: u16::MAX,
+            attacked: true,
+            damaged: true,
+            doors: u8::MAX,
+            doors_locked: u8::MAX,
+            key_locks: u8::MAX,
+            unreachable: true,
+        };
+        for i in 0..crate::mind::SUMMARY_STORED {
+            s.stored[i] = (long(300 + i), u32::MAX);
+        }
+        s.stored_len = crate::mind::SUMMARY_STORED as u8;
+        for i in 0..crate::mind::SUMMARY_HOME_HOLDS {
+            s.home_holds[i] = (long(500 + i), u32::MAX);
+        }
+        s.home_holds_len = crate::mind::SUMMARY_HOME_HOLDS as u8;
+        (s.take_out, s.feed) = (true, true);
+        (s.bag_ready, s.night) = (true, true);
+        s.milestone = crate::mind::Milestone::ALL
+            .into_iter()
+            .max_by_key(|m| m.word().len())
+            .unwrap();
+        for i in 0..crate::mind::SUMMARY_NEEDS {
+            s.needs[i] = (long(200 + i), u32::MAX);
+        }
+        s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
+        for i in 0..crate::mind::SUMMARY_RAW {
+            s.raw[i] = (long(400 + i), u32::MAX);
+        }
+        s.raw_len = crate::mind::SUMMARY_RAW as u8;
+        (s.bench, s.furnace) = (true, true);
+        (s.loot, s.raid) = (seen, seen);
+        s.loot_place = Some(crate::mind::Place::at(f32::from(u16::MAX), 5));
+        (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
+        s.last = Some(Report {
+            goal: Goal::Craft(long(7)),
+            outcome: crate::mind::Outcome::Failed(crate::mind::Why::MissingInputs),
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
+        s.trigger = Trigger::Heartbeat;
+        let threat = crate::mind::Threat {
+            arms: crate::mind::Arms::Explosive,
+            range: crate::mind::Range::Close,
+            bearing: 5,
+            wounded: true,
+            aiming_at_me: true,
+        };
+        s.threats = [threat; crate::mind::SUMMARY_THREATS];
+        s.threats_len = crate::mind::SUMMARY_THREATS as u8;
+        s.last_fight = Some(crate::mind::Why::Escaped);
+        s.current = Some(Report {
+            goal: Goal::Craft(long(9)),
+            outcome: crate::mind::Outcome::Running,
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
+        let text = protocol::ChatText::sanitize(&[b'w'; protocol::CHAT_MAX_BYTES]).unwrap();
+        for i in 0..crate::mind::SUMMARY_HEARD as u32 {
+            s.heard.push(crate::mind::HeardLine {
+                from: 300 + i,
+                name: protocol::Name::new("SixteenCharName_").unwrap(),
+                text,
+                ..crate::mind::HeardLine::EMPTY
+            });
+        }
+        for g in Goal::FIXED {
+            s.offer(g);
+        }
+        for i in 0..SUMMARY_CRAFTS {
+            s.offer(Goal::Craft(s.craftable[i]));
+        }
+        s
     }
 
     /// The turn a mind is sent matches the schema published beside this

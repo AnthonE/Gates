@@ -106,7 +106,7 @@ be embedded by a page on the same origin; its CSP refuses other origins.
 
 `watch-deploy/gates-watch.service` runs one instance continuously under Xvfb
 on the existing render host. The base unit is explicitly scripted; the live
-host uses `watch-deploy/jev.conf` to select Jev. The two-minute demo timer is disabled.
+host uses `watch-deploy/claude.conf` to select Claude. The two-minute demo timer is disabled.
 After a lost session or failure, systemd starts a fresh private island after
 five seconds; startup still has its 300-second ceiling. The host runs the
 installed bundle, so the in-game respawn and goal-level Jev reach it only when
@@ -132,17 +132,11 @@ remove the two watch locations/includes and reload the checked nginx config.
 Continuous hosting was authorized for this slow preview; smooth video and
 large audiences remain unvalidated.
 
-To enable Jev, install `watch-deploy/jev.conf` as
-`/etc/systemd/system/gates-watch.service.d/jev.conf`. Its required
-`EnvironmentFile=/etc/gates-watch/typesafe.env` contains `TYPESAFE_API_KEY`;
-the file is root-owned, mode 0600, in a root-only directory outside the repo.
-Reload systemd and restart only `gates-watch`. A missing credential fails
-startup; a failed request never substitutes scripted decisions. The live
-operator supplied the key and enabled this configuration on 2026-09-22.
-To explicitly return to scripted mode, remove the drop-in and reload/restart
-the service. Never put the key in the unit, command arguments, page or git.
+Jev (the TypeSafe classifier) is retired and `watch-deploy/jev.conf` with it:
+a host still carrying `gates-watch.service.d/jev.conf` starts `jev-watch`
+with no mind, which refuses to start. Remove that drop-in.
 
-## Run Claude instead of Jev
+## Run Claude
 
 `watch-deploy/claude.conf` swaps the controller for
 `examples/claude_agent.py` on Claude Haiku 5.5, which also sees the frame this
@@ -159,7 +153,7 @@ credits are linked to; optionally `DISCORD_WEBHOOK_URL=…`) in
 directory. Stage a bundle (`ci/deploy_shard.sh` copies `claude_agent.py` beside
 `jev-watch`), install `claude.conf` as
 `/etc/systemd/system/gates-watch.service.d/claude.conf`, **remove `jev.conf`**
-(drop-ins apply in name order), then `systemctl daemon-reload` and restart
+(retired, see above), then `systemctl daemon-reload` and restart
 only `gates-watch`. `frame.jpg`'s `X-Bot-State` then reads
 `"controller":"External agent"` and `decisions` climbs. A request that fails
 is never replaced by a scripted decision; when the credits run out, requests

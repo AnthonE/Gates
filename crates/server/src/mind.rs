@@ -3,13 +3,13 @@
 //! the local controller (`explorer.rs`) carries it out on client-received
 //! state and reports how it went. The source is asked when a goal ends
 //! (done, failed, interrupted) or on a heartbeat, never more often than
-//! once per `jev::THINK_INTERVAL`, one request outstanding.
+//! once per [`THINK_INTERVAL`], one request outstanding.
 //!
 //! Everything a source reads is [`Summary`]: a fixed-size, copyable value
 //! built only from what this client has received (`explorer::observe`).
 //! Serialization, HTTP and child-process I/O stay on the worker thread, so
 //! the input loop neither waits nor allocates. Defaults: `DECISIONS.md`
-//! §open, "Jev goals v0".
+//! §open, "agent goals v0".
 
 pub use crate::agent::build::Milestone;
 use crate::agent::loadout::STAUNCHES;
@@ -19,12 +19,16 @@ use protocol::MAX_ITEM_NAME_BYTES;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
+/// The floor between two requests: the operator's once-per-second ceiling.
+pub const THINK_INTERVAL: Duration = Duration::from_secs(1);
+/// How long an answer stays usable by default (`--timeout-ms`).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// Ask again after a goal has run this long. Proposed default.
-pub const JEV_HEARTBEAT_SECS: u64 = 30;
+pub const HEARTBEAT_SECS: u64 = 30;
 /// Spend guard: requests per rolling hour window and per day window.
 /// At either ceiling the bot pauses model decisions visibly. Proposed.
-pub const JEV_MAX_REQUESTS_HOUR: u32 = 600;
-pub const JEV_MAX_REQUESTS_DAY: u32 = 7200;
+pub const MAX_REQUESTS_HOUR: u32 = 600;
+pub const MAX_REQUESTS_DAY: u32 = 7200;
 /// Bytes kept of a decision's one-line reason. Proposed default.
 pub const REASON_BYTES: usize = 96;
 /// Finished goals the page and the report remember. Proposed default.
@@ -855,10 +859,10 @@ impl TeamSense {
     }
 }
 
-/// Its friend (`jev-bot --friend 0x…`): the one wallet this body plays
+/// Its friend (`gates-agent --friend 0x…`): the one wallet this body plays
 /// with. Whether they are on the island, on its team, in sight, in reach of
 /// an invite, or inviting it. Sent to an external source beside the
-/// observation, as `team` is ([`Summary::friend_json`]), never to Jev.
+/// observation, as `team` is ([`Summary::friend_json`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct FriendSense {
     /// A friend is named at all.
@@ -893,7 +897,7 @@ impl FriendSense {
     };
 }
 
-/// Its society (`agent::society`, `jev-bot --society`): its job, its crew
+/// Its society (`agent::society`, `gates-agent --society`): its job, its crew
 /// and how far the crew has come together, its guild beyond the crew, and
 /// who is in the ward at home. Inside the observation, `null` with none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -1292,7 +1296,7 @@ impl From<protocol::ChatText> for Lines {
 /// What a decision source has its body say out loud, sent with the human
 /// chat box's own encoder. An external source says what it likes; the
 /// scripted policy only answers its team's orders with fixed lines
-/// (`agent::orders`); Jev is a classifier and stays quiet.
+/// (`agent::orders`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Say {
     #[default]
@@ -1642,7 +1646,7 @@ pub const MAX_OPTIONS: usize = Goal::FIXED.len()
 /// from this client's received state (`explorer::observe`); it carries no
 /// seed, no absolute position and no identity of another body beyond the
 /// label a player's own chat log shows, in `heard` — which only an
-/// external source is sent ([`Summary::heard_json`]), never Jev.
+/// external source is sent ([`Summary::heard_json`]), never inside the observation.
 #[derive(Clone, Copy, Debug)]
 pub struct Summary {
     pub tick: u32,
@@ -2023,7 +2027,7 @@ impl Summary {
     /// What it heard since the last request, oldest first: who (the chat
     /// log's label), whether that is itself or a declared agent, the
     /// channel and the words. Sent to an external source beside the
-    /// observation, never inside it, so Jev is never handed player text.
+    /// observation, never inside it, so a features row never holds player text.
     /// Worker only (it allocates).
     /// A line said out loud carries `"voice": true` (a transcription, which
     /// can mishear), its pieces joined back into one line.
@@ -2064,7 +2068,7 @@ impl Summary {
 
     /// THE GATE and the works, the stones, their locks and the ziggurat's
     /// card doors, as its client knows them. Sent to an external source
-    /// beside the observation (Jev's request stays small).
+    /// beside the observation (the observation stays small).
     /// Worker only (it allocates).
     pub fn places_json(&self) -> Value {
         json!({
@@ -2275,8 +2279,7 @@ pub struct Choice {
     pub input_tokens: u64,
     pub output_tokens: u64,
     /// A line to say out loud: an external source's own, or the scripted
-    /// policy's fixed answer to an order. Jev's is always [`Say::Quiet`],
-    /// and the body ignores a line from it.
+    /// policy's fixed answer to an order.
     pub say: Say,
     /// The team's lock code, as a teammate gave it (an external agent's
     /// `"code"`, or a number on team chat for the scripted policy): kept
@@ -2286,7 +2289,6 @@ pub struct Choice {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SourceKind {
-    Jev,
     Scripted,
     External,
     /// A classifier distilled from recorded decisions (`distill.rs`).
@@ -2296,7 +2298,6 @@ pub enum SourceKind {
 impl SourceKind {
     pub fn label(self) -> &'static str {
         match self {
-            SourceKind::Jev => "Jev 1.13.0",
             SourceKind::Scripted => "Scripted",
             SourceKind::External => "External agent",
             SourceKind::Student => "Student",
@@ -2491,7 +2492,7 @@ impl SpendGuard {
 #[derive(Clone, Copy, Debug)]
 pub struct MindConfig {
     /// The floor between two requests: the operator's once-per-second
-    /// ceiling (`jev::THINK_INTERVAL`), also the backoff unit.
+    /// ceiling ([`THINK_INTERVAL`]), also the backoff unit.
     pub interval: Duration,
     /// How long an answer stays usable, and how stale a snapshot may be.
     pub timeout: Duration,
@@ -2503,11 +2504,11 @@ pub struct MindConfig {
 impl Default for MindConfig {
     fn default() -> Self {
         Self {
-            interval: crate::jev::THINK_INTERVAL,
-            timeout: crate::jev::REQUEST_TIMEOUT,
-            heartbeat: Duration::from_secs(JEV_HEARTBEAT_SECS),
-            per_hour: JEV_MAX_REQUESTS_HOUR,
-            per_day: JEV_MAX_REQUESTS_DAY,
+            interval: THINK_INTERVAL,
+            timeout: REQUEST_TIMEOUT,
+            heartbeat: Duration::from_secs(HEARTBEAT_SECS),
+            per_hour: MAX_REQUESTS_HOUR,
+            per_day: MAX_REQUESTS_DAY,
         }
     }
 }
@@ -2517,7 +2518,7 @@ impl MindConfig {
         let limit = Duration::from_secs(60);
         // A harness's think (MCP `--autopilot-s`) may run past the minute.
         let timeout_limit = Duration::from_secs(180);
-        if self.interval < crate::jev::THINK_INTERVAL
+        if self.interval < THINK_INTERVAL
             || self.interval > limit
             || self.timeout.is_zero()
             || self.timeout > timeout_limit
@@ -2610,7 +2611,7 @@ impl Mind {
     }
 
     /// Decisions on a dedicated worker thread: the shape for any source
-    /// that blocks or allocates (Jev's HTTP, an external agent's pipes).
+    /// that blocks or allocates (an external agent's pipes, an MCP harness).
     pub fn new(source: impl DecisionSource, cfg: MindConfig) -> Result<Self, String> {
         cfg.check()?;
         let kind = source.kind();
@@ -2624,7 +2625,7 @@ impl Mind {
         let fresh = (kind == SourceKind::External).then_some(fresh);
         let mut source = source;
         let worker = std::thread::Builder::new()
-            .name("jev-decisions".into())
+            .name("agent-decisions".into())
             .spawn(move || loop {
                 let (id, summary) = match inbox.pop() {
                     Ok(ask) => ask,
@@ -4098,7 +4099,7 @@ mod tests {
 
     /// Heard lines reach an external source labelled the way a player's
     /// chat log labels them, the ring keeps the newest, and none of it is
-    /// in the observation Jev is sent.
+    /// in the observation.
     #[test]
     fn heard_lines_are_labelled_capped_and_kept_out_of_the_observation() {
         let line = |from: u32, text: &str| HeardLine {
@@ -4125,7 +4126,10 @@ mod tests {
             (Some("#258"), Some(true))
         );
         assert_eq!(v[1]["channel"], "global");
-        assert!(!s.to_json().to_string().contains("hi bot"), "Jev's request");
+        assert!(
+            !s.to_json().to_string().contains("hi bot"),
+            "the observation"
+        );
         for i in 0..SUMMARY_HEARD as u32 {
             s.heard.push(line(300 + i, "x"));
         }
@@ -4154,7 +4158,7 @@ mod tests {
     struct Counting(u32);
     impl DecisionSource for Counting {
         fn kind(&self) -> SourceKind {
-            SourceKind::Jev
+            SourceKind::External
         }
         fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
             self.0 += 1;
