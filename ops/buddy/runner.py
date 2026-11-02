@@ -35,17 +35,29 @@ BUDDY_STATE:
     notes/<id>.txt           its own notes, kept across restarts
     journal/<id>.jsonl       its decisions, each naming the harness and model
                              that answered; the last few are published
+    body/<id>.jsonl          the body's own journal (`gates-agent --journal`):
+                             where it stood, its score, what it thought
+    memory/<id>.json         the places and people it remembers (`--memory`)
     recaps/<id>.jsonl        its daily recaps; the last three are published
     public/clips/<id>/       its highlight clips and their index.json
                              (`clips.py`): game.elopros.com/gates/clips/
     clips-queue.json         who wants clips, for `clips.py auto`
     public/rent.json         what each agent spent, whether it runs, what it
                              is doing: game.elopros.com/gates/rent.json
+    public/watch.json        the Watch feed (`watch.py`), every WATCH_EVERY_S:
+                             every house body and agent here, 60 s behind:
+                             game.elopros.com/gates/watch.json
+    public/map.png           the island, from the shard's companion, hourly
 
 It also publishes what the house's other bodies are doing (`others`, keyed by
-wallet): the villages and teammates keep their own journals
-(`jev-bot --journal`, `ops/gates-village@.service`), read here by glob, so the
-platform's agent floor shows them as it shows these.
+wallet): the protagonist, villages and teammates keep their own journals
+(`gates-agent --journal`, `ops/gates-village@.service`), read here by glob, so
+the platform's agent floor and the Watch page show them as they show these.
+
+A community agent of ours with a character file (`pot-<name>` and
+BUDDY_PERSONAS/<name>.toml, e.g. Doctor Wood's `doctor-wood.toml`) plays it
+(`--character`), and speaks in the file's `[voice]` when the house has an
+ElevenLabs key.
 
 Environment (defaults in brackets):
 
@@ -60,11 +72,15 @@ Environment (defaults in brackets):
     BUDDY_STATUS_URL      [https://game.elopros.com/gates/status.json] where
                           the shard says how many are on and its cap
     BUDDY_THINK_MS [4000]   BUDDY_MAX_HOUR [400]   BUDDY_MAX_DAY [3000]
-    BUDDY_OTHER_JOURNALS  [/var/lib/gates-village/*/journal*.jsonl
+    BUDDY_OTHER_JOURNALS  [/var/lib/gates-protagonist/*/journal*.jsonl
+                           /var/lib/gates-village/*/journal*.jsonl
                            /var/lib/gates-teammate/*/journal*.jsonl] space-
                           separated globs of other bodies' journals (a
                           village's bodies keep one each, journal-<name>.jsonl)
-    JEV_BOT               [/home/master/gates-jev/jev-bot]
+    JEV_BOT               [/home/master/gates-jev/jev-bot] the body
+                          (`gates-agent`; `jev-bot` is its old name)
+    BUDDY_PERSONAS        [/opt/gates-agents/personas]
+    WATCH_*               the Watch feed's knobs (`watch.py`)
     CLAUDE_AGENT          [/home/master/gates-jev/claude_agent.py]
     CLAUDE_MODEL          [claude-haiku-5-5]
     BUDDY_MIND_PORT       [8433] the own-brain bridge, on loopback
@@ -89,6 +105,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mind_bridge  # noqa: E402
 import recap  # noqa: E402
+import watch  # noqa: E402
 
 FEED_URL = os.environ.get("BUDDY_FEED_URL", "https://elopros.com/api/buddy/agents")
 ORIGIN = os.environ.get("BUDDY_ORIGIN", "https://elopros.com").rstrip("/")
@@ -120,7 +137,9 @@ FRIEND_FRESH_S = 90    # a buddy that decided this recently is with its friend
 OTHERS_FRESH_S = 900   # another body that has not decided this long is off
 OTHER_JOURNALS = os.environ.get(
     "BUDDY_OTHER_JOURNALS",
-    "/var/lib/gates-village/*/journal*.jsonl /var/lib/gates-teammate/*/journal*.jsonl").split()
+    "/var/lib/gates-protagonist/*/journal*.jsonl /var/lib/gates-village/*/journal*.jsonl "
+    "/var/lib/gates-teammate/*/journal*.jsonl").split()
+PERSONAS = os.environ.get("BUDDY_PERSONAS", "/opt/gates-agents/personas")
 FETCH_MAX = 1 << 20
 LIVE_N = 5
 ID = re.compile(r"^[0-9a-f]{10}$|^pot-[a-z0-9-]{1,24}$")
@@ -338,6 +357,31 @@ def ensure_face(aid, a):
         log(f"{aid}: face not set yet: {e}")
 
 
+def persona_file(aid):
+    """A community agent's character file (`pot-doctor-wood` →
+    BUDDY_PERSONAS/doctor-wood.toml), or None."""
+    if not aid.startswith("pot-"):
+        return None
+    p = os.path.join(PERSONAS, aid[4:] + ".toml")
+    return p if os.path.isfile(p) else None
+
+
+def voice_of(aid):
+    """(ElevenLabs voice, speaking style) for one of ours: its character
+    file's `[voice]`, else VOICES; (None, None) for everyone else."""
+    p = persona_file(aid)
+    if p:
+        try:
+            import tomllib  # noqa: PLC0415 — Python 3.11+
+            with open(p, "rb") as f:
+                v = tomllib.load(f).get("voice") or {}
+            if v.get("eleven_voice"):
+                return str(v["eleven_voice"]), str(v.get("tts_style") or "")
+        except (ImportError, OSError, ValueError) as e:
+            log(f"{aid}: {p}: {e}")
+    return VOICES.get(aid), None
+
+
 def start(aid, a):
     """Bring an agent onto the island: our mind (`claude_agent.py`) behind
     `--external`, or its owner's harness behind `--mcp`, whose stdio the
@@ -354,7 +398,12 @@ def start(aid, a):
     if a["kind"] == "community" and not own:
         cmd += ["--alone", "autopilot"]
     cmd += ["--seconds", "86400", "--think-ms", str(THINK_MS),
-            "--max-requests-hour", str(MAX_HOUR), "--max-requests-day", str(MAX_DAY)]
+            "--max-requests-hour", str(MAX_HOUR), "--max-requests-day", str(MAX_DAY),
+            # The body's own journal (the Watch feed) and what it remembers.
+            "--journal", path("body", aid + ".jsonl"), "--memory", path("memory", aid + ".json")]
+    character = persona_file(aid)
+    if character and not own:
+        cmd += ["--character", character]
     log(f"{aid}: {a['name']} ({a['kind']}, {a['brain']} brain) joins")
     if own:
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
@@ -371,9 +420,12 @@ def start(aid, a):
         "GATES_PERSONA": str(a.get("persona") or "")[:600],
         "GATES_HARNESS": HARNESS,
     })
-    if aid in VOICES and os.environ.get("ELEVENLABS_API_KEY"):
+    voice, style = voice_of(aid)
+    if voice and os.environ.get("ELEVENLABS_API_KEY"):
         cmd += ["--voice"]
-        env["GATES_ELEVEN_VOICE"] = VOICES[aid]
+        env["GATES_ELEVEN_VOICE"] = voice
+        if style:
+            env["GATES_TTS_STYLE"] = style
     cmd += ["--timeout-ms", "20000", "--external", sys.executable, AGENT]
     return subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
 
@@ -473,13 +525,44 @@ def recap_jobs(agents, left, now):
     return jobs
 
 
+def watch_sources(agents):
+    """The Watch feed's sources among the runner's agents: each body's own
+    journal, and its mind's when the body has none yet."""
+    out = []
+    for i, a in sorted(agents.items()):
+        pic = str(a.get("pic") or "")
+        out.append({"path": path("body", i + ".jsonl"), "fallback": path("journal", i + ".jsonl"),
+                    "id": i, "kind": a["kind"], "name": a["name"], "wallet": address(i),
+                    "face": ORIGIN + pic if pic.startswith("/") else None, "house": False})
+    return out
+
+
+def watching(get_agents, done):
+    """Rewrite public/watch.json every WATCH_EVERY_S, and the map hourly,
+    until `done`. A failure costs one write, never the runner."""
+    feed = watch.Feed(server=SERVER)
+    map_at = 0.0
+    while not done:
+        now = time.time()
+        try:
+            if now - map_at >= watch.MAP_EVERY_S:
+                map_at = now
+                if watch.refresh_map(path("public", "map.png")):
+                    log("watch: the island's map is new")
+            doc = feed.build(watch.house_sources() + watch_sources(get_agents()), now)
+            watch.publish(doc, path("public", "watch.json"))
+        except Exception as e:  # noqa: BLE001
+            log(f"watch: {e}")
+        time.sleep(watch.EVERY_S)
+
+
 def anthropic_client():
     import anthropic
     return anthropic.Anthropic(max_retries=1, timeout=60)
 
 
 def main():
-    for d in ("spend", "credit", "status", "notes", "journal", "face", "recaps", "public"):
+    for d in ("spend", "credit", "status", "notes", "journal", "body", "memory", "face", "recaps", "public"):
         os.makedirs(path(d), exist_ok=True)
     os.makedirs(path("public", "clips"), exist_ok=True)
     os.makedirs(path("keys"), mode=0o700, exist_ok=True)
@@ -508,12 +591,15 @@ def main():
     signal.signal(signal.SIGTERM, quit_)
     signal.signal(signal.SIGINT, quit_)
     log(f"{SLOTS}+{COMMUNITY_SLOTS} slots on {SERVER}, model {MODEL}, feed {FEED_URL}, minds on {MIND_PORT}")
+    seen_agents = [{}]
+    threading.Thread(target=watching, args=(lambda: seen_agents[0], done), daemon=True, name="watch").start()
     while not done:
         bridge.wake.clear()
         fresh = read_feed()
         if fresh is not None:
             pools, agents = fresh
         bridge.set_agents(agents)
+        seen_agents[0] = agents
         now = time.time()
         spent = {i: ledger.spent(i) for i in agents}
         pool_left = {}
