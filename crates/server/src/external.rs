@@ -5,8 +5,7 @@
 //! machine can connect to them, there is no port to allocate or guard, the
 //! agent lives and dies with the bot, the bot's own stdout stays free for
 //! its report, and any language that can read a line and print a line can
-//! play. The child inherits no Jev key (`TYPESAFE_API_KEY` is removed from
-//! its environment).
+//! play.
 //!
 //! One observation line out per request, one goal line back:
 //!
@@ -23,7 +22,7 @@
 //! team's lock code, as a teammate gave it, for the locks on the way to the
 //! team's chest.
 //!
-//! The same rules as Jev: one request outstanding, the reply must echo the
+//! The mind's rules: one request outstanding, the reply must echo the
 //! id and name an offered goal, lines are bounded, a missing or late answer
 //! is an explicit failure and never a substituted decision. Replies to an
 //! older id are skipped. A request can come again under the same id, with
@@ -46,6 +45,15 @@ pub const EXTERNAL_POLL_MS: u64 = 2;
 const POLL: Duration = Duration::from_millis(EXTERNAL_POLL_MS);
 /// Protocol version carried on every observation line.
 pub const EXTERNAL_PROTOCOL: u32 = 1;
+/// Test bound on the largest request line a turn can produce: its size is
+/// what a decision costs a model. Not enforced on the wire. Carried over
+/// from the retired Jev request's bound (8.5 KiB for the observation alone)
+/// when the observation went to every mind with what it heard, its team,
+/// its places, its character and its memory beside it. Every one of those
+/// at its cap is about 34 KiB, a few thousand tokens; a body's ordinary turn
+/// is a fraction of it.
+#[cfg(test)]
+const REQUEST_BYTES_MAX: usize = 40 * 1024;
 
 /// The one site an agent may name in chat: where its friend tops it up.
 const OUR_SITE: &str = "elopros.com";
@@ -114,7 +122,7 @@ enum Line {
 pub struct External {
     child: Option<Child>,
     /// Where observations go: the child's stdin, or an in-process pipe
-    /// (`mcp.rs`, where the agent is a harness on jev-bot's own stdio).
+    /// (`mcp.rs`, where the agent is a harness on gates-agent's own stdio).
     stdin: Option<Box<dyn Write + Send>>,
     lines: Option<rtrb::Consumer<Line>>,
     reader: Option<std::thread::JoinHandle<()>>,
@@ -129,6 +137,14 @@ pub struct External {
     note: Option<crate::bugs::Note>,
     /// The plan the last reply left its autopilot (`mind::Plan`).
     plan: Option<crate::mind::Plan>,
+    /// Keys every request carries beside the observation (its `character`,
+    /// given once), and those the mind's wrappers set before each ask
+    /// (`DecisionSource::set_context`: memory, strategy). Absent when empty.
+    fixed: serde_json::Map<String, Value>,
+    context: serde_json::Map<String, Value>,
+    /// What the last reply said beyond its goal (`thought`, `strategy`,
+    /// `stance`), for the memory and the journal.
+    extras: Option<crate::memory::Extras>,
 }
 
 impl External {
@@ -151,7 +167,6 @@ impl External {
         }
         let mut child = Command::new(program)
             .args(args)
-            .env_remove("TYPESAFE_API_KEY")
             // The bot's own voice keys (`agent_voice.rs`): the child is
             // somebody else's program and gets none of this process's paid
             // services. (`OPENAI_API_KEY` stays: it is as likely the child's
@@ -242,6 +257,9 @@ impl External {
             speech: None,
             note: None,
             plan: None,
+            fixed: serde_json::Map::new(),
+            context: serde_json::Map::new(),
+            extras: None,
         })
     }
 
@@ -249,6 +267,13 @@ impl External {
     /// accepted reply's `speak` (or, without one, its `say`) is spoken.
     pub fn with_speech(mut self, tx: crate::agent_voice::SpeechTx) -> Self {
         self.speech = Some(tx);
+        self
+    }
+
+    /// Keys every request carries beside the observation: a body's
+    /// `character` (`character.rs`).
+    pub fn with_context(mut self, keys: serde_json::Map<String, Value>) -> Self {
+        self.fixed = keys;
         self
     }
 
@@ -287,6 +312,9 @@ impl External {
     /// Write request `id`'s observation line to the agent.
     fn send(&mut self, id: u64, summary: &Summary) -> Result<(), String> {
         let mut request = Self::observation(id, summary);
+        for (k, v) in self.fixed.iter().chain(&self.context) {
+            request[k.as_str()] = v.clone();
+        }
         if let Some(speech) = self.speech.as_ref() {
             request["voice"] = Value::Bool(true);
             // Still saying its last line: a new one would wait its turn.
@@ -499,13 +527,22 @@ impl DecisionSource for External {
             Ok(note) => self.note = note,
             Err(e) => eprintln!("external agent report refused: {e}"),
         }
-        let plan = serde_json::from_str::<Value>(reply.trim_end())
-            .map_err(|e| e.to_string())
-            .and_then(|v| crate::mind::Plan::parse(&v["plan"]));
-        match plan {
+        let value = serde_json::from_str::<Value>(reply.trim_end()).map_err(|e| e.to_string());
+        match value
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|v| crate::mind::Plan::parse(&v["plan"]))
+        {
             Ok(Some(plan)) => self.plan = Some(plan),
             Ok(None) => {}
             Err(e) => eprintln!("external agent plan refused: {e}"),
+        }
+        // Its thought, strategy and stances: refused on their own, the goal
+        // beside them still stands.
+        match value.and_then(|v| crate::memory::Extras::parse(&v)) {
+            Ok(x) if !x.is_empty() => self.extras = Some(x),
+            Ok(_) => {}
+            Err(e) => eprintln!("external agent thought, strategy or stance refused: {e}"),
         }
         Ok(choice)
     }
@@ -516,6 +553,14 @@ impl DecisionSource for External {
 
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.plan.take()
+    }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, Value>) {
+        self.context = ctx.clone();
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.extras.take()
     }
 }
 
@@ -677,6 +722,67 @@ mod tests {
         );
     }
 
+    /// A body's character rides on every request, and what its wrappers
+    /// set before an ask rides beside it.
+    #[test]
+    fn a_request_carries_the_character_and_the_context() {
+        let mut agent = sh(r#"read line
+            case "$line" in *'"character":{"name":"Ryuzen"'*'"memory":{"summary":"ashore"}'*) ;; *) exit 1;; esac
+            id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            printf '{"id":%s,"goal":"wait"}\n' "$id""#)
+        .with_context(
+            [("character".to_owned(), json!({"name": "Ryuzen"}))]
+                .into_iter()
+                .collect(),
+        );
+        let ctx = [("memory".to_owned(), json!({"summary": "ashore"}))]
+            .into_iter()
+            .collect();
+        agent.set_context(&ctx);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+    }
+
+    /// A reply's thought, strategy and stances come out for the memory and
+    /// the journal; a bad one is refused alone and the goal still stands.
+    #[test]
+    fn a_reply_s_thought_strategy_and_stance_are_taken_apart_from_its_goal() {
+        let mut agent = sh(r#"while read line; do
+            id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            case "$id" in
+            1) printf '{"id":%s,"goal":"wait","thought":"Ash again.","strategy":{"ambition":"rule the north","project":"stone walls","standing_orders":["kill Ash on sight"],"summary":"I came ashore."},"stance":[{"name":"Ash","stance":"rival"}]}\n' "$id";;
+            *) printf '{"id":%s,"goal":"wait","thought":7}\n' "$id";;
+            esac
+        done"#);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+        let x = agent.take_extras().unwrap();
+        assert_eq!(x.thought.as_deref(), Some("Ash again."));
+        assert_eq!(x.strategy.unwrap().standing_orders, ["kill Ash on sight"]);
+        assert_eq!(x.summary.as_deref(), Some("I came ashore."));
+        assert_eq!(x.stance.len(), 1);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+        assert!(
+            agent.take_extras().is_none(),
+            "a bad thought is refused alone"
+        );
+    }
+
+    /// A turn with every addition (character, memory, strategy) still
+    /// matches the published schema.
+    #[test]
+    fn a_turn_with_its_character_and_memory_matches_the_schema() {
+        let mut s = full_summary();
+        s.seen.pos = Some([0.0, 0.0]);
+        let mut turn = External::observation(9, &s);
+        let memory = crate::memory::tests::full();
+        turn["character"] = crate::character::Character::plain("Ryuzen").json();
+        turn["memory"] = memory.json(&s, 99);
+        turn["strategy"] = memory.strategy().unwrap().json(99);
+        let errs = turn_schema::errors(&turn);
+        assert!(errs.is_empty(), "{errs:#?}");
+        turn["memory"]["people"][0]["stance"] = json!("lover");
+        assert!(!turn_schema::errors(&turn).is_empty());
+    }
+
     #[test]
     fn a_child_process_answers_over_its_pipes() {
         // A reply to an older request first, then the real one.
@@ -756,6 +862,131 @@ mod tests {
         let mut gone = sh("exit 0");
         assert!(gone.decide(&s).is_err());
         assert!(External::spawn("/nonexistent/agent", &[], Duration::from_secs(1)).is_err());
+    }
+
+    /// The request is what a decision costs, so its size is bounded: a
+    /// summary filled to every capacity, heard lines included, stays under
+    /// `REQUEST_BYTES_MAX`.
+    #[test]
+    fn a_full_request_stays_small() {
+        let mut s = full_summary();
+        s.seen.pos = Some([0.0, 0.0]);
+        let mut request = External::observation(u64::MAX, &s);
+        // Its character, memory and strategy at every bound beside it.
+        let memory = crate::memory::tests::full();
+        let character = crate::character::Character {
+            persona: "p".repeat(crate::character::PERSONA_MAX),
+            goal: "g".repeat(crate::character::GOAL_MAX),
+            quirks: vec!["q".repeat(crate::character::QUIRK_MAX); crate::character::QUIRKS_MAX],
+            ..crate::character::Character::plain("SixteenCharName_")
+        };
+        request["character"] = character.json();
+        request["memory"] = memory.json(&s, u64::MAX);
+        request["strategy"] = memory.strategy().unwrap().json(u64::MAX);
+        let bytes = request.to_string().len();
+        println!("largest request: {bytes} bytes");
+        assert!(bytes < REQUEST_BYTES_MAX, "{bytes}");
+    }
+
+    /// A summary filled to every capacity.
+    pub(crate) fn full_summary() -> Summary {
+        use crate::mind::{Report, Sighting, Trigger, SUMMARY_CRAFTS, SUMMARY_ITEMS};
+        let mut s = Summary::EMPTY;
+        let long = |i: usize| Name::new(format!("Item Name Number {i:04}").as_bytes()).unwrap();
+        for i in 0..SUMMARY_ITEMS {
+            s.items[i] = (long(i), 60_000);
+        }
+        s.items_len = SUMMARY_ITEMS as u8;
+        for i in 0..SUMMARY_CRAFTS {
+            s.craftable[i] = long(100 + i);
+        }
+        s.craftable_len = SUMMARY_CRAFTS as u8;
+        let seen = Sighting {
+            count: 255,
+            nearest_m: 32,
+            bearing: 5,
+        };
+        (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
+        (s.players, s.animals, s.water_near, s.backpack) = (seen, seen, seen, seen);
+        (s.hemp, s.humans) = (seen, seen);
+        s.bags = u8::MAX;
+        s.home = crate::mind::HomeSense {
+            state: crate::mind::HomeState::Inside,
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+            metres: u16::MAX,
+            attacked: true,
+            damaged: true,
+            doors: u8::MAX,
+            doors_locked: u8::MAX,
+            key_locks: u8::MAX,
+            unreachable: true,
+        };
+        for i in 0..crate::mind::SUMMARY_STORED {
+            s.stored[i] = (long(300 + i), u32::MAX);
+        }
+        s.stored_len = crate::mind::SUMMARY_STORED as u8;
+        for i in 0..crate::mind::SUMMARY_HOME_HOLDS {
+            s.home_holds[i] = (long(500 + i), u32::MAX);
+        }
+        s.home_holds_len = crate::mind::SUMMARY_HOME_HOLDS as u8;
+        (s.take_out, s.feed) = (true, true);
+        (s.bag_ready, s.night) = (true, true);
+        s.milestone = crate::mind::Milestone::ALL
+            .into_iter()
+            .max_by_key(|m| m.word().len())
+            .unwrap();
+        for i in 0..crate::mind::SUMMARY_NEEDS {
+            s.needs[i] = (long(200 + i), u32::MAX);
+        }
+        s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
+        for i in 0..crate::mind::SUMMARY_RAW {
+            s.raw[i] = (long(400 + i), u32::MAX);
+        }
+        s.raw_len = crate::mind::SUMMARY_RAW as u8;
+        (s.bench, s.furnace) = (true, true);
+        (s.loot, s.raid) = (seen, seen);
+        s.loot_place = Some(crate::mind::Place::at(f32::from(u16::MAX), 5));
+        (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
+        s.last = Some(Report {
+            goal: Goal::Craft(long(7)),
+            outcome: crate::mind::Outcome::Failed(crate::mind::Why::MissingInputs),
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
+        s.trigger = Trigger::Heartbeat;
+        let threat = crate::mind::Threat {
+            arms: crate::mind::Arms::Explosive,
+            range: crate::mind::Range::Close,
+            bearing: 5,
+            wounded: true,
+            aiming_at_me: true,
+        };
+        s.threats = [threat; crate::mind::SUMMARY_THREATS];
+        s.threats_len = crate::mind::SUMMARY_THREATS as u8;
+        s.last_fight = Some(crate::mind::Why::Escaped);
+        s.current = Some(Report {
+            goal: Goal::Craft(long(9)),
+            outcome: crate::mind::Outcome::Running,
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
+        let text = protocol::ChatText::sanitize(&[b'w'; protocol::CHAT_MAX_BYTES]).unwrap();
+        for i in 0..crate::mind::SUMMARY_HEARD as u32 {
+            s.heard.push(crate::mind::HeardLine {
+                from: 300 + i,
+                name: protocol::Name::new("SixteenCharName_").unwrap(),
+                text,
+                ..crate::mind::HeardLine::EMPTY
+            });
+        }
+        for g in Goal::FIXED {
+            s.offer(g);
+        }
+        for i in 0..SUMMARY_CRAFTS {
+            s.offer(Goal::Craft(s.craftable[i]));
+        }
+        s
     }
 
     /// The turn a mind is sent matches the schema published beside this

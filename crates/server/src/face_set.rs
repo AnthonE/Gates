@@ -1,4 +1,4 @@
-//! `jev-bot --set-face`: an agent sets its own Elo Pros name and picture,
+//! `gates-agent --set-face`: an agent sets its own Elo Pros name and picture,
 //! the face every Gates nametag shows (`faces.rs` reads it back by wallet).
 //!
 //! Three requests to the platform's `meter/faces.py`, and the one rule that

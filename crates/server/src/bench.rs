@@ -1,4 +1,4 @@
-//! **GatesBench** (`jev-bot --bench MINUTES`): one mind, played on fresh
+//! **GatesBench** (`gates-agent --bench MINUTES`): one mind, played on fresh
 //! private islands and scored on the boards a wipe pays (`standings.rs`).
 //!
 //! Each run boots its own loopback island from the local seed, seats the
@@ -46,10 +46,60 @@ const FLUSH_WAIT: Duration = Duration::from_secs(60);
 
 /// A bot's decisions as its mind took them, counted on the decision worker
 /// ([`Counted`]) and read by the run.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Tally {
     decisions: AtomicU32,
     autopilot: AtomicU32,
+    /// Every answer by its goal's kind (`Goal::key`), and the plan steps
+    /// its scripted policy saw through (`DecisionSource::plan_done`): how
+    /// the bot played, beside how well (`behaviour`).
+    goals: [AtomicU32; GOAL_KINDS],
+    plan_done: AtomicU32,
+}
+
+/// The kinds of goal a tally counts: the fixed ones, then those that name
+/// a thing or a place.
+const NAMED_KINDS: [&str; 6] = ["craft", "buy", "sell", "give", "go", "walk"];
+const GOAL_KINDS: usize = crate::mind::Goal::FIXED.len() + NAMED_KINDS.len();
+
+fn kind_slot(key: &str) -> Option<usize> {
+    crate::mind::Goal::FIXED
+        .iter()
+        .position(|g| g.key() == key)
+        .or_else(|| {
+            NAMED_KINDS
+                .iter()
+                .position(|k| *k == key)
+                .map(|i| crate::mind::Goal::FIXED.len() + i)
+        })
+}
+
+fn kind_key(slot: usize) -> &'static str {
+    match crate::mind::Goal::FIXED.get(slot) {
+        Some(g) => g.key(),
+        None => NAMED_KINDS[slot - crate::mind::Goal::FIXED.len()],
+    }
+}
+
+impl Default for Tally {
+    fn default() -> Self {
+        Self {
+            decisions: AtomicU32::new(0),
+            autopilot: AtomicU32::new(0),
+            goals: std::array::from_fn(|_| AtomicU32::new(0)),
+            plan_done: AtomicU32::new(0),
+        }
+    }
+}
+
+impl Tally {
+    /// Its answers by kind of goal, so far.
+    pub fn goals(&self) -> std::collections::BTreeMap<&'static str, u32> {
+        (0..GOAL_KINDS)
+            .map(|i| (kind_key(i), self.goals[i].load(Ordering::Relaxed)))
+            .filter(|&(_, n)| n > 0)
+            .collect()
+    }
 }
 
 impl Tally {
@@ -95,6 +145,12 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
             if crate::autopilot::is_autopilot(choice.reason.as_str()) {
                 self.tally.autopilot.fetch_add(1, Ordering::Relaxed);
             }
+            if let Some(i) = kind_slot(choice.goal.key()) {
+                self.tally.goals[i].fetch_add(1, Ordering::Relaxed);
+            }
+            self.tally
+                .plan_done
+                .store(self.inner.plan_done(), Ordering::Relaxed);
         }
         answer
     }
@@ -106,6 +162,102 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
     fn take_plan(&mut self) -> Option<Plan> {
         self.inner.take_plan()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.inner.take_extras()
+    }
+
+    fn plan_done(&self) -> u32 {
+        self.inner.plan_done()
+    }
+}
+
+/// Shannon entropy, in bits, of a count distribution: 0 for a bot that did
+/// one thing, `log2(k)` for one that spread evenly over `k`.
+pub fn entropy(counts: &std::collections::BTreeMap<&str, u32>) -> f64 {
+    let n: f64 = counts.values().map(|&c| f64::from(c)).sum();
+    if n == 0.0 {
+        return 0.0;
+    }
+    -counts
+        .values()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = f64::from(c) / n;
+            p * p.log2()
+        })
+        .sum::<f64>()
+}
+
+/// Jensen-Shannon divergence, in bits (0 the same, 1 nothing shared),
+/// between two count distributions.
+pub fn jsd(
+    a: &std::collections::BTreeMap<&str, u32>,
+    b: &std::collections::BTreeMap<&str, u32>,
+) -> f64 {
+    let (na, nb): (f64, f64) = (
+        a.values().map(|&c| f64::from(c)).sum(),
+        b.values().map(|&c| f64::from(c)).sum(),
+    );
+    if na == 0.0 || nb == 0.0 {
+        return 0.0;
+    }
+    let keys: std::collections::BTreeSet<&&str> = a.keys().chain(b.keys()).collect();
+    let mut d = 0.0;
+    for k in keys {
+        let p = a.get(*k).map_or(0.0, |&c| f64::from(c) / na);
+        let q = b.get(*k).map_or(0.0, |&c| f64::from(c) / nb);
+        let m = (p + q) / 2.0;
+        if p > 0.0 {
+            d += 0.5 * p * (p / m).log2();
+        }
+        if q > 0.0 {
+            d += 0.5 * q * (q / m).log2();
+        }
+    }
+    d.max(0.0)
+}
+
+/// How a fleet played, over every run (`gates-bench-behaviour-1`): each
+/// bot's goal mix (entropy in bits, the kinds it used, plan steps seen
+/// through) and the fleet's spread, the mean Jensen-Shannon divergence
+/// between every two bots' mixes: near 0, a fleet of one bot many times.
+/// Beside the score, not in it: the platform's `gates-bench-1` takes no
+/// keys beyond its own (`meter/bench.py`).
+pub fn behaviour<'a>(tallies: impl IntoIterator<Item = &'a Tally>) -> Value {
+    let mixes: Vec<(std::collections::BTreeMap<&str, u32>, u32)> = tallies
+        .into_iter()
+        .map(|t| (t.goals(), t.plan_done.load(Ordering::Relaxed)))
+        .collect();
+    let mut pairs = 0u32;
+    let mut spread = 0.0;
+    for i in 0..mixes.len() {
+        for j in i + 1..mixes.len() {
+            spread += jsd(&mixes[i].0, &mixes[j].0);
+            pairs += 1;
+        }
+    }
+    let used: std::collections::BTreeSet<&str> =
+        mixes.iter().flat_map(|(g, _)| g.keys().copied()).collect();
+    let n = mixes.len().max(1) as f64;
+    json!({
+        "format": "gates-bench-behaviour-1",
+        "bots": mixes.iter().map(|(g, plan)| json!({
+            "entropy_bits": entropy(g),
+            "distinct_goals": g.len(),
+            "decisions": g.values().sum::<u32>(),
+            "plan_steps_done": plan,
+            "goals": g,
+        })).collect::<Vec<_>>(),
+        "mean_entropy_bits": mixes.iter().map(|(g, _)| entropy(g)).sum::<f64>() / n,
+        "mean_pairwise_jsd_bits": if pairs > 0 { spread / f64::from(pairs) } else { 0.0 },
+        "distinct_goals": used.len(),
+        "plan_steps_done": mixes.iter().map(|(_, p)| p).sum::<u32>(),
+    })
 }
 
 /// The survivor's own frames, and the ticks its body was alive for.
@@ -266,15 +418,25 @@ pub struct Bench<'a> {
 
 /// Every bot's mind, built once and played through every run, and the tally
 /// beside each.
-pub fn minds(mind: &MindArgs, bots: usize) -> Result<Vec<(Mind, Arc<Tally>)>, String> {
+pub fn minds(mind: &MindArgs, name: &str, bots: usize) -> Result<Vec<(Mind, Arc<Tally>)>, String> {
     (0..bots)
-        .map(|_| {
+        .map(|i| {
             let tally = Arc::new(Tally::default());
             let mut m = mind.clone();
             m.tally = Some(tally.clone());
+            m.cast_body(bot_name(name, i, bots)?.as_str(), None, bots > 1);
             Ok((m.build()?, tally))
         })
         .collect()
+}
+
+/// Bot `i`'s setup beyond its mind: its character's temperament included.
+fn opts_of(mind: &MindArgs, name: &str, i: usize, bots: usize) -> crate::explorer::SurvivorOpts {
+    let mut m = mind.clone();
+    if let Ok(n) = bot_name(name, i, bots) {
+        m.cast_body(n.as_str(), None, bots > 1);
+    }
+    m.opts()
 }
 
 /// One run on a fresh island: every bot's row. `minds` come back for the
@@ -316,7 +478,7 @@ async fn play(
         let key = agentkey::AgentKey::create(&dir.join(format!("bot-{i}.key")))
             .map_err(|e| e.to_string())?;
         wallets.push(String::from_utf8_lossy(&key.address().to_hex()).into_owned());
-        let mut opts = b.mind.opts();
+        let mut opts = opts_of(b.mind, b.name, i, b.bots);
         opts.lock = lock_secret(Some(&key), name.as_str(), &dir.join("guest.secret"));
         let door = Door::new(server.clone(), Some(shard.cert_hash.clone()), Some(key))?;
         before.push(tally.read());
@@ -400,7 +562,7 @@ fn play_warp(
     let mut tallies = Vec::with_capacity(minds.len());
     for (i, (mind, tally)) in minds.drain(..).enumerate() {
         let name = bot_name(b.name, i, b.bots)?;
-        let mut opts = b.mind.opts();
+        let mut opts = opts_of(b.mind, b.name, i, b.bots);
         opts.lock = Some(LockSecret::Code(LockCode::derive(b"warp", name.as_str())));
         before.push(tally.read());
         tallies.push(tally);
@@ -514,6 +676,29 @@ mod tests {
             / runs.len() as f64;
         assert!((v["score"]["mean"].as_f64().unwrap() - mean).abs() < 1e-9);
         assert!(v.to_string().len() <= 64 * 1024);
+    }
+
+    #[test]
+    fn the_spread_of_a_fleet_is_zero_for_clones_and_one_for_strangers() {
+        let mix = |pairs: &[(&'static str, u32)]| pairs.iter().copied().collect();
+        let a = mix(&[("gather_wood", 5), ("build", 5)]);
+        let b = mix(&[("raid", 3), ("loot", 3)]);
+        assert!((entropy(&a) - 1.0).abs() < 1e-12);
+        assert_eq!(entropy(&mix(&[("explore", 9)])), 0.0);
+        assert!(jsd(&a, &a).abs() < 1e-12);
+        assert!((jsd(&a, &b) - 1.0).abs() < 1e-12);
+        let t = [Tally::default(), Tally::default()];
+        for (tally, mix) in t.iter().zip([&a, &b]) {
+            for (k, n) in mix {
+                tally.goals[kind_slot(k).unwrap()].store(*n, Ordering::Relaxed);
+            }
+        }
+        t[1].plan_done.store(3, Ordering::Relaxed);
+        let v = behaviour(&t);
+        assert_eq!(v["distinct_goals"], 4);
+        assert_eq!(v["plan_steps_done"], 3);
+        assert!((v["mean_pairwise_jsd_bits"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+        assert_eq!(v["bots"][0]["goals"]["build"], 5);
     }
 
     #[test]

@@ -378,7 +378,7 @@ run cargo build --release -p server --bin shard || exit 1
 if systemctl is-enabled --quiet gates-jev.service 2>/dev/null \
    || systemctl is-enabled --quiet gates-watch.service 2>/dev/null \
    || [ -n "$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-protagonist@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null)" ]; then
-  run cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
+  run cargo build --release -p server --features watch --bin gates-agent --bin jev-bot --bin jev-watch || exit 1
 fi
 run ./ci/build_web.sh target/webdist || exit 1
 run ./ci/depot.py --platform linux-x86_64 || exit 1

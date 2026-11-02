@@ -40,12 +40,14 @@ pub mod anomaly;
 pub mod auth;
 /// The scripted policy behind another source: a body never stands still.
 pub mod autopilot;
-/// GatesBench: a mind scored on fresh private islands (`jev-bot --bench`).
+/// GatesBench: a mind scored on fresh private islands (`gates-agent --bench`).
 pub mod bench;
 pub mod boot;
 pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.
 pub mod bugs;
+/// Who a body is (`--character`): persona, traits, the playbook's knobs.
+pub mod character;
 /// Cheat checks: snap hits, headshot rate, wall tracking (`cheat.rs`).
 pub mod cheat;
 pub mod client;
@@ -54,13 +56,13 @@ pub mod companion;
 pub mod cond;
 pub mod config;
 pub mod core;
-/// `jev-bot --record` and `--student`: a decision source distilled into a small classifier.
+/// `gates-agent --record` and `--student`: a decision source distilled into a small classifier.
 pub mod distill;
 pub mod entitle;
 pub mod explorer;
 /// Bring-your-own-agent decisions over a child's stdin/stdout (`JEV.md`).
 pub mod external;
-/// `jev-bot --set-face`: an agent signs its own name and picture.
+/// `gates-agent --set-face`: an agent signs its own name and picture.
 pub mod face_set;
 pub mod faces;
 pub mod film;
@@ -70,11 +72,12 @@ pub mod gifts;
 pub mod handoff;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
-pub mod jev;
 /// A private island stepped in lockstep, faster than the wall clock (`--warp`).
 pub mod lockstep;
-/// `jev-bot --mcp`: any MCP harness as the bot's mind (`JEV.md`).
+/// `gates-agent --mcp`: any MCP harness as the bot's mind (`JEV.md`).
 pub mod mcp;
+/// What a body remembers past one look (`--memory`): places, people, events.
+pub mod memory;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
 pub mod mind;
 pub mod mints;

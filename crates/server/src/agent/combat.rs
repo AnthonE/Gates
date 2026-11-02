@@ -38,7 +38,7 @@
 //! losing. Everything it knows of other bodies comes from [`Tracks`].
 //!
 //! **A bred brain may make the call instead** ([`Combat::set_tactics`],
-//! `jev-bot --tactics ga1:…`): a small net (`sim_core::genome`) bred in the
+//! `gates-agent --tactics ga1:…`): a small net (`sim_core::genome`) bred in the
 //! arena (`examples/zoo.rs --agent`) that reads the same sum and the same
 //! tracks and says fight, fight close, fight at range, or run, where the
 //! sum's `losing` and the range's hand used to. It decides nothing else:
@@ -290,7 +290,7 @@ pub const TACTICS_PREFIX: &[u8; 4] = b"ga1:";
 pub const TACTIC_HOLD_TICKS: u32 = 15;
 
 /// The bred brain every agent fights wolves with unless told otherwise
-/// (`jev-bot --tactics`): `examples/zoo.rs --agent --seed 2`, four
+/// (`gates-agent --tactics`): `examples/zoo.rs --agent --seed 2`, four
 /// mutations kept in 100 generations. On 192 fights no stage of breeding
 /// saw (`--held-from 3001`), against the rule-table wolf it went down in 5%
 /// of fights to the sum's 9% and lost 31% of its hp to the sum's 49%;
