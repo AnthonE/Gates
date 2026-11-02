@@ -220,6 +220,10 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.inner.take_plan()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
+    }
 }
 
 /// [`DecisionSource`] that keeps the body's journal (`--journal FILE`; each
@@ -406,6 +410,10 @@ impl<S: DecisionSource> DecisionSource for Journal<S> {
 
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.inner.take_plan()
+    }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
     }
 }
 

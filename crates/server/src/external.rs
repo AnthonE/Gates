@@ -135,6 +135,11 @@ pub struct External {
     note: Option<crate::bugs::Note>,
     /// The plan the last reply left its autopilot (`mind::Plan`).
     plan: Option<crate::mind::Plan>,
+    /// Keys every request carries beside the observation (its `character`,
+    /// given once), and those the mind's wrappers set before each ask
+    /// (`DecisionSource::set_context`: memory, strategy). Absent when empty.
+    fixed: serde_json::Map<String, Value>,
+    context: serde_json::Map<String, Value>,
 }
 
 impl External {
@@ -247,6 +252,8 @@ impl External {
             speech: None,
             note: None,
             plan: None,
+            fixed: serde_json::Map::new(),
+            context: serde_json::Map::new(),
         })
     }
 
@@ -254,6 +261,13 @@ impl External {
     /// accepted reply's `speak` (or, without one, its `say`) is spoken.
     pub fn with_speech(mut self, tx: crate::agent_voice::SpeechTx) -> Self {
         self.speech = Some(tx);
+        self
+    }
+
+    /// Keys every request carries beside the observation: a body's
+    /// `character` (`character.rs`).
+    pub fn with_context(mut self, keys: serde_json::Map<String, Value>) -> Self {
+        self.fixed = keys;
         self
     }
 
@@ -292,6 +306,9 @@ impl External {
     /// Write request `id`'s observation line to the agent.
     fn send(&mut self, id: u64, summary: &Summary) -> Result<(), String> {
         let mut request = Self::observation(id, summary);
+        for (k, v) in self.fixed.iter().chain(&self.context) {
+            request[k.as_str()] = v.clone();
+        }
         if let Some(speech) = self.speech.as_ref() {
             request["voice"] = Value::Bool(true);
             // Still saying its last line: a new one would wait its turn.
@@ -522,6 +539,10 @@ impl DecisionSource for External {
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.plan.take()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, Value>) {
+        self.context = ctx.clone();
+    }
 }
 
 /// The reply to `id` among the lines in so far, skipping older ones;
@@ -680,6 +701,26 @@ mod tests {
             observation["options"].as_array().unwrap().len(),
             s.options().len()
         );
+    }
+
+    /// A body's character rides on every request, and what its wrappers
+    /// set before an ask rides beside it.
+    #[test]
+    fn a_request_carries_the_character_and_the_context() {
+        let mut agent = sh(r#"read line
+            case "$line" in *'"character":{"name":"Ryuzen"'*'"memory":{"summary":"ashore"}'*) ;; *) exit 1;; esac
+            id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            printf '{"id":%s,"goal":"wait"}\n' "$id""#)
+        .with_context(
+            [("character".to_owned(), json!({"name": "Ryuzen"}))]
+                .into_iter()
+                .collect(),
+        );
+        let ctx = [("memory".to_owned(), json!({"summary": "ashore"}))]
+            .into_iter()
+            .collect();
+        agent.set_context(&ctx);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
     }
 
     #[test]

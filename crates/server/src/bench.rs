@@ -106,6 +106,10 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
     fn take_plan(&mut self) -> Option<Plan> {
         self.inner.take_plan()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.inner.set_context(ctx);
+    }
 }
 
 /// The survivor's own frames, and the ticks its body was alive for.
@@ -266,15 +270,25 @@ pub struct Bench<'a> {
 
 /// Every bot's mind, built once and played through every run, and the tally
 /// beside each.
-pub fn minds(mind: &MindArgs, bots: usize) -> Result<Vec<(Mind, Arc<Tally>)>, String> {
+pub fn minds(mind: &MindArgs, name: &str, bots: usize) -> Result<Vec<(Mind, Arc<Tally>)>, String> {
     (0..bots)
-        .map(|_| {
+        .map(|i| {
             let tally = Arc::new(Tally::default());
             let mut m = mind.clone();
             m.tally = Some(tally.clone());
+            m.cast_body(bot_name(name, i, bots)?.as_str(), None, bots > 1);
             Ok((m.build()?, tally))
         })
         .collect()
+}
+
+/// Bot `i`'s setup beyond its mind: its character's temperament included.
+fn opts_of(mind: &MindArgs, name: &str, i: usize, bots: usize) -> crate::explorer::SurvivorOpts {
+    let mut m = mind.clone();
+    if let Ok(n) = bot_name(name, i, bots) {
+        m.cast_body(n.as_str(), None, bots > 1);
+    }
+    m.opts()
 }
 
 /// One run on a fresh island: every bot's row. `minds` come back for the
@@ -316,7 +330,7 @@ async fn play(
         let key = agentkey::AgentKey::create(&dir.join(format!("bot-{i}.key")))
             .map_err(|e| e.to_string())?;
         wallets.push(String::from_utf8_lossy(&key.address().to_hex()).into_owned());
-        let mut opts = b.mind.opts();
+        let mut opts = opts_of(b.mind, b.name, i, b.bots);
         opts.lock = lock_secret(Some(&key), name.as_str(), &dir.join("guest.secret"));
         let door = Door::new(server.clone(), Some(shard.cert_hash.clone()), Some(key))?;
         before.push(tally.read());
@@ -400,7 +414,7 @@ fn play_warp(
     let mut tallies = Vec::with_capacity(minds.len());
     for (i, (mind, tally)) in minds.drain(..).enumerate() {
         let name = bot_name(b.name, i, b.bots)?;
-        let mut opts = b.mind.opts();
+        let mut opts = opts_of(b.mind, b.name, i, b.bots);
         opts.lock = Some(LockSecret::Code(LockCode::derive(b"warp", name.as_str())));
         before.push(tally.read());
         tallies.push(tally);

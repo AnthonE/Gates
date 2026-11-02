@@ -120,6 +120,11 @@ fn run() -> Result<AppExit, String> {
         broadcast.address
     };
     mind.frame_url = Some(format!("http://{frame_host}/frame.jpg"));
+    let wallet = key.as_ref().map(|k| {
+        let hex = k.address().to_hex();
+        String::from_utf8_lossy(&hex).into_owned()
+    });
+    mind.cast_body(name.as_str(), wallet.as_deref(), false);
     let brain = mind.build()?;
     println!(
         "controller: {} · {} hands · {}",

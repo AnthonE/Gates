@@ -570,7 +570,7 @@ fn new_key(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn run(mut options: Options) -> Result<(), String> {
+async fn run(options: Options) -> Result<(), String> {
     if let Some(path) = &options.new_key {
         return new_key(path);
     }
@@ -645,28 +645,34 @@ async fn run(mut options: Options) -> Result<(), String> {
         }
     }
     let mut minds = Vec::with_capacity(options.bots);
+    // Each body's own setup: its journal (`--journal`) and the wallet its
+    // rows name, and its character (`--character`). A fleet's wallets are
+    // its own keys (`--agent-keys`), made here on first start rather than
+    // at the door a moment later.
+    let mut bodies = Vec::with_capacity(options.bots);
     let journal = options.mind.journal.clone();
     for i in 0..options.bots {
-        // Each body keeps its own journal (`--journal`), whose rows name the
-        // wallet it plays as: a fleet's are its own keys (`--agent-keys`),
-        // made here on first start rather than at the door a moment later.
+        let name = bot_name(&options.agent_name, i, options.bots)?;
+        let own = match &options.agent_keys {
+            Some(dir) => Some(bot_key(dir, name.as_str())?),
+            None => None,
+        };
+        let wallet = own.as_ref().or(key.as_ref()).map(|k| {
+            let hex = k.address().to_hex();
+            String::from_utf8_lossy(&hex).into_owned()
+        });
+        let mut body = options.mind.clone();
         if let Some(file) = &journal {
-            let name = bot_name(&options.agent_name, i, options.bots)?;
-            options.mind.journal = Some(server::distill::journal_path(
+            body.journal = Some(server::distill::journal_path(
                 file,
                 name.as_str(),
                 options.bots,
             ));
-            let own = match &options.agent_keys {
-                Some(dir) => Some(bot_key(dir, name.as_str())?),
-                None => None,
-            };
-            options.mind.wallet = own.as_ref().or(key.as_ref()).map(|k| {
-                let hex = k.address().to_hex();
-                String::from_utf8_lossy(&hex).into_owned()
-            });
         }
-        minds.push(options.mind.build_with_speech(speech.take())?);
+        body.cast_body(name.as_str(), wallet.as_deref(), options.bots > 1);
+        body.wallet = wallet;
+        minds.push(body.build_with_speech(speech.take())?);
+        bodies.push(body);
     }
     out!(
         "mind: {} × {} · {} hands · {}",
@@ -820,7 +826,7 @@ async fn run(mut options: Options) -> Result<(), String> {
         let duration = options.duration;
         let shift = options.shift;
         let name = names[i];
-        let mut opts = options.mind.opts();
+        let mut opts = bodies[i].opts();
         opts.lock = locks[i];
         opts.society = plans[i];
         if let Some(soc) = plans[i] {
@@ -996,7 +1002,7 @@ async fn bench(options: Options) -> Result<(), String> {
         model: model.map(str::to_owned),
         think_ms: u32::try_from(options.mind.cfg.interval.as_millis()).unwrap_or(u32::MAX),
     };
-    let mut minds = server::bench::minds(&options.mind, options.bots)?;
+    let mut minds = server::bench::minds(&options.mind, &options.agent_name, options.bots)?;
     out!(
         "bench: {} × {} for {minutes} min, {runs} runs on private islands (seed {}, commit {})",
         options.mind.label(),

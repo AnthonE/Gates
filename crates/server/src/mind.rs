@@ -15,6 +15,7 @@ pub use crate::agent::build::Milestone;
 use crate::agent::loadout::STAUNCHES;
 use crate::agent::orders::{self, Order};
 use crate::agent::society::Role;
+use crate::character::{Knobs, RaidWhen};
 use protocol::MAX_ITEM_NAME_BYTES;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -2335,6 +2336,13 @@ pub trait DecisionSource: Send + 'static {
     fn take_plan(&mut self) -> Option<Plan> {
         None
     }
+    /// What the body is beyond this look, for the next request: its
+    /// `character`, its `memory`, the `strategy` it left (`memory.rs`), as
+    /// keys beside the observation. Only a source that shows its asker the
+    /// turn (an external agent, an MCP harness) uses it; wrappers pass it on.
+    fn set_context(&mut self, ctx: &serde_json::Map<String, Value>) {
+        let _ = ctx;
+    }
 }
 
 /// Steps a mind may leave its autopilot.
@@ -2929,6 +2937,9 @@ pub struct Scripted {
     code: Option<crate::agent::lock::LockCode>,
     /// What its mind left it for the turns it plays alone (`Plan`).
     plan: Plan,
+    /// Its character's numbers (`character::Knobs`): the playbook's own
+    /// constants unless a character says otherwise.
+    knobs: Knobs,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -3235,6 +3246,18 @@ impl Scripted {
         self.plan = plan;
     }
 
+    /// The playbook as this character plays it.
+    pub fn with_knobs(knobs: Knobs) -> Self {
+        Self {
+            knobs,
+            ..Self::default()
+        }
+    }
+
+    pub fn set_knobs(&mut self, knobs: Knobs) {
+        self.knobs = knobs;
+    }
+
     /// What its team typed since it was last asked, read as orders
     /// (`agent::orders`), and whether someone near it asked to team up.
     /// A line it said itself or an agent said is never an order.
@@ -3287,14 +3310,15 @@ impl Scripted {
     }
 
     fn pick(&mut self, s: &Summary) -> (Goal, &'static str) {
+        let k = self.knobs;
         // Survive now. The fight reflex answers blows on its own; the
         // policy only calls a retreat once staying would be the end.
         let threat = s.players.count > 0 || s.animals.count > 0;
         let hp = pct(s.hp, s.hp_max);
-        if s.hits > 0 && threat && hp < SCRIPTED_FLEE_HP_PCT && s.offers(Goal::Flee) {
+        if s.hits > 0 && threat && hp < k.flee_hp_pct && s.offers(Goal::Flee) {
             return (Goal::Flee, "scripted: badly hurt with a body in view");
         }
-        if hp < SCRIPTED_HEAL_HP_PCT && s.threats_len == 0 && s.offers(Goal::Heal) {
+        if hp < k.heal_hp_pct && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");
         }
         // A wound still bleeding mends nothing and drains on: a bandage
@@ -3310,8 +3334,8 @@ impl Scripted {
         // there (2026-10-25 bench). A body with health to spare works on
         // through a cold hour, as a player does.
         let dressed = STAUNCHES.iter().any(|m| s.count_of(m) > 0);
-        let freezing = s.condition.cold_hurting && hp < SCRIPTED_HEAL_HP_PCT;
-        if (freezing || (hp < SCRIPTED_FLEE_HP_PCT && !dressed))
+        let freezing = s.condition.cold_hurting && hp < k.heal_hp_pct;
+        if (freezing || (hp < k.flee_hp_pct && !dressed))
             && s.threats_len == 0
             && s.offers(Goal::Warm)
         {
@@ -3323,7 +3347,7 @@ impl Scripted {
         // Badly hurt or bleeding with nothing to dress it and no fire to be
         // had: four cloth make a bandage, and that comes before the
         // sleeping bag the cloth was kept for.
-        if (hp < SCRIPTED_FLEE_HP_PCT || s.condition.bleeding()) && !dressed && s.threats_len == 0 {
+        if (hp < k.flee_hp_pct || s.condition.bleeding()) && !dressed && s.threats_len == 0 {
             if let Some(name) = s.craftable().iter().find(|n| n.as_str() == STAUNCHES[0]) {
                 return (Goal::Craft(*name), "scripted: hurt, making a bandage");
             }
@@ -3374,7 +3398,7 @@ impl Scripted {
         if s.team.mate_attacked && !farmer && s.offers(Goal::Follow) {
             return (Goal::Follow, "scripted: my teammate is under attack");
         }
-        let low = SCRIPTED_LOW_METER_PCT;
+        let low = k.low_meter_pct;
         let bush = s.offers(Goal::Forage) && s.bushes.count > 0;
         if pct(s.water, s.water_max) < low {
             if s.offers(Goal::Drink) {
@@ -3407,7 +3431,7 @@ impl Scripted {
         // roof, once the base has one, out of the rain and the wind that add
         // to it (`sim_core::exposure`).
         if s.condition.cold_hurting
-            && hp < SCRIPTED_HEAL_HP_PCT
+            && hp < k.heal_hp_pct
             && s.milestone > Milestone::Upstairs
             && s.threats_len == 0
             && s.offers(Goal::GoHome)
@@ -3484,10 +3508,7 @@ impl Scripted {
         // lives in the base has its own work.
         let keeps_up =
             !s.society.set || (s.society.role != Role::Founder && s.team.home.count == 0);
-        if keeps_up
-            && s.offers(Goal::Follow)
-            && f32::from(s.team.awake.nearest_m) > SCRIPTED_FOLLOW_M
-        {
+        if keeps_up && s.offers(Goal::Follow) && f32::from(s.team.awake.nearest_m) > k.follow_m {
             return (Goal::Follow, "scripted: catching up with my teammate");
         }
         // A heartbeat with no urgent need lets a working goal finish: the
@@ -3496,9 +3517,7 @@ impl Scripted {
         // A crewmate that has caught up with its founder has work to do
         // there, not a founder to stand beside.
         let caught_up = |goal: Goal| {
-            s.society.set
-                && goal == Goal::Follow
-                && f32::from(s.team.awake.nearest_m) <= SCRIPTED_FOLLOW_M
+            s.society.set && goal == Goal::Follow && f32::from(s.team.awake.nearest_m) <= k.follow_m
         };
         if let Some(current) = s.current.filter(|c| s.offers(c.goal) && !caught_up(c.goal)) {
             return (current.goal, "scripted: keep going");
@@ -3600,7 +3619,7 @@ impl Scripted {
             for name in ["Wood", "Stone"] {
                 if let Some(goal) = Name::new(name.as_bytes())
                     .map(Goal::Sell)
-                    .filter(|g| s.offers(*g) && s.count_of(name) >= 2 * SCRIPTED_PLENTY)
+                    .filter(|g| s.offers(*g) && s.count_of(name) >= 2 * k.plenty)
                 {
                     return (goal, "scripted: selling the surplus at the gate");
                 }
@@ -3622,13 +3641,20 @@ impl Scripted {
         // low, or the pack is nearly full.
         if tooled
             && s.offers(Goal::Stash)
-            && (s.take_out || s.feed || s.free_slots <= SCRIPTED_STASH_FREE_SLOTS)
+            && (s.take_out || s.feed || s.free_slots <= k.stash_free_slots)
         {
             return (Goal::Stash, "scripted: home to the box and the cupboard");
         }
         // Night, and a base worth breaking into is known: what it holds is
         // worth more than another hour of gathering.
-        if s.night && s.offers(Goal::Raid) {
+        // How it raids is its character's (`Knobs::raid`): the honest
+        // never, the greedy and ambitious whenever a base is worth it.
+        let raid_now = match k.raid {
+            RaidWhen::Never => false,
+            RaidWhen::Night => s.night,
+            RaidWhen::Any => true,
+        };
+        if raid_now && s.offers(Goal::Raid) {
             return (Goal::Raid, "scripted: night, and a base worth raiding");
         }
         // Raw meat off a kill is no food until it is cooked.
@@ -3694,7 +3720,7 @@ impl Scripted {
             }
         }
         // Satchels for the raids, once the bench makes them.
-        if s.count_of(SATCHEL_ITEM) < SCRIPTED_SATCHELS {
+        if s.count_of(SATCHEL_ITEM) < k.satchels {
             if let Some(name) = s.craftable().iter().find(|n| n.as_str() == SATCHEL_ITEM) {
                 return (Goal::Craft(*name), "scripted: satchels for a raid");
             }
@@ -3825,11 +3851,7 @@ impl Scripted {
             return (Goal::Build, "scripted: the spare pays for a better door");
         }
         // A barrel or a crate close by is worth the detour.
-        if tooled
-            && s.offers(Goal::Loot)
-            && s.loot.count > 0
-            && s.loot.nearest_m <= SCRIPTED_LOOT_NEAR_M
-        {
+        if tooled && s.offers(Goal::Loot) && s.loot.count > 0 && s.loot.nearest_m <= k.loot_near_m {
             return (Goal::Loot, "scripted: a barrel or crate is near");
         }
         // Its own base and gear done, or the rest waiting on a work: what a
@@ -3853,7 +3875,7 @@ impl Scripted {
         // ([`SCRIPTED_RESERVE`]), while the pack keeps room for what the base
         // and its benches make: a pack full of everything makes nothing.
         // Past the reserve nothing is gathered for its own sake.
-        let room = s.free_slots > SCRIPTED_STASH_FREE_SLOTS;
+        let room = s.free_slots > k.stash_free_slots;
         let order = [
             Goal::GatherWood,
             Goal::GatherStone,
@@ -4247,6 +4269,23 @@ mod tests {
         assert_eq!(mind.mode(backoff), Mode::BackingOff);
         assert!(!mind.ask(backoff + cfg.interval, &s));
         assert!(mind.ask(backoff + cfg.interval * 2, &s));
+    }
+
+    /// A character's traits move the playbook's numbers, and a body of
+    /// middling traits plays it as written.
+    #[test]
+    fn a_character_s_knobs_change_when_the_playbook_runs() {
+        use crate::character::Traits;
+        let mut s = Summary::EMPTY;
+        for g in Goal::FIXED {
+            s.offer(g);
+        }
+        (s.hp, s.hp_max, s.hits) = (25, 100, 1);
+        s.players.add(10.0, 0);
+        let pick = |knobs| Scripted::with_knobs(knobs).pick(&s).0;
+        assert_eq!(pick(Traits::MID.knobs()), Goal::Flee);
+        assert_eq!(pick(Traits::MID.knobs()), Scripted::default().pick(&s).0);
+        assert_ne!(pick(Traits([100; 7]).knobs()), Goal::Flee, "the bold stay");
     }
 
     #[test]

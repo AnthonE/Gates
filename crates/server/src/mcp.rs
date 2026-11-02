@@ -175,6 +175,10 @@ impl DecisionSource for McpDoor {
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.door.take_plan()
     }
+
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.door.set_context(ctx);
+    }
 }
 
 pub fn spawn(autopilot: Duration) -> Result<(External, Presence), String> {
@@ -478,6 +482,13 @@ impl<W: Write> Server<W> {
                     "places",
                 ] {
                     out.insert(key.into(), p.request[key].clone());
+                }
+                // Who it is, what it remembers and what it set out to do,
+                // when the body has them (`character.rs`, `memory.rs`).
+                for key in ["crew", "character", "memory", "strategy"] {
+                    if let Some(v) = p.request.get(key).filter(|v| !v.is_null()) {
+                        out.insert(key.into(), v.clone());
+                    }
                 }
                 // A harness with a shell reads this. Strangers' words get
                 // their label beside them, every time there are any.

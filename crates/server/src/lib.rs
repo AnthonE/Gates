@@ -46,6 +46,8 @@ pub mod boot;
 pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.
 pub mod bugs;
+/// Who a body is (`--character`): persona, traits, the playbook's knobs.
+pub mod character;
 /// Cheat checks: snap hits, headshot rate, wall tracking (`cheat.rs`).
 pub mod cheat;
 pub mod client;

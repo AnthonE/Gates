@@ -234,7 +234,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--journal FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nChoose one mind: --scripted, --external, --mcp or --student. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, and its wallet (what the house's runner shows for the bodies it hosts). --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--journal FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--character FILE] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nChoose one mind: --scripted, --external, --mcp or --student. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --character FILE (TOML, or JSON by its .json name) says who the body is: name, kind, persona, goal, quirks and [traits] (ambition, risk, greed, sociability, honesty, patience, grit, 0-100), sent to an external or MCP mind on every turn; the traits tune the scripted policy (when it runs, how far it loots, how full it carries, whether it raids) and, without --temperament, when it fights. A fleet's file holds a [culture] and [members.\"NAME\"] tables; a body it does not name takes the culture with traits of its own. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, and its wallet (what the house's runner shows for the bodies it hosts). --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
 
 /// Which source decides: the explicit scripted policy, or an agent the
 /// operator brings. Never swapped for another at runtime.
@@ -304,6 +304,13 @@ pub struct MindArgs {
     /// (`--warp`, `lockstep.rs`): only a mind that never waits on anything
     /// — the scripted policy or a student — may.
     pub inline: bool,
+    /// The character file (`--character FILE`, `character.rs`), and the
+    /// body's own character from it, set by the binary per body
+    /// ([`Self::cast_body`]) since a fleet's bodies each get their own.
+    pub cast: Option<crate::character::Cast>,
+    pub character: Option<crate::character::Character>,
+    /// `--temperament` was given: a character's traits then do not pick it.
+    pub temperament_set: bool,
 }
 
 /// What a run without a mind flag is told.
@@ -338,6 +345,9 @@ impl Default for MindArgs {
             tally: None,
             tactics: Some(crate::agent::combat::default_tactics()),
             inline: false,
+            cast: None,
+            character: None,
+            temperament_set: false,
         }
     }
 }
@@ -375,8 +385,13 @@ impl MindArgs {
                 let name = args.next().ok_or("--temperament needs a value")?;
                 self.temperament = Temperament::parse(&name)
                     .ok_or("--temperament is one of passive, defensive, opportunist, kos")?;
+                self.temperament_set = true;
             }
             "--mcp" => self.source = Source::Mcp,
+            "--character" => {
+                let file = args.next().ok_or("--character needs a file")?;
+                self.cast = Some(crate::character::Cast::load(Path::new(&file))?);
+            }
             "--voice" => self.voice = true,
             "--record" => {
                 self.record = Some(args.next().ok_or("--record needs a directory")?.into())
@@ -448,11 +463,35 @@ impl MindArgs {
         Ok(true)
     }
 
+    /// Body `name`'s character from `--character`'s file (none without
+    /// one): its own entry, else the culture, moved by its wallet's hash in
+    /// a `fleet` (`character::Cast::for_body`).
+    pub fn cast_body(&mut self, name: &str, wallet: Option<&str>, fleet: bool) {
+        self.character = self.cast.as_ref().map(|c| c.for_body(name, wallet, fleet));
+    }
+
+    /// The playbook's numbers for this body (`character::Knobs`).
+    pub fn knobs(&self) -> crate::character::Knobs {
+        self.character
+            .as_ref()
+            .map(crate::character::Character::knobs)
+            .unwrap_or_default()
+    }
+
+    /// When it starts a fight: `--temperament`, else its character's
+    /// traits, else the default. A society's job overrides all three.
+    pub fn temperament(&self) -> Temperament {
+        match &self.character {
+            Some(c) if !self.temperament_set => c.traits.temperament(),
+            _ => self.temperament,
+        }
+    }
+
     /// The survivor's setup beyond its mind.
     pub fn opts(&self) -> SurvivorOpts {
         SurvivorOpts {
             skill: self.skill.skill(),
-            temperament: self.temperament,
+            temperament: self.temperament(),
             lock: None,
             friend: self.friend,
             society: None,
@@ -503,9 +542,20 @@ impl MindArgs {
                     .into(),
             );
         }
-        let voiced = |door: crate::external::External| match speech {
-            Some(tx) => door.with_speech(tx),
-            None => door,
+        // Its character rides on every request an external or MCP mind is
+        // sent; its traits tune the scripted policy wherever that plays.
+        let character: serde_json::Map<String, serde_json::Value> = self
+            .character
+            .iter()
+            .map(|c| ("character".to_owned(), c.json()))
+            .collect();
+        let knobs = self.knobs();
+        let voiced = |door: crate::external::External| {
+            let door = door.with_context(character);
+            match speech {
+                Some(tx) => door.with_speech(tx),
+                None => door,
+            }
         };
         self.cfg.check()?;
         let buddy = self.friend.is_some();
@@ -525,7 +575,7 @@ impl MindArgs {
             None => mind,
         };
         match &self.source {
-            Source::Scripted => self.start(Scripted::default(), self.cfg),
+            Source::Scripted => self.start(Scripted::with_knobs(knobs), self.cfg),
             Source::Student(file) => self.start(crate::distill::Student::load(file)?, self.cfg),
             Source::Mcp => {
                 let cfg = MindConfig {
@@ -536,7 +586,8 @@ impl MindArgs {
                 let (door, presence) = crate::mcp::spawn(self.autopilot)?;
                 let quiet = self.autopilot + crate::mcp::AWAY_GRACE;
                 let door = crate::mcp::McpDoor::new(voiced(door), presence, quiet);
-                self.start(Autopilot::new(door, gate), cfg).map(priced)
+                self.start(Autopilot::new(door, gate).with_knobs(knobs), cfg)
+                    .map(priced)
             }
             Source::External(program, args) => {
                 let env: Vec<(&str, String)> = self
@@ -551,7 +602,9 @@ impl MindArgs {
                     let door = voiced(crate::external::External::spawn_with_env(
                         program, args, &env, inner,
                     )?);
-                    return self.start(Autopilot::new(door, gate), self.cfg).map(priced);
+                    return self
+                        .start(Autopilot::new(door, gate).with_knobs(knobs), self.cfg)
+                        .map(priced);
                 }
                 self.start(
                     voiced(crate::external::External::spawn_with_env(
