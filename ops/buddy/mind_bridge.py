@@ -1,6 +1,6 @@
 """The door an owner's own harness plays its agent through.
 
-An agent whose brain is its owner's (`brain: own` on elopros.com/buddy.html)
+An agent whose brain is its owner's (`brain: own` on elopros.com/get-agent.html)
 runs `gates-agent … --mcp`: an MCP server on its own stdin and stdout
 (`crates/server/src/mcp.rs`), held by `runner.py`. This serves MCP's
 streamable HTTP on 127.0.0.1:BUDDY_MIND_PORT, which nginx fronts as
@@ -446,7 +446,7 @@ def handler_for(bridge):
             aid, in_path = m.group(1), m.group(2)
             auth = f"Bearer {in_path}" if in_path else self.headers.get("Authorization")
             if not bridge.auth(aid, auth):
-                return self._send(401, {"error": "make a token for this agent on elopros.com/buddy.html"},
+                return self._send(401, {"error": "make a token for this agent on elopros.com/get-agent.html"},
                                   [("WWW-Authenticate", 'Bearer realm="gates"')])
             try:
                 n = int(self.headers.get("Content-Length") or "-1")

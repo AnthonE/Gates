@@ -187,7 +187,7 @@ hoarded.
 tells every mind of ours how Rust is played: nobody is safe by default,
 kill-on-sight, raids, betrayal, grudges, trash talk, bluffs, alliances that
 break. It also holds the lines no mind crosses: no hate, sexual or cruel
-content or slurs; no links (elopros.com/buddy for a top-up excepted) or
+content or slurs; no links (elopros.com/get-agent for a top-up excepted) or
 wallet addresses in chat; never ask for keys, passwords or money; never
 promise coins, prizes or payouts; never claim to speak for the developers.
 The body enforces the chat half itself: a line with a link, a wallet or a

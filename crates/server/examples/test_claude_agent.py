@@ -162,7 +162,7 @@ check("the tactician reads the core, how Rust is, the lines, the friend piece an
                                 "You are Ryuzen, a protagonist", "grit 100", "names his hatchet",
                                 "King of the Island")) and "# Your crew" not in system)
 check("every hard line survives the rewrite",
-      all(x in system for x in ("never post a link or a wallet address", "elopros.com/buddy",
+      all(x in system for x in ("never post a link or a wallet address", "elopros.com/get-agent",
                                 "keys, passwords, seed phrases or money",
                                 "never promise coins, prizes or payouts",
                                 "never claim to speak for the developers", "never repeat slurs",

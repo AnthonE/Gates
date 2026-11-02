@@ -466,7 +466,7 @@ mod voice_tests {
             assert!(peddles(bad), "{bad}");
         }
         for fine in [
-            "top me up at elopros.com/buddy",
+            "top me up at elopros.com/get-agent",
             "base is north of the gate",
             "0x5 damage lol",
             "ok... going home",

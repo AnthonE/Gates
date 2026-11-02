@@ -1,4 +1,4 @@
-"""A day with an agent in a few lines, for the card on elopros.com/buddy.html.
+"""A day with an agent in a few lines, for the card on elopros.com/get-agent.html.
 
 `runner.py` asks `due()` once an hour, and runs `write()` for each agent it
 names from a thread of its own. A recap covers the journal since the last

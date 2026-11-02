@@ -673,7 +673,7 @@ crew in plain words on team chat.
 ### Buddies, and Doctor Wood
 
 `ops/gates-buddies.service` runs `ops/buddy/runner.py`: the Claude-minded
-agents players get on elopros.com/buddy.html. The platform's feed says who
+agents players get on elopros.com/get-agent.html. The platform's feed says who
 exists and what each pool holds; the runner starts one `gates-agent` per
 agent with credit and stops it when its pool runs dry.
 

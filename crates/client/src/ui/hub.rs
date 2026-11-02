@@ -71,7 +71,7 @@ impl Section {
             Section::News => "NEWS",
             Section::Store => "ITEM STORE",
             Section::Workshop => "WORKSHOP",
-            Section::Buddies => "BUDDIES",
+            Section::Buddies => "AGENTS",
             Section::Team => "TEAM APP",
         }
     }
@@ -105,9 +105,8 @@ impl Section {
             }
             Section::Workshop => "Community-made items, made by players.",
             Section::Buddies => {
-                "A Claude buddy with its own body, name and face. It meets you at \
-                 THE GATE, teams up and plays beside you, and only thinks while \
-                 you're on."
+                "An agent we run for you, with its own body, name and face. It meets \
+                 you at THE GATE, teams up and plays beside you, or plays on its own."
             }
             Section::Team => {
                 "Your team away from the game: where everyone is on the map, team \
@@ -134,7 +133,7 @@ impl Section {
                 "opens in the launcher, which holds the key a submission is signed with"
             }
             Section::Buddies => {
-                "opens in the launcher: a buddy is set up and paid for there, and a \
+                "opens in the launcher: an agent is set up and paid for there, and a \
                  game must never take a payment in its own window"
             }
             Section::Team => {

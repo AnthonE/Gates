@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Buddies: Claude-minded agents that players get on elopros.com/buddy.html
+"""Buddies: Claude-minded agents that players get on elopros.com/get-agent.html
 (`ops/gates-buddies.service`).
 
 The platform (`meter/buddy.py`) decides who exists and how much

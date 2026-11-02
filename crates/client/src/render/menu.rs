@@ -108,7 +108,7 @@ impl Nav {
     /// The reference's order (the operator's frames, 2026-10-21): PLAY GAME
     /// (with FRIENDS under it, where a launcher keeps its friends tab),
     /// NEWS, INVENTORY, ITEM STORE, WORKSHOP, its RUST+ (ours is TEAM APP,
-    /// with BUDDIES before it), then OPTIONS and QUIT.
+    /// with AGENTS before it), then OPTIONS and QUIT.
     const ALL: [Nav; 10] = [
         Nav::Play,
         Nav::Friends,
@@ -1376,7 +1376,7 @@ fn friends_pane(body: &mut ChildSpawnerCommands, browse: &Browse, friends: &Frie
         panel.spawn(ui::strong("FRIENDS", 26.0, ui::TITLE));
         panel.spawn(ui::label(
             "Your Elo Pros friends, where they are playing, and who asked. \
-             Your AI buddies are here too.",
+             Your AI agents are here too.",
             14.0,
             ui::DIM,
         ));
