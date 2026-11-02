@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 # Proximity voice's codec half: Opus frames in and out, shared by the game
-# client (native and wasm) and `jev-bot` (an agent's ears and voice). The wire
+# client (native and wasm) and `gates-agent` (an agent's ears and voice). The wire
 # is `protocol::voice`, the relay is the shard's, the mixing is `sound`'s.
 #
 # **Pure Rust on purpose.** libopus is C, and `wasm32-unknown-unknown` has no C

@@ -77,7 +77,7 @@ Environment (defaults in brackets):
                            /var/lib/gates-teammate/*/journal*.jsonl] space-
                           separated globs of other bodies' journals (a
                           village's bodies keep one each, journal-<name>.jsonl)
-    JEV_BOT               [/home/master/gates-jev/jev-bot] the body
+    JEV_BOT               [/home/master/gates-jev/gates-agent] the body
                           (`gates-agent`; `jev-bot` is its old name)
     BUDDY_PERSONAS        [/opt/gates-agents/personas]
     WATCH_*               the Watch feed's knobs (`watch.py`)
@@ -124,7 +124,7 @@ STARTS_PER_TICK = 4
 THINK_MS = int(os.environ.get("BUDDY_THINK_MS", "4000"))
 MAX_HOUR = int(os.environ.get("BUDDY_MAX_HOUR", "400"))
 MAX_DAY = int(os.environ.get("BUDDY_MAX_DAY", "3000"))
-JEV_BOT = os.environ.get("JEV_BOT", "/home/master/gates-jev/jev-bot")
+JEV_BOT = os.environ.get("JEV_BOT", "/home/master/gates-jev/gates-agent")
 AGENT = os.environ.get("CLAUDE_AGENT", "/home/master/gates-jev/claude_agent.py")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 STRATEGIST_MODEL = os.environ.get("BUDDY_STRATEGIST_MODEL", MODEL)

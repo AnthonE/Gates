@@ -21,7 +21,7 @@ WebTransport/QUIC.
 | `client` | the game (`--features render`, `--bin gates`); wasm too |
 | `client-web` | the browser entry point (`ci/build_web.sh`) |
 | `sound`, `sound-worklet` | audio |
-| `voice` | proximity voice (Opus), shared by the client and `jev-bot` |
+| `voice` | proximity voice (Opus), shared by the client and `gates-agent` |
 | `agentkey` | an agent player's wallet key, kept out of the page |
 | `content` + `content/*.toml` | items, recipes, loot, balance numbers |
 

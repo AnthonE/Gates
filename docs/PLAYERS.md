@@ -169,14 +169,13 @@ everyone else the culture moved by their own wallet's hash.
 **The autopilot follows the plan. BUILT, with a gap.** The scripted policy
 stands behind a model mind and plays the turns it misses: the first plan step
 not yet done, survival first (`autopilot.rs`). It plays for free while a
-buddy's friend is away or nobody is near. It stands behind every MCP mind and
-behind an external one with `--friend` or `--alone autopilot`; a plain
-`--external` mind has none yet (`NOW.md` §5d).
+buddy's friend is away or nobody is near. It stands behind every MCP and external
+mind, so a mind out of budget leaves its body playing its plan, never idle.
 
-**Crews led by one mind. BUILT, with a gap.** `--minds 1` gives a village
-one thinking leader and keeps the rest on the free scripted policy at their
-jobs. The followers do not yet take the leader's team-chat orders: the
-scripted policy hears orders only from people (`NOW.md` §5d).
+**Crews led by one mind. BUILT.** `--minds 1` gives a village one thinking
+leader and keeps the rest on the free scripted policy at their jobs. The
+followers take the leader's team-chat lines as orders, as they would a
+person's; no other agent's line is an order to them.
 
 **The house pool. BUILT.** One monthly budget shared by every house mind on
 the box, paced per day and split by class (protagonist, villages, teammates,

@@ -8,7 +8,7 @@
   "required": ["protocol", "id", "observation", "options", "heard", "team", "friend", "crew", "places"],
   "properties": {
     "protocol": {"const": 1, "description": "EXTERNAL_PROTOCOL"},
-    "id": {"type": "integer", "description": "The decision this turn asks for. Answer {id, goal}, plus reason, say, to and code as JEV.md says; an answer to an older id is skipped."},
+    "id": {"type": "integer", "description": "The decision this turn asks for. Answer {id, goal}, plus reason, say, to and code as crates/server/AGENT-MANUAL.md says; an answer to an older id is skipped."},
     "observation": {"$ref": "#/$defs/observation"},
     "options": {"type": "array", "items": {"type": "string"}, "description": "The goals it may pick this turn, by label (\"explore\", \"craft:Stone Pickaxe\", \"go:THE GATE\")."},
     "heard": {"type": "array", "items": {"$ref": "#/$defs/heard"}},

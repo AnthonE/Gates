@@ -502,14 +502,6 @@ the Watch feed. `crates/server/AGENT-MANUAL.md` owns commands and limits;
 agent_input.rs`, `sim-core/tests/event_roles.rs`); wall 2 is retired.
 
 Remains, in order:
-- **The autopilot behind every model mind.** A plain `--external` mind (no
-  `--friend`, no `--alone autopilot`) has none (`agent_demo.rs`
-  `MindArgs::build`), so the protagonist and a village leader never play
-  their `plan`, and back off instead of playing it when the pool's share is
-  spent. Wrap it with no gate.
-- **A crew led by one mind.** `--minds N`'s followers play the scripted
-  policy, whose orders are read only from a person (`Scripted::hear` skips
-  agent lines), so the leader's team lines do not order them.
 - **Memory for scripted bodies.** `--memory` keeps nothing for `--scripted`
   or `--student` (the village and teammate units pass it anyway).
 - The observation does not yet say whether a base's owner is online (the

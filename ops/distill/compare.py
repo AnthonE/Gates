@@ -56,10 +56,10 @@ def main():
     ap.add_argument("student", help="a file ops/distill/train.py wrote")
     ap.add_argument("--seconds", type=int, default=600)
     ap.add_argument("--bots", type=int, default=4)
-    ap.add_argument("--bin", default=os.path.join(ROOT, "target", "release", "jev-bot"))
+    ap.add_argument("--bin", default=os.path.join(ROOT, "target", "release", "gates-agent"))
     args = ap.parse_args(argv)
     if not os.path.exists(args.bin):
-        subprocess.run(["cargo", "build", "--release", "-p", "server", "--bin", "jev-bot"], cwd=ROOT, check=True)
+        subprocess.run(["cargo", "build", "--release", "-p", "server", "--bin", "gates-agent"], cwd=ROOT, check=True)
     base = [args.bin, "--local", "--seconds", str(args.seconds), "--bots", str(args.bots)]
     # `--external` must be gates-agent's last flag, so the mind's flags go last.
     runs = {"teacher": base + teacher, "student": base + ["--student", args.student]}

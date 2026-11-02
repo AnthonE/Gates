@@ -54,6 +54,13 @@ pub const ALONE: Gate = Gate {
     },
 };
 
+/// A society member whose mind thinks while it is alone: the crew coming
+/// together at THE GATE is still the playbook's (as under [`ALONE`]).
+pub const CREW_FORMING: Gate = Gate {
+    rule: crate::mind::crew_forming,
+    why: |_| "the crew is coming together",
+};
+
 pub struct Autopilot<P> {
     primary: P,
     scripted: Scripted,

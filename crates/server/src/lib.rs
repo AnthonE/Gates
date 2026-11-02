@@ -60,7 +60,7 @@ pub mod core;
 pub mod distill;
 pub mod entitle;
 pub mod explorer;
-/// Bring-your-own-agent decisions over a child's stdin/stdout (`JEV.md`).
+/// Bring-your-own-agent decisions over a child's stdin/stdout (`AGENT-MANUAL.md`).
 pub mod external;
 /// `gates-agent --set-face`: an agent signs its own name and picture.
 pub mod face_set;
@@ -74,11 +74,11 @@ pub mod handoff;
 pub mod interest;
 /// A private island stepped in lockstep, faster than the wall clock (`--warp`).
 pub mod lockstep;
-/// `gates-agent --mcp`: any MCP harness as the bot's mind (`JEV.md`).
+/// `gates-agent --mcp`: any MCP harness as the bot's mind (`AGENT-MANUAL.md`).
 pub mod mcp;
 /// What a body remembers past one look (`--memory`): places, people, events.
 pub mod memory;
-/// The agent's goals, observation summary and decision worker (`JEV.md`).
+/// The agent's goals, observation summary and decision worker (`AGENT-MANUAL.md`).
 pub mod mind;
 pub mod mints;
 pub mod net;

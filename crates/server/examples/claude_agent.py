@@ -468,6 +468,7 @@ class Pool:
 
     def __init__(self, path, budget, cls, smooth=True, clock=time.time):
         self.path, self.budget, self.cls, self.smooth, self.clock = path, budget, cls, smooth, clock
+        self._local_day, self._local_councils = None, 0
 
     def _edit(self, fn, write=True):
         import fcntl  # noqa: PLC0415 — POSIX only, and only with a pool
@@ -494,6 +495,12 @@ class Pool:
         (only under STRATEGIST_HEADROOM of its share) or "council" (a
         strategist call, and fewer than PLANNER_PER_DAY today)?"""
         if not self.path:
+            # No pool file: the council's daily cap is still kept, here.
+            if stage == "council":
+                day = time.strftime("%Y-%m-%d", time.gmtime(self.clock()))
+                if self._local_day != day:
+                    self._local_day, self._local_councils = day, 0
+                return self._local_councils < PLANNER_PER_DAY
             return True
 
         def check(doc):
@@ -512,6 +519,8 @@ class Pool:
             return True
 
     def charge(self, usd, council=False):
+        if council and not self.path:
+            self._local_councils += 1
         if not self.path:
             return
 

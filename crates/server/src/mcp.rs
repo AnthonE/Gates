@@ -713,7 +713,7 @@ fn tools() -> Value {
                     "id": {"type": "integer", "description": "decision_id from look"},
                     "goal": {"type": "string", "description": "one of the decision's options, exactly as written"},
                     "reason": {"type": "string", "description": "why, in a few words"},
-                    "say": {"type": "string", "maxLength": crate::mind::SAY_MAX_BYTES, "description": "chat; past one line (48 bytes) it goes out as up to three"},
+                    "say": {"type": "string", "maxLength": crate::mind::SAY_MAX_BYTES, "description": "chat; past one line (120 bytes) it goes out as up to three"},
                     "to": {"type": "string", "enum": ["global", "team", "local"], "description": "where say goes: global is everyone on the island (the default), team is private to your team, local is whoever is within 20 m"},
                     "code": {"type": "string", "pattern": "^[0-9]{1,4}$", "description": "a lock code a teammate gave you"},
                     "plan": {

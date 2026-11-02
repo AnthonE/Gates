@@ -2972,6 +2972,10 @@ pub struct Scripted {
     /// (`DecisionSource::plan_done`).
     plan_seen: u8,
     plan_done: u32,
+    /// The body whose team-chat lines it takes as orders though it is an
+    /// agent: the mind leading its crew (`--minds N`). Other agents' lines
+    /// are never orders, so two scripted bodies cannot order each other.
+    leader: Option<protocol::Address>,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -3298,16 +3302,26 @@ impl Scripted {
         self.knobs = knobs;
     }
 
+    /// Take orders on team chat from this agent too: the crew's leader.
+    pub fn with_leader(mut self, leader: Option<protocol::Address>) -> Self {
+        self.leader = leader;
+        self
+    }
+
     /// What its team typed since it was last asked, read as orders
     /// (`agent::orders`), and whether someone near it asked to team up.
-    /// A line it said itself or an agent said is never an order.
+    /// A line it said itself or an agent said is never an order, except
+    /// its crew leader's on team chat ([`Scripted::with_leader`]).
     fn hear(&mut self, s: &Summary) {
         if s.team.mates == 0 {
             self.standing = None;
             self.errand = None;
         }
         for line in s.heard.lines() {
-            if line.me || line.agent {
+            let leader = line.channel == protocol::Channel::Team
+                && !line.address.is_guest()
+                && self.leader == Some(line.address);
+            if line.me || (line.agent && !leader) {
                 continue;
             }
             let text = line.text.as_bytes();
@@ -4410,6 +4424,32 @@ mod tests {
             Say::Team(lines) => Some(String::from_utf8_lossy(lines.first.as_bytes()).into_owned()),
             _ => None,
         }
+    }
+
+    /// A crew follower (`--minds N`) takes its leader's team-chat lines as
+    /// orders though the leader is an agent; any other agent's are not.
+    #[test]
+    fn a_follower_takes_its_crew_leaders_orders() {
+        let lead = protocol::Address([0x11; protocol::ADDRESS_BYTES]);
+        let other = protocol::Address([0x22; protocol::ADDRESS_BYTES]);
+        let mut scripted = Scripted::default().with_leader(Some(lead));
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Follow] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        let from = |address, text: &str| HeardLine {
+            address,
+            ..heard(protocol::Channel::Team, text, true)
+        };
+        s.heard.push(from(other, "follow me"));
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Explore, "not its leader");
+        s.heard.clear();
+        s.heard.push(from(lead, "stay here"));
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Wait, "its leader");
     }
 
     /// A teammate's words on team chat are orders: follow and stay stand

@@ -28,7 +28,7 @@
 //! older id are skipped. A request can come again under the same id, with
 //! the same deadline: a newer look at the same decision, sent when the
 //! body's team changed while the agent thinks (an invite came). The newest
-//! line is the decision, and the answer is judged by its options. `JEV.md`
+//! line is the decision, and the answer is judged by its options. `AGENT-MANUAL.md`
 //! has the schema.
 
 use crate::agent::lock::LockCode;

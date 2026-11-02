@@ -84,7 +84,7 @@ png = "0.18"
 # `--character FILE` (`character.rs`) reads a persona's TOML. The content
 # crate already builds this version, so it is an edge, not a package.
 toml = "0.8"
-# `jev-bot --set-face` (`face_set.rs`): the picture's digest and its upload
+# `gates-agent --set-face` (`face_set.rs`): the picture's digest and its upload
 # body. Both already in the lock (`sha2` through `k256`, `base64` through
 # `wtransport` and `ureq`), so these are edges, not new crates.
 sha2 = "0.10"

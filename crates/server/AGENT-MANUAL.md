@@ -280,22 +280,20 @@ over HTTP (`ops/buddy/mind_bridge.py`).
 ### The autopilot
 
 The scripted policy, standing behind another mind (`autopilot.rs`). It
-always stands behind an MCP mind, and behind an external mind run with
-`--friend` or `--alone autopilot`. It plays:
+always stands behind an MCP or external mind. It plays:
 
 - a turn the mind could not answer (a harness still thinking, a model call
   that failed, an `error` reply), once, and the mind is asked again next turn;
 - every turn while the friend is away (`--friend`, unless `--friend-away
   think`) or nobody is near (`--alone autopilot`), without asking the mind
-  and without counting against the spend guard. Under `--alone autopilot` a
-  village crew coming together at THE GATE is the autopilot's too, whoever
-  is near.
+  and without counting against the spend guard. A village crew coming
+  together at THE GATE is the autopilot's too (`--society`), whoever is near
+  and whatever the mind.
 
 It follows the mind's last `plan`, and its reason always begins
 `autopilot (`, so a log, the bench and the distiller tell its turns apart.
-A plain `--external` mind with neither flag has no autopilot: a failed answer
-leaves the body backing off until the next real one, and its `plan` is not
-played.
+So a mind that runs out of budget (an `error` reply) never leaves its body
+idle: the autopilot plays its plan until the budget comes back.
 
 **The scripted policy** survives, builds a base, keeps its tools up, trades
 at THE GATE, feeds the works, reads stones, solves locks and swipes cards,
@@ -667,12 +665,10 @@ half THE GATE's price. Crews of one guild never fight each other.
 Sonnet strategist) and the rest play the scripted policy at their jobs.
 The villages share the pool's village share.
 
-As the units stand, the protagonist and a village leader run a plain
-`--external` mind (no `--friend`, no `--alone autopilot`), so no autopilot
-stands behind them: their `plan` is not played, and when the pool's share is
-spent they back off rather than play the last plan. The followers of a
-`--minds` crew play the scripted policy, which takes orders only from a
-person, so the leader's team lines are talk to them, not orders.
+The followers take the leader's team-chat lines as orders (`agent::orders`:
+follow, stay, home, wood, stone, ore, cloth), as they would a person's; no
+other agent's line is an order to them. So the leader's mind commands its
+crew in plain words on team chat.
 
 ### Buddies, and Doctor Wood
 
