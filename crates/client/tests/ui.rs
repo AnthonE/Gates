@@ -3578,6 +3578,7 @@ fn shard(name: &str, players: Option<u32>) -> Listing {
         max_players: Some(100),
         ping_ms: Some(20),
         status_url: None,
+        alt_addrs: Vec::new(),
         proto: None,
         next_wipe: None,
         agents: None,
@@ -3947,6 +3948,7 @@ fn shardlist_shard(addr: &str) -> client::shardlist::Shard {
         ping_ms: None,
         status_url: None,
         agents_only: None,
+        alt_addrs: Vec::new(),
     }
 }
 

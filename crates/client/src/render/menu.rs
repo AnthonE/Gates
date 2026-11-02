@@ -193,6 +193,12 @@ pub const STATUS_TIMEOUT_S: u64 = 4;
 /// needs no number.
 pub const CONNECT_TIMEOUT_S: f32 = 20.0;
 
+/// How long one of a shard's addresses gets to answer before the next one is
+/// tried (`Listing::alt_addrs`). A reachable shard handshakes in well under a
+/// second; this is spent only on a network that drops the port. Never applied
+/// to the last address, which gets the screen's own timeout.
+pub const ADDR_TIMEOUT_S: f32 = 8.0;
+
 /// The tokio runtime, owned for the life of the app.
 ///
 /// Split out of `Net` because the runtime now has to exist *before* any
@@ -2025,6 +2031,7 @@ pub fn begin_connect(
     rt: NonSend<Rt>,
     who: Res<Who>,
     pin: Option<Res<super::screen::Pin>>,
+    menu: Option<Res<Menu>>,
     mut connecting: NonSendMut<Connecting>,
 ) {
     // A watcher claims no address and signs nothing (`Session::watch`), so
@@ -2045,31 +2052,87 @@ pub fn begin_connect(
     let addr = connecting.addr.clone();
     let address = connecting.address;
     let hash = pin.filter(|p| p.addr == addr).map(|p| p.hash.clone());
+    // Every way into this screen (a row, a friend, travel, a launcher link)
+    // sets only `addr`, so a listed shard's other ports are looked up here.
+    let alts: Vec<String> = menu
+        .and_then(|m| {
+            m.rows
+                .iter()
+                .find(|r| r.addr == addr)
+                .map(|r| r.alt_addrs.clone())
+        })
+        .unwrap_or_default();
+    connecting.fallbacks = alts.len();
     connecting.waited_s = 0.0;
     if watch {
         info!("gates: watching an agent on {addr}");
     }
+    let addrs: Vec<String> = std::iter::once(addr).chain(alts).collect();
     let (tx, rx) = std::sync::mpsc::channel();
     rt.0.spawn(async move {
-        // **The pin only for the address it was given with.** A `--server`
-        // launch comes through this screen too (`bin/gates.rs`), and its
-        // `--cert-hash` used to be dropped here. A shard picked from the
-        // list later is not that address and gets no pin; the address
-        // decides the rest — loopback permissive, everything else validated.
-        let result = match crate::client_endpoint(&addr, hash.as_deref()) {
-            Ok(endpoint) if watch => {
-                crate::Session::watch(&endpoint, &addr, protocol::Address::GUEST).await
+        // Set when the shard asks for a signature: it answered, so whatever
+        // fails after that is not the port, and no other port is tried.
+        let asked = std::sync::atomic::AtomicBool::new(false);
+        let mut result = Err(crate::JoinError::Failed("no address to dial".into()));
+        for (i, at) in addrs.iter().enumerate() {
+            let last = i + 1 == addrs.len();
+            // **The pin only for the address it was given with.** A `--server`
+            // launch comes through this screen too (`bin/gates.rs`), and its
+            // `--cert-hash` used to be dropped here. A shard picked from the
+            // list later is not that address and gets no pin; the address
+            // decides the rest — loopback permissive, everything else validated.
+            let pinned = if i == 0 { hash.as_deref() } else { None };
+            let attempt = async {
+                match crate::client_endpoint(at, pinned) {
+                    Ok(endpoint) if watch => {
+                        crate::Session::watch(&endpoint, at, protocol::Address::GUEST).await
+                    }
+                    Ok(endpoint) => {
+                        crate::Session::connect(&endpoint, at, address, |d, n, t| {
+                            asked.store(true, std::sync::atomic::Ordering::Relaxed);
+                            crate::elo::sign_siwe(d, n, t)
+                        })
+                        .await
+                    }
+                    // An endpoint that would not build never reached a shard, so
+                    // there is no code to carry — `Failed` is the honest arm.
+                    Err(e) => Err(crate::JoinError::Failed(e)),
+                }
+            };
+            result = if last {
+                attempt.await
+            } else {
+                unless_silent(attempt, &asked).await
+            };
+            let unanswered = matches!(result, Err(crate::JoinError::Failed(_)))
+                && !asked.load(std::sync::atomic::Ordering::Relaxed);
+            if !unanswered || last {
+                break;
             }
-            Ok(endpoint) => {
-                crate::Session::connect(&endpoint, &addr, address, crate::elo::sign_siwe).await
-            }
-            // An endpoint that would not build never reached a shard, so there
-            // is no code to carry — `Failed` is the honest arm.
-            Err(e) => Err(crate::JoinError::Failed(e)),
-        };
+            info!("gates: no answer on {at}, trying {}", addrs[i + 1]);
+        }
         let _ = tx.send(result);
     });
     connecting.rx = Some(rx);
+}
+
+/// `attempt`, abandoned after [`ADDR_TIMEOUT_S`] if the shard has not asked
+/// for a signature by then. Dropping it closes the half-open connection.
+async fn unless_silent<T>(
+    attempt: impl std::future::Future<Output = Result<T, crate::JoinError>>,
+    asked: &std::sync::atomic::AtomicBool,
+) -> Result<T, crate::JoinError> {
+    tokio::pin!(attempt);
+    tokio::select! {
+        r = &mut attempt => r,
+        () = tokio::time::sleep(std::time::Duration::from_secs_f32(ADDR_TIMEOUT_S)) => {
+            if asked.load(std::sync::atomic::Ordering::Relaxed) {
+                attempt.await
+            } else {
+                Err(crate::JoinError::Failed(format!("no answer after {ADDR_TIMEOUT_S:.0}s")))
+            }
+        }
+    }
 }
 
 /// A one-line "connecting to …" screen. Deliberately not the menu greyed
@@ -2131,10 +2194,10 @@ pub fn poll_connect(
     connecting.waited_s += time.delta_secs();
     let gave_up = if keyboard.just_pressed(KeyCode::Escape) {
         Some("cancelled".to_string())
-    } else if connecting.waited_s >= connect_timeout(connecting.address) {
+    } else if connecting.waited_s >= screen_timeout(&connecting) {
         Some(format!(
             "no answer after {:.0}s",
-            connect_timeout(connecting.address)
+            screen_timeout(&connecting)
         ))
     } else {
         None
@@ -2209,6 +2272,12 @@ pub fn poll_connect(
 /// the shard would have taken, and the retry found the launcher's first ask
 /// still open and joined as a guest (2026-10-19).
 pub const SIGN_IN_TIMEOUT_S: f32 = protocol::SIGN_WAIT_SECS as f32 + 5.0;
+
+/// The whole attempt's limit: the last address gets the usual timeout, and
+/// every address before it got [`ADDR_TIMEOUT_S`].
+fn screen_timeout(connecting: &Connecting) -> f32 {
+    connect_timeout(connecting.address) + ADDR_TIMEOUT_S * connecting.fallbacks as f32
+}
 
 fn connect_timeout(address: protocol::Address) -> f32 {
     if address.is_guest() {
