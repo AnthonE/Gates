@@ -126,6 +126,17 @@ def tensors(rows, feat_ix, label_ix):
             if w:
                 pairs.append((i, label_ix[opt], label_ix[w]))
         y[i] = label_ix[r["goal"]]
+        if r["goal"] not in r["options"]:
+            # A concrete pick of a templated option (walk:ahead:300 offered as
+            # walk:<bearing>:<metres>) is learnt as that option, the unit the
+            # student scores in play; otherwise it sat outside the mask at
+            # p = 0 and its gradient pushed a logit no softmax could see.
+            kind = r["goal"].split(":", 1)[0]
+            same = [o for o in r["options"] if o.split(":", 1)[0] == kind]
+            if same:
+                y[i] = label_ix[same[0]]
+            else:
+                mask[i, y[i]] = True
     return x, mask, y, np.array(pairs, np.int64).reshape(-1, 3)
 
 
