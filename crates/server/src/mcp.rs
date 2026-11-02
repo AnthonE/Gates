@@ -567,10 +567,16 @@ impl<W: Write> Server<W> {
             Ok(plan) => plan,
             Err(e) => return text(&e, true),
         };
+        let extras = match crate::memory::Extras::parse(args) {
+            Ok(x) => x,
+            Err(e) => return text(&e, true),
+        };
         let mut reply = Map::new();
         reply.insert("id".into(), json!(id));
         reply.insert("goal".into(), json!(goal));
-        for key in ["reason", "say", "to", "code", "report", "plan"] {
+        for key in [
+            "reason", "say", "to", "code", "report", "plan", "strategy", "stance", "thought",
+        ] {
             if let Some(v) = args.get(key).filter(|v| !v.is_null()) {
                 reply.insert(key.into(), v.clone());
             }
@@ -607,8 +613,13 @@ impl<W: Write> Server<W> {
             ),
             None => String::new(),
         };
+        let kept = if extras.strategy.is_some() {
+            " Your strategy is kept and shown on every look until you leave another."
+        } else {
+            ""
+        };
         text(
-            &format!("Doing {goal}.{filed}{planned} Call look for the next decision."),
+            &format!("Doing {goal}.{filed}{planned}{kept} Call look for the next decision."),
             false,
         )
     }
@@ -694,14 +705,14 @@ fn tools() -> Value {
         {
             "name": "look",
             "title": "Look",
-            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one). Options can carry `give:<item>` (hand that item to your friend or the teammate in reach) and `authorize` (get on your team's cupboard). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
+            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one), and when your body has them: your character (who you are), your memory (places, people and what happened, as bearings and metres) and the strategy you left. Options can carry `give:<item>` (hand that item to your friend or the teammate in reach) and `authorize` (get on your team's cupboard). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
             "inputSchema": empty,
             "annotations": {"readOnlyHint": true},
         },
         {
             "name": "act",
             "title": "Act",
-            "description": "Answer a decision from look: pick ONE goal from its options (the social verbs too: `give:<item>`, `authorize`; speak with say). Optionally give a short reason, say one chat line (120 bytes; global, team or local), a team lock code a teammate gave you, a standing plan for the turns you miss, or a bug report when the game itself did something wrong.",
+            "description": "Answer a decision from look: pick ONE goal from its options (the social verbs too: `give:<item>`, `authorize`; speak with say). Optionally give a short reason, say one chat line (120 bytes; global, team or local), a team lock code a teammate gave you, a standing plan for the turns you miss, a strategy (kept and shown on every look), stances on people you know, your thought for spectators, or a bug report when the game itself did something wrong.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -714,7 +725,7 @@ fn tools() -> Value {
                     "plan": {
                         "type": "array",
                         "maxItems": crate::mind::PLAN_STEPS,
-                        "description": "a standing plan for the turns you miss (the autopilot plays them): up to 4 steps in order, each a goal label and optionally until the pack holds a count of an item, e.g. [{\"goal\": \"gather_wood\", \"until\": {\"item\": \"Wood\", \"count\": 1515}}, {\"goal\": \"build\"}]. The first step not yet done is played while it is on offer; survival comes first. [] clears it; leave it out to keep the last one.",
+                        "description": "a standing plan for the turns you miss (the autopilot plays them): up to 8 steps in order, each a goal label and optionally until the pack holds a count of an item, e.g. [{\"goal\": \"gather_wood\", \"until\": {\"item\": \"Wood\", \"count\": 1515}}, {\"goal\": \"build\"}]. The first step not yet done is played while it is on offer; survival comes first. [] clears it; leave it out to keep the last one.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -726,6 +737,31 @@ fn tools() -> Value {
                                 },
                             },
                             "required": ["goal"],
+                        },
+                    },
+                    "thought": {"type": "string", "maxLength": crate::memory::THOUGHT_MAX, "description": "your inner monologue, shown to spectators watching the island; never sent to other players"},
+                    "strategy": {
+                        "type": "object",
+                        "description": "what you are after, kept and shown on every look until you leave another: your ambition, the project now, up to 4 standing orders for yourself, and your life story so far (summary, kept in your memory)",
+                        "properties": {
+                            "ambition": {"type": "string", "maxLength": crate::memory::STRATEGY_TEXT_MAX},
+                            "project": {"type": "string", "maxLength": crate::memory::STRATEGY_TEXT_MAX},
+                            "standing_orders": {"type": "array", "maxItems": crate::memory::STANDING_ORDERS_MAX, "items": {"type": "string"}},
+                            "summary": {"type": "string", "maxLength": crate::memory::SUMMARY_MAX},
+                        },
+                        "additionalProperties": false,
+                    },
+                    "stance": {
+                        "type": "array",
+                        "maxItems": crate::memory::PEOPLE_MAX,
+                        "description": "mark people in your memory by name: how you mean to treat them",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "stance": {"type": "string", "enum": ["friend", "neutral", "wary", "enemy", "rival"]},
+                            },
+                            "required": ["name", "stance"],
                         },
                     },
                     "report": {
@@ -927,6 +963,39 @@ mod tests {
         );
         let sent = String::from_utf8(s.replies.clone()).unwrap();
         assert!(sent.contains(r#""plan":[{"goal":"gather_wood""#), "{sent}");
+    }
+
+    /// A strategy, stances and a thought go to the body with the act; a bad
+    /// one is refused whole with nothing sent, and look shows what the body
+    /// remembers beside the observation.
+    #[test]
+    fn a_strategy_goes_to_the_body_and_look_shows_the_memory() {
+        let (mut s, mut tx) = server(Duration::from_secs(45));
+        tx.push(sent(
+            r#"{"id":4,"options":["explore"],"observation":{},"character":{"name":"Ryuzen"},"memory":{"summary":"ashore"},"strategy":null}"#.into(),
+        ))
+        .unwrap();
+        let look: Value = serde_json::from_str(body(&s.look(Duration::ZERO))).unwrap();
+        assert_eq!(look["character"]["name"], "Ryuzen");
+        assert_eq!(look["memory"]["summary"], "ashore");
+        assert!(look.get("strategy").is_none(), "absent when empty");
+        let bad = s.act(
+            &json!({"id": 4, "goal": "explore", "stance": [{"name": "Ash", "stance": "lover"}]}),
+        );
+        assert_eq!(bad["isError"], true);
+        assert!(s.replies.is_empty(), "nothing sent");
+        let ok = s.act(
+            &json!({"id": 4, "goal": "explore", "thought": "north it is",
+            "strategy": {"ambition": "rule", "project": "walls", "standing_orders": ["no mercy"]},
+            "stance": [{"name": "Ash", "stance": "rival"}],
+            "plan": vec![json!({"goal": "explore"}); crate::mind::PLAN_STEPS]}),
+        );
+        assert_eq!(ok["isError"], false, "{}", body(&ok));
+        assert!(body(&ok).contains("strategy is kept"));
+        let sent = String::from_utf8(s.replies.clone()).unwrap();
+        for key in ["\"thought\"", "\"strategy\"", "\"stance\"", "\"plan\""] {
+            assert!(sent.contains(key), "{key} in {sent}");
+        }
     }
 
     #[test]

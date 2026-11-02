@@ -142,6 +142,9 @@ pub struct External {
     /// (`DecisionSource::set_context`: memory, strategy). Absent when empty.
     fixed: serde_json::Map<String, Value>,
     context: serde_json::Map<String, Value>,
+    /// What the last reply said beyond its goal (`thought`, `strategy`,
+    /// `stance`), for the memory and the journal.
+    extras: Option<crate::memory::Extras>,
 }
 
 impl External {
@@ -256,6 +259,7 @@ impl External {
             plan: None,
             fixed: serde_json::Map::new(),
             context: serde_json::Map::new(),
+            extras: None,
         })
     }
 
@@ -523,13 +527,22 @@ impl DecisionSource for External {
             Ok(note) => self.note = note,
             Err(e) => eprintln!("external agent report refused: {e}"),
         }
-        let plan = serde_json::from_str::<Value>(reply.trim_end())
-            .map_err(|e| e.to_string())
-            .and_then(|v| crate::mind::Plan::parse(&v["plan"]));
-        match plan {
+        let value = serde_json::from_str::<Value>(reply.trim_end()).map_err(|e| e.to_string());
+        match value
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|v| crate::mind::Plan::parse(&v["plan"]))
+        {
             Ok(Some(plan)) => self.plan = Some(plan),
             Ok(None) => {}
             Err(e) => eprintln!("external agent plan refused: {e}"),
+        }
+        // Its thought, strategy and stances: refused on their own, the goal
+        // beside them still stands.
+        match value.and_then(|v| crate::memory::Extras::parse(&v)) {
+            Ok(x) if !x.is_empty() => self.extras = Some(x),
+            Ok(_) => {}
+            Err(e) => eprintln!("external agent thought, strategy or stance refused: {e}"),
         }
         Ok(choice)
     }
@@ -544,6 +557,10 @@ impl DecisionSource for External {
 
     fn set_context(&mut self, ctx: &serde_json::Map<String, Value>) {
         self.context = ctx.clone();
+    }
+
+    fn take_extras(&mut self) -> Option<crate::memory::Extras> {
+        self.extras.take()
     }
 }
 
@@ -723,6 +740,47 @@ mod tests {
             .collect();
         agent.set_context(&ctx);
         assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+    }
+
+    /// A reply's thought, strategy and stances come out for the memory and
+    /// the journal; a bad one is refused alone and the goal still stands.
+    #[test]
+    fn a_reply_s_thought_strategy_and_stance_are_taken_apart_from_its_goal() {
+        let mut agent = sh(r#"while read line; do
+            id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            case "$id" in
+            1) printf '{"id":%s,"goal":"wait","thought":"Ash again.","strategy":{"ambition":"rule the north","project":"stone walls","standing_orders":["kill Ash on sight"],"summary":"I came ashore."},"stance":[{"name":"Ash","stance":"rival"}]}\n' "$id";;
+            *) printf '{"id":%s,"goal":"wait","thought":7}\n' "$id";;
+            esac
+        done"#);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+        let x = agent.take_extras().unwrap();
+        assert_eq!(x.thought.as_deref(), Some("Ash again."));
+        assert_eq!(x.strategy.unwrap().standing_orders, ["kill Ash on sight"]);
+        assert_eq!(x.summary.as_deref(), Some("I came ashore."));
+        assert_eq!(x.stance.len(), 1);
+        assert_eq!(agent.decide(&summary()).unwrap().goal, Goal::Wait);
+        assert!(
+            agent.take_extras().is_none(),
+            "a bad thought is refused alone"
+        );
+    }
+
+    /// A turn with every addition (character, memory, strategy) still
+    /// matches the published schema.
+    #[test]
+    fn a_turn_with_its_character_and_memory_matches_the_schema() {
+        let mut s = full_summary();
+        s.seen.pos = Some([0.0, 0.0]);
+        let mut turn = External::observation(9, &s);
+        let memory = crate::memory::tests::full();
+        turn["character"] = crate::character::Character::plain("Ryuzen").json();
+        turn["memory"] = memory.json(&s, 99);
+        turn["strategy"] = memory.strategy().unwrap().json(99);
+        let errs = turn_schema::errors(&turn);
+        assert!(errs.is_empty(), "{errs:#?}");
+        turn["memory"]["people"][0]["stance"] = json!("lover");
+        assert!(!turn_schema::errors(&turn).is_empty());
     }
 
     #[test]

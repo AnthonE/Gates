@@ -2361,7 +2361,7 @@ pub trait DecisionSource: Send + 'static {
 }
 
 /// Steps a mind may leave its autopilot.
-pub const PLAN_STEPS: usize = 4;
+pub const PLAN_STEPS: usize = 8;
 
 /// One step of a plan: a goal, done for good once the pack holds `until`.
 /// A step with no `until` is never done.
