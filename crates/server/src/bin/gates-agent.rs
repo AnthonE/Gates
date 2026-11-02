@@ -97,7 +97,7 @@ impl Shift {
 
 const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--warp] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (JEV.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
 
-const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
+const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR] [--minds N]\n--minds N (with --external or --mcp and --bots) lets only the first N bodies ask the mind, the founder first: the rest play the scripted policy as their characters and take the leaders' orders on team chat, so one paid mind leads a crew. --society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
 fn usage() -> String {
     format!(
@@ -133,6 +133,9 @@ struct Options {
     bench_out: Option<PathBuf>,
     /// `--warp`: bench runs on lockstep islands, faster than the wall clock.
     warp: bool,
+    /// `--minds N`: only the fleet's first N bodies ask the mind; the rest
+    /// play the scripted policy and take the leaders' orders. All by default.
+    minds: Option<usize>,
 }
 
 impl Options {
@@ -163,6 +166,7 @@ impl Options {
             bench_runs: None,
             bench_out: None,
             warp: false,
+            minds: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -218,6 +222,17 @@ impl Options {
                     }
                 }
                 "--society" => options.society = true,
+                "--minds" => {
+                    let n: usize = args
+                        .next()
+                        .ok_or("--minds needs a count")?
+                        .parse()
+                        .map_err(|_| "invalid --minds count")?;
+                    if n == 0 {
+                        return Err("--minds is at least 1".into());
+                    }
+                    options.minds = Some(n);
+                }
                 "--crews" => {
                     let n: usize = args
                         .next()
@@ -373,9 +388,23 @@ impl Options {
         if options.mind.source == Source::Unset {
             return Err(server::agent_demo::UNSET.into());
         }
+        if let Some(n) = options.minds {
+            if options.bots < 2 || n > options.bots {
+                return Err("--minds N leads a fleet: --bots 2.. and N at most --bots".into());
+            }
+            if !matches!(options.mind.source, Source::External(..) | Source::Mcp) {
+                return Err("--minds goes with --external or --mcp: the rest play scripted".into());
+            }
+            if options.bench.is_some() {
+                return Err("--bench plays every bot with its mind: no --minds".into());
+            }
+        }
         if options.mind.source == Source::Mcp {
-            if options.bots > 1 {
-                return Err("--mcp is one body: one harness on this process's stdio".into());
+            if options.bots > 1 && options.minds != Some(1) {
+                return Err(
+                    "--mcp is one body: one harness on this process's stdio (with --bots, add --minds 1: it leads, the rest play scripted)"
+                        .into(),
+                );
             }
             if !options.seconds_given {
                 options.duration = Duration::from_secs(MCP_RUN_SECONDS);
@@ -606,7 +635,9 @@ async fn run(options: Options) -> Result<(), String> {
     if options.mind.source == Source::Mcp {
         MCP.store(true, Ordering::Relaxed);
         server::mcp::set_me(server::mcp::Me {
-            name: options.agent_name.clone(),
+            name: bot_name(&options.agent_name, 0, options.bots)?
+                .as_str()
+                .to_owned(),
             wallet: key.as_ref().map(|k| {
                 let hex = k.address().to_hex();
                 String::from_utf8_lossy(&hex).into_owned()
@@ -680,13 +711,24 @@ async fn run(options: Options) -> Result<(), String> {
         body.wallet = wallet;
         body.name = Some(name.as_str().to_owned());
         body.crew = options.society.then(|| options.agent_name.clone());
+        // Past the first `--minds` bodies (the founder first), the scripted
+        // policy plays, as its character, and takes its leaders' orders on
+        // team chat (`agent::orders`): one paid mind leads a crew.
+        if options.minds.is_some_and(|n| i >= n) {
+            body.source = Source::Scripted;
+            body.voice = false;
+        }
         minds.push(body.build_with_speech(speech.take())?);
         bodies.push(body);
     }
     out!(
-        "mind: {} × {} · {} hands · {}",
+        "mind: {} × {}{} · {} hands · {}",
         options.mind.label(),
-        options.bots,
+        options.minds.unwrap_or(options.bots),
+        match options.minds {
+            Some(n) if n < options.bots => format!(", scripted × {}", options.bots - n),
+            _ => String::new(),
+        },
         options.mind.skill.name(),
         options.mind.temperament.name()
     );
