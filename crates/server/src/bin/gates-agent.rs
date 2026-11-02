@@ -95,7 +95,7 @@ impl Shift {
     }
 }
 
-const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--warp] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (JEV.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
+const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--warp] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (JEV.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too, and how the fleet played (each bot's goal entropy and kinds of goal, the fleet's mean pairwise Jensen-Shannon divergence, plan steps done) beside it as FILE.behaviour.json; the same goes to stderr. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
 
 const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR] [--minds N]\n--minds N (with --external or --mcp and --bots) lets only the first N bodies ask the mind, the founder first: the rest play the scripted policy as their characters and take the leaders' orders on team chat, so one paid mind leads a crew. --society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
@@ -1091,11 +1091,28 @@ async fn bench(options: Options) -> Result<(), String> {
         result["score"]["ci95"].as_f64().unwrap_or(0.0),
         runs
     );
+    // How the fleet played, beside the score: kept out of the result,
+    // which the platform takes with its own keys only.
+    let behaviour = server::bench::behaviour(minds.iter().map(|(_, t)| t.as_ref()));
+    out!(
+        "bench: behaviour: goal entropy {:.2} bits a bot, fleet spread (mean pairwise JSD) {:.3} bits, {} kinds of goal, {} plan steps done",
+        behaviour["mean_entropy_bits"].as_f64().unwrap_or(0.0),
+        behaviour["mean_pairwise_jsd_bits"].as_f64().unwrap_or(0.0),
+        behaviour["distinct_goals"],
+        behaviour["plan_steps_done"]
+    );
+    out!("bench: behaviour {behaviour}");
     if let Some(path) = &options.bench_out {
         // The exact string printed, with nothing after it: what a submit
         // hashes for its signed detail.
         std::fs::write(path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
         out!("bench: written to {}", path.display());
+        let mut beside = path.clone().into_os_string();
+        beside.push(".behaviour.json");
+        let beside = PathBuf::from(beside);
+        let pretty = serde_json::to_string_pretty(&behaviour).map_err(|e| e.to_string())?;
+        std::fs::write(&beside, pretty).map_err(|e| format!("{}: {e}", beside.display()))?;
+        out!("bench: behaviour written to {}", beside.display());
     }
     if MCP.load(Ordering::Relaxed) {
         eprintln!("{text}");
