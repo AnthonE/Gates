@@ -1379,7 +1379,9 @@ impl Best {
         let t = dx * f.0 + dz * f.1;
         let (px, pz) = (dx - t * f.0, dz - t * f.1);
         let perp2 = px * px + pz * pz;
-        let aimed = seen || (t > 0.0 && perp2 <= aim.radius * aim.radius);
+        // A zero radius means only the ray counts: a thing lying exactly on
+        // the look line (`perp2 == 0`) is not aimed at by `0 <= 0`.
+        let aimed = seen || (aim.radius > 0.0 && t > 0.0 && perp2 <= aim.radius * aim.radius);
         let tie = verb.tie();
         // Inside the aimed rank, a thing the eye's ray meets is as near as
         // where the ray meets it: the first thing hit, as a raycast answers.
