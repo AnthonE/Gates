@@ -4446,7 +4446,11 @@ mod tests {
             ..heard(protocol::Channel::Team, text, true)
         };
         s.heard.push(from(other, "follow me"));
-        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Explore, "not its leader");
+        assert_eq!(
+            scripted.decide(&s).unwrap().goal,
+            Goal::Explore,
+            "not its leader"
+        );
         s.heard.clear();
         s.heard.push(from(lead, "stay here"));
         assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Wait, "its leader");
