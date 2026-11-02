@@ -710,6 +710,19 @@ impl Route {
                 self.stats.far_searches += 1;
                 Some(Step::Wait)
             }
+            // No path in hand to the waypoint this frame: walk at the
+            // waypoint, as a trip's leg does. A caller walks a `Wait`
+            // straight at the goal, which a detour is going round: past
+            // the waypoint, it walked a second away and a second back
+            // until the stall ladder gave the goal up (#452, #537).
+            Step::Wait => {
+                let (x, _, z) = feet(body);
+                Some(Step::Walk {
+                    yaw: yaw_toward(p[0] - x, p[1] - z),
+                    sprint: hurry,
+                    jump: false,
+                })
+            }
             step => Some(step),
         }
     }

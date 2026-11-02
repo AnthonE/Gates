@@ -782,12 +782,30 @@ pub fn install_panic_hook() {
 /// after it is gone. Once per page — a second panic is the first one's echo.
 #[cfg(target_arch = "wasm32")]
 pub fn web_crash(info: &std::panic::PanicHookInfo<'_>) {
+    web_beacon(location(info), &info.to_string());
+}
+
+/// A trap the panic hook never saw: an out-of-memory abort, a stack overflow
+/// or an `unreachable` reaches the page as a bare `WebAssembly.RuntimeError`
+/// (`client-web`'s `report_trap`, called from the page's `error` listener).
+/// The module is still callable after one, and the first thing that calls
+/// into it panics on a `RefCell` the trap left borrowed (winit's runner,
+/// #535), so this one goes first and that echo is the second report the
+/// once-per-page rule drops. Grouped by the trap's first line.
+#[cfg(target_arch = "wasm32")]
+pub fn web_trap(msg: &str) {
+    let first = msg.lines().next().unwrap_or("").trim();
+    web_beacon(format!("wasm trap: {first}"), msg);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_beacon(location: String, text: &str) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SENT: AtomicBool = AtomicBool::new(false);
     if SENT.swap(true, Ordering::Relaxed) {
         return;
     }
-    let mut r = Report::crash(location(info), &info.to_string(), shot::now_secs());
+    let mut r = Report::crash(location, text, shot::now_secs());
     r.machine = Some(Machine::new("", "", "", [0, 0], user_agent().as_deref()));
     let url = report::intake_url(crate::ui::names::PLATFORM_ORIGIN);
     if let Some(w) = web_sys::window() {
