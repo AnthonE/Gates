@@ -160,7 +160,10 @@ pub fn resolve(
 ) {
     let sel = net.sel;
     let core = &mut net.session.core;
-    let [x, y, z] = core.predict.render_position();
+    // The sim-truth body, without the correction offset `render_position`
+    // smooths a misprediction away with: the shard casts from where the body
+    // is, so the prompt does (`Predictor::eye_position`'s header).
+    let [x, y, z] = core.predict.position();
     // The wire's own two bytes for the look, so the swing prompt is cast
     // from exactly what the frame will carry (`SwingAim`'s header).
     let (yaw, pitch) = (yaw_u16(look.yaw), pitch_u8(look.pitch));
@@ -982,7 +985,7 @@ pub fn keys(
         // `just_pressed` because the action lane takes one pending action
         // per client per tick.
         let core = &net.session.core;
-        let [x, _, z] = core.predict.render_position();
+        let [x, _, z] = core.predict.position();
         let pick = if aimed.0.verb == Verb::Take {
             aimed.0
         } else {
