@@ -91,7 +91,6 @@ use crate::ranged::{self, BodyHit, Struck, MM_PER_M};
 use crate::rewind::Rewind;
 use crate::terrain::{self, Haven, Occupant, Slot, CELL_SIZE, SLOT_SCALE_MAX};
 use crate::world::Player;
-use crate::yaw_lut::yaw_dir;
 
 /// The forgiveness a swing gets at a scatter occupant, metres — added to the
 /// occupant's collision radius before the ray is tested against it. **(knob)**
@@ -239,12 +238,14 @@ impl Ray {
 }
 
 /// The ray a body swings along: from its eye, the way it is looking, for
-/// `len_mm`. `yaw` and `pitch` are the wire's bytes and go through the two
-/// LUTs the shot path uses, so there is no trig and no second opinion about
-/// which way a byte points. `crouched` lowers the eye (v83): a crouched
-/// body swings from where its camera is.
+/// `len_mm`. `yaw` is taken at all sixteen of the wire's bits, as a shot's
+/// is (`ranged::aim_dir`), through `fmath` so native and wasm agree; the
+/// 256-step `yaw_dir` table aimed the hand up to 1.4° off the crosshair,
+/// always to the same side. `pitch` goes through the pitch LUT the shot
+/// path uses. `crouched` lowers the eye (v83): a crouched body swings from
+/// where its camera is.
 pub fn ray(body: &Body, crouched: bool, yaw: u16, pitch: u8, len_mm: f32) -> Ray {
-    let (fx, fz) = yaw_dir(yaw);
+    let (fx, fz) = crate::fmath::sin_cos(f32::from(yaw) * (core::f32::consts::TAU / 65536.0));
     let (ch, sv) = pitch_dir(pitch);
     // `hitscan`'s own arithmetic for the muzzle, verbatim: quanta to whole
     // millimetres in integers, then the eye lift.
@@ -1087,10 +1088,16 @@ mod tests {
         assert_eq!(r.o.0, 3000.0);
         assert_eq!(r.o.1, 500.0 + ranged::ARROW_EYE_MM as f32);
         assert_eq!(r.o.2, -6000.0);
-        let (fx, fz) = yaw_dir(0);
+        let (fx, fz) = crate::fmath::sin_cos(0.0);
         let (ch, sv) = pitch_dir(128);
         assert_eq!(r.s, (fx * ch * 2000.0, sv * 2000.0, fz * ch * 2000.0));
         let down = ray(&body, false, 0, 64, 2000.0);
         assert!(down.s.1 < 0.0, "a pitch under level points down");
+        // Every yaw bit turns the hand: two yaws inside one old 256-step
+        // bucket aim apart, as the crosshair does.
+        let a = ray(&body, false, 0x4000, 128, 2000.0);
+        let b = ray(&body, false, 0x40FF, 128, 2000.0);
+        let (dx, dz) = (a.s.0 - b.s.0, a.s.2 - b.s.2);
+        assert!(dx * dx + dz * dz > 1.0);
     }
 }
