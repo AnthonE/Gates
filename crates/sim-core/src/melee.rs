@@ -646,6 +646,18 @@ pub fn occupant_cast(
 /// (`MobDef::body_r_cm` / `body_h_cm`) — so a level swing from eye height
 /// passes clean over a pig, and you look down at what you are hunting.
 pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
+    mob_cast_posed(mc, mobs, ray, ranged::Pose::Live)
+}
+
+/// [`mob_cast`] with each animal where `pose` says it stood: rewound for a
+/// swing or a hitscan, so an animal is struck where the striker's screen
+/// drew it (`rewind::Rewind::mob_at`), as a player is.
+pub(crate) fn mob_cast_posed(
+    mc: &MobContent,
+    mobs: &Mobs,
+    ray: &Ray,
+    pose: ranged::Pose<'_>,
+) -> Option<MobHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     // The segment's planar reach: every point of it is within this of `o`.
@@ -655,20 +667,19 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
         if !m.alive || m.hp == 0 {
             continue;
         }
+        let at = pose.of_mob(slot, m);
         let def = mc.def(m.kind);
         // Out of reach, so the box solve below cannot answer: its planar
         // half-diagonal is under 0.6 × the box's length, and the metre of
         // slack dwarfs any rounding, so this only skips certain misses.
         let len = f32::from(def.body_r_cm) * 0.01 * ANIMAL_LEN_PER_R;
-        let (dx, dz) = (
-            o.0 - m.body.qx as f32 * POS_XZ_Q,
-            o.2 - m.body.qz as f32 * POS_XZ_Q,
-        );
+        let (dx, dz) = (o.0 - at.qx as f32 * POS_XZ_Q, o.2 - at.qz as f32 * POS_XZ_Q);
         let far = reach + 0.6 * len + 1.0;
         if dx * dx + dz * dz > far * far {
             continue;
         }
-        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body, m.yaw) else {
+        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &at.body(), at.yaw)
+        else {
             continue;
         };
         if best.is_none_or(|b| t_in < b.t) {
@@ -875,7 +886,16 @@ pub fn cast(
         },
     );
     let node = node_cast(seed, occ, ray);
-    let mob = mob_cast(mc, mobs, ray);
+    let mob = mob_cast_posed(
+        mc,
+        mobs,
+        ray,
+        ranged::Pose::Rewound {
+            rewind,
+            tick,
+            back: favour,
+        },
+    );
     let carcass = if reaches.carcass > 0.0 {
         carcass_cast(mc, bags, ray)
     } else {

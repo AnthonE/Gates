@@ -6593,7 +6593,17 @@ impl World {
                     // in the command, so a replayed WAL reproduces the
                     // double step bit for bit.
                     favour[slot] = want.min(crate::rewind::Rewind::max_back());
-                    catchup[slot] = Some(Self::sanitize_frame(prev));
+                    let prev = Self::sanitize_frame(prev);
+                    catchup[slot] = Some(prev);
+                    // The older frame's buttons never act, so a click that
+                    // rode only in it — a tap the client sent while the
+                    // buffer ran deep — would vanish while the client's arm
+                    // swung. It acts in the newer frame instead, a tick
+                    // late, when the hand has not changed between them.
+                    let mut frame = frame;
+                    if prev.sel == frame.sel {
+                        frame.buttons |= prev.buttons & crate::input::BTN_PRIMARY;
+                    }
                     self.take_frame(slot, frame);
                 }
             }
@@ -9939,6 +9949,7 @@ impl World {
             }
         }
         self.rewind.write_row(self.tick, &self.players);
+        self.rewind.write_mobs(self.tick, &self.mobs);
         // Last, so every producer this tick has spoken: the shots and
         // strikes the animals will hear on their next thinks.
         self.noises.record(self.tick, &self.events, &self.players);

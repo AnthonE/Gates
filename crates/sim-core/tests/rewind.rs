@@ -515,13 +515,16 @@ fn the_ring_costs_what_limits_says() {
     assert_eq!(size_of::<RewindPose>(), 20);
     assert_eq!(MAX_PLAYERS * REWIND_TICKS * size_of::<RewindPose>(), 32_000);
 
-    // Boxed inside, not outside: the rows are on the heap and `World` pays
-    // only a pointer plus the stamps.
+    // The animals' rows: 16 B a pose, 64 kB at `MAX_MOBS`, on the heap too.
+    assert_eq!(size_of::<sim_core::rewind::MobPose>(), 16);
+
+    // Boxed inside, not outside: both rings' rows are on the heap and
+    // `World` pays only two pointers plus the two stamp arrays.
     assert_eq!(
         size_of::<Rewind>(),
-        size_of::<usize>() + REWIND_TICKS * size_of::<u64>(),
-        "Rewind must be a pointer to the rows plus the stamps — if the rows \
-         landed inline, World grew by 12.8 kB of stack"
+        2 * (size_of::<usize>() + REWIND_TICKS * size_of::<u64>()),
+        "Rewind must be pointers to the rows plus the stamps — if the rows \
+         landed inline, World grew by tens of kB of stack"
     );
 }
 
@@ -618,4 +621,43 @@ fn a_row_remembers_the_crouch() {
         ring.pose_at(101, 0, 1, live).crouched,
         "crouched one tick back"
     );
+}
+
+/// The animals ride their own ring: an animal is swung at and shot where it
+/// stood `back` ticks ago, and a slot that died has no history to answer
+/// from, so the next life is never found where the last one fell.
+#[test]
+fn an_animal_is_rewound_and_its_last_life_forgotten() {
+    use sim_core::rewind::MobPose;
+    let mut w = World::new(SEED);
+    let mut r = Rewind::new();
+    let s = 3;
+    w.mobs.m[s].alive = true;
+    w.mobs.m[s].hp = 10;
+    for t in 0..10u64 {
+        w.mobs.m[s].body.qx = t as i32 * 100;
+        r.write_mobs(t, &w.mobs);
+    }
+    let live = MobPose::live(&w.mobs.m[s]);
+    assert_eq!(live.qx, 900);
+    assert_eq!(r.mob_at(9, s, 4, live).qx, 500, "four ticks back");
+    assert_eq!(r.mob_at(9, s, 0, live), live, "no favour is the live pose");
+    // A slot that was never alive answers live.
+    let other = MobPose::live(&w.mobs.m[s + 1]);
+    assert_eq!(r.mob_at(9, s + 1, 4, other), other);
+
+    // Dies on tick 10, hatches again on 11 somewhere else.
+    w.mobs.m[s].alive = false;
+    r.write_mobs(10, &w.mobs);
+    w.mobs.m[s].alive = true;
+    w.mobs.m[s].body.qx = 99_999;
+    r.write_mobs(11, &w.mobs);
+    let reborn = MobPose::live(&w.mobs.m[s]);
+    for back in 1..=REWIND_MAX_TICKS {
+        assert_eq!(
+            r.mob_at(11, s, back, reborn).qx,
+            99_999,
+            "{back} back found the last life"
+        );
+    }
 }
