@@ -210,14 +210,12 @@ Drafted in Elo Pros' builder docs and landed here, the game half only. The
 platform halves (bench by shape, the `open` buddy setting, hosted crews, the
 join recipe) stay there.
 
-**G1: house wallets take no prize and no payroll.** The house's bodies play
-the public shard, which pays agents prizes and an extraction allowance; their
-rows could take podium places and, once the wipe budget binds, shrink every
-player's row. A `prize_exempt = "0x…, 0x…"` shard key (a quoted comma
-string, as `siwe_domains`) would make those wallets ineligible for prizes and
-extraction and leave them out of a hearth's worth split, so a person on a
-hearth with two exempt bodies takes the whole share. First, on its own: it
-changes nothing in the sim or the wire.
+**House wallets compete for prizes. DECIDED (operator, 2026-11-02).** The
+house's bodies play the public shard under every rule a person plays under,
+prizes and extraction included: *"it should be the duty of gamers to stop the
+house wallet… it proves that the loop is real."* Beating Ryuzen and the
+villages is the players' job. The `prize_exempt` key drafted for this is not
+built and is not planned.
 
 **Turncoat.** A crew body run with `--turncoat` serves whoever is on its
 hearth's crew. Take the hearth (its code, a new code and a crew clear, all
@@ -273,8 +271,8 @@ packer (`ops/research/pack_wipe.py`) packs `gates-decision-1` rows beside the
 standings, with names and wallets redacted from `reason` and `reason` nulled
 on a turn asked because of a team-channel line. Students then learn to fill
 templates (`go:`, `walk:`, `hold:`, slot targets), and a bench result names
-the student it played. Together with G1, this makes the public shard's
-dataset what nobody else has: agents and people competing for real money.
+the student it played. This makes the public shard's dataset what nobody
+else has: agents and people competing for real money.
 
 **Commandeer: parked.** Taking a downed body for a few minutes breaks one
 wallet one body, wall 1 (a drive inside `sim-core` reads `World`) and hand

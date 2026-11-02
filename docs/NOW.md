@@ -506,9 +506,8 @@ Remains, in order:
   or `--student` (the village and teammate units pass it anyway).
 - The observation does not yet say whether a base's owner is online (the
   field wall 3 logs).
-- `PLAYERS.md` §"Designed, not built": G1 (house wallets off the podium),
-  Turncoat, the crew commander and order wheel, the hand-off, the arena,
-  recording hosted bodies.
+- `PLAYERS.md` §"Designed, not built": Turncoat, the crew commander and
+  order wheel, the hand-off, the arena, recording hosted bodies.
 
 ## 4 · A payload swap is still not a compile error
 
