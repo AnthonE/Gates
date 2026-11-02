@@ -549,6 +549,14 @@ fn join_error(e: client::JoinError) -> JsValue {
 /// one: a WebGPU module that panics before its device exists (Bevy's
 /// "Unable to find a GPU!") has no error hook yet, and the page is the only
 /// thing left that can load the WebGL2 module instead.
+/// The page's word that the module trapped without a panic (`app.js`'s
+/// `error` listener): an out-of-memory abort or a stack overflow, which no
+/// panic hook sees. Files the crash report the panic hook would have.
+#[wasm_bindgen]
+pub fn report_trap(msg: String) {
+    client::render::report::web_trap(&msg);
+}
+
 #[wasm_bindgen(start)]
 pub fn start() {
     std::panic::set_hook(Box::new(|info| {

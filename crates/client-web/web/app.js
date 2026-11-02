@@ -1230,17 +1230,21 @@ function gpuFallBack(why) {
    device draws nothing ever again, so that one reloads into WebGL2; a
    refusal puts a line over the canvas offering it, and is remembered. */
 let gpuTrouble = false;
+function alertBar() {
+  const bar = document.createElement("div");
+  bar.setAttribute("role", "alert");
+  bar.style.cssText = "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:50;"
+    + "max-width:min(92vw,640px);padding:10px 14px;border-radius:6px;background:rgba(24,20,16,.92);"
+    + "color:#f2e9dc;font:14px/1.4 var(--sans);box-shadow:0 2px 12px #0008";
+  return bar;
+}
 window.gatesGpuError = (msg, kind) => {
   if (window.gatesGfx !== "webgpu") return;
   if (kind === "lost") { gpuFallBack("the graphics device was lost under WebGPU"); return; }
   try { localStorage.setItem(GPU_FAILED, moduleKey(builtModules && builtModules.webgpu)); } catch (err) { /* private mode */ }
   if (gpuTrouble) return;
   gpuTrouble = true;
-  const bar = document.createElement("div");
-  bar.setAttribute("role", "alert");
-  bar.style.cssText = "position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:50;"
-    + "max-width:min(92vw,640px);padding:10px 14px;border-radius:6px;background:rgba(24,20,16,.92);"
-    + "color:#f2e9dc;font:14px/1.4 var(--sans);box-shadow:0 2px 12px #0008";
+  const bar = alertBar();
   const link = document.createElement("a");
   const u = new URL(location.href);
   u.searchParams.set("gfx", "webgl2");
@@ -1263,19 +1267,48 @@ window.gatesGpuError = (msg, kind) => {
    only a panic in Bevy's renderer set-up demotes the build — any other one
    leaves its message in the console for whoever reads it. */
 window.gatesPanic = (msg) => {
+  /* A panic ends in a trap; the `error` listener in `load` must not take
+     that trap for a second, silent one. */
+  window.gatesTrapped = true;
   const m = String(msg || "");
   const renderer = /bevy_render[^\n]*renderer|Unable to find a GPU|wgpu surface|request_device/.test(m);
   if (window.gatesGfx === "webgpu" && renderer && playStarted && performance.now() - playStarted < 30000) {
     gpuFallBack("WebGPU did not start in this browser");
     return;
   }
+  /* A panic inside wgpu's WebGPU backend, at any point in a session, is the
+     browser's GPU refusing a call wgpu unwraps: a `createBuffer` RangeError
+     on a device that is going away (#534) arrives as a panic before the
+     device-lost callback runs. The module is dead either way; WebGL2 is the
+     one that may live. */
+  if (window.gatesGfx === "webgpu" && /wgpu-[\d.]+\/src\/backend\/webgpu\.rs|GPUDevice|GPUQueue|GPUCanvasContext/.test(m)) {
+    gpuFallBack("the graphics card refused WebGPU");
+    return;
+  }
   /* Any other panic stops the game for good. If the handoff is still up,
      say so on it rather than leave its bar sweeping over a dead canvas. */
+  const noGl = /webgl2 not available|canvas already in use/.test(m);
+  const why = noGl
+    ? "The browser would not give the game a WebGL2 canvas. Check that hardware acceleration is on, or restart the browser."
+    : "The game stopped.";
   const h = $("handoff");
   if (!h.hidden && !h.classList.contains("gone")) {
     h.classList.add("failed");
-    $("handoff-line").textContent = "The game stopped while starting. Reload the page to try again.";
+    $("handoff-line").textContent = noGl ? why : "The game stopped while starting. Reload the page to try again.";
+    return;
   }
+  /* In the world, a frozen frame says nothing: put the way out over it. */
+  if (!playStarted || document.querySelector("[data-gates-dead]")) return;
+  window.removeEventListener("beforeunload", guardLeave);
+  const bar = alertBar();
+  bar.dataset.gatesDead = "1";
+  const link = document.createElement("a");
+  link.href = location.href;
+  link.textContent = "Reload";
+  link.style.cssText = "color:#ffcf7a;margin-left:8px";
+  bar.append(why + " (press Esc to click)", link);
+  bar.title = m.slice(0, 400);
+  document.body.append(bar);
 };
 /* The game has drawn its own loading screen (`client::render::web::reveal`):
    fade the handoff out from over it. */
@@ -1307,6 +1340,18 @@ async function load(gfx, sizes) {
      which of the two it is. */
   window.gatesWasm = await mod.default({ module_or_path: res });
   window.gatesGfx = gfx;
+  /* A trap with no panic behind it (out of memory, a stack overflow) reaches
+     here as a bare `RuntimeError` and nothing else: no panic hook ran, so no
+     report went. File one, and say so over the frozen frame. The module stays
+     callable after a trap, but anything may fail inside it now. */
+  window.addEventListener("error", (e) => {
+    const err = e.error;
+    if (!(err instanceof WebAssembly.RuntimeError) || window.gatesTrapped) return;
+    window.gatesTrapped = true;
+    const msg = `${err.message}\n${String(err.stack || "").slice(0, 1500)}`;
+    try { if (mod.report_trap) mod.report_trap(msg); } catch (x) { /* the module is gone too far */ }
+    window.gatesPanic(msg);
+  });
   return mod;
 }
 
