@@ -219,7 +219,8 @@ def main():
     args = ap.parse_args()
     import anthropic
     client = anthropic.Anthropic(max_retries=4)
-    outdir = os.path.join(args.run, "reads", args.cond + ("-hint" if args.hint else ""))
+    name = args.cond + ("-hint" if args.hint else "") + ("" if args.model == MODEL else "-" + args.model)
+    outdir = os.path.join(args.run, "reads", name)
     os.makedirs(outdir, exist_ok=True)
     for path in sorted(glob.glob(os.path.join(args.run, "set", "student-*.json"))):
         sid = os.path.basename(path)[len("student-"):-len(".json")]
