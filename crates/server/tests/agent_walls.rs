@@ -4001,6 +4001,51 @@ fn a_survivor_sells_its_surplus_wood_at_the_gate() {
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
+/// A sale at THE GATE from where the shard's agents said it never got
+/// there ("could not reach a target": #452 at the gate, #537 80 m out; same
+/// seed as the public shard, so the same town), and from 80 m out on every
+/// side. From the west the walk is a detour round the town, and a detour
+/// once walked away from its own waypoint whenever its leg had no path in
+/// hand.
+#[test]
+fn a_survivor_sells_wood_from_every_side_of_the_town() {
+    let haven0 = sim_core::terrain::haven(SEED);
+    let (kx, kz) = sim_core::town::kiosk_world(&haven0.town, 0).unwrap();
+    let mut spots = vec![(1843.0, 2053.0), (1911.0, 2094.0)];
+    for k in 0..8 {
+        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+        spots.push((kx + 80.0 * a.cos(), kz + 80.0 * a.sin()));
+    }
+    let mut failed = Vec::new();
+    for at in spots {
+        let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+        let haven = sim_core::terrain::haven(SEED);
+        let content = common::content();
+        let mut h = Harness::with_mind(false, at, mind);
+        h.until(5, |_| false);
+        let wood = sim_core::gather::ItemStack {
+            count: 1000,
+            ..common::stack(&content, "item.wood")
+        };
+        h.stage(move |p| {
+            p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+            for i in 0..4 {
+                p.inv[HOTBAR_SLOTS + i] = wood;
+            }
+        });
+        let sold = h.until(120 * TICK_HZ, |b| {
+            b.history
+                .iter()
+                .any(|r| matches!(r.goal, Goal::Sell(_)) && r.outcome == Outcome::Done)
+        });
+        if !sold {
+            eprintln!("no sale from {at:?}: {}", h.explain());
+            failed.push(at);
+        }
+    }
+    assert!(failed.is_empty(), "no sale from {failed:?}");
+}
+
 /// THE GATE's research table makes paper of what an agent found: carrying a
 /// revolver it has no blueprint for (its tree parent unlearned) and junk,
 /// the agent walks to the table, puts in the revolver and its price,
