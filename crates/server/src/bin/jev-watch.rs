@@ -125,6 +125,8 @@ fn run() -> Result<AppExit, String> {
         String::from_utf8_lossy(&hex).into_owned()
     });
     mind.cast_body(name.as_str(), wallet.as_deref(), false);
+    mind.name = Some(name.as_str().to_owned());
+    mind.wallet = wallet;
     let brain = mind.build()?;
     println!(
         "controller: {} · {} hands · {}",

@@ -1113,8 +1113,13 @@ impl<S: DecisionSource> DecisionSource for Remembering<S> {
         self.inner.take_plan()
     }
 
+    /// The answer's thought and stances, with the strategy as the memory
+    /// keeps it now (the newest a mind left, this run or one before), so a
+    /// journal row always says what the body is set on.
     fn take_extras(&mut self) -> Option<Extras> {
-        self.extras.take()
+        let mut x = self.extras.take().unwrap_or_default();
+        x.strategy = self.memory.strategy().cloned();
+        (!x.is_empty()).then_some(x)
     }
 
     fn plan_done(&self) -> u32 {

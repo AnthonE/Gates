@@ -678,6 +678,8 @@ async fn run(options: Options) -> Result<(), String> {
         }
         body.cast_body(name.as_str(), wallet.as_deref(), options.bots > 1);
         body.wallet = wallet;
+        body.name = Some(name.as_str().to_owned());
+        body.crew = options.society.then(|| options.agent_name.clone());
         minds.push(body.build_with_speech(speech.take())?);
         bodies.push(body);
     }
