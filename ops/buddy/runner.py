@@ -540,7 +540,7 @@ def watch_sources(agents):
         pic = str(a.get("pic") or "")
         out.append({"path": path("body", i + ".jsonl"), "fallback": path("journal", i + ".jsonl"),
                     "id": i, "kind": a["kind"], "name": a["name"], "wallet": address(i),
-                    "face": ORIGIN + pic if pic.startswith("/") else None, "house": False})
+                    "face": pic if pic.startswith("/api/") else None, "house": False})
     return out
 
 

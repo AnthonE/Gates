@@ -86,10 +86,11 @@ srcs += [
     {"path": os.path.join(state, "body", "pot-doctor-wood.jsonl"),
      "fallback": os.path.join(state, "journal", "pot-doctor-wood.jsonl"), "id": "pot-doctor-wood",
      "kind": "community", "name": "Doctor Wood", "wallet": WOOD,
-     "face": "https://elopros.com/api/buddy/pic/pot-doctor-wood.png", "house": False},
+     "face": "/api/buddy/pic/pot-doctor-wood.png", "house": False},
     {"path": os.path.join(state, "body", "a000000001.jsonl"),
      "fallback": os.path.join(state, "journal", "a000000001.jsonl"), "id": "a000000001",
-     "kind": "buddy", "name": "Birch", "wallet": "0x" + "f6" * 20, "face": None, "house": False},
+     "kind": "buddy", "name": "Birch", "wallet": "0x" + "f6" * 20,
+     "face": "https://game.elopros.com/x.png", "house": False},
 ]
 doc = watch.Feed().build(srcs, NOW)
 if "--print" in sys.argv:
@@ -125,11 +126,12 @@ check("a villager: named from its file, its crew, its position and local chat",
 w = by["Doctor Wood"]
 check("a community agent carries its position, wallet id, face and spoken lines",
       w["kind"] == "community" and w["pos"] == {"x": 2000.0, "z": 2000.0} and w["id"] == WOOD
-      and w["face"].startswith("https://") and w["said"][0]["text"] == "Tung tung tung! Andiamo!"
+      and w["face"] == "/api/buddy/pic/pot-doctor-wood.png" and w["said"][0]["text"] == "Tung tung tung! Andiamo!"
       and w["harness"] == "elo-buddy-runner")
 b = by["Birch"]
 check("a player's buddy: no position, an opaque id, no spectate link, its deaths",
       b["pos"] is None and b["id"] == "a000000001" and b["spectate"] is None and b["deaths"] == 4
+      and b["face"] is None
       and b["said"] == [])
 check("a stale body is left out entirely", "0x" + "d4" * 20 not in json.dumps(doc))
 check("no wallet anywhere but ids and spectate links",
@@ -146,6 +148,10 @@ check("out-of-island and non-numeric positions are dropped",
 out = os.path.join(TMP, "watch.json")
 watch.publish(doc, out)
 check("published atomically, world-readable", json.load(open(out)) == doc and oct(os.stat(out).st_mode)[-3:] == "644")
+big = dict(doc, agents=[dict(doc["agents"][0], id=str(i), reason="x" * 160, thought="y" * 280) for i in range(900)])
+watch.publish(big, out)
+check("the feed stays under 512 KB, dropping agents from the end",
+      os.path.getsize(out) <= 512 * 1024 and json.load(open(out))["agents"][0]["id"] == "0")
 png = os.path.join(TMP, "map.png")
 check("a map source that is not there keeps the last map", watch.refresh_map(png, "http://127.0.0.1:9/map.png") is False
       and not os.path.exists(png))

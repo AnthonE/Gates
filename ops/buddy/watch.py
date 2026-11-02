@@ -50,6 +50,9 @@ CAPS = {"name": 24, "goal": 48, "reason": 160, "thought": 280, "said": 200,
         "ambition": 160, "project": 160, "order": 120, "model": 48, "harness": 48}
 KINDS = ("protagonist", "teammate", "villager", "buddy", "solo", "community", "other")
 WALLET = re.compile(r"^0x[0-9a-f]{40}$")
+# A face is a picture elopros.com serves itself (its CSP loads no other host).
+FACE = re.compile(r"^/api/[A-Za-z0-9._/-]{1,200}$")
+FEED_MAX_BYTES = 512 * 1024
 URL = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+"
                  r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|gg|xyz|ai|co|app|dev|me|tv|ly|link|"
                  r"site|online|info|biz|ru|cn|uk|de|fr|us|to|sh|so|fun|lol|club)\b(?:/\S*)?")
@@ -198,7 +201,7 @@ class Feed:
             "name": clean(src.get("name") or cur.get("name"), CAPS["name"]) or (wallet[:8] if wallet else "agent"),
             "kind": kind,
             "crew": clean(crew, CAPS["name"]),
-            "face": src.get("face"),
+            "face": src.get("face") if FACE.match(str(src.get("face") or "")) and ".." not in src["face"] else None,
             "pos": pos_of(cur) if public else None,
             "goal": clean(cur.get("goal"), CAPS["goal"]),
             "reason": clean(cur.get("reason"), CAPS["reason"]),
@@ -241,7 +244,13 @@ def write_atomic(p, data, mode=0o644):
 
 
 def publish(doc, out):
-    write_atomic(out, json.dumps(doc, separators=(",", ":")).encode())
+    """watch.json, under FEED_MAX_BYTES: the last agents go first."""
+    doc = dict(doc, agents=list(doc["agents"]))
+    data = json.dumps(doc, separators=(",", ":")).encode()
+    while len(data) > FEED_MAX_BYTES and doc["agents"]:
+        doc["agents"].pop()
+        data = json.dumps(doc, separators=(",", ":")).encode()
+    write_atomic(out, data)
 
 
 def refresh_map(out, source=MAP_SOURCE):
