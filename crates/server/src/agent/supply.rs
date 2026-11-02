@@ -748,6 +748,10 @@ pub struct HomeJob {
     moving: (u16, bool),
     moves: u8,
     tries: u8,
+    /// Every try so far failed at the aim: `E` from where it stood never
+    /// took the box (a bag or a corpse in front of it), so nothing went to
+    /// the server.
+    aim_only: bool,
     /// Why the trip failed inside, said once it is back out.
     failed: Option<Why>,
     /// Units put in the boxes, and taken out.
@@ -780,6 +784,7 @@ impl HomeJob {
             moving: (0, true),
             moves: 0,
             tries: 0,
+            aim_only: true,
             failed: None,
             put: 0,
             took: 0,
@@ -882,7 +887,12 @@ impl HomeJob {
     ) -> Deliver {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if self.tries >= MAX_TRIES {
-            return self.fail(Why::Refused);
+            let why = if self.aim_only {
+                Why::Blocked
+            } else {
+                Why::Refused
+            };
+            return self.fail(why);
         }
         if self.doors.busy() {
             return match self
@@ -1107,6 +1117,7 @@ impl HomeJob {
                 if box_open(core, key) {
                     self.lid = Lid::Open;
                 } else if tick.wrapping_sub(sent) >= VERDICT_TICKS {
+                    self.aim_only = false;
                     self.tries = self.tries.saturating_add(1);
                     self.lid = Lid::Aiming(tick);
                 }
@@ -1131,6 +1142,7 @@ impl HomeJob {
                 }
                 if !box_open(core, key) {
                     // The panel shut under it.
+                    self.aim_only = false;
                     self.tries = self.tries.saturating_add(1);
                     self.lid = Lid::Aiming(tick);
                     return go;
