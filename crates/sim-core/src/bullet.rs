@@ -263,7 +263,7 @@ pub fn step(
 
         if let Some(q) = quarry.as_deref_mut() {
             let beast = q
-                .first(o, s)
+                .first(o, s, pose)
                 .filter(|m| m.t <= stop_t && best.is_none_or(|h| m.t < h.enter));
             if let Some(m) = beast {
                 q.push(MobShot {

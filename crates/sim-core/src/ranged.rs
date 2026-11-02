@@ -697,9 +697,10 @@ impl Quarry<'_> {
         &self,
         o: (f32, f32, f32),
         s: (f32, f32, f32),
+        pose: Pose<'_>,
     ) -> Option<crate::melee::MobHit> {
         let ray = crate::melee::Ray { o, s, len_mm: 0.0 };
-        crate::melee::mob_cast(self.mc, self.mobs, &ray)
+        crate::melee::mob_cast_posed(self.mc, self.mobs, &ray, pose)
     }
 
     pub(crate) fn push(&mut self, hit: MobShot) {
@@ -1433,7 +1434,7 @@ fn step_in(
         // player, and the hit goes out to `World` to land.
         if let Some(q) = quarry.as_deref_mut() {
             let beast = q
-                .first((ox, oy, oz), (sx, sy, sz))
+                .first((ox, oy, oz), (sx, sy, sz), Pose::Live)
                 .filter(|m| m.t <= stop_t && best.is_none_or(|b| m.t < b.enter));
             // A dial's drum it meets first turns that dial, and the arrow
             // drops off the stone there.
@@ -2023,6 +2024,16 @@ impl Pose<'_> {
         match self {
             Self::Live => live,
             Self::Rewound { rewind, tick, back } => rewind.pose_at(tick, slot, back, live),
+        }
+    }
+
+    /// Where animal `slot` stood, by the same definition of *was*.
+    #[inline]
+    pub(crate) fn of_mob(self, slot: usize, m: &crate::mob::Mob) -> crate::rewind::MobPose {
+        let live = crate::rewind::MobPose::live(m);
+        match self {
+            Self::Live => live,
+            Self::Rewound { rewind, tick, back } => rewind.mob_at(tick, slot, back, live),
         }
     }
 }
@@ -3089,19 +3100,13 @@ impl Shot<'_> {
     ) -> Pellet {
         let (o, reach, n) = (self.o, self.reach, self.n);
         let s = (d.0 * reach, d.1 * reach, d.2 * reach);
-        let seen = nearest_body(
-            players,
-            o,
-            s,
-            1.0,
-            self.id,
-            Pose::Rewound {
-                rewind: self.rewind,
-                tick: self.tick,
-                back: self.back,
-            },
-        );
-        let beast = quarry.and_then(|q| q.first(o, s));
+        let pose = Pose::Rewound {
+            rewind: self.rewind,
+            tick: self.tick,
+            back: self.back,
+        };
+        let seen = nearest_body(players, o, s, 1.0, self.id, pose);
+        let beast = quarry.and_then(|q| q.first(o, s, pose));
         let first_t = match (seen.map(|b| b.t), beast.map(|m| m.t)) {
             (Some(b), Some(m)) => Some(b.min(m)),
             (b, m) => b.or(m),

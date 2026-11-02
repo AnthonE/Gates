@@ -54,6 +54,12 @@ impl WrapClock {
         self.run = None;
     }
 
+    /// Whether a wrap is under way: the hands are busy and nothing in them
+    /// swings (`survival::hands_busy`), so the arm must not either.
+    pub fn busy(&self) -> bool {
+        self.run.is_some()
+    }
+
     /// How far through the wrap `now` is, 0..1; `None` with none under way.
     pub fn progress(&self, now: f64) -> Option<f32> {
         self.run

@@ -542,6 +542,12 @@ pub fn skin_radius(occupant: u8) -> f32 {
 /// frame is somebody else's arrow or somebody else's swing.
 pub const SAME_BLOW_M: f32 = 2.0;
 
+/// How long after this body's own `EV_SWING` its blow's facts may arrive and
+/// still be that swing's, seconds: the strike's delay plus slack for the
+/// two arriving in different packets.
+pub const STRIKE_WINDOW_S: f64 =
+    sim_core::gather::STRIKE_DELAY_TICKS as f64 / sim_core::limits::TICK_HZ as f64 + 0.25;
+
 /// Is the impact at `at` the pick's own blow, reported a second time?
 ///
 /// The rule the header names: a landed node swing reaches the client as
@@ -890,12 +896,29 @@ pub fn contacts(
     swung: Res<super::verbs::Swung>,
     bodies: Query<(&super::bodies::Body, &GlobalTransform)>,
     herd: Query<(&super::mobs::Animal, &GlobalTransform)>,
+    time: Res<Time>,
+    mut swung_at: Local<Option<(f64, SwingPick)>>,
 ) {
     out.clear();
     let Some(net) = net else { return };
     let core = &net.session.core;
-    let own_swing = feed.swings().contains(&core.player_id);
-    let pick = &swung.0;
+    // **The swing and its blow are two arrivals.** `EV_SWING` is pushed when
+    // the arm moves and the strike lands `STRIKE_DELAY_TICKS` later, so the
+    // blow's facts (`EV_IMPACT`, a refusal, the barrel's harvest) come in a
+    // later frame than the swing's. Matched within the window after this
+    // body's own swing, once per swing; matched on the swing's own frame,
+    // as this did, a landed blow was never `mine` and a whiff threw chips.
+    // The pick is the one the swing was taken on: a barrel the blow smashed
+    // is out of this frame's pick already.
+    let now = time.elapsed_secs_f64();
+    if feed.swings().contains(&core.player_id) {
+        *swung_at = Some((now, swung.0));
+    }
+    if swung_at.is_some_and(|(t, _)| now - t > STRIKE_WINDOW_S) {
+        *swung_at = None;
+    }
+    let striking = swung_at.is_some();
+    let pick = &swung_at.map_or(swung.0, |(_, p)| p);
 
     // ── Every surface the sim says was struck ────────────────────────────
     //
@@ -909,7 +932,7 @@ pub fn contacts(
             im.qz as f32 * POS_XZ_Q,
         );
         let weapon = weapon_of(im.kind);
-        let mine = own_swing && im.surf == SURF_WORLD && same_blow(pick, at);
+        let mine = striking && !claimed && im.surf == SURF_WORLD && same_blow(pick, at);
         claimed |= mine;
         let (mut normal, mut matter) = match world.as_deref() {
             Some(w) => {
@@ -952,11 +975,23 @@ pub fn contacts(
 
     // ── A swing that connected with a node the sim did not mark ──────────
     //
-    // A refused tool, a barrel, a bush: the sim's own swing fact plus the
-    // pick ([`gather_burst`]). Skipped when an impact above already placed
-    // this blow. No mark — the sim did not mark it.
+    // A refused tool or a smashed barrel: the sim's own fact of that blow
+    // plus the pick ([`gather_burst`]). Skipped when an impact above already
+    // placed this blow. No mark — the sim did not mark it. A whiff sends
+    // neither, so it throws nothing.
+    let refused = feed
+        .refusals()
+        .any(|(r, _, _)| r == super::feed::Refused::Gather);
+    let smashed = pick.occupant == Occupant::BarrelSlot as u8
+        && core
+            .harvested
+            .contains(sim_core::gather::cell_key(pick.cx, pick.cz));
+    let connected = striking && (refused || smashed);
+    if claimed || connected {
+        *swung_at = None;
+    }
     if !claimed {
-        if let Some(b) = gather_burst(own_swing, pick, eye.pos) {
+        if let Some(b) = gather_burst(connected, pick, eye.pos) {
             out.push(Contact {
                 at: b.at,
                 away: b.away,
@@ -1001,7 +1036,9 @@ pub fn contacts(
             surf: SURF_GROUND,
             matter: Matter::Flesh,
             kind: ContactKind::Flesh,
-            weapon: if own_swing {
+            // Inside the window after this body's own swing, the blow is
+            // that swing's: `EV_HIT` arrives with the strike, not the swing.
+            weapon: if striking {
                 Weapon::Melee
             } else {
                 Weapon::Bullet

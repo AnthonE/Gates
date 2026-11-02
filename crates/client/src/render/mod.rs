@@ -1091,6 +1091,12 @@ impl Plugin for GatesRenderPlugin {
             PostUpdate,
             web::follow_pointer_lock.run_if(|| cfg!(target_arch = "wasm32")),
         )
+        // A desktop lock the OS can only confine still keeps the pointer
+        // where it was locked (`input::pin_locked_cursor`).
+        .add_systems(
+            PostUpdate,
+            input::pin_locked_cursor.run_if(|| !cfg!(target_arch = "wasm32")),
+        )
         // Key hints follow the player's binds, on every screen.
         .add_systems(Update, binds::keyed)
         // Take the page's handoff overlay down once this app has drawn.

@@ -62,7 +62,8 @@
 //! on how the world arrived at tick `N`, which is the one thing wall 5
 //! forbids. Said here because it reads like a rough edge and is the design.
 
-use crate::limits::{MAX_PLAYERS, REWIND_MAX_TICKS, REWIND_TICKS};
+use crate::limits::{MAX_MOBS, MAX_PLAYERS, REWIND_MAX_TICKS, REWIND_TICKS};
+use crate::mob::{Mob, Mobs};
 use crate::world::Player;
 
 /// A slot with no live tenant. The same sentinel `server/src/core.rs` writes
@@ -142,6 +143,60 @@ pub struct Rewind {
     rows: Box<[[RewindPose; MAX_PLAYERS]; REWIND_TICKS]>,
     /// The tick each row was written for, [`COLD`] until it has been.
     stamps: [u64; REWIND_TICKS],
+    /// The animals, on their own stamps: written by `write_mobs` alone, so
+    /// a caller that writes only the players' rows (a test, a tool) never
+    /// reads a stale animal under a fresh stamp. An animal the client was
+    /// drawing `INTERP_DELAY_TICKS` ago is swung at and shot where it was
+    /// drawn, as a player is.
+    mobs: Box<[[MobPose; MAX_MOBS]; REWIND_TICKS]>,
+    mob_stamps: [u64; REWIND_TICKS],
+}
+
+/// One animal's position and heading at the end of one tick — what a swing
+/// or a shot measures an animal's box against (`melee::animal_entry`).
+/// `alive` false is a row that cannot answer: the slot was dead, or empty.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MobPose {
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub yaw: u16,
+    pub alive: bool,
+}
+
+impl MobPose {
+    pub const EMPTY: Self = Self {
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        yaw: 0,
+        alive: false,
+    };
+
+    /// The present-tick pose of an animal.
+    #[inline]
+    #[must_use]
+    pub fn live(m: &Mob) -> Self {
+        Self {
+            qx: m.body.qx,
+            qy: m.body.qy,
+            qz: m.body.qz,
+            yaw: m.yaw,
+            alive: m.alive && m.hp > 0,
+        }
+    }
+
+    /// The body this pose stands, for `melee::animal_entry`.
+    #[inline]
+    #[must_use]
+    pub fn body(&self) -> crate::movement::Body {
+        crate::movement::Body {
+            qx: self.qx,
+            qy: self.qy,
+            qz: self.qz,
+            ..Default::default()
+        }
+    }
 }
 
 impl Rewind {
@@ -150,6 +205,8 @@ impl Rewind {
         Self {
             rows: crate::boxed_array([RewindPose::EMPTY; MAX_PLAYERS]),
             stamps: [COLD; REWIND_TICKS],
+            mobs: crate::boxed_array([MobPose::EMPTY; MAX_MOBS]),
+            mob_stamps: [COLD; REWIND_TICKS],
         }
     }
 
@@ -247,6 +304,53 @@ impl Rewind {
         }
         let rec = self.rows[r][slot];
         if rec.id == NO_TENANT || rec.id != live.id {
+            return live;
+        }
+        rec
+    }
+
+    /// Write every animal's end-of-tick pose for `tick`. An animal that
+    /// died since the last row has its whole history wiped: a slot is
+    /// reused when it hatches again, and a rewind must never find the next
+    /// life standing where the last one fell.
+    pub fn write_mobs(&mut self, tick: u64, mobs: &Mobs) {
+        let r = Self::row_of(tick);
+        let prev = Self::row_of(tick.wrapping_sub(1));
+        let prev_ok = tick > 0 && self.mob_stamps[prev] == tick - 1;
+        let mut i = 0;
+        while i < MAX_MOBS {
+            let pose = MobPose::live(&mobs.m[i]);
+            if !pose.alive && prev_ok && self.mobs[prev][i].alive {
+                let mut k = 0;
+                while k < REWIND_TICKS {
+                    self.mobs[k][i] = MobPose::EMPTY;
+                    k += 1;
+                }
+            }
+            self.mobs[r][i] = pose;
+            i += 1;
+        }
+        self.mob_stamps[r] = tick;
+    }
+
+    /// Where animal `slot` stood `back` ticks before `tick`, or `live` when
+    /// the ring cannot honestly answer — `pose_at`'s rule, with a row that
+    /// was not alive in place of a stranger's id.
+    #[inline]
+    #[must_use]
+    pub fn mob_at(&self, tick: u64, slot: usize, back: u8, live: MobPose) -> MobPose {
+        if back == 0 || slot >= MAX_MOBS || !live.alive {
+            return live;
+        }
+        let Some(want) = tick.checked_sub(back as u64) else {
+            return live;
+        };
+        let r = Self::row_of(want);
+        if self.mob_stamps[r] != want {
+            return live;
+        }
+        let rec = self.mobs[r][slot];
+        if !rec.alive {
             return live;
         }
         rec
