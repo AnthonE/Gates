@@ -85,9 +85,10 @@ pub fn gather(
     mut look: ResMut<Look>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     // Paired with the zoom because this system is at Bevy's sixteen.
-    (settings, zoom): (
+    (settings, zoom, bite): (
         Res<super::settings::Settings>,
         Option<Res<super::viewmodel::DrawZoom>>,
+        Option<Res<super::verbs::Bite>>,
     ),
     aimed: Option<Res<super::verbs::Aimed>>,
     screen: Option<Res<State<super::Screen>>>,
@@ -475,7 +476,11 @@ pub fn gather(
     // nothing fire there (`combat::holstered`), so the arm does not swing
     // and the bow does not draw — `hud::holster_hint` says why.
     // Nor from the water: a swimmer shoots nothing (`combat::waterlogged`).
-    let holstered = core.holstered() || core.waterlogged();
+    // Nor while a bandage is wrapped on: the sim holds the hands until it
+    // lands (`survival::hands_busy`) and cancels the swing at the strike,
+    // so an arm that swung would swing at nothing.
+    let holstered =
+        core.holstered() || core.waterlogged() || bite.as_deref().is_some_and(|b| b.wrap.busy());
     if swings && !spent && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
