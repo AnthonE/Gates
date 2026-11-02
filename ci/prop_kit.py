@@ -105,6 +105,8 @@ SURF = {
     "paper": dict(tex="paper", sat=0.0, color=(0.70, 0.66, 0.54), rough=1.0, metal=0.0, wear=0.0),
     "blueprint": dict(tex="paper", sat=0.0, color=(0.10, 0.20, 0.42), rough=1.0, metal=0.0, wear=0.0),
     "glass": dict(proc="plain", color=(0.30, 0.38, 0.36), rough=0.08, metal=0.0, wear=0.0, grime=0.0),
+    # Photovoltaic cells under glass: near-black blue, glossy, a little dust.
+    "cells": dict(proc="plain", color=(0.015, 0.035, 0.10), rough=0.18, metal=0.0, wear=0.0, grime=0.25),
     "plastic": dict(proc="plain", color=(0.70, 0.70, 0.68), rough=0.45, metal=0.0, wear=0.0, grime=0.0),
     "berry": dict(proc="plain", color=(0.25, 0.02, 0.10), rough=0.25, metal=0.0, wear=0.0, grime=0.0),
     "leaf": dict(proc="paint", color=(0.10, 0.22, 0.06), rough=0.6, metal=0.0, wear=0.0, grime=0.0),

@@ -197,6 +197,171 @@ def workbench3(k):
         k.box((0.018, 0.008, 0.14 - i * 0.02), (-0.7 + i * 0.07, 0.35, 0.96), "steel", bevel=0.002)
 
 
+# ── electricity (`sim_core::power`) ─────────────────────────────────────────
+# Rows 24–30 of DEPLOY, greyboxes until these. Scrap-built like the rest of
+# the base: tube frames, painted sheet, brass terminals, rubber cable.
+
+@recipe("generator", "models/deploy/generator.glb", size=(1.0, 0.8, 0.6))
+def generator(k):
+    # Tube frame on rubber feet, carrying a tray.
+    for x in (-0.46, 0.46):
+        for y in (-0.26, 0.26):
+            k.cyl(0.018, 0.74, (x, y, 0.39), "steel", n=10)
+            k.cyl(0.03, 0.04, (x, y, 0.02), "rubber", n=10, bevel=0.0)
+    for y in (-0.26, 0.26):
+        for z in (0.06, 0.76):
+            k.box((0.96, 0.036, 0.036), (0, y, z), "steel", bevel=0.004)
+    for x in (-0.46, 0.46):
+        for z in (0.06, 0.76):
+            k.box((0.036, 0.56, 0.036), (x, 0, z), "steel", bevel=0.004)
+    k.box((0.92, 0.52, 0.03), (0, 0, 0.095), "dark", bevel=0.004)
+    # Engine block, finned head and the pull-start on its left end.
+    k.box((0.42, 0.40, 0.30), (-0.15, 0, 0.26), "dark", bevel=0.012, segs=2)
+    k.box((0.30, 0.26, 0.10), (-0.15, 0, 0.46), "dark", bevel=0.008)
+    for i in range(5):
+        k.box((0.33, 0.29, 0.010), (-0.15, 0, 0.415 + i * 0.022), "steel", bevel=0.0)
+    k.cyl(0.13, 0.06, (-0.39, 0.05, 0.30), "red", axis="X", n=20)
+    k.cyl(0.04, 0.02, (-0.43, 0.05, 0.30), "dark", axis="X", n=12)
+    k.box((0.05, 0.03, 0.03), (-0.43, 0.05, 0.40), "rubber", bevel=0.004)
+    # Alternator on the right: a green can with a vented end cap.
+    k.cyl(0.15, 0.30, (0.20, 0.02, 0.27), "green", axis="X", n=20, bevel=0.008)
+    k.cyl(0.12, 0.04, (0.37, 0.02, 0.27), "dark", axis="X", n=20)
+    for z in (0.21, 0.27, 0.33):
+        k.box((0.012, 0.16, 0.02), (0.395, 0.02, z), "rubber", bevel=0.0)
+    # Fuel tank over everything, hazard band on its front, filler cap.
+    k.box((0.60, 0.44, 0.18), (0, 0, 0.62), "red", bevel=0.03, segs=3)
+    for i in range(6):
+        k.box((0.1, 0.012, 0.05), (-0.25 + i * 0.1, -0.225, 0.60), "yellow" if i % 2 else "rubber", bevel=0.0)
+    k.cyl(0.04, 0.03, (0.15, -0.10, 0.725), "dark", n=14)
+    # Control panel on the front: two outlets and a switch.
+    k.box((0.26, 0.03, 0.18), (0.28, -0.285, 0.40), "dark", bevel=0.004)
+    for x in (0.22, 0.34):
+        k.cyl(0.022, 0.02, (x, -0.305, 0.43), "plastic", axis="Y", n=12, bevel=0.0)
+    k.cyl(0.015, 0.02, (0.28, -0.305, 0.345), "red", axis="Y", n=10, bevel=0.0)
+    # Muffler and tail pipe along the back.
+    k.cyl(0.06, 0.28, (-0.10, 0.22, 0.52), "rusty", axis="X", n=14)
+    k.cyl(0.02, 0.08, (0.08, 0.22, 0.52), "rusty", axis="X", n=10)
+    k.tube([(-0.15, 0.20, 0.41), (-0.15, 0.22, 0.46)], 0.025, "rusty", n=10)
+
+
+@recipe("solar", "models/deploy/solar.glb", size=(1.6, 1.2, 1.0))
+def solar(k):
+    # A 1.56 x 1.10 panel tilted 35° to face the front, on a steel A-frame.
+    tilt = 35.0
+    s, c = math.sin(math.radians(tilt)), math.cos(math.radians(tilt))
+    at = (0.0, 0.0, 0.80)
+
+    def on_panel(u, v, off):
+        return (at[0] + u, at[1] + v * c - off * s, at[2] + v * s + off * c)
+
+    def panel_box(size, u, v, off, surf, bevel=0.0):
+        k.box(size, on_panel(u, v, off), surf, rot=(tilt, 0, 0), bevel=bevel)
+
+    # `off` runs along the panel's normal, toward the sky and the front.
+    panel_box((1.56, 1.10, 0.04), 0, 0, 0, "steel", bevel=0.004)
+    panel_box((1.50, 1.04, 0.006), 0, 0, 0.022, "cells")
+    for i in range(1, 6):
+        panel_box((0.008, 1.04, 0.004), -0.75 + i * 0.25, 0, 0.026, "white")
+    for j in range(1, 4):
+        panel_box((1.50, 0.008, 0.004), 0, -0.52 + j * 0.26, 0.026, "white")
+    # Legs: tall at the back, short at the front, rails between, feet plates.
+    for x in (-0.60, 0.60):
+        k.box((0.04, 0.04, 1.04), (x, 0.40, 0.52), "steel", bevel=0.003)
+        k.box((0.04, 0.04, 0.50), (x, -0.40, 0.25), "steel", bevel=0.003)
+        k.box((0.03, 0.80, 0.03), (x, 0.0, 0.10), "steel", bevel=0.003)
+        for y in (-0.40, 0.40):
+            k.box((0.12, 0.12, 0.02), (x, y, 0.01), "dark", bevel=0.003)
+    k.box((1.24, 0.03, 0.03), (0, 0.40, 0.50), "steel", bevel=0.003)
+    k.box((1.24, 0.03, 0.03), (0, -0.40, 0.25), "steel", bevel=0.003)
+    # Junction box under the panel, its cable down a back leg.
+    k.box((0.18, 0.12, 0.06), (0.30, 0.30, 0.95), "dark", bevel=0.004)
+    k.tube([(0.30, 0.30, 0.93), (0.45, 0.36, 0.86), (0.58, 0.40, 0.75), (0.58, 0.40, 0.10)],
+           0.009, "rubber", n=8)
+
+
+@recipe("battery", "models/deploy/battery.glb", size=(0.6, 0.5, 0.4), tex=512)
+def battery(k):
+    # Deep-cycle cell: green case, dark lid, lead posts under brass nuts.
+    k.box((0.58, 0.38, 0.40), (0, 0, 0.20), "green", bevel=0.012, segs=2)
+    k.box((0.60, 0.40, 0.03), (0, 0, 0.415), "dark", bevel=0.006)
+    for x in (-0.19, 0.19):
+        k.cyl(0.025, 0.05, (x, -0.05, 0.455), "steel", n=12)
+        k.cyl(0.03, 0.02, (x, -0.05, 0.49), "brass", n=6, bevel=0.0)
+    k.tube([(-0.19, -0.05, 0.47), (-0.27, -0.05, 0.45), (-0.305, -0.05, 0.30)], 0.012, "rubber", n=8)
+    k.tube([(0.19, -0.05, 0.47), (0.27, -0.05, 0.45), (0.305, -0.05, 0.30)], 0.012, "red", n=8)
+    for i in range(6):
+        k.cyl(0.018, 0.012, (-0.20 + i * 0.08, 0.10, 0.436), "dark", n=10, bevel=0.0)
+    for x in (-0.30, 0.30):
+        for z in (0.12, 0.20, 0.28):
+            k.box((0.006, 0.30, 0.02), (x, 0, z), "rubber", bevel=0.0)
+    k.box((0.30, 0.004, 0.14), (0, -0.192, 0.22), "white", bevel=0.0)
+    k.box((0.30, 0.004, 0.03), (0, -0.193, 0.27), "red", bevel=0.0)
+
+
+@recipe("switch", "models/deploy/switch.glb", size=(0.25, 0.3, 0.15), tex=512)
+def switch(k):
+    # Knife switch in a wall box: back plate, box, a short lever, terminals.
+    k.box((0.25, 0.01, 0.30), (0, 0.07, 0.15), "steel", bevel=0.002)
+    k.box((0.22, 0.08, 0.26), (0, 0.03, 0.14), "dark", bevel=0.006)
+    k.box((0.08, 0.006, 0.16), (0, -0.013, 0.14), "steel", bevel=0.0)
+    s, c = math.sin(math.radians(35)), math.cos(math.radians(35))
+    k.cyl(0.012, 0.055, (0, -0.015 - 0.0275 * c, 0.13 + 0.0275 * s), "steel", axis="Y", rot=(-35, 0, 0), n=8)
+    k.ball(0.014, (0, -0.015 - 0.055 * c, 0.13 + 0.055 * s), "red", n=10)
+    for x in (-0.05, 0.05):
+        k.cyl(0.012, 0.03, (x, 0.03, 0.015), "brass", n=8, bevel=0.0)
+    for x in (-0.09, 0.09):
+        for z in (0.03, 0.25):
+            k.cyl(0.006, 0.004, (x, -0.012, z), "steel", axis="Y", n=6, bevel=0.0)
+    k.cyl(0.01, 0.006, (0.07, -0.013, 0.24), "red", axis="Y", n=8, bevel=0.0)
+    k.box((0.05, 0.003, 0.02), (-0.06, -0.012, 0.24), "white", bevel=0.0)
+
+
+def _junction(k, paint, band, front, back):
+    # A junction box on a mounting plate: `front` brass ports toward −Y,
+    # `back` toward +Y, a painted band across the lid, one indicator.
+    k.box((0.30, 0.16, 0.012), (0, 0, 0.006), "steel", bevel=0.002)
+    k.box((0.26, 0.14, 0.14), (0, 0, 0.082), paint, bevel=0.008, segs=2)
+    k.box((0.10, 0.14, 0.004), (0, 0, 0.154), band, bevel=0.0)
+    for x in (-0.11, 0.11):
+        for y in (-0.055, 0.055):
+            k.cyl(0.006, 0.004, (x, y, 0.154), "steel", n=6, bevel=0.0)
+    for n, y, sign in ((front, -0.085, -1), (back, 0.085, 1)):
+        for i in range(n):
+            x = (i - (n - 1) / 2) * 0.08
+            k.cyl(0.025, 0.012, (x, y - sign * 0.012, 0.08), "steel", axis="Y", n=12, bevel=0.0)
+            k.cyl(0.02, 0.04, (x, y, 0.08), "brass", axis="Y", n=12, bevel=0.0)
+    k.cyl(0.008, 0.006, (0.10, -0.072, 0.13), "kgreen", axis="Y", n=8, bevel=0.0)
+
+
+@recipe("splitter", "models/deploy/splitter.glb", size=(0.3, 0.2, 0.2), tex=512)
+def splitter(k):
+    _junction(k, "dark", "yellow", front=3, back=1)
+
+
+@recipe("combiner", "models/deploy/combiner.glb", size=(0.3, 0.2, 0.2), tex=512)
+def combiner(k):
+    _junction(k, "green", "white", front=1, back=3)
+
+
+@recipe("light", "models/deploy/light.glb", size=(0.4, 0.15, 0.4), tex=512)
+def light(k):
+    # Bulkhead lamp: a round plate, a glass dome in a steel cage. Flat, so it
+    # reads the same on a floor cell today and under a ceiling tomorrow.
+    k.cyl(0.20, 0.02, (0, 0, 0.01), "dark", n=24)
+    k.cyl(0.16, 0.02, (0, 0, 0.03), "steel", n=24)
+    # The dome is a lathe, not a ball: a ball's lower half would hang below
+    # the plate and the fit would shrink the whole lamp to keep it in row.
+    k.lathe([(0.15, 0.03), (0.146, 0.06), (0.13, 0.09), (0.10, 0.115), (0.06, 0.135), (0.0, 0.14)],
+            surf="glass", n=20)
+    k.torus(0.15, 0.006, (0, 0, 0.05), "steel", n=20, m=6)
+    k.torus(0.11, 0.006, (0, 0, 0.10), "steel", n=20, m=6)
+    for i in range(6):
+        a = i * 60.0
+        r = 0.135
+        k.box((0.01, 0.01, 0.11), (r * math.cos(math.radians(a)), r * math.sin(math.radians(a)), 0.075),
+              "steel", rot=(0, -28, a), bevel=0.0)
+
+
 # ── held items ──────────────────────────────────────────────────────────────
 # Authored standing: the grip on the Z axis (x = y = 0), foot at z = 0, a
 # head's long axis along +X (`ui::hold::HAFTED_LAY`'s assumption).

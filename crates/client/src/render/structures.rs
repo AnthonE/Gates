@@ -2489,13 +2489,15 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/floor_spikes.glb"), // 21 floor spikes
     Some("models/deploy/abyss_rug.glb"), // 22 rug
     Some("models/deploy/water_catcher.glb"), // 23 water catcher
-    None,                  // 24 small generator — greybox
-    None,                  // 25 solar panel — greybox
-    None,                  // 26 battery — greybox
-    None,                  // 27 switch — greybox
-    None,                  // 28 splitter — greybox
-    None,                  // 29 root combiner — greybox
-    None,                  // 30 ceiling light — greybox
+    // 24–30 electricity: built in Blender by `ci/prop_kit.py` like rows 4
+    // and 8–11, fitted to the rows above.
+    Some("models/deploy/generator.glb"), // 24 small generator
+    Some("models/deploy/solar.glb"),     // 25 solar panel
+    Some("models/deploy/battery.glb"),   // 26 battery
+    Some("models/deploy/switch.glb"),    // 27 switch
+    Some("models/deploy/splitter.glb"),  // 28 splitter
+    Some("models/deploy/combiner.glb"),  // 29 root combiner
+    Some("models/deploy/light.glb"),     // 30 ceiling light
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
