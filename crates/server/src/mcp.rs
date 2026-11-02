@@ -1,7 +1,7 @@
-//! `jev-bot --mcp`: the bot as an MCP server on its own stdin and stdout,
+//! `gates-agent --mcp`: the bot as an MCP server on its own stdin and stdout,
 //! so any harness that speaks the Model Context Protocol — Claude Code,
 //! Hermes Agent, Codex, OpenClaw, a desktop app — is its mind. The harness
-//! starts `jev-bot … --mcp` as a stdio server and plays with three tools:
+//! starts `gates-agent … --mcp` as a stdio server and plays with three tools:
 //! `look` (the next decision), `act` (answer it) and `status`.
 //!
 //! It is the external door (`external.rs`) with the agent moved in-process:
@@ -47,7 +47,7 @@ const POLL: Duration = Duration::from_millis(5);
 /// line could cross the scripted answer in the pipe.
 const LATE_MARGIN: Duration = Duration::from_millis(500);
 
-/// Who the body is, for `status` and `look`: set by `jev-bot` before it
+/// Who the body is, for `status` and `look`: set by `gates-agent` before it
 /// joins, and the spectator link once the door knows it.
 #[derive(Clone, Debug, Default)]
 pub struct Me {

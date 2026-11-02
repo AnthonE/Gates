@@ -18,7 +18,7 @@
 #                 base kit; `item.assault_rifle+item.holosight:1` comes with
 #                 attachments on) · --env WEATHER,TIME (dev_env) · --turret
 #                 x,z (a powered, loaded auto turret there: server/src/film.rs)
-#                 · --agents N (N scripted kill-on-sight jev-bot agents; the
+#                 · --agents N (N scripted kill-on-sight gates-agent agents; the
 #                 tape then spectates one of them instead of standing still)
 #                 The defaults are the tape the lists in ci/film/ were shot on
 #                 (`ci/film.sh record film/zig.rec 1200`): a camp of towers
@@ -72,7 +72,7 @@ record)
       *) fail "unknown record option $1" ;;
     esac
   done
-  cargo build --profile "$PROFILE" -p server --bin shard --bin jev-bot -p client --bin record >/dev/null 2>&1 \
+  cargo build --profile "$PROFILE" -p server --bin shard --bin gates-agent -p client --bin record >/dev/null 2>&1 \
     || fail "the shard or the recorder did not build"
   WORK="$(mktemp -d)"
   trap '[ -n "${AGENTS_PID:-}" ] && kill "$AGENTS_PID" 2>/dev/null; [ -n "${SHARD_PID:-}" ] && kill "$SHARD_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
@@ -105,7 +105,7 @@ TOML
   echo "film: taping $SECONDS_ s of seed $SEED, $POPULATION inhabitants at $SPAWN"
   ARGS=("127.0.0.1:$PORT" "$TAPE" "$SECONDS_")
   if [ "$AGENTS" -gt 0 ]; then
-    "$BIN/jev-bot" --server "127.0.0.1:$PORT" --bots "$AGENTS" --seconds "${SECONDS_%.*}" \
+    "$BIN/gates-agent" --server "127.0.0.1:$PORT" --bots "$AGENTS" --seconds "${SECONDS_%.*}" \
       --scripted --temperament kos --skill good > "$WORK/agents.log" 2>&1 &
     AGENTS_PID=$!
     # A seat watches an agent that has joined: ask until one has.

@@ -120,7 +120,7 @@ enum Line {
 pub struct External {
     child: Option<Child>,
     /// Where observations go: the child's stdin, or an in-process pipe
-    /// (`mcp.rs`, where the agent is a harness on jev-bot's own stdio).
+    /// (`mcp.rs`, where the agent is a harness on gates-agent's own stdio).
     stdin: Option<Box<dyn Write + Send>>,
     lines: Option<rtrb::Consumer<Line>>,
     reader: Option<std::thread::JoinHandle<()>>,

@@ -293,13 +293,15 @@ echo "== 6. the agents =="
 # disabled one (Jev out of credit, 2026-10-17) stays off, since a restart
 # would start it.
 # The house teammates (`ops/gates-teammate@.service`, one per bot) and the
-# buddies (`ops/gates-buddy@.service`, Claude-minded) run the same jev-bot,
+# buddies (`ops/gates-buddy@.service`, Claude-minded) run the same agent
+# (`gates-agent`; `jev-bot` is the same program under its old name, shipped
+# beside it for one release while the units move over),
 # so each one installed restarts on it too; a buddy's decision program rides
 # beside the binary. So does the buddies runner (`ops/gates-buddies.service`),
-# whose children are the same jev-bot, and every village
+# whose children are the same agent, and every village
 # (`ops/gates-village@.service`, a scripted guild). All of those run as
 # `gates-agents`, sandboxed to the game, from root-owned /opt/gates-agents;
-# Jev (`gates-jev`, master's) still runs from ~/gates-jev.
+# ~/gates-jev (master's) still holds the copy gates-buddy@ runs.
 AGENT_BIN=/opt/gates-agents
 JEV_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
@@ -309,19 +311,23 @@ if systemctl is-enabled --quiet gates-jev.service 2>/dev/null \
    || systemctl is-enabled --quiet gates-watch.service 2>/dev/null \
    || [ -n "$TEAMMATES" ]; then
   if [ "$GO" = 1 ]; then
-    cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
+    cargo build --release -p server --features watch --bin gates-agent --bin jev-bot --bin jev-watch || exit 1
   else
-    echo "  would run: cargo build --release -p server --features watch --bin jev-bot --bin jev-watch"
+    echo "  would run: cargo build --release -p server --features watch --bin gates-agent --bin jev-bot --bin jev-watch"
   fi
 fi
 if systemctl is-enabled --quiet gates-jev.service 2>/dev/null; then
-  run cp -f target/release/jev-bot "$JEV_BIN/jev-bot.new"
-  run mv -f "$JEV_BIN/jev-bot.new" "$JEV_BIN/jev-bot"
+  for bin in gates-agent jev-bot; do
+    run cp -f "target/release/$bin" "$JEV_BIN/$bin.new"
+    run mv -f "$JEV_BIN/$bin.new" "$JEV_BIN/$bin"
+  done
   run cp -f crates/server/examples/claude_agent.py "$JEV_BIN/claude_agent.py"
 fi
 if [ -n "$TEAMMATES" ]; then
-  run sudo install -m 0755 target/release/jev-bot "$AGENT_BIN/jev-bot.new"
-  run sudo mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
+  for bin in gates-agent jev-bot; do
+    run sudo install -m 0755 "target/release/$bin" "$AGENT_BIN/$bin.new"
+    run sudo mv -f "$AGENT_BIN/$bin.new" "$AGENT_BIN/$bin"
+  done
   run sudo install -m 0644 crates/server/examples/claude_agent.py \
     ops/buddy/runner.py ops/buddy/mind_bridge.py ops/buddy/recap.py "$AGENT_BIN/"
 fi

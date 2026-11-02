@@ -1,4 +1,4 @@
-//! **GatesBench** (`jev-bot --bench MINUTES`): one mind, played on fresh
+//! **GatesBench** (`gates-agent --bench MINUTES`): one mind, played on fresh
 //! private islands and scored on the boards a wipe pays (`standings.rs`).
 //!
 //! Each run boots its own loopback island from the local seed, seats the

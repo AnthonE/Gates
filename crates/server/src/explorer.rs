@@ -808,13 +808,13 @@ pub struct SurvivorOpts {
     /// The one wallet it plays with (`--friend`): invited first, never
     /// fought, met at THE GATE (`Goal::Meet`).
     pub friend: Option<protocol::Address>,
-    /// The clan it lives in (`jev-bot --society`, `agent::society`): its
+    /// The clan it lives in (`gates-agent --society`, `agent::society`): its
     /// job, its crew and its guild.
     pub society: Option<Society>,
     /// Its doors wait for code locks instead of taking key locks with the
     /// doors: others come in by its code. Always so in a society.
     pub code_doors: bool,
-    /// A bred brain for the fight-or-run call (`jev-bot --tactics ga1:…`,
+    /// A bred brain for the fight-or-run call (`gates-agent --tactics ga1:…`,
     /// `agent::combat::set_tactics`); `None` keeps the sum's.
     pub tactics: Option<sim_core::genome::Genome>,
 }
@@ -1535,7 +1535,7 @@ impl Survivor {
         &self.bases
     }
 
-    /// The session ends `ticks` server ticks after the welcome (`jev-bot
+    /// The session ends `ticks` server ticks after the welcome (`gates-agent
     /// --seconds`); `None` for no end. From [`LOG_OFF_SECS`] before it the
     /// body goes home, shuts its doors and stands inside. Counted from the
     /// first welcome, so a reconnect does not push it back.
@@ -1544,7 +1544,7 @@ impl Survivor {
         self.deadline = ticks.zip(self.welcomed).map(|(t, w)| w.saturating_add(t));
     }
 
-    /// A new shift (`jev-bot --shift`): the next session ends `ticks` after
+    /// A new shift (`gates-agent --shift`): the next session ends `ticks` after
     /// its own welcome, not the first one's, and this body goes home for it
     /// the way it does at a run's end.
     pub fn new_shift(&mut self, ticks: u32) {
