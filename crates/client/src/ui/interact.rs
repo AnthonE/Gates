@@ -740,14 +740,19 @@ fn carcass_cm(species: u8) -> Option<(u16, u16)> {
 
 /// What the look ray must meet to be on a bag lying where it fell, metres:
 /// `(half-width, height)` of an upright square about its position. A pack
-/// is a pack; a body or a carcass is as wide as its swing volume (it lies
-/// any way round) and no taller than a thing lying down, which the swing's
-/// standing cylinder is.
-fn bag_pick_m(bag: &WireBag) -> (f32, f32) {
+/// is a pack; a body or a carcass is its swing volume cut down to its
+/// middle, no wider than a torso and no taller than a thing lying down.
+/// The swing's standing cylinder is 1.7 m across for a body, and a body
+/// lying against a box took the box in with it (#533).
+pub fn bag_pick_m(bag: &WireBag) -> (f32, f32) {
     const PACK_M: (f32, f32) = (0.35, 0.45);
     const LYING_TOP_M: f32 = 0.4;
+    const LYING_HALF_M: f32 = 0.45;
     match bag.species().and_then(carcass_cm) {
-        Some((r, h)) => (f32::from(r) * 0.01, (f32::from(h) * 0.01).min(LYING_TOP_M)),
+        Some((r, h)) => (
+            (f32::from(r) * 0.01).min(LYING_HALF_M),
+            (f32::from(h) * 0.01).min(LYING_TOP_M),
+        ),
         None => PACK_M,
     }
 }

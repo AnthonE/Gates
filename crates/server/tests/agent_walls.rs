@@ -802,7 +802,7 @@ impl Harness {
                 // A door swung, or a fire, a recycler or a research table
                 // switched (`C`, on the same pick).
                 ActionMsg::Use { cx, cz, level, loc } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let switch = matches!(pick.verb, Verb::Fire | Verb::Recycler | Verb::Research);
                     assert!(
                         (pick.verb == Verb::Door || switch)
@@ -818,7 +818,7 @@ impl Harness {
                     kind: CONT_BOX,
                     cont,
                 } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     assert!(
                         matches!(
                             pick.verb,
@@ -843,7 +843,7 @@ impl Harness {
                     op,
                     ..
                 } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let at = (pick.cx, pick.cz, pick.level, pick.loc) == (cx, cz, level, loc);
                     let human = if sim_core::deploy::op_is_crew(op) {
                         pick.verb == Verb::Hearth && !pick.has_lock && at
@@ -894,7 +894,7 @@ impl Harness {
                 // The tree is bought from the panel `E` on a bench opens,
                 // at that bench's rung: the node's tier or above.
                 ActionMsg::Unlock { recipe } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     let station = self.shard.world.craft.recipes[usize::from(recipe)].station;
                     let tier = sim_core::research::node_tier(station);
                     assert!(
@@ -951,7 +951,7 @@ impl Harness {
                     self.pick_checks += 1;
                 }
                 ActionMsg::Feed { cx, cz, level } => {
-                    let pick = self.e_pick(frame.yaw);
+                    let pick = self.e_pick(&frame);
                     assert_eq!(
                         (pick.verb, pick.cx, pick.cz, pick.level),
                         (Verb::Hearth, cx, cz, level),
@@ -1061,14 +1061,44 @@ impl Harness {
 
     /// What the human client's `E` would pick from the bot's body, facing
     /// wire yaw `yaw`, over what its client holds.
-    fn e_pick(&self, yaw: u16) -> client::ui::interact::Pick {
-        use client::ui::interact::{resolve, Aim};
+    fn e_pick(&self, frame: &sim_core::input::InputFrame) -> client::ui::interact::Pick {
+        use client::ui::interact::{resolve, Aim, Sight};
         let core = self.bot.core().unwrap();
         let me = self.view.get(ID).copied().unwrap();
         let q = sim_core::movement::POS_XZ_Q;
-        let (fx, fz) = sim_core::yaw_dir(yaw);
+        let (x, z) = (me.qx as f32 * q, me.qz as f32 * q);
+        let (fx, fz) = sim_core::yaw_dir(frame.yaw);
+        // The eye the human client picks along (`render::verbs`): from the
+        // stance's eye, on this frame's yaw and pitch. Heights are lent
+        // generously (the render table is not here), so a thing is never
+        // missed for being drawn taller than this guess; a bag is judged by
+        // the ray as the client judges it.
+        let crouched = frame.buttons & sim_core::input::BTN_CROUCH != 0;
+        let eye_y =
+            me.qy as f32 * sim_core::movement::POS_Y_Q + server::agent::tracks::eye_m(crouched);
+        let (ch, sv) = sim_core::pitch_dir(frame.pitch);
+        let haven = common::haven();
+        let cols = core.pieces.cols();
+        let span = |rec: &sim_core::deploy::DeployRec, arch: u8| {
+            let base = sim_core::deploy::body_base_y(SEED, &haven, cols, rec, arch);
+            let tall = if sim_core::deploy::is_edge_loc(rec.loc) {
+                2.2
+            } else {
+                1.0
+            };
+            (base, base + tall)
+        };
+        let mut aim = Aim::new(x, z, fx, fz);
+        aim.cols = Some(cols);
+        aim.sight = Some(Sight {
+            eye: [x, eye_y, z],
+            dir: [fx * ch, sv, fz * ch],
+            span: &span,
+            reach: None,
+            lying: None,
+        });
         resolve(
-            Aim::new(me.qx as f32 * q, me.qz as f32 * q, fx, fz),
+            aim,
             core.deploys.entries(),
             &core.deploy_defs,
             core.deploy_defs_have,
@@ -2942,13 +2972,6 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool, corpse: bool) {
     let delivered = h.until(secs * TICK_HZ, |b| b.history.iter().any(|r| r.goal == run));
     assert!(delivered, "no delivery ended: {}", h.explain());
     let report = h.bot.history.iter().find(|r| r.goal == run).unwrap();
-    if corpse {
-        // `E` never took the box, so nothing went to the server: it says
-        // something is in the way, not that the server refused it.
-        let blocked = Outcome::Failed(Why::Blocked);
-        assert_eq!(report.outcome, blocked, "{report:?}: {}", h.explain());
-        return;
-    }
     assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
     let w = &h.shard.world;
     let key = sim_core::deploy::box_key(bx + 1, bz, 0, 0);
@@ -3013,11 +3036,11 @@ fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
 }
 
 /// #533: a teammate's backpack and corpse at the team's box, in front of it
-/// on the only side it can be walked up to. `E` from there takes them (the
-/// human client's pick, nearest on the aim line), so the box never opens.
-/// The trip said "the server refused it", though nothing was ever sent.
+/// on the only side it can be walked up to. `E` once took them (the pick
+/// was nearest on the flat aim line), and the box never opened; looked at
+/// along the eye's ray, over the body to the box's middle, it opens.
 #[test]
-fn a_body_in_front_of_the_team_chest_says_it_is_in_the_way() {
+fn a_body_in_front_of_the_team_chest_does_not_keep_it_shut() {
     a_teammate_fills_the_team_chest(false, false, true);
 }
 

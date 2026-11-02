@@ -22,7 +22,7 @@
 //! salvage, raw stuff); else an empty one; else whichever has room. So the
 //! boxes sort themselves the way the team started them.
 
-use crate::agent::build::{aim_point, e_picks_by, Stations};
+use crate::agent::build::{box_look, e_picks_along, Looked, Stations};
 use crate::agent::doors::{nearest_door, Doors, Through, HOP_M, MAX_DOORS, MAX_TRIES};
 use crate::agent::hands::Hands;
 use crate::agent::home::HOLD_TICKS;
@@ -70,6 +70,7 @@ pub const BOX_FULL_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// this near what it walked to.
 pub const STAY_NEAR_M: f32 = 2.0;
 /// An answer to a press comes within this long.
+
 const VERDICT_TICKS: u32 = 3 * TICK_HZ;
 
 /// The deployable's archetype standing at this address, per the mirror.
@@ -1088,8 +1089,9 @@ impl HomeJob {
             return Deliver::IDLE;
         }
         let key = box_key(chest.cx, chest.cz, chest.level, chest.loc);
+        let (eye, look) = box_look(core, seed, haven, chest, body);
         let intent = Intent {
-            look: Look::Point(aim_point(core, seed, haven, chest, x, z)),
+            look: Look::Point(look),
             ..Intent::IDLE
         };
         let go = Deliver::Door(Through::Go(intent));
@@ -1103,7 +1105,19 @@ impl HomeJob {
                 }
                 if tick.wrapping_sub(since) >= HOLD_TICKS
                     && hands.settled()
-                    && e_picks_by(core, x, z, hands.view().0, chest, 0.0)
+                    && e_picks_along(
+                        core,
+                        x,
+                        z,
+                        hands.view().0,
+                        chest,
+                        0.0,
+                        Some(Looked {
+                            eye,
+                            pitch: hands.view().1,
+                            at: look,
+                        }),
+                    )
                 {
                     return Deliver::Open { key, intent };
                 }
