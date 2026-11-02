@@ -2783,7 +2783,7 @@ impl server::mind::DecisionSource for ChestWhenOffered {
 /// `supply`, it is left inside with a hatchet instead of the wood, and is
 /// sent on a wood run: walled in, it goes out by the door first, chops what
 /// it finds for the run's minutes, then fills the chest the same way.
-fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
+fn a_teammate_fills_the_team_chest(locked: bool, supply: bool, corpse: bool) {
     use server::agent::lock::LockCode;
     use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
     use sim_core::deploy::ACCESS_OP_SET_CODE;
@@ -2905,6 +2905,33 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
             .find(bx, bz, 0, LOC_EDGE_ZLO)
             .is_some_and(|d| !d.open)
     };
+    if corpse {
+        // #533: a teammate starved to death by the box, on the one side it
+        // can be walked up to: its backpack and corpse lie between where
+        // the agent stops and the box, and `E` from there takes them.
+        let spot = place(bxf + 3.8, bzf + 1.5);
+        h.stage_puppet(move |p| {
+            p.body = spot;
+            p.hp = 1;
+            p.food = 0;
+            p.water = 0;
+        });
+        let dead = |h: &Harness| {
+            h.shard
+                .world
+                .players
+                .iter()
+                .any(|p| p.id == PUPPET && p.dead)
+        };
+        for _ in 0..120 * TICK_HZ {
+            if dead(&h) {
+                break;
+            }
+            h.step();
+        }
+        assert!(dead(&h), "the teammate never died");
+        assert_eq!(h.shard.world.backpacks.len(), 2, "a backpack and a corpse");
+    }
     assert!(shut(&h), "the door stands shut");
 
     let secs = if supply {
@@ -2915,6 +2942,13 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
     let delivered = h.until(secs * TICK_HZ, |b| b.history.iter().any(|r| r.goal == run));
     assert!(delivered, "no delivery ended: {}", h.explain());
     let report = h.bot.history.iter().find(|r| r.goal == run).unwrap();
+    if corpse {
+        // `E` never took the box, so nothing went to the server: it says
+        // something is in the way, not that the server refused it.
+        let blocked = Outcome::Failed(Why::Blocked);
+        assert_eq!(report.outcome, blocked, "{report:?}: {}", h.explain());
+        return;
+    }
     assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
     let w = &h.shard.world;
     let key = sim_core::deploy::box_key(bx + 1, bz, 0, 0);
@@ -2965,17 +2999,26 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
 
 #[test]
 fn a_teammate_fills_the_team_chest_through_its_door() {
-    a_teammate_fills_the_team_chest(false, false);
+    a_teammate_fills_the_team_chest(false, false, false);
 }
 
 #[test]
 fn a_teammate_given_the_code_fills_the_chest_behind_a_lock() {
-    a_teammate_fills_the_team_chest(true, false);
+    a_teammate_fills_the_team_chest(true, false, false);
 }
 
 #[test]
 fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
-    a_teammate_fills_the_team_chest(false, true);
+    a_teammate_fills_the_team_chest(false, true, false);
+}
+
+/// #533: a teammate's backpack and corpse at the team's box, in front of it
+/// on the only side it can be walked up to. `E` from there takes them (the
+/// human client's pick, nearest on the aim line), so the box never opens.
+/// The trip said "the server refused it", though nothing was ever sent.
+#[test]
+fn a_body_in_front_of_the_team_chest_says_it_is_in_the_way() {
+    a_teammate_fills_the_team_chest(false, false, true);
 }
 
 /// The starter's ground floor as a founder leaves it (`sim_core::bots::
