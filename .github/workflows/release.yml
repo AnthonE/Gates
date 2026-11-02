@@ -229,6 +229,7 @@ jobs:
           # `content/` beside it.
           cp "target/release/${{ matrix.jevbot }}" "$dir/"
           cp crates/server/examples/claude_agent.py "$dir/"
+          cp -r crates/server/brief "$dir/brief"
           cp crates/server/JEV.md "$dir/"
 
           test -d assets || { echo "::error::assets/ is missing — the client would ship untextured"; exit 1; }
