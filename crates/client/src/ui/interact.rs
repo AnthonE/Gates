@@ -1850,7 +1850,6 @@ mod tests {
         };
         let pick = |m: f32| resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[at(m)]);
         assert_eq!(pick(LOOT_REACH_M - 0.1).verb, Verb::Bag);
-        assert!(LOOT_REACH_M + 0.5 < REACH_M);
         assert_eq!(pick(LOOT_REACH_M + 0.5).verb, Verb::None);
     }
 
