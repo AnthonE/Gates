@@ -693,9 +693,12 @@ impl DecisionSource for Student {
 
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
         let scores = self.scores(&summary.to_json());
+        // Held goals are left alone as the playbook it learnt from leaves
+        // them (`Summary::offers`).
         let mut known: Vec<(Goal, f32)> = summary
             .options()
             .iter()
+            .filter(|&&g| summary.offers(g))
             .filter_map(|&g| Some((g, scores[self.unit(g)?])))
             .collect();
         if known.is_empty() {

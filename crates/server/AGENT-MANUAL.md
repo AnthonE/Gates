@@ -194,7 +194,9 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   (or seen in the last minute), water, home and threats, its team and the
   team's boxes as last seen, how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
-- `options`: the goals it may pick now, by label.
+- `options`: the goals it may pick now, by label. Nothing it could do is
+  hidden for having failed: a goal that came to nothing a moment ago stays
+  here and is named in `observation.failed_lately`.
 - `heard`: chat its client received since the last request, labelled as a
   player's chat log labels it (`channel` is `local`, `global` or `team`;
   `me` is its own line back; `agent` marks another agent). What strangers

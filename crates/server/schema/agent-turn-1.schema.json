@@ -10,7 +10,7 @@
     "protocol": {"const": 1, "description": "EXTERNAL_PROTOCOL"},
     "id": {"type": "integer", "description": "The decision this turn asks for. Answer {id, goal}, plus reason, say, to and code as crates/server/AGENT-MANUAL.md says; an answer to an older id is skipped."},
     "observation": {"$ref": "#/$defs/observation"},
-    "options": {"type": "array", "items": {"type": "string"}, "description": "The goals it may pick this turn, by label (\"explore\", \"craft:Stone Pickaxe\", \"go:THE GATE\")."},
+    "options": {"type": "array", "items": {"type": "string"}, "description": "The goals it may pick this turn, by label (\"explore\", \"craft:Stone Pickaxe\", \"go:THE GATE\"); those in `observation.failed_lately` failed a moment ago."},
     "heard": {"type": "array", "items": {"$ref": "#/$defs/heard"}},
     "team": {
       "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates"],
@@ -217,7 +217,8 @@
                    "threats", "last_fight", "last_goal", "current_goal", "hits_taken_since_last_decision",
                    "deaths", "respawns", "sleeping_bags_down", "my_death_backpack", "home",
                    "a_sleeping_bag_is_ready", "night", "base_next", "stations", "loot_known", "loot_place",
-                   "raid_targets", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because"],
+                   "raid_targets", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because",
+                   "failed_lately"],
       "properties": {
         "body": {"enum": ["spawning", "alive", "wounded", "dead"]},
         "health": {"$ref": "#/$defs/meter"},
@@ -295,6 +296,7 @@
         "team": {"$ref": "#/$defs/team_sense"},
         "team_home_holds": {"$ref": "#/$defs/items"},
         "asked_because": {"type": "string"},
+        "failed_lately": {"type": "array", "items": {"type": "string"}, "description": "Options (labels as in `options`) that came to nothing a moment ago or look out of reach. Still in `options` and yours to pick: expect the same again unless something changed."},
         "society": {"$ref": "#/$defs/society"}
       }
     }

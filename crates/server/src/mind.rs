@@ -1765,6 +1765,11 @@ pub struct Summary {
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
+    /// Beside each option: it came to nothing a moment ago (or looks out
+    /// of reach). Still offered, and said so (`failed_lately`): the mind
+    /// decides whether to try again. [`Scripted`] reads it as a pause and
+    /// leaves the goal alone until it clears ([`Summary::offers`]).
+    pub held: [bool; MAX_OPTIONS],
     /// What the body perceived since it last asked, and its pose, for its
     /// memory (`memory.rs`): world positions and wire ids, so never in
     /// [`Self::to_json`] or any other request a mind reads.
@@ -1946,6 +1951,7 @@ impl Summary {
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
+        held: [false; MAX_OPTIONS],
         seen: crate::memory::Perceived::EMPTY,
     };
 
@@ -1981,19 +1987,64 @@ impl Summary {
         &self.threats[..self.threats_len as usize]
     }
 
-    /// A walk is offered when any walk is ([`Walk::ANY`]).
+    /// Where `goal` is on the list, a walk leg standing for the any-walk
+    /// ([`Walk::ANY`]) that offers every leg.
+    fn index_of(&self, goal: Goal) -> Option<usize> {
+        let at = |g: Goal| self.options().iter().position(|&o| o == g);
+        at(goal).or_else(|| match goal {
+            Goal::Walk(w) if w != Walk::ANY => at(Goal::Walk(Walk::ANY)),
+            _ => None,
+        })
+    }
+
+    /// On the list and not held: what a scripted picker may choose. A walk
+    /// is offered when any walk is ([`Walk::ANY`]).
     pub fn offers(&self, goal: Goal) -> bool {
-        self.options().contains(&goal)
-            || matches!(goal, Goal::Walk(w) if w != Walk::ANY)
-                && self.options().contains(&Goal::Walk(Walk::ANY))
+        self.index_of(goal).is_some_and(|i| !self.held[i])
+    }
+
+    /// On the list at all, held or not: what any mind may choose.
+    pub fn allows(&self, goal: Goal) -> bool {
+        self.index_of(goal).is_some()
+    }
+
+    /// On the list, but it came to nothing a moment ago.
+    pub fn is_held(&self, goal: Goal) -> bool {
+        self.index_of(goal).is_some_and(|i| self.held[i])
+    }
+
+    /// The held options, in list order.
+    pub fn held_goals(&self) -> impl Iterator<Item = Goal> + '_ {
+        self.options()
+            .iter()
+            .zip(&self.held)
+            .filter(|(_, &h)| h)
+            .map(|(&g, _)| g)
     }
 
     /// Offer a goal once. Silently full past `MAX_OPTIONS`, which the
     /// constant's arithmetic makes unreachable.
     pub fn offer(&mut self, goal: Goal) {
-        if !self.offers(goal) && (self.options_len as usize) < MAX_OPTIONS {
+        if !self.options().contains(&goal) && (self.options_len as usize) < MAX_OPTIONS {
             self.options[self.options_len as usize] = goal;
+            self.held[self.options_len as usize] = false;
             self.options_len += 1;
+        }
+    }
+
+    /// Offer a goal, held when `held`: a goal that came to nothing a moment
+    /// ago is still the mind's to choose, told so.
+    pub fn offer_held(&mut self, goal: Goal, held: bool) {
+        self.offer(goal);
+        if held {
+            self.hold(goal);
+        }
+    }
+
+    /// Mark an offered goal held.
+    pub fn hold(&mut self, goal: Goal) {
+        if let Some(i) = self.options().iter().position(|&g| g == goal) {
+            self.held[i] = true;
         }
     }
 
@@ -2002,6 +2053,7 @@ impl Summary {
         let n = self.options_len as usize;
         if let Some(i) = self.options[..n].iter().position(|&g| g == goal) {
             self.options.copy_within(i + 1..n, i);
+            self.held.copy_within(i + 1..n, i);
             self.options_len -= 1;
         }
     }
@@ -2227,6 +2279,7 @@ impl Summary {
             "team": self.team.json(),
             "team_home_holds": self.home_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "asked_because": self.trigger.word(),
+            "failed_lately": self.held_goals().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
         });
         // A society's body is told its place in it; a lone one is sent
         // nothing for it.
