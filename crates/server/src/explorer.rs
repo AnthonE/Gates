@@ -711,6 +711,8 @@ pub struct Memory {
     /// A supply run found the team's boxes full a while ago: what another
     /// would gather has nowhere to go.
     pub box_full_held: bool,
+    /// Every one of the team's boxes was full when last opened.
+    pub home_full: bool,
     pub home_holds: [(u16, u32); crate::mind::SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
     pub home_boxes: u8,
@@ -7311,6 +7313,7 @@ impl Survivor {
             self.memory.home_holds_len = self.shared.totals(&mut rows) as u8;
             self.memory.home_holds = rows;
             self.memory.home_boxes = self.shared.box_count() as u8;
+            self.memory.home_full = self.shared.full();
             self.memory.shared = self.shared_home();
             let mut wants = [(0u16, 0u32); WANT_ROWS];
             self.wants_len = if self.book.ready() {
@@ -8836,6 +8839,7 @@ pub fn observe(
     s.team.mate_attacked = senses.mate_attacked;
     s.team.home = senses.team_home;
     s.team.home_boxes = memory.home_boxes;
+    s.team.home_full = memory.home_full;
     s.team.home_attacked = memory.home_alarm;
     s.team.lives_there = memory.shared;
     s.team.home_has_needs = memory.home_needs;
@@ -9145,7 +9149,7 @@ pub fn observe(
             (Goal::GatherOre, Goal::SupplyOre),
             (Goal::GatherHemp, Goal::SupplyHemp),
         ] {
-            if s.offers(gather) && !memory.box_full_held {
+            if s.offers(gather) && !memory.box_full_held && !memory.home_full {
                 s.offer(run);
             }
         }

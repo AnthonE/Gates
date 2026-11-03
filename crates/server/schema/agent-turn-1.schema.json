@@ -144,7 +144,7 @@
     "team_sense": {
       "type": "object", "additionalProperties": false,
       "required": ["mates", "nearest", "down", "lead", "invited", "mate_attacked", "home", "home_boxes",
-                   "home_attacked", "i_live_there", "home_has_what_i_need", "code_known", "on_cupboard", "my_bag_there"],
+                   "home_boxes_full", "home_attacked", "i_live_there", "home_has_what_i_need", "code_known", "on_cupboard", "my_bag_there"],
       "properties": {
         "mates": {"type": "integer"},
         "nearest": {"$ref": "#/$defs/sighting"},
@@ -154,6 +154,7 @@
         "mate_attacked": {"type": "boolean"},
         "home": {"$ref": "#/$defs/sighting", "description": "The team's home base, as a sighting."},
         "home_boxes": {"type": "integer"},
+        "home_boxes_full": {"type": "boolean", "description": "Every one of the team's boxes had no empty slot when last opened."},
         "home_attacked": {"type": "boolean"},
         "i_live_there": {"type": "boolean"},
         "home_has_what_i_need": {"type": "boolean"},

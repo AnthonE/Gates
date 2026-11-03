@@ -732,6 +732,52 @@ pub fn diag_borne(taken: &[PieceRec], t: Target) -> bool {
     })
 }
 
+/// How far the aim point has to go past the line between two addresses
+/// before the ghost lets go of the one it holds (`NOW.md` §0fb item 8).
+/// Without it a crosshair resting on a cell boundary flickers the ghost a
+/// whole 3 m cell back and forth with every pixel of mouse noise. A tenth
+/// of a cell: far enough to swallow the noise, near enough that a sweep
+/// across the grid still reads as following the crosshair.
+pub const HOLD_M: f32 = 0.3;
+
+/// `fresh`, unless `held` (the address drawn last frame) still resolves
+/// within [`HOLD_M`] of the aim point `at` through `resolve`: then `held`.
+///
+/// Shape-blind on purpose: `resolve` is whatever chain picked `fresh`
+/// (`target_at`, the straight-edge fallback), so a plane, an edge, a
+/// diagonal and a triangle half all get the same band without a rule each.
+/// A change of storey is never held back: the storey is what the ray met,
+/// and holding it would draw a piece at a level the crosshair has left.
+pub fn hold_target(
+    at: (f32, f32),
+    fresh: Target,
+    held: Option<Target>,
+    resolve: impl Fn((f32, f32)) -> Target,
+) -> Target {
+    let Some(held) = held.filter(|h| *h != fresh && h.level == fresh.level) else {
+        return fresh;
+    };
+    const D: f32 = HOLD_M * std::f32::consts::FRAC_1_SQRT_2;
+    const PROBES: [(f32, f32); 8] = [
+        (HOLD_M, 0.0),
+        (-HOLD_M, 0.0),
+        (0.0, HOLD_M),
+        (0.0, -HOLD_M),
+        (D, D),
+        (D, -D),
+        (-D, D),
+        (-D, -D),
+    ];
+    if PROBES
+        .iter()
+        .any(|&(dx, dz)| resolve((at.0 + dx, at.1 + dz)) == held)
+    {
+        held
+    } else {
+        fresh
+    }
+}
+
 fn target_at_with(ax: f32, az: f32, shape: u8, level: u8, diag: bool) -> Target {
     let max = (MAX_BUILD_COORD - 1) as i32;
     let mut cx = build_cell_of(ax).clamp(0, max);
@@ -1810,6 +1856,35 @@ mod tests {
             assert!(store.mirror_put(rec, frame, |_| Some(shape)));
         }
         store
+    }
+
+    /// §0fb item 8: a crosshair resting on a boundary does not flicker the
+    /// ghost a cell back and forth, a real move across lets go, and a
+    /// change of storey is never held back.
+    #[test]
+    fn the_ghost_holds_its_cell_until_the_aim_is_clearly_past_the_boundary() {
+        let resolve = |p: (f32, f32)| target_at(p.0, p.1, SHAPE_FOUNDATION, 0);
+        let edge = BUILD_CELL_M * 2.0; // cell 1 | cell 2 in x
+        let z = BUILD_CELL_M * 1.5;
+        let left = resolve((edge - 0.05, z));
+        // Just over the line: still the cell it was drawn in.
+        let at = (edge + HOLD_M * 0.5, z);
+        assert_ne!(resolve(at), left);
+        assert_eq!(hold_target(at, resolve(at), Some(left), resolve), left);
+        // Well past it: the new cell.
+        let at = (edge + HOLD_M * 1.5, z);
+        assert_eq!(
+            hold_target(at, resolve(at), Some(left), resolve),
+            resolve(at)
+        );
+        // Nothing held (a ghost just shown): the aim's own cell.
+        let at = (edge + 0.01, z);
+        assert_eq!(hold_target(at, resolve(at), None, resolve), resolve(at));
+        // Another storey is never held, however near.
+        let up = |p: (f32, f32)| target_at(p.0, p.1, SHAPE_WALL, 1);
+        let fresh = up(at);
+        let below = Target { level: 0, ..fresh };
+        assert_eq!(hold_target(at, fresh, Some(below), up), fresh);
     }
 
     #[test]

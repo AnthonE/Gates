@@ -154,6 +154,16 @@ impl TeamHome {
         self.boxes().count()
     }
 
+    /// Every box has been opened and the last look found no empty slot in
+    /// any: a pack stack that is not already there has nowhere to go
+    /// (#551, #552: a crew of seven, one box, eleven stacks of 1000 Wood).
+    pub fn full(&self) -> bool {
+        self.box_count() > 0
+            && self
+                .boxes()
+                .all(|k| k.ledger.known() && k.ledger.slots().iter().all(|s| s.count > 0))
+    }
+
     /// The first box: where a trip that stays goes.
     pub fn first(&self) -> Option<OpAddr> {
         self.boxes().next().map(|k| k.at)

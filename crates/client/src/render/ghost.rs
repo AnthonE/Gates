@@ -184,6 +184,10 @@ pub struct Ghost {
     /// on top of the facing that turns its front toward you. Latched across
     /// placements, like the stair turn.
     pub deploy_turn: u8,
+    /// The shape and address drawn last frame off a plain aim point (no
+    /// socket snap, no lattice), for [`place::hold_target`]'s hysteresis:
+    /// `None` while hidden, so a ghost coming back up starts fresh.
+    held: Option<(u8, Target)>,
 }
 
 /// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
@@ -349,15 +353,34 @@ pub fn track(
     // The storey is what the ray met (aimed level v0): the wall's face means
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
-    let mut target = aim.target_for(shape);
-    // A wall only reaches for a diagonal a triangle stands under: across a
-    // square it takes the nearest straight edge instead.
-    if !place::diag_borne(core.pieces.entries(), target) {
-        target = place::target_at_straight(aim.at.0, aim.at.1, shape, level);
-    }
-    if sim_core::circulation::is_riser(shape) {
-        target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
-    }
+    let stair_loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
+    // The address a plain aim point resolves to. A wall only reaches for a
+    // diagonal a triangle stands under: across a square it takes the
+    // nearest straight edge instead.
+    let resolve = |p: (f32, f32)| {
+        let mut t = place::target_at(p.0, p.1, shape, level);
+        if !place::diag_borne(core.pieces.entries(), t) {
+            t = place::target_at_straight(p.0, p.1, shape, level);
+        }
+        if sim_core::circulation::is_riser(shape) {
+            t.loc = stair_loc;
+        }
+        t
+    };
+    // A wall continuing a run beside the one aimed at (`Aim::beside`) is a
+    // socket snap, not an aim point, and takes no hysteresis.
+    let snapped = structures::is_edge_shape(shape) && aim.beside.is_some();
+    let target = if snapped {
+        let mut t = aim.target_for(shape);
+        if !place::diag_borne(core.pieces.entries(), t) {
+            t = place::target_at_straight(aim.at.0, aim.at.1, shape, level);
+        }
+        t
+    } else {
+        let held = ghost.held.filter(|h| h.0 == shape).map(|h| h.1);
+        place::hold_target(aim.at, resolve(aim.at), held, resolve)
+    };
+    ghost.held = (!snapped).then_some((shape, target));
     let site = Site {
         seed: world.seed,
         haven: &world.haven,
@@ -1205,6 +1228,7 @@ fn hide(commands: &mut Commands, ghost: &mut Ghost) {
     if let Some(e) = ghost.entity {
         commands.entity(e).insert(Visibility::Hidden);
     }
+    ghost.held = None;
 }
 
 fn translucent(base_color: Color) -> StandardMaterial {

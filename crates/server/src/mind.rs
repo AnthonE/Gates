@@ -793,6 +793,8 @@ pub struct TeamSense {
     /// and whether it is under attack (`agent::supply`).
     pub home: Sighting,
     pub home_boxes: u8,
+    /// Every one of those boxes was full when last opened.
+    pub home_full: bool,
     pub home_attacked: bool,
     /// It lives there (no base of its own), and its boxes hold something
     /// the pack lacks (food, meds, a better tool).
@@ -850,6 +852,7 @@ impl TeamSense {
             "mate_attacked": self.mate_attacked,
             "home": self.home.json(),
             "home_boxes": self.home_boxes,
+            "home_boxes_full": self.home_full,
             "home_attacked": self.home_attacked,
             "i_live_there": self.lives_there,
             "home_has_what_i_need": self.home_has_needs,
@@ -1899,6 +1902,7 @@ impl Summary {
                 bearing: 0,
             },
             home_boxes: 0,
+            home_full: false,
             home_attacked: false,
             lives_there: false,
             home_has_needs: false,
