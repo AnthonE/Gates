@@ -10,7 +10,8 @@
 //   node board.mjs [board.json] status
 //
 // The board file (default board/board.json) names the views. A view is a
-// fixed picture of the game (a seed, a camera, an hour), the command that
+// fixed picture of the game (a seed, a camera, an hour), with an id and
+// optionally a name a person reads, the command that
 // shoots it with no GPU (the game's own: a headless page on SwiftShader, a
 // native client on lavapipe), the PNG that command writes, and its
 // references, each with what to take from it and what to ignore. A view may
@@ -233,7 +234,7 @@ export function sheetHTML(board, rows, verdicts, title) {
     const refs = r.refs.length
       ? r.refs.map((f, i) => cell(f.src, `ref ${i + 1}${f.private ? ' (private)' : ''}: take ${f.take}${f.ignore ? ' · ignore ' + f.ignore : ''}`, `${r.view.id}:ref:${i}`)).join('')
       : cell(null, 'no reference yet', `${r.view.id}:ref:none`);
-    return `<section><header><h2>${esc(r.view.id)}</h2><p>${esc(r.view.what || '')}</p>`
+    return `<section><header><h2>${esc(r.view.name || r.view.id)}${r.view.name ? ` <span class="id">${esc(r.view.id)}</span>` : ''}</h2><p>${esc(r.view.what || '')}</p>`
       + (r.view.take ? `<p class="take">aim: ${esc(r.view.take)}</p>` : '')
       + `<p class="mark">${verdict}</p>${notes}</header>`
       + `<div class="row"><div class="refs">${refs}</div>`
@@ -242,7 +243,7 @@ export function sheetHTML(board, rows, verdicts, title) {
   }).join('');
   return `<!doctype html><meta charset="utf-8"><title>${esc(title)}</title><style>
 body{margin:0;padding:16px;background:#111;color:#ddd;font:13px/1.4 system-ui,sans-serif}
-h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:0}section{border-top:1px solid #333;padding:10px 0}
+h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:0}h2 .id{font:12px ui-monospace,monospace;color:#888;margin-left:6px}section{border-top:1px solid #333;padding:10px 0}
 header p{margin:2px 0;color:#aaa}.take{color:#cfc}.mark b.right{color:#6f6}.mark b.wrong{color:#f66}.note{color:#ccf}
 .row{display:flex;gap:10px;align-items:flex-start}.refs{display:flex;gap:10px}
 .c{margin:0;width:${SHEET_COL}px}.c img{width:${SHEET_COL}px;display:block;border:1px solid #333}
