@@ -2310,7 +2310,10 @@ mod tests {
 
     #[test]
     fn an_unlisted_official_address_also_tries_443() {
-        assert_eq!(official_alts("game.elopros.com:61234"), ["game.elopros.com:443"]);
+        assert_eq!(
+            official_alts("game.elopros.com:61234"),
+            ["game.elopros.com:443"]
+        );
         assert!(official_alts("game.elopros.com:443").is_empty());
         assert!(official_alts("shard.example:61234").is_empty());
         assert!(official_alts("127.0.0.1:4433").is_empty());
