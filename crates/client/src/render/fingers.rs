@@ -7,9 +7,9 @@
 //! they saw before the bones existed.
 //!
 //! **Holding a row that closes the fist** (`HeldModelDef::grip_roll`), the
-//! hand turns each bone by [`closed`] on top of its rest: the fingers in to a
-//! 3.4 cm handle on `viewmodel::VIEWMODEL_SEAT`'s grip line, and the thumb
-//! round over the front of it. Before the bones the thumb stood out from the
+//! hand turns each bone by [`closed`] on top of its rest: the fingers round a
+//! 3.4 cm handle on `viewmodel::VIEWMODEL_SEAT`'s grip line to the palm, and
+//! the thumb over the front of it. Before the bones the thumb stood out from the
 //! fist and the fingers rested a centimetre off the handle, which is the
 //! hand that read as "kinda odd" (operator, 2026-10-06).
 //!
@@ -41,24 +41,28 @@ pub const DIGITS: [&str; 5] = ["Thumb", "Index", "Middle", "Ring", "Pinky"];
 /// The bone the finger bones hang under.
 const HAND: &str = super::anim::HAND_BONE;
 
-/// How far each finger closes past its rest curl, degrees over its three
-/// bones, Index to Pinky. Measured off the rigged file against the grip line:
-/// the index already touches a 3.4 cm handle at rest, the middle and ring
-/// need 12° and 24° to reach it, and the pinky sits past the end of the
-/// handle's diagonal, so it closes into the palm as a fist does.
-const FINGER_DEG: [f32; 4] = [0.0, 12.0, 24.0, 45.0];
-/// How a finger's closing splits over its knuckle, middle and last joints.
-const FINGER_SPLIT: [f32; 3] = [0.35, 0.40, 0.25];
-/// The thumb's base turn, about this axis in its own bone frame: mostly the
-/// curl run backwards and a little across, which swings it off the side of
-/// the fist and round over the front of the handle. A pure curl cannot get
-/// there — the rest thumb curls into the palm, away from the handle — and
-/// this was the closest of 2,000 sampled turns to touching it (2.5 cm off
-/// the handle's axis, never inside it).
-const THUMB_AXIS: Vec3 = Vec3::new(-0.986, -0.031, -0.162);
-const THUMB_TURN_DEG: f32 = 110.0;
+/// How far each finger's knuckle, middle and last joints close past the rest
+/// curl, degrees, Index to Pinky. Solved off the rigged file against a
+/// 3.4 cm rod on `viewmodel::VIEWMODEL_SEAT`'s grip line: each finger closes
+/// as far round the rod toward the palm as it goes without sinking more than
+/// 3 mm into it. The rest curl is a loose C, so the middle joints do most of
+/// the closing; the pinky's knuckle bends first to reach a handle that sits
+/// lower in its palm.
+const FINGER_DEG: [[f32; 3]; 4] = [
+    [0.0, 110.0, 20.0],
+    [10.0, 90.0, 10.0],
+    [10.0, 70.0, 0.0],
+    [40.0, 50.0, 0.0],
+];
+/// The thumb's base turn, about this axis in its own bone frame: it swings
+/// the thumb off the side of the fist and over the front of the handle,
+/// the side the eye sees, where the rest thumb stands clear of it. Picked as
+/// the turn among 6,000 sampled that lays the most thumb on that side of the
+/// rod without entering it or the closed index.
+const THUMB_AXIS: Vec3 = Vec3::new(-0.008, -0.999, -0.045);
+const THUMB_TURN_DEG: f32 = 121.0;
 /// Then the thumb's two outer joints close down onto the handle.
-const THUMB_CURL_DEG: [f32; 2] = [40.0, 32.0];
+const THUMB_CURL_DEG: [f32; 2] = [-2.0, 39.0];
 
 /// The closed grip's turn for one bone, on top of its rest rotation. A
 /// positive turn about a finger bone's local +X closes it — the axis
@@ -70,7 +74,7 @@ pub fn closed(digit: usize, joint: usize) -> Quat {
             j => Quat::from_rotation_x(THUMB_CURL_DEG[j - 1].to_radians()),
         };
     }
-    Quat::from_rotation_x((FINGER_DEG[digit - 1] * FINGER_SPLIT[joint]).to_radians())
+    Quat::from_rotation_x(FINGER_DEG[digit - 1][joint].to_radians())
 }
 
 /// The bone a scene node's name is, if it is one of the right hand's.
@@ -160,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_turns_every_finger_inward_and_the_index_not_at_all() {
+    fn closing_never_opens_a_finger() {
         for d in 1..5 {
             for j in 0..3 {
                 let (axis, ang) = closed(d, j).to_axis_angle();
@@ -170,6 +174,5 @@ mod tests {
                 );
             }
         }
-        assert_eq!(closed(1, 0), Quat::IDENTITY);
     }
 }

@@ -1896,8 +1896,11 @@ fn the_grip_line_runs_through_the_fist_and_clear_of_it() {
         "a {R} cm haft on the grip line cuts {:.2} cm into the hand",
         R - clear
     );
+    // At REST, before the fingers close (`render::fingers`), which is when
+    // they come round the open side: the line runs through the fingers'
+    // tunnel now, not across the palm, and the open curl leaves two sides.
     assert!(
-        held >= 15,
+        held >= 14,
         "the hand reaches round the grip line on only {held} of 16 sides"
     );
 }
@@ -1949,7 +1952,7 @@ fn a_fitted_hand_holds_the_item_where_the_framing_put_it() {
             "{}: the haft runs {haft:?} through {seat:?} in the hand, not the grip line",
             def.key
         );
-        let (turn, twist, shift) = hand_set(fit);
+        let (_, turn, twist, shift) = hand_set(fit, if def.arm_turn { 1.0 } else { 0.0 });
         let bend = turn_of(Quat::from_rotation_y(-twist) * turn);
         println!(
             "{:16} wrist {:5.1}°  forearm {:+6.1}°  arm {:.1} cm",

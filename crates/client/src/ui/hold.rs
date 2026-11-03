@@ -408,13 +408,14 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         key: "bat",
         src: HeldSrc::Glb("models/held/bat.glb"),
         height_m: 0.840,
-        grip_frac: 0.12,
+        grip_frac: 0.135,
         scale: 1.0,
         lay: -1.047,
         pose_yaw: 2.793,
         stroke: Stroke::Chop,
         light: None,
         grip_roll: Some(0.0),
+        arm_turn: false,
     },
     // A hafted tool is held near the butt, far from the head. 0.25 of the
     // model is **36% up the haft**, which is where the number finally means
@@ -580,6 +581,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         stroke: Stroke::Swipe,
         light: Some(TORCH_LIGHT),
         grip_roll: Some(GRIP_ROLL_CARRIED),
+        arm_turn: false,
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
     // forward, and gripped low, at the handle.
@@ -773,7 +775,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         "metal_blade",
         "models/held/metal_blade.glb",
         0.420,
-        0.08,
+        0.17,
         0.90,
     ),
     HeldModelDef::upright(
@@ -1042,8 +1044,8 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     ),
     HeldModelDef::arrow("fire_arrow", "models/held/fire_arrow.glb", 0.790),
     // Rust's tree items (2026-10-17; Meshy, 2026-10-18). The head-heavy
-    // ones take the hafted tools' carry; the swords take the bat's, a long
-    // straight thing held near upright. Each `reach_cm` in `weapons.toml` is
+    // ones take the hafted tools' carry; the swords take `blade`'s, leaned
+    // near upright with the arm turned to show the thumb. Each `reach_cm` in `weapons.toml` is
     // its row's length past the grip (`tests/melee_reach.rs`).
     HeldModelDef::hafted(
         "salvaged_hammer",
@@ -1067,7 +1069,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.14,
         1.00,
     ),
-    HeldModelDef::blade("longsword", "models/held/longsword.glb", 1.100, 0.10, 0.90),
+    HeldModelDef::blade("longsword", "models/held/longsword.glb", 1.100, 0.13, 0.90),
     HeldModelDef::hafted(
         "salvaged_axe",
         "models/held/salvaged_axe.glb",
@@ -1302,6 +1304,22 @@ pub fn skin_model(row: usize, skin: u16) -> Option<usize> {
         .position(|s| s.catalog == skin && s.key == key)
 }
 
+/// A blade's carry: the hold-frame lay and yaw that stand it near upright,
+/// a few degrees left of it (operator, 2026-11-03: the fist read as an open
+/// palm with the sword lying on it, then *"more vertical"*). The bat's
+/// carry, which the swords had, can only be closed on by a hand that shows
+/// the eye its palm — the hold clip's arm comes in from the lower right, and
+/// a fist turned to show its back on that carry puts the elbow in the middle
+/// of the frame. Stood this way, a straight wrist on an arm from below shows
+/// the thumb wrapped over the fist. Picked off a sweep of lay, yaw and hand
+/// roll in 5° steps for the elbow below the frame, the thumb toward the eye,
+/// the point on screen and the blade within 20° of upright.
+pub const BLADE_LAY: f32 = 0.436;
+/// See [`BLADE_LAY`].
+pub const BLADE_YAW: f32 = 0.262;
+/// The hand's roll on a blade's haft. See [`BLADE_LAY`].
+pub const BLADE_ROLL: f32 = -0.960;
+
 /// The pose a head-heavy hafted tool is carried in — the axe's, shared by the
 /// pickaxe and the hammer.
 ///
@@ -1448,6 +1466,12 @@ pub struct HeldModelDef {
     /// which side of the fist faces the eye. The item itself does not move:
     /// the hand and arm do (`render::viewmodel::hand_fit`).
     pub grip_roll: Option<f32>,
+    /// The first-person arm turns WITH the hand to close on this row
+    /// (`render::viewmodel::hand_set`), instead of the wrist and forearm
+    /// taking the whole turn. A row whose carry shows the back or thumb side
+    /// of the fist needs it: the hold clip's arm presents the palm, and
+    /// turning the hand off it at the wrist alone is a broken wrist.
+    pub arm_turn: bool,
 }
 
 /// How far a garment carried on the palm is turned about the fist, radians:
@@ -1543,6 +1567,7 @@ impl HeldModelDef {
             stroke: Stroke::Chop,
             light: None,
             grip_roll: Some(GRIP_ROLL_LAID),
+            arm_turn: false,
         }
     }
 
@@ -1562,6 +1587,7 @@ impl HeldModelDef {
             stroke: Stroke::Thrust,
             light: None,
             grip_roll: Some(GRIP_ROLL_LAID),
+            arm_turn: false,
         }
     }
 
@@ -1594,6 +1620,7 @@ impl HeldModelDef {
             stroke: Stroke::Chop,
             light: None,
             grip_roll: Some(GRIP_ROLL_HAFTED),
+            arm_turn: false,
         }
     }
 
@@ -1616,6 +1643,7 @@ impl HeldModelDef {
             stroke: Stroke::Bash,
             light: None,
             grip_roll: Some(GRIP_ROLL_CARRIED),
+            arm_turn: false,
         }
     }
 
@@ -1642,6 +1670,7 @@ impl HeldModelDef {
             stroke: Stroke::Shot,
             light: None,
             grip_roll: None,
+            arm_turn: false,
         }
     }
 
@@ -1720,8 +1749,9 @@ impl HeldModelDef {
         Self::kit_borne(key, height_m, grip_frac, scale)
     }
 
-    /// A blade, carried as the bat is: near upright, the weight dropping it a
-    /// little off the vertical, chopped down through the crosshair.
+    /// A blade: stood near upright, the thumb side of the
+    /// fist toward the eye and the forearm coming up from below
+    /// ([`BLADE_LAY`]), chopped down through the crosshair.
     const fn blade(
         key: &'static str,
         path: &'static str,
@@ -1735,11 +1765,12 @@ impl HeldModelDef {
             height_m,
             grip_frac,
             scale,
-            lay: -1.047,
-            pose_yaw: 2.793,
+            lay: BLADE_LAY,
+            pose_yaw: BLADE_YAW,
             stroke: Stroke::Chop,
             light: None,
-            grip_roll: Some(0.0),
+            grip_roll: Some(BLADE_ROLL),
+            arm_turn: true,
         }
     }
 
