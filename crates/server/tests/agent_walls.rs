@@ -4001,6 +4001,123 @@ fn a_teammate_given_the_code_puts_its_bag_down_in_the_team_s_base() {
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
+/// The team's one box is full (#551, #552: a crew of seven, eleven stacks
+/// of 1000 Wood). The agent hauls more Wood home, finds no room, and is
+/// offered `add_box` for the Small Box in its pack: in through the door,
+/// the code at the cupboard, and the box down on the floor. The base now
+/// has two boxes it knows, and room.
+#[test]
+fn a_teammate_finding_the_team_s_box_full_puts_another_one_down() {
+    use server::agent::lock::LockCode;
+    use sim_core::build::{BUILD_CELL_M, LOC_PLANE};
+    use sim_core::deploy::{ACCESS_OP_SET_CODE, ARCH_BOX};
+    use sim_core::limits::BOX_SLOTS;
+
+    let given = 2580;
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(
+            &[Goal::JoinTeam, Goal::AddBox, Goal::Deliver],
+            Some(LockCode::given(given).unwrap()),
+        ),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bx, bz) = move_in(&mut h, at);
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+    // The teammate locks its cupboard with the code it gave, and goes.
+    let lock = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.lock_code")
+    };
+    let mate = place(bxf + 1.5, bzf + 2.2);
+    h.stage_puppet(move |p| {
+        p.body = mate;
+        p.inv[HOTBAR_SLOTS] = lock;
+    });
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.lock,
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    h.puppet_act(ActionMsg::Access {
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_PLANE,
+        op: ACCESS_OP_SET_CODE,
+        code: given,
+    });
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+    // Every slot of the team's box: a full stack of Wood.
+    let wood = common::stack(&content, "item.wood");
+    let full = sim_core::gather::ItemStack {
+        count: content.items[usize::from(wood.item)].stack as u16,
+        ..wood
+    };
+    let boxes = |h: &Harness| {
+        let w = &h.shard.world;
+        w.deploys
+            .entries()
+            .iter()
+            .filter(|d| w.deploy.defs[usize::from(d.row)].arch == ARCH_BOX)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(boxes(&h).len(), 1, "the staged base has one box");
+    for core in [&mut h.shard, &mut h.replay] {
+        for i in 0..core.world.deploys.boxes().len() {
+            for slot in 0..BOX_SLOTS {
+                core.world.deploys.set_box_slot(i, slot, full);
+            }
+        }
+    }
+    // Outside, more Wood and a Small Box in the pack.
+    let small_box = common::stack(&content, "item.box_small");
+    let haul = sim_core::gather::ItemStack { count: 500, ..wood };
+    let out = place(bxf + 1.5, bzf - 8.0);
+    h.stage(move |p| {
+        p.body = out;
+        p.inv[HOTBAR_SLOTS + 1] = haul;
+        p.inv[HOTBAR_SLOTS + 2] = small_box;
+    });
+    let ended = h.until(300 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::AddBox)
+    });
+    assert!(ended, "no add_box goal ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::AddBox)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let now = boxes(&h);
+    assert_eq!(now.len(), 2, "{}", h.explain());
+    let new = now.iter().find(|d| d.owner == ID).expect("its own box");
+    let (x, z) = new.xz();
+    assert!(
+        inside_base([x, z], (bx, bz)),
+        "the box stands inside the base: {x},{z}"
+    );
+    assert_eq!(h.bot.shared().box_count(), 2, "it keeps the new box");
+    assert!(!h.bot.shared().full(), "and the base has room");
+    assert!(
+        h.bot.home().bags() == 0,
+        "the box is on no bag list: {}",
+        h.explain()
+    );
+}
+
 /// The public places' decision source: sell wood at THE GATE, or feed a
 /// work, whichever is on offer, else stand.
 struct VisitWhenOffered;

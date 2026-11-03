@@ -172,6 +172,9 @@ pub enum Goal {
     /// Put a sleeping bag down near here: somewhere to wake that is not
     /// the beach.
     Bag,
+    /// The team's boxes are full: put another box down on the base's floor,
+    /// crafting one first when the pack holds none (#551, #552).
+    AddBox,
     /// Walk back to the backpack this body dropped where it died, and take
     /// what it held.
     Recover,
@@ -333,7 +336,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 42] = [
+    pub const FIXED: [Goal; 43] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -376,6 +379,7 @@ impl Goal {
         Goal::KeepShop,
         Goal::HandOver,
         Goal::Authorize,
+        Goal::AddBox,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -396,6 +400,7 @@ impl Goal {
             Goal::Hunt => "hunt",
             Goal::Heal => "heal",
             Goal::Bag => "bag",
+            Goal::AddBox => "add_box",
             Goal::Recover => "recover",
             Goal::Build => "build",
             Goal::GoHome => "go_home",
@@ -531,6 +536,7 @@ impl Goal {
             Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
             Goal::Heal => "Use bandages or a medkit.".into(),
             Goal::Bag => "Put a sleeping bag down to wake beside: here, or on the team's floor if you live there.".into(),
+            Goal::AddBox => "The team's boxes are full: put the box in your pack down on the team's floor for more room.".into(),
             Goal::Recover => "Walk back to the death backpack and take what it holds.".into(),
             Goal::Build => "Build the next part of the base from the pack; choose a plot if none.".into(),
             Goal::GoHome => "Walk home and in, shutting the doors.".into(),
@@ -793,6 +799,8 @@ pub struct TeamSense {
     /// and whether it is under attack (`agent::supply`).
     pub home: Sighting,
     pub home_boxes: u8,
+    /// Every one of those boxes was full when last opened.
+    pub home_full: bool,
     pub home_attacked: bool,
     /// It lives there (no base of its own), and its boxes hold something
     /// the pack lacks (food, meds, a better tool).
@@ -850,6 +858,7 @@ impl TeamSense {
             "mate_attacked": self.mate_attacked,
             "home": self.home.json(),
             "home_boxes": self.home_boxes,
+            "home_boxes_full": self.home_full,
             "home_attacked": self.home_attacked,
             "i_live_there": self.lives_there,
             "home_has_what_i_need": self.home_has_needs,
@@ -1756,6 +1765,11 @@ pub struct Summary {
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
+    /// Beside each option: it came to nothing a moment ago (or looks out
+    /// of reach). Still offered, and said so (`failed_lately`): the mind
+    /// decides whether to try again. [`Scripted`] reads it as a pause and
+    /// leaves the goal alone until it clears ([`Summary::offers`]).
+    pub held: [bool; MAX_OPTIONS],
     /// What the body perceived since it last asked, and its pose, for its
     /// memory (`memory.rs`): world positions and wire ids, so never in
     /// [`Self::to_json`] or any other request a mind reads.
@@ -1899,6 +1913,7 @@ impl Summary {
                 bearing: 0,
             },
             home_boxes: 0,
+            home_full: false,
             home_attacked: false,
             lives_there: false,
             home_has_needs: false,
@@ -1936,6 +1951,7 @@ impl Summary {
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
+        held: [false; MAX_OPTIONS],
         seen: crate::memory::Perceived::EMPTY,
     };
 
@@ -1971,19 +1987,64 @@ impl Summary {
         &self.threats[..self.threats_len as usize]
     }
 
-    /// A walk is offered when any walk is ([`Walk::ANY`]).
+    /// Where `goal` is on the list, a walk leg standing for the any-walk
+    /// ([`Walk::ANY`]) that offers every leg.
+    fn index_of(&self, goal: Goal) -> Option<usize> {
+        let at = |g: Goal| self.options().iter().position(|&o| o == g);
+        at(goal).or_else(|| match goal {
+            Goal::Walk(w) if w != Walk::ANY => at(Goal::Walk(Walk::ANY)),
+            _ => None,
+        })
+    }
+
+    /// On the list and not held: what a scripted picker may choose. A walk
+    /// is offered when any walk is ([`Walk::ANY`]).
     pub fn offers(&self, goal: Goal) -> bool {
-        self.options().contains(&goal)
-            || matches!(goal, Goal::Walk(w) if w != Walk::ANY)
-                && self.options().contains(&Goal::Walk(Walk::ANY))
+        self.index_of(goal).is_some_and(|i| !self.held[i])
+    }
+
+    /// On the list at all, held or not: what any mind may choose.
+    pub fn allows(&self, goal: Goal) -> bool {
+        self.index_of(goal).is_some()
+    }
+
+    /// On the list, but it came to nothing a moment ago.
+    pub fn is_held(&self, goal: Goal) -> bool {
+        self.index_of(goal).is_some_and(|i| self.held[i])
+    }
+
+    /// The held options, in list order.
+    pub fn held_goals(&self) -> impl Iterator<Item = Goal> + '_ {
+        self.options()
+            .iter()
+            .zip(&self.held)
+            .filter(|(_, &h)| h)
+            .map(|(&g, _)| g)
     }
 
     /// Offer a goal once. Silently full past `MAX_OPTIONS`, which the
     /// constant's arithmetic makes unreachable.
     pub fn offer(&mut self, goal: Goal) {
-        if !self.offers(goal) && (self.options_len as usize) < MAX_OPTIONS {
+        if !self.options().contains(&goal) && (self.options_len as usize) < MAX_OPTIONS {
             self.options[self.options_len as usize] = goal;
+            self.held[self.options_len as usize] = false;
             self.options_len += 1;
+        }
+    }
+
+    /// Offer a goal, held when `held`: a goal that came to nothing a moment
+    /// ago is still the mind's to choose, told so.
+    pub fn offer_held(&mut self, goal: Goal, held: bool) {
+        self.offer(goal);
+        if held {
+            self.hold(goal);
+        }
+    }
+
+    /// Mark an offered goal held.
+    pub fn hold(&mut self, goal: Goal) {
+        if let Some(i) = self.options().iter().position(|&g| g == goal) {
+            self.held[i] = true;
         }
     }
 
@@ -1992,6 +2053,7 @@ impl Summary {
         let n = self.options_len as usize;
         if let Some(i) = self.options[..n].iter().position(|&g| g == goal) {
             self.options.copy_within(i + 1..n, i);
+            self.held.copy_within(i + 1..n, i);
             self.options_len -= 1;
         }
     }
@@ -2217,6 +2279,7 @@ impl Summary {
             "team": self.team.json(),
             "team_home_holds": self.home_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "asked_because": self.trigger.word(),
+            "failed_lately": self.held_goals().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
         });
         // A society's body is told its place in it; a lone one is sent
         // nothing for it.
@@ -2225,6 +2288,26 @@ impl Summary {
         }
         v
     }
+}
+
+/// Living in a base whose boxes are all full: put another box down, or
+/// make one to put down (#551, #552).
+fn more_room(s: &Summary) -> Option<(Goal, &'static str)> {
+    if !(s.team.home_full && s.team.lives_there) {
+        return None;
+    }
+    if s.offers(Goal::AddBox) {
+        return Some((
+            Goal::AddBox,
+            "scripted: the team's boxes are full; another one",
+        ));
+    }
+    // One in the pack that cannot go down yet (the floor refused it a
+    // moment ago) is not a reason to make a second.
+    let item = crate::agent::build::BOX_ITEM;
+    let craft = Goal::Craft(Name::new(item.as_bytes())?);
+    (s.count_of(item) == 0 && s.offers(craft))
+        .then_some((craft, "scripted: the team's boxes are full; a box for them"))
 }
 
 /// A decision's one-line reason: printable ASCII, whitespace collapsed,
@@ -3608,6 +3691,11 @@ impl Scripted {
                 }
             }
         }
+        // A base whose boxes are full gets another before anything more is
+        // hauled to it.
+        if let Some(pick) = more_room(s) {
+            return pick;
+        }
         // A crewmate's job, once it lives in the crew's base.
         if let Some(pick) = society_work(s) {
             return pick;
@@ -4783,6 +4871,49 @@ mod tests {
         s.items[2] = (name("Hunting Bow"), 1);
         s.items_len = 3;
         assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Wooden Arrow")));
+    }
+
+    /// #551, #552: living in a base whose boxes are all full, a scripted
+    /// body makes a box when it has none, then puts it down; one in the
+    /// pack that cannot go down yet is no reason to make another.
+    #[test]
+    fn a_full_team_base_gets_another_box() {
+        let name = |n: &str| Name::new(n.as_bytes()).unwrap();
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.bags = 1;
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.team.home.add(5.0, 0);
+        s.team.home_boxes = 1;
+        s.team.lives_there = true;
+        s.team.bag_there = true;
+        s.offer(Goal::Explore);
+        s.offer(Goal::GatherWood);
+        s.trees.add(10.0, 0);
+        let small_box = name(crate::agent::build::BOX_ITEM);
+        s.craftable[0] = small_box;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(small_box));
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Craft(small_box),
+            "no box while there is room"
+        );
+        s.team.home_full = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(small_box));
+        s.items[2] = (small_box, 1);
+        s.items_len = 3;
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Craft(small_box),
+            "one in the pack is enough"
+        );
+        s.offer(Goal::AddBox);
+        assert_eq!(scripted.pick(&s).0, Goal::AddBox);
     }
 
     #[test]

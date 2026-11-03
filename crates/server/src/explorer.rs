@@ -680,6 +680,16 @@ pub struct Memory {
     pub raid_held: bool,
     /// It knows a home to walk a patrol round (`agent::society`).
     pub patrol_home: bool,
+    /// Goals whose last try came to nothing a moment ago: still offered,
+    /// held (`Summary::held`) until their retry clock runs out.
+    pub build_held: bool,
+    pub patrol_held: bool,
+    pub authorize_held: bool,
+    pub cook_held: bool,
+    pub warm_held: bool,
+    pub recycle_held: bool,
+    pub research_held: bool,
+    pub shop_held: bool,
     /// It carries enough for the base to hand its founder, who is near or
     /// says where it is; no hand-over came to nothing a moment ago.
     pub hand: bool,
@@ -711,6 +721,12 @@ pub struct Memory {
     /// A supply run found the team's boxes full a while ago: what another
     /// would gather has nowhere to go.
     pub box_full_held: bool,
+    /// Every one of the team's boxes was full when last opened.
+    pub home_full: bool,
+    /// ...and it could put another one down there: a box in the pack, a
+    /// way onto the floor, room in what it keeps, no try failed lately.
+    pub add_box: bool,
+    pub add_box_held: bool,
     pub home_holds: [(u16, u32); crate::mind::SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
     pub home_boxes: u8,
@@ -1041,6 +1057,7 @@ pub struct Survivor {
     bag_leg: BagLeg,
     bag_knocked: bool,
     team_bag_failed: Option<u32>,
+    add_box_failed: Option<u32>,
     recover_job: RecoverJob,
     seen: Seen,
     /// The base it is building, and the walk through its doors.
@@ -1319,6 +1336,7 @@ impl Survivor {
             bag_leg: BagLeg::Here,
             bag_knocked: false,
             team_bag_failed: None,
+            add_box_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
             builder: Builder::new().keyed(!opts.code_doors && opts.society.is_none()),
@@ -1617,7 +1635,7 @@ impl Survivor {
         let tick = view.newest_applied.unwrap_or_default();
         for &(goal, at, runs) in self.flops.iter().flatten() {
             if runs >= 2 && tick.wrapping_sub(at) < FLOP_RETRY_TICKS {
-                s.withdraw(goal);
+                s.hold(goal);
             }
         }
         s.current = self.goal.map(|a| Report {
@@ -2285,7 +2303,7 @@ impl Survivor {
         let held = self.deferred.take().and_then(|(choice, since)| {
             let fresh = now.saturating_duration_since(since) < self.mind.config().timeout;
             let short = fought.is_none_or(|f| f < RESUME_TICKS);
-            let keep = fresh && short && self.summarize(core, view, player).offers(choice.goal);
+            let keep = fresh && short && self.summarize(core, view, player).allows(choice.goal);
             if !keep {
                 self.stats.deferred_dropped += 1;
             }
@@ -2310,7 +2328,7 @@ impl Survivor {
                 // A flee, fight or hunt goal's fight was the goal; it
                 // finishes itself with how it went.
                 let keep = matches!(goal, Goal::Flee | Goal::Fight | Goal::Hunt)
-                    || (fought < RESUME_TICKS && self.summarize(core, view, player).offers(goal));
+                    || (fought < RESUME_TICKS && self.summarize(core, view, player).allows(goal));
                 if keep {
                     self.stats.goals_resumed += 1;
                 } else {
@@ -2493,10 +2511,15 @@ impl Survivor {
         });
         // Living in the team's base, its bag goes down in there: in to the
         // cupboard (or the first box, if it knows none), then the floor.
-        if goal == Goal::Bag && self.memory.team_bag {
+        // A box for a full base goes the same way.
+        if (goal == Goal::Bag && self.memory.team_bag) || goal == Goal::AddBox {
             if let Some(home) = self.shared.anchor() {
                 self.bag_leg = BagLeg::In;
-                self.bag_job = BagJob::on_floor(home);
+                self.bag_job = if goal == Goal::AddBox {
+                    BagJob::box_on_floor(home)
+                } else {
+                    BagJob::on_floor(home)
+                };
                 self.home_job = HomeJob::new(match self.shared.hearth() {
                     Some(h) => {
                         let (x, z) = cell_center(h.cx, h.cz);
@@ -2566,9 +2589,9 @@ impl Survivor {
                 Outcome::Done => None,
                 _ => self.sample_in_table.take(),
             };
-            // Not offered again before the hold is read, a second from now.
+            // Held at once, before the hold is read a second from now.
             if matches!(outcome, Outcome::Failed(_)) {
-                self.memory.research = false;
+                self.memory.research_held = true;
             }
         }
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
@@ -2671,6 +2694,7 @@ impl Survivor {
             | Goal::Drink
             | Goal::Recover
             | Goal::Bag
+            | Goal::AddBox
             | Goal::Loot
             | Goal::Cook
             | Goal::Warm
@@ -2799,7 +2823,7 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Drink => self.drink(core, body, tick),
-            Goal::Bag => self.place_bag(core, body, tick),
+            Goal::Bag | Goal::AddBox => self.place_bag(core, body, tick),
             Goal::Recover => self.recover(core, body, tick),
             Goal::Build if elapsed >= BUILD_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -6047,7 +6071,11 @@ impl Survivor {
                 if self.queue(|buf| {
                     protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, pose, buf)
                 }) {
-                    self.home.asked(cx, cz, 0, loc);
+                    if self.bag_job.storage() {
+                        self.home.asked_kit(cx, cz, 0, loc);
+                    } else {
+                        self.home.asked(cx, cz, 0, loc);
+                    }
                     self.bag_job.deploy_sent(tick);
                 }
                 intent
@@ -6056,17 +6084,30 @@ impl Survivor {
                 if let Some(a) = self.goal.as_mut() {
                     a.gained += 1;
                 }
+                if let (true, Some((cx, cz))) = (self.bag_job.storage(), self.bag_job.cell()) {
+                    self.shared.adopt_box(core, cx, cz);
+                }
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
             Do::Fail(why) => {
                 if self.bag_leg != BagLeg::Here {
-                    self.team_bag_failed = Some(tick);
+                    self.floor_failed(tick);
                 }
                 self.end_goal(tick, Outcome::Failed(why));
                 Intent::IDLE
             }
             Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// A trip to put something down on the team's floor came to nothing:
+    /// that kind of trip waits a while.
+    fn floor_failed(&mut self, tick: u32) {
+        if self.bag_job.storage() {
+            self.add_box_failed = Some(tick);
+        } else {
+            self.team_bag_failed = Some(tick);
         }
     }
 
@@ -6083,7 +6124,7 @@ impl Survivor {
                 match over {
                     None => Some(intent),
                     Some(Outcome::Failed(why)) => {
-                        self.team_bag_failed = Some(tick);
+                        self.floor_failed(tick);
                         self.end_goal(tick, Outcome::Failed(why));
                         Some(Intent::IDLE)
                     }
@@ -6113,7 +6154,7 @@ impl Survivor {
                         && !self.shared.crewed()
                         && (self.bag_knocked || self.shared.hearth_unlocked(core)) =>
                     {
-                        self.team_bag_failed = Some(tick);
+                        self.floor_failed(tick);
                         self.end_goal(tick, Outcome::Failed(Why::Locked));
                     }
                     // On the crew, or no way to know: the floor says.
@@ -7163,12 +7204,9 @@ impl Survivor {
         // A build that could not reach its work, or failed as it began, is
         // not offered again at once: a second a try, it would be all the body
         // did (two village founders, an hour each, 2026-10-17).
-        if self
+        self.memory.build_held = self
             .build_failed
-            .is_some_and(|at| tick.wrapping_sub(at) < BUILD_RETRY_TICKS)
-        {
-            self.memory.base.ready = false;
-        }
+            .is_some_and(|at| tick.wrapping_sub(at) < BUILD_RETRY_TICKS);
         // Living in the team's base, it builds none of its own; nor does a
         // crewmate who is not its crew's founder, before it is shown home.
         if self.shared_home() || self.society.is_some_and(|soc| !soc.founder()) {
@@ -7280,10 +7318,10 @@ impl Survivor {
                 && matches!(temperament, Temperament::Opportunist | Temperament::Kos);
             // A patrol that could not reach its posts is not offered again
             // at once: a body walled in would choose it every second.
-            self.memory.patrol_home = self.patrol_centre().is_some()
-                && self
-                    .patrol_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= society::PATROL_RETRY_SECS * TICK_HZ);
+            self.memory.patrol_home = self.patrol_centre().is_some();
+            self.memory.patrol_held = self
+                .patrol_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < society::PATROL_RETRY_SECS * TICK_HZ);
             self.post_board(core, body);
             self.memory.raid_held = self
                 .raid_failed
@@ -7311,6 +7349,15 @@ impl Survivor {
             self.memory.home_holds_len = self.shared.totals(&mut rows) as u8;
             self.memory.home_holds = rows;
             self.memory.home_boxes = self.shared.box_count() as u8;
+            self.memory.home_full = self.shared.full();
+            self.memory.add_box = self.memory.home_full
+                && self.memory.shared
+                && self.shared.box_room()
+                && self.shared.may_bag(core, self.team_code.is_some())
+                && home::box_row(core).is_some();
+            self.memory.add_box_held = self
+                .add_box_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < TEAM_BAG_RETRY_TICKS);
             self.memory.shared = self.shared_home();
             let mut wants = [(0u16, 0u32); WANT_ROWS];
             self.wants_len = if self.book.ready() {
@@ -7343,10 +7390,10 @@ impl Survivor {
             self.memory.authorize = core.team().count > 0
                 && self.shared.hearth().is_some_and(|h| own_hearth != Some(h))
                 && !self.shared.crewed()
-                && (self.team_code.is_some() || self.shared.hearth_unlocked(core))
-                && self
-                    .auth_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= AUTHORIZE_RETRY_TICKS);
+                && (self.team_code.is_some() || self.shared.hearth_unlocked(core));
+            self.memory.authorize_held = self
+                .auth_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < AUTHORIZE_RETRY_TICKS);
             self.memory.bag_home = self
                 .shared
                 .anchor()
@@ -7375,20 +7422,20 @@ impl Survivor {
             let cooking = self.goal() == Some(Goal::Cook)
                 && core.cont_kind == CONT_BOX
                 && oven::should_run(Work::Cook, core, &self.book, &core.cont[..BOX_SLOTS]);
-            self.memory.cook = (cooking
-                || oven::can_tend(core, &self.book, Work::Cook, fire.is_some(), &Keep::NONE))
-                && self
-                    .cook_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            self.memory.cook = cooking
+                || oven::can_tend(core, &self.book, Work::Cook, fire.is_some(), &Keep::NONE);
+            self.memory.cook_held = self
+                .cook_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < oven::RETRY_TICKS);
             // Mid-warm-up the wood is in the fire rather than the pack.
             let warming = self.goal() == Some(Goal::Warm) && core.cont_kind == CONT_BOX;
             let fire = self.device_near(core, Work::Warm, x, z);
             self.memory.warm = oven::wants_warmth(core)
                 && (warming
-                    || oven::can_tend(core, &self.book, Work::Warm, fire.is_some(), &Keep::NONE))
-                && self
-                    .warm_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::WARM_RETRY_TICKS);
+                    || oven::can_tend(core, &self.book, Work::Warm, fire.is_some(), &Keep::NONE));
+            self.memory.warm_held = self
+                .warm_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < oven::WARM_RETRY_TICKS);
             // Salvage is taken apart unless the base wants it whole: what
             // the rest of the milestone costs, or the gear still to be made
             // takes.
@@ -7405,10 +7452,10 @@ impl Survivor {
             }
             self.keep = keep;
             self.memory.recycle =
-                oven::can_tend(core, book, Work::Recycle, recycler.is_some(), &keep)
-                    && self
-                        .recycle_failed
-                        .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+                oven::can_tend(core, book, Work::Recycle, recycler.is_some(), &keep);
+            self.memory.recycle_held = self
+                .recycle_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < oven::RETRY_TICKS);
             // A research: paper to read, or a found thing and the junk for
             // it (or what an earlier one left in the table) while THE GATE's
             // table is there to take them to. Mid-research the sample is in
@@ -7422,11 +7469,12 @@ impl Survivor {
                 .is_some_and(|sample| oven::research_of(core, sample).is_some());
             let table = oven::town_table(core).is_some();
             self.memory.research = researching
-                || ((oven::unread(core).is_some()
-                    || (table && (left || oven::research(core, tier).is_some())))
-                    && self
-                        .research_failed
-                        .is_none_or(|at| tick.wrapping_sub(at) >= VISIT_RETRY_TICKS));
+                || oven::unread(core).is_some()
+                || (table && (left || oven::research(core, tier).is_some()));
+            self.memory.research_held = !researching
+                && self
+                    .research_failed
+                    .is_some_and(|at| tick.wrapping_sub(at) < VISIT_RETRY_TICKS);
             // The crew's shop (`agent::shop`), its founder's to keep: a
             // machine carried and none standing is put down; one standing is
             // stocked when the pack has lots of a ware past what the base
@@ -7442,11 +7490,10 @@ impl Survivor {
                         tick.wrapping_sub(at) >= crate::agent::shop::VISIT_SECS * TICK_HZ
                     }));
             self.memory.hand = self.hand_due(core, body, tick);
-            self.memory.shop = self.society.is_some_and(|s| s.founder())
-                && (placing || stocking)
-                && self
-                    .shop_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            self.memory.shop = self.society.is_some_and(|s| s.founder()) && (placing || stocking);
+            self.memory.shop_held = self
+                .shop_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             // What a loot run would set off for (`loot::TRIP_M`): one known
@@ -8591,6 +8638,7 @@ pub fn observe(
     loadout: &Loadout,
 ) -> Summary {
     let mut s = Summary::EMPTY;
+    let mut craft_held = [false; crate::mind::SUMMARY_CRAFTS];
     s.tick = view.newest_applied.unwrap_or_default();
     let body = view.get(player);
     s.body = if core.dead || body.is_some_and(|b| b.dead) {
@@ -8692,7 +8740,6 @@ pub fn observe(
                     || usize::from(core.jobs_count) >= CRAFT_QUEUE
                     || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
-                    || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
                     || !(room_for(core, ItemBits::bit(def.output)) || craft_fits(core, r as u16, 1))
@@ -8723,6 +8770,8 @@ pub fn observe(
                     && !needless_gear(core, book, def.output, name.as_str())
                 {
                     s.craftable[n] = name;
+                    // A walk to its station came to nothing a moment ago.
+                    craft_held[n] = def.station != STATION_NONE && memory.station_held;
                     s.craftable_len += 1;
                 }
             }
@@ -8836,6 +8885,7 @@ pub fn observe(
     s.team.mate_attacked = senses.mate_attacked;
     s.team.home = senses.team_home;
     s.team.home_boxes = memory.home_boxes;
+    s.team.home_full = memory.home_full;
     s.team.home_attacked = memory.home_alarm;
     s.team.lives_there = memory.shared;
     s.team.home_has_needs = memory.home_needs;
@@ -9008,80 +9058,74 @@ pub fn observe(
     // A bag in the pack and room for one more of its own down; the way
     // back to the last death's backpack while it is near and nobody who
     // could start the fight again is in view.
+    // Each goal below that came to nothing a moment ago is still offered,
+    // held (`Summary::held`): the mind is told, and decides.
     if usize::from(memory.bags) < BAG_CAP
-        && !memory.bag_held
         && !(memory.shared && memory.bag_home)
         && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
     {
-        s.offer(Goal::Bag);
+        s.offer_held(Goal::Bag, memory.bag_held);
     }
     if senses.backpack.count > 0
         && f32::from(senses.backpack.nearest_m) <= home::RECOVER_M
         && !senses.hostile
-        && !memory.recover_held
     {
-        s.offer(Goal::Recover);
+        s.offer_held(Goal::Recover, memory.recover_held);
     }
     // The base: the next milestone while some op of it can go now; the way
     // home once a cupboard stands there and this body is not inside.
     if memory.base.ready {
-        s.offer(Goal::Build);
+        s.offer_held(Goal::Build, memory.build_held);
     }
-    if memory.home.state == HomeState::Built && !memory.home_held {
-        s.offer(Goal::GoHome);
+    if memory.home.state == HomeState::Built {
+        s.offer_held(Goal::GoHome, memory.home_held);
     }
     // A loot run: a barrel or crate it knows of, or a place on the map
     // that keeps them, room in the pack, and nobody dangerous in view.
     if (senses.loot.count > 0 || senses.loot_place.is_some())
         && s.free_slots >= loot::MIN_FREE_SLOTS
         && !senses.hostile
-        && !memory.loot_held
     {
-        s.offer(Goal::Loot);
+        s.offer_held(Goal::Loot, memory.loot_held);
     }
     // A cook, with raw meat, fuel and a fire to cook on, nobody dangerous
     // about.
     if memory.cook && !senses.hostile {
-        s.offer(Goal::Cook);
+        s.offer_held(Goal::Cook, memory.cook_held);
     }
     if memory.warm && !senses.hostile {
-        s.offer(Goal::Warm);
+        s.offer_held(Goal::Warm, memory.warm_held);
     }
     if memory.recycle && !senses.hostile {
-        s.offer(Goal::Recycle);
+        s.offer_held(Goal::Recycle, memory.recycle_held);
     }
     // The gate's guns shoot whoever fought a player lately.
     if memory.research && !senses.hostile_afield && core.hostile_left() == 0 {
-        s.offer(Goal::Research);
+        s.offer_held(Goal::Research, memory.research_held);
     }
     if memory.shop && !senses.hostile {
-        s.offer(Goal::KeepShop);
+        s.offer_held(Goal::KeepShop, memory.shop_held);
     }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)
-        && !memory.stash_held
         && (memory.take_out || memory.feed || memory.put_away)
     {
-        s.offer(Goal::Stash);
+        s.offer_held(Goal::Stash, memory.stash_held);
     }
     // Home called back to (an alarm while out) or damaged and mendable,
     // and no defence came to nothing a moment ago.
     let built = matches!(memory.home.state, HomeState::Built | HomeState::Inside);
-    if built
-        && !memory.defend_held
-        && ((memory.alarm && memory.home.state == HomeState::Built) || memory.damaged)
-    {
-        s.offer(Goal::Defend);
+    if built && ((memory.alarm && memory.home.state == HomeState::Built) || memory.damaged) {
+        s.offer_held(Goal::Defend, memory.defend_held);
     }
     // A raid: a base worth it by its temperament and its means, room for
     // what it holds, and nobody dangerous in view.
     if memory.raids
         && senses.raid.count > 0
         && !senses.hostile
-        && !memory.raid_held
         && s.free_slots >= loot::MIN_FREE_SLOTS
     {
-        s.offer(Goal::Raid);
+        s.offer_held(Goal::Raid, memory.raid_held);
     }
     // In a society only a crewmate's invite is said yes to.
     if s.team.invited && (!s.society.set || s.society.crew_invited_me) {
@@ -9112,14 +9156,14 @@ pub fn observe(
     // A home to walk a ring round, and something in hand to meet an
     // intruder with.
     if armed && memory.patrol_home {
-        s.offer(Goal::Patrol);
+        s.offer_held(Goal::Patrol, memory.patrol_held);
     }
     if memory.hand && !senses.hostile {
         s.offer(Goal::HandOver);
     }
     // Onto the team's cupboard's crew (Rust's authorize), while it is not.
     if memory.authorize && !senses.hostile {
-        s.offer(Goal::Authorize);
+        s.offer_held(Goal::Authorize, memory.authorize_held);
     }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for
@@ -9127,17 +9171,21 @@ pub fn observe(
     // view, and no trip there came to nothing a moment ago. Living there,
     // home is there too: the walk home, and its defence.
     if memory.shared {
-        if s.team.home.count > 0 && s.team.home.nearest_m > SHARED_HOME_NEAR_M && !memory.home_held
-        {
-            s.offer(Goal::GoHome);
+        if s.team.home.count > 0 && s.team.home.nearest_m > SHARED_HOME_NEAR_M {
+            s.offer_held(Goal::GoHome, memory.home_held);
         }
-        if memory.home_alarm && !memory.defend_held {
-            s.offer(Goal::Defend);
+        if memory.home_alarm {
+            s.offer_held(Goal::Defend, memory.defend_held);
         }
     }
-    if s.team.home.count > 0 && !senses.hostile && !memory.deliver_held {
+    // A full base gets another box, whatever the last trip there made of
+    // the full one.
+    if memory.add_box && !senses.hostile {
+        s.offer_held(Goal::AddBox, memory.add_box_held);
+    }
+    if s.team.home.count > 0 && !senses.hostile {
         if memory.deliver {
-            s.offer(Goal::Deliver);
+            s.offer_held(Goal::Deliver, memory.deliver_held);
         }
         for (gather, run) in [
             (Goal::GatherWood, Goal::SupplyWood),
@@ -9145,8 +9193,8 @@ pub fn observe(
             (Goal::GatherOre, Goal::SupplyOre),
             (Goal::GatherHemp, Goal::SupplyHemp),
         ] {
-            if s.offers(gather) && !memory.box_full_held {
-                s.offer(run);
+            if s.offers(gather) {
+                s.offer_held(run, memory.deliver_held || memory.box_full_held);
             }
         }
     }
@@ -9154,8 +9202,7 @@ pub fn observe(
     // and a feed for the nearest work that takes what the pack holds.
     // Strangers at the gate itself do not take them away: it is where
     // everybody trades.
-    if !senses.hostile_afield && core.hostile_left() == 0 && s.gate.is_some() && !memory.trade_held
-    {
+    if !senses.hostile_afield && core.hostile_left() == 0 && s.gate.is_some() {
         let mut rows = [(0u16, false); gate::TRADE_ROWS];
         let wants = memory
             .base
@@ -9165,34 +9212,34 @@ pub fn observe(
         let n = gate::trades(core, wants.map(|&(item, _)| item), &mut rows);
         for &(item, sell) in &rows[..n] {
             if let Some(name) = Name::new(core.catalog.name(usize::from(item))) {
-                s.offer(if sell {
-                    Goal::Sell(name)
-                } else {
-                    Goal::Buy(name)
-                });
+                s.offer_held(
+                    if sell {
+                        Goal::Sell(name)
+                    } else {
+                        Goal::Buy(name)
+                    },
+                    memory.trade_held,
+                );
             }
         }
     }
     if let Some(b) = body {
         let (x, z) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-        if !senses.hostile
-            && !memory.work_held
-            && gate::pick_work(core, core.haven(), x, z).is_some()
-        {
-            s.offer(Goal::FeedWork);
+        if !senses.hostile && gate::pick_work(core, core.haven(), x, z).is_some() {
+            s.offer_held(Goal::FeedWork, memory.work_held);
         }
         // The ancients: a stone near it has not read, a lock whose answer
         // it read, a card door it holds the card for; nobody dangerous in
         // view, and none of them came to nothing a moment ago.
         if !senses.hostile {
-            if !memory.lore_held[0] && lore::unread(core, x, z, lore::READ_TRIP_M).is_some() {
-                s.offer(Goal::ReadStone);
+            if lore::unread(core, x, z, lore::READ_TRIP_M).is_some() {
+                s.offer_held(Goal::ReadStone, memory.lore_held[0]);
             }
-            if !memory.lore_held[1] && lore::solvable(core, x, z).is_some() {
-                s.offer(Goal::SolveLock);
+            if lore::solvable(core, x, z).is_some() {
+                s.offer_held(Goal::SolveLock, memory.lore_held[1]);
             }
-            if !memory.lore_held[2] && lore::swipeable(core).is_some() {
-                s.offer(Goal::SwipeCard);
+            if lore::swipeable(core).is_some() {
+                s.offer_held(Goal::SwipeCard, memory.lore_held[2]);
             }
         }
     }
@@ -9219,9 +9266,8 @@ pub fn observe(
                     .filter_map(|l| Some((l.name, l.at?))),
             );
         for (name, at) in trips {
-            if name != Name::EMPTY && at.distance != Distance::Here && memory.go_held != Some(name)
-            {
-                s.offer(Goal::Go(name));
+            if name != Name::EMPTY && at.distance != Distance::Here {
+                s.offer_held(Goal::Go(name), memory.go_held == Some(name));
             }
         }
         // And anywhere at all, by bearing and metres.
@@ -9234,9 +9280,16 @@ pub fn observe(
             }
         }
     }
-    for i in 0..s.craftable_len as usize {
-        s.offer(Goal::Craft(s.craftable[i]));
+    let crafts = s.craftable;
+    for (&name, &held) in crafts
+        .iter()
+        .zip(&craft_held)
+        .take(s.craftable_len as usize)
+    {
+        s.offer_held(Goal::Craft(name), held);
     }
+    // What flopped twice running a moment ago (`Survivor::flops`) is held
+    // by `summarize`, which keeps that list.
     s
 }
 
@@ -10054,14 +10107,22 @@ mod tests {
             bot.memory.last.unwrap().outcome,
             Outcome::Failed(Why::NoAnswer)
         );
-        // ...and is not offered again on the same spot, only after a walk.
+        // ...and is held on the same spot, only clear after a walk: a
+        // scripted picker leaves it, a mind still may choose it, told why.
         view.newest_applied = Some(3 + VERDICT_SECS * TICK_HZ);
         bot.frame_at(&view, 1, 4, now);
-        assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(!s.offers(Goal::Bag) && s.allows(Goal::Bag) && s.is_held(Goal::Bag));
+        assert!(s.to_json()["failed_lately"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g == "bag"));
         view.entities[0].1.qx += ((home::BAG_RETRY_M + 2.0) / POS_XZ_Q) as i32;
         view.newest_applied = Some(4 + VERDICT_SECS * TICK_HZ);
         bot.frame_at(&view, 1, 5, now);
-        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(s.offers(Goal::Bag) && !s.is_held(Goal::Bag));
     }
 
     #[test]

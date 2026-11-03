@@ -154,6 +154,16 @@ impl TeamHome {
         self.boxes().count()
     }
 
+    /// Every box has been opened and the last look found no empty slot in
+    /// any: a pack stack that is not already there has nowhere to go
+    /// (#551, #552: a crew of seven, one box, eleven stacks of 1000 Wood).
+    pub fn full(&self) -> bool {
+        self.box_count() > 0
+            && self
+                .boxes()
+                .all(|k| k.ledger.known() && k.ledger.slots().iter().all(|s| s.count > 0))
+    }
+
     /// The first box: where a trip that stays goes.
     pub fn first(&self) -> Option<OpAddr> {
         self.boxes().next().map(|k| k.at)
@@ -225,6 +235,37 @@ impl TeamHome {
             return;
         }
         self.learn(at, ARCH_BOX);
+    }
+
+    /// A box it put down itself on the team's floor (`Goal::AddBox`) is the
+    /// team's from the moment the mirror shows it: no teammate has to be
+    /// seen at it first.
+    pub fn adopt_box(&mut self, core: &ClientCore, cx: u16, cz: u16) {
+        if self.anchor.is_none() {
+            return;
+        }
+        let have = core.deploy_defs_have.min(core.deploy_defs.def_count);
+        let found = core.deploys.entries().iter().find_map(|d| {
+            let at = OpAddr {
+                cx: d.cx,
+                cz: d.cz,
+                level: d.level,
+                loc: d.loc,
+            };
+            ((d.cx, d.cz) == (cx, cz)
+                && u16::from(d.row) < have
+                && core.deploy_defs.defs[usize::from(d.row)].arch == ARCH_BOX
+                && !self.knows(at))
+            .then_some(at)
+        });
+        if let Some(at) = found {
+            self.learn(at, ARCH_BOX);
+        }
+    }
+
+    /// Room for one more box in what it keeps of the base.
+    pub fn box_room(&self) -> bool {
+        self.box_count() < HOME_BOXES
     }
 
     /// The team's stations as a crafter reads them: the best bench of each
