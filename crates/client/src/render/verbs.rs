@@ -160,7 +160,10 @@ pub fn resolve(
 ) {
     let sel = net.sel;
     let core = &mut net.session.core;
-    let [x, y, z] = core.predict.render_position();
+    // The sim-truth body, without the correction offset `render_position`
+    // smooths a misprediction away with: the shard casts from where the body
+    // is, so the prompt does (`Predictor::eye_position`'s header).
+    let [x, y, z] = core.predict.position();
     // The wire's own two bytes for the look, so the swing prompt is cast
     // from exactly what the frame will carry (`SwingAim`'s header).
     let (yaw, pitch) = (yaw_u16(look.yaw), pitch_u8(look.pitch));
@@ -343,8 +346,9 @@ pub fn resolve(
             // gesture. It loses every tie to a deployable on purpose: a
             // box placed against a waystation cache is a thing a player
             // built and meant, and the authored container is not going
-            // anywhere.
-            if aimed.0.is_none() {
+            // anywhere. A pick only stood near (a bag at your feet) is not
+            // one the crosshair is on, so the crate under it still wins.
+            if !aimed.0.aimed {
                 let open = interact::resolve_open(
                     SwingAim {
                         x,
@@ -375,7 +379,7 @@ pub fn resolve(
             // A berry bush or hemp under the crosshair is picked with `E`
             // (it is never swung at), folded in exactly as the crate is: it
             // loses to anything a player built or an authored container.
-            if aimed.0.is_none() {
+            if !aimed.0.aimed {
                 let bush = interact::resolve_pick(
                     SwingAim {
                         x,
@@ -441,7 +445,7 @@ pub fn resolve(
             core.player_id,
             &core.view.entities,
         );
-        if !help.is_none() && (aimed.0.is_none() || help.d2 < aimed.0.d2) {
+        if !help.is_none() && (!aimed.0.aimed || help.d2 < aimed.0.d2) {
             aimed.0 = help;
         }
         let sleeper = interact::resolve_sleeper(
@@ -463,7 +467,7 @@ pub fn resolve(
             .iter()
             .find(|&&(id, _)| id == sleeper.handle)
             .is_none_or(|&(_, e)| lying((e.qx, e.qy, e.qz), [0; 3]));
-        if reachable && !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
+        if reachable && !sleeper.is_none() && (!aimed.0.aimed || sleeper.d2 < aimed.0.d2) {
             aimed.0 = sleeper;
         }
     }
@@ -981,7 +985,7 @@ pub fn keys(
         // `just_pressed` because the action lane takes one pending action
         // per client per tick.
         let core = &net.session.core;
-        let [x, _, z] = core.predict.render_position();
+        let [x, _, z] = core.predict.position();
         let pick = if aimed.0.verb == Verb::Take {
             aimed.0
         } else {

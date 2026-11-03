@@ -91,7 +91,6 @@ use crate::ranged::{self, BodyHit, Struck, MM_PER_M};
 use crate::rewind::Rewind;
 use crate::terrain::{self, Haven, Occupant, Slot, CELL_SIZE, SLOT_SCALE_MAX};
 use crate::world::Player;
-use crate::yaw_lut::yaw_dir;
 
 /// The forgiveness a swing gets at a scatter occupant, metres — added to the
 /// occupant's collision radius before the ray is tested against it. **(knob)**
@@ -239,12 +238,14 @@ impl Ray {
 }
 
 /// The ray a body swings along: from its eye, the way it is looking, for
-/// `len_mm`. `yaw` and `pitch` are the wire's bytes and go through the two
-/// LUTs the shot path uses, so there is no trig and no second opinion about
-/// which way a byte points. `crouched` lowers the eye (v83): a crouched
-/// body swings from where its camera is.
+/// `len_mm`. `yaw` is taken at all sixteen of the wire's bits, as a shot's
+/// is (`ranged::aim_dir`), through `fmath` so native and wasm agree; the
+/// 256-step `yaw_dir` table aimed the hand up to 1.4° off the crosshair,
+/// always to the same side. `pitch` goes through the pitch LUT the shot
+/// path uses. `crouched` lowers the eye (v83): a crouched body swings from
+/// where its camera is.
 pub fn ray(body: &Body, crouched: bool, yaw: u16, pitch: u8, len_mm: f32) -> Ray {
-    let (fx, fz) = yaw_dir(yaw);
+    let (fx, fz) = crate::fmath::sin_cos(f32::from(yaw) * (core::f32::consts::TAU / 65536.0));
     let (ch, sv) = pitch_dir(pitch);
     // `hitscan`'s own arithmetic for the muzzle, verbatim: quanta to whole
     // millimetres in integers, then the eye lift.
@@ -645,6 +646,18 @@ pub fn occupant_cast(
 /// (`MobDef::body_r_cm` / `body_h_cm`) — so a level swing from eye height
 /// passes clean over a pig, and you look down at what you are hunting.
 pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
+    mob_cast_posed(mc, mobs, ray, ranged::Pose::Live)
+}
+
+/// [`mob_cast`] with each animal where `pose` says it stood: rewound for a
+/// swing or a hitscan, so an animal is struck where the striker's screen
+/// drew it (`rewind::Rewind::mob_at`), as a player is.
+pub(crate) fn mob_cast_posed(
+    mc: &MobContent,
+    mobs: &Mobs,
+    ray: &Ray,
+    pose: ranged::Pose<'_>,
+) -> Option<MobHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     // The segment's planar reach: every point of it is within this of `o`.
@@ -654,20 +667,19 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
         if !m.alive || m.hp == 0 {
             continue;
         }
+        let at = pose.of_mob(slot, m);
         let def = mc.def(m.kind);
         // Out of reach, so the box solve below cannot answer: its planar
         // half-diagonal is under 0.6 × the box's length, and the metre of
         // slack dwarfs any rounding, so this only skips certain misses.
         let len = f32::from(def.body_r_cm) * 0.01 * ANIMAL_LEN_PER_R;
-        let (dx, dz) = (
-            o.0 - m.body.qx as f32 * POS_XZ_Q,
-            o.2 - m.body.qz as f32 * POS_XZ_Q,
-        );
+        let (dx, dz) = (o.0 - at.qx as f32 * POS_XZ_Q, o.2 - at.qz as f32 * POS_XZ_Q);
         let far = reach + 0.6 * len + 1.0;
         if dx * dx + dz * dz > far * far {
             continue;
         }
-        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body, m.yaw) else {
+        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &at.body(), at.yaw)
+        else {
             continue;
         };
         if best.is_none_or(|b| t_in < b.t) {
@@ -874,7 +886,16 @@ pub fn cast(
         },
     );
     let node = node_cast(seed, occ, ray);
-    let mob = mob_cast(mc, mobs, ray);
+    let mob = mob_cast_posed(
+        mc,
+        mobs,
+        ray,
+        ranged::Pose::Rewound {
+            rewind,
+            tick,
+            back: favour,
+        },
+    );
     let carcass = if reaches.carcass > 0.0 {
         carcass_cast(mc, bags, ray)
     } else {
@@ -1087,10 +1108,16 @@ mod tests {
         assert_eq!(r.o.0, 3000.0);
         assert_eq!(r.o.1, 500.0 + ranged::ARROW_EYE_MM as f32);
         assert_eq!(r.o.2, -6000.0);
-        let (fx, fz) = yaw_dir(0);
+        let (fx, fz) = crate::fmath::sin_cos(0.0);
         let (ch, sv) = pitch_dir(128);
         assert_eq!(r.s, (fx * ch * 2000.0, sv * 2000.0, fz * ch * 2000.0));
         let down = ray(&body, false, 0, 64, 2000.0);
         assert!(down.s.1 < 0.0, "a pitch under level points down");
+        // Every yaw bit turns the hand: two yaws inside one old 256-step
+        // bucket aim apart, as the crosshair does.
+        let a = ray(&body, false, 0x4000, 128, 2000.0);
+        let b = ray(&body, false, 0x40FF, 128, 2000.0);
+        let (dx, dz) = (a.s.0 - b.s.0, a.s.2 - b.s.2);
+        assert!(dx * dx + dz * dz > 1.0);
     }
 }

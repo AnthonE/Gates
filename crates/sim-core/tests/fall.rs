@@ -2,7 +2,7 @@
 //! puts the body down with the fall's own cause.
 
 use sim_core::combat::CombatContent;
-use sim_core::input::{InputFrame, BTN_JUMP};
+use sim_core::input::{InputFrame, BTN_JUMP, BTN_PRIMARY};
 use sim_core::movement::{self, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::Scratch;
 use sim_core::terrain;
@@ -190,5 +190,35 @@ fn a_drop_onto_a_face_hurts() {
     assert!(
         hit > 0,
         "no drop ever touched a face: the test drops nowhere"
+    );
+}
+
+/// A click that rode only in a throttle pair's older frame still swings:
+/// the older frame's buttons never act, and the client's arm already went.
+#[test]
+fn a_tap_in_a_throttle_pairs_older_frame_still_swings() {
+    let mut w = lifted(0.0);
+    for _ in 0..60 {
+        w.tick(&[]);
+    }
+    let before = w.players[0].next_swing;
+    let prev = InputFrame {
+        seq: 1,
+        buttons: BTN_PRIMARY,
+        ..InputFrame::default()
+    };
+    let frame = InputFrame {
+        seq: 2,
+        ..InputFrame::default()
+    };
+    w.tick(&[Command::InputPair {
+        id: 1,
+        prev,
+        frame,
+        favour: 0,
+    }]);
+    assert!(
+        w.players[0].next_swing > before,
+        "the tap in the older frame took no swing"
     );
 }

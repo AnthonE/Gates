@@ -1310,6 +1310,40 @@ fn doorway_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> 
     }
 }
 
+/// Where an open hinged door's leaf stands, on the ground: swung off its
+/// hinge post into the cell, as `render::structures::deploy_transform` draws
+/// it (the leaf is the doorway's width, `BUILD_CELL_M − 2·DOOR_POST_W_M`,
+/// and half a wall thick). Aiming at the open door you just walked through
+/// is aiming at this, not at the empty doorway beside it.
+fn open_leaf_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> Rect {
+    let c = sim_core::build::BUILD_CELL_M;
+    let d = c - 2.0 * sim_core::collide::DOOR_POST_W_M;
+    let w = sim_core::deploy::insert_thickness(ARCH_DOOR);
+    let hinge = c * 0.5 - d * 0.5 + w * 0.5;
+    if let Some(at) =
+        cols.and_then(|k| sim_core::deploy::posed_insert(k, rec.cx, rec.cz, rec.level, rec.loc))
+    {
+        // The doorway's root frame: +z the run, +x `(run.z, −run.x)`, the
+        // side an open leaf lies on (`edge_insert_local`).
+        let (rx, rz) = at.run;
+        let (along, out) = (hinge - c * 0.5, d * 0.5);
+        return Rect {
+            x: at.x + rx * along + rz * out,
+            z: at.z + rz * along - rx * out,
+            hw: d * 0.5,
+            hd: w * 0.5,
+            s: rx,
+            c: rz,
+        };
+    }
+    let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
+    if rec.loc == sim_core::build::LOC_EDGE_XLO {
+        Rect::aligned(x0, z0 + hinge - w * 0.5, x0 + d, z0 + hinge + w * 0.5)
+    } else {
+        Rect::aligned(x0 + hinge - w * 0.5, z0, x0 + hinge + w * 0.5, z0 + d)
+    }
+}
+
 /// Best-so-far, as scalars rather than a candidate struct, so the sweep
 /// allocates nothing.
 struct Best {
@@ -1345,7 +1379,9 @@ impl Best {
         let t = dx * f.0 + dz * f.1;
         let (px, pz) = (dx - t * f.0, dz - t * f.1);
         let perp2 = px * px + pz * pz;
-        let aimed = seen || (t > 0.0 && perp2 <= aim.radius * aim.radius);
+        // A zero radius means only the ray counts: a thing lying exactly on
+        // the look line (`perp2 == 0`) is not aimed at by `0 <= 0`.
+        let aimed = seen || (aim.radius > 0.0 && t > 0.0 && perp2 <= aim.radius * aim.radius);
         let tie = verb.tie();
         // Inside the aimed rank, a thing the eye's ray meets is as near as
         // where the ray meets it: the first thing hit, as a raycast answers.
@@ -1457,34 +1493,28 @@ pub fn resolve(
         // a deployable placed freely, the doorway's middle for a door —
         // which is the metric `deploy.rs`'s `box_in_reach` and the door's
         // own gate use.
-        let (x, z) = rec.xz();
         // A door is aimed at where it hangs, its edge's middle: two doors
         // share a cell (an airlock's front and inner door), and scored at
         // the centre they tie exactly, so the second could never be picked.
         // The shard measures a door's reach to the same point
         // (`DeployRec::hand_xz`), and refuses one on another storey or
         // behind a floor, so neither is offered.
-        let (x, z) = if verb == Verb::Door {
-            if aim
-                .sight
-                .as_ref()
-                .and_then(|s| s.reach)
-                .is_some_and(|r| !r(rec, arch))
-            {
-                continue;
-            }
+        let (x, z, r) = if verb == Verb::Door {
             let (hx, hz) = match aim.cols {
                 Some(cols) => rec.hand_xz(cols),
                 None => sim_core::build::anchor(rec.cx, rec.cz, rec.loc),
             };
-            let r = aim.reach.min(LOOT_REACH_M);
-            if (hx - aim.x) * (hx - aim.x) + (hz - aim.z) * (hz - aim.z) > r * r {
-                continue;
-            }
-            (hx, hz)
+            (hx, hz, aim.reach.min(LOOT_REACH_M))
         } else {
-            (x, z)
+            let (x, z) = rec.xz();
+            (x, z, aim.reach)
         };
+        // Out of reach on the flat is out, before anything dearer is asked:
+        // every record in the store passes here each frame, and the hand's
+        // line-of-sight walk below is up to `HAND_SAMPLES` collision taps.
+        if (x - aim.x) * (x - aim.x) + (z - aim.z) * (z - aim.z) > r * r {
+            continue;
+        }
         // Anything placed freely is picked by looking at it, when there is
         // an eye to look with: the box the ray meets, not the nearest box.
         let mut seen = None;
@@ -1494,7 +1524,19 @@ pub fn resolve(
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                let Some(t) = sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top) else {
+                if s.reach.is_some_and(|r| !r(rec, arch)) {
+                    continue;
+                }
+                let gap = sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top);
+                // Open, the leaf is where the door is drawn: the crosshair
+                // on it closes it, as well as the crosshair in the gap.
+                let leaf = (arch == ARCH_DOOR && rec.open)
+                    .then(|| sight_hit(s, &open_leaf_rect(rec, aim.cols), bottom, top))
+                    .flatten();
+                let Some(t) = (match (gap, leaf) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }) else {
                     continue;
                 };
                 seen = Some(t);
@@ -1533,21 +1575,29 @@ pub fn resolve(
 
     let lying = aim.sight.as_ref().and_then(|s| s.lying);
     for bag in bags {
+        // A bag carries a world position, not a grid cell — it is dropped
+        // where its owner died.
+        let x = bag.qx as f32 * sim_core::movement::POS_XZ_Q;
+        let z = bag.qz as f32 * sim_core::movement::POS_XZ_Q;
+        // The shard loots a bag inside `LOOT_REACH_M` (`Bags::in_reach`),
+        // shorter than a station's arm: offered past it, `E` is told no.
+        // Asked first, so a far bag never pays for the walk below.
+        let r = aim.reach.min(LOOT_REACH_M);
+        if (x - aim.x) * (x - aim.x) + (z - aim.z) * (z - aim.z) > r * r {
+            continue;
+        }
         // Not offered where the shard would refuse it: behind a wall, under
         // a floor.
         if lying.is_some_and(|r| !r((bag.qx, bag.qy, bag.qz), [0; 3])) {
             continue;
         }
-        // A bag carries a world position, not a grid cell — it is dropped
-        // where its owner died.
-        let x = bag.qx as f32 * sim_core::movement::POS_XZ_Q;
-        let z = bag.qz as f32 * sim_core::movement::POS_XZ_Q;
         // With the eye's ray in hand a bag is aimed at only when the ray
         // meets it, as a box is: a pack or a body lying on the floor in
         // front of a box is under the look, not on it, and taking it for
         // aimed handed it every `E` meant for the box (#533, #540). Missed
         // by the ray it still wins when nothing aimed is in reach.
         let mut bag_aim = aim;
+        bag_aim.reach = r;
         let mut seen = None;
         if let Some(s) = aim.sight.as_ref() {
             let (r, h) = bag_pick_m(bag);
@@ -1728,6 +1778,35 @@ mod tests {
         assert_eq!(look(1.0).verb, Verb::None, "the doorway is behind us");
     }
 
+    /// An open door is closed by looking at its swung leaf, not only at the
+    /// empty doorway: walked through and turned round, the leaf is what the
+    /// crosshair is on.
+    #[test]
+    fn an_open_door_is_picked_by_its_leaf() {
+        let (defs, have) = defs_with(&[ARCH_DOOR]);
+        let mut door = rec(1, 1, 0);
+        door.loc = sim_core::build::LOC_EDGE_ZLO;
+        let span = |_: &DeployRec, _: u8| (0.0, 2.2);
+        // Inside the cell, east of the leaf, looking west along it: the
+        // doorway strip is a metre to the north of this line.
+        let (x, z) = (BUILD_CELL_M + 2.0, BUILD_CELL_M + 0.6);
+        let look = |open: bool| {
+            let mut d = door;
+            d.open = open;
+            let mut aim = Aim::new(x, z, -1.0, 0.0);
+            aim.sight = Some(Sight {
+                eye: [x, 1.6, z],
+                dir: [-1.0, 0.0, 0.0],
+                span: &span,
+                reach: None,
+                lying: None,
+            });
+            resolve(aim, &[d], &defs, have, &[])
+        };
+        assert_eq!(look(true).verb, Verb::Door, "the open leaf is aimed at");
+        assert_eq!(look(false).verb, Verb::None, "shut, nothing is there");
+    }
+
     /// The `t > 0` guard: a hearth underfoot must not trump a box you are
     /// looking straight at.
     #[test]
@@ -1755,6 +1834,23 @@ mod tests {
         assert_eq!(p.verb, Verb::Bag);
         assert_eq!(p.handle, 77);
         assert!(p.aimed);
+    }
+
+    /// A bag is offered only inside the shard's loot reach, which is
+    /// shorter than a station's: past it `E` would only be refused.
+    #[test]
+    fn a_bag_past_loot_reach_is_not_offered() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let at = |m: f32| WireBag {
+            id: 77,
+            qx: (m / sim_core::movement::POS_XZ_Q) as i32,
+            qy: 0,
+            qz: 0,
+            kind: 0,
+        };
+        let pick = |m: f32| resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[at(m)]);
+        assert_eq!(pick(LOOT_REACH_M - 0.1).verb, Verb::Bag);
+        assert_eq!(pick(LOOT_REACH_M + 0.5).verb, Verb::None);
     }
 
     /// A body lying in front of a box: looking at the box opens the box,

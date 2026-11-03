@@ -1223,3 +1223,67 @@ fn the_night_brings_more_wolves_and_the_day_takes_them_back() {
     }
     assert_eq!(wolves(&w), by_day, "the night's wolves stayed into the day");
 }
+
+/// A pig the swinger saw standing in front of them and swung at, which has
+/// stepped aside on the shard by the time the blow lands: with the favour
+/// that put the swinger's screen `favour` ticks behind, the pig is struck
+/// where it was drawn (`rewind::Rewind::mob_at`), as a player is. Without
+/// it the same swing whiffs — which is the control that keeps this honest.
+fn swing_at_a_pig_that_stepped_away(favour: u8) -> bool {
+    let (mut w, slot) = hunt_world();
+    w.players[0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    let here = w.mobs.m[slot].body;
+    let pitch = aim_at_mob(&w, 0, slot);
+    let mut aside = here;
+    aside.qx += (3.0 / POS_XZ_Q) as i32;
+    let hp0 = w.mobs.m[slot].hp;
+    let frame = |seq: u16, buttons: u8| InputFrame {
+        seq,
+        buttons,
+        yaw: 0,
+        pitch,
+        sel: 0,
+        ..InputFrame::default()
+    };
+    // Parked in the line for a while, then the click.
+    let mut seq = 0u16;
+    for _ in 0..12 {
+        w.mobs.m[slot].body = here;
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: frame(seq, 0),
+            favour,
+        }]);
+        seq += 1;
+    }
+    // The swing is taken on the click and lands `STRIKE_DELAY_TICKS` later;
+    // the pig steps aside two ticks into that.
+    for k in 0..(sim_core::gather::STRIKE_DELAY_TICKS + 2) {
+        w.mobs.m[slot].body = if k < 2 { here } else { aside };
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: frame(seq, if k == 0 { BTN_PRIMARY } else { 0 }),
+            favour,
+        }]);
+        seq += 1;
+    }
+    w.mobs.m[slot].hp < hp0
+}
+
+#[test]
+fn a_swing_lands_on_the_animal_where_the_swinger_saw_it() {
+    assert!(
+        !swing_at_a_pig_that_stepped_away(0),
+        "control: with no favour the pig has stepped out of the swing"
+    );
+    assert!(
+        swing_at_a_pig_that_stepped_away(8),
+        "rewound, the pig is struck where the swinger's screen drew it"
+    );
+}
