@@ -13,7 +13,9 @@
 // fixed picture of the game (a seed, a camera, an hour), the command that
 // shoots it with no GPU (the game's own: a headless page on SwiftShader, a
 // native client on lavapipe), the PNG that command writes, and its
-// references, each with what to take from it and what to ignore. A pass is
+// references, each with what to take from it and what to ignore. A view may
+// also name the page that draws it in a browser (`page`: its src, the window
+// object it exposes, and the name to shoot), for a board shown in the page. A pass is
 // one run of every shooter, kept under board/passes/<stamp>/ (not committed).
 // Marks are board/marks.jsonl, one line each, append-only: the operator's
 // verdict on a view, which is the bar. Numbers keep a floor under it, never
@@ -59,6 +61,9 @@ export function checkBoard(board, path = 'board.json') {
     ids.add(v.id);
     if (!Array.isArray(v.shoot) || !v.shoot.length || !v.shoot.every((a) => typeof a === 'string')) bad(`view ${v.id}: shoot is the command as an array of strings`);
     if (typeof v.png !== 'string' || !v.png.endsWith('.png')) bad(`view ${v.id}: png is the file its shooter writes`);
+    // optional: the page that draws this view in a browser, for a board shown in the page
+    // (window[api].ready, then window[api].shot(shot) -> base64 PNG, or {png})
+    if (v.page !== undefined && !(v.page && typeof v.page.src === 'string' && /^__?[A-Za-z]\w*$/.test(v.page.api || '') && typeof v.page.shot === 'string')) bad(`view ${v.id}: page is {src, api, shot}`);
     for (const r of v.refs || []) {
       if (!r || typeof r.file !== 'string' || !r.file) bad(`view ${v.id}: a ref needs a file`);
       if (typeof r.take !== 'string' || !r.take.trim()) bad(`view ${v.id}: ref ${r.file} needs what to take from it`);
