@@ -24,7 +24,7 @@ use protocol::EntityState;
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::build::{anchor, build_cell_of, BUILD_REACH_M, LOC_PLANE};
 use sim_core::deploy::{
-    cell_center, is_edge_loc, BagAnchor, ARCH_BAG, BAG_CAP, BODY_LOCS, FEED_CHUNK,
+    cell_center, is_edge_loc, BagAnchor, ARCH_BAG, ARCH_BOX, BAG_CAP, BODY_LOCS, FEED_CHUNK,
     REFUSE_D_BAG_CAP, REFUSE_D_CLAIM, REFUSE_D_COST, UPKEEP_PERIOD_TICKS,
 };
 use sim_core::footprint::Pose;
@@ -150,6 +150,9 @@ pub struct Home {
     raid: Option<u32>,
     /// The address a deploy was sent to, until its answer.
     asked: Option<(u16, u16, u8, u8)>,
+    /// What is on its way is a sleeping bag (the own-bag list's), not a
+    /// box for the team's floor.
+    asked_bag: bool,
     verdict: Option<Placed>,
     /// The server said it has all the bags it may have down: none of the
     /// ones it knows of this session, maybe, but the cap stands until the
@@ -186,6 +189,7 @@ impl Home {
             fought: None,
             raid: None,
             asked: None,
+            asked_bag: false,
             verdict: None,
             capped: false,
             bag_failed: None,
@@ -291,7 +295,15 @@ impl Home {
     /// A deploy is on its way to this address.
     pub fn asked(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
         self.asked = Some((cx, cz, level, loc));
+        self.asked_bag = true;
         self.verdict = None;
+    }
+
+    /// A deploy that is not a bag is on its way to this address: its
+    /// verdict is wanted, and it goes on no bag list.
+    pub fn asked_kit(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        self.asked(cx, cz, level, loc);
+        self.asked_bag = false;
     }
 
     /// A placement broadcast. Only the address it asked for is its own.
@@ -299,6 +311,9 @@ impl Home {
         if deploy && self.asked == Some((cx, cz, level, loc)) {
             self.asked = None;
             self.verdict = Some(Placed::Yes);
+            if !self.asked_bag {
+                return;
+            }
             self.stats.bags_placed += 1;
             if let Some(slot) = self.bags.iter_mut().find(|b| b.is_none()) {
                 *slot = Some((cx, cz, level));
@@ -596,6 +611,25 @@ pub fn bag_row(core: &ClientCore) -> Option<(u16, u16)> {
     })
 }
 
+/// The box the pack holds to put down, as `(row, item)`: the first
+/// storage-box row whose item is in the pack.
+pub fn box_row(core: &ClientCore) -> Option<(u16, u16)> {
+    let defs = &core.deploy_defs;
+    (0..core.deploy_defs_have.min(defs.def_count)).find_map(|row| {
+        let def = defs.defs[row as usize];
+        (def.arch == ARCH_BOX && def.hp > 0 && def.item != 0 && count_of(core, def.item) > 0)
+            .then_some((row, def.item))
+    })
+}
+
+fn count_of(core: &ClientCore, item: u16) -> u32 {
+    core.inv[..INV_SLOTS]
+        .iter()
+        .filter(|s| s.count > 0 && s.item == item)
+        .map(|s| u32::from(s.count))
+        .sum()
+}
+
 /// Where the backpack from its last death lies, while it stands.
 pub fn death_bag(core: &ClientCore) -> Option<[f32; 3]> {
     if core.own_bag == 0 {
@@ -704,6 +738,7 @@ pub const FLOOR_NEAR_M: f32 = 0.6;
 /// the sim's own placement rule (`deploy::body_site`) takes over the
 /// mirror, clear of every doorway and not a cell already refused. The
 /// nearest to the feet wins: `(cx, cz, pose, the floor's height)`.
+#[allow(clippy::too_many_arguments)]
 pub fn floor_spot(
     core: &ClientCore,
     seed: u64,
@@ -712,8 +747,8 @@ pub fn floor_spot(
     home: [f32; 2],
     within: f32,
     refused: &[(u16, u16)],
+    row: u16,
 ) -> Option<(u16, u16, Pose, f32)> {
-    let (row, _) = bag_row(core)?;
     let def = core.deploy_defs.defs[usize::from(row)];
     let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
     let (bx, bz) = (build_cell_of(x), build_cell_of(z));
@@ -758,7 +793,7 @@ pub fn floor_spot(
                         core.deploys.entries(),
                         &core.deploy_defs,
                         def.placement,
-                        ARCH_BAG,
+                        def.arch,
                         cx,
                         cz,
                         0,
@@ -856,9 +891,30 @@ pub struct BagJob {
     sent: Option<u32>,
     refused: [(u16, u16); SPOT_TRIES],
     tries: usize,
+    /// A storage box rather than a sleeping bag (`Goal::AddBox`): always
+    /// on a floor, and on no bag list.
+    storage: bool,
 }
 
 impl BagJob {
+    /// A box for the built floor within [`crate::agent::supply::HOME_M`]
+    /// of `home`: more room for the team's base.
+    pub fn box_on_floor(home: [f32; 2]) -> Self {
+        Self {
+            storage: true,
+            ..Self::on_floor(home)
+        }
+    }
+
+    pub fn storage(&self) -> bool {
+        self.storage
+    }
+
+    /// The cell the deploy went to.
+    pub fn cell(&self) -> Option<(u16, u16)> {
+        self.cell
+    }
+
     /// A bag for the built floor within [`crate::agent::supply::HOME_M`]
     /// of `home`.
     pub fn on_floor(home: [f32; 2]) -> Self {
@@ -891,7 +947,7 @@ impl BagJob {
         tick: u32,
     ) -> Do {
         let step = self.next(core, seed, haven, body, hands, home, tick);
-        if let Do::Fail(_) = step {
+        if let (Do::Fail(_), false) = (step, self.storage) {
             home.bag_failed([body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q], tick);
         }
         step
@@ -908,8 +964,24 @@ impl BagJob {
         home: &mut Home,
         tick: u32,
     ) -> Do {
-        let Some((row, item)) = bag_row(core) else {
-            return Do::Fail(Why::NoRecipe);
+        let kit = if self.storage {
+            box_row(core)
+        } else {
+            bag_row(core)
+        };
+        let Some((row, item)) = kit else {
+            // The box went down and left the pack before its broadcast.
+            if self.storage && self.sent.is_some() {
+                if let Some(Placed::Yes) = home.take_verdict() {
+                    return Do::Done;
+                }
+                return Do::Go(Intent::IDLE);
+            }
+            return Do::Fail(if self.storage {
+                Why::MissingInputs
+            } else {
+                Why::NoRecipe
+            });
         };
         if let Some(at) = self.sent {
             match home.take_verdict() {
@@ -973,6 +1045,7 @@ impl BagJob {
                 home,
                 crate::agent::supply::HOME_M,
                 refused,
+                row,
             ),
             (None, None) => bag_cell(core, seed, haven, body, refused).map(|(cx, cz)| {
                 let (mx, mz) = cell_center(cx, cz);

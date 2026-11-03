@@ -172,6 +172,9 @@ pub enum Goal {
     /// Put a sleeping bag down near here: somewhere to wake that is not
     /// the beach.
     Bag,
+    /// The team's boxes are full: put another box down on the base's floor,
+    /// crafting one first when the pack holds none (#551, #552).
+    AddBox,
     /// Walk back to the backpack this body dropped where it died, and take
     /// what it held.
     Recover,
@@ -333,7 +336,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 42] = [
+    pub const FIXED: [Goal; 43] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -376,6 +379,7 @@ impl Goal {
         Goal::KeepShop,
         Goal::HandOver,
         Goal::Authorize,
+        Goal::AddBox,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -396,6 +400,7 @@ impl Goal {
             Goal::Hunt => "hunt",
             Goal::Heal => "heal",
             Goal::Bag => "bag",
+            Goal::AddBox => "add_box",
             Goal::Recover => "recover",
             Goal::Build => "build",
             Goal::GoHome => "go_home",
@@ -531,6 +536,7 @@ impl Goal {
             Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
             Goal::Heal => "Use bandages or a medkit.".into(),
             Goal::Bag => "Put a sleeping bag down to wake beside: here, or on the team's floor if you live there.".into(),
+            Goal::AddBox => "The team's boxes are full: put the box in your pack down on the team's floor for more room.".into(),
             Goal::Recover => "Walk back to the death backpack and take what it holds.".into(),
             Goal::Build => "Build the next part of the base from the pack; choose a plot if none.".into(),
             Goal::GoHome => "Walk home and in, shutting the doors.".into(),
@@ -2231,6 +2237,26 @@ impl Summary {
     }
 }
 
+/// Living in a base whose boxes are all full: put another box down, or
+/// make one to put down (#551, #552).
+fn more_room(s: &Summary) -> Option<(Goal, &'static str)> {
+    if !(s.team.home_full && s.team.lives_there) {
+        return None;
+    }
+    if s.offers(Goal::AddBox) {
+        return Some((
+            Goal::AddBox,
+            "scripted: the team's boxes are full; another one",
+        ));
+    }
+    // One in the pack that cannot go down yet (the floor refused it a
+    // moment ago) is not a reason to make a second.
+    let item = crate::agent::build::BOX_ITEM;
+    let craft = Goal::Craft(Name::new(item.as_bytes())?);
+    (s.count_of(item) == 0 && s.offers(craft))
+        .then_some((craft, "scripted: the team's boxes are full; a box for them"))
+}
+
 /// A decision's one-line reason: printable ASCII, whitespace collapsed,
 /// truncated. Never a prompt, a key or a raw response body.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3612,6 +3638,11 @@ impl Scripted {
                 }
             }
         }
+        // A base whose boxes are full gets another before anything more is
+        // hauled to it.
+        if let Some(pick) = more_room(s) {
+            return pick;
+        }
         // A crewmate's job, once it lives in the crew's base.
         if let Some(pick) = society_work(s) {
             return pick;
@@ -4787,6 +4818,49 @@ mod tests {
         s.items[2] = (name("Hunting Bow"), 1);
         s.items_len = 3;
         assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Wooden Arrow")));
+    }
+
+    /// #551, #552: living in a base whose boxes are all full, a scripted
+    /// body makes a box when it has none, then puts it down; one in the
+    /// pack that cannot go down yet is no reason to make another.
+    #[test]
+    fn a_full_team_base_gets_another_box() {
+        let name = |n: &str| Name::new(n.as_bytes()).unwrap();
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.bags = 1;
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.team.home.add(5.0, 0);
+        s.team.home_boxes = 1;
+        s.team.lives_there = true;
+        s.team.bag_there = true;
+        s.offer(Goal::Explore);
+        s.offer(Goal::GatherWood);
+        s.trees.add(10.0, 0);
+        let small_box = name(crate::agent::build::BOX_ITEM);
+        s.craftable[0] = small_box;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(small_box));
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Craft(small_box),
+            "no box while there is room"
+        );
+        s.team.home_full = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(small_box));
+        s.items[2] = (small_box, 1);
+        s.items_len = 3;
+        assert_ne!(
+            scripted.pick(&s).0,
+            Goal::Craft(small_box),
+            "one in the pack is enough"
+        );
+        s.offer(Goal::AddBox);
+        assert_eq!(scripted.pick(&s).0, Goal::AddBox);
     }
 
     #[test]

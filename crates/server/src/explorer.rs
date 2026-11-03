@@ -713,6 +713,9 @@ pub struct Memory {
     pub box_full_held: bool,
     /// Every one of the team's boxes was full when last opened.
     pub home_full: bool,
+    /// ...and it could put another one down there: a box in the pack, a
+    /// way onto the floor, room in what it keeps, no try failed lately.
+    pub add_box: bool,
     pub home_holds: [(u16, u32); crate::mind::SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
     pub home_boxes: u8,
@@ -1043,6 +1046,7 @@ pub struct Survivor {
     bag_leg: BagLeg,
     bag_knocked: bool,
     team_bag_failed: Option<u32>,
+    add_box_failed: Option<u32>,
     recover_job: RecoverJob,
     seen: Seen,
     /// The base it is building, and the walk through its doors.
@@ -1321,6 +1325,7 @@ impl Survivor {
             bag_leg: BagLeg::Here,
             bag_knocked: false,
             team_bag_failed: None,
+            add_box_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
             builder: Builder::new().keyed(!opts.code_doors && opts.society.is_none()),
@@ -2495,10 +2500,15 @@ impl Survivor {
         });
         // Living in the team's base, its bag goes down in there: in to the
         // cupboard (or the first box, if it knows none), then the floor.
-        if goal == Goal::Bag && self.memory.team_bag {
+        // A box for a full base goes the same way.
+        if (goal == Goal::Bag && self.memory.team_bag) || goal == Goal::AddBox {
             if let Some(home) = self.shared.anchor() {
                 self.bag_leg = BagLeg::In;
-                self.bag_job = BagJob::on_floor(home);
+                self.bag_job = if goal == Goal::AddBox {
+                    BagJob::box_on_floor(home)
+                } else {
+                    BagJob::on_floor(home)
+                };
                 self.home_job = HomeJob::new(match self.shared.hearth() {
                     Some(h) => {
                         let (x, z) = cell_center(h.cx, h.cz);
@@ -2673,6 +2683,7 @@ impl Survivor {
             | Goal::Drink
             | Goal::Recover
             | Goal::Bag
+            | Goal::AddBox
             | Goal::Loot
             | Goal::Cook
             | Goal::Warm
@@ -2801,7 +2812,7 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Drink => self.drink(core, body, tick),
-            Goal::Bag => self.place_bag(core, body, tick),
+            Goal::Bag | Goal::AddBox => self.place_bag(core, body, tick),
             Goal::Recover => self.recover(core, body, tick),
             Goal::Build if elapsed >= BUILD_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -6049,7 +6060,11 @@ impl Survivor {
                 if self.queue(|buf| {
                     protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, pose, buf)
                 }) {
-                    self.home.asked(cx, cz, 0, loc);
+                    if self.bag_job.storage() {
+                        self.home.asked_kit(cx, cz, 0, loc);
+                    } else {
+                        self.home.asked(cx, cz, 0, loc);
+                    }
                     self.bag_job.deploy_sent(tick);
                 }
                 intent
@@ -6058,17 +6073,30 @@ impl Survivor {
                 if let Some(a) = self.goal.as_mut() {
                     a.gained += 1;
                 }
+                if let (true, Some((cx, cz))) = (self.bag_job.storage(), self.bag_job.cell()) {
+                    self.shared.adopt_box(core, cx, cz);
+                }
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
             Do::Fail(why) => {
                 if self.bag_leg != BagLeg::Here {
-                    self.team_bag_failed = Some(tick);
+                    self.floor_failed(tick);
                 }
                 self.end_goal(tick, Outcome::Failed(why));
                 Intent::IDLE
             }
             Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// A trip to put something down on the team's floor came to nothing:
+    /// that kind of trip waits a while.
+    fn floor_failed(&mut self, tick: u32) {
+        if self.bag_job.storage() {
+            self.add_box_failed = Some(tick);
+        } else {
+            self.team_bag_failed = Some(tick);
         }
     }
 
@@ -6085,7 +6113,7 @@ impl Survivor {
                 match over {
                     None => Some(intent),
                     Some(Outcome::Failed(why)) => {
-                        self.team_bag_failed = Some(tick);
+                        self.floor_failed(tick);
                         self.end_goal(tick, Outcome::Failed(why));
                         Some(Intent::IDLE)
                     }
@@ -6115,7 +6143,7 @@ impl Survivor {
                         && !self.shared.crewed()
                         && (self.bag_knocked || self.shared.hearth_unlocked(core)) =>
                     {
-                        self.team_bag_failed = Some(tick);
+                        self.floor_failed(tick);
                         self.end_goal(tick, Outcome::Failed(Why::Locked));
                     }
                     // On the crew, or no way to know: the floor says.
@@ -7314,6 +7342,14 @@ impl Survivor {
             self.memory.home_holds = rows;
             self.memory.home_boxes = self.shared.box_count() as u8;
             self.memory.home_full = self.shared.full();
+            self.memory.add_box = self.memory.home_full
+                && self.memory.shared
+                && self.shared.box_room()
+                && self.shared.may_bag(core, self.team_code.is_some())
+                && home::box_row(core).is_some()
+                && self
+                    .add_box_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= TEAM_BAG_RETRY_TICKS);
             self.memory.shared = self.shared_home();
             let mut wants = [(0u16, 0u32); WANT_ROWS];
             self.wants_len = if self.book.ready() {
@@ -9139,6 +9175,11 @@ pub fn observe(
             s.offer(Goal::Defend);
         }
     }
+    // A full base gets another box, whatever the last trip there made of
+    // the full one.
+    if memory.add_box && !senses.hostile {
+        s.offer(Goal::AddBox);
+    }
     if s.team.home.count > 0 && !senses.hostile && !memory.deliver_held {
         if memory.deliver {
             s.offer(Goal::Deliver);
@@ -9149,7 +9190,7 @@ pub fn observe(
             (Goal::GatherOre, Goal::SupplyOre),
             (Goal::GatherHemp, Goal::SupplyHemp),
         ] {
-            if s.offers(gather) && !memory.box_full_held && !memory.home_full {
+            if s.offers(gather) && !memory.box_full_held {
                 s.offer(run);
             }
         }
