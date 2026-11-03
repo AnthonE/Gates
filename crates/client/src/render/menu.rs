@@ -2054,14 +2054,15 @@ pub fn begin_connect(
     let hash = pin.filter(|p| p.addr == addr).map(|p| p.hash.clone());
     // Every way into this screen (a row, a friend, travel, a launcher link)
     // sets only `addr`, so a listed shard's other ports are looked up here.
-    let alts: Vec<String> = menu
-        .and_then(|m| {
-            m.rows
-                .iter()
-                .find(|r| r.addr == addr)
-                .map(|r| r.alt_addrs.clone())
-        })
-        .unwrap_or_default();
+    // A launcher join arrives before the list has loaded, so an official
+    // address with no row tries our forwarded web port anyway.
+    let listed = menu.and_then(|m| {
+        m.rows
+            .iter()
+            .find(|r| r.addr == addr && !r.direct)
+            .map(|r| r.alt_addrs.clone())
+    });
+    let alts: Vec<String> = listed.unwrap_or_else(|| official_alts(&addr));
     connecting.fallbacks = alts.len();
     connecting.waited_s = 0.0;
     if watch {
@@ -2114,6 +2115,22 @@ pub fn begin_connect(
         let _ = tx.send(result);
     });
     connecting.rx = Some(rx);
+}
+
+/// The port official shards also answer on (`ops/gates-udp443.nft`), for a
+/// connect that has no listed row to read `alt_addrs` from.
+const OFFICIAL_ALT_PORT: u16 = 443;
+
+fn official_alts(addr: &str) -> Vec<String> {
+    match addr.rsplit_once(':') {
+        Some((host, port))
+            if crate::ui::servers::is_official_addr(addr)
+                && port != OFFICIAL_ALT_PORT.to_string() =>
+        {
+            vec![format!("{host}:{OFFICIAL_ALT_PORT}")]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// `attempt`, abandoned after [`ADDR_TIMEOUT_S`] if the shard has not asked
@@ -2290,6 +2307,14 @@ fn connect_timeout(address: protocol::Address) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unlisted_official_address_also_tries_443() {
+        assert_eq!(official_alts("game.elopros.com:61234"), ["game.elopros.com:443"]);
+        assert!(official_alts("game.elopros.com:443").is_empty());
+        assert!(official_alts("shard.example:61234").is_empty());
+        assert!(official_alts("127.0.0.1:4433").is_empty());
+    }
 
     #[test]
     fn the_direct_row_is_always_there() {

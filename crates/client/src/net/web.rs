@@ -582,10 +582,48 @@ pub(crate) async fn open(server: &str, cert_hash: Option<&str>) -> Result<WebTra
 
     let transport = WebTransport::new_with_options(&url, &opts)
         .map_err(|e| js_err(&format!("connect {url}"), &e))?;
-    JsFuture::from(transport.ready())
+    // Raced against our own deadline, because a network that drops the port
+    // leaves `ready` pending for as long as the browser cares to wait, and
+    // the page has another port of the same shard to try (`alt_addrs`).
+    // Closing the transport is what cancels it; a page cannot drop a promise.
+    let ready = js_sys::Promise::race(&js_sys::Array::of2(&transport.ready(), &deadline()));
+    let won = JsFuture::from(ready)
         .await
         .map_err(|e| js_err("connect", &e))?;
+    if won.as_string().as_deref() == Some(DEADLINE_TAG) {
+        transport.close();
+        return Err(format!(
+            "connect: no answer from {server} after {}s",
+            HANDSHAKE_TIMEOUT_MS / 1000
+        ));
+    }
     Ok(transport)
+}
+
+/// How long the WebTransport handshake gets before [`open`] gives up. A
+/// reachable shard answers in well under a second, even across an ocean.
+/// The desktop's per-address limit is the same (`render::menu::ADDR_TIMEOUT_S`).
+const HANDSHAKE_TIMEOUT_MS: i32 = 8_000;
+const DEADLINE_TAG: &str = "gates:handshake-deadline";
+
+/// A promise that resolves to [`DEADLINE_TAG`] after [`HANDSHAKE_TIMEOUT_MS`].
+/// Through the global `setTimeout`, so it works wherever this module runs.
+/// With no `setTimeout` at all it never resolves, and the browser's own
+/// timeout is the limit again.
+fn deadline() -> js_sys::Promise {
+    js_sys::Promise::new(&mut |resolve, _reject| {
+        let set = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("setTimeout"))
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+        if let Some(set) = set {
+            let _ = set.call3(
+                &JsValue::UNDEFINED,
+                &resolve,
+                &JsValue::from(HANDSHAKE_TIMEOUT_MS),
+                &JsValue::from_str(DEADLINE_TAG),
+            );
+        }
+    })
 }
 
 impl Drop for WebWire {
