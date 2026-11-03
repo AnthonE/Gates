@@ -1896,8 +1896,11 @@ fn the_grip_line_runs_through_the_fist_and_clear_of_it() {
         "a {R} cm haft on the grip line cuts {:.2} cm into the hand",
         R - clear
     );
+    // At REST, before the fingers close (`render::fingers`), which is when
+    // they come round the open side: the line runs through the fingers'
+    // tunnel now, not across the palm, and the open curl leaves two sides.
     assert!(
-        held >= 15,
+        held >= 14,
         "the hand reaches round the grip line on only {held} of 16 sides"
     );
 }

@@ -408,7 +408,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         key: "bat",
         src: HeldSrc::Glb("models/held/bat.glb"),
         height_m: 0.840,
-        grip_frac: 0.12,
+        grip_frac: 0.135,
         scale: 1.0,
         lay: -1.047,
         pose_yaw: 2.793,
@@ -773,7 +773,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         "metal_blade",
         "models/held/metal_blade.glb",
         0.420,
-        0.08,
+        0.17,
         0.90,
     ),
     HeldModelDef::upright(
@@ -1067,7 +1067,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
         0.14,
         1.00,
     ),
-    HeldModelDef::blade("longsword", "models/held/longsword.glb", 1.100, 0.10, 0.90),
+    HeldModelDef::blade("longsword", "models/held/longsword.glb", 1.100, 0.13, 0.90),
     HeldModelDef::hafted(
         "salvaged_axe",
         "models/held/salvaged_axe.glb",

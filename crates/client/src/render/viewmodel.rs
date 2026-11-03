@@ -464,14 +464,20 @@ pub struct InHand;
 /// and carries no anatomy, so the haft crossed the knuckles about 90° off
 /// the thumb and the frame showed an axe floating over an open palm. In this
 /// bone frame the fingers run up +Y and curl toward +X (the palm side), the
-/// thumb sits out on +X and toward −Z, and the line runs diagonally across
-/// the palm from the heel to the thumb–index web: a 3.2 cm rod on it clears
-/// every vertex of the hand and has hand on all sixteen sides.
+/// thumb sits out on +X and toward −Z.
+///
+/// The line runs through the tunnel the curled fingers make, not diagonally
+/// across the palm. The diagonal (heel to thumb–index web, 33° off the
+/// tunnel) left the ring and pinky curling beside the haft instead of round
+/// it, so the handle lay on the fingertips (operator, 2026-11-03: *"the hand
+/// doesnt grip it correctly"*). Here every finger closes round a 3.4 cm rod
+/// to the palm ([`super::fingers::closed`]); at rest the rod still clears
+/// the hand and has hand on fifteen of sixteen sides.
 /// `tests/viewmodel_arms.rs` re-measures both off the file.
-pub const VIEWMODEL_SEAT: Vec3 = Vec3::new(4.1, 14.2, -2.4);
+pub const VIEWMODEL_SEAT: Vec3 = Vec3::new(2.25, 12.65, 1.26);
 /// The grip line's direction through [`VIEWMODEL_SEAT`], butt to head, in the
-/// same bone frame: 41° off the curled fingers' channel, toward the thumb.
-pub const VIEWMODEL_SEAT_DIR: Vec3 = Vec3::new(0.185, 0.531, -0.827);
+/// same bone frame: 21° off the fingers' tunnel, toward the thumb.
+pub const VIEWMODEL_SEAT_DIR: Vec3 = Vec3::new(0.459, 0.277, -0.844);
 /// How fast the hand turns to a newly drawn row's grip, 1/s.
 pub const VIEWMODEL_HAND_RATE: f32 = 12.0;
 
