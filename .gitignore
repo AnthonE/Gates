@@ -54,3 +54,7 @@ assets/models/To Examine/
 # Agent worktrees parked under .claude/ (whole duplicate checkouts).
 # .claude/skills/ is tracked.
 .claude/worktrees/
+
+# The reference board's passes (ci/board.mjs): pictures, regenerated, never shared.
+board/passes/
+/shots/

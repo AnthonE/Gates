@@ -55,9 +55,9 @@ ORDER = ["NONE", "CLIENT", "SHARD", "WIRE", "WIPE"]
 # are not here because the server crate depends on both.
 CLIENT = ("crates/client/", "crates/client-web/", "crates/sound/", "crates/sound-worklet/",
           "assets/")
-# Nothing a player runs: docs, tooling, ops, and tests (a golden moving is a
+# Nothing a player runs: docs, tooling (the reference board too), ops, and tests (a golden moving is a
 # PIN above, read by value, not by its file).
-NO_DEPLOY = ("posts/", "reference/", "findings/", "ci/", "ops/", ".github/", ".claude/",
+NO_DEPLOY = ("posts/", "reference/", "findings/", "ci/", "ops/", ".github/", ".claude/", "board/",
              "docs/", ".gitignore")
 TESTS = re.compile(r"^crates/[^/]+/(tests|benches|examples)/")
 
