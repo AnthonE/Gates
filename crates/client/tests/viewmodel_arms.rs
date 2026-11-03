@@ -1952,7 +1952,7 @@ fn a_fitted_hand_holds_the_item_where_the_framing_put_it() {
             "{}: the haft runs {haft:?} through {seat:?} in the hand, not the grip line",
             def.key
         );
-        let (turn, twist, shift) = hand_set(fit);
+        let (_, turn, twist, shift) = hand_set(fit, if def.arm_turn { 1.0 } else { 0.0 });
         let bend = turn_of(Quat::from_rotation_y(-twist) * turn);
         println!(
             "{:16} wrist {:5.1}°  forearm {:+6.1}°  arm {:.1} cm",

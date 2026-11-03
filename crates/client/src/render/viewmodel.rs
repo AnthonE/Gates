@@ -529,14 +529,19 @@ pub fn hand_fit(def: Option<&HeldModelDef>) -> HandFit {
     }
 }
 
-/// What the arm does to put the bone at `fit`, relative to the hold clip:
-/// the hand bone's turn in its own frame, the part of it about the forearm's
-/// long axis (radians, which [`pose_hand`] hands to the forearm so the wrist
-/// only bends), and the shift of the whole arm in the [`HeldRig`] frame,
-/// metres.
-pub fn hand_set(fit: HandFit) -> (Quat, f32, Vec3) {
+/// What the arm does to put the bone at `fit`, relative to the hold clip.
+///
+/// `arm` is how much of the hand's turn the whole arm takes, 0..=1, turning
+/// about the wrist (a row's `arm_turn`, eased): the arm's turn in the
+/// [`HeldRig`] frame comes back first. What it leaves is the hand bone's turn
+/// in its own frame and the part of that about the forearm's long axis
+/// (radians, which [`pose_hand`] hands to the forearm so the wrist only
+/// bends). Last, the shift of the whole arm that puts the wrist where `fit`
+/// has it, metres.
+pub fn hand_set(fit: HandFit, arm: f32) -> (Quat, Quat, f32, Vec3) {
     let rest = hand_rest();
-    let turn = rest.rot.inverse() * fit.rot;
+    let whole = Quat::IDENTITY.slerp(fit.rot * rest.rot.inverse(), arm);
+    let turn = rest.rot.inverse() * whole.inverse() * fit.rot;
     // The twist about +Y. The forearm and the hand share that axis on this
     // rig (the clip's hand is a 30° turn about it), so the forearm can carry
     // the twist and leave the wrist the swing.
@@ -546,7 +551,12 @@ pub fn hand_set(fit: HandFit) -> (Quat, f32, Vec3) {
     } else if twist < -std::f32::consts::PI {
         twist += std::f32::consts::TAU;
     }
-    (turn, twist, tilt() * (fit.pos - rest.pos))
+    (
+        tilt() * whole * tilt().inverse(),
+        turn,
+        twist,
+        tilt() * (fit.pos - rest.pos),
+    )
 }
 
 /// The grip a row is held by: the item's transform in the `RightHand` bone's
@@ -1380,7 +1390,10 @@ pub struct Motion {
     fit: Option<HandFit>,
     /// This frame's [`hand_set`] — the hand's turn, the forearm's share of
     /// it and the arm's shift — for [`pose_hand`] to write after the clip.
-    set: Option<(Quat, f32, Vec3)>,
+    set: Option<(Quat, Quat, f32, Vec3)>,
+    /// How much of the hand's turn the whole arm takes, 0..=1, eased with
+    /// `fit` (`ui::hold::HeldModelDef::arm_turn`).
+    arm: f32,
     /// How closed the fist is on the row in it, 0..=1, eased with `fit`
     /// (`fingers::pose`).
     grip: f32,
@@ -2935,7 +2948,13 @@ pub fn animate(
     if let Ok((mut it, in_hand)) = item.single_mut() {
         if in_hand {
             *it = item_pose(Some(fit), snap * aim);
-            m.set = Some(hand_set(fit));
+            let arm = if def.filter(|_| !holstered).is_some_and(|d| d.arm_turn) {
+                1.0
+            } else {
+                0.0
+            };
+            m.arm += (arm - m.arm) * k;
+            m.set = Some(hand_set(fit, m.arm));
             // The fist closes on a row the hand fits round; a palmed row or
             // an empty hand keeps the rest curl.
             if def
@@ -2967,10 +2986,15 @@ pub fn pose_hand(
     let Ok((arms, mut root)) = arms.single_mut() else {
         return;
     };
-    let (Some(hand), Some((turn, twist, shift))) = (arms.hand, m.set) else {
+    let (Some(hand), Some((whole, turn, twist, shift)), Some(fit)) = (arms.hand, m.set, m.fit)
+    else {
         return;
     };
-    root.translation = VIEWMODEL_ARMS + shift;
+    // The whole arm turns about the wrist, which `shift` has just put where
+    // `fit` wants it.
+    let wrist = VIEWMODEL_HOLD + tilt() * fit.pos;
+    root.translation = wrist + whole * (VIEWMODEL_ARMS + shift - wrist);
+    root.rotation = whole * Quat::from_rotation_y(std::f32::consts::PI);
     // Without a forearm the wrist takes the whole turn: the same hand, a
     // worse wrist, and never an item hung off a hand that did not turn.
     let twist = match arms.forearm.and_then(|f| bones.get_mut(f).ok()) {
