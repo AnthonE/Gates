@@ -1045,7 +1045,7 @@ pub const HELD_MODELS: [HeldModelDef; 131] = [
     HeldModelDef::arrow("fire_arrow", "models/held/fire_arrow.glb", 0.790),
     // Rust's tree items (2026-10-17; Meshy, 2026-10-18). The head-heavy
     // ones take the hafted tools' carry; the swords take `blade`'s, leaned
-    // across the frame with the arm turned to show the thumb. Each `reach_cm` in `weapons.toml` is
+    // near upright with the arm turned to show the thumb. Each `reach_cm` in `weapons.toml` is
     // its row's length past the grip (`tests/melee_reach.rs`).
     HeldModelDef::hafted(
         "salvaged_hammer",
@@ -1304,20 +1304,21 @@ pub fn skin_model(row: usize, skin: u16) -> Option<usize> {
         .position(|s| s.catalog == skin && s.key == key)
 }
 
-/// A blade's carry: the hold-frame lay and yaw that lean it to 11 o'clock
-/// (operator, 2026-11-03: the fist read as an open palm with the sword
-/// lying on it). The bat's carry, which the swords had, can only be closed
-/// on by a hand that shows the eye its palm — the hold clip's arm comes in
-/// from the lower right, and a fist turned to show its back on that carry
-/// puts the elbow in the middle of the frame. Leaned this way, a straight
-/// wrist on an arm from below shows the thumb wrapped over the fist.
-/// Picked off a sweep of every lay, yaw and hand roll in 10° steps for the
-/// elbow below the frame, the thumb toward the eye and the point on screen.
-pub const BLADE_LAY: f32 = 0.524;
+/// A blade's carry: the hold-frame lay and yaw that stand it near upright,
+/// a few degrees left of it (operator, 2026-11-03: the fist read as an open
+/// palm with the sword lying on it, then *"more vertical"*). The bat's
+/// carry, which the swords had, can only be closed on by a hand that shows
+/// the eye its palm — the hold clip's arm comes in from the lower right, and
+/// a fist turned to show its back on that carry puts the elbow in the middle
+/// of the frame. Stood this way, a straight wrist on an arm from below shows
+/// the thumb wrapped over the fist. Picked off a sweep of lay, yaw and hand
+/// roll in 5° steps for the elbow below the frame, the thumb toward the eye,
+/// the point on screen and the blade within 20° of upright.
+pub const BLADE_LAY: f32 = 0.436;
 /// See [`BLADE_LAY`].
-pub const BLADE_YAW: f32 = 1.396;
+pub const BLADE_YAW: f32 = 0.262;
 /// The hand's roll on a blade's haft. See [`BLADE_LAY`].
-pub const BLADE_ROLL: f32 = -0.873;
+pub const BLADE_ROLL: f32 = -0.960;
 
 /// The pose a head-heavy hafted tool is carried in — the axe's, shared by the
 /// pickaxe and the hammer.
@@ -1748,7 +1749,7 @@ impl HeldModelDef {
         Self::kit_borne(key, height_m, grip_frac, scale)
     }
 
-    /// A blade: leaned to 11 o'clock across the frame, the thumb side of the
+    /// A blade: stood near upright, the thumb side of the
     /// fist toward the eye and the forearm coming up from below
     /// ([`BLADE_LAY`]), chopped down through the crosshair.
     const fn blade(
