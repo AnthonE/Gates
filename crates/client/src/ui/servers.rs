@@ -96,6 +96,9 @@ pub struct Listing {
     pub ping_ms: Option<u32>,
     /// Where this row's live count is polled from, if anywhere.
     pub status_url: Option<String>,
+    /// The same shard on other ports, dialled in order when `addr` gets no
+    /// answer (`shardlist::Shard::alt_addrs`).
+    pub alt_addrs: Vec<String>,
     /// The wire the shard speaks, off its status poll (`Status::proto`).
     pub proto: Option<u32>,
     /// Unix seconds of the shard's next wipe, off its status poll; 0 is none.
@@ -162,6 +165,7 @@ impl Listing {
             max_players: None,
             ping_ms: None,
             status_url: None,
+            alt_addrs: Vec::new(),
             proto: None,
             next_wipe: None,
             agents: None,
@@ -189,6 +193,7 @@ impl Listing {
             max_players: s.max_players,
             ping_ms: s.ping_ms,
             status_url: s.status_url.clone(),
+            alt_addrs: s.alt_addrs.clone(),
             proto: None,
             next_wipe: None,
             agents: None,

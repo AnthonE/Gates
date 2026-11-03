@@ -78,6 +78,10 @@ pub const MAX_SHARDS: usize = 64;
 /// menu; a megabyte of name is a display bug at best.
 pub const MAX_FIELD_BYTES: usize = 96;
 
+/// Most `alt_addrs` a row may carry. Each one costs a player on a blocked
+/// network a timeout. `ci/shardlist.py` writes no more than this.
+pub const MAX_ALT_ADDRS: usize = 3;
+
 /// Longest `status_url` a row may carry, in bytes. Its own cap because a url
 /// is legitimately longer than a name — `MAX_FIELD_BYTES` would refuse an
 /// honest one — and shorter than the document cap, because this string is
@@ -125,6 +129,12 @@ pub struct Shard {
     /// wins over the file.
     #[serde(default)]
     pub agents_only: Option<bool>,
+    /// The same shard on other ports (UDP 443 forwarded to the bind), tried
+    /// in order when `addr` gets no answer. Optional and additive; [`parse`]
+    /// drops any that is malformed or on another host, since the certificate
+    /// and the sign-in name belong to the host.
+    #[serde(default)]
+    pub alt_addrs: Vec<String>,
 }
 
 impl Shard {
@@ -319,7 +329,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Shard>, String> {
             }
         ));
     }
-    let doc: Doc = serde_json::from_value(v).map_err(|e| format!("shard list: {e}"))?;
+    let mut doc: Doc = serde_json::from_value(v).map_err(|e| format!("shard list: {e}"))?;
 
     if doc.servers.len() > MAX_SHARDS {
         return Err(format!(
@@ -350,6 +360,24 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Shard>, String> {
         if let Some(u) = &s.status_url {
             check_status_url(u).map_err(|why| format!("shard list row {n} ({}): {why}", s.id))?;
         }
+    }
+    // A bad alternate costs only itself, never the row: old clients ignore
+    // the field, so a list must not go dark for a reader that knows it.
+    for s in &mut doc.servers {
+        let host = s.addr.rsplit_once(':').map(|(h, _)| h.to_string());
+        let mut kept: Vec<String> = Vec::new();
+        for alt in std::mem::take(&mut s.alt_addrs) {
+            let same_host = alt.rsplit_once(':').map(|(h, _)| h) == host.as_deref();
+            if kept.len() < MAX_ALT_ADDRS
+                && same_host
+                && alt != s.addr
+                && !kept.contains(&alt)
+                && check_addr(&alt).is_ok()
+            {
+                kept.push(alt);
+            }
+        }
+        s.alt_addrs = kept;
     }
     Ok(doc.servers)
 }
@@ -467,6 +495,20 @@ mod tests {
         // A shard with no endpoint stays `?`, which is correct and permanent.
         assert_eq!(rows[1].status_url, None);
         assert_eq!(rows[1].population(), "?/100");
+    }
+
+    #[test]
+    fn other_ports_keep_only_the_same_host() {
+        let rows = parse(
+            br#"{"servers":[{"id":"a","name":"A","addr":"game.elopros.com:61234",
+                "alt_addrs":["game.elopros.com:443","evil.example:443",
+                             "game.elopros.com:61234","game.elopros.com:443","nope"]}]}"#,
+        )
+        .expect("a bad alternate never refuses the row");
+        assert_eq!(rows[0].alt_addrs, ["game.elopros.com:443"]);
+        // Absent is an empty list, which is every list published before it.
+        let rows = parse(br#"{"servers":[{"id":"a","name":"A","addr":"h.example:1"}]}"#).unwrap();
+        assert!(rows[0].alt_addrs.is_empty());
     }
 
     #[test]

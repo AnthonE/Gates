@@ -176,6 +176,10 @@ pub struct Connecting {
     /// rather than an `Instant`, so the screen has one clock and it is the
     /// renderer's.
     pub waited_s: f32,
+    /// How many other ports of the same shard the attempt may try after
+    /// `addr` (`Listing::alt_addrs`). Each adds `menu::ADDR_TIMEOUT_S` to how
+    /// long the screen waits.
+    pub fallbacks: usize,
 }
 
 /// Who the launcher says is playing.
