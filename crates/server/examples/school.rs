@@ -21,6 +21,7 @@
 //! cargo run --release -p server --example school -- --student student.json
 //! cargo run --release -p server --example school -- --student student.json --gens 40 --out bred.json
 //! cargo run --release -p server --example school -- --student student.json --bench gs1:...
+//! cargo run --release -p server --example school -- --student student.json --resume gs1:... --from-gen 20 --confirms 18
 //! ```
 
 use server::agent::lock::{LockCode, LockSecret};
@@ -203,7 +204,8 @@ fn bench(ctx: &Ctx, g: &Genome, n: usize, threads: usize) {
 
 fn main() {
     let mut it = std::env::args().skip(1);
-    let (mut path, mut out, mut bench_only) = (None, None, None);
+    let (mut path, mut out, mut bench_only, mut resume) = (None, None, None, None::<String>);
+    let (mut from_gen, mut confirms) = (0usize, 0u64);
     let (mut gens, mut kids, mut islands, mut confirm, mut held) = (40usize, 15usize, 4, 8, 16);
     let (mut bots, mut minutes, mut seed) = (2usize, 45u64, 1u64);
     let mut threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -213,6 +215,12 @@ fn main() {
             "--student" => path = Some(next()),
             "--out" => out = Some(next()),
             "--bench" => bench_only = Some(next()),
+            // Pick a killed run up where it stopped, bit for bit: the last
+            // checkpoint, the generation after it, and how many confirm
+            // stages ran before (the log's kept + refused lines).
+            "--resume" => resume = Some(next()),
+            "--from-gen" => from_gen = next().parse().expect("--from-gen"),
+            "--confirms" => confirms = next().parse().expect("--confirms"),
             "--gens" => gens = next().parse().expect("--gens"),
             "--kids" => kids = next().parse().expect("--kids"),
             "--islands" => islands = next().parse().expect("--islands"),
@@ -248,9 +256,15 @@ fn main() {
     }
     let started = Instant::now();
     let draw = |k: u64| mix64(seed.wrapping_mul(0x1_0000_0001) ^ k);
-    let mut parent = Genome::new(base);
-    let mut confirms = 0u64;
-    for gen in 0..gens {
+    let mut parent = match &resume {
+        Some(text) => {
+            let g = Genome::decode(PREFIX, text.as_bytes()).expect("a gs1: genome");
+            assert_eq!(g.base, base, "that genome was bred from another student");
+            g
+        }
+        None => Genome::new(base),
+    };
+    for gen in from_gen..gens {
         if parent.full() {
             break;
         }
