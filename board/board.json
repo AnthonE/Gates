@@ -1,0 +1,192 @@
+{
+  "game": "Gates",
+  "about": "The reference board (docs/ART.md is the bar it measures against): the probe's views from ci/scene.sh, each beside the reference frames ART.md measured, and the operator's marks. The reference set is the reference game's screenshots, so it never enters this repo: point GATES_REFERENCE_DIR at your own copy, as for ci/native_bar.py. node ci/board.mjs look shoots every view and draws the sheet; it scores nothing.",
+  "refs": "refs",
+  "private_refs_env": "GATES_REFERENCE_DIR",
+  "views": [
+    {
+      "id": "design",
+      "what": "the probe's design vantage: eye height, facing north, seed 20260731, six inhabitants",
+      "take": "ART.md \u00a73: whole-frame median near 104, the near band's ground with texture in it (neighbour contrast 6.3, ours was 0.26)",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/0-design.png",
+      "refs": [
+        {
+          "file": "genericview.jpeg",
+          "take": "daylight tonal range at eye height; ground that has texture up close",
+          "private": true,
+          "ignore": "the UI"
+        },
+        {
+          "file": "generic2.jpeg",
+          "take": "how far you see, and how the distance hazes",
+          "private": true,
+          "ignore": "the UI"
+        }
+      ]
+    },
+    {
+      "id": "west",
+      "what": "eye height, facing west",
+      "take": "granite warm grey and about twice as bright as turf; grass shadows go cool",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/1-west.png",
+      "refs": [
+        {
+          "file": "generichighview.jpeg",
+          "take": "value separation between rock and turf",
+          "private": true,
+          "ignore": "the UI"
+        },
+        {
+          "file": "roads.jpeg",
+          "take": "a road as a lighter band the eye follows",
+          "private": true,
+          "ignore": "the UI"
+        }
+      ]
+    },
+    {
+      "id": "south",
+      "what": "eye height, facing south",
+      "take": "the same tonal bar as design from another bearing",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/2-south.png",
+      "refs": [
+        {
+          "file": "generichighview2.jpg",
+          "take": "sky zenith near luma 184 at hue 220; lit grass 59-70",
+          "private": true,
+          "ignore": "the UI"
+        }
+      ]
+    },
+    {
+      "id": "east",
+      "what": "eye height, facing east",
+      "take": "the same tonal bar as design from another bearing",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/3-east.png",
+      "refs": [
+        {
+          "file": "barrelroad.webp",
+          "take": "a roadside read at a glance: props, road, verge",
+          "private": true,
+          "ignore": "the UI"
+        }
+      ]
+    },
+    {
+      "id": "near",
+      "what": "looking down at the ground at the probe's feet",
+      "take": "close ground: neighbour contrast, cool shadows, rock that is warm grey",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/4-near.png",
+      "refs": [
+        {
+          "file": "spawnedrock.jpg",
+          "take": "a rock on turf: lit granite 127-167, warm, against grass 59-70",
+          "private": true,
+          "ignore": "the UI"
+        },
+        {
+          "file": "choppingtree.jpg",
+          "take": "a gathered tree and the ground around it, close",
+          "private": true,
+          "ignore": "the UI and the hands"
+        }
+      ]
+    },
+    {
+      "id": "sky",
+      "what": "up toward the sun's azimuth",
+      "take": "sky band mean near 143; a sun and clouds that read lit",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/5-sky.png",
+      "refs": [
+        {
+          "file": "generichighview2.jpg",
+          "take": "the sky's gradient and lit clouds (luma 145-164)",
+          "private": true,
+          "ignore": "the ground"
+        }
+      ]
+    },
+    {
+      "id": "player",
+      "what": "another player at eye height (conditional: skipped when nobody is near)",
+      "take": "a person reads as a person at distance, against any ground",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/7-player.png",
+      "refs": [
+        {
+          "file": "woundedplayers.jpeg",
+          "take": "players readable against the ground and each other",
+          "private": true,
+          "ignore": "the UI and the names"
+        }
+      ]
+    },
+    {
+      "id": "build",
+      "what": "a base from its standoff (conditional: skipped when no base went up)",
+      "take": "a base reads as built by someone: tiers, doors, the cupboard's place",
+      "shoot": [
+        "./ci/scene.sh",
+        "--out",
+        "shots/board",
+        "--no-hud"
+      ],
+      "png": "shots/board/8-build.png",
+      "refs": [
+        {
+          "file": "bases.webp",
+          "take": "bases in the landscape, at the distance you find one",
+          "private": true,
+          "ignore": "the UI"
+        },
+        {
+          "file": "gameplayfoundbase.jpeg",
+          "take": "the moment you come upon somebody's base",
+          "private": true,
+          "ignore": "the UI"
+        }
+      ]
+    }
+  ]
+}

@@ -92,6 +92,7 @@ cargo run -p server --bin bots -- 100                # 100 bots
 cargo test -p <crate>                                # one crate's tests
 ./ci/gates.sh [fast]                                 # what CI runs (fast = a PR's run)
 python3 ci/deploy_kind.py                            # what this branch takes to ship
+node ci/board.mjs look                                # the reference board (board/board.json): scene.sh's views beside the reference frames ($GATES_REFERENCE_DIR) and the operator's marks, one sheet
 ```
 
 ## Traps that already cost real time
