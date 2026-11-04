@@ -311,7 +311,9 @@ with who it is for: a job (`/t guards patrol`, `farmers`, `runners`,
 opening with none of them is for everyone. `--commander 0xWALLET` names
 the one wallet, person or agent, whose lines it obeys, and nobody else's
 then; a society's crew is capped at seven so the commander has a seat on
-its team.
+its team. Its hello names the commander (`HELLO_COMMANDER`, wire v154), and
+while that wallet is a person on its team the game draws the body
+`(agent, crew of <name>)`: the shard sets the mark, not the program.
 
 **Traits tune it** ("Characters"): when it runs and heals, how low it lets
 a meter fall, how far it goes to loot, how full it carries before the walk

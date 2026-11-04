@@ -669,7 +669,12 @@ const SUB_TURRET: u32 = 110;
 /// A wire laid, or every wire on a part taken up (wire v150,
 /// `sim_core::world::EV_WIRE`). See `EventMsg::Wire`.
 const SUB_WIRE: u32 = 111;
-const SUB_MAX: u32 = SUB_WIRE;
+/// Agent `id` serves player `of`, a person on its team (wire v154,
+/// `ActionMsg::Commander`); `of` 0 when it serves nobody now. The game
+/// draws `(agent, crew of <of's name>)`. To every session as it moves, and
+/// to a joiner for each agent there.
+const SUB_CREW: u32 = 112;
+const SUB_MAX: u32 = SUB_CREW;
 /// Widths of a wire's ports (`sim_core::power::ports`).
 const WIRE_PORT_OUT_BITS: u32 = 2;
 const WIRE_PORT_IN_BITS: u32 = 1;
@@ -2555,6 +2560,8 @@ pub enum EventMsg {
     /// id names one tenancy of a slot, so a new tenant is never marked by
     /// an old one's event.
     Agent { id: u32 },
+    /// Agent `id` serves player `of` (v154), 0 for nobody — see `SUB_CREW`.
+    Crew { id: u32, of: u32 },
     /// The receiver's team (v108) — see [`TeamView`].
     Team(TeamView),
     /// A vending machine's offers as the receiver sees them (v118) — see
@@ -6251,6 +6258,17 @@ pub fn encode_event_tag(
 }
 
 /// Player `id` declared itself an agent — see [`EventMsg::Agent`].
+/// Agent `id` serves player `of` (0 for nobody) — see [`EventMsg::Crew`].
+pub fn encode_event_crew(id: u32, of: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if id == 0 || id & sim_core::limits::MOB_ID_TAG != 0 || of & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CREW)?;
+    w.write(id, 32)?;
+    w.write(of, 32)?;
+    Ok(w.finish())
+}
+
 pub fn encode_event_agent(id: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     if id == 0 || id & sim_core::limits::MOB_ID_TAG != 0 {
         return Err(WireError::Range);
@@ -8258,6 +8276,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Agent { id }
         }
+        SUB_CREW => {
+            let id = r.read(32)?;
+            let of = r.read(32)?;
+            if id == 0 || (id | of) & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Crew { id, of }
+        }
         SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
         SUB_SHOP => {
             let mut view = ShopView {
@@ -10161,6 +10187,27 @@ mod tests {
         for bad in [no_leader, twice, far, headless, ghost] {
             assert_eq!(encode_event_team(&bad, &mut buf), Err(WireError::Range));
         }
+    }
+
+    /// An agent's crew mark (v154) crosses with its commander or none, and
+    /// neither end takes one for nobody or an animal.
+    #[test]
+    fn crew_marks_an_agent_with_its_commander_or_none() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for of in [0x0000_0402, 0] {
+            let len = encode_event_crew(0x0001_2307, of, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]),
+                Ok(EventMsg::Crew {
+                    id: 0x0001_2307,
+                    of
+                })
+            );
+        }
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        assert_eq!(encode_event_crew(0, 1, &mut buf), Err(WireError::Range));
+        assert_eq!(encode_event_crew(mob, 1, &mut buf), Err(WireError::Range));
+        assert_eq!(encode_event_crew(1, mob, &mut buf), Err(WireError::Range));
     }
 
     /// An agent's mark (v107) crosses for a guest-shaped id, and neither

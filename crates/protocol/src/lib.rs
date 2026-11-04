@@ -68,10 +68,10 @@ pub use event::{
     encode_event_bags, encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_dead, encode_event_death, encode_event_death_mark,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
-    encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
+    encode_event_craft_refused, encode_event_crew, encode_event_dead, encode_event_death,
+    encode_event_death_mark, encode_event_deploy_defs, encode_event_deploy_placed,
+    encode_event_deploy_refused, encode_event_deploy_sync, encode_event_door, encode_event_drank,
+    encode_event_env, encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
     encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
     encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
@@ -1401,7 +1401,11 @@ pub use voice::{
 /// `Handoff`), and `KIND_TRAVEL` (13) tells a client to take one to another
 /// server. `MAX_AUTH_MSG_BYTES` grows to hold the longest handoff, and a
 /// client reads every frame after the welcome at `MAX_S2C_STREAM_BYTES`.
-pub const PROTO_VER: u16 = 153;
+/// v154 — an agent's commander: `HELLO_COMMANDER` (bit 3, with
+/// `HELLO_AGENT`) puts the wallet it serves in the hello's `target`, and
+/// `SUB_CREW` (112) marks agent `id` as the crew of player `of` while that
+/// wallet is a person on its team, `of` 0 for none (`EventMsg::Crew`).
+pub const PROTO_VER: u16 = 154;
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.
@@ -1636,10 +1640,11 @@ pub struct Hello {
     /// the liar. `HELLO_SPECTATE` asks for a read-only seat; the shard, not
     /// this bit, decides whether there is one (`NETCODE.md` §2.3).
     pub flags: u8,
-    /// Who a spectator asks to watch — on the wire **only** with
-    /// `HELLO_SPECTATE`, and [`Address::GUEST`] there means "any watchable
-    /// agent". Must be `GUEST` on every other hello; the encoder refuses one
-    /// that is not, because the field would not reach the shard.
+    /// Who a spectator asks to watch — on the wire with `HELLO_SPECTATE`,
+    /// and [`Address::GUEST`] there means "any watchable agent". With
+    /// `HELLO_COMMANDER` (v154), the wallet an agent serves, never `GUEST`.
+    /// Must be `GUEST` on every other hello; the encoder refuses one that is
+    /// not, because the field would not reach the shard.
     pub target: Address,
     /// The session's self-declared display name, shown to its spectators.
     /// Empty on a spectator (refused otherwise: a watcher has no audience).
@@ -1655,8 +1660,13 @@ pub const HELLO_AGENT: u8 = 1 << 0;
 pub const HELLO_WATCHABLE: u8 = 1 << 1;
 /// This session asks for a read-only seat watching [`Hello::target`] (v73).
 pub const HELLO_SPECTATE: u8 = 1 << 2;
+/// This agent serves the wallet in [`Hello::target`] (v154, `gates-agent
+/// --commander`): only with `HELLO_AGENT`, never a spectator's. Self-declared
+/// as the agent mark is; the shard draws it `crew of` that player only while
+/// they are a person on the agent's team (`EventMsg::Crew`).
+pub const HELLO_COMMANDER: u8 = 1 << 3;
 /// Every flag this version defines; any other bit is refused at decode.
-pub const HELLO_FLAGS: u8 = HELLO_AGENT | HELLO_WATCHABLE | HELLO_SPECTATE;
+pub const HELLO_FLAGS: u8 = HELLO_AGENT | HELLO_WATCHABLE | HELLO_SPECTATE | HELLO_COMMANDER;
 
 impl Hello {
     /// This build's hello, declaring nothing: a human player, the only
@@ -1694,9 +1704,16 @@ impl Hello {
         }
         if self.is_spectator() {
             self.flags == HELLO_SPECTATE && self.name.is_empty()
+        } else if self.flags & HELLO_COMMANDER != 0 {
+            self.is_agent() && !self.target.is_guest()
         } else {
             self.target.is_guest()
         }
+    }
+
+    /// The wallet this agent says it serves (`HELLO_COMMANDER`), if any.
+    pub fn commander(&self) -> Option<Address> {
+        (self.flags & HELLO_COMMANDER != 0).then_some(self.target)
     }
 }
 
@@ -2144,7 +2161,7 @@ pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
     w.write(msg.build as u32, 32)?;
     w.write((msg.build >> 32) as u32, 32)?;
     w.write(msg.flags as u32, 8)?;
-    if msg.is_spectator() {
+    if msg.flags & (HELLO_SPECTATE | HELLO_COMMANDER) != 0 {
         write_address(&mut w, &msg.target)?;
     }
     write_name(&mut w, &msg.name)?;
@@ -2182,7 +2199,7 @@ pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
     if flags & !HELLO_FLAGS != 0 {
         return Err(WireError::Malformed);
     }
-    let target = if flags & HELLO_SPECTATE != 0 {
+    let target = if flags & (HELLO_SPECTATE | HELLO_COMMANDER) != 0 {
         read_address(&mut r)?
     } else {
         Address::GUEST
@@ -7074,7 +7091,23 @@ mod tests {
         someone[3] = 7;
         for bad in [
             Hello {
-                flags: 1 << 3,
+                flags: 1 << 4,
+                ..base
+            },
+            // A commander only from an agent, never a spectator, and always
+            // naming somebody.
+            Hello {
+                flags: HELLO_COMMANDER,
+                target: Address(someone),
+                ..base
+            },
+            Hello {
+                flags: HELLO_AGENT | HELLO_COMMANDER,
+                ..base
+            },
+            Hello {
+                flags: HELLO_SPECTATE | HELLO_COMMANDER,
+                target: Address(someone),
                 ..base
             },
             Hello {
@@ -7110,7 +7143,7 @@ mod tests {
             w.write(bad.build as u32, 32).unwrap();
             w.write((bad.build >> 32) as u32, 32).unwrap();
             w.write(bad.flags as u32, 8).unwrap();
-            if bad.flags & HELLO_SPECTATE != 0 {
+            if bad.flags & (HELLO_SPECTATE | HELLO_COMMANDER) != 0 {
                 for b in bad.target.0 {
                     w.write(b as u32, 8).unwrap();
                 }
@@ -7123,7 +7156,7 @@ mod tests {
             // A player hello with a target has nowhere to put it on the wire,
             // so its hand-built twin IS a valid player hello; every other
             // shape here must be refused.
-            if bad.target.is_guest() || bad.is_spectator() {
+            if bad.target.is_guest() || bad.is_spectator() || bad.flags & HELLO_COMMANDER != 0 {
                 assert_eq!(
                     decode_hello(&raw[..n]),
                     Err(WireError::Malformed),

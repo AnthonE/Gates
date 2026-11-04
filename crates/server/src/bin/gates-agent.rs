@@ -617,6 +617,10 @@ async fn run(options: Options) -> Result<(), String> {
     if let Some(path) = &options.new_key {
         return new_key(path);
     }
+    // Every hello this run sends names its commander (v154).
+    if let Some(c) = options.mind.commander {
+        let _ = server::botclient::COMMANDER.set(c);
+    }
     if options.set_face {
         // Blocking HTTP: off the runtime's worker, which it would stall.
         return tokio::task::block_in_place(|| set_face(&options));

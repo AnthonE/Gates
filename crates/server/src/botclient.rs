@@ -1014,6 +1014,7 @@ impl Dial<'_> {
                 let mut hello = protocol::Hello::this_build();
                 hello.flags = protocol::HELLO_AGENT | protocol::HELLO_WATCHABLE;
                 hello.name = *name;
+                with_commander(&mut hello);
                 crate::net::client_handshake_as(
                     &mut send,
                     &mut recv,
@@ -1036,6 +1037,7 @@ impl Dial<'_> {
                     hello.flags |= protocol::HELLO_WATCHABLE;
                 }
                 hello.name = identity.name;
+                with_commander(&mut hello);
                 let key = identity.key;
                 crate::net::client_handshake_as(
                     &mut send,
@@ -1878,6 +1880,20 @@ fn is_loopback_host(server: &str) -> bool {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The wallet this process's agents serve (`gates-agent --commander`), set
+/// once at start: every agent hello it sends names it (`HELLO_COMMANDER`,
+/// v154), and the shard marks the body `crew of` that player while they are
+/// a person on its team.
+pub static COMMANDER: std::sync::OnceLock<protocol::Address> = std::sync::OnceLock::new();
+
+/// An agent's hello, naming [`COMMANDER`] when one is set.
+fn with_commander(hello: &mut protocol::Hello) {
+    if let Some(&c) = COMMANDER.get().filter(|c| !c.is_guest()) {
+        hello.flags |= protocol::HELLO_COMMANDER;
+        hello.target = c;
+    }
 }
 
 #[cfg(test)]

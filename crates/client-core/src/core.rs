@@ -1269,6 +1269,15 @@ impl ClientCore {
         id != 0 && self.agents.get((id & 0xFF) as usize) == Some(&id)
     }
 
+    /// The player agent `id` serves, a person on its team (`EventMsg::Crew`,
+    /// v154): what its nametag names as `crew of`. `None` for nobody.
+    pub fn crew_of(&self, id: u32) -> Option<u32> {
+        self.crews
+            .get((id & 0xFF) as usize)
+            .filter(|(agent, of)| id != 0 && *agent == id && *of != 0)
+            .map(|&(_, of)| of)
+    }
+
     /// This player's team as the shard last said (`EventMsg::Team`, v108):
     /// leader, members with state and a 1 m position, and a waiting invite.
     /// [`protocol::TeamView::NONE`] until it has.
@@ -1826,6 +1835,10 @@ pub struct ClientCore {
     /// the full id by slot, 0 for none, so a reused slot never marks its new
     /// tenant. Read with [`Self::is_agent`].
     agents: Box<[u32]>,
+    /// Whom each agent serves (`EventMsg::Crew`, v154): by the agent's slot,
+    /// its full id and its commander's, so a reused slot says nothing.
+    /// Read with [`Self::crew_of`].
+    crews: Box<[(u32, u32)]>,
     /// This player's team (`EventMsg::Team`, v108). Read with [`Self::team`].
     team: protocol::TeamView,
     /// Bumped on every `Team`, so a renderer redraws only when it moved.
@@ -2534,6 +2547,7 @@ impl ClientCore {
             skins_gen: 0,
             tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             agents: vec![0; sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
+            crews: vec![(0, 0); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             team: protocol::TeamView::NONE,
             team_gen: 0,
             shops: [protocol::ShopView::default(); SHOP_VIEWS],
@@ -3277,6 +3291,12 @@ impl ClientCore {
             EventMsg::Agent { id } => {
                 if let Some(row) = self.agents.get_mut((id & 0xFF) as usize) {
                     *row = id;
+                    self.tags_gen = self.tags_gen.wrapping_add(1);
+                }
+            }
+            EventMsg::Crew { id, of } => {
+                if let Some(row) = self.crews.get_mut((id & 0xFF) as usize) {
+                    *row = (id, of);
                     self.tags_gen = self.tags_gen.wrapping_add(1);
                 }
             }

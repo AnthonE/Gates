@@ -497,6 +497,12 @@ pub struct ShardCore {
     /// Per slot, whether its tenant declared itself an agent: the standings
     /// file it, and every client is owed its mark (`EventMsg::Agent`).
     standings_agent: [bool; MAX_PLAYERS],
+    /// The wallet each agent slot named as its commander (`ActionMsg::
+    /// Commander`, v154), the guest address for none; and whom it serves
+    /// now: that wallet's player id while they are a person on its team, else
+    /// 0 (`EventMsg::Crew`, refreshed once a second in `pump_teams`).
+    commanders: [protocol::Address; MAX_PLAYERS],
+    crew_of: [u32; MAX_PLAYERS],
     /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
     /// extraction, and to everyone when the exchange changes.
     bank_owed: [bool; MAX_PLAYERS],
@@ -1137,6 +1143,8 @@ impl ShardCore {
             standings_owed: [0; MAX_PLAYERS],
             standings_gen_seen: 0,
             standings_agent: [false; MAX_PLAYERS],
+            commanders: [protocol::Address::GUEST; MAX_PLAYERS],
+            crew_of: [0; MAX_PLAYERS],
             bank_owed: [false; MAX_PLAYERS],
             played_minute: [0; MAX_PLAYERS],
             minute_at: [(0, 0, 0); MAX_PLAYERS],
@@ -1450,7 +1458,21 @@ impl ShardCore {
         }
     }
 
+    /// The wallet the agent in `slot` said it serves (`HELLO_COMMANDER`,
+    /// v154): after `note_agent`, which clears it for every new tenant. A
+    /// person names nobody; the mark itself waits on `refresh_crews`.
+    pub fn note_commander(&mut self, slot: usize, commander: protocol::Address) {
+        if slot < MAX_PLAYERS && self.standings_agent[slot] {
+            self.commanders[slot] = commander;
+        }
+    }
+
     pub fn note_agent(&mut self, slot: usize, agent: bool) {
+        // A new tenant of the slot serves nobody until it says whom.
+        if slot < MAX_PLAYERS {
+            self.commanders[slot] = protocol::Address::GUEST;
+            self.crew_of[slot] = 0;
+        }
         if let Some(a) = self.standings_agent.get_mut(slot) {
             *a = agent;
             if agent {
@@ -7835,6 +7857,40 @@ impl ShardCore {
         true
     }
 
+    /// Whom each agent serves now (`EventMsg::Crew`, v154): the player its
+    /// commander's wallet is, while they are connected, a person (not an
+    /// agent) and on its team; else nobody. A mark that moved is owed to
+    /// every client. Allocation-free; once a second.
+    fn refresh_crews(&mut self) {
+        for slot in 0..MAX_PLAYERS {
+            let want = self.commanders[slot];
+            let me = &self.clients[slot];
+            let of = if !me.connected || !self.standings_agent[slot] || want.is_guest() {
+                0
+            } else {
+                let mates = self.teams.team_of(me.id);
+                (0..MAX_PLAYERS)
+                    .find(|&s| {
+                        let c = &self.clients[s];
+                        s != slot
+                            && c.connected
+                            && !self.standings_agent[s]
+                            && self.tags[s].id == c.id
+                            && self.tags[s].address == want
+                            && mates.contains(&c.id)
+                    })
+                    .map_or(0, |s| self.clients[s].id)
+            };
+            if of != self.crew_of[slot] {
+                self.crew_of[slot] = of;
+                let bit = 1u128 << slot;
+                for c in self.clients.iter_mut() {
+                    c.crews_owed |= bit;
+                }
+            }
+        }
+    }
+
     /// The tick's team verbs (`team.rs`), then, once a second, the bodies
     /// that left the world leave their teams.
     fn pump_teams(
@@ -7849,6 +7905,7 @@ impl ShardCore {
         }
         let tick = self.world.tick;
         if tick.is_multiple_of(sim_core::limits::TICK_HZ as u64) {
+            self.refresh_crews();
             let world = &self.world;
             let clients = &self.clients[..MAX_PLAYERS];
             self.teams.prune(tick, |id| {
@@ -8744,6 +8801,35 @@ impl ShardCore {
                         ShardStats::bump(&stats.encode_range_errors);
                     }
                 },
+            }
+        }
+
+        // Whom each agent serves (v154): `agents_owed`'s shape. Only an agent
+        // here is told about; the id is this tenancy's, so a later tenant
+        // of the slot is never marked by it.
+        let owed = self.clients[slot].crews_owed;
+        if owed != 0 {
+            let i = owed.trailing_zeros() as usize;
+            let bit = 1u128 << i;
+            let target = self.clients.get(i).filter(|c| c.connected).map(|c| c.id);
+            match target.filter(|_| self.standings_agent.get(i) == Some(&true)) {
+                None => self.clients[slot].crews_owed &= !bit,
+                Some(id) => {
+                    match protocol::encode_event_crew(id, self.crew_of[i], &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                self.clients[slot].crews_owed &= !bit;
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => {
+                            self.clients[slot].crews_owed &= !bit;
+                            ShardStats::bump(&stats.encode_range_errors);
+                        }
+                    }
+                }
             }
         }
 
@@ -12118,6 +12204,68 @@ mod tests {
         assert!(core.connect_as(3, 259, None, None).is_some());
         core.note_agent(3, false);
         assert!(marks(&mut core).is_empty(), "a human tenant of the slot");
+    }
+
+    /// Crew marks (v154): an agent naming a commander is marked `crew of`
+    /// them only while that wallet is a connected person on its team; the
+    /// mark goes to every client as it moves, and back to nobody when the
+    /// team breaks.
+    #[test]
+    fn an_agent_is_marked_its_commanders_crew_only_while_on_their_team() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let marks = |core: &mut ShardCore| {
+            let mut got = Vec::new();
+            for _ in 0..(2 * sim_core::limits::TICK_HZ) {
+                core.tick_bare(&stats, |lane, slot, bytes| {
+                    if lane == Lane::Event {
+                        if let Ok(EventMsg::Crew { id, of }) = decode_event(bytes) {
+                            got.push((slot, id, of));
+                        }
+                    }
+                    true
+                });
+            }
+            got
+        };
+        let boss = protocol::Address([0x33; protocol::ADDRESS_BYTES]);
+        let hex = boss.to_hex();
+        let key = crate::store::PlayerKey::new(&hex).unwrap();
+        assert!(core.connect_as(0, 256, None, None).is_some());
+        core.note_agent(0, true);
+        core.note_commander(0, boss);
+        assert!(core.connect_as(1, 257, None, None).is_some());
+        core.tag_join(1, 257, Some(&key));
+        core.note_agent(1, false);
+        // A person naming a commander names nobody.
+        core.note_commander(1, boss);
+        assert_eq!(core.commanders[1], protocol::Address::GUEST);
+        let seen = marks(&mut core);
+        assert!(
+            seen.iter().all(|m| m.1 == 256 && m.2 == 0),
+            "not on a team: {seen:?}"
+        );
+        let tick = core.world.tick;
+        core.teams
+            .op(257, protocol::TEAM_OP_INVITE, 256, tick, |_| Ok(()))
+            .unwrap();
+        core.teams
+            .op(256, protocol::TEAM_OP_ACCEPT, 257, tick, |_| Ok(()))
+            .unwrap();
+        let seen = marks(&mut core);
+        assert!(
+            seen.contains(&(0, 256, 257)) && seen.contains(&(1, 256, 257)),
+            "{seen:?}"
+        );
+        let tick = core.world.tick;
+        core.teams
+            .op(256, protocol::TEAM_OP_LEAVE, 0, tick, |_| Ok(()))
+            .unwrap();
+        let seen = marks(&mut core);
+        assert!(
+            seen.contains(&(1, 256, 0)),
+            "off the team, nobody's: {seen:?}"
+        );
     }
 
     /// **A client eating every tick eats about once a second** (`pace.rs`).
