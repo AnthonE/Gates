@@ -1049,8 +1049,8 @@ pub fn animate(
                 fx.glow.spawn(Particle {
                     left: life,
                     life,
-                    pos: from,
-                    vel: v,
+                    pos: from.into(),
+                    vel: v.into(),
                     size0: 0.018,
                     size1: 0.008,
                     c0: [6.0, 4.6, 2.6, 1.0],
@@ -1060,8 +1060,8 @@ pub fn animate(
                     cell: atlas::GLOW,
                     orient: Orient::Stretch,
                     stretch: 0.03,
-                    plane_p: Vec3::new(from.x, floor + 0.02, from.z),
-                    plane_n: Vec3::Y,
+                    plane_p: Vec3::new(from.x, floor + 0.02, from.z).into(),
+                    plane_n: Vec3::Y.into(),
                     ..Particle::default()
                 });
             }
@@ -1070,7 +1070,7 @@ pub fn animate(
                 fx.glow.spawn(Particle {
                     left: life,
                     life,
-                    pos: from,
+                    pos: from.into(),
                     size0: 0.35,
                     size1: 0.1,
                     c0: [2.5, 3.0, 4.0, 1.0],

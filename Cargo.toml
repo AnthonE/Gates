@@ -27,6 +27,10 @@ members = [
     "crates/agentkey",
     # Proximity voice's Opus codec, shared by the client and the agent bot.
     "crates/voice",
+    # Effects with no engine (the particle pool, sprite sheet, recipes, the fx
+    # stage's contract). Canonical here; oneshot and Before Colony vendor it,
+    # which is why it inherits nothing from this workspace.
+    "crates/fx",
 ]
 
 [workspace.package]

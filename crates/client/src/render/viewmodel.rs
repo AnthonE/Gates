@@ -2334,7 +2334,7 @@ pub fn hand_fire(
     mut q: Query<(&mut HandFire, &Mesh3d, &GlobalTransform)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    use super::fx::pool::Cam;
+    use super::fx::pool::{Cam, MeshWrite};
     let dt = time.delta_secs().min(0.1);
     let lit = net.as_deref().and_then(lit_in_hand).is_some();
     let Ok(cam) = cam.single() else { return };
@@ -2347,7 +2347,8 @@ pub fn hand_fire(
         if let Some(last) = fire.last {
             let moved = at - last;
             if moved.length() < HAND_FIRE_JUMP_M {
-                fire.pool.shift(-(inv * moved) * (k * HAND_FIRE_TRAIL));
+                fire.pool
+                    .shift((-(inv * moved) * (k * HAND_FIRE_TRAIL)).into());
             }
         }
         fire.last = Some(at);
@@ -2369,9 +2370,13 @@ pub fn hand_fire(
             continue;
         }
         let local = Cam {
-            pos: gt.affine().inverse().transform_point3(cam.translation()),
-            right: inv * Vec3::from(cam.right()),
-            up: inv * Vec3::from(cam.up()),
+            pos: gt
+                .affine()
+                .inverse()
+                .transform_point3(cam.translation())
+                .into(),
+            right: (inv * Vec3::from(cam.right())).into(),
+            up: (inv * Vec3::from(cam.up())).into(),
         };
         if let Some(m) = meshes.get_mut(&mesh.0) {
             fire.pool.write(m, &local, Vec3::ZERO);

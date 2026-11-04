@@ -3,8 +3,9 @@
 **MVP fast-iteration mode** (operator, 2026-09-23: *"can we just put code in
 and not do all the extra junk… im in MVP fast itteration mode"*). Ship code.
 This page is the whole process. The long manual it replaced (every trap, wall
-and war story) is in git: `git show ecb9e21:CLAUDE.md`. Grep it when
-something weird happens. Don't read it up front.
+and war story) is in git: `git show ecb9e21:CLAUDE.md` (a shallow clone
+needs `git fetch --unshallow` first). Grep it when something weird happens.
+Don't read it up front.
 
 ## What this is
 
@@ -24,6 +25,7 @@ WebTransport/QUIC.
 | `voice` | proximity voice (Opus), shared by the client and `gates-agent` |
 | `agentkey` | an agent player's wallet key, kept out of the page |
 | `content` + `content/*.toml` | items, recipes, loot, balance numbers |
+| `fx` | effects with no engine: the particle pool, sprite sheet, recipes and knobs, the fx stage's contract. Shared: oneshot and Before Colony vendor it |
 
 The design docs live in `docs/` (`docs/README.md` indexes them). A bare
 `NOW.md` or `DECISIONS.md` in a code comment means the file there.
@@ -34,6 +36,11 @@ The design docs live in `docs/` (`docs/README.md` indexes them). A bare
 2. `ci/quick.sh`: formats, then clippies the workspace and the game. Add
    crate names to run their tests too (`ci/quick.sh sim-core protocol`).
 3. Commit with a short message. Push your branch.
+
+Touching an effect (sparks, dust, smoke, blood, a blast): `ci/fx.sh <name>`
+stages it alone and writes its strip, numbers and diff against the last run;
+the `fx` skill is the loop (`.claude/skills/fx/`, and the `fx-judge` agent
+for a second read).
 
 The full gates (`ci/gates.sh fast`, ~35 min) run when we ship, not on every
 push: `ci/release.sh` dispatches them on main and waits. A PR runs only the
@@ -92,6 +99,8 @@ cargo run -p server --bin bots -- 100                # 100 bots
 cargo test -p <crate>                                # one crate's tests
 ./ci/gates.sh [fast]                                 # what CI runs (fast = a PR's run)
 python3 ci/deploy_kind.py                            # what this branch takes to ship
+ci/fx.sh list | <name>… [--knobs 'Layer.key=v;…']    # the fx stage: one effect's strip → shots/fx/<name>/
+node ci/fxstrip.mjs selftest                          # the strip's measurements on made-up pixels
 node ci/board.mjs look                                # the reference board (board/board.json): scene.sh's views beside the reference frames ($GATES_REFERENCE_DIR) and the operator's marks, one sheet
 ```
 
@@ -118,6 +127,8 @@ node ci/board.mjs look                                # the reference board (boa
   (`apt-get update` first). Running it also needs `libxkbcommon-x11-0`.
 - `rustup target add wasm32-unknown-unknown` for the wasm gates.
 - `pip install numpy Pillow` for the asset gates.
+- `ci/scene.sh` and `ci/fx.sh` shoot headless: `apt-get install xvfb
+  mesa-vulkan-drivers` (lavapipe) and Playwright's Chromium for the sheets.
 - Server `*_wire` tests overflow the stack in debug:
   `RUST_MIN_STACK=16777216`.
 
@@ -131,6 +142,9 @@ node ci/board.mjs look                                # the reference board (boa
   the game is sold. Never copy Rust's (Facepunch's) own art.
 - `crates/client/src/elo_overlay.rs` is vendored from the Elo Pros
   platform repo (private) and a test pins its hash. Fix it upstream and re-copy.
+- `crates/fx` and `ci/fxstrip.mjs` are canonical here and vendored by oneshot
+  and Before Colony. Keep them Bevy-free and dependency-free; after changing
+  them, run each repo's `fx-sync.sh` (theirs refuse local edits).
 - The old JavaScript client (`web/`) stays deleted. The browser build is the
   Rust client compiled to wasm.
 - The autonomous loop lives outside the repo (`/mnt/hive-data/gates-loop`,

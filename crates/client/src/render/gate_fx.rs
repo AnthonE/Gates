@@ -31,7 +31,7 @@ use std::f32::consts::TAU;
 
 use super::depot::Surface;
 use super::fx::atlas::{self, SPRITE_COLS, SPRITE_ROWS, SPRITE_TEX};
-use super::fx::pool::{pool_mesh, Cam, Orient, Particle, Pool, MIN_PX};
+use super::fx::pool::{pool_mesh, Orient, Particle, Pool, MIN_PX};
 use super::fx::Fx;
 use super::rig::{EyeCam, FlameGain};
 use super::town::{self, TownGlow};
@@ -465,8 +465,8 @@ impl GateFx {
                 pool.spawn(Particle {
                     left: life,
                     life,
-                    pos: tf.transform_point(at),
-                    vel: tf.rotation * v,
+                    pos: tf.transform_point(at).into(),
+                    vel: (tf.rotation * v).into(),
                     size0: 0.012,
                     size1: 0.006,
                     c0: [4.0, 5.5, 9.0, 1.0],
@@ -1499,12 +1499,8 @@ pub fn draw(
         return;
     }
     let Ok(cam_gt) = cams.single() else { return };
-    let cam = Cam {
-        pos: cam_gt.translation(),
-        right: cam_gt.right().into(),
-        up: cam_gt.up().into(),
-    };
-    let anchor = cam.pos;
+    let cam = super::fx::pool::cam(cam_gt);
+    let anchor = cam_gt.translation();
     if let Ok((mut tf, mut gt)) = q.single_mut() {
         if tf.translation != anchor {
             tf.translation = anchor;
@@ -1566,9 +1562,9 @@ pub fn draw(
             let p0 = tf.transform_point(b.pts[s]);
             let p1 = tf.transform_point(b.pts[s + 1]);
             let mid = (p0 + p1) * 0.5;
-            let dist = mid.distance(cam.pos);
-            let view = (mid - cam.pos).normalize_or(Vec3::Z);
-            let side = view.cross(p1 - p0).normalize_or(cam.right);
+            let dist = mid.distance(anchor);
+            let view = (mid - anchor).normalize_or(Vec3::Z);
+            let side = view.cross(p1 - p0).normalize_or(Vec3::from(cam.right));
             for (w, rgb, a) in [
                 (b.width * 7.0, ARC_GLOW, 0.55),
                 (b.width.max(dist * MIN_PX * 0.8), ARC_CORE, 1.0),
@@ -1640,8 +1636,8 @@ pub fn draw(
         let p = Particle {
             left: 1.0,
             life: 1.0,
-            pos: tf.transform_point(local),
-            vel,
+            pos: tf.transform_point(local).into(),
+            vel: vel.into(),
             size0: size,
             size1: size,
             c0: [rgb[0] * a, rgb[1] * a, rgb[2] * a, a.min(1.0)],
@@ -1653,7 +1649,7 @@ pub fn draw(
             len_max: 0.9,
             ..Particle::default()
         };
-        if let Some(q) = Pool::quad(&p, &cam, anchor) {
+        if let Some(q) = Pool::quad(&p, &cam, anchor.into()) {
             put(q);
         }
     }
