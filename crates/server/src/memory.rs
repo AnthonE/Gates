@@ -740,6 +740,22 @@ impl Memory {
         self.strategy.as_ref()
     }
 
+    /// Someone in view in `s` it remembers as an enemy or a rival: one who
+    /// killed it, struck it three times, or its mind marked so. Never a
+    /// teammate in view, whatever the book says.
+    pub fn feared(&self, s: &Summary) -> bool {
+        s.seen
+            .people()
+            .iter()
+            .filter(|p| p.in_view && !p.teammate)
+            .any(|p| {
+                let label = p.label();
+                self.people
+                    .iter()
+                    .any(|m| m.name == label && matches!(m.stance(), Stance::Enemy | Stance::Rival))
+            })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.places.is_empty()
             && self.people.is_empty()
@@ -1087,8 +1103,13 @@ impl<S: DecisionSource> DecisionSource for Remembering<S> {
     ) -> Result<Choice, String> {
         let now = unix_now();
         self.memory.ingest(summary, now);
-        let ctx = self.context(summary, now);
-        self.inner.set_context(&ctx);
+        // The scripted policy and a student read no JSON: their memory is
+        // kept, and what they act on is whether a known enemy is here.
+        if self.inner.kind() == SourceKind::External {
+            let ctx = self.context(summary, now);
+            self.inner.set_context(&ctx);
+        }
+        self.inner.set_feared(self.memory.feared(summary));
         let Self { inner, memory, .. } = self;
         let answer = inner.decide_fresh(summary, &mut || {
             let newer = fresher();
@@ -1124,6 +1145,10 @@ impl<S: DecisionSource> DecisionSource for Remembering<S> {
 
     fn plan_done(&self) -> u32 {
         self.inner.plan_done()
+    }
+
+    fn set_feared(&mut self, feared: bool) {
+        self.inner.set_feared(feared);
     }
 }
 
@@ -1248,6 +1273,55 @@ pub(crate) mod tests {
             what,
             ["I was killed by Ash", "my home was attacked", "I died"]
         );
+    }
+
+    /// A scripted body keeps its memory too, and acts on one thing in it:
+    /// hurt, with one who killed it in view, it runs rather than bandage.
+    #[test]
+    fn a_scripted_body_remembers_its_killer_and_runs_from_them_hurt() {
+        let mut body = Remembering::new(crate::mind::Scripted::default(), None, None);
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Flee, Goal::Heal] {
+            s.offer(g);
+        }
+        (s.hp, s.hp_max) = (100, 100);
+        let ash = s
+            .seen
+            .person(9, tag("Ash"), protocol::Address::GUEST, false)
+            .unwrap();
+        s.seen.people[ash].in_view = true;
+        s.seen.people[ash].killed_me = 1;
+        s.seen.event(EventKind::Died, Some(ash));
+        body.decide(&s).unwrap();
+        // A later look: Ash in view again, this body hurt, nobody striking.
+        let mut later = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Flee, Goal::Heal] {
+            later.offer(g);
+        }
+        (later.hp, later.hp_max) = (50, 100);
+        let again = |teammate: bool, name: &str| {
+            let mut l = later;
+            let i = l
+                .seen
+                .person(9, tag(name), protocol::Address::GUEST, false)
+                .unwrap();
+            l.seen.people[i].in_view = true;
+            l.seen.people[i].teammate = teammate;
+            l
+        };
+        assert_eq!(body.decide(&again(false, "Ash")).unwrap().goal, Goal::Flee);
+        assert_eq!(
+            body.decide(&again(false, "Rowan")).unwrap().goal,
+            Goal::Heal,
+            "a stranger"
+        );
+        assert_eq!(body.decide(&later).unwrap().goal, Goal::Heal, "nobody here");
+        // Healthy, it stays and works: the grudge is a lower bar, not a rout.
+        let mut fit = again(false, "Ash");
+        fit.hp = 100;
+        assert_ne!(body.decide(&fit).unwrap().goal, Goal::Flee);
+        assert!(!body.memory.feared(&again(true, "Ash")), "a teammate now");
+        assert_eq!(body.memory.people[0].killed_me, 1);
     }
 
     #[test]

@@ -163,6 +163,10 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
         self.inner.take_plan()
     }
 
+    fn set_feared(&mut self, feared: bool) {
+        self.inner.set_feared(feared);
+    }
+
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
         self.inner.set_context(ctx);
     }

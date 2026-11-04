@@ -2441,6 +2441,13 @@ pub trait DecisionSource: Send + 'static {
     fn plan_done(&self) -> u32 {
         0
     }
+    /// Whether someone its memory holds as an enemy is in view now
+    /// (`memory::Memory::feared`), set before each ask by
+    /// `memory::Remembering`. The scripted policy runs from them sooner;
+    /// wrappers pass it on.
+    fn set_feared(&mut self, feared: bool) {
+        let _ = feared;
+    }
 }
 
 /// Steps a mind may leave its autopilot.
@@ -3059,6 +3066,9 @@ pub struct Scripted {
     /// agent: the mind leading its crew (`--minds N`). Other agents' lines
     /// are never orders, so two scripted bodies cannot order each other.
     leader: Option<protocol::Address>,
+    /// Someone its memory holds as an enemy is in view
+    /// (`DecisionSource::set_feared`).
+    feared: bool,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -3349,6 +3359,10 @@ impl DecisionSource for Scripted {
         self.plan_done
     }
 
+    fn set_feared(&mut self, feared: bool) {
+        self.feared = feared;
+    }
+
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
         self.hear(s);
         let done = self.plan.done(s);
@@ -3454,6 +3468,11 @@ impl Scripted {
         let hp = pct(s.hp, s.hp_max);
         if s.hits > 0 && threat && hp < k.flee_hp_pct && s.offers(Goal::Flee) {
             return (Goal::Flee, "scripted: badly hurt with a body in view");
+        }
+        // One it remembers killing it is here: a lesser wound is enough to
+        // go, rather than bandage in front of them.
+        if self.feared && hp < k.heal_hp_pct && s.offers(Goal::Flee) {
+            return (Goal::Flee, "scripted: hurt, and one who killed me is here");
         }
         if hp < k.heal_hp_pct && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");

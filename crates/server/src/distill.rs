@@ -221,6 +221,10 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
         self.inner.take_plan()
     }
 
+    fn set_feared(&mut self, feared: bool) {
+        self.inner.set_feared(feared);
+    }
+
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
         self.inner.set_context(ctx);
     }
@@ -454,6 +458,10 @@ impl<S: DecisionSource> DecisionSource for Journal<S> {
 
     fn take_plan(&mut self) -> Option<crate::mind::Plan> {
         self.inner.take_plan()
+    }
+
+    fn set_feared(&mut self, feared: bool) {
+        self.inner.set_feared(feared);
     }
 
     fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {

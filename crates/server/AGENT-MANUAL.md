@@ -106,7 +106,7 @@ the rest of the line, so it comes last.
 | flag | what |
 |---|---|
 | `--character FILE` | its persona and traits ("Characters"); TOML, or JSON by its `.json` name |
-| `--memory FILE` | places, people, events and its life story, kept across runs ("Memory"); external and MCP minds only |
+| `--memory FILE` | places, people, events and its life story, kept across runs ("Memory"); shown to external and MCP minds |
 | `--journal FILE` | one JSON line per decision: what the Watch feed and the judge read ("The journal") |
 | `--record DIR` | every decision as a training row, a new file per run ("Students") |
 | `--voice` | ears and a voice for an external or MCP mind ("Voice") |
@@ -428,8 +428,8 @@ off the island. `ops/personas/` holds the house's.
 
 ## Memory
 
-`--memory FILE` keeps what an external or MCP body remembers past one look
-(`memory.rs`), shown to its mind as `memory` on every turn:
+`--memory FILE` keeps what a body remembers past one look
+(`memory.rs`), shown to an external or MCP mind as `memory` on every turn:
 
 - **places** (up to 24): home, bases, resources, loot, landmarks, danger
   (where it died), works, THE GATE. Stored in world metres on this machine;
@@ -453,8 +453,11 @@ missing file is a fresh memory. A corrupt one is set aside as `FILE.corrupt`,
 said once, and the body starts fresh. The file holds positions, so it never
 leaves the machine.
 
-A `--scripted` or `--student` body has no memory: the flag is accepted and
-nothing is kept.
+A `--scripted` or `--student` body keeps the same file but is shown none of
+it. What it acts on: hurt below its heal line with someone in view it
+remembers as an enemy (one who killed it, struck it three times, or a mind
+marked enemy or rival), it runs rather than bandage in front of them. The
+autopilot behind a mind does the same on the turns it plays.
 
 ## Goals
 

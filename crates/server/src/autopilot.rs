@@ -146,6 +146,12 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
         self.primary.set_context(ctx);
     }
 
+    /// The turns it plays itself run from a known enemy too.
+    fn set_feared(&mut self, feared: bool) {
+        self.primary.set_feared(feared);
+        self.scripted.set_feared(feared);
+    }
+
     fn take_extras(&mut self) -> Option<crate::memory::Extras> {
         self.primary.take_extras()
     }
