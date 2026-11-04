@@ -429,11 +429,11 @@ impl Options {
                 return Err("--society needs a fleet: --bots 2..16".into());
             }
             let crews = crew_count(&options);
-            if options.bots.div_ceil(crews) > protocol::TEAM_MAX {
+            if options.bots.div_ceil(crews) > crew_cap(&options) {
                 return Err(format!(
-                    "{} bots in {crews} crews is over the team cap of {}: add --crews",
+                    "{} bots in {crews} crews is over a crew's cap of {}: add --crews",
                     options.bots,
-                    protocol::TEAM_MAX
+                    crew_cap(&options)
                 ));
             }
             if crews > options.bots {
@@ -448,11 +448,17 @@ impl Options {
 }
 
 /// How many crews a society's fleet makes: as asked, else as few as the
-/// team cap allows.
+/// crew cap allows.
 fn crew_count(options: &Options) -> usize {
     options
         .crews
-        .unwrap_or_else(|| options.bots.div_ceil(protocol::TEAM_MAX))
+        .unwrap_or_else(|| options.bots.div_ceil(crew_cap(options)))
+}
+
+/// Bodies in one crew: a team's cap, less a seat for its commander
+/// (`--commander`, `PLAYERS.md` "The crew commander").
+fn crew_cap(options: &Options) -> usize {
+    protocol::TEAM_MAX - usize::from(options.mind.commander.is_some())
 }
 
 /// Which crew bot `i` is in, and its place there: crews are contiguous runs

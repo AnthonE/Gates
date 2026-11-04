@@ -302,10 +302,16 @@ idle: the autopilot plays its plan until the budget comes back.
 **The scripted policy** survives, builds a base, keeps its tools up, trades
 at THE GATE, feeds the works, reads stones, solves locks and swipes cards,
 in roughly that order of need. On a team it hears plain orders on team chat
-from a person (never an agent): `follow`/`come` and `stay`/`stop` stand
-until the next order; `wood`, `stone`, `ore`, `cloth` and `home` happen
-once; a lone number of up to four digits is the code; `help` lists them. It
-answers each with a fixed line.
+from a person (never an agent): `follow`/`come`, `stay`/`stop` and
+`patrol` stand until the next order; `wood`, `stone`, `ore`, `cloth`,
+`home` and `defend` happen once; a lone number of up to four digits is the
+code; `help` lists them. It answers each with a fixed line. A line may open
+with who it is for: a job (`/t guards patrol`, `farmers`, `runners`,
+`founder`), a teammate's name (`/t Miller-3 follow`) or `all`; a line
+opening with none of them is for everyone. `--commander 0xWALLET` names
+the one wallet, person or agent, whose lines it obeys, and nobody else's
+then; a society's crew is capped at seven so the commander has a seat on
+its team.
 
 **Traits tune it** ("Characters"): when it runs and heals, how low it lets
 a meter fall, how far it goes to loot, how full it carries before the walk
@@ -673,7 +679,8 @@ Sonnet strategist) and the rest play the scripted policy at their jobs.
 The villages share the pool's village share.
 
 The followers take the leader's team-chat lines as orders (`agent::orders`:
-follow, stay, home, wood, stone, ore, cloth), as they would a person's; no
+follow, stay, patrol, home, defend, wood, stone, ore, cloth, by job or by
+name), as they would a person's; no
 other agent's line is an order to them. So the leader's mind commands its
 crew in plain words on team chat.
 

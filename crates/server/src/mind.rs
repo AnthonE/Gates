@@ -3099,6 +3099,9 @@ pub struct Scripted {
     /// agent: the mind leading its crew (`--minds N`). Other agents' lines
     /// are never orders, so two scripted bodies cannot order each other.
     leader: Option<protocol::Address>,
+    /// The one whose team-chat lines it obeys, person or agent
+    /// (`--commander`): with one set, nobody else's lines are orders.
+    commander: Option<protocol::Address>,
     /// Someone its memory holds as an enemy is in view
     /// (`DecisionSource::set_feared`).
     feared: bool,
@@ -3438,6 +3441,13 @@ impl Scripted {
         self
     }
 
+    /// Take orders on team chat from this wallet only (and its crew's
+    /// leader): the crew's commander, a person or an agent.
+    pub fn with_commander(mut self, commander: Option<protocol::Address>) -> Self {
+        self.commander = commander;
+        self
+    }
+
     /// What its team typed since it was last asked, read as orders
     /// (`agent::orders`), and whether someone near it asked to team up.
     /// A line it said itself or an agent said is never an order, except
@@ -3447,16 +3457,26 @@ impl Scripted {
             self.standing = None;
             self.errand = None;
         }
+        let role = s.society.set.then_some(s.society.role);
+        let mates = &s.team.who[..usize::from(s.team.who_len).min(s.team.who.len())];
         for line in s.heard.lines() {
-            let leader = line.channel == protocol::Channel::Team
-                && !line.address.is_guest()
-                && self.leader == Some(line.address);
+            let named = |w: Option<protocol::Address>| {
+                line.channel == protocol::Channel::Team
+                    && !line.address.is_guest()
+                    && w == Some(line.address)
+            };
+            let leader = named(self.leader) || named(self.commander);
             if line.me || (line.agent && !leader) {
                 continue;
             }
             let text = line.text.as_bytes();
             match line.channel {
                 protocol::Channel::Team => {
+                    // With a commander, only its line (and the crew
+                    // leader's) is an order; a line may name who it is for.
+                    if (self.commander.is_some() && !leader) || !orders::for_me(text, role, mates) {
+                        continue;
+                    }
                     if let Some(code) = orders::code(text) {
                         self.code = Some(code);
                         self.reply("got the code");
@@ -3472,6 +3492,11 @@ impl Scripted {
                             self.standing = Some(Order::Stay);
                             self.errand = None;
                             self.reply("holding here");
+                        }
+                        Some(Order::Patrol) => {
+                            self.standing = Some(Order::Patrol);
+                            self.errand = None;
+                            self.reply("on patrol");
                         }
                         Some(errand) => {
                             self.standing = None;
@@ -3640,6 +3665,7 @@ impl Scripted {
                         _ => "on it: wood",
                     },
                 ),
+                Order::Defend => (Goal::Defend, "defending home"),
                 _ => (Goal::GoHome, "heading home"),
             };
             if s.offers(goal) {
@@ -3658,6 +3684,9 @@ impl Scripted {
             }
             Some(Order::Stay) if s.offers(Goal::Wait) => {
                 return (Goal::Wait, "scripted: my teammate said stay");
+            }
+            Some(Order::Patrol) if s.offers(Goal::Patrol) => {
+                return (Goal::Patrol, "scripted: my teammate said patrol");
             }
             _ => {}
         }
@@ -4594,6 +4623,64 @@ mod tests {
         s.heard.clear();
         s.heard.push(from(lead, "stay here"));
         assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Wait, "its leader");
+    }
+
+    /// With a commander (`--commander`) only its lines are orders, an
+    /// agent's too; a line opening with a job or a teammate's name is for
+    /// them only; patrol stands and defend is once.
+    #[test]
+    fn a_crew_obeys_its_commander_by_job_and_by_name() {
+        let boss = protocol::Address([0x33; protocol::ADDRESS_BYTES]);
+        let mate = protocol::Address([0x44; protocol::ADDRESS_BYTES]);
+        let mut scripted = Scripted::default().with_commander(Some(boss));
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Follow, Goal::Patrol] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        s.team.who[0] = Who {
+            id: 8,
+            name: protocol::Name::new("Miller-3").unwrap(),
+            address: mate,
+        };
+        s.team.who_len = 1;
+        s.society.set = true;
+        s.society.role = Role::Farmer;
+        let mut ask = |s: &mut Summary, address, agent, text: &str| {
+            s.heard.clear();
+            s.heard.push(HeardLine {
+                address,
+                ..heard(protocol::Channel::Team, text, agent)
+            });
+            scripted.decide(s).unwrap()
+        };
+        assert_eq!(
+            ask(&mut s, mate, false, "stay").goal,
+            Goal::Explore,
+            "not the commander"
+        );
+        let c = ask(&mut s, boss, true, "farmers patrol");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Patrol, Some("on patrol"))
+        );
+        assert_eq!(
+            ask(&mut s, boss, false, "guards stay").goal,
+            Goal::Patrol,
+            "not its job"
+        );
+        assert_eq!(
+            ask(&mut s, boss, false, "Miller-3 stay").goal,
+            Goal::Patrol,
+            "a teammate's"
+        );
+        assert_eq!(ask(&mut s, boss, false, "all: stay").goal, Goal::Wait);
+        // Defend is a run, once: home not struck, it says so.
+        let c = ask(&mut s, boss, false, "defend");
+        assert_eq!(said(&c).as_deref(), Some("can't right now"));
     }
 
     /// A teammate's words on team chat are orders: follow and stay stand
