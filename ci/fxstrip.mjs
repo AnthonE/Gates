@@ -29,7 +29,8 @@
 //
 // A page is driven frame-exactly, never by the wall clock: hook `fx` sets
 // `window.__fxStep = k` and waits for `window.__fx = {step: k, held >= 2}`
-// (oneshot's `?pose=1&fx=`); hook `bc` sets `window.__bcFilm = {step: k}`,
+// (oneshot's `?pose=1&fx=`; `__fx` may also say its game, name, what, span,
+// live, seed, knobs and recipes); hook `bc` sets `window.__bcFilm = {step: k}`,
 // wakes the app and waits for `__bc.showcase_steps >= k` (Before Colony's
 // `?showcase=fx`). A native stage writes its own frames and stage.json
 // (Gates' `examples/fx_stage.rs`, `ci/fx.sh`).
@@ -386,7 +387,7 @@ async function page(out, o) {
   const pw = loadPlaywright();
   if (!pw) throw new Error('fxstrip: Playwright is not installed here');
   const [w, h] = (o.size || '768x432').split('x').map(Number);
-  const steps = o.steps ? o.steps.split(',').map(Number) : stripSteps(Number(o.span || 1), Number(o.frames || 11));
+  let steps = o.steps ? o.steps.split(',').map(Number) : null;
   const hook = o.hook || 'fx';
   let srv = null, url = o.url;
   if (!url) {
@@ -430,7 +431,10 @@ async function page(out, o) {
       info = await pg.evaluate(() => ({ ...window.__fx }));
     } else {
       await until('(window.__bc?.showcase_frames ?? 0) >= 10 && (window.__bc?.showcase_steps ?? -1) >= 0', true);
+      info = await pg.evaluate(() => ({ ...(window.__fx || {}) }));
     }
+    // The span the stage says its effect lasts, unless the caller said.
+    steps ||= stripSteps(Number(o.span || info.span || 1), Number(o.frames || 11));
     for (const k of steps) {
       if (hook === 'fx') {
         await pg.evaluate((k) => { window.__fxStep = k; }, k);
