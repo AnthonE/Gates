@@ -344,6 +344,18 @@ def walk_ok(goal, options):
             and 10 <= int(parts[2]) <= 600)
 
 
+HOLD_ANY = "hold:<seconds>"
+
+
+def hold_ok(goal, options):
+    """A filled-in hold (`hold:20`) answers the hold template when it is on
+    offer; the body checks it again (`mind::HOLD_MAX_S`)."""
+    if HOLD_ANY not in options or not goal.startswith("hold:"):
+        return False
+    secs = goal[len("hold:"):]
+    return secs.isdigit() and 1 <= int(secs) <= 30
+
+
 def save_notes(notes):
     try:
         tmp = NOTES_FILE + ".tmp"
@@ -999,7 +1011,8 @@ def main():
             answer = ask(system, turn_content(request, recent, frame, notes, chat_log, strategist.echo()),
                          schema(can_share, voice))
             goal = answer["goal"]
-            if goal not in request["options"] and not walk_ok(goal, request["options"]):
+            if (goal not in request["options"] and not walk_ok(goal, request["options"])
+                    and not hold_ok(goal, request["options"])):
                 raise RuntimeError(f"model chose {goal!r}, not on offer")
             reason = one_line(answer["reason"], REASON_CHARS)
             thought = one_line(answer.get("thought"), THOUGHT_CHARS)

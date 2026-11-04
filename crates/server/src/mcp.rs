@@ -288,6 +288,9 @@ pub struct Server<W: Write> {
     late: u64,
     /// Marked on every message from the harness (`McpDoor`).
     presence: Option<Presence>,
+    /// The standing plan the last `act` left the body (`Null`: none, or
+    /// cleared): shown on every `look` and in `status`.
+    plan: Value,
 }
 
 impl<W: Write> Server<W> {
@@ -305,6 +308,7 @@ impl<W: Write> Server<W> {
             answered: 0,
             late: 0,
             presence: None,
+            plan: Value::Null,
         }
     }
 
@@ -492,6 +496,9 @@ impl<W: Write> Server<W> {
                         out.insert(key.into(), v.clone());
                     }
                 }
+                if !self.plan.is_null() {
+                    out.insert("plan".into(), self.plan.clone());
+                }
                 // A harness with a shell reads this. Strangers' words get
                 // their label beside them, every time there are any.
                 if p.request["heard"].as_array().is_some_and(|h| !h.is_empty()) {
@@ -522,7 +529,16 @@ impl<W: Write> Server<W> {
         let Some(p) = self.pending.as_ref().filter(|p| p.id == id) else {
             return text(&self.gone(id), true);
         };
-        if !p.options.iter().any(|o| o == goal) {
+        // A template on offer (`walk:<bearing>:<metres>`, `hold:<seconds>`)
+        // answers to every goal it stands for.
+        let offered: Vec<crate::mind::Goal> = p
+            .options
+            .iter()
+            .filter_map(|o| crate::mind::Goal::named(o).or_else(|| template(o)))
+            .collect();
+        if !p.options.iter().any(|o| o == goal)
+            && crate::mind::Goal::parse(goal, &offered).is_none()
+        {
             return text(
                 &format!(
                     "`{goal}` is not one of this decision's options: {}",
@@ -592,6 +608,11 @@ impl<W: Write> Server<W> {
         self.shown = false;
         self.answered_id = Some(id);
         self.answered += 1;
+        match &plan {
+            Some(p) if p.is_empty() => self.plan = Value::Null,
+            Some(_) => self.plan = args["plan"].clone(),
+            None => {}
+        }
         let filed = if !report {
             ""
         } else if crate::bugs::is_open() {
@@ -665,10 +686,20 @@ impl<W: Write> Server<W> {
             "last_goal": pick("last_goal"),
             "team": last.map_or(Value::Null, |l| l["team"].clone()),
             "friend": last.map_or(Value::Null, |l| l["friend"].clone()),
+            "plan": self.plan,
             "bug_reports": crate::bugs::counts(),
         });
         text(&out.to_string(), false)
     }
+}
+
+/// An offered template's goal: the any-walk and the any-hold, whose labels
+/// are forms to fill in rather than goals [`crate::mind::Goal::named`] reads.
+fn template(label: &str) -> Option<crate::mind::Goal> {
+    use crate::mind::{Goal, Walk, HOLD_ANY};
+    [Goal::Walk(Walk::ANY), HOLD_ANY]
+        .into_iter()
+        .find(|g| g.label().as_str() == label)
 }
 
 fn me_json() -> Value {
@@ -699,7 +730,7 @@ fn tools() -> Value {
         {
             "name": "look",
             "title": "Look",
-            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one), and when your body has them: your character (who you are), your memory (places, people and what happened, as bearings and metres) and the strategy you left. Options can carry `give:<item>` (hand that item to your friend or the teammate in reach) and `authorize` (get on your team's cupboard). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
+            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one), and when your body has them: your character (who you are), your memory (places, people and what happened, as bearings and metres) and the strategy you left; and the standing plan you left with act, if any (plan). Options can carry `give:<item>` (hand that item to your friend or the teammate in reach), `authorize` (get on your team's cupboard), and two forms to fill in: `walk:<bearing>:<metres>` and `hold:<seconds>` (answer e.g. walk:ahead-left:300 or hold:20). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
             "inputSchema": empty,
             "annotations": {"readOnlyHint": true},
         },
@@ -777,7 +808,7 @@ fn tools() -> Value {
         {
             "name": "status",
             "title": "Status",
-            "description": "Your name, wallet, the link to watch your body live, whether a decision is waiting, and your health, goal, team and friend as last seen.",
+            "description": "Your name, wallet, the link to watch your body live, whether a decision is waiting, your health, goal, team and friend as last seen, and the standing plan you left (null for none).",
             "inputSchema": empty,
             "annotations": {"readOnlyHint": true},
         },
@@ -939,6 +970,30 @@ mod tests {
         assert_eq!(note.body, "walked north");
     }
 
+    /// A template on offer takes the goal it stands for: a walk leg, a hold.
+    #[test]
+    fn a_filled_in_walk_or_hold_answers_its_template() {
+        let (mut s, mut tx) = server(Duration::from_secs(45));
+        tx.push(sent(
+            r#"{"id":4,"options":["explore","walk:<bearing>:<metres>","hold:<seconds>"],"observation":{}}"#.into(),
+        ))
+        .unwrap();
+        for bad in ["hold:0", "hold:999", "walk:up:300", "hold"] {
+            let r = s.act(&json!({"id": 4, "goal": bad}));
+            assert_eq!(r["isError"], true, "{bad}");
+        }
+        let r = s.act(&json!({"id": 4, "goal": "walk:ahead-left:300"}));
+        assert_eq!(r["isError"], false, "{}", body(&r));
+        tx.push(sent(
+            r#"{"id":5,"options":["explore","hold:<seconds>"],"observation":{}}"#.into(),
+        ))
+        .unwrap();
+        let r = s.act(&json!({"id": 5, "goal": "hold:20"}));
+        assert_eq!(r["isError"], false, "{}", body(&r));
+        let wrote = String::from_utf8(s.replies.clone()).unwrap();
+        assert!(wrote.contains(r#""goal":"hold:20""#), "{wrote}");
+    }
+
     #[test]
     fn a_plan_goes_to_the_body_and_a_bad_one_is_refused() {
         let (mut s, mut tx) = server(Duration::from_secs(45));
@@ -955,8 +1010,23 @@ mod tests {
             "{}",
             body(&ok)
         );
-        let sent = String::from_utf8(s.replies.clone()).unwrap();
-        assert!(sent.contains(r#""plan":[{"goal":"gather_wood""#), "{sent}");
+        let wrote = String::from_utf8(s.replies.clone()).unwrap();
+        assert!(
+            wrote.contains(r#""plan":[{"goal":"gather_wood""#),
+            "{wrote}"
+        );
+        // The plan left is shown back: in status, and on the next look.
+        let st: Value = serde_json::from_str(body(&s.status())).unwrap();
+        assert_eq!(st["plan"][1]["goal"], "build");
+        tx.push(sent(
+            r#"{"id":5,"options":["explore"],"observation":{}}"#.into(),
+        ))
+        .unwrap();
+        let look: Value = serde_json::from_str(body(&s.look(Duration::ZERO))).unwrap();
+        assert_eq!(look["plan"][0]["until"]["count"], 1515);
+        s.act(&json!({"id": 5, "goal": "explore", "plan": []}));
+        let st: Value = serde_json::from_str(body(&s.status())).unwrap();
+        assert!(st["plan"].is_null(), "cleared");
     }
 
     /// A strategy, stances and a thought go to the body with the act; a bad

@@ -2794,6 +2794,13 @@ impl Survivor {
                 self.stats.phase = Phase::Resting;
                 Intent::IDLE
             }
+            Goal::Hold(secs) => {
+                if elapsed >= u32::from(secs.max(1)) * TICK_HZ {
+                    self.end_goal(tick, Outcome::Done);
+                }
+                self.stats.phase = Phase::Resting;
+                Intent::IDLE
+            }
             Goal::Flee => {
                 if active.fled || !self.start_flee(body, tick) {
                     self.end_goal(tick, Outcome::Done);
@@ -5753,6 +5760,7 @@ impl Survivor {
                     | Goal::Forage
                     | Goal::GatherHemp
                     | Goal::Wait
+                    | Goal::Hold(_)
                     | Goal::GoHome,
                 ) => true,
                 Some(Goal::Build) => self.builder.at_checkpoint(),
@@ -9276,6 +9284,8 @@ pub fn observe(
         }
         // And anywhere at all, by bearing and metres.
         s.offer(Goal::Walk(crate::mind::Walk::ANY));
+        // And a stand of the length it picks.
+        s.offer(crate::mind::HOLD_ANY);
         // A give of anything the pack holds, while its friend or a teammate
         // stands in hand reach: a mind told who is about decides what.
         if senses.give_to {

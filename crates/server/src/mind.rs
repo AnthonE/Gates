@@ -280,6 +280,21 @@ pub enum Goal {
     /// Offered to the same sources as `Go`, as one template, [`Walk::ANY`],
     /// that every walk answers to.
     Walk(Walk),
+    /// Stand where it is, guard up, so many seconds (`hold:20`): `wait` with
+    /// the length a mind picks, up to [`HOLD_MAX_S`]. Offered as one
+    /// template, [`HOLD_ANY`], to the sources `Walk` is offered to.
+    Hold(u16),
+}
+
+/// The offer of any hold: its label is the form a mind fills in.
+pub const HOLD_ANY: Goal = Goal::Hold(0);
+/// A hold's seconds: at least one, at most one heartbeat's worth.
+pub const HOLD_MAX_S: u16 = 30;
+
+/// `<seconds>`, within 1..=[`HOLD_MAX_S`].
+fn hold_secs(s: &str) -> Option<u16> {
+    let n: u16 = s.parse().ok()?;
+    (1..=HOLD_MAX_S).contains(&n).then_some(n)
 }
 
 /// One leg of a walk: a bearing (`BEARINGS`' index, clockwise from ahead)
@@ -434,6 +449,7 @@ impl Goal {
             Goal::Authorize => "authorize",
             Goal::Go(_) => "go",
             Goal::Walk(_) => "walk",
+            Goal::Hold(_) => "hold",
         }
     }
 
@@ -466,6 +482,13 @@ impl Goal {
                 _ => put(b":<bearing>:<metres>"),
             }
         }
+        if let Goal::Hold(secs) = self {
+            put(b":");
+            match secs {
+                0 => put(b"<seconds>"),
+                n => put(n.to_string().as_bytes()),
+            }
+        }
         Label {
             bytes,
             len: len as u8,
@@ -494,6 +517,9 @@ impl Goal {
         if key == "walk" {
             return Walk::parse(name).map(Goal::Walk);
         }
+        if key == "hold" {
+            return hold_secs(name).map(Goal::Hold);
+        }
         let name = Name::new(name.as_bytes())?;
         match key {
             "craft" => Some(Goal::Craft(name)),
@@ -511,6 +537,11 @@ impl Goal {
             return Walk::parse(leg)
                 .filter(|_| offered.contains(&Goal::Walk(Walk::ANY)))
                 .map(Goal::Walk);
+        }
+        if let Some(secs) = label.strip_prefix("hold:") {
+            return hold_secs(secs)
+                .filter(|_| offered.contains(&HOLD_ANY))
+                .map(Goal::Hold);
         }
         offered
             .iter()
@@ -592,6 +623,11 @@ impl Goal {
                 w.metres,
                 BEARINGS.get(usize::from(w.bearing)).unwrap_or(&"ahead")
             ),
+            Goal::Hold(0) => format!(
+                "Stand guard where you are: fill in 1-{HOLD_MAX_S} seconds, e.g. hold:20. \
+                 You still answer a blow."
+            ),
+            Goal::Hold(n) => format!("Stand guard here {n} s."),
         }
     }
 }
@@ -2025,6 +2061,7 @@ impl Summary {
         let at = |g: Goal| self.options().iter().position(|&o| o == g);
         at(goal).or_else(|| match goal {
             Goal::Walk(w) if w != Walk::ANY => at(Goal::Walk(Walk::ANY)),
+            Goal::Hold(n) if n != 0 => at(HOLD_ANY),
             _ => None,
         })
     }
@@ -4236,6 +4273,21 @@ mod tests {
         assert_eq!(Goal::parse("gather_wood", &[Goal::Explore]), None);
         assert!(Name::new(b"").is_none() && Name::new(b"bad\nname").is_none());
         assert!(Name::new(&[b'x'; MAX_ITEM_NAME_BYTES + 1]).is_none());
+    }
+
+    /// A hold is one template on offer, filled in with its seconds.
+    #[test]
+    fn a_hold_is_a_template_filled_in_with_seconds() {
+        assert_eq!(HOLD_ANY.label().as_str(), "hold:<seconds>");
+        assert_eq!(Goal::Hold(20).label().as_str(), "hold:20");
+        assert_eq!(Goal::named("hold:20"), Some(Goal::Hold(20)));
+        assert_eq!(Goal::named("hold:0"), None);
+        assert_eq!(Goal::named("hold:31"), None);
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("hold:20", s.options()), None, "not offered");
+        s.offer(HOLD_ANY);
+        assert_eq!(Goal::parse("hold:20", s.options()), Some(Goal::Hold(20)));
+        assert!(s.offers(Goal::Hold(5)));
     }
 
     /// The social verbs' labels: `give:<item>` names the item as a craft
