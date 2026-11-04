@@ -488,6 +488,7 @@ offered, and a reply naming anything else is refused.
 | `go:<place>` | walk to a named place in `places` and stop within 8 m. External and MCP minds only; a trip that fails is not offered again for two minutes |
 | `walk:<bearing>:<metres>` | walk anywhere: a bearing from where it faces (`ahead`, `ahead-right`, `right`, `behind-right`, `behind`, `behind-left`, `left`, `ahead-left`) and 10-600 m. Offered as one template the mind fills in |
 | `hold:<seconds>` | stand guard where it is 1-30 s, still answering a blow: `wait` with the length the mind picks. Offered as one template, beside the walk |
+| `follow:m<k>` | `follow`, after one teammate: the one `team.teammates` lists `k`th (from 1). Offered, one per teammate, beside the walk |
 | `give:<item>`, `authorize` | the social verbs (below) |
 
 **The social verbs**, each a human client verb first, held by

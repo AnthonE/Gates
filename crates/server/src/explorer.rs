@@ -1232,6 +1232,8 @@ pub struct Survivor {
     /// is handing to.
     give_to: Option<u32>,
     hand_target: u32,
+    /// The teammate slot a `follow:m<k>` goes after (`Goal::FollowMate`).
+    follow_target: Option<u8>,
     /// An authorize under way, and when the last came to nothing.
     auth: Auth,
     auth_failed: Option<u32>,
@@ -1438,6 +1440,7 @@ impl Survivor {
             invitee: None,
             give_to: None,
             hand_target: 0,
+            follow_target: None,
             auth: Auth::default(),
             auth_failed: None,
             alone_since: None,
@@ -2500,6 +2503,10 @@ impl Survivor {
         if matches!(goal, Goal::Give(_)) {
             self.hand_target = self.give_to.unwrap_or(0);
         }
+        self.follow_target = match goal {
+            Goal::FollowMate(slot) => Some(slot),
+            _ => None,
+        };
         self.auth = Auth::default();
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;
@@ -2705,6 +2712,7 @@ impl Survivor {
             | Goal::KeepShop
             | Goal::Raid
             | Goal::Follow
+            | Goal::FollowMate(_)
             | Goal::Meet
             | Goal::Patrol
             | Goal::HandOver
@@ -2731,7 +2739,10 @@ impl Survivor {
         // the doors and the walk out start from the ground they were made
         // for. A follow and a delivery go where their own legs take them.
         if walks
-            && !matches!(active.goal, Goal::Follow | Goal::Deliver)
+            && !matches!(
+                active.goal,
+                Goal::Follow | Goal::FollowMate(_) | Goal::Deliver
+            )
             && !active.delivering
             && (self.route.descending() || self.route.upstairs(core, body))
         {
@@ -2752,8 +2763,10 @@ impl Survivor {
         // Out of a teammate's base too, by its nearest door. A delivery and
         // an authorize work its own doors, and a follow goes where its
         // teammate goes.
-        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver | Goal::Authorize)
-            || active.delivering
+        let own_doors = matches!(
+            active.goal,
+            Goal::Follow | Goal::FollowMate(_) | Goal::Deliver | Goal::Authorize
+        ) || active.delivering
             || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
             if let Some(intent) = self.leave_mates(core, body, tick) {
@@ -2929,11 +2942,11 @@ impl Survivor {
                 self.stats.phase = Phase::Waiting;
                 Intent::IDLE
             }
-            Goal::Follow if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
+            Goal::Follow | Goal::FollowMate(_) if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
-            Goal::Follow => self.follow(core, body, tick),
+            Goal::Follow | Goal::FollowMate(_) => self.follow(core, body, tick),
             Goal::Meet if elapsed >= MEET_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -3694,9 +3707,21 @@ impl Survivor {
     fn follow(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let team = *core.team();
+        // A follow after one teammate: the slot its request listed them at,
+        // in the team view's order without itself (`observe`'s `team.who`).
+        let only = self.follow_target.map(|slot| {
+            team.members()
+                .iter()
+                .filter(|m| m.id != core.player_id)
+                .nth(usize::from(slot).saturating_sub(1))
+                .map_or(0, |m| m.id)
+        });
         let mut mate: Option<(bool, f32, [f32; 2], Option<f32>)> = None;
         for m in team.members() {
-            if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
+            if m.id == core.player_id
+                || m.state != protocol::TEAM_AWAKE
+                || only.is_some_and(|id| id != m.id)
+            {
                 continue;
             }
             let track = self.tracks.get(m.id);
@@ -9284,8 +9309,12 @@ pub fn observe(
         }
         // And anywhere at all, by bearing and metres.
         s.offer(Goal::Walk(crate::mind::Walk::ANY));
-        // And a stand of the length it picks.
+        // And a stand of the length it picks, and a follow after any one
+        // teammate by the slot `team.teammates` lists them at.
         s.offer(crate::mind::HOLD_ANY);
+        for slot in 1..=s.team.who_len {
+            s.offer(Goal::FollowMate(slot));
+        }
         // A give of anything the pack holds, while its friend or a teammate
         // stands in hand reach: a mind told who is about decides what.
         if senses.give_to {

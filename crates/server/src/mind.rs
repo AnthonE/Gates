@@ -280,6 +280,10 @@ pub enum Goal {
     /// Offered to the same sources as `Go`, as one template, [`Walk::ANY`],
     /// that every walk answers to.
     Walk(Walk),
+    /// `follow`, after one teammate: the one the request's `team.teammates`
+    /// lists at this slot, from 1 (`follow:m2`). A slot, never a name.
+    /// Offered, one per teammate, to the sources `Walk` is offered to.
+    FollowMate(u8),
     /// Stand where it is, guard up, so many seconds (`hold:20`): `wait` with
     /// the length a mind picks, up to [`HOLD_MAX_S`]. Offered as one
     /// template, [`HOLD_ANY`], to the sources `Walk` is offered to.
@@ -450,6 +454,7 @@ impl Goal {
             Goal::Go(_) => "go",
             Goal::Walk(_) => "walk",
             Goal::Hold(_) => "hold",
+            Goal::FollowMate(_) => "follow",
         }
     }
 
@@ -481,6 +486,10 @@ impl Goal {
                 }
                 _ => put(b":<bearing>:<metres>"),
             }
+        }
+        if let Goal::FollowMate(slot) = self {
+            put(b":m");
+            put(slot.to_string().as_bytes());
         }
         if let Goal::Hold(secs) = self {
             put(b":");
@@ -519,6 +528,12 @@ impl Goal {
         }
         if key == "hold" {
             return hold_secs(name).map(Goal::Hold);
+        }
+        if key == "follow" {
+            let slot: u8 = name.strip_prefix('m')?.parse().ok()?;
+            return (1..=protocol::TEAM_MAX as u8)
+                .contains(&slot)
+                .then_some(Goal::FollowMate(slot));
         }
         let name = Name::new(name.as_bytes())?;
         match key {
@@ -628,6 +643,9 @@ impl Goal {
                  You still answer a blow."
             ),
             Goal::Hold(n) => format!("Stand guard here {n} s."),
+            Goal::FollowMate(k) => format!(
+                "Stay with teammate {k} (team.teammates' {k}th); fight their attackers."
+            ),
         }
     }
 }
@@ -1709,13 +1727,15 @@ pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
 
 /// The most goals one request can offer: the fixed set, every craft and
-/// trade, the trips, the one walk anywhere (`Walk::ANY`), and a give for
-/// each item the pack lists.
+/// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
+/// (`HOLD_ANY`), a follow for each teammate, and a give for each item the
+/// pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
-    + 1
+    + 2
+    + protocol::TEAM_MAX
     + SUMMARY_ITEMS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
@@ -4288,6 +4308,13 @@ mod tests {
         s.offer(HOLD_ANY);
         assert_eq!(Goal::parse("hold:20", s.options()), Some(Goal::Hold(20)));
         assert!(s.offers(Goal::Hold(5)));
+        // A follow after one teammate is by slot, from 1, never a name.
+        assert_eq!(Goal::FollowMate(2).label().as_str(), "follow:m2");
+        assert_eq!(Goal::named("follow:m2"), Some(Goal::FollowMate(2)));
+        for bad in ["follow:m0", "follow:m9", "follow:Ash", "follow:2"] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        assert_eq!(Goal::named("follow"), Some(Goal::Follow));
     }
 
     /// The social verbs' labels: `give:<item>` names the item as a craft
