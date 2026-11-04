@@ -1433,6 +1433,36 @@ impl Threat {
     }
 }
 
+/// Whether a base's owner is about, as the body's own eyes have it
+/// (`agent::raid::Base::presence`): seen awake near it lately, asleep in it,
+/// watched a long while with nobody awake about it, or not watched enough
+/// to say. What a human reads off the same watch: the island's player list
+/// is never asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OwnerSeen {
+    #[default]
+    Unknown,
+    Online,
+    Asleep,
+    Quiet,
+}
+
+impl OwnerSeen {
+    pub fn word(self) -> &'static str {
+        match self {
+            OwnerSeen::Unknown => "unknown",
+            OwnerSeen::Online => "online",
+            OwnerSeen::Asleep => "asleep",
+            OwnerSeen::Quiet => "quiet",
+        }
+    }
+
+    /// Offline-looking: a sleeper in it, or a long quiet watch.
+    pub fn offline(self) -> bool {
+        matches!(self, OwnerSeen::Asleep | OwnerSeen::Quiet)
+    }
+}
+
 /// A coarse distance: here (under 10 m), near (50), mid (200), far.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Distance {
@@ -1726,8 +1756,9 @@ pub struct Summary {
     /// The nearest place on the map with crates it has not found bare.
     pub loot_place: Option<Place>,
     /// Bases it has seen that are worth raiding now: how many, and the
-    /// nearest's distance and bearing.
+    /// nearest's distance and bearing, and whether that one's owner is about.
     pub raid: Sighting,
+    pub raid_owner: OwnerSeen,
     /// What its box held when last opened.
     pub stored: [(Name, u32); SUMMARY_STORED],
     pub stored_len: u8,
@@ -1891,6 +1922,7 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        raid_owner: OwnerSeen::Unknown,
         stored: [(Name::EMPTY, 0); SUMMARY_STORED],
         stored_len: 0,
         take_out: false,
@@ -2271,6 +2303,7 @@ impl Summary {
             "loot_known": self.loot.json(),
             "loot_place": self.loot_place.map(|p| p.json()),
             "raid_targets": self.raid.json(),
+            "raid_owner": self.raid_owner.word(),
             "my_box": {
                 "holds": self.stored().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "has_what_the_base_needs": self.take_out,
@@ -5104,6 +5137,9 @@ mod tests {
         let v = s.to_json();
         assert_eq!(v["raid_targets"]["count"], 1);
         assert_eq!(v["raid_targets"]["bearing"], "right");
+        assert_eq!(v["raid_owner"], "unknown");
+        s.raid_owner = OwnerSeen::Asleep;
+        assert_eq!(s.to_json()["raid_owner"], "asleep");
     }
 
     /// The stations: fragments for the bench come from loot until a

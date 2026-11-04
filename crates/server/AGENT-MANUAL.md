@@ -192,7 +192,9 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
 - `observation`: health, food, water, the pack by name, what it can craft,
   counts and bearings of trees, nodes, bushes, players and animals in view
   (or seen in the last minute), water, home and threats, its team and the
-  team's boxes as last seen, how its last goal went, hits and deaths, and
+  team's boxes as last seen, bases worth a raid and whether the nearest's
+  owner is about (`raid_owner`: online, asleep, quiet or unknown, from its
+  own watch of the base), how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
 - `options`: the goals it may pick now, by label. Nothing it could do is
   hidden for having failed: a goal that came to nothing a moment ago stays

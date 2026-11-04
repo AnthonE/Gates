@@ -563,6 +563,8 @@ pub struct Senses {
     /// The nearest base worth raiding, where it stands: for its memory
     /// only (`memory.rs`), which a mind sees as a bearing.
     pub raid_at: Option<[f32; 2]>,
+    /// Whether that base's owner is about (`raid::Base::presence`).
+    pub raid_owner: crate::mind::OwnerSeen,
     /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
     pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -7329,8 +7331,9 @@ impl Survivor {
             let means = self.means(core);
             let (n, nearest) = self.bases.targets(&means, temperament, here, tick);
             let mut raid = Sighting::default();
-            self.senses.raid_at = nearest;
-            if let Some([x, z]) = nearest {
+            self.senses.raid_at = nearest.map(|(at, _)| at);
+            self.senses.raid_owner = nearest.map(|(_, o)| o).unwrap_or_default();
+            if let Some(([x, z], _)) = nearest {
                 let (d, b) = relative(body, x, z);
                 raid.add(d, b);
                 raid.count = n;
@@ -8829,6 +8832,7 @@ pub fn observe(
     s.loot = senses.loot;
     s.loot_place = senses.loot_place;
     s.raid = senses.raid;
+    s.raid_owner = senses.raid_owner;
     for &(item, units) in &memory.stored[..usize::from(memory.stored_len)] {
         let n = usize::from(s.stored_len);
         if let (Some(name), true) = (
