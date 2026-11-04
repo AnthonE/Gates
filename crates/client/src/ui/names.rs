@@ -45,7 +45,22 @@ pub fn of(core: &ClientCore, id: u32) -> String {
 /// made-up one in streamer mode (`ui::streamer`). Every surface that puts a
 /// player's name on screen calls this.
 pub fn shown(core: &ClientCore, id: u32) -> String {
-    shown_if(super::streamer::on(), core.tag(id), core.is_agent(id), id)
+    let streamer = super::streamer::on();
+    let agent = core.is_agent(id);
+    let name = shown_if(streamer, core.tag(id), agent, id);
+    // An agent serving a person on its team (v154): whose crew it is.
+    match core.crew_of(id).filter(|_| agent) {
+        Some(of) => crew_of(&name, &shown_if(streamer, core.tag(of), false, of)),
+        None => name,
+    }
+}
+
+/// `name (agent)` as `name (agent, crew of <commander>)` (`EventMsg::Crew`).
+pub fn crew_of(name: &str, commander: &str) -> String {
+    match name.strip_suffix(" (agent)") {
+        Some(bare) => format!("{bare} (agent, crew of {commander})"),
+        None => name.to_string(),
+    }
 }
 
 /// [`shown`] with the switch given, for a test.
@@ -232,6 +247,12 @@ mod tests {
     fn an_agent_says_so_wherever_it_is_named() {
         assert_eq!(label(Some(&tag("jev", 0)), true, 259), "jev (agent)");
         assert_eq!(label(None, true, 259), "#259 (agent)");
+        assert_eq!(crew_of("jev (agent)", "Ash"), "jev (agent, crew of Ash)");
+        assert_eq!(
+            crew_of("[OWL] jev (agent)", "Ash"),
+            "[OWL] jev (agent, crew of Ash)"
+        );
+        assert_eq!(crew_of("Ash", "jev"), "Ash", "a person is nobody's crew");
     }
 
     #[test]

@@ -497,6 +497,9 @@ pub struct ClientNetState {
     /// is owed: `tags_owed`'s shape, all at join and on a resync. A bit for a
     /// slot whose tenant is not an agent clears without a send.
     pub agents_owed: u128,
+    /// Which agents' crew marks (`EventMsg::Crew`, v154) this client is owed:
+    /// `agents_owed`'s shape, and set for everyone when one moves.
+    pub crews_owed: u128,
     /// World slots whose worn set this connection is owed (`SUB_WORN`),
     /// `tags_owed`'s shape: all of them at join and on a resync.
     pub worn_owed: u128,
@@ -642,6 +645,7 @@ impl ClientNetState {
             last_skins: None,
             tags_owed: TAGS_ALL,
             agents_owed: TAGS_ALL,
+            crews_owed: TAGS_ALL,
             worn_owed: TAGS_ALL,
             skins_pending: None,
             skins_platform: sim_core::skin::SkinSet::EMPTY,
@@ -683,6 +687,7 @@ impl ClientNetState {
         self.last_skins = None;
         self.tags_owed = TAGS_ALL;
         self.agents_owed = TAGS_ALL;
+        self.crews_owed = TAGS_ALL;
         self.worn_owed = TAGS_ALL;
         self.recipes_cursor = 0;
         self.research_cursor = 0;

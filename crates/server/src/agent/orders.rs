@@ -8,10 +8,16 @@
 //! agent's own replies are never taken as one.
 //!
 //! `/t follow me` · `/t stay` · `/t go get wood` (stone, ore, cloth) ·
-//! `/t go home` · `/t help` · `/t the code is 1234`.
+//! `/t go home` · `/t patrol` · `/t defend` · `/t help` ·
+//! `/t the code is 1234`.
+//!
+//! A line may open with who it is for ([`for_me`]): a job (`/t guards
+//! patrol`, `/t farmers get wood`), a teammate's name (`/t Miller-3
+//! follow`), or `all`. A line that opens with none of them is for everyone.
 
 use crate::agent::lock::LockCode;
-use crate::mind::Goal;
+use crate::agent::society::Role;
+use crate::mind::{Goal, Who};
 
 /// What a teammate asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -24,12 +30,17 @@ pub enum Order {
     Supply(Goal),
     /// Walk home, the team's base when it lives there.
     Home,
+    /// Walk the ring round home until told otherwise.
+    Patrol,
+    /// Home is struck: get in and fight from there, once.
+    Defend,
     /// Say what it understands.
     Help,
 }
 
 /// What `help` answers, within one chat line.
-pub const HELP: &str = "say: follow, stay, wood, stone, ore, cloth, home";
+pub const HELP: &str =
+    "say: follow, stay, wood, stone, ore, cloth, home, patrol, defend; start with guards, a name or all";
 
 /// The words of a line, lowercased, split on anything not a letter or a
 /// digit. No allocation: the caller walks them.
@@ -50,8 +61,10 @@ pub fn order(text: &[u8]) -> Option<Order> {
         Order::Help => 0,
         Order::Stay => 1,
         Order::Supply(_) => 2,
-        Order::Home => 3,
-        Order::Follow => 4,
+        Order::Defend => 3,
+        Order::Home => 4,
+        Order::Patrol => 5,
+        Order::Follow => 6,
     };
     for w in words(text) {
         let o = if is(w, &["help", "commands", "orders"]) {
@@ -66,8 +79,12 @@ pub fn order(text: &[u8]) -> Option<Order> {
             Order::Supply(Goal::SupplyOre)
         } else if is(w, &["cloth", "hemp"]) {
             Order::Supply(Goal::SupplyHemp)
+        } else if is(w, &["defend", "defence", "defense", "protect"]) {
+            Order::Defend
         } else if is(w, &["home", "base"]) {
             Order::Home
+        } else if is(w, &["patrol", "sweep", "perimeter"]) {
+            Order::Patrol
         } else if is(w, &["follow", "following", "come", "escort"]) {
             Order::Follow
         } else {
@@ -78,6 +95,52 @@ pub fn order(text: &[u8]) -> Option<Order> {
         }
     }
     found
+}
+
+/// The first word of a line as typed, trailing punctuation off (`Miller-3:`
+/// is `Miller-3`).
+fn head(text: &[u8]) -> &[u8] {
+    let start = text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(text.len());
+    let rest = &text[start..];
+    let end = rest
+        .iter()
+        .position(u8::is_ascii_whitespace)
+        .unwrap_or(rest.len());
+    let mut w = &rest[..end];
+    while let [body @ .., last] = w {
+        if matches!(last, b':' | b',' | b'!' | b'.' | b'?' | b';') {
+            w = body;
+        } else {
+            break;
+        }
+    }
+    w
+}
+
+/// Whether a team line is for this body: its job (`role`, in a society),
+/// none of its teammates `mates` by name, or everyone. A line opening with
+/// a job is for that job's bodies only; with a teammate's name, for them
+/// only (its own name is never in `mates`, so a line naming it is for it).
+pub fn for_me(text: &[u8], role: Option<Role>, mates: &[Who]) -> bool {
+    let w = head(text);
+    if w.is_empty() || is(w, &["all", "everyone", "everybody", "crew", "y'all"]) {
+        return true;
+    }
+    let jobs: [(Role, &[&str]); 4] = [
+        (Role::Guard, &["guard", "guards"]),
+        (Role::Farmer, &["farmer", "farmers"]),
+        (Role::Runner, &["runner", "runners"]),
+        (Role::Founder, &["founder", "boss"]),
+    ];
+    if let Some((job, _)) = jobs.iter().find(|(_, words)| is(w, words)) {
+        return role == Some(*job);
+    }
+    !mates
+        .iter()
+        .any(|m| !m.name.as_str().is_empty() && w.eq_ignore_ascii_case(m.name.as_str().as_bytes()))
 }
 
 /// A lock code in a team line: a lone number of one to four digits, the
@@ -108,7 +171,11 @@ mod tests {
 
     #[test]
     fn plain_words_are_orders() {
-        let cases: [(&str, Option<Order>); 14] = [
+        let cases: [(&str, Option<Order>); 18] = [
+            ("guards patrol", Some(Order::Patrol)),
+            ("defend the base!", Some(Order::Defend)),
+            ("patrol, then come home", Some(Order::Home)),
+            ("stop patrolling", Some(Order::Stay)),
             ("follow me", Some(Order::Follow)),
             ("come here", Some(Order::Follow)),
             ("Follow", Some(Order::Follow)),
@@ -127,6 +194,26 @@ mod tests {
         for (text, want) in cases {
             assert_eq!(order(text.as_bytes()), want, "{text}");
         }
+    }
+
+    #[test]
+    fn a_line_opening_with_a_job_or_a_name_is_for_them_only() {
+        let mate = |name: &str| Who {
+            id: 7,
+            name: protocol::Name::new(name).unwrap(),
+            address: protocol::Address::GUEST,
+        };
+        let mates = [mate("Miller-3"), mate("Ash")];
+        let guard = Some(Role::Guard);
+        assert!(for_me(b"follow me", guard, &mates), "nobody named: all");
+        assert!(for_me(b"all: get wood", None, &mates));
+        assert!(for_me(b"guards patrol", guard, &mates));
+        assert!(!for_me(b"guards patrol", Some(Role::Farmer), &mates));
+        assert!(!for_me(b"Guards, patrol", None, &mates), "no job, no guard");
+        assert!(!for_me(b"Miller-3 follow", guard, &mates), "a teammate's");
+        assert!(!for_me(b"ash: stay", guard, &mates));
+        assert!(for_me(b"Miller-4 follow", guard, &mates), "its own name");
+        assert!(for_me(b"  ", guard, &mates));
     }
 
     #[test]

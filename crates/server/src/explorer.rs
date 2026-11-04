@@ -136,6 +136,10 @@ pub const INVITE_REACH_M: f32 = 3.0;
 /// this near: the give's own reach (`sim_core::assist::ASSIST_REACH_M`), the
 /// same as an invite's. It runs at most this long, seconds.
 pub const GIVE_REACH_M: f32 = INVITE_REACH_M;
+/// Under the crosshair: this far either side of the aim line.
+pub const NEAR_AIM_ACROSS_M: f32 = 0.6;
+/// A stranger aimed at keeps its `n` slot this long after.
+pub const NEAR_KEEP_TICKS: u32 = 60 * TICK_HZ;
 pub const GIVE_GOAL_SECS: u32 = 60;
 /// An authorize (`Goal::Authorize`): the walk in through the team's doors to
 /// its cupboard and the press there, at most this long, seconds; one that
@@ -563,6 +567,11 @@ pub struct Senses {
     /// The nearest base worth raiding, where it stands: for its memory
     /// only (`memory.rs`), which a mind sees as a bearing.
     pub raid_at: Option<[f32; 2]>,
+    /// Whether that base's owner is about (`raid::Base::presence`).
+    pub raid_owner: crate::mind::OwnerSeen,
+    /// Strangers whose nametag it aimed at lately, in their slots
+    /// (`team.near`, `follow:n<k>`): ids, 0 for none, packed to the front.
+    pub near: [u32; crate::mind::NEAR_MAX],
     /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
     pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -600,6 +609,8 @@ pub struct Senses {
     /// bring its crew together is worth offering.
     pub society: crate::mind::SocietySense,
     pub society_meet: bool,
+    /// A turncoat's standing (`mind::Turn`).
+    pub turn: crate::mind::Turn,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -1132,6 +1143,11 @@ pub struct Survivor {
     /// pack lacks that its boxes hold, when a trip last came to nothing,
     /// when it was last under attack, and the code a teammate gave.
     shared: TeamHome,
+    /// A turncoat's standing, since when (a stray's wait, a lapse's walk),
+    /// and when a deploy batch last came (`agent::society::TURN_GONE_SECS`).
+    turn: crate::mind::Turn,
+    turn_at: u32,
+    deploy_walk_at: u32,
     home_job: HomeJob,
     wants: [(u16, u32); WANT_ROWS],
     wants_len: u8,
@@ -1230,6 +1246,14 @@ pub struct Survivor {
     /// is handing to.
     give_to: Option<u32>,
     hand_target: u32,
+    /// The teammate slot a `follow:m<k>` or `reach:m<k>` goes after
+    /// (`Goal::FollowMate`, `Goal::ReachMate`).
+    follow_target: Option<u8>,
+    /// The stranger a `follow:n<k>` goes after, by id (`Goal::FollowNear`).
+    follow_near: Option<u32>,
+    /// Strangers whose nametag its aim crossed within `NEAR_AIM_M`, and
+    /// when last: slots that stay put until a minute without one.
+    aimed: [(u32, u32); crate::mind::NEAR_MAX],
     /// An authorize under way, and when the last came to nothing.
     auth: Auth,
     auth_failed: Option<u32>,
@@ -1378,6 +1402,9 @@ impl Survivor {
             raid_job: RaidJob::default(),
             raid_failed: None,
             shared: TeamHome::default(),
+            turn: crate::mind::Turn::Loyal,
+            turn_at: 0,
+            deploy_walk_at: 0,
             home_job: HomeJob::default(),
             wants: [(0, 0); WANT_ROWS],
             wants_len: 0,
@@ -1436,6 +1463,9 @@ impl Survivor {
             invitee: None,
             give_to: None,
             hand_target: 0,
+            follow_target: None,
+            follow_near: None,
+            aimed: [(0, 0); crate::mind::NEAR_MAX],
             auth: Auth::default(),
             auth_failed: None,
             alone_since: None,
@@ -2491,13 +2521,26 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
-        if matches!(goal, Goal::HandOver | Goal::Give(_)) {
+        if matches!(goal, Goal::HandOver | Goal::Give(_) | Goal::GiveMate(..)) {
             self.hand = Hand::default();
         }
         // A give goes to whoever was in hand reach when it was chosen.
         if matches!(goal, Goal::Give(_)) {
             self.hand_target = self.give_to.unwrap_or(0);
         }
+        self.follow_target = match goal {
+            Goal::FollowMate(slot) | Goal::ReachMate(slot) => Some(slot),
+            _ => None,
+        };
+        self.follow_near = match goal {
+            Goal::FollowNear(slot) => self
+                .senses
+                .near
+                .get(usize::from(slot).saturating_sub(1))
+                .copied()
+                .or(Some(0)),
+            _ => None,
+        };
         self.auth = Auth::default();
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;
@@ -2703,6 +2746,9 @@ impl Survivor {
             | Goal::KeepShop
             | Goal::Raid
             | Goal::Follow
+            | Goal::FollowMate(_)
+            | Goal::ReachMate(_)
+            | Goal::FollowNear(_)
             | Goal::Meet
             | Goal::Patrol
             | Goal::HandOver
@@ -2729,7 +2775,14 @@ impl Survivor {
         // the doors and the walk out start from the ground they were made
         // for. A follow and a delivery go where their own legs take them.
         if walks
-            && !matches!(active.goal, Goal::Follow | Goal::Deliver)
+            && !matches!(
+                active.goal,
+                Goal::Follow
+                    | Goal::FollowMate(_)
+                    | Goal::ReachMate(_)
+                    | Goal::FollowNear(_)
+                    | Goal::Deliver
+            )
             && !active.delivering
             && (self.route.descending() || self.route.upstairs(core, body))
         {
@@ -2750,8 +2803,15 @@ impl Survivor {
         // Out of a teammate's base too, by its nearest door. A delivery and
         // an authorize work its own doors, and a follow goes where its
         // teammate goes.
-        let own_doors = matches!(active.goal, Goal::Follow | Goal::Deliver | Goal::Authorize)
-            || active.delivering
+        let own_doors = matches!(
+            active.goal,
+            Goal::Follow
+                | Goal::FollowMate(_)
+                | Goal::ReachMate(_)
+                | Goal::FollowNear(_)
+                | Goal::Deliver
+                | Goal::Authorize
+        ) || active.delivering
             || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
             if let Some(intent) = self.leave_mates(core, body, tick) {
@@ -2787,6 +2847,13 @@ impl Survivor {
             }
             Goal::Wait => {
                 if elapsed >= WAIT_GOAL_SECS * TICK_HZ {
+                    self.end_goal(tick, Outcome::Done);
+                }
+                self.stats.phase = Phase::Resting;
+                Intent::IDLE
+            }
+            Goal::Hold(secs) => {
+                if elapsed >= u32::from(secs.max(1)) * TICK_HZ {
                     self.end_goal(tick, Outcome::Done);
                 }
                 self.stats.phase = Phase::Resting;
@@ -2920,11 +2987,15 @@ impl Survivor {
                 self.stats.phase = Phase::Waiting;
                 Intent::IDLE
             }
-            Goal::Follow if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
+            Goal::Follow | Goal::FollowMate(_) | Goal::ReachMate(_) | Goal::FollowNear(_)
+                if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ =>
+            {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
-            Goal::Follow => self.follow(core, body, tick),
+            Goal::Follow | Goal::FollowMate(_) | Goal::ReachMate(_) | Goal::FollowNear(_) => {
+                self.follow(core, body, tick)
+            }
             Goal::Meet if elapsed >= MEET_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -2951,11 +3022,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::HandOver => self.hand_over(core, body, tick),
-            Goal::Give(_) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
+            Goal::Give(_) | Goal::GiveMate(..) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Give(name) => self.give(core, body, name, tick),
+            Goal::Give(name) => self.give(core, body, name, None, tick),
+            Goal::GiveMate(slot, name) => self.give(core, body, name, Some(slot), tick),
             Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
                 self.auth_failed = Some(tick);
                 self.home_job = HomeJob::default();
@@ -3113,7 +3185,7 @@ impl Survivor {
                     };
                 }
             }
-        } else {
+        } else if self.turn != crate::mind::Turn::Lapsed {
             let f = self.senses.friend;
             if !f.online || f.on_team || f.reachable || f.invited_me {
                 self.end_goal(tick, Outcome::Done);
@@ -3127,6 +3199,13 @@ impl Survivor {
             }
             Some(Err(why)) => {
                 self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            // A lapsed stray at THE GATE: it plays alone from here.
+            None if self.turn == crate::mind::Turn::Lapsed => {
+                self.turn = crate::mind::Turn::Loyal;
+                self.senses.turn = self.turn;
+                self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
             None => {
@@ -3422,17 +3501,142 @@ impl Survivor {
     /// A give (`Goal::Give`): every stack of the named item the pack
     /// carries, to the friend or teammate who stood in hand reach when it
     /// was chosen.
-    fn give(&mut self, core: &mut ClientCore, body: &EntityState, name: Name, tick: u32) -> Intent {
+    fn give(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        name: Name,
+        slot: Option<u8>,
+        tick: u32,
+    ) -> Intent {
         let Some(item) = crate::agent::build::item_named(core, name.as_str()) else {
             self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
             return Intent::IDLE;
         };
-        let id = self.hand_target;
+        // `give:m<k>:<item>`: the teammate its request listed at that slot,
+        // wherever they stand; else whoever was in hand reach.
+        let id = match slot {
+            Some(slot) => mate_in_slot(core, slot),
+            None => self.hand_target,
+        };
         let to = (id != 0)
             .then(|| self.mate_at(id, tick))
             .flatten()
             .map(|(at, seen)| (id, at, seen));
         self.hand_to(core, body, to, Handing::Item(item), tick)
+    }
+
+    /// A turncoat's hearth taken: it forgets its crew, their code, their
+    /// allies and their base, leaves the team, puts its weapon away (it
+    /// answers a blow, never starts one) and says so on local chat.
+    fn turn_stray(&mut self, tick: u32) {
+        self.society = None;
+        self.kin.clear();
+        self.crew_near = None;
+        self.team_code = None;
+        self.shared.forget();
+        self.combat.set_temperament(Temperament::Defensive);
+        self.turn = crate::mind::Turn::Stray;
+        self.turn_at = tick;
+        self.queue(|b| protocol::encode_action_team(protocol::TEAM_OP_LEAVE, 0, b));
+        if let Some(line) = protocol::ChatText::sanitize(society::STRAY_LINE.as_bytes()) {
+            self.take_say(Say::Line(line.into()));
+        }
+    }
+
+    /// A turncoat's standing, once a perception: its hearth gone from the
+    /// mirror with the shard's deploys in turns it; a stray on a team is
+    /// taken; a stray nobody takes on lapses; one taken who loses its team
+    /// is a stray again.
+    fn sense_turn(
+        &mut self,
+        core: &ClientCore,
+        body: &EntityState,
+        team: &protocol::TeamView,
+        tick: u32,
+    ) {
+        use crate::mind::Turn;
+        if let (Some(soc), Some(at)) = (self.society, self.shared.hearth()) {
+            let standing = core
+                .deploys
+                .entries()
+                .iter()
+                .any(|d| (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc));
+            let walked =
+                tick.wrapping_sub(self.deploy_walk_at) >= society::TURN_GONE_SECS * TICK_HZ;
+            // Only well inside the shard's interest round it is a missing
+            // cupboard a fact: far off, a resync never sent it again.
+            let (hx, hz) = sim_core::deploy::cell_center(at.cx, at.cz);
+            let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+            let near = (bx - hx).hypot(bz - hz) <= society::TURN_SEEN_M;
+            if soc.turncoat && !standing && walked && near {
+                self.turn_stray(tick);
+                // Whatever it was doing was its old crew's.
+                if self.goal.is_some() {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                }
+            }
+        }
+        let on_team = team.count > 1;
+        self.turn = match self.turn {
+            Turn::Stray if on_team => Turn::Taken,
+            Turn::Stray if tick.wrapping_sub(self.turn_at) >= society::STRAY_SECS * TICK_HZ => {
+                self.turn_at = tick;
+                Turn::Lapsed
+            }
+            Turn::Taken if !on_team => {
+                self.turn_at = tick;
+                Turn::Stray
+            }
+            Turn::Lapsed if on_team => Turn::Loyal,
+            t => t,
+        };
+        self.senses.turn = self.turn;
+    }
+
+    /// The strangers its aim crossed within `NEAR_AIM_M` (a nametag a
+    /// player reads off a body under the crosshair): a slot each, kept a
+    /// minute past the last time, packed into `senses.near` in slot order.
+    fn note_aimed(&mut self, body: &EntityState, team: &protocol::TeamView, tick: u32) {
+        let (px, pz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let (fx, fz) = yaw_dir(body.yaw);
+        for t in self.tracks.all() {
+            if t.species != Species::Player
+                || !t.visible
+                || !t.active()
+                || t.dead
+                || t.id == body.id
+                || team.has(t.id)
+            {
+                continue;
+            }
+            let (dx, dz) = (t.pos[0] - px, t.pos[2] - pz);
+            let ahead = dx * fx + dz * fz;
+            let across = (dx * fz - dz * fx).abs();
+            if ahead <= 0.0 || dx.hypot(dz) > crate::mind::NEAR_AIM_M || across > NEAR_AIM_ACROSS_M
+            {
+                continue;
+            }
+            if let Some(slot) = self.aimed.iter_mut().find(|(id, _)| *id == t.id) {
+                slot.1 = tick;
+            } else if let Some(slot) = self.aimed.iter_mut().find(|(id, _)| *id == 0) {
+                *slot = (t.id, tick);
+            }
+        }
+        for slot in &mut self.aimed {
+            if slot.0 != 0 && tick.wrapping_sub(slot.1) >= NEAR_KEEP_TICKS {
+                *slot = (0, 0);
+            }
+        }
+        self.senses.near = [0; crate::mind::NEAR_MAX];
+        for (out, (id, _)) in self
+            .senses
+            .near
+            .iter_mut()
+            .zip(self.aimed.iter().filter(|(id, _)| *id != 0))
+        {
+            *out = *id;
+        }
     }
 
     /// Where a player it hands to stands, by its own eyes: in sight, else
@@ -3685,9 +3889,24 @@ impl Survivor {
     fn follow(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let team = *core.team();
+        // A follow after one teammate: the slot its request listed them at,
+        // in the team view's order without itself (`observe`'s `team.who`).
+        let only = self.follow_target.map(|slot| mate_in_slot(core, slot));
         let mut mate: Option<(bool, f32, [f32; 2], Option<f32>)> = None;
+        // A stranger by the slot its request listed them at: where its own
+        // eyes have them, as a give finds a body.
+        if let Some(id) = self.follow_near {
+            mate = (id != 0)
+                .then(|| self.mate_at(id, tick))
+                .flatten()
+                .map(|(p, _)| (false, (p[0] - x).hypot(p[2] - z), [p[0], p[2]], Some(p[1])));
+        }
         for m in team.members() {
-            if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
+            if self.follow_near.is_some()
+                || m.id == core.player_id
+                || m.state != protocol::TEAM_AWAKE
+                || only.is_some_and(|id| id != m.id)
+            {
                 continue;
             }
             let track = self.tracks.get(m.id);
@@ -3712,6 +3931,11 @@ impl Survivor {
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
+        // A reach is over at hand reach.
+        if matches!(self.goal(), Some(Goal::ReachMate(_))) && d <= GIVE_REACH_M {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
         // A crewmate (`agent::society`) only keeps up: within a stone's throw
         // of its founder it goes back to work, rather than standing on the
         // ground the base is going up on.
@@ -4098,6 +4322,13 @@ impl Survivor {
     fn auth_over(&mut self, tick: u32, outcome: Outcome) -> Intent {
         if matches!(outcome, Outcome::Failed(_)) {
             self.auth_failed = Some(tick);
+        }
+        // A turncoat's own hearth turned its press away (a new code, a crew
+        // clear): the hearth is someone else's now.
+        if matches!(outcome, Outcome::Failed(Why::Locked | Why::Refused))
+            && self.society.is_some_and(|s| s.turncoat)
+        {
+            self.turn_stray(tick);
         }
         self.auth = Auth::default();
         self.home_job = HomeJob::default();
@@ -5751,6 +5982,7 @@ impl Survivor {
                     | Goal::Forage
                     | Goal::GatherHemp
                     | Goal::Wait
+                    | Goal::Hold(_)
                     | Goal::GoHome,
                 ) => true,
                 Some(Goal::Build) => self.builder.at_checkpoint(),
@@ -7174,6 +7406,8 @@ impl Survivor {
         }
         self.give_to = give_to.map(|(.., id)| id);
         self.senses.give_to = self.give_to.is_some();
+        self.note_aimed(body, &team, tick);
+        self.sense_turn(core, body, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
             let since = *self.alone_since.get_or_insert(tick);
             if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
@@ -7329,8 +7563,9 @@ impl Survivor {
             let means = self.means(core);
             let (n, nearest) = self.bases.targets(&means, temperament, here, tick);
             let mut raid = Sighting::default();
-            self.senses.raid_at = nearest;
-            if let Some([x, z]) = nearest {
+            self.senses.raid_at = nearest.map(|(at, _)| at);
+            self.senses.raid_owner = nearest.map(|(_, o)| o).unwrap_or_default();
+            if let Some(([x, z], _)) = nearest {
                 let (d, b) = relative(body, x, z);
                 raid.add(d, b);
                 raid.count = n;
@@ -7702,6 +7937,11 @@ impl Survivor {
         let flags = core.on_stream(bytes)?;
         let applied2 = core.applied2();
         let tick = self.seen_tick.unwrap_or_default();
+        if flags & (client_core::core::APPLIED_DEPLOYS | client_core::core::APPLIED_DEPLOY_RESET)
+            != 0
+        {
+            self.deploy_walk_at = tick;
+        }
         while let Some((item, added)) = core.pop_toast() {
             self.stats.gather_awards += 1;
             if let Some(g) = self.gathered.get_mut(item as usize) {
@@ -8829,6 +9069,7 @@ pub fn observe(
     s.loot = senses.loot;
     s.loot_place = senses.loot_place;
     s.raid = senses.raid;
+    s.raid_owner = senses.raid_owner;
     for &(item, units) in &memory.stored[..usize::from(memory.stored_len)] {
         let n = usize::from(s.stored_len);
         if let (Some(name), true) = (
@@ -8857,6 +9098,10 @@ pub fn observe(
     if s.team.invited {
         s.team.invite_from = who(team.invite);
     }
+    for &id in senses.near.iter().filter(|&&id| id != 0) {
+        s.team.near[usize::from(s.team.near_len)] = who(id);
+        s.team.near_len += 1;
+    }
     for m in team.members() {
         if m.id == player {
             continue;
@@ -8878,6 +9123,7 @@ pub fn observe(
     }
     s.friend = senses.friend;
     s.society = senses.society;
+    s.turn = senses.turn;
     if let (Some(b), Some([fx, fz])) = (body, senses.friend_at) {
         let (d, bearing) = relative(b, fx, fz);
         s.friend.in_sight.add(d, bearing);
@@ -9149,8 +9395,10 @@ pub fn observe(
     {
         s.offer(Goal::Meet);
     }
-    // Its society's crew, coming together there (`agent::society`).
-    if senses.society_meet && s.gate.is_some() && !senses.hostile_afield {
+    // Its society's crew, coming together there (`agent::society`); or a
+    // stray nobody took on, off to play alone.
+    let lapsed = senses.turn == crate::mind::Turn::Lapsed;
+    if (senses.society_meet || lapsed) && s.gate.is_some() && !senses.hostile_afield {
         s.offer(Goal::Meet);
     }
     // A home to walk a ring round, and something in hand to meet an
@@ -9272,6 +9520,19 @@ pub fn observe(
         }
         // And anywhere at all, by bearing and metres.
         s.offer(Goal::Walk(crate::mind::Walk::ANY));
+        // And a stand of the length it picks, and a follow after any one
+        // teammate by the slot `team.teammates` lists them at.
+        s.offer(crate::mind::HOLD_ANY);
+        for slot in 1..=s.team.who_len {
+            s.offer(Goal::FollowMate(slot));
+            s.offer(Goal::ReachMate(slot));
+            if s.items_len > 0 {
+                s.offer(Goal::GiveMate(slot, Name::EMPTY));
+            }
+        }
+        for slot in 1..=s.team.near_len {
+            s.offer(Goal::FollowNear(slot));
+        }
         // A give of anything the pack holds, while its friend or a teammate
         // stands in hand reach: a mind told who is about decides what.
         if senses.give_to {
@@ -9355,6 +9616,17 @@ fn walk_target(body: &EntityState, leg: crate::mind::Walk) -> [f32; 2] {
     let edge = sim_core::movement::BORDER_MARGIN + WALK_STOP_M;
     let far = sim_core::terrain::ISLAND_SIZE - edge;
     [(x + dx * m).clamp(edge, far), (z + dz * m).clamp(edge, far)]
+}
+
+/// The teammate a request listed at `slot` (from 1), in the team view's
+/// order without itself (`observe`'s `team.who`); 0 for none.
+fn mate_in_slot(core: &ClientCore, slot: u8) -> u32 {
+    core.team()
+        .members()
+        .iter()
+        .filter(|m| m.id != core.player_id)
+        .nth(usize::from(slot).saturating_sub(1))
+        .map_or(0, |m| m.id)
 }
 
 fn relative(body: &EntityState, x: f32, z: f32) -> (f32, u8) {
@@ -9524,6 +9796,72 @@ mod tests {
 
     fn survivor() -> Survivor {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
+    }
+
+    /// A turncoat whose hearth is gone from the mirror once the deploys are
+    /// in, standing near it, turns stray: no crew, no code, defensive. A
+    /// fresh resync, or a body far off, turns nobody. A stray put on a team
+    /// is taken; one nobody takes on lapses, and on a team again is loyal.
+    #[test]
+    fn a_turncoat_turns_stray_when_its_hearth_is_gone_and_lapses_untaken() {
+        use crate::agent::society::{self, Board, Kin, Role, MAX_ALLIES};
+        use crate::mind::Turn;
+        static BOARD: Board = Board::new();
+        let (mut bot, _, _) = fixture();
+        let soc = Society {
+            role: Role::Farmer,
+            me: 1,
+            crew: [Kin::NONE; protocol::TEAM_MAX],
+            crew_len: 2,
+            allies: [Kin::NONE; MAX_ALLIES],
+            allies_len: 0,
+            code: None,
+            crew_no: 0,
+            board: Some(&BOARD),
+            turncoat: true,
+        };
+        bot.society = Some(soc);
+        bot.team_code = crate::agent::lock::LockCode::given(1234);
+        let at = sim_core::bots::OpAddr {
+            cx: 100,
+            cz: 100,
+            level: 0,
+            loc: 0,
+        };
+        bot.shared.set_hearth(at);
+        let (hx, hz) = sim_core::deploy::cell_center(at.cx, at.cz);
+        let body = |x: f32, z: f32| EntityState {
+            qx: quant_xz(x),
+            qz: quant_xz(z),
+            ..EntityState::default()
+        };
+        let near = body(hx + 5.0, hz);
+        let far = body(hx + 300.0, hz);
+        let alone = protocol::TeamView::NONE;
+        let core = bot.core.take().unwrap();
+        let gone = society::TURN_GONE_SECS * TICK_HZ;
+        bot.deploy_walk_at = 1000;
+        bot.sense_turn(&core, &near, &alone, 1000 + gone - 1);
+        assert!(bot.society.is_some(), "a resync still coming in");
+        bot.sense_turn(&core, &far, &alone, 1000 + gone);
+        assert!(bot.society.is_some(), "too far off to know");
+        let t0 = 1000 + gone;
+        bot.sense_turn(&core, &near, &alone, t0);
+        assert!(bot.society.is_none());
+        assert_eq!(bot.turn, Turn::Stray);
+        assert_eq!(bot.team_code, None, "its old crew's code forgotten");
+        assert_eq!(bot.combat.temperament(), Temperament::Defensive);
+        assert!(bot.say_line.is_some(), "it says so");
+        let mut team = protocol::TeamView::NONE;
+        team.count = 2;
+        bot.sense_turn(&core, &near, &team, t0 + 1);
+        assert_eq!(bot.turn, Turn::Taken);
+        bot.sense_turn(&core, &near, &alone, t0 + 2);
+        assert_eq!(bot.turn, Turn::Stray, "its new team gone");
+        bot.sense_turn(&core, &near, &alone, t0 + 2 + society::STRAY_SECS * TICK_HZ);
+        assert_eq!(bot.turn, Turn::Lapsed);
+        bot.sense_turn(&core, &near, &team, t0 + 3 + society::STRAY_SECS * TICK_HZ);
+        assert_eq!(bot.turn, Turn::Loyal);
     }
 
     /// The catalog outgrew one u128 (127 rows filled it): ids on both

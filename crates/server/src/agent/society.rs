@@ -72,6 +72,19 @@ pub const PATROL_RETRY_SECS: u32 = 60;
 pub const WARD_M: f32 = 34.0;
 /// A swing or a shot this recent makes its owner an intruder, ticks.
 pub const WARD_FOUGHT_TICKS: u32 = 10 * sim_core::limits::TICK_HZ;
+/// A turncoat's hearth missing from the mirror this long after the last
+/// deploy batch came is gone, not still on its way (a resync clears the
+/// mirror, and a resync alone never turns a crew).
+pub const TURN_GONE_SECS: u32 = 10;
+/// ...and only this near it, metres: well inside the shard's interest
+/// (`limits::AOI_ENTER_CM`), which sends every deploy that close.
+pub const TURN_SEEN_M: f32 = 80.0;
+const _: () = assert!(TURN_SEEN_M * 100.0 * 2.0 <= sim_core::limits::AOI_ENTER_CM as f32);
+/// A stray nobody takes on in this long walks to THE GATE and plays alone.
+pub const STRAY_SECS: u32 = 10 * 60;
+/// What a stray says on local chat as it turns.
+pub const STRAY_LINE: &str =
+    "my crew's hearth is taken. I'm a free hand: invite me and give me your code";
 
 /// What a body does for its crew.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -353,6 +366,10 @@ pub struct Society {
     /// founder builds a step from it ([`seat_for`]).
     pub crew_no: u8,
     pub board: Option<&'static Board>,
+    /// `--turncoat`: it serves whoever holds its hearth. Its hearth taken
+    /// (its press refused, or the cupboard gone once the shard's deploys are
+    /// in), it turns stray: no crew, no code, no allies, off the team.
+    pub turncoat: bool,
 }
 
 impl Society {

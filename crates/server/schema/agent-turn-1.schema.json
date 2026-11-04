@@ -13,10 +13,11 @@
     "options": {"type": "array", "items": {"type": "string"}, "description": "The goals it may pick this turn, by label (\"explore\", \"craft:Stone Pickaxe\", \"go:THE GATE\"); those in `observation.failed_lately` failed a moment ago."},
     "heard": {"type": "array", "items": {"$ref": "#/$defs/heard"}},
     "team": {
-      "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates"],
+      "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates", "near"],
       "properties": {
         "invite_from": {"type": ["string", "null"]},
-        "teammates": {"type": "array", "items": {"type": "string"}}
+        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k> and give:m<k>:<item> name the kth (from 1)."},
+        "near": {"type": "array", "items": {"type": "string"}, "description": "Strangers whose nametag this body aimed at within 8 m in the last minute; follow:n<k> names the kth (from 1)."}
       }
     },
     "friend": {
@@ -217,7 +218,7 @@
                    "threats", "last_fight", "last_goal", "current_goal", "hits_taken_since_last_decision",
                    "deaths", "respawns", "sleeping_bags_down", "my_death_backpack", "home",
                    "a_sleeping_bag_is_ready", "night", "base_next", "stations", "loot_known", "loot_place",
-                   "raid_targets", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because",
+                   "raid_targets", "raid_owner", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because",
                    "failed_lately"],
       "properties": {
         "body": {"enum": ["spawning", "alive", "wounded", "dead"]},
@@ -288,6 +289,7 @@
         "loot_known": {"$ref": "#/$defs/sighting"},
         "loot_place": {"$ref": "#/$defs/place_or_null"},
         "raid_targets": {"$ref": "#/$defs/sighting"},
+        "raid_owner": {"enum": ["unknown", "online", "asleep", "quiet"], "description": "The nearest raid target's owner, as this body's own watch of it has it: seen awake about it in the last five minutes (online), asleep in it, watched five minutes with nobody awake about it (quiet), or not watched long enough to say (unknown, also when raid_targets is empty)."},
         "my_box": {
           "type": "object", "additionalProperties": false, "required": ["holds", "has_what_the_base_needs"],
           "properties": {"holds": {"$ref": "#/$defs/items"}, "has_what_the_base_needs": {"type": "boolean"}}

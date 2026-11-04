@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 197] = [
+pub const FIXTURES: [&str; 199] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -354,6 +354,10 @@ pub const FIXTURES: [&str; 197] = [
     "action_wire.bin",
     "action_unwire.bin",
     "event_wire.bin",
+    // An agent's commander (v154): an agent's hello naming it, and its
+    // crew mark.
+    "hello_commander.bin",
+    "event_crew.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2329,6 +2333,26 @@ pub fn action_wire() -> (u32, u8, u32, u8) {
         0x5566_7788,
         (sim_core::power::MAX_INS - 1) as u8,
     )
+}
+
+/// An agent's hello naming its commander (v154): a wallet with every byte
+/// distinct.
+pub fn hello_commander() -> Hello {
+    let mut a = [0u8; crate::ADDRESS_BYTES];
+    for (i, b) in a.iter_mut().enumerate() {
+        *b = 0x40 + i as u8;
+    }
+    Hello {
+        flags: crate::HELLO_AGENT | crate::HELLO_COMMANDER,
+        target: crate::Address(a),
+        ..hello()
+    }
+}
+
+/// An agent's crew mark (v154): the agent and its commander, ids with bits
+/// in both halves.
+pub fn event_crew() -> (u32, u32) {
+    ((0x0123 << 8) | 9, (0x0045 << 8) | 3)
 }
 
 /// A part's wires taken up (v150).

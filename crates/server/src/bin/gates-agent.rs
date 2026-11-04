@@ -97,7 +97,7 @@ impl Shift {
 
 const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--warp] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (AGENT-MANUAL.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too, and how the fleet played (each bot's goal entropy and kinds of goal, the fleet's mean pairwise Jensen-Shannon divergence, plan steps done) beside it as FILE.behaviour.json; the same goes to stderr. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
 
-const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR] [--minds N]\n--minds N (with --external or --mcp and --bots) lets only the first N bodies ask the mind, the founder first: the rest play the scripted policy as their characters and take the leaders' orders on team chat, so one paid mind leads a crew. --society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
+const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR] [--minds N] [--turncoat]\n--minds N (with --external or --mcp and --bots) lets only the first N bodies ask the mind, the founder first: the rest play the scripted policy as their characters and take the leaders' orders on team chat, so one paid mind leads a crew. --society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --turncoat makes every body serve whoever holds its hearth: once its hearth is taken (a new code or a crew clear refuses its press, or the cupboard is broken) it turns stray, forgets its crew's code and allies, leaves the team and says so on local chat; invite it and give it your code on team chat and it gets on your cupboard and works your base; nobody takes it on in ten minutes and it walks to THE GATE and plays alone. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
 fn usage() -> String {
     format!(
@@ -122,6 +122,9 @@ struct Options {
     origin: String,
     seconds_given: bool,
     society: bool,
+    /// `--turncoat`: a crew body serves whoever takes its hearth
+    /// (`agent::society::Society::turncoat`).
+    turncoat: bool,
     crews: Option<usize>,
     roles: Vec<Role>,
     allies: Vec<Kin>,
@@ -158,6 +161,7 @@ impl Options {
             seconds_given: false,
             society: false,
             crews: None,
+            turncoat: false,
             roles: Vec::new(),
             allies: Vec::new(),
             shift: None,
@@ -222,6 +226,7 @@ impl Options {
                     }
                 }
                 "--society" => options.society = true,
+                "--turncoat" => options.turncoat = true,
                 "--minds" => {
                     let n: usize = args
                         .next()
@@ -419,21 +424,23 @@ impl Options {
         if options.bots > MAX_BOTS && !options.society {
             return Err(format!("--bots above {MAX_BOTS} is a guild: add --society"));
         }
-        let society_flags =
-            options.crews.is_some() || !options.roles.is_empty() || !options.allies.is_empty();
+        let society_flags = options.crews.is_some()
+            || !options.roles.is_empty()
+            || !options.allies.is_empty()
+            || options.turncoat;
         if society_flags && !options.society {
-            return Err("--crews, --roles and --allies shape a --society".into());
+            return Err("--crews, --roles, --allies and --turncoat shape a --society".into());
         }
         if options.society {
             if options.bots < 2 {
                 return Err("--society needs a fleet: --bots 2..16".into());
             }
             let crews = crew_count(&options);
-            if options.bots.div_ceil(crews) > protocol::TEAM_MAX {
+            if options.bots.div_ceil(crews) > crew_cap(&options) {
                 return Err(format!(
-                    "{} bots in {crews} crews is over the team cap of {}: add --crews",
+                    "{} bots in {crews} crews is over a crew's cap of {}: add --crews",
                     options.bots,
-                    protocol::TEAM_MAX
+                    crew_cap(&options)
                 ));
             }
             if crews > options.bots {
@@ -448,11 +455,17 @@ impl Options {
 }
 
 /// How many crews a society's fleet makes: as asked, else as few as the
-/// team cap allows.
+/// crew cap allows.
 fn crew_count(options: &Options) -> usize {
     options
         .crews
-        .unwrap_or_else(|| options.bots.div_ceil(protocol::TEAM_MAX))
+        .unwrap_or_else(|| options.bots.div_ceil(crew_cap(options)))
+}
+
+/// Bodies in one crew: a team's cap, less a seat for its commander
+/// (`--commander`, `PLAYERS.md` "The crew commander").
+fn crew_cap(options: &Options) -> usize {
+    protocol::TEAM_MAX - usize::from(options.mind.commander.is_some())
 }
 
 /// Which crew bot `i` is in, and its place there: crews are contiguous runs
@@ -490,6 +503,7 @@ fn plan_society(
             code: None,
             crew_no: crew_no as u8,
             board: Some(board),
+            turncoat: options.turncoat,
         };
         for j in 0..n {
             let (their_crew, their_place) = crew_of(options, j);
@@ -602,6 +616,10 @@ fn new_key(path: &std::path::Path) -> Result<(), String> {
 async fn run(options: Options) -> Result<(), String> {
     if let Some(path) = &options.new_key {
         return new_key(path);
+    }
+    // Every hello this run sends names its commander (v154).
+    if let Some(c) = options.mind.commander {
+        let _ = server::botclient::COMMANDER.set(c);
     }
     if options.set_face {
         // Blocking HTTP: off the runtime's worker, which it would stall.

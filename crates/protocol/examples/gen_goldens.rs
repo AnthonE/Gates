@@ -324,6 +324,12 @@ fn main() {
     let (from, to, out, inp) = goldens::event_wire();
     let len = protocol::encode_event_wire(from, to, out, inp, true, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[196], &buf[..len]);
+    // An agent's commander (v154).
+    let len = protocol::encode_hello(&goldens::hello_commander(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[197], &buf[..len]);
+    let (id, of) = goldens::event_crew();
+    let len = protocol::encode_event_crew(id, of, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[198], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

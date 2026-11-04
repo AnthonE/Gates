@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 197] = [
+const GOLDEN: [&[u8]; 199] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -260,6 +260,8 @@ const GOLDEN: [&[u8]; 197] = [
     include_bytes!("golden/action_wire.bin"),
     include_bytes!("golden/action_unwire.bin"),
     include_bytes!("golden/event_wire.bin"),
+    include_bytes!("golden/hello_commander.bin"),
+    include_bytes!("golden/event_crew.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -584,8 +586,11 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 194);
     g!(seen, golden_action, 195);
     g!(seen, golden_event, 196);
+    // An agent's commander (v154).
+    g!(seen, golden_stream, 197);
+    g!(seen, golden_event, 198);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 197, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 199, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1277,6 +1282,14 @@ fn golden_stream(fixture: &[u8], name: &str) {
             assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
             assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
             assert_eq!(decode_hello(fixture).unwrap(), hello_spectate());
+        }
+        "hello_commander.bin" => {
+            let msg = protocol::goldens::hello_commander();
+            let len = encode_hello(&msg, &mut buf).unwrap();
+            assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+            assert_eq!(peek_kind(fixture).unwrap(), KIND_HELLO);
+            assert_eq!(decode_hello(fixture).unwrap(), msg);
+            assert_eq!(msg.commander(), Some(msg.target));
         }
         "watch.bin" => {
             let len = protocol::encode_watch(&watch(), &mut buf).unwrap();
@@ -2857,6 +2870,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_event_tag(id, &address, &label, pic, &guild, &mut buf).unwrap()
+        }
+        "event_crew.bin" => {
+            let (id, of) = protocol::goldens::event_crew();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Crew { id, of },
+                "{name}"
+            );
+            protocol::encode_event_crew(id, of, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

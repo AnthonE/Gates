@@ -280,6 +280,42 @@ pub enum Goal {
     /// Offered to the same sources as `Go`, as one template, [`Walk::ANY`],
     /// that every walk answers to.
     Walk(Walk),
+    /// `follow`, after one teammate: the one the request's `team.teammates`
+    /// lists at this slot, from 1 (`follow:m2`). A slot, never a name.
+    /// Offered, one per teammate, to the sources `Walk` is offered to.
+    FollowMate(u8),
+    /// Walk up to one teammate, by slot as `FollowMate`, and stop at hand
+    /// reach (`reach:m2`).
+    ReachMate(u8),
+    /// Hand every stack of the named item to one teammate, by slot, walking
+    /// up to them first (`give:m2:Wood`). Offered as a form per teammate
+    /// (`give:m2:<item>`, the item `Name::EMPTY`); a live answer only, never
+    /// a plan step.
+    GiveMate(u8, Name),
+    /// `follow`, after a stranger whose nametag it aimed at within
+    /// [`NEAR_AIM_M`] lately: the one `team.near` lists at this slot, from 1
+    /// (`follow:n1`).
+    FollowNear(u8),
+    /// Stand where it is, guard up, so many seconds (`hold:20`): `wait` with
+    /// the length a mind picks, up to [`HOLD_MAX_S`]. Offered as one
+    /// template, [`HOLD_ANY`], to the sources `Walk` is offered to.
+    Hold(u16),
+}
+
+/// Strangers a request lists by slot (`team.near`), and how near one stood
+/// when its nametag was aimed at.
+pub const NEAR_MAX: usize = 4;
+pub const NEAR_AIM_M: f32 = 8.0;
+
+/// The offer of any hold: its label is the form a mind fills in.
+pub const HOLD_ANY: Goal = Goal::Hold(0);
+/// A hold's seconds: at least one, at most one heartbeat's worth.
+pub const HOLD_MAX_S: u16 = 30;
+
+/// `<seconds>`, within 1..=[`HOLD_MAX_S`].
+fn hold_secs(s: &str) -> Option<u16> {
+    let n: u16 = s.parse().ok()?;
+    (1..=HOLD_MAX_S).contains(&n).then_some(n)
 }
 
 /// One leg of a walk: a bearing (`BEARINGS`' index, clockwise from ahead)
@@ -434,6 +470,10 @@ impl Goal {
             Goal::Authorize => "authorize",
             Goal::Go(_) => "go",
             Goal::Walk(_) => "walk",
+            Goal::Hold(_) => "hold",
+            Goal::FollowMate(_) | Goal::FollowNear(_) => "follow",
+            Goal::ReachMate(_) => "reach",
+            Goal::GiveMate(..) => "give",
         }
     }
 
@@ -466,6 +506,28 @@ impl Goal {
                 _ => put(b":<bearing>:<metres>"),
             }
         }
+        if let Goal::FollowMate(slot) | Goal::ReachMate(slot) | Goal::GiveMate(slot, _) = self {
+            put(b":m");
+            put(slot.to_string().as_bytes());
+        }
+        if let Goal::FollowNear(slot) = self {
+            put(b":n");
+            put(slot.to_string().as_bytes());
+        }
+        if let Goal::GiveMate(_, item) = self {
+            put(b":");
+            match item {
+                Name::EMPTY => put(b"<item>"),
+                n => put(n.as_bytes()),
+            }
+        }
+        if let Goal::Hold(secs) = self {
+            put(b":");
+            match secs {
+                0 => put(b"<seconds>"),
+                n => put(n.to_string().as_bytes()),
+            }
+        }
         Label {
             bytes,
             len: len as u8,
@@ -494,6 +556,38 @@ impl Goal {
         if key == "walk" {
             return Walk::parse(name).map(Goal::Walk);
         }
+        if key == "hold" {
+            return hold_secs(name).map(Goal::Hold);
+        }
+        let mate = |s: &str| -> Option<u8> {
+            let slot: u8 = s.strip_prefix('m')?.parse().ok()?;
+            (1..=protocol::TEAM_MAX as u8)
+                .contains(&slot)
+                .then_some(slot)
+        };
+        if key == "follow" {
+            if let Some(n) = name.strip_prefix('n') {
+                let slot: u8 = n.parse().ok()?;
+                return (1..=NEAR_MAX as u8)
+                    .contains(&slot)
+                    .then_some(Goal::FollowNear(slot));
+            }
+            return mate(name).map(Goal::FollowMate);
+        }
+        if key == "reach" {
+            return mate(name).map(Goal::ReachMate);
+        }
+        if key == "give" {
+            if let Some((slot, item)) = name.split_once(':') {
+                let slot = mate(slot)?;
+                // The form itself: what an offer lists, never an answer.
+                if item == "<item>" {
+                    return Some(Goal::GiveMate(slot, Name::EMPTY));
+                }
+                let item = Name::new(item.as_bytes()).filter(|n| *n != Name::EMPTY)?;
+                return Some(Goal::GiveMate(slot, item));
+            }
+        }
         let name = Name::new(name.as_bytes())?;
         match key {
             "craft" => Some(Goal::Craft(name)),
@@ -511,6 +605,19 @@ impl Goal {
             return Walk::parse(leg)
                 .filter(|_| offered.contains(&Goal::Walk(Walk::ANY)))
                 .map(Goal::Walk);
+        }
+        if let Some(Goal::GiveMate(slot, item)) = label
+            .starts_with("give:m")
+            .then(|| Goal::named(label))
+            .flatten()
+        {
+            return (item != Name::EMPTY && offered.contains(&Goal::GiveMate(slot, Name::EMPTY)))
+                .then_some(Goal::GiveMate(slot, item));
+        }
+        if let Some(secs) = label.strip_prefix("hold:") {
+            return hold_secs(secs)
+                .filter(|_| offered.contains(&HOLD_ANY))
+                .map(Goal::Hold);
         }
         offered
             .iter()
@@ -591,6 +698,28 @@ impl Goal {
                 "Walk {} m {} and stop.",
                 w.metres,
                 BEARINGS.get(usize::from(w.bearing)).unwrap_or(&"ahead")
+            ),
+            Goal::Hold(0) => format!(
+                "Stand guard where you are: fill in 1-{HOLD_MAX_S} seconds, e.g. hold:20. \
+                 You still answer a blow."
+            ),
+            Goal::Hold(n) => format!("Stand guard here {n} s."),
+            Goal::FollowMate(k) => format!(
+                "Stay with teammate {k} (team.teammates' {k}th); fight their attackers."
+            ),
+            Goal::ReachMate(k) => format!(
+                "Walk up to teammate {k} (team.teammates' {k}th) and stop in hand reach."
+            ),
+            Goal::GiveMate(k, Name::EMPTY) => format!(
+                "Hand an item to teammate {k} (team.teammates' {k}th), walking up to them: \
+                 fill in what the pack holds, e.g. give:m{k}:Wood."
+            ),
+            Goal::GiveMate(k, item) => format!(
+                "Walk up to teammate {k} and hand them every {} I carry.",
+                item.as_str()
+            ),
+            Goal::FollowNear(k) => format!(
+                "Stay with the stranger team.near lists {k}th, whose nametag you aimed at."
             ),
         }
     }
@@ -815,6 +944,10 @@ pub struct TeamSense {
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
     pub who_len: u8,
+    /// Strangers whose nametag it aimed at within `NEAR_AIM_M` lately, in
+    /// the slots `follow:n<k>` names (`explorer`'s `aimed`).
+    pub near: [Who; NEAR_MAX],
+    pub near_len: u8,
 }
 
 /// A player as a chat log names them: name, else short address, else id.
@@ -1433,6 +1566,48 @@ impl Threat {
     }
 }
 
+/// A turncoat's standing (`agent::society::Society::turncoat`): serving its
+/// crew, a stray waiting to be taken on, taken on by a new team, or a stray
+/// nobody took on, off to THE GATE to play alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Turn {
+    #[default]
+    Loyal,
+    Stray,
+    Taken,
+    Lapsed,
+}
+
+/// Whether a base's owner is about, as the body's own eyes have it
+/// (`agent::raid::Base::presence`): seen awake near it lately, asleep in it,
+/// watched a long while with nobody awake about it, or not watched enough
+/// to say. What a human reads off the same watch: the island's player list
+/// is never asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OwnerSeen {
+    #[default]
+    Unknown,
+    Online,
+    Asleep,
+    Quiet,
+}
+
+impl OwnerSeen {
+    pub fn word(self) -> &'static str {
+        match self {
+            OwnerSeen::Unknown => "unknown",
+            OwnerSeen::Online => "online",
+            OwnerSeen::Asleep => "asleep",
+            OwnerSeen::Quiet => "quiet",
+        }
+    }
+
+    /// Offline-looking: a sleeper in it, or a long quiet watch.
+    pub fn offline(self) -> bool {
+        matches!(self, OwnerSeen::Asleep | OwnerSeen::Quiet)
+    }
+}
+
 /// A coarse distance: here (under 10 m), near (50), mid (200), far.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Distance {
@@ -1643,13 +1818,16 @@ pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
 
 /// The most goals one request can offer: the fixed set, every craft and
-/// trade, the trips, the one walk anywhere (`Walk::ANY`), and a give for
-/// each item the pack lists.
+/// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
+/// (`HOLD_ANY`), a follow, a reach and a give form for each teammate, a
+/// follow for each stranger near, and a give for each item the pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
-    + 1
+    + 2
+    + 3 * protocol::TEAM_MAX
+    + NEAR_MAX
     + SUMMARY_ITEMS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
@@ -1726,8 +1904,9 @@ pub struct Summary {
     /// The nearest place on the map with crates it has not found bare.
     pub loot_place: Option<Place>,
     /// Bases it has seen that are worth raiding now: how many, and the
-    /// nearest's distance and bearing.
+    /// nearest's distance and bearing, and whether that one's owner is about.
     pub raid: Sighting,
+    pub raid_owner: OwnerSeen,
     /// What its box held when last opened.
     pub stored: [(Name, u32); SUMMARY_STORED],
     pub stored_len: u8,
@@ -1743,6 +1922,8 @@ pub struct Summary {
     pub friend: FriendSense,
     /// Its society (`--society`), if it is in one.
     pub society: SocietySense,
+    /// A turncoat's standing (`Turn`); `Loyal` for every other body.
+    pub turn: Turn,
     /// What the team's boxes held when their panels were last open.
     pub home_holds: [(Name, u32); SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
@@ -1891,6 +2072,7 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        raid_owner: OwnerSeen::Unknown,
         stored: [(Name::EMPTY, 0); SUMMARY_STORED],
         stored_len: 0,
         take_out: false,
@@ -1931,9 +2113,16 @@ impl Summary {
                 address: protocol::Address::GUEST,
             }; protocol::TEAM_MAX],
             who_len: 0,
+            near: [Who {
+                id: 0,
+                name: protocol::Name::EMPTY,
+                address: protocol::Address::GUEST,
+            }; NEAR_MAX],
+            near_len: 0,
         },
         friend: FriendSense::NONE,
         society: SocietySense::NONE,
+        turn: Turn::Loyal,
         home_holds: [(Name::EMPTY, 0); SUMMARY_HOME_HOLDS],
         home_holds_len: 0,
         gate: None,
@@ -1993,6 +2182,8 @@ impl Summary {
         let at = |g: Goal| self.options().iter().position(|&o| o == g);
         at(goal).or_else(|| match goal {
             Goal::Walk(w) if w != Walk::ANY => at(Goal::Walk(Walk::ANY)),
+            Goal::Hold(n) if n != 0 => at(HOLD_ANY),
+            Goal::GiveMate(k, item) if item != Name::EMPTY => at(Goal::GiveMate(k, Name::EMPTY)),
             _ => None,
         })
     }
@@ -2199,6 +2390,7 @@ impl Summary {
         json!({
             "invite_from": t.invited.then(|| t.invite_from.label()),
             "teammates": t.who[..t.who_len as usize].iter().map(Who::label).collect::<Vec<_>>(),
+            "near": t.near[..t.near_len as usize].iter().map(Who::label).collect::<Vec<_>>(),
         })
     }
 
@@ -2271,6 +2463,7 @@ impl Summary {
             "loot_known": self.loot.json(),
             "loot_place": self.loot_place.map(|p| p.json()),
             "raid_targets": self.raid.json(),
+            "raid_owner": self.raid_owner.word(),
             "my_box": {
                 "holds": self.stored().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "has_what_the_base_needs": self.take_out,
@@ -2441,6 +2634,13 @@ pub trait DecisionSource: Send + 'static {
     fn plan_done(&self) -> u32 {
         0
     }
+    /// Whether someone its memory holds as an enemy is in view now
+    /// (`memory::Memory::feared`), set before each ask by
+    /// `memory::Remembering`. The scripted policy runs from them sooner;
+    /// wrappers pass it on.
+    fn set_feared(&mut self, feared: bool) {
+        let _ = feared;
+    }
 }
 
 /// Steps a mind may leave its autopilot.
@@ -2481,6 +2681,11 @@ impl Plan {
             let label = step["goal"].as_str().ok_or("each plan step needs a goal")?;
             let goal =
                 Goal::named(label).ok_or_else(|| format!("plan step {label:?} is not a goal"))?;
+            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..)) {
+                return Err(format!(
+                    "plan step {label:?}: a give is a live answer, never a plan step"
+                ));
+            }
             let until = match &step["until"] {
                 Value::Null => None,
                 u => {
@@ -3059,6 +3264,12 @@ pub struct Scripted {
     /// agent: the mind leading its crew (`--minds N`). Other agents' lines
     /// are never orders, so two scripted bodies cannot order each other.
     leader: Option<protocol::Address>,
+    /// The one whose team-chat lines it obeys, person or agent
+    /// (`--commander`): with one set, nobody else's lines are orders.
+    commander: Option<protocol::Address>,
+    /// Someone its memory holds as an enemy is in view
+    /// (`DecisionSource::set_feared`).
+    feared: bool,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -3349,6 +3560,10 @@ impl DecisionSource for Scripted {
         self.plan_done
     }
 
+    fn set_feared(&mut self, feared: bool) {
+        self.feared = feared;
+    }
+
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
         self.hear(s);
         let done = self.plan.done(s);
@@ -3391,6 +3606,13 @@ impl Scripted {
         self
     }
 
+    /// Take orders on team chat from this wallet only (and its crew's
+    /// leader): the crew's commander, a person or an agent.
+    pub fn with_commander(mut self, commander: Option<protocol::Address>) -> Self {
+        self.commander = commander;
+        self
+    }
+
     /// What its team typed since it was last asked, read as orders
     /// (`agent::orders`), and whether someone near it asked to team up.
     /// A line it said itself or an agent said is never an order, except
@@ -3400,16 +3622,26 @@ impl Scripted {
             self.standing = None;
             self.errand = None;
         }
+        let role = s.society.set.then_some(s.society.role);
+        let mates = &s.team.who[..usize::from(s.team.who_len).min(s.team.who.len())];
         for line in s.heard.lines() {
-            let leader = line.channel == protocol::Channel::Team
-                && !line.address.is_guest()
-                && self.leader == Some(line.address);
+            let named = |w: Option<protocol::Address>| {
+                line.channel == protocol::Channel::Team
+                    && !line.address.is_guest()
+                    && w == Some(line.address)
+            };
+            let leader = named(self.leader) || named(self.commander);
             if line.me || (line.agent && !leader) {
                 continue;
             }
             let text = line.text.as_bytes();
             match line.channel {
                 protocol::Channel::Team => {
+                    // With a commander, only its line (and the crew
+                    // leader's) is an order; a line may name who it is for.
+                    if (self.commander.is_some() && !leader) || !orders::for_me(text, role, mates) {
+                        continue;
+                    }
                     if let Some(code) = orders::code(text) {
                         self.code = Some(code);
                         self.reply("got the code");
@@ -3425,6 +3657,11 @@ impl Scripted {
                             self.standing = Some(Order::Stay);
                             self.errand = None;
                             self.reply("holding here");
+                        }
+                        Some(Order::Patrol) => {
+                            self.standing = Some(Order::Patrol);
+                            self.errand = None;
+                            self.reply("on patrol");
                         }
                         Some(errand) => {
                             self.standing = None;
@@ -3454,6 +3691,11 @@ impl Scripted {
         let hp = pct(s.hp, s.hp_max);
         if s.hits > 0 && threat && hp < k.flee_hp_pct && s.offers(Goal::Flee) {
             return (Goal::Flee, "scripted: badly hurt with a body in view");
+        }
+        // One it remembers killing it is here: a lesser wound is enough to
+        // go, rather than bandage in front of them.
+        if self.feared && hp < k.heal_hp_pct && s.offers(Goal::Flee) {
+            return (Goal::Flee, "scripted: hurt, and one who killed me is here");
         }
         if hp < k.heal_hp_pct && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: hurt, and nobody about");
@@ -3529,6 +3771,23 @@ impl Scripted {
                 self.reply("come closer, or press N on me");
             }
         }
+        // A turncoat whose hearth was taken: it waits to be taken on, and
+        // once nobody has, walks to THE GATE to play alone.
+        // It waits fed and watered: a low meter goes to the playbook below.
+        let fed = pct(s.food, s.food_max) >= k.low_meter_pct
+            && pct(s.water, s.water_max) >= k.low_meter_pct;
+        match s.turn {
+            Turn::Stray if fed && s.team.mates == 0 && s.offers(Goal::Wait) => {
+                return (Goal::Wait, "scripted: a free hand, waiting to be taken on");
+            }
+            Turn::Lapsed if s.offers(Goal::Meet) => {
+                return (
+                    Goal::Meet,
+                    "scripted: nobody took me on; to THE GATE, alone",
+                );
+            }
+            _ => {}
+        }
         // A society's farmer runs from fights, its teammates' too: the
         // guards are for that.
         let farmer = s.society.set && s.society.role == Role::Farmer;
@@ -3588,6 +3847,7 @@ impl Scripted {
                         _ => "on it: wood",
                     },
                 ),
+                Order::Defend => (Goal::Defend, "defending home"),
                 _ => (Goal::GoHome, "heading home"),
             };
             if s.offers(goal) {
@@ -3607,6 +3867,9 @@ impl Scripted {
             Some(Order::Stay) if s.offers(Goal::Wait) => {
                 return (Goal::Wait, "scripted: my teammate said stay");
             }
+            Some(Order::Patrol) if s.offers(Goal::Patrol) => {
+                return (Goal::Patrol, "scripted: my teammate said patrol");
+            }
             _ => {}
         }
         // On its friend's team, the team's code given it and the team's
@@ -3614,6 +3877,11 @@ impl Scripted {
         // nothing else makes the scripted policy reach for a cupboard.
         if s.friend.on_team && s.team.code && s.offers(Goal::Authorize) {
             return (Goal::Authorize, "scripted: onto my friend's cupboard");
+        }
+        // A turncoat taken on, its new team's code given it: onto their
+        // cupboard, to work their base.
+        if s.turn == Turn::Taken && s.team.code && s.offers(Goal::Authorize) {
+            return (Goal::Authorize, "scripted: onto my new crew's cupboard");
         }
         // The plan its mind left for the turns it plays alone: the first
         // step not yet done, while it is on offer.
@@ -4157,6 +4425,71 @@ mod tests {
         assert!(Name::new(&[b'x'; MAX_ITEM_NAME_BYTES + 1]).is_none());
     }
 
+    /// A hold is one template on offer, filled in with its seconds.
+    #[test]
+    fn a_hold_is_a_template_filled_in_with_seconds() {
+        assert_eq!(HOLD_ANY.label().as_str(), "hold:<seconds>");
+        assert_eq!(Goal::Hold(20).label().as_str(), "hold:20");
+        assert_eq!(Goal::named("hold:20"), Some(Goal::Hold(20)));
+        assert_eq!(Goal::named("hold:0"), None);
+        assert_eq!(Goal::named("hold:31"), None);
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("hold:20", s.options()), None, "not offered");
+        s.offer(HOLD_ANY);
+        assert_eq!(Goal::parse("hold:20", s.options()), Some(Goal::Hold(20)));
+        assert!(s.offers(Goal::Hold(5)));
+        // A follow after one teammate is by slot, from 1, never a name.
+        assert_eq!(Goal::FollowMate(2).label().as_str(), "follow:m2");
+        assert_eq!(Goal::named("follow:m2"), Some(Goal::FollowMate(2)));
+        for bad in ["follow:m0", "follow:m9", "follow:Ash", "follow:2"] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        assert_eq!(Goal::named("follow"), Some(Goal::Follow));
+        assert_eq!(Goal::named("reach:m3"), Some(Goal::ReachMate(3)));
+        assert_eq!(Goal::named("follow:n1"), Some(Goal::FollowNear(1)));
+        assert_eq!(Goal::named("follow:n5"), None, "past NEAR_MAX");
+        // A give to a slot: one form per teammate, filled in with the item.
+        let wood = Name::new(b"Wood").unwrap();
+        let form = Goal::GiveMate(2, Name::EMPTY);
+        assert_eq!(form.label().as_str(), "give:m2:<item>");
+        assert_eq!(Goal::named("give:m2:<item>"), Some(form));
+        assert_eq!(Goal::GiveMate(2, wood).label().as_str(), "give:m2:Wood");
+        assert_eq!(
+            Goal::named("give:Wood"),
+            Some(Goal::Give(wood)),
+            "the plain give"
+        );
+        let mut s = Summary::EMPTY;
+        assert_eq!(
+            Goal::parse("give:m2:Wood", s.options()),
+            None,
+            "not offered"
+        );
+        s.offer(form);
+        assert_eq!(
+            Goal::parse("give:m2:Wood", s.options()),
+            Some(Goal::GiveMate(2, wood))
+        );
+        assert_eq!(
+            Goal::parse("give:m2:<item>", s.options()),
+            None,
+            "the form is no answer"
+        );
+        assert_eq!(
+            Goal::parse("give:m1:Wood", s.options()),
+            None,
+            "another slot"
+        );
+        // A give is a live answer, never a plan step.
+        for give in ["give:Wood", "give:m2:Wood"] {
+            let plan = json!([{"goal": give}]);
+            assert!(
+                Plan::parse(&plan).unwrap_err().contains("live answer"),
+                "{give}"
+            );
+        }
+    }
+
     /// The social verbs' labels: `give:<item>` names the item as a craft
     /// does, `authorize` stands alone, and both parse only when offered.
     #[test]
@@ -4542,6 +4875,97 @@ mod tests {
         s.heard.clear();
         s.heard.push(from(lead, "stay here"));
         assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Wait, "its leader");
+    }
+
+    /// With a commander (`--commander`) only its lines are orders, an
+    /// agent's too; a line opening with a job or a teammate's name is for
+    /// them only; patrol stands and defend is once.
+    #[test]
+    fn a_crew_obeys_its_commander_by_job_and_by_name() {
+        let boss = protocol::Address([0x33; protocol::ADDRESS_BYTES]);
+        let mate = protocol::Address([0x44; protocol::ADDRESS_BYTES]);
+        let mut scripted = Scripted::default().with_commander(Some(boss));
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Follow, Goal::Patrol] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        s.team.who[0] = Who {
+            id: 8,
+            name: protocol::Name::new("Miller-3").unwrap(),
+            address: mate,
+        };
+        s.team.who_len = 1;
+        s.society.set = true;
+        s.society.role = Role::Farmer;
+        let mut ask = |s: &mut Summary, address, agent, text: &str| {
+            s.heard.clear();
+            s.heard.push(HeardLine {
+                address,
+                ..heard(protocol::Channel::Team, text, agent)
+            });
+            scripted.decide(s).unwrap()
+        };
+        assert_eq!(
+            ask(&mut s, mate, false, "stay").goal,
+            Goal::Explore,
+            "not the commander"
+        );
+        let c = ask(&mut s, boss, true, "farmers patrol");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Patrol, Some("on patrol"))
+        );
+        assert_eq!(
+            ask(&mut s, boss, false, "guards stay").goal,
+            Goal::Patrol,
+            "not its job"
+        );
+        assert_eq!(
+            ask(&mut s, boss, false, "Miller-3 stay").goal,
+            Goal::Patrol,
+            "a teammate's"
+        );
+        assert_eq!(ask(&mut s, boss, false, "all: stay").goal, Goal::Wait);
+        // Defend is a run, once: home not struck, it says so.
+        let c = ask(&mut s, boss, false, "defend");
+        assert_eq!(said(&c).as_deref(), Some("can't right now"));
+    }
+
+    /// A turncoat gone stray waits to be taken on, gets on its new team's
+    /// cupboard once it has their code, and lapsed walks to THE GATE.
+    #[test]
+    fn a_stray_waits_to_be_taken_on_then_works_for_its_new_team() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Meet, Goal::Authorize] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.turn = Turn::Stray;
+        assert_eq!(scripted.pick(&s).0, Goal::Wait, "a free hand waits");
+        s.water = 5;
+        assert_ne!(scripted.pick(&s).0, Goal::Wait, "not thirsty");
+        s.water = 100;
+        s.turn = Turn::Taken;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        assert_ne!(scripted.pick(&s).0, Goal::Authorize, "no code yet");
+        s.team.code = true;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::Authorize,
+            "onto the new cupboard"
+        );
+        s.team = Summary::EMPTY.team;
+        s.turn = Turn::Lapsed;
+        assert_eq!(scripted.pick(&s).0, Goal::Meet, "to THE GATE, alone");
+        s.turn = Turn::Loyal;
+        assert_ne!(scripted.pick(&s).0, Goal::Meet);
     }
 
     /// A teammate's words on team chat are orders: follow and stay stand
@@ -5085,6 +5509,9 @@ mod tests {
         let v = s.to_json();
         assert_eq!(v["raid_targets"]["count"], 1);
         assert_eq!(v["raid_targets"]["bearing"], "right");
+        assert_eq!(v["raid_owner"], "unknown");
+        s.raid_owner = OwnerSeen::Asleep;
+        assert_eq!(s.to_json()["raid_owner"], "asleep");
     }
 
     /// The stations: fragments for the bench come from loot until a

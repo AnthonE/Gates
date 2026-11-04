@@ -173,6 +173,12 @@ impl TeamHome {
         self.hearth
     }
 
+    /// A cupboard learnt as the team's, for a test that starts there.
+    #[cfg(test)]
+    pub fn set_hearth(&mut self, at: OpAddr) {
+        self.hearth = Some(at);
+    }
+
     /// The cupboard has it on its crew, as far as it was last told.
     pub fn crewed(&self) -> bool {
         self.crewed

@@ -34,7 +34,7 @@ use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::route::{Route, Step};
 use crate::agent::tracks::{clear_line, eye_m, Sight, Species, Tracks};
 use crate::agent::wiki::Throw;
-use crate::mind::Why;
+use crate::mind::{OwnerSeen, Why};
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
@@ -158,13 +158,24 @@ pub struct Base {
 }
 
 impl Base {
+    /// Whether its owner is about, as the watch has it: somebody awake
+    /// near it lately (and not asleep in it since), somebody asleep in it,
+    /// a long watch with nobody awake, or too short a watch to say.
+    pub fn presence(&self, tick: u32) -> OwnerSeen {
+        let age = |at: u32| tick.wrapping_sub(at);
+        let awake = self.awake.filter(|&at| age(at) < OFFLINE_TICKS);
+        match (awake, self.sleeper) {
+            (Some(a), Some(s)) if age(a) < age(s) => OwnerSeen::Online,
+            (Some(_), None) => OwnerSeen::Online,
+            (_, Some(_)) => OwnerSeen::Asleep,
+            (None, None) if age(self.first) >= OFFLINE_TICKS => OwnerSeen::Quiet,
+            (None, None) => OwnerSeen::Unknown,
+        }
+    }
+
     /// Nobody about it awake for a long watch, or somebody asleep in it.
     pub fn offline(&self, tick: u32) -> bool {
-        let watched = tick.wrapping_sub(self.first) >= OFFLINE_TICKS;
-        let quiet = self
-            .awake
-            .is_none_or(|at| tick.wrapping_sub(at) >= OFFLINE_TICKS);
-        self.sleeper.is_some() || (watched && quiet)
+        self.presence(tick).offline()
     }
 }
 
@@ -621,27 +632,28 @@ impl Bases {
         best.map(|(_, _, i, f, b)| (i, f, b))
     }
 
-    /// How many bases are worth raiding now, and where the nearest is.
+    /// How many bases are worth raiding now, and where the nearest is and
+    /// whether its owner is about.
     pub fn targets(
         &self,
         means: &Means,
         temperament: Temperament,
         from: [f32; 2],
         tick: u32,
-    ) -> (u8, Option<[f32; 2]>) {
+    ) -> (u8, Option<([f32; 2], OwnerSeen)>) {
         let mut n = 0u8;
-        let mut nearest: Option<(f32, [f32; 2])> = None;
+        let mut nearest: Option<(f32, [f32; 2], OwnerSeen)> = None;
         for (i, b) in self.bases.iter().enumerate() {
             let one = self.best_of(i, means, temperament, from, tick);
             if one {
                 n = n.saturating_add(1);
                 let d = (b.at[0] - from[0]).hypot(b.at[1] - from[1]);
-                if nearest.is_none_or(|(m, _)| d < m) {
-                    nearest = Some((d, b.at));
+                if nearest.is_none_or(|(m, ..)| d < m) {
+                    nearest = Some((d, b.at, b.presence(tick)));
                 }
             }
         }
-        (n, nearest.map(|(_, at)| at))
+        (n, nearest.map(|(_, at, owner)| (at, owner)))
     }
 
     fn best_of(
@@ -1541,6 +1553,28 @@ mod tests {
         }
     }
 
+    /// The owner's presence is the watch's: awake lately is online until a
+    /// sleeper is seen after it, and a long quiet watch reads as offline.
+    #[test]
+    fn a_base_s_owner_reads_online_asleep_quiet_or_unknown_off_the_watch() {
+        let mut b = Base {
+            used: true,
+            first: 100,
+            ..Base::default()
+        };
+        assert_eq!(b.presence(110), OwnerSeen::Unknown);
+        assert_eq!(b.presence(100 + OFFLINE_TICKS), OwnerSeen::Quiet);
+        b.awake = Some(200);
+        assert_eq!(b.presence(210), OwnerSeen::Online);
+        assert!(!b.offline(210));
+        b.sleeper = Some(300);
+        assert_eq!(b.presence(310), OwnerSeen::Asleep, "lay down since");
+        b.awake = Some(400);
+        assert_eq!(b.presence(410), OwnerSeen::Online, "woke since");
+        assert_eq!(b.presence(400 + OFFLINE_TICKS), OwnerSeen::Asleep);
+        assert!(b.offline(400 + OFFLINE_TICKS));
+    }
+
     #[test]
     fn the_cheapest_base_worth_it_is_chosen_and_one_tried_is_let_be() {
         let mut bases = Bases::new();
@@ -1566,10 +1600,9 @@ mod tests {
         assert_eq!(bases.targets(&means, Temperament::Defensive, from, 10).0, 0);
         // Asleep in it: offline-looking, and worth it after all.
         bases.bases[a].sleeper = Some(20);
-        assert_eq!(
-            bases.targets(&means, Temperament::Opportunist, from, 20).0,
-            2
-        );
+        let (n, nearest) = bases.targets(&means, Temperament::Opportunist, from, 20);
+        assert_eq!(n, 2);
+        assert_eq!(nearest.map(|(_, o)| o), Some(OwnerSeen::Asleep));
         bases.tried(b, 30);
         let pick = bases.best(&means, Temperament::Opportunist, from, 31);
         assert_eq!(pick.map(|(i, ..)| i), Some(a));

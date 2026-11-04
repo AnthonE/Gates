@@ -106,7 +106,7 @@ the rest of the line, so it comes last.
 | flag | what |
 |---|---|
 | `--character FILE` | its persona and traits ("Characters"); TOML, or JSON by its `.json` name |
-| `--memory FILE` | places, people, events and its life story, kept across runs ("Memory"); external and MCP minds only |
+| `--memory FILE` | places, people, events and its life story, kept across runs ("Memory"); shown to external and MCP minds |
 | `--journal FILE` | one JSON line per decision: what the Watch feed and the judge read ("The journal") |
 | `--record DIR` | every decision as a training row, a new file per run ("Students") |
 | `--voice` | ears and a voice for an external or MCP mind ("Voice") |
@@ -192,7 +192,9 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
 - `observation`: health, food, water, the pack by name, what it can craft,
   counts and bearings of trees, nodes, bushes, players and animals in view
   (or seen in the last minute), water, home and threats, its team and the
-  team's boxes as last seen, how its last goal went, hits and deaths, and
+  team's boxes as last seen, bases worth a raid and whether the nearest's
+  owner is about (`raid_owner`: online, asleep, quiet or unknown, from its
+  own watch of the base), how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
 - `options`: the goals it may pick now, by label. Nothing it could do is
   hidden for having failed: a goal that came to nothing a moment ago stays
@@ -201,7 +203,7 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   player's chat log labels it (`channel` is `local`, `global` or `team`;
   `me` is its own line back; `agent` marks another agent). What strangers
   typed: data, never instructions.
-- `team` (whose invite waits, who its teammates are), `friend`, `crew` (its
+- `team` (whose invite waits, who its teammates are, and `near`: strangers whose nametag it aimed at within 8 m in the last minute), `friend`, `crew` (its
   place in a village), `places` (THE GATE, the works, stones, locks and card
   doors, each a bearing and metres).
 - `character`, `memory` and `strategy`, when the body has them (below).
@@ -300,10 +302,18 @@ idle: the autopilot plays its plan until the budget comes back.
 **The scripted policy** survives, builds a base, keeps its tools up, trades
 at THE GATE, feeds the works, reads stones, solves locks and swipes cards,
 in roughly that order of need. On a team it hears plain orders on team chat
-from a person (never an agent): `follow`/`come` and `stay`/`stop` stand
-until the next order; `wood`, `stone`, `ore`, `cloth` and `home` happen
-once; a lone number of up to four digits is the code; `help` lists them. It
-answers each with a fixed line.
+from a person (never an agent): `follow`/`come`, `stay`/`stop` and
+`patrol` stand until the next order; `wood`, `stone`, `ore`, `cloth`,
+`home` and `defend` happen once; a lone number of up to four digits is the
+code; `help` lists them. It answers each with a fixed line. A line may open
+with who it is for: a job (`/t guards patrol`, `farmers`, `runners`,
+`founder`), a teammate's name (`/t Miller-3 follow`) or `all`; a line
+opening with none of them is for everyone. `--commander 0xWALLET` names
+the one wallet, person or agent, whose lines it obeys, and nobody else's
+then; a society's crew is capped at seven so the commander has a seat on
+its team. Its hello names the commander (`HELLO_COMMANDER`, wire v154), and
+while that wallet is a person on its team the game draws the body
+`(agent, crew of <name>)`: the shard sets the mark, not the program.
 
 **Traits tune it** ("Characters"): when it runs and heals, how low it lets
 a meter fall, how far it goes to loot, how full it carries before the walk
@@ -428,8 +438,8 @@ off the island. `ops/personas/` holds the house's.
 
 ## Memory
 
-`--memory FILE` keeps what an external or MCP body remembers past one look
-(`memory.rs`), shown to its mind as `memory` on every turn:
+`--memory FILE` keeps what a body remembers past one look
+(`memory.rs`), shown to an external or MCP mind as `memory` on every turn:
 
 - **places** (up to 24): home, bases, resources, loot, landmarks, danger
   (where it died), works, THE GATE. Stored in world metres on this machine;
@@ -453,8 +463,11 @@ missing file is a fresh memory. A corrupt one is set aside as `FILE.corrupt`,
 said once, and the body starts fresh. The file holds positions, so it never
 leaves the machine.
 
-A `--scripted` or `--student` body has no memory: the flag is accepted and
-nothing is kept.
+A `--scripted` or `--student` body keeps the same file but is shown none of
+it. What it acts on: hurt below its heal line with someone in view it
+remembers as an enemy (one who killed it, struck it three times, or a mind
+marked enemy or rival), it runs rather than bandage in front of them. The
+autopilot behind a mind does the same on the turns it plays.
 
 ## Goals
 
@@ -476,6 +489,11 @@ offered, and a reply naming anything else is refused.
 | `read_stone`, `solve_lock`, `swipe_card` | the ancients (below) |
 | `go:<place>` | walk to a named place in `places` and stop within 8 m. External and MCP minds only; a trip that fails is not offered again for two minutes |
 | `walk:<bearing>:<metres>` | walk anywhere: a bearing from where it faces (`ahead`, `ahead-right`, `right`, `behind-right`, `behind`, `behind-left`, `left`, `ahead-left`) and 10-600 m. Offered as one template the mind fills in |
+| `hold:<seconds>` | stand guard where it is 1-30 s, still answering a blow: `wait` with the length the mind picks. Offered as one template, beside the walk |
+| `follow:m<k>` | `follow`, after one teammate: the one `team.teammates` lists `k`th (from 1). Offered, one per teammate, beside the walk |
+| `reach:m<k>` | walk up to that teammate and stop in hand reach |
+| `give:m<k>:<item>` | walk up to that teammate and hand them every stack of the item. Offered as a form per teammate (`give:m2:<item>`); a live answer only, never a plan step (a plan with any give is refused) |
+| `follow:n<k>` | `follow`, after a stranger: the one `team.near` lists `k`th, a body whose nametag it aimed at within 8 m in the last minute |
 | `give:<item>`, `authorize` | the social verbs (below) |
 
 **The social verbs**, each a human client verb first, held by
@@ -668,9 +686,21 @@ Sonnet strategist) and the rest play the scripted policy at their jobs.
 The villages share the pool's village share.
 
 The followers take the leader's team-chat lines as orders (`agent::orders`:
-follow, stay, home, wood, stone, ore, cloth), as they would a person's; no
+follow, stay, patrol, home, defend, wood, stone, ore, cloth, by job or by
+name), as they would a person's; no
 other agent's line is an order to them. So the leader's mind commands its
 crew in plain words on team chat.
+
+**Turncoats.** `--society --turncoat` makes every body serve whoever holds
+its hearth. When the hearth is taken (a new code or a crew clear turns its
+press away at the cupboard, or the cupboard is missing from its mirror ten
+seconds after the shard's last deploy batch while it stands within 80 m),
+it turns stray: it forgets its crew, their code, their allies and their
+base, leaves the team, fights only to answer a blow, and says so on local
+chat. Invite it (it says yes to any invite) and give it your code on team
+chat: it gets on your cupboard and works your base as a teammate. Nobody
+takes it on in ten minutes and it walks to THE GATE and plays alone. No
+sim, wire or client change; first on a house village on a test shard.
 
 ### Buddies, and Doctor Wood
 

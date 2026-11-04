@@ -3538,6 +3538,7 @@ fn install(
             watch: None,
             said,
             agent: hello.is_agent(),
+            commander: hello.commander().unwrap_or(protocol::Address::GUEST),
             name: if hello.is_agent() {
                 hello.name
             } else {
@@ -3791,6 +3792,7 @@ fn install_spectator(
             watch: Some(target),
             said: crate::slot::Said::default(),
             agent: false,
+            commander: protocol::Address::GUEST,
             name: protocol::Name::EMPTY,
             link,
         })
@@ -5482,6 +5484,7 @@ fn sim_thread(
                 core.tag_join(c.slot, c.id, key.as_ref());
                 core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
+                core.note_commander(c.slot, c.commander);
                 core.play_join(c.slot, c.id, key, how, c.agent);
                 // A wallet read inside the cooldown, stated with the join
                 // (`Connect::said`): after `tag_join`, which owes the gifts
