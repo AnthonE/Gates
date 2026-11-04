@@ -609,6 +609,8 @@ pub struct Senses {
     /// bring its crew together is worth offering.
     pub society: crate::mind::SocietySense,
     pub society_meet: bool,
+    /// A turncoat's standing (`mind::Turn`).
+    pub turn: crate::mind::Turn,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -1141,6 +1143,11 @@ pub struct Survivor {
     /// pack lacks that its boxes hold, when a trip last came to nothing,
     /// when it was last under attack, and the code a teammate gave.
     shared: TeamHome,
+    /// A turncoat's standing, since when (a stray's wait, a lapse's walk),
+    /// and when a deploy batch last came (`agent::society::TURN_GONE_SECS`).
+    turn: crate::mind::Turn,
+    turn_at: u32,
+    deploy_walk_at: u32,
     home_job: HomeJob,
     wants: [(u16, u32); WANT_ROWS],
     wants_len: u8,
@@ -1395,6 +1402,9 @@ impl Survivor {
             raid_job: RaidJob::default(),
             raid_failed: None,
             shared: TeamHome::default(),
+            turn: crate::mind::Turn::Loyal,
+            turn_at: 0,
+            deploy_walk_at: 0,
             home_job: HomeJob::default(),
             wants: [(0, 0); WANT_ROWS],
             wants_len: 0,
@@ -3175,7 +3185,7 @@ impl Survivor {
                     };
                 }
             }
-        } else {
+        } else if self.turn != crate::mind::Turn::Lapsed {
             let f = self.senses.friend;
             if !f.online || f.on_team || f.reachable || f.invited_me {
                 self.end_goal(tick, Outcome::Done);
@@ -3189,6 +3199,13 @@ impl Survivor {
             }
             Some(Err(why)) => {
                 self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            // A lapsed stray at THE GATE: it plays alone from here.
+            None if self.turn == crate::mind::Turn::Lapsed => {
+                self.turn = crate::mind::Turn::Loyal;
+                self.senses.turn = self.turn;
+                self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
             None => {
@@ -3507,6 +3524,74 @@ impl Survivor {
             .flatten()
             .map(|(at, seen)| (id, at, seen));
         self.hand_to(core, body, to, Handing::Item(item), tick)
+    }
+
+    /// A turncoat's hearth taken: it forgets its crew, their code, their
+    /// allies and their base, leaves the team, puts its weapon away (it
+    /// answers a blow, never starts one) and says so on local chat.
+    fn turn_stray(&mut self, tick: u32) {
+        self.society = None;
+        self.kin.clear();
+        self.crew_near = None;
+        self.team_code = None;
+        self.shared.forget();
+        self.combat.set_temperament(Temperament::Defensive);
+        self.turn = crate::mind::Turn::Stray;
+        self.turn_at = tick;
+        self.queue(|b| protocol::encode_action_team(protocol::TEAM_OP_LEAVE, 0, b));
+        if let Some(line) = protocol::ChatText::sanitize(society::STRAY_LINE.as_bytes()) {
+            self.take_say(Say::Line(line.into()));
+        }
+    }
+
+    /// A turncoat's standing, once a perception: its hearth gone from the
+    /// mirror with the shard's deploys in turns it; a stray on a team is
+    /// taken; a stray nobody takes on lapses; one taken who loses its team
+    /// is a stray again.
+    fn sense_turn(
+        &mut self,
+        core: &ClientCore,
+        body: &EntityState,
+        team: &protocol::TeamView,
+        tick: u32,
+    ) {
+        use crate::mind::Turn;
+        if let (Some(soc), Some(at)) = (self.society, self.shared.hearth()) {
+            let standing = core
+                .deploys
+                .entries()
+                .iter()
+                .any(|d| (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc));
+            let walked =
+                tick.wrapping_sub(self.deploy_walk_at) >= society::TURN_GONE_SECS * TICK_HZ;
+            // Only well inside the shard's interest round it is a missing
+            // cupboard a fact: far off, a resync never sent it again.
+            let (hx, hz) = sim_core::deploy::cell_center(at.cx, at.cz);
+            let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+            let near = (bx - hx).hypot(bz - hz) <= society::TURN_SEEN_M;
+            if soc.turncoat && !standing && walked && near {
+                self.turn_stray(tick);
+                // Whatever it was doing was its old crew's.
+                if self.goal.is_some() {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                }
+            }
+        }
+        let on_team = team.count > 1;
+        self.turn = match self.turn {
+            Turn::Stray if on_team => Turn::Taken,
+            Turn::Stray if tick.wrapping_sub(self.turn_at) >= society::STRAY_SECS * TICK_HZ => {
+                self.turn_at = tick;
+                Turn::Lapsed
+            }
+            Turn::Taken if !on_team => {
+                self.turn_at = tick;
+                Turn::Stray
+            }
+            Turn::Lapsed if on_team => Turn::Loyal,
+            t => t,
+        };
+        self.senses.turn = self.turn;
     }
 
     /// The strangers its aim crossed within `NEAR_AIM_M` (a nametag a
@@ -4237,6 +4322,13 @@ impl Survivor {
     fn auth_over(&mut self, tick: u32, outcome: Outcome) -> Intent {
         if matches!(outcome, Outcome::Failed(_)) {
             self.auth_failed = Some(tick);
+        }
+        // A turncoat's own hearth turned its press away (a new code, a crew
+        // clear): the hearth is someone else's now.
+        if matches!(outcome, Outcome::Failed(Why::Locked | Why::Refused))
+            && self.society.is_some_and(|s| s.turncoat)
+        {
+            self.turn_stray(tick);
         }
         self.auth = Auth::default();
         self.home_job = HomeJob::default();
@@ -7315,6 +7407,7 @@ impl Survivor {
         self.give_to = give_to.map(|(.., id)| id);
         self.senses.give_to = self.give_to.is_some();
         self.note_aimed(body, &team, tick);
+        self.sense_turn(core, body, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
             let since = *self.alone_since.get_or_insert(tick);
             if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
@@ -7844,6 +7937,11 @@ impl Survivor {
         let flags = core.on_stream(bytes)?;
         let applied2 = core.applied2();
         let tick = self.seen_tick.unwrap_or_default();
+        if flags & (client_core::core::APPLIED_DEPLOYS | client_core::core::APPLIED_DEPLOY_RESET)
+            != 0
+        {
+            self.deploy_walk_at = tick;
+        }
         while let Some((item, added)) = core.pop_toast() {
             self.stats.gather_awards += 1;
             if let Some(g) = self.gathered.get_mut(item as usize) {
@@ -9025,6 +9123,7 @@ pub fn observe(
     }
     s.friend = senses.friend;
     s.society = senses.society;
+    s.turn = senses.turn;
     if let (Some(b), Some([fx, fz])) = (body, senses.friend_at) {
         let (d, bearing) = relative(b, fx, fz);
         s.friend.in_sight.add(d, bearing);
@@ -9296,8 +9395,10 @@ pub fn observe(
     {
         s.offer(Goal::Meet);
     }
-    // Its society's crew, coming together there (`agent::society`).
-    if senses.society_meet && s.gate.is_some() && !senses.hostile_afield {
+    // Its society's crew, coming together there (`agent::society`); or a
+    // stray nobody took on, off to play alone.
+    let lapsed = senses.turn == crate::mind::Turn::Lapsed;
+    if (senses.society_meet || lapsed) && s.gate.is_some() && !senses.hostile_afield {
         s.offer(Goal::Meet);
     }
     // A home to walk a ring round, and something in hand to meet an
@@ -9695,6 +9796,72 @@ mod tests {
 
     fn survivor() -> Survivor {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
+    }
+
+    /// A turncoat whose hearth is gone from the mirror once the deploys are
+    /// in, standing near it, turns stray: no crew, no code, defensive. A
+    /// fresh resync, or a body far off, turns nobody. A stray put on a team
+    /// is taken; one nobody takes on lapses, and on a team again is loyal.
+    #[test]
+    fn a_turncoat_turns_stray_when_its_hearth_is_gone_and_lapses_untaken() {
+        use crate::agent::society::{self, Board, Kin, Role, MAX_ALLIES};
+        use crate::mind::Turn;
+        static BOARD: Board = Board::new();
+        let (mut bot, _, _) = fixture();
+        let soc = Society {
+            role: Role::Farmer,
+            me: 1,
+            crew: [Kin::NONE; protocol::TEAM_MAX],
+            crew_len: 2,
+            allies: [Kin::NONE; MAX_ALLIES],
+            allies_len: 0,
+            code: None,
+            crew_no: 0,
+            board: Some(&BOARD),
+            turncoat: true,
+        };
+        bot.society = Some(soc);
+        bot.team_code = crate::agent::lock::LockCode::given(1234);
+        let at = sim_core::bots::OpAddr {
+            cx: 100,
+            cz: 100,
+            level: 0,
+            loc: 0,
+        };
+        bot.shared.set_hearth(at);
+        let (hx, hz) = sim_core::deploy::cell_center(at.cx, at.cz);
+        let body = |x: f32, z: f32| EntityState {
+            qx: quant_xz(x),
+            qz: quant_xz(z),
+            ..EntityState::default()
+        };
+        let near = body(hx + 5.0, hz);
+        let far = body(hx + 300.0, hz);
+        let alone = protocol::TeamView::NONE;
+        let core = bot.core.take().unwrap();
+        let gone = society::TURN_GONE_SECS * TICK_HZ;
+        bot.deploy_walk_at = 1000;
+        bot.sense_turn(&core, &near, &alone, 1000 + gone - 1);
+        assert!(bot.society.is_some(), "a resync still coming in");
+        bot.sense_turn(&core, &far, &alone, 1000 + gone);
+        assert!(bot.society.is_some(), "too far off to know");
+        let t0 = 1000 + gone;
+        bot.sense_turn(&core, &near, &alone, t0);
+        assert!(bot.society.is_none());
+        assert_eq!(bot.turn, Turn::Stray);
+        assert_eq!(bot.team_code, None, "its old crew's code forgotten");
+        assert_eq!(bot.combat.temperament(), Temperament::Defensive);
+        assert!(bot.say_line.is_some(), "it says so");
+        let mut team = protocol::TeamView::NONE;
+        team.count = 2;
+        bot.sense_turn(&core, &near, &team, t0 + 1);
+        assert_eq!(bot.turn, Turn::Taken);
+        bot.sense_turn(&core, &near, &alone, t0 + 2);
+        assert_eq!(bot.turn, Turn::Stray, "its new team gone");
+        bot.sense_turn(&core, &near, &alone, t0 + 2 + society::STRAY_SECS * TICK_HZ);
+        assert_eq!(bot.turn, Turn::Lapsed);
+        bot.sense_turn(&core, &near, &team, t0 + 3 + society::STRAY_SECS * TICK_HZ);
+        assert_eq!(bot.turn, Turn::Loyal);
     }
 
     /// The catalog outgrew one u128 (127 rows filled it): ids on both

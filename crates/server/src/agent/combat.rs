@@ -871,6 +871,12 @@ impl Combat {
         self.mode = Mode::Downed;
     }
 
+    /// A new temperament from now on: a turncoat gone stray puts its
+    /// weapon away (`agent::society::Society::turncoat`).
+    pub fn set_temperament(&mut self, temperament: Temperament) {
+        self.temperament = temperament;
+    }
+
     pub fn temperament(&self) -> Temperament {
         self.temperament
     }

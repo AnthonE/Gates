@@ -1566,6 +1566,18 @@ impl Threat {
     }
 }
 
+/// A turncoat's standing (`agent::society::Society::turncoat`): serving its
+/// crew, a stray waiting to be taken on, taken on by a new team, or a stray
+/// nobody took on, off to THE GATE to play alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Turn {
+    #[default]
+    Loyal,
+    Stray,
+    Taken,
+    Lapsed,
+}
+
 /// Whether a base's owner is about, as the body's own eyes have it
 /// (`agent::raid::Base::presence`): seen awake near it lately, asleep in it,
 /// watched a long while with nobody awake about it, or not watched enough
@@ -1910,6 +1922,8 @@ pub struct Summary {
     pub friend: FriendSense,
     /// Its society (`--society`), if it is in one.
     pub society: SocietySense,
+    /// A turncoat's standing (`Turn`); `Loyal` for every other body.
+    pub turn: Turn,
     /// What the team's boxes held when their panels were last open.
     pub home_holds: [(Name, u32); SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
@@ -2108,6 +2122,7 @@ impl Summary {
         },
         friend: FriendSense::NONE,
         society: SocietySense::NONE,
+        turn: Turn::Loyal,
         home_holds: [(Name::EMPTY, 0); SUMMARY_HOME_HOLDS],
         home_holds_len: 0,
         gate: None,
@@ -3756,6 +3771,23 @@ impl Scripted {
                 self.reply("come closer, or press N on me");
             }
         }
+        // A turncoat whose hearth was taken: it waits to be taken on, and
+        // once nobody has, walks to THE GATE to play alone.
+        // It waits fed and watered: a low meter goes to the playbook below.
+        let fed = pct(s.food, s.food_max) >= k.low_meter_pct
+            && pct(s.water, s.water_max) >= k.low_meter_pct;
+        match s.turn {
+            Turn::Stray if fed && s.team.mates == 0 && s.offers(Goal::Wait) => {
+                return (Goal::Wait, "scripted: a free hand, waiting to be taken on");
+            }
+            Turn::Lapsed if s.offers(Goal::Meet) => {
+                return (
+                    Goal::Meet,
+                    "scripted: nobody took me on; to THE GATE, alone",
+                );
+            }
+            _ => {}
+        }
         // A society's farmer runs from fights, its teammates' too: the
         // guards are for that.
         let farmer = s.society.set && s.society.role == Role::Farmer;
@@ -3845,6 +3877,11 @@ impl Scripted {
         // nothing else makes the scripted policy reach for a cupboard.
         if s.friend.on_team && s.team.code && s.offers(Goal::Authorize) {
             return (Goal::Authorize, "scripted: onto my friend's cupboard");
+        }
+        // A turncoat taken on, its new team's code given it: onto their
+        // cupboard, to work their base.
+        if s.turn == Turn::Taken && s.team.code && s.offers(Goal::Authorize) {
+            return (Goal::Authorize, "scripted: onto my new crew's cupboard");
         }
         // The plan its mind left for the turns it plays alone: the first
         // step not yet done, while it is on offer.
@@ -4896,6 +4933,39 @@ mod tests {
         // Defend is a run, once: home not struck, it says so.
         let c = ask(&mut s, boss, false, "defend");
         assert_eq!(said(&c).as_deref(), Some("can't right now"));
+    }
+
+    /// A turncoat gone stray waits to be taken on, gets on its new team's
+    /// cupboard once it has their code, and lapsed walks to THE GATE.
+    #[test]
+    fn a_stray_waits_to_be_taken_on_then_works_for_its_new_team() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Wait, Goal::Meet, Goal::Authorize] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.turn = Turn::Stray;
+        assert_eq!(scripted.pick(&s).0, Goal::Wait, "a free hand waits");
+        s.water = 5;
+        assert_ne!(scripted.pick(&s).0, Goal::Wait, "not thirsty");
+        s.water = 100;
+        s.turn = Turn::Taken;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        assert_ne!(scripted.pick(&s).0, Goal::Authorize, "no code yet");
+        s.team.code = true;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::Authorize,
+            "onto the new cupboard"
+        );
+        s.team = Summary::EMPTY.team;
+        s.turn = Turn::Lapsed;
+        assert_eq!(scripted.pick(&s).0, Goal::Meet, "to THE GATE, alone");
+        s.turn = Turn::Loyal;
+        assert_ne!(scripted.pick(&s).0, Goal::Meet);
     }
 
     /// A teammate's words on team chat are orders: follow and stay stand

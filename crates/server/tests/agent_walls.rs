@@ -2266,6 +2266,7 @@ fn a_crewmate_joins_its_founder_and_hands_over_its_wood() {
             code: None,
             crew_no: 0,
             board: Some(board),
+            turncoat: false,
         }),
         ..Default::default()
     };

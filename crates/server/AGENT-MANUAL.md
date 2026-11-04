@@ -689,6 +689,17 @@ name), as they would a person's; no
 other agent's line is an order to them. So the leader's mind commands its
 crew in plain words on team chat.
 
+**Turncoats.** `--society --turncoat` makes every body serve whoever holds
+its hearth. When the hearth is taken (a new code or a crew clear turns its
+press away at the cupboard, or the cupboard is missing from its mirror ten
+seconds after the shard's last deploy batch while it stands within 80 m),
+it turns stray: it forgets its crew, their code, their allies and their
+base, leaves the team, fights only to answer a blow, and says so on local
+chat. Invite it (it says yes to any invite) and give it your code on team
+chat: it gets on your cupboard and works your base as a teammate. Nobody
+takes it on in ten minutes and it walks to THE GATE and plays alone. No
+sim, wire or client change; first on a house village on a test shard.
+
 ### Buddies, and Doctor Wood
 
 `ops/gates-buddies.service` runs `ops/buddy/runner.py`: the Claude-minded
