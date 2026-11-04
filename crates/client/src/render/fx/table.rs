@@ -2,10 +2,13 @@
 //! sparks or dust, splash or blood, the way the reference picks an impact
 //! effect by hit type and physic material. Numbers live here, in code.
 
+use std::sync::OnceLock;
+
+use ::fx::recipe::Recipe;
 use bevy::prelude::*;
 
 use super::atlas::{DROPLET, GLOW, LEAF, PUFF, RING, SMOKE, SPECK, STAR, STREAK};
-use super::pool::{Orient, Particle, Pool};
+use super::pool::{Orient, Pool};
 use crate::render::impact::{Matter, Weapon};
 
 /// One kind of thing an effect throws.
@@ -37,6 +40,51 @@ pub enum Layer {
 }
 
 impl Layer {
+    /// Every layer, in the order the knobs name them.
+    pub const ALL: [Layer; 14] = [
+        Layer::Sparks,
+        Layer::Flash,
+        Layer::Dust,
+        Layer::Grit,
+        Layer::Droplets,
+        Layer::Ring,
+        Layer::Mist,
+        Layer::Leaves,
+        Layer::BloodMist,
+        Layer::BloodDrops,
+        Layer::Smoke,
+        Layer::Fireball,
+        Layer::GunSmoke,
+        Layer::Plume,
+    ];
+
+    /// Its name, as a knob names it (`Sparks.speed=4,12`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Layer::Sparks => "Sparks",
+            Layer::Flash => "Flash",
+            Layer::Dust => "Dust",
+            Layer::Grit => "Grit",
+            Layer::Droplets => "Droplets",
+            Layer::Ring => "Ring",
+            Layer::Mist => "Mist",
+            Layer::Leaves => "Leaves",
+            Layer::BloodMist => "BloodMist",
+            Layer::BloodDrops => "BloodDrops",
+            Layer::Smoke => "Smoke",
+            Layer::Fireball => "Fireball",
+            Layer::GunSmoke => "GunSmoke",
+            Layer::Plume => "Plume",
+        }
+    }
+
+    /// The layer a knob names, any case.
+    pub fn named(name: &str) -> Option<Layer> {
+        Layer::ALL
+            .into_iter()
+            .find(|l| l.name().eq_ignore_ascii_case(name))
+    }
+
     /// Whether this layer is light (the additive pool) or matter (the
     /// alpha pool, lit like the ground).
     pub fn glow(self) -> bool {
@@ -158,35 +206,11 @@ pub fn dust_tint(m: Matter) -> Color {
     }
 }
 
-/// One layer's recipe.
-struct Spec {
-    orient: Orient,
-    cell: u8,
-    cells: u8,
-    speed: (f32, f32),
-    /// Share of the launch along the thrown direction rather than scattered.
-    spray: f32,
-    /// Extra upward speed, m/s.
-    up: f32,
-    gravity: f32,
-    drag: f32,
-    life: (f32, f32),
-    size: (f32, f32),
-    /// End size over start size.
-    grow: f32,
-    c0: [f32; 4],
-    c1: [f32; 4],
-    /// Multiply the colours by the matter's dust tint.
-    tinted: bool,
-    spin: f32,
-    stretch: f32,
-    bounce: bool,
-}
-
 const WATER: [f32; 3] = [0.72, 0.8, 0.86];
 
-fn spec(layer: Layer) -> Spec {
-    let base = Spec {
+/// The layer's recipe as built, before any knob (`fx::recipe::Recipe`).
+pub fn built(layer: Layer) -> Recipe {
+    let base = Recipe {
         orient: Orient::Billboard,
         cell: PUFF,
         cells: 1,
@@ -203,10 +227,11 @@ fn spec(layer: Layer) -> Spec {
         tinted: false,
         spin: 0.0,
         stretch: 0.0,
+        len_max: 0.0,
         bounce: false,
     };
     match layer {
-        Layer::Sparks => Spec {
+        Layer::Sparks => Recipe {
             orient: Orient::Stretch,
             cell: STREAK,
             speed: (3.0, 9.0),
@@ -223,7 +248,7 @@ fn spec(layer: Layer) -> Spec {
             bounce: true,
             ..base
         },
-        Layer::Flash => Spec {
+        Layer::Flash => Recipe {
             cell: STAR,
             cells: 3,
             life: (0.05, 0.08),
@@ -233,7 +258,7 @@ fn spec(layer: Layer) -> Spec {
             c1: [1.5, 0.8, 0.3, 0.0],
             ..base
         },
-        Layer::Dust => Spec {
+        Layer::Dust => Recipe {
             cells: 3,
             speed: (0.4, 1.6),
             spray: 0.55,
@@ -251,7 +276,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.8,
             ..base
         },
-        Layer::Grit => Spec {
+        Layer::Grit => Recipe {
             cell: SPECK,
             speed: (2.0, 4.5),
             spray: 0.6,
@@ -267,7 +292,7 @@ fn spec(layer: Layer) -> Spec {
             bounce: true,
             ..base
         },
-        Layer::Droplets => Spec {
+        Layer::Droplets => Recipe {
             cell: DROPLET,
             speed: (1.5, 4.0),
             spray: 0.85,
@@ -281,7 +306,7 @@ fn spec(layer: Layer) -> Spec {
             c1: [WATER[0], WATER[1], WATER[2], 0.3],
             ..base
         },
-        Layer::Ring => Spec {
+        Layer::Ring => Recipe {
             orient: Orient::Flat,
             cell: RING,
             life: (0.55, 0.7),
@@ -291,7 +316,7 @@ fn spec(layer: Layer) -> Spec {
             c1: [WATER[0], WATER[1], WATER[2], 0.0],
             ..base
         },
-        Layer::Mist => Spec {
+        Layer::Mist => Recipe {
             cells: 3,
             speed: (0.3, 0.9),
             spray: 0.9,
@@ -305,7 +330,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.5,
             ..base
         },
-        Layer::Leaves => Spec {
+        Layer::Leaves => Recipe {
             cell: LEAF,
             speed: (1.0, 2.5),
             spray: 0.4,
@@ -319,7 +344,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 7.0,
             ..base
         },
-        Layer::BloodMist => Spec {
+        Layer::BloodMist => Recipe {
             cells: 3,
             speed: (0.5, 1.8),
             spray: 0.6,
@@ -333,7 +358,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 1.0,
             ..base
         },
-        Layer::BloodDrops => Spec {
+        Layer::BloodDrops => Recipe {
             cell: DROPLET,
             speed: (1.5, 3.5),
             spray: 0.5,
@@ -347,7 +372,7 @@ fn spec(layer: Layer) -> Spec {
             c1: [0.16, 0.002, 0.002, 0.6],
             ..base
         },
-        Layer::Smoke => Spec {
+        Layer::Smoke => Recipe {
             cell: SMOKE,
             cells: 2,
             speed: (0.3, 1.0),
@@ -362,7 +387,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.3,
             ..base
         },
-        Layer::GunSmoke => Spec {
+        Layer::GunSmoke => Recipe {
             cell: SMOKE,
             cells: 2,
             speed: (0.6, 1.6),
@@ -377,7 +402,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.6,
             ..base
         },
-        Layer::Plume => Spec {
+        Layer::Plume => Recipe {
             cells: 3,
             speed: (0.5, 2.0),
             spray: 0.5,
@@ -393,7 +418,7 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.4,
             ..base
         },
-        Layer::Fireball => Spec {
+        Layer::Fireball => Recipe {
             cell: GLOW,
             speed: (1.0, 4.0),
             spray: 0.3,
@@ -410,10 +435,6 @@ fn spec(layer: Layer) -> Spec {
     }
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
 /// Throw `n` particles of `layer` from `at`, around `dir`, coloured for
 /// `matter`. Sparks and grit bounce once off the plane through `at` facing
 /// `dir` — the surface they came off.
@@ -424,44 +445,48 @@ pub fn emit(pool: &mut Pool, layer: Layer, n: usize, at: Vec3, dir: Vec3, matter
 /// [`emit`] in a colour of the caller's rather than a matter's: sulfur's
 /// yellow, a metal node's rust. A layer that is not tinted ignores it.
 pub fn emit_tint(pool: &mut Pool, layer: Layer, n: usize, at: Vec3, dir: Vec3, tint: Color) {
-    let s = spec(layer);
-    let tint = if s.tinted {
-        tint.to_linear().to_f32_array_no_alpha()
-    } else {
-        [1.0; 3]
-    };
-    let paint = |c: [f32; 4]| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2], c[3]];
-    let dir = dir.normalize_or(Vec3::Y);
-    for _ in 0..n {
-        let scatter = Vec3::new(pool.signed(), pool.signed(), pool.signed()).normalize_or(Vec3::Y);
-        let v = (dir * s.spray + scatter * (1.0 - s.spray)).normalize_or(dir);
-        let speed = lerp(s.speed.0, s.speed.1, pool.roll());
-        let life = lerp(s.life.0, s.life.1, pool.roll());
-        let size = lerp(s.size.0, s.size.1, pool.roll());
-        let cell = s.cell + ((pool.roll() * s.cells as f32) as u8).min(s.cells - 1);
-        let roll = pool.roll() * std::f32::consts::TAU;
-        let spin = pool.signed() * s.spin;
-        pool.spawn(Particle {
-            left: life,
-            life,
-            // A couple of centimetres off the surface, so nothing is born
-            // inside it.
-            pos: at + v * 0.02,
-            vel: v * speed + Vec3::Y * s.up,
-            size0: size,
-            size1: size * s.grow,
-            c0: paint(s.c0),
-            c1: paint(s.c1),
-            gravity: s.gravity,
-            drag: s.drag,
-            roll,
-            spin,
-            cell,
-            orient: s.orient,
-            stretch: s.stretch,
-            len_max: 0.0,
-            plane_p: at,
-            plane_n: if s.bounce { dir } else { Vec3::ZERO },
-        });
+    ::fx::recipe::emit(
+        pool,
+        &recipe(layer),
+        n,
+        at.into(),
+        dir.into(),
+        tint.to_linear().to_f32_array_no_alpha(),
+        1.0,
+    );
+}
+
+/// Recipes the fx stage retuned (`--knobs`), set once at its start.
+static KNOBS: OnceLock<Vec<(Layer, Recipe)>> = OnceLock::new();
+
+/// The recipe a layer throws now: as built, or as the stage's knobs retuned it.
+pub fn recipe(layer: Layer) -> Recipe {
+    KNOBS
+        .get()
+        .and_then(|k| k.iter().find(|(l, _)| *l == layer).map(|(_, r)| *r))
+        .unwrap_or_else(|| built(layer))
+}
+
+/// Retune layers from knobs (`Sparks.speed=4,12;Flash.life=0.04,0.07`) for
+/// the rest of the run. Once per run: the fx stage calls it at start-up.
+pub fn set_knobs(text: &str) -> Result<(), String> {
+    let mut out: Vec<(Layer, Recipe)> = Vec::new();
+    for k in ::fx::recipe::knobs(text) {
+        let k = k?;
+        let layer = Layer::named(k.layer).ok_or_else(|| {
+            let names: Vec<_> = Layer::ALL.iter().map(|l| l.name()).collect();
+            format!("no layer `{}` (layers: {})", k.layer, names.join(", "))
+        })?;
+        let i = match out.iter().position(|(l, _)| *l == layer) {
+            Some(i) => i,
+            None => {
+                out.push((layer, built(layer)));
+                out.len() - 1
+            }
+        };
+        out[i].1.set(k.key, k.val)?;
     }
+    KNOBS
+        .set(out)
+        .map_err(|_| "knobs are set once a run".to_string())
 }

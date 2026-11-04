@@ -21,6 +21,7 @@
 pub mod atlas;
 pub mod gun;
 pub mod pool;
+pub mod stage;
 pub mod table;
 pub mod world;
 
@@ -30,7 +31,7 @@ use bevy::prelude::*;
 
 use super::impact::{Contact, Weapon};
 use super::rig::EyeCam;
-use pool::{pool_mesh, Cam, Pool};
+use pool::{pool_mesh, MeshWrite, Pool};
 
 /// Additive particles drawable at once. A spark lives under half a second, so
 /// this is dozens of simultaneous metal hits.
@@ -241,11 +242,8 @@ pub fn draw(
     let Ok(cam_gt) = cams.single() else {
         return;
     };
-    let cam = Cam {
-        pos: cam_gt.translation(),
-        right: cam_gt.right().into(),
-        up: cam_gt.up().into(),
-    };
+    let cam = pool::cam(cam_gt);
+    let eye = cam_gt.translation();
     let ahead: Vec3 = cam_gt.forward().into();
     let Fx {
         glow,
@@ -259,9 +257,9 @@ pub fn draw(
         // it: transparent draws go far to near, so sparks land over dust and
         // both over the marks.
         let (pool, handle, anchor) = if m.glow {
-            (&mut *glow, &*glow_mesh, cam.pos)
+            (&mut *glow, &*glow_mesh, eye)
         } else {
-            (&mut *soft, &*soft_mesh, cam.pos + ahead)
+            (&mut *soft, &*soft_mesh, eye + ahead)
         };
         if tf.translation != anchor {
             tf.translation = anchor;

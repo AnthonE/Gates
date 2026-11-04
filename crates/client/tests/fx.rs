@@ -1,12 +1,14 @@
 //! Gate: what a blow throws, and that the particle pools stay inside their
-//! bounds. Arithmetic on the pools and the table — no `World`, no GPU.
+//! bounds. Arithmetic on the pools and the table — no `World`, no GPU. The
+//! pool's own laws (a spark's width, its bounce, the sort) are the shared
+//! crate's, tested in `crates/fx/tests`; these are Gates' half.
 
 #![cfg(feature = "render")]
 
 use bevy::math::Vec3;
 use bevy::mesh::{Mesh, VertexAttributeValues};
 use client::render::fx::gun::{cosmetic_mark, first_in_line, seg_dist};
-use client::render::fx::pool::{pool_mesh, Cam, Orient, Particle, Pool, MIN_PX};
+use client::render::fx::pool::{pool_mesh, Cam, MeshWrite, Pool};
 use client::render::fx::table::{effect, emit, lod, scaled, Layer};
 use client::render::impact::{Matter, Weapon};
 
@@ -91,80 +93,21 @@ fn particles_thin_with_distance() {
     assert_eq!(scaled(0, 1.0), 0);
 }
 
-/// The quad's extent across its streak (corner 0 to corner 3).
-fn quad_width(p: &Particle, cam: &Cam) -> f32 {
-    let (pos, _, _) = Pool::quad(p, cam, Vec3::ZERO).expect("live");
-    (Vec3::from(pos[3]) - Vec3::from(pos[0])).length()
-}
-
-/// A spark far away is still at least ~1.5 px wide — the web draws no bloom
-/// to widen it.
-#[test]
-fn a_distant_spark_does_not_vanish() {
-    let cam = Cam {
-        pos: Vec3::ZERO,
-        right: Vec3::X,
-        up: Vec3::Y,
-    };
-    let p = Particle {
-        left: 0.3,
-        life: 0.3,
-        pos: Vec3::new(0.0, 0.0, -60.0),
-        vel: Vec3::new(5.0, 0.0, 0.0),
-        size0: 0.006,
-        size1: 0.006,
-        c0: [1.0; 4],
-        c1: [1.0; 4],
-        orient: Orient::Stretch,
-        stretch: 0.016,
-        ..Particle::default()
-    };
-    let w = quad_width(&p, &cam);
-    assert!(
-        w >= 2.0 * 60.0 * MIN_PX * 0.99,
-        "a spark at 60 m draws {w} m wide"
-    );
-}
-
-/// A spark thrown into the surface it came off bounces back out of it.
-#[test]
-fn a_spark_does_not_fall_through_its_wall() {
-    let mut p = Pool::new(8, false);
-    p.spawn(Particle {
-        left: 1.0,
-        life: 1.0,
-        pos: Vec3::new(0.0, 1.0, 0.05),
-        vel: Vec3::new(0.0, 0.0, -6.0),
-        gravity: 9.81,
-        plane_p: Vec3::ZERO,
-        plane_n: Vec3::Z,
-        ..Particle::default()
-    });
-    for _ in 0..30 {
-        p.step(1.0 / 60.0);
-    }
-    let s = p.particles().next().expect("still alive");
-    assert!(
-        s.pos.z >= -1e-4,
-        "the spark went through the wall: z = {}",
-        s.pos.z
-    );
-}
-
 /// The mesh is written in place: live particles are quads, dead ones are
 /// collapsed, and an empty pool writes once more to clear and then stops.
 #[test]
 fn the_mesh_collapses_the_dead_and_goes_quiet() {
     let mut mesh: Mesh = pool_mesh(16);
     let mut p = Pool::new(16, true);
+    let eye = Vec3::new(0.0, 1.6, 5.0);
     let cam = Cam {
-        pos: Vec3::new(0.0, 1.6, 5.0),
-        right: Vec3::X,
-        up: Vec3::Y,
+        pos: eye.into(),
+        right: Vec3::X.into(),
+        up: Vec3::Y.into(),
     };
     emit(&mut p, Layer::Dust, 3, Vec3::ZERO, Vec3::Y, Matter::Sand);
     assert!(p.needs_write());
-    assert!(p.write(&mut mesh, &cam, cam.pos));
+    assert!(p.write(&mut mesh, &cam, eye));
     let positions = |m: &Mesh| match m.attribute(Mesh::ATTRIBUTE_POSITION) {
         Some(VertexAttributeValues::Float32x3(v)) => v.clone(),
         _ => panic!("no positions"),
@@ -179,9 +122,23 @@ fn the_mesh_collapses_the_dead_and_goes_quiet() {
     }
     assert_eq!(p.live(), 0);
     assert!(p.needs_write(), "the dead must be cleared once");
-    assert!(p.write(&mut mesh, &cam, cam.pos));
+    assert!(p.write(&mut mesh, &cam, eye));
     assert!(positions(&mesh).iter().all(|v| *v == [0.0; 3]));
     assert!(!p.needs_write(), "and then the mesh is left alone");
+}
+
+/// The generated sprite sheet's level 0, pinned: the sheet moved into the
+/// shared `fx` crate byte for byte, and a change to a sprite is a change to
+/// every effect that draws it (look at the strips, `ci/fx.sh`, then repin).
+#[test]
+fn the_sprite_sheet_is_unchanged() {
+    let (px, w, h) = client::render::fx::atlas::sprite_pixels();
+    assert_eq!((w, h), (256, 256));
+    let mut d: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in px {
+        d = (d ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    assert_eq!(d, 0xcfa8_8247_627f_258f, "sprite sheet digest {d:#018x}");
 }
 
 /// A client draws a miss exactly where the shard did not: the beam stopped on

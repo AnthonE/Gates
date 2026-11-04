@@ -54,7 +54,7 @@ ORDER = ["NONE", "CLIENT", "SHARD", "WIRE", "WIPE"]
 # The game alone: nothing the shard links or reads. `client-core` and `voice`
 # are not here because the server crate depends on both.
 CLIENT = ("crates/client/", "crates/client-web/", "crates/sound/", "crates/sound-worklet/",
-          "assets/")
+          "crates/fx/", "assets/")
 # Nothing a player runs: docs, tooling (the reference board too), ops, and tests (a golden moving is a
 # PIN above, read by value, not by its file).
 NO_DEPLOY = ("posts/", "reference/", "findings/", "ci/", "ops/", ".github/", ".claude/", "board/",

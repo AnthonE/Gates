@@ -94,8 +94,8 @@ pub fn tracer_at(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32, mps: f32, gravi
     fx.glow.spawn(Particle {
         left: life,
         life,
-        pos: start,
-        vel: dir * mps,
+        pos: start.into(),
+        vel: (dir * mps).into(),
         gravity,
         size0: 0.014,
         size1: 0.010,

@@ -485,9 +485,9 @@ pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) 
         pool.spawn(Particle {
             left: life,
             life,
-            pos: crown + off + Vec3::Y * dy,
+            pos: (crown + off + Vec3::Y * dy).into(),
             // Up, and in toward the middle: the tongues meet in a tip.
-            vel: up * rise - off * 1.4,
+            vel: (up * rise - off * 1.4).into(),
             size0: size,
             size1: 0.014,
             c0: [1.6, 0.58, 0.11, 1.0],
@@ -509,8 +509,8 @@ pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) 
         pool.spawn(Particle {
             left: life,
             life,
-            pos: crown + off + Vec3::Y * 0.004,
-            vel: up * rise,
+            pos: (crown + off + Vec3::Y * 0.004).into(),
+            vel: (up * rise).into(),
             size0: size,
             size1: 0.01,
             c0: [2.4, 1.55, 0.62, 1.0],
@@ -526,8 +526,8 @@ pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) 
         pool.spawn(Particle {
             left: life,
             life,
-            pos: crown + Vec3::Y * 0.012,
-            vel: up * 0.05,
+            pos: (crown + Vec3::Y * 0.012).into(),
+            vel: (up * 0.05).into(),
             size0: 0.05,
             size1: 0.04,
             c0: [1.1, 0.48, 0.1, 0.6],
@@ -547,7 +547,7 @@ pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) 
         pool.spawn(Particle {
             left: life,
             life,
-            pos: crown + Vec3::new(a.cos() * 0.027, y, a.sin() * 0.027),
+            pos: (crown + Vec3::new(a.cos() * 0.027, y, a.sin() * 0.027)).into(),
             size0: size,
             size1: 0.005,
             c0: [0.8, 0.2, 0.03, 0.45],
@@ -564,8 +564,8 @@ pub fn torch_flame(pool: &mut Pool, crown: Vec3, up: Vec3, dt: f32, wrap: bool) 
         pool.spawn(Particle {
             left: life,
             life,
-            pos: crown + Vec3::new(a.cos() * 0.026, y, a.sin() * 0.026),
-            vel: up * 0.01,
+            pos: (crown + Vec3::new(a.cos() * 0.026, y, a.sin() * 0.026)).into(),
+            vel: (up * 0.01).into(),
             size0: size,
             size1: 0.0015,
             c0: [3.2, 1.2, 0.25, 1.0],
@@ -640,8 +640,8 @@ pub fn fires(
                     glow.spawn(Particle {
                         left: life,
                         life,
-                        pos: base + off,
-                        vel: Vec3::new(-off.x * 0.8, rise, -off.z * 0.8),
+                        pos: (base + off).into(),
+                        vel: Vec3::new(-off.x * 0.8, rise, -off.z * 0.8).into(),
                         size0: size,
                         size1: size * 0.25,
                         c0: [2.6, 1.05, 0.28, 0.9],
@@ -683,8 +683,8 @@ pub fn fires(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos,
-                vel,
+                pos: pos.into(),
+                vel: vel.into(),
                 size0: 0.012,
                 size1: 0.006,
                 c0: [7.0, 2.6, 0.5, 1.0],

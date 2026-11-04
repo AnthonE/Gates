@@ -149,8 +149,8 @@ pub fn drive(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos: base + off,
-                vel: Vec3::new(-off.x * 0.6, rise, -off.z * 0.6),
+                pos: (base + off).into(),
+                vel: Vec3::new(-off.x * 0.6, rise, -off.z * 0.6).into(),
                 size0: size,
                 size1: size * 0.25,
                 c0: VENT_HOT,
@@ -176,8 +176,8 @@ pub fn drive(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos,
-                vel,
+                pos: pos.into(),
+                vel: vel.into(),
                 size0: 0.014,
                 size1: 0.006,
                 c0: VENT_SPARK,

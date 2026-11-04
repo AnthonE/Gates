@@ -193,6 +193,13 @@ path = "examples/worn_look.rs"
 required-features = ["render", "native"]
 
 [[example]]
+name = "fx_stage"
+path = "examples/fx_stage.rs"
+# One effect at a time in front of two cards, a frame per step — the fx
+# stage (`ci/fx.sh`, the `fx` skill). A window and the disk, so `native`.
+required-features = ["render", "native"]
+
+[[example]]
 name = "piece_bench"
 path = "examples/piece_bench.rs"
 # The building kit under the game's light, headless — `native` for the reason
@@ -682,6 +689,9 @@ sha2 = "0.10"
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }
+# The particle pool, sprite sheet and recipes, with no engine in them
+# (`render/fx` is their Bevy half). Shared with oneshot and Before Colony.
+fx = { path = "../fx" }
 # **`sync` is declared because we USE it, and it was arriving by accident.**
 # `tokio::sync::mpsc` is 25 sites across `lib.rs`, `render/boot.rs`,
 # `render/hub.rs` and `render/menu.rs` — the thread-to-frame handback for

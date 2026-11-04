@@ -1,0 +1,14 @@
+[package]
+name = "fx"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Effects with no engine: the particle pool, its sprite sheet, layer recipes and the fx stage's contract"
+
+# No dependencies, no `*.workspace = true` keys and its own rustfmt.toml and
+# clippy.toml: this directory is canonical in Gates and copied byte for byte
+# into oneshot and Before Colony (their `fx-sync.sh`), whatever their Bevy,
+# glam, edition or line width. A vector here is `[f32; 3]`; each game's Bevy
+# adapter turns its own `Vec3` into one with `.into()`.
+[dependencies]

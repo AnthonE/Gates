@@ -1,6 +1,6 @@
 {
   "game": "Gates",
-  "about": "The reference board (docs/ART.md is the bar it measures against): the probe's views from ci/scene.sh, each beside the reference frames ART.md measured, and the operator's marks. The reference set is the reference game's screenshots, so it never enters this repo: point GATES_REFERENCE_DIR at your own copy, as for ci/native_bar.py. node ci/board.mjs look shoots every view and draws the sheet; it scores nothing.",
+  "about": "The reference board (docs/ART.md is the bar it measures against): the probe's views from ci/scene.sh, each beside the reference frames ART.md measured, and the operator's marks. The reference set is the reference game's screenshots, so it never enters this repo: point GATES_REFERENCE_DIR at your own copy, as for ci/native_bar.py. node ci/board.mjs look shoots every view and draws the sheet; it scores nothing. The fx-* views are the fx stage's strips (ci/fx.sh, the fx skill): one effect over a dark and a light card, every frame of it, measured against the plate and the last run.",
   "refs": "refs",
   "private_refs_env": "GATES_REFERENCE_DIR",
   "views": [
@@ -195,6 +195,132 @@
           "ignore": "the UI"
         }
       ]
+    },
+    {
+      "id": "fx-bullet-metal",
+      "name": "Effect: a round on metal",
+      "what": "bullet \u00d7 metal on the fx stage: dark card left, light card right, 1.4 s",
+      "take": "a white-hot star for a frame or two, sparks that streak and cool white \u2192 ember, skitter once off the plate and are gone by 0.5 s; one small grey puff; reads with bloom off",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/bullet-metal/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-bullet-stone",
+      "name": "Effect: a round on stone",
+      "what": "bullet \u00d7 stone on the fx stage",
+      "take": "a few short sparks inside a grey cloud and grit that falls; less spark than metal, more dust",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/bullet-stone/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-bullet-wood",
+      "name": "Effect: a round on wood",
+      "what": "bullet \u00d7 wood on the fx stage",
+      "take": "no sparks at all; a tan puff and splinters of grit thrown out and falling",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/bullet-wood/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-bullet-water",
+      "name": "Effect: a round into water",
+      "what": "bullet \u00d7 water on the fx stage",
+      "take": "droplets thrown up and falling, a ring spreading flat, a little mist; nothing hot",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/bullet-water/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-bullet-flesh",
+      "name": "Effect: a round into a body",
+      "what": "bullet \u00d7 flesh on the fx stage",
+      "take": "a dark red mist and a few drops, quick: gone well inside a second; reads on the light card",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/bullet-flesh/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-melee-stone",
+      "name": "Effect: a swing at stone",
+      "what": "melee \u00d7 stone on the fx stage",
+      "take": "a handful of sparks, a cloud of stone dust and grit: a tool biting rock",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/melee-stone/strip.png",
+      "refs": []
+    },
+    {
+      "id": "fx-blast",
+      "name": "Effect: a satchel going off",
+      "what": "the blast on the fx stage, framed for 2.2 m, 3 s",
+      "take": "a flash, an orange fireball that cools to red in half a second, sparks, then smoke that rises and hangs; the light card shows the smoke's body",
+      "shoot": [
+        "./ci/fx.sh",
+        "bullet-metal",
+        "bullet-stone",
+        "bullet-wood",
+        "bullet-water",
+        "bullet-flesh",
+        "melee-stone",
+        "blast"
+      ],
+      "png": "shots/fx/blast/strip.png",
+      "refs": []
     }
   ]
 }

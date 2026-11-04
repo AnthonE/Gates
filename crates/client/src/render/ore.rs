@@ -1410,8 +1410,8 @@ pub fn hotspot(
             Particle {
                 left: 0.14,
                 life: 0.14,
-                pos: centre + jitter,
-                vel: n * 0.05,
+                pos: (centre + jitter).into(),
+                vel: (n * 0.05).into(),
                 size0: size,
                 size1: size * 1.3,
                 c0: [6.0 * k, 2.6 * k, 0.5 * k, 1.0],
@@ -1430,7 +1430,7 @@ pub fn hotspot(
             Particle {
                 left: 0.14,
                 life: 0.14,
-                pos: at + n * 0.02,
+                pos: (at + n * 0.02).into(),
                 size0: size,
                 size1: size,
                 c0: [0.95, 0.42, 0.06, 0.55 * breath],
@@ -1455,8 +1455,8 @@ pub fn hotspot(
             Particle {
                 left: 0.28,
                 life: 0.28,
-                pos,
-                vel: n * 0.12 + Vec3::Y * 0.08,
+                pos: pos.into(),
+                vel: (n * 0.12 + Vec3::Y * 0.08).into(),
                 size0: size,
                 size1: size * 1.8,
                 c0: [9.0 * bright, 7.0 * bright, 3.5 * bright, 1.0],
@@ -1530,8 +1530,8 @@ fn glint(fx: &mut Fx, at: Vec3, n: Vec3, eye: Vec3) {
             Particle {
                 left: 0.45,
                 life: 0.45,
-                pos: centre,
-                vel: dir * speed,
+                pos: centre.into(),
+                vel: (dir * speed).into(),
                 size0: size,
                 size1: size * 0.4,
                 c0: [12.0, 9.0, 4.0, 1.0],

@@ -1,0 +1,2 @@
+# Defaults on purpose: the nearest rustfmt.toml wins, and this crate is
+# formatted the same in every repo that vendors it.

@@ -597,8 +597,8 @@ pub fn fel_fire(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos: head + off + Vec3::Y * 0.03,
-                vel: Vec3::Y * rise,
+                pos: (head + off + Vec3::Y * 0.03).into(),
+                vel: (Vec3::Y * rise).into(),
                 size0: size,
                 size1: 0.008,
                 c0: FEL_HOT,
@@ -634,8 +634,8 @@ pub fn fel_fire(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos: at + jitter,
-                vel,
+                pos: (at + jitter).into(),
+                vel: vel.into(),
                 size0: 0.012,
                 size1: 0.005,
                 c0: FEL_SPARK,
@@ -660,8 +660,8 @@ pub fn fel_fire(
             glow.spawn(Particle {
                 left: life,
                 life,
-                pos: at + off,
-                vel: Vec3::Y * rise - off * 1.2,
+                pos: (at + off).into(),
+                vel: (Vec3::Y * rise - off * 1.2).into(),
                 size0: size,
                 size1: size * 0.3,
                 c0: FEL_HOT,
