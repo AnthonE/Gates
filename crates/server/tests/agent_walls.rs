@@ -6565,3 +6565,53 @@ fn the_minds_we_ship_hold_no_tools() {
         );
     }
 }
+
+/// An external mind that goes to THE GATE whenever the trip is on offer.
+struct GoToGate;
+
+impl server::mind::DecisionSource for GoToGate {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let trip =
+            Goal::Go(server::mind::Name::new(server::agent::gate::GATE_NAME.as_bytes()).unwrap());
+        let goal = if s.allows(trip) { trip } else { Goal::Wait };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// #548, #549: go:THE GATE from where the shard's agent chose it ten turns
+/// running and never arrived.
+#[test]
+fn an_agent_walks_to_the_gate_from_where_it_never_arrived() {
+    let mut failed = Vec::new();
+    for at in [(1937.0, 2268.0), (2703.0, 2349.0)] {
+        let mind = Mind::inline(GoToGate, MindConfig::default()).unwrap();
+        let haven = sim_core::terrain::haven(SEED);
+        let mut h = Harness::with_mind(false, at, mind);
+        h.until(5, |_| false);
+        h.stage(move |p| {
+            p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        });
+        let there = h.until(400 * TICK_HZ, |b| {
+            b.history
+                .iter()
+                .any(|r| matches!(r.goal, Goal::Go(_)) && r.outcome == Outcome::Done)
+        });
+        if !there {
+            eprintln!("never at THE GATE from {at:?}: {}", h.explain());
+            failed.push(at);
+        }
+    }
+    assert!(failed.is_empty(), "never arrived from {failed:?}");
+}
