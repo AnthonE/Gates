@@ -13,10 +13,11 @@
     "options": {"type": "array", "items": {"type": "string"}, "description": "The goals it may pick this turn, by label (\"explore\", \"craft:Stone Pickaxe\", \"go:THE GATE\"); those in `observation.failed_lately` failed a moment ago."},
     "heard": {"type": "array", "items": {"$ref": "#/$defs/heard"}},
     "team": {
-      "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates"],
+      "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates", "near"],
       "properties": {
         "invite_from": {"type": ["string", "null"]},
-        "teammates": {"type": "array", "items": {"type": "string"}}
+        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k> and give:m<k>:<item> name the kth (from 1)."},
+        "near": {"type": "array", "items": {"type": "string"}, "description": "Strangers whose nametag this body aimed at within 8 m in the last minute; follow:n<k> names the kth (from 1)."}
       }
     },
     "friend": {

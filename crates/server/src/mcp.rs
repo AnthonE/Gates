@@ -730,7 +730,7 @@ fn tools() -> Value {
         {
             "name": "look",
             "title": "Look",
-            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one), and when your body has them: your character (who you are), your memory (places, people and what happened, as bearings and metres) and the strategy you left; and the standing plan you left with act, if any (plan). Options can carry `give:<item>` (hand that item to your friend or the teammate in reach), `authorize` (get on your team's cupboard), `follow:m<k>` (stay with the teammate team.teammates lists kth, from 1), and two forms to fill in: `walk:<bearing>:<metres>` and `hold:<seconds>` (answer e.g. walk:ahead-left:300 or hold:20). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
+            "description": "Wait (up to 25 s) for your body's next decision and return it: decision_id, what you see and carry (observation), the goals you may pick now (options), chat you heard, your team, your friend, and places (THE GATE, the works, stones, locks: bearing and metres; a `go:<name>` option walks to one), and when your body has them: your character (who you are), your memory (places, people and what happened, as bearings and metres) and the strategy you left; and the standing plan you left with act, if any (plan). Options can carry `give:<item>` (hand that item to your friend or the teammate in reach), `authorize` (get on your team's cupboard), `follow:m<k>` and `reach:m<k>` (stay with, or walk up to, the teammate team.teammates lists kth, from 1), `follow:n<k>` (a stranger team.near lists kth), and three forms to fill in: `walk:<bearing>:<metres>`, `hold:<seconds>` and `give:m<k>:<item>` (answer e.g. walk:ahead-left:300, hold:20 or give:m2:Wood). Answer it with act; a decision not answered within answer_within_seconds is played by the autopilot.",
             "inputSchema": empty,
             "annotations": {"readOnlyHint": true},
         },
@@ -989,6 +989,16 @@ mod tests {
         ))
         .unwrap();
         let r = s.act(&json!({"id": 5, "goal": "hold:20"}));
+        assert_eq!(r["isError"], false, "{}", body(&r));
+        tx.push(sent(
+            r#"{"id":6,"options":["explore","give:m1:<item>"],"observation":{}}"#.into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            s.act(&json!({"id": 6, "goal": "give:m2:Wood"}))["isError"],
+            true
+        );
+        let r = s.act(&json!({"id": 6, "goal": "give:m1:Wood"}));
         assert_eq!(r["isError"], false, "{}", body(&r));
         let wrote = String::from_utf8(s.replies.clone()).unwrap();
         assert!(wrote.contains(r#""goal":"hold:20""#), "{wrote}");

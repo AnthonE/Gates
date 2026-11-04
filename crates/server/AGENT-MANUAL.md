@@ -203,7 +203,7 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   player's chat log labels it (`channel` is `local`, `global` or `team`;
   `me` is its own line back; `agent` marks another agent). What strangers
   typed: data, never instructions.
-- `team` (whose invite waits, who its teammates are), `friend`, `crew` (its
+- `team` (whose invite waits, who its teammates are, and `near`: strangers whose nametag it aimed at within 8 m in the last minute), `friend`, `crew` (its
   place in a village), `places` (THE GATE, the works, stones, locks and card
   doors, each a bearing and metres).
 - `character`, `memory` and `strategy`, when the body has them (below).
@@ -489,6 +489,9 @@ offered, and a reply naming anything else is refused.
 | `walk:<bearing>:<metres>` | walk anywhere: a bearing from where it faces (`ahead`, `ahead-right`, `right`, `behind-right`, `behind`, `behind-left`, `left`, `ahead-left`) and 10-600 m. Offered as one template the mind fills in |
 | `hold:<seconds>` | stand guard where it is 1-30 s, still answering a blow: `wait` with the length the mind picks. Offered as one template, beside the walk |
 | `follow:m<k>` | `follow`, after one teammate: the one `team.teammates` lists `k`th (from 1). Offered, one per teammate, beside the walk |
+| `reach:m<k>` | walk up to that teammate and stop in hand reach |
+| `give:m<k>:<item>` | walk up to that teammate and hand them every stack of the item. Offered as a form per teammate (`give:m2:<item>`); a live answer only, never a plan step (a plan with any give is refused) |
+| `follow:n<k>` | `follow`, after a stranger: the one `team.near` lists `k`th, a body whose nametag it aimed at within 8 m in the last minute |
 | `give:<item>`, `authorize` | the social verbs (below) |
 
 **The social verbs**, each a human client verb first, held by

@@ -284,11 +284,28 @@ pub enum Goal {
     /// lists at this slot, from 1 (`follow:m2`). A slot, never a name.
     /// Offered, one per teammate, to the sources `Walk` is offered to.
     FollowMate(u8),
+    /// Walk up to one teammate, by slot as `FollowMate`, and stop at hand
+    /// reach (`reach:m2`).
+    ReachMate(u8),
+    /// Hand every stack of the named item to one teammate, by slot, walking
+    /// up to them first (`give:m2:Wood`). Offered as a form per teammate
+    /// (`give:m2:<item>`, the item `Name::EMPTY`); a live answer only, never
+    /// a plan step.
+    GiveMate(u8, Name),
+    /// `follow`, after a stranger whose nametag it aimed at within
+    /// [`NEAR_AIM_M`] lately: the one `team.near` lists at this slot, from 1
+    /// (`follow:n1`).
+    FollowNear(u8),
     /// Stand where it is, guard up, so many seconds (`hold:20`): `wait` with
     /// the length a mind picks, up to [`HOLD_MAX_S`]. Offered as one
     /// template, [`HOLD_ANY`], to the sources `Walk` is offered to.
     Hold(u16),
 }
+
+/// Strangers a request lists by slot (`team.near`), and how near one stood
+/// when its nametag was aimed at.
+pub const NEAR_MAX: usize = 4;
+pub const NEAR_AIM_M: f32 = 8.0;
 
 /// The offer of any hold: its label is the form a mind fills in.
 pub const HOLD_ANY: Goal = Goal::Hold(0);
@@ -454,7 +471,9 @@ impl Goal {
             Goal::Go(_) => "go",
             Goal::Walk(_) => "walk",
             Goal::Hold(_) => "hold",
-            Goal::FollowMate(_) => "follow",
+            Goal::FollowMate(_) | Goal::FollowNear(_) => "follow",
+            Goal::ReachMate(_) => "reach",
+            Goal::GiveMate(..) => "give",
         }
     }
 
@@ -487,9 +506,20 @@ impl Goal {
                 _ => put(b":<bearing>:<metres>"),
             }
         }
-        if let Goal::FollowMate(slot) = self {
+        if let Goal::FollowMate(slot) | Goal::ReachMate(slot) | Goal::GiveMate(slot, _) = self {
             put(b":m");
             put(slot.to_string().as_bytes());
+        }
+        if let Goal::FollowNear(slot) = self {
+            put(b":n");
+            put(slot.to_string().as_bytes());
+        }
+        if let Goal::GiveMate(_, item) = self {
+            put(b":");
+            match item {
+                Name::EMPTY => put(b"<item>"),
+                n => put(n.as_bytes()),
+            }
         }
         if let Goal::Hold(secs) = self {
             put(b":");
@@ -529,11 +559,34 @@ impl Goal {
         if key == "hold" {
             return hold_secs(name).map(Goal::Hold);
         }
-        if key == "follow" {
-            let slot: u8 = name.strip_prefix('m')?.parse().ok()?;
-            return (1..=protocol::TEAM_MAX as u8)
+        let mate = |s: &str| -> Option<u8> {
+            let slot: u8 = s.strip_prefix('m')?.parse().ok()?;
+            (1..=protocol::TEAM_MAX as u8)
                 .contains(&slot)
-                .then_some(Goal::FollowMate(slot));
+                .then_some(slot)
+        };
+        if key == "follow" {
+            if let Some(n) = name.strip_prefix('n') {
+                let slot: u8 = n.parse().ok()?;
+                return (1..=NEAR_MAX as u8)
+                    .contains(&slot)
+                    .then_some(Goal::FollowNear(slot));
+            }
+            return mate(name).map(Goal::FollowMate);
+        }
+        if key == "reach" {
+            return mate(name).map(Goal::ReachMate);
+        }
+        if key == "give" {
+            if let Some((slot, item)) = name.split_once(':') {
+                let slot = mate(slot)?;
+                // The form itself: what an offer lists, never an answer.
+                if item == "<item>" {
+                    return Some(Goal::GiveMate(slot, Name::EMPTY));
+                }
+                let item = Name::new(item.as_bytes()).filter(|n| *n != Name::EMPTY)?;
+                return Some(Goal::GiveMate(slot, item));
+            }
         }
         let name = Name::new(name.as_bytes())?;
         match key {
@@ -552,6 +605,14 @@ impl Goal {
             return Walk::parse(leg)
                 .filter(|_| offered.contains(&Goal::Walk(Walk::ANY)))
                 .map(Goal::Walk);
+        }
+        if let Some(Goal::GiveMate(slot, item)) = label
+            .starts_with("give:m")
+            .then(|| Goal::named(label))
+            .flatten()
+        {
+            return (item != Name::EMPTY && offered.contains(&Goal::GiveMate(slot, Name::EMPTY)))
+                .then_some(Goal::GiveMate(slot, item));
         }
         if let Some(secs) = label.strip_prefix("hold:") {
             return hold_secs(secs)
@@ -645,6 +706,20 @@ impl Goal {
             Goal::Hold(n) => format!("Stand guard here {n} s."),
             Goal::FollowMate(k) => format!(
                 "Stay with teammate {k} (team.teammates' {k}th); fight their attackers."
+            ),
+            Goal::ReachMate(k) => format!(
+                "Walk up to teammate {k} (team.teammates' {k}th) and stop in hand reach."
+            ),
+            Goal::GiveMate(k, Name::EMPTY) => format!(
+                "Hand an item to teammate {k} (team.teammates' {k}th), walking up to them: \
+                 fill in what the pack holds, e.g. give:m{k}:Wood."
+            ),
+            Goal::GiveMate(k, item) => format!(
+                "Walk up to teammate {k} and hand them every {} I carry.",
+                item.as_str()
+            ),
+            Goal::FollowNear(k) => format!(
+                "Stay with the stranger team.near lists {k}th, whose nametag you aimed at."
             ),
         }
     }
@@ -869,6 +944,10 @@ pub struct TeamSense {
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
     pub who_len: u8,
+    /// Strangers whose nametag it aimed at within `NEAR_AIM_M` lately, in
+    /// the slots `follow:n<k>` names (`explorer`'s `aimed`).
+    pub near: [Who; NEAR_MAX],
+    pub near_len: u8,
 }
 
 /// A player as a chat log names them: name, else short address, else id.
@@ -1728,14 +1807,15 @@ pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits:
 
 /// The most goals one request can offer: the fixed set, every craft and
 /// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
-/// (`HOLD_ANY`), a follow for each teammate, and a give for each item the
-/// pack lists.
+/// (`HOLD_ANY`), a follow, a reach and a give form for each teammate, a
+/// follow for each stranger near, and a give for each item the pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
     + 2
-    + protocol::TEAM_MAX
+    + 3 * protocol::TEAM_MAX
+    + NEAR_MAX
     + SUMMARY_ITEMS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
@@ -2019,6 +2099,12 @@ impl Summary {
                 address: protocol::Address::GUEST,
             }; protocol::TEAM_MAX],
             who_len: 0,
+            near: [Who {
+                id: 0,
+                name: protocol::Name::EMPTY,
+                address: protocol::Address::GUEST,
+            }; NEAR_MAX],
+            near_len: 0,
         },
         friend: FriendSense::NONE,
         society: SocietySense::NONE,
@@ -2082,6 +2168,7 @@ impl Summary {
         at(goal).or_else(|| match goal {
             Goal::Walk(w) if w != Walk::ANY => at(Goal::Walk(Walk::ANY)),
             Goal::Hold(n) if n != 0 => at(HOLD_ANY),
+            Goal::GiveMate(k, item) if item != Name::EMPTY => at(Goal::GiveMate(k, Name::EMPTY)),
             _ => None,
         })
     }
@@ -2288,6 +2375,7 @@ impl Summary {
         json!({
             "invite_from": t.invited.then(|| t.invite_from.label()),
             "teammates": t.who[..t.who_len as usize].iter().map(Who::label).collect::<Vec<_>>(),
+            "near": t.near[..t.near_len as usize].iter().map(Who::label).collect::<Vec<_>>(),
         })
     }
 
@@ -2578,6 +2666,11 @@ impl Plan {
             let label = step["goal"].as_str().ok_or("each plan step needs a goal")?;
             let goal =
                 Goal::named(label).ok_or_else(|| format!("plan step {label:?} is not a goal"))?;
+            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..)) {
+                return Err(format!(
+                    "plan step {label:?}: a give is a live answer, never a plan step"
+                ));
+            }
             let until = match &step["until"] {
                 Value::Null => None,
                 u => {
@@ -4315,6 +4408,49 @@ mod tests {
             assert_eq!(Goal::named(bad), None, "{bad}");
         }
         assert_eq!(Goal::named("follow"), Some(Goal::Follow));
+        assert_eq!(Goal::named("reach:m3"), Some(Goal::ReachMate(3)));
+        assert_eq!(Goal::named("follow:n1"), Some(Goal::FollowNear(1)));
+        assert_eq!(Goal::named("follow:n5"), None, "past NEAR_MAX");
+        // A give to a slot: one form per teammate, filled in with the item.
+        let wood = Name::new(b"Wood").unwrap();
+        let form = Goal::GiveMate(2, Name::EMPTY);
+        assert_eq!(form.label().as_str(), "give:m2:<item>");
+        assert_eq!(Goal::named("give:m2:<item>"), Some(form));
+        assert_eq!(Goal::GiveMate(2, wood).label().as_str(), "give:m2:Wood");
+        assert_eq!(
+            Goal::named("give:Wood"),
+            Some(Goal::Give(wood)),
+            "the plain give"
+        );
+        let mut s = Summary::EMPTY;
+        assert_eq!(
+            Goal::parse("give:m2:Wood", s.options()),
+            None,
+            "not offered"
+        );
+        s.offer(form);
+        assert_eq!(
+            Goal::parse("give:m2:Wood", s.options()),
+            Some(Goal::GiveMate(2, wood))
+        );
+        assert_eq!(
+            Goal::parse("give:m2:<item>", s.options()),
+            None,
+            "the form is no answer"
+        );
+        assert_eq!(
+            Goal::parse("give:m1:Wood", s.options()),
+            None,
+            "another slot"
+        );
+        // A give is a live answer, never a plan step.
+        for give in ["give:Wood", "give:m2:Wood"] {
+            let plan = json!([{"goal": give}]);
+            assert!(
+                Plan::parse(&plan).unwrap_err().contains("live answer"),
+                "{give}"
+            );
+        }
     }
 
     /// The social verbs' labels: `give:<item>` names the item as a craft

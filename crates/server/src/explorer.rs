@@ -136,6 +136,10 @@ pub const INVITE_REACH_M: f32 = 3.0;
 /// this near: the give's own reach (`sim_core::assist::ASSIST_REACH_M`), the
 /// same as an invite's. It runs at most this long, seconds.
 pub const GIVE_REACH_M: f32 = INVITE_REACH_M;
+/// Under the crosshair: this far either side of the aim line.
+pub const NEAR_AIM_ACROSS_M: f32 = 0.6;
+/// A stranger aimed at keeps its `n` slot this long after.
+pub const NEAR_KEEP_TICKS: u32 = 60 * TICK_HZ;
 pub const GIVE_GOAL_SECS: u32 = 60;
 /// An authorize (`Goal::Authorize`): the walk in through the team's doors to
 /// its cupboard and the press there, at most this long, seconds; one that
@@ -565,6 +569,9 @@ pub struct Senses {
     pub raid_at: Option<[f32; 2]>,
     /// Whether that base's owner is about (`raid::Base::presence`).
     pub raid_owner: crate::mind::OwnerSeen,
+    /// Strangers whose nametag it aimed at lately, in their slots
+    /// (`team.near`, `follow:n<k>`): ids, 0 for none, packed to the front.
+    pub near: [u32; crate::mind::NEAR_MAX],
     /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
     pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -1232,8 +1239,14 @@ pub struct Survivor {
     /// is handing to.
     give_to: Option<u32>,
     hand_target: u32,
-    /// The teammate slot a `follow:m<k>` goes after (`Goal::FollowMate`).
+    /// The teammate slot a `follow:m<k>` or `reach:m<k>` goes after
+    /// (`Goal::FollowMate`, `Goal::ReachMate`).
     follow_target: Option<u8>,
+    /// The stranger a `follow:n<k>` goes after, by id (`Goal::FollowNear`).
+    follow_near: Option<u32>,
+    /// Strangers whose nametag its aim crossed within `NEAR_AIM_M`, and
+    /// when last: slots that stay put until a minute without one.
+    aimed: [(u32, u32); crate::mind::NEAR_MAX],
     /// An authorize under way, and when the last came to nothing.
     auth: Auth,
     auth_failed: Option<u32>,
@@ -1441,6 +1454,8 @@ impl Survivor {
             give_to: None,
             hand_target: 0,
             follow_target: None,
+            follow_near: None,
+            aimed: [(0, 0); crate::mind::NEAR_MAX],
             auth: Auth::default(),
             auth_failed: None,
             alone_since: None,
@@ -2496,7 +2511,7 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
-        if matches!(goal, Goal::HandOver | Goal::Give(_)) {
+        if matches!(goal, Goal::HandOver | Goal::Give(_) | Goal::GiveMate(..)) {
             self.hand = Hand::default();
         }
         // A give goes to whoever was in hand reach when it was chosen.
@@ -2504,7 +2519,16 @@ impl Survivor {
             self.hand_target = self.give_to.unwrap_or(0);
         }
         self.follow_target = match goal {
-            Goal::FollowMate(slot) => Some(slot),
+            Goal::FollowMate(slot) | Goal::ReachMate(slot) => Some(slot),
+            _ => None,
+        };
+        self.follow_near = match goal {
+            Goal::FollowNear(slot) => self
+                .senses
+                .near
+                .get(usize::from(slot).saturating_sub(1))
+                .copied()
+                .or(Some(0)),
             _ => None,
         };
         self.auth = Auth::default();
@@ -2713,6 +2737,8 @@ impl Survivor {
             | Goal::Raid
             | Goal::Follow
             | Goal::FollowMate(_)
+            | Goal::ReachMate(_)
+            | Goal::FollowNear(_)
             | Goal::Meet
             | Goal::Patrol
             | Goal::HandOver
@@ -2741,7 +2767,11 @@ impl Survivor {
         if walks
             && !matches!(
                 active.goal,
-                Goal::Follow | Goal::FollowMate(_) | Goal::Deliver
+                Goal::Follow
+                    | Goal::FollowMate(_)
+                    | Goal::ReachMate(_)
+                    | Goal::FollowNear(_)
+                    | Goal::Deliver
             )
             && !active.delivering
             && (self.route.descending() || self.route.upstairs(core, body))
@@ -2765,7 +2795,12 @@ impl Survivor {
         // teammate goes.
         let own_doors = matches!(
             active.goal,
-            Goal::Follow | Goal::FollowMate(_) | Goal::Deliver | Goal::Authorize
+            Goal::Follow
+                | Goal::FollowMate(_)
+                | Goal::ReachMate(_)
+                | Goal::FollowNear(_)
+                | Goal::Deliver
+                | Goal::Authorize
         ) || active.delivering
             || self.bag_leg != BagLeg::Here;
         if walks && !own_doors && self.builder.region(body) == Region::Outside {
@@ -2942,11 +2977,15 @@ impl Survivor {
                 self.stats.phase = Phase::Waiting;
                 Intent::IDLE
             }
-            Goal::Follow | Goal::FollowMate(_) if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ => {
+            Goal::Follow | Goal::FollowMate(_) | Goal::ReachMate(_) | Goal::FollowNear(_)
+                if elapsed >= FOLLOW_GOAL_SECS * TICK_HZ =>
+            {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
-            Goal::Follow | Goal::FollowMate(_) => self.follow(core, body, tick),
+            Goal::Follow | Goal::FollowMate(_) | Goal::ReachMate(_) | Goal::FollowNear(_) => {
+                self.follow(core, body, tick)
+            }
             Goal::Meet if elapsed >= MEET_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -2973,11 +3012,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::HandOver => self.hand_over(core, body, tick),
-            Goal::Give(_) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
+            Goal::Give(_) | Goal::GiveMate(..) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Give(name) => self.give(core, body, name, tick),
+            Goal::Give(name) => self.give(core, body, name, None, tick),
+            Goal::GiveMate(slot, name) => self.give(core, body, name, Some(slot), tick),
             Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
                 self.auth_failed = Some(tick);
                 self.home_job = HomeJob::default();
@@ -3444,17 +3484,74 @@ impl Survivor {
     /// A give (`Goal::Give`): every stack of the named item the pack
     /// carries, to the friend or teammate who stood in hand reach when it
     /// was chosen.
-    fn give(&mut self, core: &mut ClientCore, body: &EntityState, name: Name, tick: u32) -> Intent {
+    fn give(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        name: Name,
+        slot: Option<u8>,
+        tick: u32,
+    ) -> Intent {
         let Some(item) = crate::agent::build::item_named(core, name.as_str()) else {
             self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
             return Intent::IDLE;
         };
-        let id = self.hand_target;
+        // `give:m<k>:<item>`: the teammate its request listed at that slot,
+        // wherever they stand; else whoever was in hand reach.
+        let id = match slot {
+            Some(slot) => mate_in_slot(core, slot),
+            None => self.hand_target,
+        };
         let to = (id != 0)
             .then(|| self.mate_at(id, tick))
             .flatten()
             .map(|(at, seen)| (id, at, seen));
         self.hand_to(core, body, to, Handing::Item(item), tick)
+    }
+
+    /// The strangers its aim crossed within `NEAR_AIM_M` (a nametag a
+    /// player reads off a body under the crosshair): a slot each, kept a
+    /// minute past the last time, packed into `senses.near` in slot order.
+    fn note_aimed(&mut self, body: &EntityState, team: &protocol::TeamView, tick: u32) {
+        let (px, pz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let (fx, fz) = yaw_dir(body.yaw);
+        for t in self.tracks.all() {
+            if t.species != Species::Player
+                || !t.visible
+                || !t.active()
+                || t.dead
+                || t.id == body.id
+                || team.has(t.id)
+            {
+                continue;
+            }
+            let (dx, dz) = (t.pos[0] - px, t.pos[2] - pz);
+            let ahead = dx * fx + dz * fz;
+            let across = (dx * fz - dz * fx).abs();
+            if ahead <= 0.0 || dx.hypot(dz) > crate::mind::NEAR_AIM_M || across > NEAR_AIM_ACROSS_M
+            {
+                continue;
+            }
+            if let Some(slot) = self.aimed.iter_mut().find(|(id, _)| *id == t.id) {
+                slot.1 = tick;
+            } else if let Some(slot) = self.aimed.iter_mut().find(|(id, _)| *id == 0) {
+                *slot = (t.id, tick);
+            }
+        }
+        for slot in &mut self.aimed {
+            if slot.0 != 0 && tick.wrapping_sub(slot.1) >= NEAR_KEEP_TICKS {
+                *slot = (0, 0);
+            }
+        }
+        self.senses.near = [0; crate::mind::NEAR_MAX];
+        for (out, (id, _)) in self
+            .senses
+            .near
+            .iter_mut()
+            .zip(self.aimed.iter().filter(|(id, _)| *id != 0))
+        {
+            *out = *id;
+        }
     }
 
     /// Where a player it hands to stands, by its own eyes: in sight, else
@@ -3709,16 +3806,19 @@ impl Survivor {
         let team = *core.team();
         // A follow after one teammate: the slot its request listed them at,
         // in the team view's order without itself (`observe`'s `team.who`).
-        let only = self.follow_target.map(|slot| {
-            team.members()
-                .iter()
-                .filter(|m| m.id != core.player_id)
-                .nth(usize::from(slot).saturating_sub(1))
-                .map_or(0, |m| m.id)
-        });
+        let only = self.follow_target.map(|slot| mate_in_slot(core, slot));
         let mut mate: Option<(bool, f32, [f32; 2], Option<f32>)> = None;
+        // A stranger by the slot its request listed them at: where its own
+        // eyes have them, as a give finds a body.
+        if let Some(id) = self.follow_near {
+            mate = (id != 0)
+                .then(|| self.mate_at(id, tick))
+                .flatten()
+                .map(|(p, _)| (false, (p[0] - x).hypot(p[2] - z), [p[0], p[2]], Some(p[1])));
+        }
         for m in team.members() {
-            if m.id == core.player_id
+            if self.follow_near.is_some()
+                || m.id == core.player_id
                 || m.state != protocol::TEAM_AWAKE
                 || only.is_some_and(|id| id != m.id)
             {
@@ -3746,6 +3846,11 @@ impl Survivor {
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
+        // A reach is over at hand reach.
+        if matches!(self.goal(), Some(Goal::ReachMate(_))) && d <= GIVE_REACH_M {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
         // A crewmate (`agent::society`) only keeps up: within a stone's throw
         // of its founder it goes back to work, rather than standing on the
         // ground the base is going up on.
@@ -7209,6 +7314,7 @@ impl Survivor {
         }
         self.give_to = give_to.map(|(.., id)| id);
         self.senses.give_to = self.give_to.is_some();
+        self.note_aimed(body, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
             let since = *self.alone_since.get_or_insert(tick);
             if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
@@ -8894,6 +9000,10 @@ pub fn observe(
     if s.team.invited {
         s.team.invite_from = who(team.invite);
     }
+    for &id in senses.near.iter().filter(|&&id| id != 0) {
+        s.team.near[usize::from(s.team.near_len)] = who(id);
+        s.team.near_len += 1;
+    }
     for m in team.members() {
         if m.id == player {
             continue;
@@ -9314,6 +9424,13 @@ pub fn observe(
         s.offer(crate::mind::HOLD_ANY);
         for slot in 1..=s.team.who_len {
             s.offer(Goal::FollowMate(slot));
+            s.offer(Goal::ReachMate(slot));
+            if s.items_len > 0 {
+                s.offer(Goal::GiveMate(slot, Name::EMPTY));
+            }
+        }
+        for slot in 1..=s.team.near_len {
+            s.offer(Goal::FollowNear(slot));
         }
         // A give of anything the pack holds, while its friend or a teammate
         // stands in hand reach: a mind told who is about decides what.
@@ -9398,6 +9515,17 @@ fn walk_target(body: &EntityState, leg: crate::mind::Walk) -> [f32; 2] {
     let edge = sim_core::movement::BORDER_MARGIN + WALK_STOP_M;
     let far = sim_core::terrain::ISLAND_SIZE - edge;
     [(x + dx * m).clamp(edge, far), (z + dz * m).clamp(edge, far)]
+}
+
+/// The teammate a request listed at `slot` (from 1), in the team view's
+/// order without itself (`observe`'s `team.who`); 0 for none.
+fn mate_in_slot(core: &ClientCore, slot: u8) -> u32 {
+    core.team()
+        .members()
+        .iter()
+        .filter(|m| m.id != core.player_id)
+        .nth(usize::from(slot).saturating_sub(1))
+        .map_or(0, |m| m.id)
 }
 
 fn relative(body: &EntityState, x: f32, z: f32) -> (f32, u8) {
