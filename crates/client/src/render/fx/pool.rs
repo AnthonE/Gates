@@ -54,7 +54,18 @@ impl MeshWrite for Pool {
         let (Some(pos), Some(uv), Some(col)) = (pos, uv, col) else {
             return false;
         };
-        self.fill(Verts { pos, uv, col }, cam, anchor.into())
+        self.fill(
+            Verts {
+                pos,
+                uv,
+                col,
+                uv2: None,
+                nrm: None,
+                aux: None,
+            },
+            cam,
+            anchor.into(),
+        )
     }
 }
 
