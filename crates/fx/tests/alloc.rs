@@ -73,6 +73,9 @@ fn emit_step_and_fill_never_allocate() {
             pos: &mut pos,
             uv: &mut uv,
             col: &mut col,
+            uv2: None,
+            nrm: None,
+            aux: None,
         };
         pool.fill(out, &cam, cam.pos);
     }

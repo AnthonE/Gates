@@ -65,10 +65,85 @@ pub struct Particle {
     /// a point on it and its normal; a zero normal is no plane.
     pub plane_p: V3,
     pub plane_n: V3,
+    /// A flipbook: this many cells from `cell`, row-major across the pool's
+    /// [`Sheet`], played once over its life; 0 or 1 is a still sprite.
+    pub frames: u8,
+    /// A roll in `[0, 1)` at birth: a flipbook above a half is drawn
+    /// mirrored, so two of the same cell don't read as twins.
+    pub seed: f32,
+    /// Which of the game's emissive ramps a baked sheet's heat takes (0 the
+    /// first), and how bright, for the game's flipbook shader.
+    pub tone: f32,
+    pub glow: f32,
 }
 
 /// One particle's quad: four corners, their uvs, and its colour.
 pub type Quad = ([[f32; 3]; 4], [[f32; 2]; 4], [f32; 4]);
+
+/// What a flipbook's quad carries besides: the next frame's uvs, the
+/// sprite's own right axis (unit, world: the game's shader lights a baked
+/// sheet in the sprite's frame), and `[blend, age, tone, glow]` — how far
+/// into the crossfade to that frame, how far through its life (0 born, 1
+/// gone), its ramp and its brightness.
+pub type Extra = ([[f32; 2]; 4], V3, [f32; 4]);
+
+/// How a pool's sprite sheet is cut: `cols × rows` cells of `tex` texels a
+/// side, numbered row-major from the top left. Up to 256 cells (`cell` is a
+/// byte).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sheet {
+    pub cols: u32,
+    pub rows: u32,
+    pub tex: u32,
+}
+
+impl Sheet {
+    /// The generated sheet's cut ([`crate::atlas`]): 4 × 4 of 64.
+    pub const DEFAULT: Sheet = Sheet {
+        cols: SPRITE_COLS,
+        rows: SPRITE_ROWS,
+        tex: SPRITE_TEX,
+    };
+
+    /// The uv of `(u, v) ∈ [0, 1]²` inside `cell`, inset half a texel so a
+    /// cell's edge never bleeds its neighbour's.
+    pub fn uv(&self, cell: u32, u: f32, v: f32) -> [f32; 2] {
+        let cols = self.cols.max(1);
+        let rows = self.rows.max(1);
+        let cell = cell.min(cols * rows - 1);
+        let (cu, cv) = ((cell % cols) as f32, (cell / cols) as f32);
+        let inset = 0.5 / self.tex.max(1) as f32;
+        [
+            (cu + inset + u * (1.0 - 2.0 * inset)) / cols as f32,
+            (cv + inset + v * (1.0 - 2.0 * inset)) / rows as f32,
+        ]
+    }
+
+    /// The four corners' uvs of `cell`, in the quad's corner order.
+    pub fn corners(&self, cell: u32) -> [[f32; 2]; 4] {
+        [
+            self.uv(cell, 0.0, 1.0),
+            self.uv(cell, 1.0, 1.0),
+            self.uv(cell, 1.0, 0.0),
+            self.uv(cell, 0.0, 0.0),
+        ]
+    }
+}
+
+/// Where a flipbook of `frames` cells stands `age` (0..1) through its life:
+/// the frame drawn, the frame it is fading into, and how far into that fade.
+/// The last frame holds (no frame after it to fade to); a still sprite is
+/// its one cell at a blend of 0.
+pub fn frame_at(frames: u8, age: f32) -> (u32, u32, f32) {
+    let n = frames.max(1) as u32;
+    let f = age.clamp(0.0, 1.0) * n as f32;
+    let i = (f as u32).min(n - 1);
+    if i + 1 < n {
+        (i, i + 1, f - i as f32)
+    } else {
+        (i, i, 0.0)
+    }
+}
 
 /// The camera, as a quad needs it.
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +159,12 @@ pub struct Verts<'a> {
     pub pos: &'a mut [[f32; 3]],
     pub uv: &'a mut [[f32; 2]],
     pub col: &'a mut [[f32; 4]],
+    /// A flipbook pool's second uv set, its sprites' right axes (its
+    /// normals) and its `[blend, age, tone, glow]` ([`Extra`]); `None` for
+    /// a mesh that draws stills only.
+    pub uv2: Option<&'a mut [[f32; 2]]>,
+    pub nrm: Option<&'a mut [[f32; 3]]>,
+    pub aux: Option<&'a mut [[f32; 4]]>,
 }
 
 /// The pool.
@@ -98,14 +179,23 @@ pub struct Pool {
     drawn: bool,
     /// Sort back to front (the alpha pool) or not (the additive one).
     sorted: bool,
+    /// How its sprite sheet is cut.
+    sheet: Sheet,
     /// Particles spawned, and live ones recycled for want of a slot.
     pub spawned: u64,
     pub stolen: u64,
 }
 
 impl Pool {
-    /// A pool of `cap` particles — allocated here, once, and never again.
+    /// A pool of `cap` particles over the generated sheet — allocated here,
+    /// once, and never again.
     pub fn new(cap: usize, sorted: bool) -> Self {
+        Self::with_sheet(cap, sorted, Sheet::DEFAULT)
+    }
+
+    /// A pool of `cap` particles over a sheet cut as `sheet` (a baked
+    /// flipbook sheet).
+    pub fn with_sheet(cap: usize, sorted: bool, sheet: Sheet) -> Self {
         Self {
             parts: vec![Particle::default(); cap],
             order: (0..cap as u16).collect(),
@@ -113,9 +203,14 @@ impl Pool {
             rng: 0,
             drawn: true,
             sorted,
+            sheet,
             spawned: 0,
             stolen: 0,
         }
+    }
+
+    pub fn sheet(&self) -> Sheet {
+        self.sheet
     }
 
     pub fn cap(&self) -> usize {
@@ -227,9 +322,15 @@ impl Pool {
         }
     }
 
-    /// The four corners of particle `p` relative to `anchor`, with their uvs,
-    /// and its colour — or `None` for a free slot.
+    /// The four corners of particle `p` relative to `anchor`, with their uvs
+    /// on the generated sheet, and its colour — or `None` for a free slot.
     pub fn quad(p: &Particle, cam: &Cam, anchor: V3) -> Option<Quad> {
+        Self::quad_on(p, cam, anchor, &Sheet::DEFAULT).map(|(q, _)| q)
+    }
+
+    /// [`Pool::quad`] on `sheet`, with the flipbook's [`Extra`]: the frame
+    /// its age lands on, the next one's uvs and the blend between them.
+    pub fn quad_on(p: &Particle, cam: &Cam, anchor: V3, sheet: &Sheet) -> Option<(Quad, Extra)> {
         if p.left <= 0.0 {
             return None;
         }
@@ -282,22 +383,17 @@ impl Pool {
             v3::add(v3::add(o, a), b),
             v3::add(v3::sub(o, a), b),
         ];
-        let (cu, cv) = (
-            (p.cell as u32 % SPRITE_COLS) as f32,
-            (p.cell as u32 / SPRITE_COLS) as f32,
-        );
-        let inset = 0.5 / SPRITE_TEX as f32;
-        let uv = |u: f32, v: f32| {
-            [
-                (cu + inset + u * (1.0 - 2.0 * inset)) / SPRITE_COLS as f32,
-                (cv + inset + v * (1.0 - 2.0 * inset)) / SPRITE_ROWS as f32,
-            ]
-        };
-        Some((
-            pos,
-            [uv(0.0, 1.0), uv(1.0, 1.0), uv(1.0, 0.0), uv(0.0, 0.0)],
-            c,
-        ))
+        let (fa, fb, blend) = frame_at(p.frames, t);
+        let mut uv = sheet.corners(p.cell as u32 + fa);
+        let mut uv2 = sheet.corners(p.cell as u32 + fb);
+        if p.frames > 1 && p.seed >= 0.5 {
+            uv.swap(0, 1);
+            uv.swap(2, 3);
+            uv2.swap(0, 1);
+            uv2.swap(2, 3);
+        }
+        let right = v3::norm_or(a, cam.right);
+        Some(((pos, uv, c), (uv2, right, [blend, t, p.tone, p.glow])))
     }
 
     /// Copy the pool into a mesh's attributes, in place, relative to
@@ -326,7 +422,14 @@ impl Pool {
                 key(pj).total_cmp(&key(pi))
             });
         }
-        let Verts { pos, uv, col } = out;
+        let Verts {
+            pos,
+            uv,
+            col,
+            mut uv2,
+            mut nrm,
+            mut aux,
+        } = out;
         for slot in 0..self.parts.len() {
             let i = if self.sorted {
                 self.order[slot] as usize
@@ -334,12 +437,25 @@ impl Pool {
                 slot
             };
             let base = slot * 4;
-            match Self::quad(&self.parts[i], cam, anchor) {
-                Some((p, t, c)) => {
+            match Self::quad_on(&self.parts[i], cam, anchor, &self.sheet) {
+                Some(((p, t, c), (t2, r, a))) => {
                     for k in 0..4 {
                         pos[base + k] = p[k];
                         uv[base + k] = t[k];
                         col[base + k] = c;
+                    }
+                    if let Some(uv2) = uv2.as_deref_mut() {
+                        uv2[base..base + 4].copy_from_slice(&t2);
+                    }
+                    if let Some(nrm) = nrm.as_deref_mut() {
+                        for v in &mut nrm[base..base + 4] {
+                            *v = r;
+                        }
+                    }
+                    if let Some(aux) = aux.as_deref_mut() {
+                        for v in &mut aux[base..base + 4] {
+                            *v = a;
+                        }
                     }
                 }
                 None => {

@@ -3,7 +3,7 @@
 //! sprite sheet is pinned, knobs round-trip, and the stage's clock steps.
 
 use fx::atlas::{self, Shape, CELLS, DEFAULT};
-use fx::pool::{indices, Cam, Orient, Particle, Pool, Verts, MIN_PX};
+use fx::pool::{frame_at, indices, Cam, Orient, Particle, Pool, Sheet, Verts, MIN_PX};
 use fx::recipe::{emit, knobs, scaled, Recipe};
 use fx::stage::{self, Clock, Framing, WARM};
 use fx::v3;
@@ -138,6 +138,9 @@ impl Mesh {
             pos: &mut self.pos,
             uv: &mut self.uv,
             col: &mut self.col,
+            uv2: None,
+            nrm: None,
+            aux: None,
         }
     }
 }
@@ -223,6 +226,111 @@ fn emit_paints_scales_and_repeats() {
     assert_eq!(scaled(1, 0.1), 1);
     assert_eq!(scaled(12, 1.0), 12);
     assert_eq!(scaled(5, 0.0), 0);
+}
+
+/// A flipbook walks its frames over its life, fading into the next and
+/// holding the last; a variant rolls to the next flipbook along; a still
+/// is one cell at a blend of 0; the sheet's cut places each cell.
+#[test]
+fn a_flipbook_walks_its_frames() {
+    assert_eq!(frame_at(0, 0.5), (0, 0, 0.0));
+    assert_eq!(frame_at(1, 0.9), (0, 0, 0.0));
+    assert_eq!(frame_at(4, 0.0), (0, 1, 0.0));
+    let (a, b, k) = frame_at(4, 0.3);
+    assert_eq!((a, b), (1, 2));
+    assert!((k - 0.2).abs() < 1e-5, "{k}");
+    assert_eq!(frame_at(4, 0.99), (3, 3, 0.0));
+    assert_eq!(frame_at(4, 1.5), (3, 3, 0.0));
+    let sheet = Sheet {
+        cols: 8,
+        rows: 8,
+        tex: 128,
+    };
+    let cam = Cam {
+        pos: [0.0, 0.0, 4.0],
+        right: v3::X,
+        up: v3::Y,
+    };
+    let p = Particle {
+        left: 0.5,
+        life: 1.0,
+        size0: 0.1,
+        size1: 0.1,
+        c0: [1.0; 4],
+        c1: [1.0; 4],
+        cell: 16,
+        frames: 8,
+        seed: 0.25,
+        ..Particle::default()
+    };
+    let ((_, uv, _), (uv2, right, aux)) = Pool::quad_on(&p, &cam, v3::ZERO, &sheet).expect("live");
+    // Half way: frame 4 of 8, which is cell 20, the third row's fifth.
+    assert_eq!(uv, sheet.corners(20));
+    assert_eq!(uv2, sheet.corners(21));
+    assert_eq!(aux, [0.0, 0.5, 0.0, 0.0]);
+    assert!(
+        (v3::len(right) - 1.0).abs() < 1e-5 && right[0] > 0.99,
+        "unrolled: {right:?}"
+    );
+    // A seed past a half mirrors the flipbook: the corners swap in u.
+    let twin = Particle { seed: 0.75, ..p };
+    let ((_, m, _), (m2, _, _)) = Pool::quad_on(&twin, &cam, v3::ZERO, &sheet).expect("live");
+    assert_eq!([m[1], m[0], m[3], m[2]], uv);
+    assert_eq!([m2[1], m2[0], m2[3], m2[2]], uv2);
+    let inset = 0.5 / 128.0;
+    assert!((uv[3][0] - (4.0 + inset) / 8.0).abs() < 1e-6);
+    assert!((uv[3][1] - (2.0 + inset) / 8.0).abs() < 1e-6);
+    // A pool on that sheet writes the extras; a still pool's are its cell twice.
+    let mut pool = Pool::with_sheet(2, false, sheet);
+    let film = Recipe {
+        cell: 0,
+        cells: 2,
+        frames: 8,
+        ..Recipe::BASE
+    };
+    emit(&mut pool, &film, 2, v3::ZERO, v3::Y, [1.0; 3], 1.0);
+    assert!(pool
+        .particles()
+        .all(|q| q.frames == 8 && (q.cell == 0 || q.cell == 8)));
+    let (mut pos, mut uv, mut col) = (
+        vec![[0.0f32; 3]; 8],
+        vec![[0.0f32; 2]; 8],
+        vec![[0.0f32; 4]; 8],
+    );
+    let (mut uv2, mut nrm, mut aux) = (
+        vec![[0.0f32; 2]; 8],
+        vec![[0.0f32; 3]; 8],
+        vec![[0.0f32; 4]; 8],
+    );
+    pool.fill(
+        Verts {
+            pos: &mut pos,
+            uv: &mut uv,
+            col: &mut col,
+            uv2: Some(&mut uv2),
+            nrm: Some(&mut nrm),
+            aux: Some(&mut aux),
+        },
+        &cam,
+        v3::ZERO,
+    );
+    assert!(nrm.iter().all(|n| (v3::len(*n) - 1.0).abs() < 1e-4));
+    // Born, each fades toward its second frame: cell 1 or 9, mirrored or not.
+    let next: Vec<[f32; 2]> = [1, 9]
+        .iter()
+        .flat_map(|&c| {
+            let k = sheet.corners(c);
+            [k[0], k[1]]
+        })
+        .collect();
+    assert!(next.contains(&uv2[0]), "{:?}", uv2[0]);
+    assert!(aux
+        .iter()
+        .all(|a| a[1] == 0.0 && a[2] == 0.0 && a[3] == 1.0));
+    let still = Particle { frames: 0, ..p };
+    let ((_, s1, _), (s2, _, a)) = Pool::quad_on(&still, &cam, v3::ZERO, &sheet).expect("live");
+    assert_eq!(s1, s2);
+    assert_eq!(a[0], 0.0);
 }
 
 /// Gates' sheet, pinned: a change to a sprite is a change to every effect

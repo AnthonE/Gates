@@ -17,9 +17,17 @@ use crate::v3::{self, V3};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Recipe {
     pub orient: Orient,
-    /// The first sprite cell, and how many cells from it a particle rolls.
+    /// The first sprite cell, and how many variants from it a particle
+    /// rolls: the next cell each, or the next flipbook (`frames` cells on).
     pub cell: u8,
     pub cells: u8,
+    /// A flipbook: cells played from the one rolled, once over the
+    /// particle's life (row-major on the pool's sheet). 0 or 1: a still.
+    pub frames: u8,
+    /// A baked sheet's heat: which of the game's emissive ramps it takes,
+    /// and how bright.
+    pub tone: f32,
+    pub glow: f32,
     /// Launch speed range, m/s.
     pub speed: (f32, f32),
     /// Share of the launch along the thrown direction rather than scattered.
@@ -57,6 +65,9 @@ impl Recipe {
         orient: Orient::Billboard,
         cell: 5,
         cells: 1,
+        frames: 0,
+        tone: 0.0,
+        glow: 1.0,
         speed: (0.0, 0.0),
         spray: 0.5,
         up: 0.0,
@@ -75,9 +86,10 @@ impl Recipe {
     };
 
     /// The knob names [`Recipe::set`] takes, in the order a recipe prints.
-    pub const KEYS: [&'static str; 18] = [
-        "orient", "cell", "cells", "speed", "spray", "up", "gravity", "drag", "life", "size",
-        "grow", "c0", "c1", "tinted", "spin", "stretch", "len_max", "bounce",
+    pub const KEYS: [&'static str; 21] = [
+        "orient", "cell", "cells", "frames", "tone", "glow", "speed", "spray", "up", "gravity",
+        "drag", "life", "size", "grow", "c0", "c1", "tinted", "spin", "stretch", "len_max",
+        "bounce",
     ];
 
     /// Set one knob from its text: a number, a pair `a,b`, a colour
@@ -133,6 +145,9 @@ impl Recipe {
             }
             "cell" => self.cell = byte(0)?,
             "cells" => self.cells = byte(1)?,
+            "frames" => self.frames = byte(0)?,
+            "tone" => self.tone = num(val)?,
+            "glow" => self.glow = num(val)?,
             "speed" => self.speed = pair(&nums(2)?),
             "spray" => self.spray = num(val)?,
             "up" => self.up = num(val)?,
@@ -186,11 +201,14 @@ impl fmt::Display for Recipe {
         let [e, g, h, i] = self.c1;
         write!(
             f,
-            "orient={orient};cell={};cells={};speed={},{};spray={};up={};gravity={};drag={};\
-             life={},{};size={},{};grow={};c0={a},{b},{c},{d};c1={e},{g},{h},{i};tinted={};\
-             spin={};stretch={};len_max={};bounce={}",
+            "orient={orient};cell={};cells={};frames={};tone={};glow={};speed={},{};spray={};\
+             up={};gravity={};drag={};life={},{};size={},{};grow={};c0={a},{b},{c},{d};\
+             c1={e},{g},{h},{i};tinted={};spin={};stretch={};len_max={};bounce={}",
             self.cell,
             self.cells,
+            self.frames,
+            self.tone,
+            self.glow,
             self.speed.0,
             self.speed.1,
             self.spray,
@@ -256,6 +274,8 @@ pub fn emit(pool: &mut Pool, r: &Recipe, n: usize, at: V3, dir: V3, tint: [f32; 
     let paint = |c: [f32; 4]| [c[0] * tint[0], c[1] * tint[1], c[2] * tint[2], c[3]];
     let dir = v3::norm_or(dir, v3::Y);
     let cells = r.cells.max(1);
+    // A variant is the next cell, or the next flipbook along.
+    let stride = r.frames.max(1);
     for _ in 0..n {
         let scatter = v3::norm_or([pool.signed(), pool.signed(), pool.signed()], v3::Y);
         let v = v3::norm_or(
@@ -265,9 +285,14 @@ pub fn emit(pool: &mut Pool, r: &Recipe, n: usize, at: V3, dir: V3, tint: [f32; 
         let speed = mix(r.speed.0, r.speed.1, pool.roll());
         let life = mix(r.life.0, r.life.1, pool.roll());
         let size = mix(r.size.0, r.size.1, pool.roll()) * scale;
-        let cell = r.cell + ((pool.roll() * cells as f32) as u8).min(cells - 1);
+        let cell = r.cell.wrapping_add(
+            ((pool.roll() * cells as f32) as u8)
+                .min(cells - 1)
+                .wrapping_mul(stride),
+        );
         let roll = pool.roll() * core::f32::consts::TAU;
         let spin = pool.signed() * r.spin;
+        let seed = pool.roll();
         pool.spawn(Particle {
             left: life,
             life,
@@ -292,6 +317,10 @@ pub fn emit(pool: &mut Pool, r: &Recipe, n: usize, at: V3, dir: V3, tint: [f32; 
             len_max: r.len_max,
             plane_p: at,
             plane_n: if r.bounce { dir } else { v3::ZERO },
+            frames: r.frames,
+            seed,
+            tone: r.tone,
+            glow: r.glow,
         });
     }
 }
