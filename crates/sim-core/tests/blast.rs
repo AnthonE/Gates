@@ -764,3 +764,86 @@ fn a_wall_between_shields_a_body_from_the_blast() {
     assert!(hurt(false) > 0, "in the open, the blast reaches the body");
     assert_eq!(hurt(true), 0, "behind the wall, it does not");
 }
+
+/// A wall that is not the charge's own shields a deployable behind it, as
+/// it shields a body (`a_wall_between_shields_a_body_from_the_blast`): the
+/// reference's Nov 2026 "splash through walls" fix. A workbench in the next
+/// cell south, in the corner nearest the planted wall, sits ~2.4 m from the
+/// charge — inside the blast — and only the low-z wall stands between.
+#[test]
+fn a_wall_between_shields_a_deployable_from_the_blast() {
+    use sim_core::build::LOC_EDGE_ZLO;
+    const WORKBENCH_ROW: u16 = 1;
+    const WORKBENCH_ITEM: u16 = 3;
+    let hit = |shield: bool| {
+        let (mut w, cx, cz) = raid_world();
+        w.players[0].inv[2] = ItemStack {
+            item: WORKBENCH_ITEM,
+            count: 1,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        w.tick(&[Command::Place {
+            id: RAIDER,
+            row: 0,
+            cx,
+            cz: cz - 1,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(w.pieces.len(), 3, "the second foundation must take");
+        if shield {
+            w.tick(&[Command::Place {
+                id: RAIDER,
+                row: 1,
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_EDGE_ZLO,
+                freehand: false,
+                plate: 0,
+            }]);
+            assert_eq!(w.pieces.len(), 4, "two foundations + two walls");
+        }
+        // Place it from the south cell's far side: the low-z wall, when it
+        // stands, would hide the spot from the north cell.
+        let (sx, sz) = cell_center(cx, cz - 1);
+        w.players[0].body = Body::at(SEED, hv(SEED), sx + 0.8, sz - 0.8);
+        w.tick(&[Command::PlaceDeploy {
+            id: RAIDER,
+            row: WORKBENCH_ROW,
+            cx,
+            cz: cz - 1,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose {
+                ox: -26,
+                oz: 77,
+                yaw: 0,
+            },
+        }]);
+        let why: Vec<_> = w
+            .events
+            .entries()
+            .iter()
+            .filter(|e| e.code == sim_core::world::EV_DEPLOY_REFUSED)
+            .map(|e| e.b)
+            .collect();
+        assert_eq!(w.deploys.len(), 1, "the workbench must take: {why:?}");
+        let before = w.deploys.entries()[0].hp;
+        let (x, z) = cell_center(cx, cz);
+        w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+        plant(&mut w, cx, cz, LOC_EDGE_XLO);
+        w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
+        wait_out(&mut w);
+        before - w.deploys.entries().first().map_or(0, |d| d.hp)
+    };
+    assert!(
+        hit(false) > 0,
+        "in the open, the blast reaches the workbench"
+    );
+    assert_eq!(hit(true), 0, "behind the wall, it does not");
+}

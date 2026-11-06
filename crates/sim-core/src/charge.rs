@@ -695,14 +695,17 @@ const WAIST_M: f32 = 0.8;
 /// four sides.
 const SEEN_FROM: usize = 5;
 
-/// Where a blast sees bodies from (`reference/PROJECTILES.md`: radius
-/// damage needs a clear line). No points sees everything in the radius —
-/// a rocket's blast, whose flight this module is not told.
+/// Where a blast sees bodies and structures from (`reference/PROJECTILES.md`:
+/// radius damage needs a clear line). No points sees everything in the
+/// radius — a rocket's blast, whose flight this module is not told.
 #[derive(Clone, Copy)]
 struct Seen {
     from: [(f32, f32, f32); SEEN_FROM],
     n: usize,
     doors: u32,
+    /// What the charge is stuck to (address, deploy bit): always reached,
+    /// whatever the walk says about its faces.
+    host: Option<(u16, u16, u8, u8, bool)>,
 }
 
 impl Seen {
@@ -710,7 +713,52 @@ impl Seen {
         from: [(0.0, 0.0, 0.0); SEEN_FROM],
         n: 0,
         doors: 0,
+        host: None,
     };
+
+    /// Whether the blast reaches the built piece at `addr`: any face of it
+    /// in plain sight of any point the blast looks out from. A wall shields
+    /// the piece behind it exactly as it shields a body — the reference's
+    /// "triangle frames took splash through walls" fix (Nov 2026), which
+    /// here was every piece, not just triangles.
+    fn reaches_piece(
+        &self,
+        seed: u64,
+        haven: &crate::terrain::Haven,
+        pieces: &Pieces,
+        addr: (u16, u16, u8, u8),
+    ) -> bool {
+        self.n == 0
+            || self.host == Some((addr.0, addr.1, addr.2, addr.3, false))
+            || self.from[..self.n]
+                .iter()
+                .any(|&f| crate::reach::sees_piece(seed, haven, pieces, self.doors, addr, f))
+    }
+
+    /// [`Seen::reaches_piece`] for a deployable: its middle (a door's face
+    /// toward each point) in plain sight, as a hand reaching for it asks.
+    fn reaches_deploy(
+        &self,
+        seed: u64,
+        haven: &crate::terrain::Haven,
+        cols: &crate::collide::ColIndex,
+        rec: &crate::deploy::DeployRec,
+        arch: u8,
+    ) -> bool {
+        self.n == 0
+            || self.host == Some((rec.cx, rec.cz, rec.level, rec.loc, true))
+            || self.from[..self.n].iter().any(|&f| {
+                let t = crate::reach::Target::deploy(seed, haven, cols, rec, arch, (f.0, f.2));
+                crate::reach::sight(
+                    seed,
+                    haven,
+                    cols,
+                    self.doors,
+                    f,
+                    (t.x, t.base_y + t.mid, t.z),
+                )
+            })
+    }
 
     /// Whether any of `to` is in plain sight of the blast. Walked from the
     /// body out, so a body pressed to a wall's face reads as in front of
@@ -743,7 +791,11 @@ fn seen_from(pieces: &Pieces, doors: u32, c: &ChargeRec, (ax, ay, az): (f32, f32
     use crate::build::BUILD_CELL_M;
     use crate::hull::{HULL_DIAG, HULL_EDGE, HULL_HALF, HULL_RISER, HULL_TRI};
     use crate::reach::{DOOR_SIDE_M, LIFT_M};
-    let mut s = Seen { doors, ..Seen::ALL };
+    let mut s = Seen {
+        doors,
+        host: Some((c.cx, c.cz, c.level, c.loc, c.deploy)),
+        ..Seen::ALL
+    };
     let mut push = |p: (f32, f32, f32)| {
         if s.n < SEEN_FROM {
             s.from[s.n] = p;
@@ -1004,7 +1056,7 @@ fn blast_seen(
                     } else {
                         falloff(c.structure, d, blast)
                     };
-                    if scaled > 0 {
+                    if scaled > 0 && seen.reaches_piece(seed, haven, pieces, (cx, cz, level, loc)) {
                         targets[n] = (cx, cz, level, loc, false, scaled);
                         n += 1;
                     }
@@ -1058,7 +1110,7 @@ fn blast_seen(
             } else {
                 falloff(c.structure, dist_cm(tx, ty, tz), blast)
             };
-            if scaled > 0 {
+            if scaled > 0 && seen.reaches_piece(seed, haven, pieces, (cx, cz, level, loc)) {
                 targets[n] = (cx, cz, level, loc, false, scaled);
                 n += 1;
             }
@@ -1073,7 +1125,8 @@ fn blast_seen(
             break;
         }
         let (tx, tz) = crate::deploy::rec_anchor(pieces.cols(), rec);
-        let ly = match dc.defs.get(rec.row as usize) {
+        let def = dc.defs.get(rec.row as usize);
+        let ly = match def {
             Some(def) => crate::deploy::body_base_y(seed, haven, pieces.cols(), rec, def.arch),
             None => {
                 crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
@@ -1086,7 +1139,9 @@ fn blast_seen(
         } else {
             falloff(c.structure, d, blast)
         };
-        if scaled > 0 {
+        if scaled > 0
+            && def.is_none_or(|def| seen.reaches_deploy(seed, haven, pieces.cols(), rec, def.arch))
+        {
             targets[n] = (rec.cx, rec.cz, rec.level, rec.loc, true, scaled);
             n += 1;
         }
