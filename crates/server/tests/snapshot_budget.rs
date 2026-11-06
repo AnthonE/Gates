@@ -1667,10 +1667,11 @@ fn the_filter_buys_nothing_on_a_clustered_shard() {
         .iter()
         .filter(|id| (0..MAX_PLAYERS).any(|s| id_of(s) == **id))
         .count();
-    assert_eq!(
-        players,
-        MAX_PLAYERS - 1,
-        "slot 0 can see only {players} of the 99 bodies stood on top of it — \
+    // At the 512-player cap the cluster is denser than the rank band, so the
+    // band is what binds: slot 0 sees a full band of its neighbours.
+    assert!(
+        players >= (MAX_PLAYERS - 1).min(AOI_RANK_ENTER) && players <= AOI_RANK_EXIT,
+        "slot 0 can see only {players} of the bodies stood on top of it — \
          the clustered fixture is not clustered, so the no-op claim is untested"
     );
 }

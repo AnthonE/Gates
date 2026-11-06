@@ -584,6 +584,12 @@ const WORN_DRIP_PER_TICK: usize = 8;
 /// seconds; slots with nothing to say cost nothing.
 const TAG_DRIP_PER_TICK: usize = 4;
 
+/// Connected players past which a tick's interest pass is split over the
+/// cores (`update_all_interest`); below it a thread costs more than it buys.
+const INTEREST_PARALLEL_AT: usize = 64;
+/// Threads the interest pass may use, the calling one included.
+const INTEREST_THREADS_MAX: usize = 4;
+
 /// Minutes a wallet must play this wipe (`standings_minute`) before its
 /// sleeper is protected from eviction ([`ShardCore::evict_victim`]) and its
 /// eviction's id row outranks a throwaway's ([`EvictIds`]). The standings'
@@ -1949,9 +1955,19 @@ impl ShardCore {
             &self.teams,
             &self.tags,
         );
-        let exempt = |id: u32| {
-            (0..MAX_PLAYERS).any(|s| clients[s].connected && clients[s].id == id && agent[s])
-        };
+        // The agents on the shard, gathered once: `exempt` is asked for every
+        // watcher of the wall scan, and a scan of every connection each time
+        // made it quadratic.
+        let mut agents = [0u32; MAX_PLAYERS];
+        let mut n_agents = 0;
+        for s in 0..MAX_PLAYERS {
+            if clients[s].connected && agent[s] {
+                agents[n_agents] = clients[s].id;
+                n_agents += 1;
+            }
+        }
+        let agents = &agents[..n_agents];
+        let exempt = |id: u32| agents.contains(&id);
         self.cheats.tick(
             tick,
             &self.world.players,
@@ -4393,22 +4409,11 @@ impl ShardCore {
         crate::trustlog::Tap::drain(self, stats);
         self.pump_teams(stats, &mut send);
 
-        for slot in 0..MAX_PLAYERS {
-            if self.clients[slot].connected {
-                self.update_interest(slot, stats);
-            }
-        }
         // Spectator seats (`NETCODE.md` §2.3), decided once per tick: a seat
         // whose target left is fed nothing more from here on, and the accept
-        // loop closes it on its next sweep. A live seat measures interest
-        // from the body it watches, exactly as that player's own connection
-        // does — `clients[seat].id` IS the target's id.
+        // loop closes it on its next sweep.
         let live = self.live_seats();
-        for (i, &l) in live.iter().enumerate() {
-            if l {
-                self.update_interest(MAX_PLAYERS + i, stats);
-            }
-        }
+        self.update_all_interest(&live, stats);
         mark(Phase::Events);
         self.fan_out(&live, stats, ops, &mut send);
 
@@ -4655,7 +4660,7 @@ impl ShardCore {
     }
 
     /// This client's live world slot, or None while its join command is
-    /// still queued. `update_interest` refreshes the cache every tick, so
+    /// still queued. `interest_for` refreshes the cache every tick, so
     /// this is a validated read of it, never a scan — chat routing is
     /// O(recipients), not O(recipients × players).
     fn live_wslot(&self, slot: usize) -> Option<usize> {
@@ -10149,7 +10154,7 @@ impl ShardCore {
 
     /// Does connection `slot`'s class-D interest array describe this tick?
     ///
-    /// `update_interest` gives up before pass 1 when the connection has no
+    /// `interest_for` gives up before pass 1 when the connection has no
     /// live body — a join command still queued, or a world slot whose
     /// tenant changed under it — and returns **without touching
     /// `interest`**, so the array is not "empty", it is meaningless.
@@ -10188,7 +10193,7 @@ impl ShardCore {
     /// Three pass-throughs, each load-bearing:
     ///
     /// - **The subject's own connection.** A body is never a candidate for
-    ///   itself (`update_interest` pass 1: `p.id != c.id`), so
+    ///   itself (`interest_for` pass 1: `p.id != c.id`), so
     ///   `interest[own]` is false *by construction* and filtering on it
     ///   alone would silently drop the copy the actor gets. That copy is
     ///   one message per event rather than one per client, and
@@ -10438,7 +10443,57 @@ impl ShardCore {
     /// a rank question (a tenant change, a death). Pass 2 turns the field
     /// into the two order statistics the bands compare against. Pass 3
     /// decides, on both bands at once, and accrues.
-    fn update_interest(&mut self, slot: usize, stats: &ShardStats) {
+    /// Every connected player's interest, then every live seat's — spread
+    /// over the cores on a crowded shard. One connection's set reads the
+    /// world and writes only its own `ClientNetState`, so the connections
+    /// are independent and the split changes no answer, only the clock:
+    /// at 512 clustered bodies this pass was 63 % of a tick on one core.
+    fn update_all_interest(&mut self, live: &[bool; MAX_SPECTATORS], stats: &ShardStats) {
+        let world = &self.world;
+        let connected = self.clients[..MAX_PLAYERS]
+            .iter()
+            .filter(|c| c.connected)
+            .count();
+        let threads = if connected < INTEREST_PARALLEL_AT {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(INTEREST_THREADS_MAX)
+        };
+        let (players, seats) = self.clients.split_at_mut(MAX_PLAYERS);
+        if threads <= 1 {
+            for c in players.iter_mut().filter(|c| c.connected) {
+                Self::interest_for(world, c, stats);
+            }
+        } else {
+            let chunk = MAX_PLAYERS.div_ceil(threads);
+            std::thread::scope(|sc| {
+                let mut parts = players.chunks_mut(chunk);
+                let mine = parts.next();
+                for part in parts {
+                    sc.spawn(move || {
+                        for c in part.iter_mut().filter(|c| c.connected) {
+                            Self::interest_for(world, c, stats);
+                        }
+                    });
+                }
+                for c in mine.into_iter().flatten().filter(|c| c.connected) {
+                    Self::interest_for(world, c, stats);
+                }
+            });
+        }
+        // Spectator seats (`NETCODE.md` §2.3): a live seat measures interest
+        // from the body it watches, exactly as that player's own connection
+        // does — `clients[seat].id` IS the target's id.
+        for (i, &l) in live.iter().enumerate() {
+            if l {
+                Self::interest_for(world, &mut seats[i], stats);
+            }
+        }
+    }
+
+    fn interest_for(world: &World, c: &mut ClientNetState, stats: &ShardStats) {
         /// Packed candidate index: `< MAX_PLAYERS` is a world slot, above
         /// it a roster slot — `encode_snapshot`'s packing, for the reason
         /// it has one. Players and animals are ranked in **one** field
@@ -10450,14 +10505,16 @@ impl ShardCore {
         /// decision falls through to distance — no special case needed.
         const ABSENT: i64 = i64::MAX;
 
-        if !self.interest_settled(slot) {
-            match Self::world_slot_of(&self.world, self.clients[slot].id) {
-                Some(w) => self.clients[slot].own_wslot = w,
+        let settled = c.own_wslot != usize::MAX
+            && world.players[c.own_wslot].active
+            && world.players[c.own_wslot].id == c.id;
+        if !settled {
+            match Self::world_slot_of(world, c.id) {
+                Some(w) => c.own_wslot = w,
                 None => return, // join command still queued
             }
         }
-        let c = &mut self.clients[slot];
-        let own = self.world.players[c.own_wslot].body;
+        let own = world.players[c.own_wslot].body;
         let mut overflow = false;
 
         // --- pass 1: measure, and settle what the rank has no say in.
@@ -10477,7 +10534,7 @@ impl ShardCore {
         // hundred players are spread over two kilometres.
         let mut n_near = 0usize;
         for (w, d2_out) in d2_of.iter_mut().enumerate().take(MAX_PLAYERS) {
-            let p = &self.world.players[w];
+            let p = &world.players[w];
             let live = p.active && p.id != c.id;
             if !live || c.tracked_id[w] != p.id {
                 // Tenant left or changed: the id the client knew is gone.
@@ -10507,7 +10564,7 @@ impl ShardCore {
         // the pending-removal set, so the client despawns it rather than
         // holding a corpse that never moves again.
         for s in 0..MAX_MOBS {
-            let m = &self.world.mobs.m[s];
+            let m = &world.mobs.m[s];
             if !m.alive {
                 if c.m_interest[s] {
                     overflow |= !c.pending_add(mob::mob_id(s));
@@ -10605,13 +10662,13 @@ impl ShardCore {
                     c.interest[w] = false;
                     c.accum[w] = 0.0;
                     c.unsent[w] = 0;
-                    overflow |= !c.pending_add(self.world.players[w].id);
+                    overflow |= !c.pending_add(world.players[w].id);
                 }
             } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM && key <= enter_key {
                 c.interest[w] = true;
                 c.accum[w] = 0.0;
                 c.unsent[w] = 0;
-                c.pending_remove(self.world.players[w].id);
+                c.pending_remove(world.players[w].id);
             }
             if c.interest[w] {
                 let d_m = ((d2 as f32).sqrt()) * 0.01;
@@ -12164,7 +12221,11 @@ mod tests {
         assert!(core.connect_as(2, 258, Some(key(0xc3)), None).is_some());
         core.tag_join(2, 258, Some(&key(0xc3)));
         let first = tags(&mut core);
-        assert_eq!(first.iter().filter(|t| t.0 == 2).count(), 1, "one per tick");
+        assert_eq!(
+            first.iter().filter(|t| t.0 == 2).count(),
+            3,
+            "up to TAG_DRIP_PER_TICK a tick"
+        );
         let mut late: Vec<u32> = first.iter().filter(|t| t.0 == 2).map(|t| t.1).collect();
         for _ in 0..3 {
             late.extend(tags(&mut core).iter().filter(|t| t.0 == 2).map(|t| t.1));

@@ -123,7 +123,7 @@ fn an_admin_kicks_and_bans_by_id_and_the_ban_carries_the_wallet() {
     let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(8);
     pump(&mut core, &stats, &mut tx);
 
-    say(&mut core, 0, "/kick 257");
+    say(&mut core, 0, "/kick 1025");
     pump(&mut core, &stats, &mut tx);
     match rx.pop() {
         Ok(AdminAct::Kick { by, id }) => {
@@ -133,7 +133,7 @@ fn an_admin_kicks_and_bans_by_id_and_the_ban_carries_the_wallet() {
         other => panic!("expected a kick for slot 1, got {other:?}"),
     }
 
-    say(&mut core, 0, "/ban 257");
+    say(&mut core, 0, "/ban 1025");
     pump(&mut core, &stats, &mut tx);
     match rx.pop() {
         Ok(AdminAct::Ban { id, key: k, .. }) => {
@@ -228,19 +228,19 @@ fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
         "[server] 999 is not on"
     );
     assert_eq!(
-        heard(&mut core, &mut tx, "/ban 258"),
-        "[server] 258 no wallet to ban: /kick it"
+        heard(&mut core, &mut tx, "/ban 1026"),
+        "[server] 1026 no wallet to ban: /kick it"
     );
     assert!(rx.pop().is_err(), "no refusal crossed the ring");
 
     // The one-slot ring takes a kick; the next three find it full.
-    say(&mut core, 0, "/kick 257");
+    say(&mut core, 0, "/kick 1025");
     let (chats, _) = pump(&mut core, &stats, &mut tx);
     assert!(
         chats.is_empty(),
         "a sent kick is the accept loop's to answer"
     );
-    for typed in ["/kick 257", "/ban 257", "/unban 0011223344"] {
+    for typed in ["/kick 1025", "/ban 1025", "/unban 0011223344"] {
         assert_eq!(
             heard(&mut core, &mut tx, typed),
             "[server] not done: admin ring full"
@@ -261,7 +261,7 @@ fn a_stranger_commands_nothing() {
     let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(8);
     pump(&mut core, &stats, &mut tx);
 
-    say(&mut core, 1, "/kick 256");
+    say(&mut core, 1, "/kick 1024");
     let (chats, _) = pump(&mut core, &stats, &mut tx);
     assert!(
         rx.pop().is_err(),
@@ -274,7 +274,7 @@ fn a_stranger_commands_nothing() {
 }
 
 /// A slash line never reaches the room — not a good one, not a typo'd
-/// one. This is the property that keeps `/kik 257` from announcing to a
+/// one. This is the property that keeps `/kik 1025` from announcing to a
 /// griefer that somebody is fumbling for the kick command.
 #[test]
 fn no_slash_line_is_ever_relayed() {
@@ -284,7 +284,7 @@ fn no_slash_line_is_ever_relayed() {
     let (mut tx, _rx) = rtrb::RingBuffer::<AdminAct>::new(8);
     pump(&mut core, &stats, &mut tx);
 
-    for text in ["/kik 257", "/kick", "/nonsense", "/kick 257"] {
+    for text in ["/kik 1025", "/kick", "/nonsense", "/kick 1025"] {
         say(&mut core, 0, text);
         let (chats, _) = pump(&mut core, &stats, &mut tx);
         assert!(
@@ -337,7 +337,7 @@ fn tp_and_give_change_the_world_through_commands() {
     let target = core.world.players[w1].body;
     assert_ne!(core.world.players[w0].body.qx, target.qx);
 
-    say(&mut core, 0, "/tp 257");
+    say(&mut core, 0, "/tp 1025");
     // Queued this tick, applied the next — the command's own doc says so.
     pump(&mut core, &stats, &mut tx);
     pump(&mut core, &stats, &mut tx);
@@ -401,7 +401,7 @@ fn anyone_can_file_a_bug() {
     // counter is the proxy: `admin_refused` moves for the kick and not
     // for the bug.
     let refused_after_bug = ShardStats::get(&stats.admin_refused);
-    say(&mut core, 1, "/kick 256");
+    say(&mut core, 1, "/kick 1024");
     pump(&mut core, &stats, &mut tx);
     assert_eq!(
         ShardStats::get(&stats.admin_refused),

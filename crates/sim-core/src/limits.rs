@@ -601,8 +601,10 @@ pub const CRAG_CACHE_LINES_ONE: usize = 512;
 /// ground's grade, the coarse points and the solid surface, `face.rs`; the
 /// skin's half-metre points get twice as many), on the shard's `World`: a
 /// walking body asks a few points a tick and a new row every few ticks.
+/// 64 a seat: at a fixed 8,192 a spread 512-player shard thrashed it and
+/// movement was a third of the tick (`bin/profile --pitch 60`).
 /// 52 B a point in all. Must stay a power of two.
-pub const FACE_CACHE_LINES: usize = 8_192;
+pub const FACE_CACHE_LINES: usize = (64 * MAX_PLAYERS).next_power_of_two();
 /// The same memos for one predicted body.
 pub const FACE_CACHE_LINES_ONE: usize = 512;
 

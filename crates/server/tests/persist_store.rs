@@ -892,7 +892,7 @@ fn an_evicted_players_id_survives_throwaway_churn_and_a_refused_return() {
     for n in 0..120u32 {
         assert!(core.disconnect(0).is_some());
         core.tick_bare(&stats, |_, _, _| true);
-        id = (3 + n) << 8;
+        id = protocol::player_id(3 + n, 0);
         let (_, evicted) = core
             .connect_as(0, id, Some(key(&format!("sybil-{n}"))), None)
             .expect("admitted");

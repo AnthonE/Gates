@@ -75,6 +75,8 @@ pub const WALL_MAX_M: f32 = 100.0;
 /// How close to a hidden body the aim must stay, degrees — widened at
 /// short range to the body's own width.
 pub const WALL_CONE_DEG: f32 = 3.0;
+/// `cos(WALL_CONE_DEG)`, for the wall scan's cheap pre-test.
+const WALL_COS_CONE: f32 = 0.998_629_5;
 /// One wall track: this long on one hidden target…
 pub const WALL_TRACK_TICKS: u32 = 2 * TICK_HZ;
 /// …while the target moves at least this far…
@@ -459,15 +461,34 @@ impl Checks {
             }
             let eye = ranged_eye(a);
             let aim = aim_of(a);
+            let aim_n = len(aim);
             let mut best: Option<(usize, f32, f32)> = None;
+            // Every watcher against every body is the one quadratic loop on
+            // the shard (512² pairs on a full one), so a pair is refused on
+            // range and on a cosine before it costs an `acos`, an `atan` or
+            // a team lookup. The cosine test is a margin looser than the
+            // exact one below, so it only ever skips a clear miss.
             for (v, b) in players.iter().enumerate() {
-                if v == w || !b.active || b.dead || mates(a.id, b.id) {
+                if v == w || !b.active || b.dead {
                     continue;
                 }
                 let chest = add_y(feet(b), CHEST_M);
                 let to = sub(chest, eye);
-                let d = len(to);
-                if !(WALL_MIN_M..=WALL_MAX_M).contains(&d) {
+                let d2 = to.0 * to.0 + to.1 * to.1 + to.2 * to.2;
+                if !(WALL_MIN_M * WALL_MIN_M..=WALL_MAX_M * WALL_MAX_M).contains(&d2) {
+                    continue;
+                }
+                let d = d2.sqrt();
+                if aim_n > 0.0 {
+                    // cos(atan(0.6 / d)) is d / √(d² + 0.36); the wider cone
+                    // has the smaller cosine.
+                    let cos_cone = WALL_COS_CONE.min(d / (d2 + 0.36).sqrt());
+                    let c = (aim.0 * to.0 + aim.1 * to.1 + aim.2 * to.2) / (aim_n * d);
+                    if c < cos_cone - 1e-3 {
+                        continue;
+                    }
+                }
+                if mates(a.id, b.id) {
                     continue;
                 }
                 let off = angle_deg(aim, to);

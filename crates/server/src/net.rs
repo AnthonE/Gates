@@ -6176,17 +6176,21 @@ mod tests {
         let honest = SignWait::join(&pool, Some(4000));
         let mut flood: Vec<SignTicket> = Vec::new();
         let mut next = 0;
+        // Enough networks that their allowances overfill the pool (fifty
+        // did at the 100-player cap; the pool grows with the cap).
+        const SOURCES: usize = SIGN_WAITERS / ADMIT_PER_SOURCE as usize + 50;
+        const _: () = assert!(SOURCES < 4000);
         // Ten pools' worth: past the first fill, every join drops somebody.
         for _ in 0..10 * SIGN_WAITERS {
             flood.retain(&seated);
-            let mut holds = [0usize; 50];
+            let mut holds = vec![0usize; SOURCES];
             for t in &flood {
                 holds[SignWait::source(t.word)] += 1;
             }
             // The next address under its allowance, round robin: there is
-            // always one, as fifty allowances are more than the pool.
-            let source = (0..50)
-                .map(|k| (next + k) % 50)
+            // always one, as their allowances are more than the pool.
+            let source = (0..SOURCES)
+                .map(|k| (next + k) % SOURCES)
                 .find(|&s| holds[s] < ADMIT_PER_SOURCE as usize)
                 .expect("a dropped waiter gave its place back");
             next = source + 1;
