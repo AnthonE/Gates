@@ -692,7 +692,7 @@ fn guest_churn_cannot_evict_a_settled_players_young_sleeper() {
         let s = 2 + round as usize;
         assert!(core.disconnect(s).is_some());
         core.tick_bare(&stats, |_, _, _| true);
-        let id = protocol::player_id(3 + round, s as usize);
+        let id = protocol::player_id(3 + round, s);
         let (_, evicted) = core.connect_as(s, id, None, None).expect("room");
         assert!(evicted.is_none(), "a guest's body files nothing");
         core.tick_bare(&stats, |_, _, _| true);

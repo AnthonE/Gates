@@ -6923,7 +6923,7 @@ mod tests {
         for (s, key) in who.iter().enumerate() {
             keys[s] = KeySlot {
                 key: Some(*key),
-                id: protocol::player_id(1, s as usize),
+                id: protocol::player_id(1, s),
                 ..KeySlot::default()
             };
         }

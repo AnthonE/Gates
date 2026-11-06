@@ -1023,13 +1023,14 @@ fn a_near_animal_outranks_a_far_player() {
         m.alive = false;
         m.respawn_at = u64::MAX;
     }
-    // The whole player cap and enough animals beside them to fill the
+    // A hundred players and enough animals beside them to fill the
     // admission rank exactly before the far herd stands up: a hundred
     // players alone cannot (wire v121's enter rank is 137).
-    let near_herd = AOI_RANK_ENTER - (MAX_PLAYERS - 1);
-    for slot in 0..MAX_PLAYERS {
+    const PEERS: usize = 100;
+    let near_herd = AOI_RANK_ENTER - (PEERS - 1);
+    for slot in 0..PEERS {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        if (slot + 1) % 32 == 0 || slot + 1 == MAX_PLAYERS {
+        if (slot + 1) % 32 == 0 || slot + 1 == PEERS {
             core.tick_bare(&stats, |_, _, _| true);
         }
     }
@@ -1039,7 +1040,7 @@ fn a_near_animal_outranks_a_far_player() {
                 continue;
             }
             p.body.qz = q(1000.0);
-            let Some(slot) = (0..MAX_PLAYERS).find(|&s| id_of(s) == p.id) else {
+            let Some(slot) = (0..PEERS).find(|&s| id_of(s) == p.id) else {
                 continue;
             };
             p.body.qx = if slot == 0 {
