@@ -5165,7 +5165,7 @@ const _: () = assert!(
 
 /// Home slot for an entity id. The Fibonacci mix `collide::ColIndex` and
 /// `occupy::SlotCache` already use, for the reason they use it: player ids
-/// are minted `(generation << 8) | slot` and mob ids share a high tag, so
+/// are minted `player_id(generation, slot)` and mob ids share a high tag, so
 /// the low bits alone would pile a whole class onto one line.
 #[inline]
 fn bl_home(id: u32) -> usize {
@@ -6029,13 +6029,13 @@ mod tests {
             buffered_depth: 0,
             repeat_count: 0,
         };
-        // Ids shaped like the shard's: `(generation << 8) | slot` for
+        // Ids shaped like the shard's: `player_id(generation, slot)` for
         // players and the mob tag above them, so the probe meets the same
         // clustering the real table does.
         let baseline: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32)
             .map(|i| {
                 ent(if i < 40 {
-                    (1 << 8) | i
+                    player_id(1, i as usize)
                 } else {
                     0x4000_0000 | i
                 })

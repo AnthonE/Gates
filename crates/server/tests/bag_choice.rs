@@ -637,7 +637,7 @@ fn the_death_screen_and_its_marker_survive_a_reconnect() {
 
 /// The id the slot table mints for `slot`'s second tenant: a reconnect.
 fn id2_of(slot: usize) -> u32 {
-    (2 << 8) | slot as u32
+    protocol::player_id(2, slot)
 }
 
 /// **Evicted while away, still your bag.** A full shard evicts the

@@ -3505,7 +3505,7 @@ fn install(
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     };
-    // Player id: slot in the low byte, claim generation above — unique
+    // Player id: slot in the low ten bits, claim generation above — unique
     // across slot reuse, stable for the connection's life.
     //
     // The generation is masked to 23 bits **so bit 31 is never set**, and

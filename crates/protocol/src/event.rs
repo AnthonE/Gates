@@ -2542,8 +2542,8 @@ pub enum EventMsg {
     /// for none.
     ///
     /// Sent to every connected session when learned, and in full to a late
-    /// joiner, one per tick. The low byte of `id` is the connection slot
-    /// (`server/net.rs`), which is how a client files it. Never a guest's
+    /// joiner, a few per tick. The low bits of `id` are the connection slot
+    /// (`player_id_slot`), which is how a client files it. Never a guest's
     /// and never an animal's: both ends refuse one.
     Tag {
         id: u32,

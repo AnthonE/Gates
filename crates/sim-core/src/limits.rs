@@ -190,7 +190,7 @@ pub const CLIENT_DG_RING: usize = 8 * SNAPSHOT_PARTS;
 /// graveyard back). Overflow policy: **refuse** the join / retry the
 /// return next tick. Proposed defaults, DECISIONS.md §open.
 pub const CTRL_RING_CAP: usize = 8;
-pub const GRAVEYARD_RING_CAP: usize = 256;
+pub const GRAVEYARD_RING_CAP: usize = 1_024;
 
 /// Each hop of the player-save path: sim → the store's index (accept loop),
 /// and the index → the file (storage thread). One cap for both because both
@@ -204,7 +204,8 @@ pub const GRAVEYARD_RING_CAP: usize = 256;
 /// autosave sweep re-takes the same player a few ticks later, and the record
 /// is idempotent (it is filed by key and overwrites in place). Proposed
 /// default, DECISIONS.md §open ("player persistence v0").
-pub const SAVE_RING_CAP: usize = 256;
+pub const SAVE_RING_CAP: usize = 1_024;
+const _: () = assert!(SAVE_RING_CAP > MAX_PLAYERS);
 
 /// World-save buffers in flight, each direction. **Two, because that is
 /// what a double buffer is**: one being written to disk while the next is
@@ -261,7 +262,7 @@ pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
 /// Overflow policy: **overwrite oldest**. It is a ring by construction and
 /// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
 /// nothing reachable is ever discarded. Cost:
-/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 32,000 B` of poses plus a
+/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 163,840 B` of poses plus a
 /// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
 /// nothing allocates in the tick (wall 2).
 ///
@@ -897,7 +898,7 @@ pub const SYNC_SCAN_PER_TICK: usize = 2_048;
 /// the `BAG_GONE_EVICTED` removal event. Never **refuse**: a death that
 /// silently kept the inventory would make the cap a way to dodge the
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
-pub const MAX_BACKPACKS: usize = 256;
+pub const MAX_BACKPACKS: usize = 1_024;
 
 /// Loose stacks lying on the ground at once (`grounditem.rs`: what a
 /// smashed barrel leaves behind). **Its own cap and not a share of
@@ -1246,7 +1247,10 @@ pub const MAX_HAVEN_CANDIDATES: usize = 256;
 /// peak, and stays under the 510 that the stair-rotation overflow test
 /// (`server/src/core.rs`) can raise in one tick, so that test still reaches
 /// a real overflow.
-pub const MAX_EVENTS_PER_TICK: usize = 500;
+///
+/// **2 560 since the 512-player cap**: the same 1.9× headroom over five times
+/// the firefight.
+pub const MAX_EVENTS_PER_TICK: usize = 2_560;
 
 /// "Dropped at your feet" lines one give-back (a craft cancel, a demolish
 /// refund, a pick-up, an unbolt) may announce: one per distinct item, so a

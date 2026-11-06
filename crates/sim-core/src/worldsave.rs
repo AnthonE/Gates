@@ -2379,16 +2379,16 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 33)
+            + 512 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 33)
             + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
             + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 38                    // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
             + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (33) + the oven's 30 + the planter's water (30)
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
-            + 256 * 388                     // bags: 28 + 30 twelve-byte stacks (33)
+            + 1_024 * 388                   // bags: 28 + 30 twelve-byte stacks (33)
             + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (33) (256 at roadside junk)
-            + 1_200 * 25                    // charges (every seat's share: 100 × 12)
+            + 6_144 * 25                    // charges (every seat's share: 512 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
             + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 33; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)

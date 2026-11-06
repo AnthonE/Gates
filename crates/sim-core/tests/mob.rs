@@ -588,8 +588,9 @@ fn mob_ids_never_collide_with_player_ids() {
     // Every player id the server can mint (`net.rs` masks the generation
     // for exactly this reason) is below the tag.
     for slot in 0..MAX_PLAYERS as u32 {
-        for gen in [0u32, 1, 0x7F_FFFF] {
-            let id = ((gen & 0x007F_FFFF) << 8) | slot;
+        // `protocol::player_id`: ten slot bits, 21 of generation.
+        for gen in [0u32, 1, 0x1F_FFFF] {
+            let id = ((gen & 0x001F_FFFF) << 10) | slot;
             assert_eq!(
                 id & MOB_ID_TAG,
                 0,

@@ -1841,7 +1841,7 @@ pub enum Command {
     /// currently carrying id `sleeper`.
     ///
     /// Two ids because the sim has no idea who anybody is. A player id is
-    /// `generation << 8 | slot`, minted per connection and meaningless
+    /// `generation << 10 | slot`, minted per connection and meaningless
     /// across two of them (`persist.rs` says so from the other side), so
     /// the identity that survives a disconnect is the server's opaque
     /// `PlayerKey` and it deliberately never enters this crate. The server
@@ -3097,7 +3097,7 @@ impl World {
     /// [`PRESENCE_GONE`] (`EV_TRUST`'s low byte).
     ///
     /// The linear scan is `slot_of`'s, and deliberately not a smarter
-    /// lookup: a player id is minted `generation << 8 | slot` by the
+    /// lookup: a player id is minted `generation << 10 | slot` by the
     /// **server**, and sim-core does not know that — deriving a slot from
     /// an id here would be this crate learning a convention it is not
     /// allowed to depend on, and it would be silently wrong the first time
@@ -6017,7 +6017,7 @@ impl World {
         // obvious guard — "refuse if this id is in the world" — is wrong,
         // and wrong in a case that is not exotic: **`id == sleeper` is the
         // ordinary path after a restart.** A player id is
-        // `generation << 8 | slot`, and a restart resets the slot table, so
+        // `generation << 10 | slot`, and a restart resets the slot table, so
         // the first connection into slot 0 is minted the same id the body
         // saved in slot 0 already carries. That guard turned every
         // first-reconnect-after-a-restart into a silent no-op: the takeover

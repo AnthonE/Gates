@@ -3488,9 +3488,10 @@ impl ShardCore {
         let world = &self.world;
         self.evict_ids.load(|id| {
             id & sim_core::limits::MOB_ID_TAG == 0
-                && floors
-                    .get(protocol::player_id_slot(id))
-                    .is_some_and(|&f| protocol::player_id_gen(id) <= f)
+                // One floor for every slot (`id_floors`), so the slot is not
+                // asked: an id from the old eight-bit layout decodes to a
+                // slot past `MAX_PLAYERS` and must not be dropped for it.
+                && protocol::player_id_gen(id) <= floors[0]
                 && !world.players.iter().any(|p| p.active && p.id == id)
         })
     }

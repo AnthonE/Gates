@@ -31,10 +31,10 @@ fn id_of(slot: usize) -> u32 {
 }
 
 /// The id the slot table would mint for `slot`'s **second** tenant — a
-/// reconnect after the first claim, `generation << 8 | slot` with the
+/// reconnect after the first claim, `protocol::player_id(generation, slot)` with the
 /// generation bumped.
 fn id2_of(slot: usize) -> u32 {
-    (2 << 8) | slot as u32
+    protocol::player_id(2, slot)
 }
 
 fn key(s: &str) -> PlayerKey {
@@ -692,7 +692,7 @@ fn guest_churn_cannot_evict_a_settled_players_young_sleeper() {
         let s = 2 + round as usize;
         assert!(core.disconnect(s).is_some());
         core.tick_bare(&stats, |_, _, _| true);
-        let id = ((3 + round) << 8) | s as u32;
+        let id = protocol::player_id(3 + round, s as usize);
         let (_, evicted) = core.connect_as(s, id, None, None).expect("room");
         assert!(evicted.is_none(), "a guest's body files nothing");
         core.tick_bare(&stats, |_, _, _| true);
@@ -911,14 +911,14 @@ fn an_evicted_players_id_survives_throwaway_churn_and_a_refused_return() {
     assert!(core.disconnect(0).is_some());
     core.tick_bare(&stats, |_, _, _| true);
     settle(&mut core, "late-settler");
-    let settler = id + (1 << 8);
+    let settler = id + (1 << protocol::PLAYER_SLOT_BITS);
     assert!(core
         .connect_as(0, settler, Some(key("late-settler")), None)
         .is_some());
     core.tick_bare(&stats, |_, _, _| true);
     assert!(core.disconnect(0).is_some());
     core.tick_bare(&stats, |_, _, _| true);
-    let back = settler + (1 << 8);
+    let back = settler + (1 << protocol::PLAYER_SLOT_BITS);
     assert!(core.connect_as(0, back, Some(me), Some(record)).is_none());
     assert_eq!(
         core.evict_ids.find(&me),
