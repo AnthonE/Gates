@@ -32,6 +32,14 @@
 //! a few times a day. Rust's own client pushes a fresh inventory on Steam's
 //! "inventory changed" callback for the same reason.
 //!
+//! ## The Pill: a second read, beside this one
+//!
+//! Solana items ([`solana_of`], `GET {origin}/api/items/sol/of/{wallet}`) are
+//! read at the same moments, as their own answer: `ShardCore` adds that set
+//! to the platform's, the way it adds a gift. So Solana being dark, slow or
+//! down costs the Pill and nothing else: the EVM answer never waits for it,
+//! and an unknown from it changes nothing, as here.
+//!
 //! ## Where this runs
 //!
 //! On a blocking thread spawned by the accept loop (`net.rs`), never on the
@@ -177,6 +185,76 @@ pub fn parse(body: &str, sc: &SkinContent) -> Owned {
         if let Some(row) = row {
             set.insert(row);
         }
+    }
+    Owned::Known(set)
+}
+
+// ── items on Solana ──────────────────────────────────────────────────────────
+//
+// The title's Metaplex Core collection (`meter/solana_items.py`). A row names
+// its title and its `item`, the key the collection's record gives it, which
+// is matched by the asset's metadata uri, so a rename on chain changes nothing.
+
+/// A Solana item of this title, by its key → the `content/skins.toml` row it
+/// owns. A row's catalog id is never reused, so this never has to move.
+pub const SOLANA_ITEMS: [(&str, u16); 1] = [("pill", 33)];
+
+/// Whether this shard reads Solana items for a wallet at all: only a shard
+/// that asks the platform, and not one lending every row anyway.
+pub fn reads_solana(cfg: &Config) -> bool {
+    cfg.origin.is_some() && !cfg.all
+}
+
+/// What a wallet holds on Solana, over `sc`'s rows. An EVM wallet is read at
+/// the Solana wallet linked to it, which the platform looks up; an account
+/// with no wallet holds nothing there. Blocking, like [`owned_of`].
+pub fn solana_of(cfg: &Config, wallet: &str, sc: &SkinContent) -> Owned {
+    let Some(origin) = cfg.origin.as_deref().filter(|_| reads_solana(cfg)) else {
+        return Owned::Known(SkinSet::EMPTY);
+    };
+    if sc.count == 0 || crate::auth::is_account_str(wallet) {
+        return Owned::Known(SkinSet::EMPTY);
+    }
+    if !crate::entitle::is_wallet(wallet) {
+        return Owned::Unknown;
+    }
+    let url = format!("{origin}/api/items/sol/of/{wallet}");
+    match crate::entitle::get_capped(&url, cfg.timeout, MAX_RESPONSE_BYTES) {
+        Some(body) => parse_solana(&body, sc),
+        None => Owned::Unknown,
+    }
+}
+
+/// An `items/sol/of` body → the owned set over `sc`'s rows. `dark: true` (no
+/// collection yet) and a wallet with no link both list no items: an empty
+/// set. `reachable: false` is could-not-look, unless a row it did read owns
+/// something: the route lists what it read when another title's collection
+/// failed. Another title's row owns nothing here, whatever it is called.
+pub fn parse_solana(body: &str, sc: &SkinContent) -> Owned {
+    use serde_json::Value;
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return Owned::Unknown;
+    };
+    let Some(items) = v.get("items").and_then(Value::as_array) else {
+        return Owned::Unknown;
+    };
+    let mut set = SkinSet::EMPTY;
+    for item in items {
+        let ours = item
+            .get("title")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.eq_ignore_ascii_case(STORE_TITLE));
+        let key = item.get("item").and_then(Value::as_str);
+        let row = SOLANA_ITEMS
+            .iter()
+            .find(|(k, _)| ours && key == Some(*k))
+            .and_then(|(_, catalog)| sc.row_of(*catalog));
+        if let Some(row) = row {
+            set.insert(row);
+        }
+    }
+    if set.is_empty() && v.get("reachable") == Some(&Value::Bool(false)) {
+        return Owned::Unknown;
     }
     Owned::Known(set)
 }
@@ -389,6 +467,120 @@ mod tests {
             ..Config::off()
         };
         assert_eq!(owned_of(&all, None, &sc), Owned::Known(SkinSet::all(3)));
+    }
+
+    /// Catalog ids 1 and the Pill's, in that row order.
+    fn pill_catalog() -> SkinContent {
+        let mut sc = SkinContent::EMPTY;
+        for (i, catalog) in [1u16, SOLANA_ITEMS[0].1].into_iter().enumerate() {
+            sc.defs[i] = SkinDef {
+                catalog,
+                covers: 3,
+                unlock: false,
+            };
+        }
+        sc.count = 2;
+        sc
+    }
+
+    /// The route's answers (`meter/solana_items.py::of`), trimmed.
+    #[test]
+    fn a_pill_of_this_title_owns_its_row_and_no_other_row_does() {
+        let sc = pill_catalog();
+        let body = r#"{"reachable":true,"wallet":"7x","via":"0xab","items":[
+            {"title":"gates","item":"pill","name":"The Pill","chain_label":"Solana"}],"count":1}"#;
+        let Owned::Known(set) = parse_solana(body, &sc) else {
+            panic!("a readable answer");
+        };
+        assert!(set.has(1), "the Pill's row");
+        assert_eq!(set.count(), 1);
+
+        for not_ours in [
+            r#"{"title":"oneshot","item":"pill","name":"The Pill"}"#,
+            r#"{"title":"gates","item":null,"name":"The Pill"}"#,
+            r#"{"title":"gates","item":"crown","name":"pill"}"#,
+            r#"{"item":"pill"}"#,
+        ] {
+            let body = format!(r#"{{"reachable":true,"items":[{not_ours}]}}"#);
+            assert_eq!(
+                parse_solana(&body, &sc),
+                Owned::Known(SkinSet::EMPTY),
+                "{not_ours}"
+            );
+        }
+        // A shard whose content has no Pill row owns nothing by it.
+        assert_eq!(parse_solana(body, &catalog()), Owned::Known(SkinSet::EMPTY));
+    }
+
+    #[test]
+    fn dark_and_unlinked_are_no_pill_and_could_not_look_changes_nothing() {
+        let sc = pill_catalog();
+        for empty in [
+            r#"{"reachable":true,"dark":true,"why":"no title has items on Solana yet.","chain_label":"Solana","wallet":"7x","via":null,"items":[]}"#,
+            r#"{"reachable":true,"wallet":"0xab","solana":null,"items":[],"count":0,"why":"no Solana wallet is linked to this one"}"#,
+        ] {
+            assert_eq!(parse_solana(empty, &sc), Owned::Known(SkinSet::EMPTY));
+        }
+        for unknown in [
+            r#"{"reachable":false,"why":"the wallet links could not be read","wallet":"0xab","solana":null,"items":[]}"#,
+            r#"{"reachable":false,"wallet":"7x","items":[],"unread":[{"title":"gates","why":"429"}]}"#,
+            r#"{"reachable":true}"#,
+            "<html>502</html>",
+        ] {
+            assert_eq!(parse_solana(unknown, &sc), Owned::Unknown, "{unknown}");
+        }
+        // One collection unread is said, not hidden: a Pill the route did read
+        // still owns its row.
+        let partial = r#"{"reachable":false,"wallet":"7x","items":[{"title":"gates","item":"pill"}],
+            "unread":[{"title":"oneshot","why":"429"}]}"#;
+        let Owned::Known(set) = parse_solana(partial, &sc) else {
+            panic!("it read this title's");
+        };
+        assert!(set.has(1));
+    }
+
+    #[test]
+    fn an_unarmed_shard_the_dev_knob_and_an_account_read_nothing_on_solana() {
+        let sc = pill_catalog();
+        let wallet = "0x00000000000000000000000000000000000000a1";
+        assert_eq!(
+            solana_of(&Config::off(), wallet, &sc),
+            Owned::Known(SkinSet::EMPTY)
+        );
+        let all = Config {
+            origin: Some("https://origin.test".into()),
+            all: true,
+            ..Config::off()
+        };
+        assert!(!reads_solana(&all));
+        assert_eq!(solana_of(&all, wallet, &sc), Owned::Known(SkinSet::EMPTY));
+        let armed = Config {
+            origin: Some("https://origin.test".into()),
+            ..Config::off()
+        };
+        assert!(reads_solana(&armed));
+        assert_eq!(
+            solana_of(&armed, "acct_0123456789abcdef0123", &sc),
+            Owned::Known(SkinSet::EMPTY)
+        );
+        assert_eq!(solana_of(&armed, "not a wallet", &sc), Owned::Unknown);
+    }
+
+    /// The table's rows are in the shipped catalog, on a look the Pill can
+    /// wear, with no price of ours on them.
+    #[test]
+    fn the_pill_is_a_free_look_in_the_shipped_catalog() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let c = content::Content::load_dir(&dir).expect("shipped content loads");
+        for (key, catalog) in SOLANA_ITEMS {
+            let row = c
+                .skins
+                .iter()
+                .find(|s| s.catalog == catalog)
+                .unwrap_or_else(|| panic!("{key}: no row has catalog {catalog}"));
+            assert!(!row.unlock, "{key} is a look");
+            assert!(row.price.is_none() && row.coin.is_none(), "{key} is free");
+        }
     }
 
     /// The live store's shape (`meter/itemstore.py::card`), trimmed.

@@ -1701,6 +1701,7 @@ const REREAD_AFTER: [Duration; 3] = [
 const REREADS_MAX: usize = 96;
 
 type SkinsAnswer = (usize, u32, Option<PlayerKey>, crate::skins::Owned);
+type SolanaAnswer = (usize, u32, PlayerKey, crate::skins::Owned);
 type FaceAnswer = (usize, u32, PlayerKey, crate::faces::Face);
 
 /// One wallet's last platform read.
@@ -1827,7 +1828,8 @@ fn spawn_read<M: Send + 'static>(
 /// The skin-ownership read for tenant `gen` of `slot` (`skins.rs`). The
 /// answer carries the wallet, so it lands on whoever holds it by then
 /// ([`landing`]). A guest (`None`) owns what the config says; nothing is
-/// remembered for one.
+/// remembered for one. A wallet's Solana items are read beside it, on their
+/// own answer, so a slow Solana never holds up a skin just bought.
 fn read_skins(
     slot: usize,
     gen: u32,
@@ -1835,7 +1837,17 @@ fn read_skins(
     facts: &ShardFacts,
     gate: &Arc<tokio::sync::Semaphore>,
     tx: &tokio::sync::mpsc::Sender<SkinsAnswer>,
+    solana_tx: &tokio::sync::mpsc::Sender<SolanaAnswer>,
 ) {
+    if let Some(k) = key.filter(|_| crate::skins::reads_solana(&facts.skins)) {
+        let cfg = facts.skins.clone();
+        let sc = facts.skin_content.clone();
+        let failed = (slot, gen, k, crate::skins::Owned::Unknown);
+        spawn_read(gate, solana_tx, failed, move || {
+            let wallet = std::str::from_utf8(k.as_bytes()).unwrap_or_default();
+            (slot, gen, k, crate::skins::solana_of(&cfg, wallet, &sc))
+        });
+    }
     let cfg = facts.skins.clone();
     let sc = facts.skin_content.clone();
     let failed = (slot, gen, key, crate::skins::Owned::Unknown);
@@ -1965,6 +1977,7 @@ async fn accept_loop(
     // the platform nothing extra.
     let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel::<(usize, u32)>(MAX_PLAYERS);
     let (owned_tx, mut owned_rx) = tokio::sync::mpsc::channel::<SkinsAnswer>(MAX_PLAYERS);
+    let (solana_tx, mut solana_rx) = tokio::sync::mpsc::channel::<SolanaAnswer>(MAX_PLAYERS);
     let mut skin_reads =
         PlatformReads::<sim_core::skin::SkinSet>::new(crate::skins::REFRESH_COOLDOWN);
     // Names and pictures (`faces.rs`): once per join and cooldown, answered
@@ -2071,7 +2084,15 @@ async fn accept_loop(
                     // reach a bench, and what they are called.
                     if let Some(k) = keys[slot].key {
                         if skin_reads.ask(&k, true, now) {
-                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                            read_skins(
+                                slot,
+                                gen,
+                                Some(k),
+                                &facts,
+                                &read_gate,
+                                &owned_tx,
+                                &solana_tx,
+                            );
                         }
                         if faces_armed && face_reads.ask(&k, true, now) {
                             read_face(slot, gen, k, &facts, &read_gate, &face_tx);
@@ -2236,7 +2257,7 @@ async fn accept_loop(
                     // time: there is nothing to ask again.
                     if let Some(k) = keys[slot].key {
                         if skin_reads.ask(&k, false, Instant::now()) {
-                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx, &solana_tx);
                         }
                     }
                 }
@@ -2263,7 +2284,7 @@ async fn accept_loop(
                     }
                     if let Some(s) = live_seat(k, &keys, &slots) {
                         if skin_reads.ask(k, true, now) {
-                            read_skins(s, keys[s].generation, Some(*k), &facts, &read_gate, &owned_tx);
+                            read_skins(s, keys[s].generation, Some(*k), &facts, &read_gate, &owned_tx, &solana_tx);
                         }
                     }
                     false
@@ -2345,7 +2366,7 @@ async fn accept_loop(
                 if let Some(slot) = landing(slot, gen, key.as_ref(), &keys, &slots) {
                     match owned {
                         crate::skins::Owned::Known(set) => {
-                            let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set };
+                            let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set, solana: false };
                             if skins_tx.push(msg).is_ok() {
                                 ShardStats::bump(&stats.skins_read);
                             } else {
@@ -2353,6 +2374,19 @@ async fn accept_loop(
                             }
                         }
                         crate::skins::Owned::Unknown => ShardStats::bump(&stats.skins_unknown),
+                    }
+                }
+            }
+            // The Solana read's answer, on the same terms. Not remembered in
+            // `skin_reads`, and an unknown is no anomaly: dark is what every
+            // read says until a collection exists, and it costs only the Pill.
+            Some((slot, gen, key, owned)) = solana_rx.recv() => {
+                if let Some(slot) = landing(slot, gen, Some(&key), &keys, &slots) {
+                    if let crate::skins::Owned::Known(set) = owned {
+                        let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set, solana: true };
+                        if skins_tx.push(msg).is_err() {
+                            ShardStats::bump(&stats.skins_dropped);
+                        }
                     }
                 }
             }
@@ -2439,7 +2473,7 @@ async fn accept_loop(
                 while let Some(k) = skin_reads.owed(now) {
                     if let Some(s) = live_seat(&k, &keys, &slots) {
                         if skin_reads.ask(&k, false, now) {
-                            read_skins(s, keys[s].generation, Some(k), &facts, &read_gate, &owned_tx);
+                            read_skins(s, keys[s].generation, Some(k), &facts, &read_gate, &owned_tx, &solana_tx);
                         }
                     }
                 }
@@ -5532,7 +5566,11 @@ fn sim_thread(
         // What the platform said players own (`skins.rs`), after the joins
         // above so a set read for a joiner finds the client it belongs to.
         while let Ok(m) = skins_rx.pop() {
-            core.skins_owned(m.slot, m.id, m.owned);
+            if m.solana {
+                core.skins_solana(m.slot, m.id, m.owned);
+            } else {
+                core.skins_owned(m.slot, m.id, m.owned);
+            }
         }
         // The names and pictures players set on the platform (`faces.rs`).
         while let Ok(m) = faces_rx.pop() {
