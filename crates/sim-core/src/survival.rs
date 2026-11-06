@@ -59,8 +59,8 @@
 //! **What v0 deliberately does not do**, registered in `DECISIONS.md` §open
 //! ("survival clock v0"): no temperature and no wetness (the `WET 36%` chip
 //! in the reference frames is M2's, and it wants weather first), no
-//! comfort, no metabolism from activity (sprinting costs exactly what
-//! standing does — the span is wall-clock, not work), no food spoilage, no
+//! comfort, no metabolism from activity beyond the sprint's surcharge
+//! (`sprint_drain_pct`, Rust's Nov 2026 +10%), no food spoilage, no
 //! stomach cap on how much you can eat at once beyond the meter's own
 //! ceiling, and no day/night coupling (`DESIGN.md` §2 pairs them; the other
 //! half is blocked behind the ground's structure moving from bump into
@@ -277,6 +277,9 @@ pub struct SurvivalContent {
     /// Hp a minute an open wound costs (`Player::bleed`, Rust's 1 hp every
     /// 3 s). The hit that opens it is `combat::hurt`'s.
     pub bleed_hp_per_min: u16,
+    /// How much faster both meters drain on a tick the body sprints, per
+    /// cent (Rust, Nov 2026: 10). Zero is no activity cost.
+    pub sprint_drain_pct: u16,
 }
 
 impl SurvivalContent {
@@ -300,6 +303,7 @@ impl SurvivalContent {
         vessel_count: 0,
         exposure: crate::exposure::ExposureContent::EMPTY,
         bleed_hp_per_min: 0,
+        sprint_drain_pct: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -488,10 +492,17 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     let before = (p.food, p.water, p.hp);
 
     // 1 · Drain. Numerator is the ceiling, denominator the span, so the
-    // meter reaches exactly zero on exactly the tick the span names.
-    let f = tick_units(&mut p.food_acc, sc.max_food as u32, sc.food_span_ticks);
+    // meter reaches exactly zero on exactly the tick the span names. A
+    // sprinting tick adds its surcharge to the numerator, so the
+    // accumulator's remainder means the same thing either way.
+    let (mut fnum, mut wnum) = (sc.max_food as u32, sc.max_water as u32);
+    if sc.sprint_drain_pct > 0 && sprinting(p) {
+        fnum += fnum * sc.sprint_drain_pct as u32 / 100;
+        wnum += wnum * sc.sprint_drain_pct as u32 / 100;
+    }
+    let f = tick_units(&mut p.food_acc, fnum, sc.food_span_ticks);
     p.food = p.food.saturating_sub(f as u16);
-    let w = tick_units(&mut p.water_acc, sc.max_water as u32, sc.water_span_ticks);
+    let w = tick_units(&mut p.water_acc, wnum, sc.water_span_ticks);
     p.water = p.water.saturating_sub(w as u16);
 
     // 2 · Hurt. Both meters empty stack: the rates add before the
@@ -572,6 +583,17 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
         return Step::Changed;
     }
     Step::Quiet
+}
+
+/// Whether `p` runs this tick: its last frame sprints (`movement::sprints`:
+/// held, forward, no bow drawn) and nothing overrides it — a crouch walks, a
+/// downed body crawls, and a sleeper's last frame is no work at all.
+fn sprinting(p: &Player) -> bool {
+    p.active
+        && !p.sleeping
+        && !p.wounded
+        && p.frame.buttons & crate::input::BTN_CROUCH == 0
+        && crate::movement::sprints(&p.frame)
 }
 
 // The clock's deaths are announced by `World::die`, with every other
@@ -1046,6 +1068,38 @@ mod tests {
         assert_eq!(p.water, 1, "one unit left on the last tick of the span");
         step(&sc, &mut p, &mut q);
         assert_eq!(p.water, 0, "empty exactly on the span's tick");
+    }
+
+    /// A sprint burns `sprint_drain_pct` more of both meters than a walk
+    /// over the same ticks; a crouch held with it walks, and so costs none.
+    #[test]
+    fn a_sprint_drains_faster_and_a_crouch_does_not() {
+        let mut sc = SurvivalContent::probe_fixture();
+        sc.sprint_drain_pct = 10;
+        let run = crate::input::InputFrame {
+            buttons: crate::input::BTN_SPRINT,
+            move_z: 100,
+            ..crate::input::InputFrame::default()
+        };
+        let mut q = EventQueue::default();
+        let mut spent = |frame: crate::input::InputFrame| {
+            let mut p = player(&sc);
+            p.frame = frame;
+            let (f0, w0) = (p.food, p.water);
+            for _ in 0..(sc.water_span_ticks / 2) {
+                step(&sc, &mut p, &mut q);
+            }
+            (f0 - p.food, w0 - p.water)
+        };
+        let walk = spent(crate::input::InputFrame::default());
+        let sprint = spent(run);
+        assert_eq!(sprint.1, walk.1 + walk.1 / 10, "water: +10% at a sprint");
+        assert!(sprint.0 > walk.0, "food drains faster too");
+        let sneak = crate::input::InputFrame {
+            buttons: crate::input::BTN_SPRINT | crate::input::BTN_CROUCH,
+            ..run
+        };
+        assert_eq!(spent(sneak), walk, "a crouch walks");
     }
 
     /// Both meters empty stack, and the sum is what kills.

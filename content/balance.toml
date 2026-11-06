@@ -269,6 +269,9 @@ drink_water_salt = 15
 # bandage closes it. Fire burns, it does not cut.
 bleed_pct = 20
 bleed_hp_per_min = 20
+# Sprinting burns food and water this much faster, per cent (Rust's November
+# 2026 patch: "Sprinting now increases hunger and fluid consumption by 10%").
+sprint_drain_pct = 10
 
 # The water vessels, Rust's water bottle and jug: each holds up to `ml` of
 # water in its own data, fresh, or the sea's salt where `salt` lets it. H
