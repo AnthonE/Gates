@@ -570,19 +570,21 @@ pub enum Quick {
 /// `REFUSE_M_NO_ROOM`, never a clamp), so a destination is only a
 /// destination if the arithmetic is done first:
 ///
-/// 1. **The first slot holding the same item with room**, and the count is
-///    that room — so right-clicking 40 wood into a pack holding 990 of a
-///    1,000 stack moves ten and leaves thirty, rather than being refused.
-///    Same-item first, because the alternative scatters a resource across
-///    fresh slots beside the pile it belongs in, which is the thing that
-///    makes a quick-move worse than a drag.
+/// 1. **The first grid slot holding the same item with room**, and the
+///    count is that room — so right-clicking 40 wood into a pack holding 990
+///    of a 1,000 stack moves ten and leaves thirty, rather than being
+///    refused. Same-item first, because the alternative scatters a resource
+///    across fresh slots beside the pile it belongs in, which is the thing
+///    that makes a quick-move worse than a drag.
 /// 2. **Otherwise the first empty slot of the main grid**, and the count
 ///    is the whole stack. An empty slot always takes it: the source stack
-///    was built under the sim's own ceiling. The **belt is last**, for the
-///    reason the loop states — the reference's belt is a separate
-///    container and cannot be a quick-move's target at all
-///    (`reference/LOOT.md` §5, §9.5), and ours is six slots of the same
-///    array, so the order is where that difference has to be expressed.
+///    was built under the sim's own ceiling. The **belt is last**, a match
+///    on it included, for the reason the loop states — the reference's belt
+///    is a separate container and cannot be a quick-move's target at all
+///    (`reference/LOOT.md` §5, §9.5; since Nov 2026 not even onto a
+///    matching stack), and ours is six slots of the same array, so the
+///    order is where that difference has to be expressed: a belt match,
+///    then an empty belt slot, only when the grid has no room.
 /// 3. **Otherwise nothing**, with a line saying so.
 ///
 /// ⚠ **A `stack_max` of 0 means "I do not know", not "unstackable"** —
@@ -688,6 +690,7 @@ pub fn quick_move(
     let width = slots_in(to_kind);
     let mut empty = None;
     let mut empty_belt = None;
+    let mut belt_merge = None;
     for slot in 0..width {
         let there = dst.get(slot).copied().unwrap_or_default();
         if there.count == 0 {
@@ -728,7 +731,15 @@ pub fn quick_move(
         // And the condition, for the same reason: a clone's genes ride it.
         if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
             let room = cap.saturating_sub(there.count);
-            if room > 0 {
+            // A match on the belt loses too, and to an empty grid slot as
+            // well (the reference, Nov 2026: a quick-move goes to the main
+            // inventory "even if there is a matching item on the belt"):
+            // looted arrows land in the pack, not on the stack in your hand.
+            if room > 0 && to_kind == CONT_SELF && slot < HOTBAR_SLOTS {
+                if belt_merge.is_none() {
+                    belt_merge = Some((slot, room));
+                }
+            } else if room > 0 {
                 return finish(
                     cont_handle,
                     from_kind,
@@ -743,14 +754,20 @@ pub fn quick_move(
             }
         }
     }
-    match empty.or(empty_belt) {
-        Some(slot) => finish(
+    let pick = match (empty, belt_merge, empty_belt) {
+        (Some(slot), _, _) => Some((slot, Grab::All)),
+        (None, Some((slot, room)), _) => Some((slot, Grab::Fit(room))),
+        (None, None, Some(slot)) => Some((slot, Grab::All)),
+        (None, None, None) => None,
+    };
+    match pick {
+        Some((slot, grab)) => finish(
             cont_handle,
             from_kind,
             from_slot,
             to_kind,
             slot,
-            Grab::All,
+            grab,
             inv,
             cont,
             worn,
