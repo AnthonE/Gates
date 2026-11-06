@@ -12,7 +12,7 @@ use crate::limits::MAX_BUILDINGS;
 pub struct Buildings {
     frames: Box<[Frame; MAX_BUILDINGS]>,
     /// Live pieces per row; zero is a free row.
-    counts: Box<[u16; MAX_BUILDINGS]>,
+    counts: Box<[u32; MAX_BUILDINGS]>,
     /// Rows with a piece in them.
     live: usize,
 }
@@ -45,7 +45,7 @@ impl Buildings {
     }
 
     /// Pieces standing in building `b`.
-    pub fn count(&self, b: u16) -> u16 {
+    pub fn count(&self, b: u16) -> u32 {
         self.counts.get(b as usize).copied().unwrap_or(0)
     }
 

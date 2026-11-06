@@ -2382,14 +2382,14 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
+        let by_hand = 1_532                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
             + 512 * 681                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + teas at 31, item data at 33)
-            + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
-            + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
-            + 4_096 * 38                    // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
-            + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 2_048 * 191                   // containers: 13 + 12 twelve-byte stacks (33) + the oven's 30 + the planter's water (30)
-            + 2_048 * 106                   // code locks (format 17: ten auth ids)
+            + 4 + 2 + 32_768 * 16           // the id counter and the buildings (format 29)
+            + 131_072 * 37                  // pieces + plate + placement tick + id, building and footprint (29)
+            + 32_768 * 38                   // deploys (+ the pose at 19, the skin at 32) + bag_ready + placed
+            + 4_096 * 67                    // hearths (26 with the slot + the crew: 1 + 10*4)
+            + 16_384 * 191                  // containers: 13 + 12 twelve-byte stacks (33) + the oven's 30 + the planter's water (30)
+            + 16_384 * 106                  // code locks (format 17: ten auth ids)
             + 1_024 * 388                   // bags: 28 + 30 twelve-byte stacks (33)
             + 256 * 381                     // world containers: 21 + 30 twelve-byte stacks (33) (256 at roadside junk)
             + 6_144 * 25                    // charges (every seat's share: 512 × 12)
@@ -2397,30 +2397,31 @@ mod tests {
             + 512 * 39                      // loose ground stacks (format 14; 8 B stack at 16, 12 B at 33; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
             + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
-            + 2 + 64 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
-            + 6 + 4_096 * 58 // plants (format 30): a count and the next id, then each plant
-            + 2 + 512 * 46 // turret lists (format 34): a count, then key + count + ten ids (+ the mode at 35)
-            + 2 + 2_048 * 10 // wires (format 36): a count, then from, out, to, inp
-            + 2 + 512 * 8; // charges (format 36): a count, then key and charge
-                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                           // 56 -> 62 at format 10: a tenth count, plus the
-                           // spent store's `u32` eviction counter beside the
-                           // body one. 62 -> 64 at format 14: an eleventh
-                           // count for the loose stacks. No head field beside
-                           // it — `next_id` is derived by the loader from the
-                           // ids it installs (`GroundItems::restore`), unlike
-                           // a bag's, and a head field duplicating a
-                           // derivable one is a second place for it to be
-                           // wrong. 64 -> 90 at format 15: the admin's sky and
-                           // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                           // fires' count. 92 -> 1380 at format 21: the
-                           // works, every slot whether or not content
-                           // names one (`MAX_WORKS` × `WORK_BYTES`).
+            + 2 + 256 * 40 // vending offers (format 26): a count, then key + 6 rows of item, lot, price
+            + 6 + 16_384 * 58 // plants (format 30): a count and the next id, then each plant
+            + 2 + 4_096 * 46 // turret lists (format 34): a count, then key + count + ten ids (+ the mode at 35)
+            + 2 + 16_384 * 10 // wires (format 36): a count, then from, out, to, inp
+            + 2 + 4_096 * 8; // charges (format 36): a count, then key and charge
+                             // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                             // 56 -> 62 at format 10: a tenth count, plus the
+                             // spent store's `u32` eviction counter beside the
+                             // body one. 62 -> 64 at format 14: an eleventh
+                             // count for the loose stacks. No head field beside
+                             // it — `next_id` is derived by the loader from the
+                             // ids it installs (`GroundItems::restore`), unlike
+                             // a bag's, and a head field duplicating a
+                             // derivable one is a second place for it to be
+                             // wrong. 64 -> 90 at format 15: the admin's sky and
+                             // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                             // fires' count. 92 -> 1380 at format 21: the
+                             // works, every slot whether or not content
+                             // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
         // 1516 -> 1520 at format 25: the blight's salt.
-        assert_eq!(HEAD_BYTES, 1_520);
+        // 1520 -> 1532 at format 37: six section counts widened to `u32`.
+        assert_eq!(HEAD_BYTES, 1_532);
         // 4 id + 12 position + 12 stack + 8 deadline + 3 stuck direction.
         assert_eq!(GROUND_ITEM_BYTES, 39);
         // Three millimetre coordinates, the round, the ready deadline, the
@@ -2545,8 +2546,12 @@ mod tests {
         // 6_421_508 with no format change, the 512-player cap: 412 more
         // bodies × 681, 768 more bags × 388, 4,944 more charges × 25 —
         // counts, so old saves load.
+        // 17_162_256 at format 37: room to build — six counts to `u32`, and
+        // the pieces (131 072), buildings and deploys (32 768), boxes and
+        // locks (16 384), hearths (4 096), plants, turret lists, wires,
+        // batteries and shops scaled for the 512-player cap.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 6_421_508,
+            WORLD_SAVE_MAX_BYTES, 17_162_256,
             "the world save ceiling moved"
         );
     }

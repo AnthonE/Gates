@@ -652,14 +652,15 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[COUNTS_AT..COUNTS_AT + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
-    // A piece count past MAX_PIECES.
+    // A piece count past MAX_PIECES: a `u32` since format 37.
     assert_eq!(
-        bent(&|b| b[COUNTS_AT + 2..COUNTS_AT + 4].copy_from_slice(&u16::MAX.to_le_bytes())),
+        bent(&|b| b[COUNTS_AT + 2..COUNTS_AT + 6].copy_from_slice(&u32::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
-    // A lock count past MAX_LOCKS — the sixth `u16` (lock v1).
+    // A lock count past MAX_LOCKS — the sixth count, after the players'
+    // `u16` and four `u32`s (format 37).
     assert_eq!(
-        bent(&|b| b[COUNTS_AT + 10..COUNTS_AT + 12].copy_from_slice(&u16::MAX.to_le_bytes())),
+        bent(&|b| b[COUNTS_AT + 18..COUNTS_AT + 22].copy_from_slice(&u32::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
     // A slot-life count past MAX_SLOT_LIVES — the u32 one, and the last
