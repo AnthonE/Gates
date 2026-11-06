@@ -1106,7 +1106,7 @@ const STRUCT_HP_BITS: u32 = u16::BITS;
 /// (`sim_core::build::MAX_PIECE_ID`), so the width is the range check.
 pub(crate) const PIECE_ID_BITS: u32 = 26;
 /// A building row, `MAX_BUILDINGS` exactly.
-pub(crate) const BUILDING_BITS: u32 = 12;
+pub(crate) const BUILDING_BITS: u32 = 15;
 /// A frame's origin, signed centimetres biased by half the width: ±5.2 km,
 /// the island and its sea.
 pub(crate) const ORIGIN_CM_BITS: u32 = 20;

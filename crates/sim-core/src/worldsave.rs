@@ -254,7 +254,10 @@ use crate::worldcont::WorldContRec;
 /// older file reads.
 /// **36 — electricity** (`power.rs`): the wires and the batteries' charges,
 /// two counted sections after the turrets' lists; no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 36;
+/// **37 — room to build** (the 512-player cap): the piece, deploy, hearth,
+/// box, lock and bag counts are `u32`, so a store past 65 535 can be said;
+/// no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 37;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -301,7 +304,8 @@ pub const HEAD_BYTES: usize = 2
     + ARC_SAVE_BYTES
     + BLIGHT_SAVE_BYTES
     + SECTION_COUNTS;
-/// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// Six `u16` counts and seven `u32`: the six build stores (format 37) and
+/// `slot_lives` (whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
 /// The ninth is `world_conts` (format 5), the tenth `spent` (format 10),
@@ -313,7 +317,7 @@ pub const HEAD_BYTES: usize = 2
 /// the byte-poke landed in the eviction counter and the test failed with
 /// "a player count past MAX_PLAYERS was accepted" rather than with anything
 /// about the head. The offset is `HEAD_BYTES - SECTION_COUNTS` now.
-pub const SECTION_COUNTS: usize = 12 * 2 + 4;
+pub const SECTION_COUNTS: usize = 6 * 2 + 7 * 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -678,12 +682,12 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     // not here — see `decode_into`. What is written is who was in the world.
     let bodies = w.players.iter().filter(|p| p.active).count();
     o.u16(bodies as u16);
-    o.u16(w.pieces.len() as u16);
-    o.u16(w.deploys.len() as u16);
-    o.u16(w.deploys.hearths().len() as u16);
-    o.u16(w.deploys.boxes().len() as u16);
-    o.u16(w.deploys.locks().len() as u16);
-    o.u16(w.backpacks.len() as u16);
+    o.u32(w.pieces.len() as u32);
+    o.u32(w.deploys.len() as u32);
+    o.u32(w.deploys.hearths().len() as u32);
+    o.u32(w.deploys.boxes().len() as u32);
+    o.u32(w.deploys.locks().len() as u32);
+    o.u32(w.backpacks.len() as u32);
     o.u16(w.world_conts.len() as u16);
     o.u16(w.charges.len() as u16);
     o.u16(w.spent.len() as u16);
@@ -1184,12 +1188,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let blight_salt = r.u32()?;
 
     let n_players = r.count(MAX_PLAYERS)?;
-    let n_pieces = r.count(MAX_PIECES)?;
-    let n_deploys = r.count(MAX_DEPLOYS)?;
-    let n_hearths = r.count(MAX_HEARTHS)?;
-    let n_boxes = r.count(MAX_BOXES)?;
-    let n_locks = r.count(MAX_LOCKS)?;
-    let n_bags = r.count(MAX_BACKPACKS)?;
+    let n_pieces = r.count32(MAX_PIECES)?;
+    let n_deploys = r.count32(MAX_DEPLOYS)?;
+    let n_hearths = r.count32(MAX_HEARTHS)?;
+    let n_boxes = r.count32(MAX_BOXES)?;
+    let n_locks = r.count32(MAX_LOCKS)?;
+    let n_bags = r.count32(MAX_BACKPACKS)?;
     let n_conts = r.count(MAX_WORLD_CONTS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_spent = r.count(MAX_SPENT_ARROWS)?;

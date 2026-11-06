@@ -1652,7 +1652,7 @@ fn addr_key(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
 /// backward-shift delete, so no tombstones), keyed by [`addr_key`].
 struct AddrIndex {
     keys: Box<[u64; PIECE_ADDR_SLOTS]>,
-    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u32; PIECE_ADDR_SLOTS]>,
 }
 
 impl AddrIndex {
@@ -1697,7 +1697,7 @@ impl AddrIndex {
             i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
         }
         self.keys[i] = key;
-        self.vals[i] = idx as u16;
+        self.vals[i] = idx as u32;
     }
 
     fn del(&mut self, key: u64) {
@@ -1743,7 +1743,7 @@ fn hit_of(rec: &PieceRec) -> crate::collide::PieceHit {
 /// Lattice address → store index: [`AddrIndex`] on a 128-bit key.
 struct LatIndex {
     keys: Box<[u128; PIECE_ADDR_SLOTS]>,
-    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u32; PIECE_ADDR_SLOTS]>,
 }
 
 impl LatIndex {
@@ -1786,7 +1786,7 @@ impl LatIndex {
             i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
         }
         self.keys[i] = key;
-        self.vals[i] = idx as u16;
+        self.vals[i] = idx as u32;
     }
 
     fn del(&mut self, key: u128) {

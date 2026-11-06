@@ -426,8 +426,8 @@ pub(crate) struct ClaimCache {
     /// walk order; volume `v` is `pool[vol_start[v]..][..vol_len[v]]`.
     pool: Box<[u32; MAX_PIECES]>,
     pool_len: usize,
-    vol_start: [u16; MAX_HEARTHS],
-    vol_len: [u16; MAX_HEARTHS],
+    vol_start: [u32; MAX_HEARTHS],
+    vol_len: [u32; MAX_HEARTHS],
     /// Planar bounds per volume, **cushion-expanded**, in metres:
     /// `[min_x, min_z, max_x, max_z]`. The cheap pre-reject that keeps a
     /// covers() miss at four compares instead of a cell scan.
@@ -615,8 +615,8 @@ impl ClaimCache {
                 max_x + PRIV_CUSHION_M,
                 max_z + PRIV_CUSHION_M,
             ];
-            self.vol_start[v as usize] = start as u16;
-            self.vol_len[v as usize] = (self.pool_len - start) as u16;
+            self.vol_start[v as usize] = start as u32;
+            self.vol_len[v as usize] = (self.pool_len - start) as u32;
             self.vol_of[hi] = v;
             self.vol_count += 1;
         }

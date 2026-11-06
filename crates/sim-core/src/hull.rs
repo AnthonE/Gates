@@ -454,7 +454,7 @@ pub struct Hulls {
     rows: Vec<Hull>,
     /// Key → row, open addressing like `build::AddrIndex`.
     keys: Box<[u64; PIECE_ADDR_SLOTS]>,
-    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u32; PIECE_ADDR_SLOTS]>,
     space: Space,
 }
 
@@ -533,7 +533,7 @@ impl Hulls {
             i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
         }
         self.keys[i] = key;
-        self.vals[i] = idx as u16;
+        self.vals[i] = idx as u32;
     }
 
     fn del_key(&mut self, key: u64) {

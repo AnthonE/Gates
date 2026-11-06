@@ -1408,7 +1408,8 @@ pub use voice::{
 ///
 /// v155: a player id is `generation << PLAYER_SLOT_BITS | slot` with ten
 /// slot bits (was eight), so a shard can seat more than 256. No layout moved;
-/// a v154 client would read every slot past 255 as the wrong player.
+/// a v154 client would read every slot past 255 as the wrong player. A
+/// piece's building row grows to 15 bits (`MAX_BUILDINGS` 32 768).
 pub const PROTO_VER: u16 = 155;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,

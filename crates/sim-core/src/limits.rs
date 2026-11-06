@@ -623,14 +623,16 @@ pub const MAX_PIECE_COSTS: usize = 2;
 /// placement with an integer reason code (EV_BUILD_REFUSED) — a full world
 /// refuses loudly, never evicts someone's wall. Proposed default,
 /// DECISIONS.md §open (build grid row).
-pub const MAX_PIECES: usize = 32_768;
+/// 131 072 since the 512-player cap: 256 a seat. Indices into the store are
+/// `u32` (they were `u16`, which held it to 65 536).
+pub const MAX_PIECES: usize = 131_072;
 
 /// Buildings per shard (freeform W3): each is a frame, minted by a
 /// foundation placed free and freed with its last piece. A building has at
 /// least one piece, so this caps nothing a full piece store would not —
 /// except a world of single foundations, which it refuses past 4,096 with
 /// `REFUSE_B_FULL`. Structural, not a knob.
-pub const MAX_BUILDINGS: usize = 4_096;
+pub const MAX_BUILDINGS: usize = 32_768;
 
 /// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
 /// axis, matching the wire's 11-bit cell fields (the 4,096 m island spans
@@ -658,7 +660,7 @@ const _: () = assert!(COL_INDEX_SLOTS.is_power_of_two());
 /// load. Structural, not a knob.
 pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
-const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
+const _: () = assert!(MAX_PIECES <= u32::MAX as usize);
 
 /// Deployable definitions the sim preallocates for (content/deployables.toml).
 /// The content bake refuses a set past this; the wire carries the row in 6
@@ -677,7 +679,7 @@ pub const MAX_DEPLOY_COSTS: usize = MAX_RECIPE_INPUTS;
 /// placement with an integer reason code (EV_DEPLOY_REFUSED) — same
 /// posture as `MAX_PIECES`. Proposed default, DECISIONS.md §open
 /// (deployables row).
-pub const MAX_DEPLOYS: usize = 4_096;
+pub const MAX_DEPLOYS: usize = 32_768;
 
 /// Slots in the collision index's table of blocking deployables
 /// (`collide::SolidPose`): every free-placed solid deployable has its own
@@ -698,7 +700,7 @@ const _: () = assert!(SPACE_SLOTS / 2 >= 4 * (MAX_PIECES + MAX_DEPLOYS));
 /// and the upkeep sweep scan hearths, never the whole deploy store.
 /// Overflow policy: **refuse** the hearth placement. Proposed default,
 /// DECISIONS.md §open (deployables row).
-pub const MAX_HEARTHS: usize = 512;
+pub const MAX_HEARTHS: usize = 4_096;
 
 /// Hearths one hand may have standing at once: its share of `MAX_HEARTHS`,
 /// as boxes, turrets and power parts have theirs. Without it one player
@@ -740,13 +742,13 @@ const _: () = assert!(MAX_TURRETS_PER_OWNER < MAX_TURRETS);
 /// Wires on the island at once (`power::PowerStore`): a part has at most
 /// three outputs, and this is two for every part [`MAX_POWER_NODES`] holds.
 /// Overflow policy: **refuse** the connect with `power::REFUSE_W_FULL`.
-pub const MAX_WIRES: usize = 2_048;
+pub const MAX_WIRES: usize = 16_384;
 
 /// Power parts the solve takes in a period (`power::Grid`), shard-wide.
 /// Past it, a part stands dark until one comes down: it is not in the grid,
 /// so nothing reaches it. Structural, not a knob: the grid's arrays and its
 /// index are sized by it.
-pub const MAX_POWER_NODES: usize = 1_024;
+pub const MAX_POWER_NODES: usize = 8_192;
 
 /// Power parts of one owner the solve takes (`power::Grid`): the grid is
 /// shard-wide ([`MAX_POWER_NODES`]), so one hand may not hold all of it.
@@ -758,7 +760,7 @@ const _: () = assert!(MAX_POWER_NODES >= 16 * MAX_POWER_NODES_PER_OWNER);
 
 /// Batteries holding a charge at once (`power::CellRec`). A battery past it
 /// holds nothing until one comes down. Structural, like the grid's.
-pub const MAX_BATTERIES: usize = 512;
+pub const MAX_BATTERIES: usize = 4_096;
 const _: () = assert!(MAX_BATTERIES <= MAX_POWER_NODES && MAX_WIRES <= 2 * MAX_POWER_NODES);
 
 /// Players one auto turret's authorize list holds (`turret::TurretRec`),
@@ -770,7 +772,7 @@ pub const TURRET_AUTH_CAP: usize = 10;
 /// is still its owner alone keeps none, so this counts the turrets somebody
 /// has authorized on, deauthorized from or cleared. Overflow policy:
 /// **refuse** the op that would create one with `REFUSE_D_FULL`.
-pub const MAX_TURRET_RECS: usize = 512;
+pub const MAX_TURRET_RECS: usize = 4_096;
 const _: () = assert!(MAX_TURRET_RECS <= MAX_BOXES);
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
@@ -956,14 +958,14 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// never placed. Proposed default, DECISIONS.md §open (box v0). 2,048
 /// since each hand's share was capped ([`MAX_BOXES_PER_OWNER`]): at 1,024
 /// sixteen accounts filled it. A count, not a stride, so old saves load.
-pub const MAX_BOXES: usize = 2_048;
+pub const MAX_BOXES: usize = 16_384;
 /// Of [`MAX_BOXES`], how many one player may have placed — boxes, fires,
 /// furnaces, planters, turrets, every container (`deploy::holds_items`).
 /// The store is shard-wide and a small box is cheap, so without a share one
 /// player kept every fire, furnace and box on the island from being placed.
 /// Overflow policy: **refuse** with `REFUSE_D_OWN_CAP` (the store's own is
 /// `REFUSE_D_FULL`).
-pub const MAX_BOXES_PER_OWNER: usize = 64;
+pub const MAX_BOXES_PER_OWNER: usize = 128;
 // Every container stands on a deploy record, and filling the store takes
 // thirty-two hands' whole shares.
 const _: () = assert!(MAX_BOXES <= MAX_DEPLOYS && MAX_BOXES >= 32 * MAX_BOXES_PER_OWNER);
@@ -972,13 +974,13 @@ const _: () = assert!(MAX_BOXES <= MAX_DEPLOYS && MAX_BOXES >= 32 * MAX_BOXES_PE
 /// ground (`farm.rs`). One fixed store; a farm period visits at most
 /// `ceil(MAX_PLANTS / 15)` of them. Overflow policy: **refuse** the
 /// planting with `REFUSE_D_PLANTS_FULL` — the seed stays in the hand.
-pub const MAX_PLANTS: usize = 4_096;
+pub const MAX_PLANTS: usize = 16_384;
 
 /// Of [`MAX_PLANTS`], how many may stand in the open ground, island-wide
 /// and per sower (`farm::ground_ok`). A ground plant never dies before it
 /// ripens, so these are what bound a field sown to spam. Overflow policy:
 /// **refuse** the planting with `REFUSE_D_PLANTS_FULL`.
-pub const MAX_GROUND_PLANTS: usize = 512;
+pub const MAX_GROUND_PLANTS: usize = 4_096;
 pub const MAX_GROUND_PLANTS_PER_OWNER: usize = 48;
 
 /// Water catchers standing at once, island-wide (`deploy::ARCH_CATCHER`).
@@ -1049,7 +1051,7 @@ pub const BOX_SLOTS: usize = 12;
 
 /// Vending machines with offers set, shard-wide (`shop.rs`). A machine with
 /// no offers holds no record; past the cap a first `SET` refuses.
-pub const MAX_SHOPS: usize = 64;
+pub const MAX_SHOPS: usize = 256;
 /// Offers one vending machine shows.
 pub const SHOP_ROWS: usize = 6;
 
@@ -1064,7 +1066,7 @@ pub const SHOP_ROWS: usize = 6;
 /// it, and a shard with 2,048 locked doors is a shard with hundreds of
 /// bases.
 /// Proposed default, DECISIONS.md §open (lock v1).
-pub const MAX_LOCKS: usize = 2_048;
+pub const MAX_LOCKS: usize = 16_384;
 
 /// Players one lock remembers with **full** rights — the ones who entered
 /// its main code, plus whoever bolted it on. The reference's list is

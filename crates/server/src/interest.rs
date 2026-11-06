@@ -98,22 +98,23 @@ pub const PIECE_REARM_CM: i64 = AOI_EXIT_CM - AOI_ENTER_CM;
 ///
 /// ```text
 /// MAX_PIECES / B ticks × SPRINT_SPEED / TICK_HZ  <  PIECE_REARM_CM
-/// 32768 / B × 5.5 / 30 m                         <  32 m     ⇒  B > 187
+/// 131072 / B × 5.5 / 30 m                        <  32 m     ⇒  B > 751
 /// ```
 ///
-/// 1,024 clears that by 5.4×: a full-store walk is 32 ticks (1.07 s),
-/// inside which a sprinter covers 5.9 m of the 32 m budget. It costs 1,024
-/// integer distance tests per walking client per tick — nothing in steady
-/// state, where every walk has finished and the scan does not run at all.
-/// It was 256 while the store was 8,192, the same 32 ticks.
+/// At 131 072 pieces the floor is B > 751, and 4,096 clears it by 5.4×: a
+/// full-store walk is 32 ticks (1.07 s), inside which a sprinter covers
+/// 5.9 m of the 32 m budget. It costs 4,096 integer distance tests per
+/// walking client per tick — nothing in steady state, where every walk has
+/// finished and the scan does not run at all. It was 256 while the store
+/// was 8,192 and 1,024 at 32,768, the same 32 ticks each time.
 /// `tests/piece_interest.rs` holds the inequality against the constants it
 /// is derived from.
 ///
 /// The deployable and backpack walks scan with the same window. Their
-/// stores are smaller (`MAX_DEPLOYS` 4096 is 4 ticks, `MAX_BACKPACKS` 256
+/// stores are smaller (`MAX_DEPLOYS` 32 768 is 8 ticks, `MAX_BACKPACKS` 1 024
 /// is one), so the floor above clears by more for them; the assert below
 /// is what says so.
-pub const PIECE_SCAN_BATCH: usize = 1_024;
+pub const PIECE_SCAN_BATCH: usize = 4_096;
 const _: () = assert!(MAX_DEPLOYS <= MAX_PIECES && MAX_BACKPACKS <= MAX_PIECES);
 
 /// Squared planar distance between two centimetre positions.
