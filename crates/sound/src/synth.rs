@@ -1432,7 +1432,8 @@ fn fizzle(r: &mut Rng) -> Vec<f32> {
     out
 }
 
-/// One heartbeat heard from inside: "lub" then "dub" 0.17 s later — two
+/// The fallback for a heartbeat whose recording failed to decode
+/// (`assets/sound/pd/heartbeat_*`): "lub" then "dub" 0.17 s later — two
 /// low sine thumps falling in pitch (a valve's knock, not a drum), the
 /// second shorter and quieter, with a breath of low-passed noise on each
 /// attack so it reads as a body and not a synth kick.

@@ -567,7 +567,8 @@ pub enum Cue {
     StepSnow,
     /// A step in snow heard at another body, as [`Cue::RemoteStepSand`].
     RemoteStepSnow,
-    /// Your own heart while you are down (wounded v0): one "lub-dub", played
+    /// Your own heart while you are down (wounded v0): one recorded
+    /// "lub-dub" (`pd/heartbeat_*`), played
     /// on a beat by `render/audio.rs` for as long as the crawl lasts — the
     /// reference's Nov 2026 "heartbeat sound when wounded". Yours alone, so
     /// not positional. Appended, the enum's append-order rule.

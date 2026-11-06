@@ -151,6 +151,7 @@ static RECORDED: &[(Cue, &[Rec])] = &[
     (Cue::MapPin, takes!("kenney", "map_pin", 0)),
     (Cue::Geiger, takes!("pd", "geiger", 0 1 2 3)),
     (Cue::Headshot, takes!("pd", "headshot", 0 1 2)),
+    (Cue::Heartbeat, takes!("pd", "heartbeat", 0 1 2 3)),
     (Cue::BowDraw, takes!("freesound", "bow_draw", 0 1)),
     (Cue::Reload, takes!("freesound", "reload", 0 1)),
     (Cue::Ricochet, takes!("freesound", "ricochet", 0 1 2 3)),
