@@ -15,8 +15,9 @@ pub enum Orient {
     /// Faces the camera, rolled by its own angle.
     #[default]
     Billboard,
-    /// Drawn along its own velocity as seen from the camera — a spark's
-    /// streak — at least [`MIN_PX`] wide so it reads with bloom off.
+    /// A true line in the world, from its head back along its velocity — a
+    /// spark's streak — turned to face the camera, at least [`MIN_PX`] wide so
+    /// it reads with bloom off. Seen head on it is a dot, not a line.
     Stretch,
     /// Lies flat on the ground (a ring on the water).
     Flat,
@@ -358,21 +359,31 @@ impl Pool {
             Orient::Stretch => {
                 let view = v3::norm_or(v3::sub(p.pos, cam.pos), v3::Z);
                 let dist = v3::len(v3::sub(p.pos, cam.pos));
-                let across = v3::sub(p.vel, v3::scale(view, v3::dot(p.vel, view)));
                 let max = if p.len_max > 0.0 {
                     p.len_max
                 } else {
                     STREAK_MAX_M
                 };
-                let len = (v3::len(p.vel) * p.stretch).clamp(STREAK_MIN_M, max);
+                // A longest under the shortest is the shortest, not a panic.
+                let len = (v3::len(p.vel) * p.stretch).clamp(STREAK_MIN_M, max.max(STREAK_MIN_M));
+                let dir = v3::norm_or(p.vel, cam.up);
+                let toward = v3::dot(dir, view);
+                let across = v3::sub(dir, v3::scale(view, toward));
                 let axis = v3::norm_or(across, cam.up);
                 let side = v3::norm_or(v3::cross(view, axis), cam.right);
                 let w = size.max(dist * MIN_PX);
-                // The head leads; the tail trails back along the motion.
+                // The head leads; the tail trails back along the motion, in
+                // depth too: one flying from the eye is short, not its whole
+                // length sideways. Head on, at least `w` across, or the quad
+                // is edge on to the eye and gone.
+                let half = len * 0.5;
                 (
-                    v3::scale(axis, len * 0.5),
+                    v3::add(
+                        v3::scale(view, toward * half),
+                        v3::scale(axis, (v3::len(across) * half).max(w)),
+                    ),
                     v3::scale(side, w),
-                    v3::sub(p.pos, v3::scale(axis, len * 0.5)),
+                    v3::sub(p.pos, v3::scale(dir, half)),
                 )
             }
         };
