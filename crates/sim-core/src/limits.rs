@@ -693,6 +693,15 @@ const _: () = assert!(SPACE_SLOTS / 2 >= 4 * (MAX_PIECES + MAX_DEPLOYS));
 /// DECISIONS.md §open (deployables row).
 pub const MAX_HEARTHS: usize = 512;
 
+/// Hearths one hand may have standing at once: its share of `MAX_HEARTHS`,
+/// as boxes, turrets and power parts have theirs. Without it one player
+/// with the wood (1,000 a hearth) fills the shard's store and nobody else
+/// can claim anywhere. The reference capped tool cupboards at 6 a player
+/// on its softcore servers (Nov 2026) against the same spam; 6 is theirs.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_OWN_CAP`.
+pub const MAX_HEARTHS_PER_OWNER: usize = 6;
+const _: () = assert!(MAX_HEARTHS >= 64 * MAX_HEARTHS_PER_OWNER);
+
 /// Player auto turrets with a gun, shard-wide (`turret.rs`): each rides a
 /// roster slot below the town's sentries, taken from the animals' range —
 /// 64 leaves 187 animal slots, about three times what the shipped

@@ -569,10 +569,19 @@ impl Rig {
         let said = self.client(p, row, t);
         let sim = self.sim(p, row, t);
         assert_eq!(sim, Err(code), "the sim did not refuse with code {code}");
-        assert_eq!(
-            said,
-            DeployVerdict::No(client::ui::refusals::DEPLOY[code as usize]),
-            "client and sim disagree for code {code}"
+        // A taken spot is the one code the ghost words more closely than the
+        // table: it names what takes it ("blocked by a box", the reference's
+        // Nov 2026 "Blocked by X"), which the code alone cannot carry.
+        let table = client::ui::refusals::DEPLOY[code as usize];
+        let expect =
+            if code == sim_core::deploy::REFUSE_D_SPOT && sentence.starts_with("blocked by ") {
+                sentence
+            } else {
+                table
+            };
+        assert!(
+            matches!(said, DeployVerdict::No(w) if w == expect),
+            "client and sim disagree for code {code}: {said:?}"
         );
         assert_eq!(said.why(), sentence, "the sentence drifted from the table");
     }
@@ -675,13 +684,14 @@ fn a_taken_spot_is_red_on_both_sides() {
     let mut p = rich(CX, CZ);
     // The first bag places — and was never red.
     rig.agree_ok(&mut p, ROW_BAG, at(CX, CZ, 0, LOC_PLANE));
-    // The second refuses the occupied address, both sides.
+    // The second refuses the occupied address, both sides, and the ghost
+    // names what is in the way.
     rig.agree_no(
         &mut p,
         ROW_BAG,
         at(CX, CZ, 0, LOC_PLANE),
         REFUSE_D_SPOT,
-        "spot taken",
+        "blocked by a sleeping bag",
     );
     // And the loc rule is the same function on both sides: a door named at
     // the cell body is not a slot a doorway-class deployable occupies.

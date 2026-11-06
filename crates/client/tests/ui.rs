@@ -6269,17 +6269,46 @@ mod quick {
     #[test]
     fn a_quick_move_tops_up_the_pile_it_belongs_in() {
         let mut inv = empty();
-        inv[0] = stack(HATCHET, 1); // slot 0 is taken by something else
-        inv[3] = stack(WOOD, 990);
+        inv[HOTBAR_SLOTS] = stack(HATCHET, 1); // taken by something else
+        inv[HOTBAR_SLOTS + 3] = stack(WOOD, 990);
         let mut cont = empty();
         cont[0] = stack(WOOD, 40);
         let args = sent(from_bag(&inv, &cont, 0));
         assert_eq!(
-            (args.to_slot, args.count),
-            (3, 10),
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS + 3, 10),
             "the quick-move ignored 10 units of room in the pile and \
              either scattered a second stack or asked for a count the sim \
              refuses"
+        );
+    }
+
+    /// **A match on the belt loses to the grid** (the reference, Nov 2026:
+    /// quick-moved loot goes to the main inventory "even if there is a
+    /// matching item on the belt"). Arrows in hand stay the arrows in hand;
+    /// the looted ones go in the pack — and onto the belt's pile only when
+    /// the grid has no room at all.
+    #[test]
+    fn a_quick_move_passes_a_belt_pile_for_the_grid() {
+        let mut inv = empty();
+        inv[2] = stack(WOOD, 100);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot as usize, args.count),
+            (HOTBAR_SLOTS, 40),
+            "the looted stack was merged onto the belt's pile"
+        );
+        // A grid full of other things: now the belt's pile takes it.
+        for slot in inv[HOTBAR_SLOTS..].iter_mut() {
+            *slot = stack(HATCHET, 1);
+        }
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot, args.count),
+            (2, 40),
+            "with the grid full, the belt's pile should take the top-up"
         );
     }
 
@@ -6557,8 +6586,9 @@ mod quick {
         let mut cont = empty();
         cont[0] = stack(WOOD, 40);
         let mut inv = empty();
-        // What the first right-click left: a stack of wood in the pack.
-        inv[0] = stack(WOOD, 20);
+        // What the first right-click left: a stack of wood in the pack
+        // (the grid's first slot — a quick-move never starts on the belt).
+        inv[HOTBAR_SLOTS] = stack(WOOD, 20);
         let args = sent(quick_move(
             CONT_WORLD,
             BAG,
@@ -6570,8 +6600,8 @@ mod quick {
             &[ItemStack::default(); WEAR_SLOTS],
         ));
         assert_eq!(
-            (args.to_kind, args.to_slot, args.count),
-            (CONT_SELF, 0, 40),
+            (args.to_kind, args.to_slot as usize, args.count),
+            (CONT_SELF, HOTBAR_SLOTS, 40),
             "the second take out of a crate did not merge into the pile \
              the first one made"
         );

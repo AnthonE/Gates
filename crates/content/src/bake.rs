@@ -1438,6 +1438,7 @@ impl Content {
         sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
         sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
         sc.bleed_hp_per_min = u16f(s.bleed_hp_per_min, "bleed_hp_per_min")?;
+        sc.sprint_drain_pct = u16f(s.sprint_drain_pct, "sprint_drain_pct")?;
         sc.drink_water_salt = u16f(
             s.drink_water_salt.unwrap_or(s.drink_water),
             "drink_water_salt",

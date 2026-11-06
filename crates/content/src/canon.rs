@@ -631,6 +631,7 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.u(sv.bleed_pct);
     h.u(sv.bleed_hp_per_min);
+    h.u(sv.sprint_drain_pct);
 
     let ex = &c.balance.exposure;
     h.s("exposure");

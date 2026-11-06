@@ -1680,6 +1680,10 @@ pub struct Survival {
     pub bleed_pct: u32,
     #[serde(default)]
     pub bleed_hp_per_min: u32,
+    /// How much faster food and water drain while sprinting, per cent
+    /// (Rust, Nov 2026: 10). Absent is no activity cost.
+    #[serde(default)]
+    pub sprint_drain_pct: u32,
 }
 
 /// One water vessel (`[[survival.vessels]]`).

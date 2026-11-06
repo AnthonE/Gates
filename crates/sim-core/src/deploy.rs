@@ -88,8 +88,8 @@ use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOXES_PER_OWNER,
     MAX_BOX_SPILL_PER_TICK, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, MAX_POWER_NODES_PER_OWNER,
-    MAX_TURRETS_PER_OWNER, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
+    MAX_DEPLOY_DEFS, MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_HEARTHS_PER_OWNER, MAX_LOCKS,
+    MAX_POWER_NODES_PER_OWNER, MAX_TURRETS_PER_OWNER, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -610,6 +610,7 @@ pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// (`movement::swimming`), `build::REFUSE_B_SWIMMING`'s rule.
 pub const REFUSE_D_SWIMMING: u32 = 26;
 /// One hand's share of a shard-wide store is placed already: its
+/// hearths (`limits::MAX_HEARTHS_PER_OWNER`), its
 /// containers (`limits::MAX_BOXES_PER_OWNER`), its turrets
 /// (`limits::MAX_TURRETS_PER_OWNER`) or its power parts
 /// (`limits::MAX_POWER_NODES_PER_OWNER`). Its own reason rather than
@@ -3375,6 +3376,16 @@ pub fn place_deploy(
         }
         if deploys.hearth_count == MAX_HEARTHS {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+            return;
+        }
+        // And each hand holds only its share of that store.
+        if deploys.entries[..deploys.len]
+            .iter()
+            .filter(|d| d.owner == p.id && dc.defs[d.row as usize].arch == ARCH_HEARTH)
+            .count()
+            >= MAX_HEARTHS_PER_OWNER
+        {
+            events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWN_CAP, 0);
             return;
         }
     }
@@ -9880,6 +9891,60 @@ mod tests {
         );
         // A box of somebody else's in that row, and the same placement goes.
         deploys.boxes.entries[0].owner = 9;
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(r.0, crate::world::EV_DEPLOY_PLACED);
+    }
+
+    /// **One hand's share of the hearth store** (the reference's softcore
+    /// cupboard cap, Nov 2026): the store is shard-wide, and without a share
+    /// one player's wood fills it for everyone.
+    #[test]
+    fn one_hand_places_only_its_share_of_the_hearth_store() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (2, 1)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        // The hand's share already standing, far off (row 0 is the hearth).
+        for k in 0..MAX_HEARTHS_PER_OWNER {
+            deploys.entries[k] = DeployRec {
+                cx: 100 + 3 * k as u16,
+                cz: 100,
+                row: 0,
+                owner: p.id,
+                ..DeployRec::default()
+            };
+        }
+        deploys.len = MAX_HEARTHS_PER_OWNER;
+        let mut place = |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player| {
+            place_deploy(
+                SEED,
+                hv(),
+                &dc,
+                &bc,
+                pieces,
+                deploys,
+                p,
+                0,
+                0,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                crate::footprint::Pose::CENTRE,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        let r = place(&mut deploys, &mut pieces, &mut p);
+        assert_eq!(
+            (r.0, r.2),
+            (crate::world::EV_DEPLOY_REFUSED, REFUSE_D_OWN_CAP)
+        );
+        // One of them somebody else's, and the same placement goes.
+        deploys.entries[0].owner = 9;
         let r = place(&mut deploys, &mut pieces, &mut p);
         assert_eq!(r.0, crate::world::EV_DEPLOY_PLACED);
     }
