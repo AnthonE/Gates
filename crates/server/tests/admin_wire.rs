@@ -26,7 +26,7 @@ const ADMIN_WALLET: &str = "0x00112233445566778899aabbccddeeff00112233";
 const OTHER_WALLET: &str = "0xffeeddccbbaa99887766554433221100ffeeddcc";
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn key(s: &str) -> PlayerKey {

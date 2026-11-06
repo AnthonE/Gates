@@ -1405,7 +1405,35 @@ pub use voice::{
 /// `HELLO_AGENT`) puts the wallet it serves in the hello's `target`, and
 /// `SUB_CREW` (112) marks agent `id` as the crew of player `of` while that
 /// wallet is a person on its team, `of` 0 for none (`EventMsg::Crew`).
-pub const PROTO_VER: u16 = 154;
+///
+/// v155: a player id is `generation << PLAYER_SLOT_BITS | slot` with ten
+/// slot bits (was eight), so a shard can seat more than 256. No layout moved;
+/// a v154 client would read every slot past 255 as the wrong player.
+pub const PROTO_VER: u16 = 155;
+
+/// Low bits of a player id that name its connection slot (v155). The rest,
+/// below `limits::MOB_ID_TAG`, are the slot's claim generation.
+pub const PLAYER_SLOT_BITS: u32 = 10;
+pub const PLAYER_SLOT_MASK: u32 = (1 << PLAYER_SLOT_BITS) - 1;
+const _: () = assert!(sim_core::limits::MAX_PLAYERS <= 1 << PLAYER_SLOT_BITS);
+
+/// The id slot `slot` mints at `generation`.
+#[inline]
+pub const fn player_id(generation: u32, slot: usize) -> u32 {
+    (generation << PLAYER_SLOT_BITS) | slot as u32
+}
+
+/// The connection slot a player id was minted in.
+#[inline]
+pub const fn player_id_slot(id: u32) -> usize {
+    (id & PLAYER_SLOT_MASK) as usize
+}
+
+/// The claim generation a player id was minted at.
+#[inline]
+pub const fn player_id_gen(id: u32) -> u32 {
+    id >> PLAYER_SLOT_BITS
+}
 
 /// Bits naming a delta record's baseline row (v141): every baseline is a
 /// snapshot the encoder sent, so it has at most `MAX_SNAPSHOT_ENTITIES`.

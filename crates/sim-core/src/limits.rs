@@ -2,14 +2,18 @@
 //! map, and per-tick work item caps here, each with its overflow policy
 //! stated. Server and protocol import these; nothing redefines them.
 
-/// Shard cap (knob, DECISIONS.md §open: 100 / 4-core VPS). Preallocation
-/// needs a number at boot; the accept path hard-refuses past it.
-pub const MAX_PLAYERS: usize = 100;
+/// Shard cap: bodies in the world, awake and asleep, and connections. Rust
+/// runs 500-player servers; at 100 clustered a tick cost 3.5 % of budget
+/// (`bin/profile`), so the cap was the limit, not the CPU. Preallocation
+/// needs a number at boot; the accept path hard-refuses past it. A player
+/// id carries its slot in `protocol::PLAYER_SLOT_BITS`.
+pub const MAX_PLAYERS: usize = 512;
 
 /// Commands the sim will apply in one tick. Overflow policy: **defer** —
 /// callers keep the tail for the next tick; the sim itself takes at most
 /// this many (`World::tick` ignores the excess rather than growing work).
-pub const MAX_COMMANDS_PER_TICK: usize = 256;
+pub const MAX_COMMANDS_PER_TICK: usize = 1_536;
+const _: () = assert!(MAX_COMMANDS_PER_TICK >= 2 * MAX_PLAYERS);
 
 /// Fixed sim rate (DESIGN.md §5.2). The tick number is the only clock.
 pub const TICK_HZ: u32 = 30;
@@ -1366,7 +1370,7 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// many other people were shooting, which is the one thing a projectile
 /// must never do.
 /// Proposed default, DECISIONS.md §open (ranged v0).
-pub const MAX_ARROWS: usize = 128;
+pub const MAX_ARROWS: usize = 512;
 
 /// Arrows one archer may have in flight at once (`ranged::draw`) — their
 /// share of `MAX_ARROWS`, so the store cannot be filled by a handful of
@@ -1391,7 +1395,7 @@ pub const MAX_MODS: usize = 8;
 /// never the reason a shot is refused while every owner keeps to its share.
 /// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy for its
 /// reason — never steal a live round to make room.
-pub const MAX_BULLETS: usize = 2048;
+pub const MAX_BULLETS: usize = 10_240;
 
 /// Bullets one shooter may have in flight at once. A shotgun volley is up to
 /// `MAX_PELLETS` and an automatic holds three or four (a rifle round lives
@@ -1709,10 +1713,10 @@ pub const TRUST_ROWS_PER_COMMAND: usize = 1;
 ///
 /// Typed as the number, with the derivation asserted beside it: the knob
 /// registry (`ci/knob_registry.mjs`) reads literals and cannot evaluate an
-/// expression, which is `AOI_RANK_ENTER`'s lesson above. Cost: 256 × 12 B,
+/// expression, which is `AOI_RANK_ENTER`'s lesson above. Cost: 1 536 × 12 B,
 /// one boxed allocation at construction, nothing in the tick (wall 2).
 /// Registered in DECISIONS.md §open ("trust ledger v1").
-pub const MAX_TRUST_ROWS_PER_TICK: usize = 256;
+pub const MAX_TRUST_ROWS_PER_TICK: usize = 1_536;
 const _: () = assert!(
     MAX_TRUST_ROWS_PER_TICK == MAX_COMMANDS_PER_TICK * TRUST_ROWS_PER_COMMAND,
     "MAX_TRUST_ROWS_PER_TICK must stay the command ceiling times the rows one \

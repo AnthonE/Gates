@@ -16,7 +16,7 @@ use sim_core::gather::GatherContent;
 const SEED: u64 = 20_260_731;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn wallet(slot: usize) -> String {

@@ -61,7 +61,7 @@ pub const HELI_SLOT: usize = MAX_MOBS - 1;
 pub const HELI_AOI_SCALE: i64 = 4;
 
 /// No player.
-pub const NO_TARGET: u8 = u8::MAX;
+pub const NO_TARGET: u16 = u16::MAX;
 
 /// The highest the heli flies, in `POS_Y_Q` quanta: 140 m. The wire's
 /// absolute y window tops out at 143.35 m (`protocol::POS_Y_BITS`), and a
@@ -221,7 +221,7 @@ pub struct Heli {
     pub wz: i32,
     /// The player slot it is after, and that player's id (a slot can
     /// change tenant between two looks).
-    pub target: u8,
+    pub target: u16,
     pub target_id: u32,
     /// Where it last saw the target (mm) and when.
     pub lx: i32,
@@ -233,7 +233,7 @@ pub struct Heli {
     pub burst_left: u8,
     /// Where a scan's rotating try starts (`sentry::rotating_pick`): one
     /// past the last slot it took, kept when a target goes.
-    pub scan: u8,
+    pub scan: u16,
 }
 
 impl Default for Heli {
@@ -273,7 +273,7 @@ impl Heli {
         let mut b = [0u8; 96];
         b[0] = self.flying as u8;
         b[1] = self.leaving as u8;
-        b[2] = self.target;
+        b[2] = self.target as u8;
         b[3] = self.burst_left;
         b[4..12].copy_from_slice(&self.next_at.to_le_bytes());
         b[12..20].copy_from_slice(&self.leave_at.to_le_bytes());
@@ -291,7 +291,9 @@ impl Heli {
         b[72..80].copy_from_slice(&self.seen_at.to_le_bytes());
         b[80..88].copy_from_slice(&self.next_shot.to_le_bytes());
         b[88..90].copy_from_slice(&self.orbit.to_le_bytes());
-        b[90] = self.scan;
+        b[90] = self.scan as u8;
+        b[91] = (self.scan >> 8) as u8;
+        b[92] = (self.target >> 8) as u8;
         b
     }
 
@@ -310,7 +312,7 @@ impl Heli {
 /// player array and cannot write it (the bite's split, `mob::Bites`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Round {
-    pub victim: u8,
+    pub victim: u16,
     pub damage: u16,
     pub range_cm: u16,
 }
@@ -581,7 +583,7 @@ fn look(
                 !tried[..t].contains(&i) && huntable(cc, p) && d2_of(p) <= reach2
             });
             if let Some(i) = i {
-                heli.scan = ((i + 1) % MAX_PLAYERS) as u8;
+                heli.scan = ((i + 1) % MAX_PLAYERS) as u16;
             }
             i
         };
@@ -592,7 +594,7 @@ fn look(
         let p = &players[i];
         if sees(seed, haven, cols, occ, gun, p) {
             let (px, pz) = feet_xz_mm(p);
-            heli.target = i as u8;
+            heli.target = i as u16;
             heli.target_id = p.id;
             heli.seen_at = tick;
             (heli.lx, heli.lz) = (px, pz);
@@ -798,7 +800,7 @@ fn fire(
     let upto = (hit.t * n as f32) as usize + 1;
     let (stop_t, _, _) = ranged::world_stop(seed, haven, cols, occ, o, s, n, upto, ARROW_R_M);
     (hit.t <= stop_t).then_some(Round {
-        victim: hit.slot as u8,
+        victim: hit.slot as u16,
         damage: def.damage,
         range_cm: (reach * hit.t / 10.0) as u16,
     })

@@ -36,7 +36,7 @@ pub const SENTRIES: usize = crate::town::SENTRY_POSTS.len();
 pub const SENTRY_SLOT0: usize = crate::heli::HELI_SLOT - SENTRIES;
 
 /// No player.
-pub const NO_TARGET: u8 = u8::MAX;
+pub const NO_TARGET: u16 = u16::MAX;
 
 /// Ticks between two looks (a target's sight line, or a scan for one).
 pub(crate) const LOOK_TICKS: u64 = 10;
@@ -106,7 +106,7 @@ impl SentryDef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sentry {
     /// The player slot it is after, and that player's id.
-    pub target: u8,
+    pub target: u16,
     pub target_id: u32,
     pub seen_at: u64,
     pub next_shot: u64,
@@ -114,7 +114,7 @@ pub struct Sentry {
     /// The roster slot a scan's rotating try starts from ([`rotating_pick`]):
     /// one past the last slot it took. Kept when the target goes, or a
     /// hidden body locked and then dropped would send it back to slot 0.
-    pub scan: u8,
+    pub scan: u16,
 }
 
 impl Default for Sentry {
@@ -132,14 +132,16 @@ impl Default for Sentry {
 
 impl Sentry {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 23] {
-        let mut b = [0u8; 23];
-        b[0] = self.target;
+    pub fn hash_bytes(&self) -> [u8; 25] {
+        let mut b = [0u8; 25];
+        b[0] = self.target as u8;
         b[1] = self.burst_left;
         b[2..6].copy_from_slice(&self.target_id.to_le_bytes());
         b[6..14].copy_from_slice(&self.seen_at.to_le_bytes());
         b[14..22].copy_from_slice(&self.next_shot.to_le_bytes());
-        b[22] = self.scan;
+        b[22] = self.scan as u8;
+        b[23] = (self.scan >> 8) as u8;
+        b[24] = (self.target >> 8) as u8;
         b
     }
 
@@ -317,7 +319,7 @@ pub(crate) fn look(
                 !tried[..t].contains(&i) && wanted(p) && d2_of(p) <= reach2
             });
             if let Some(i) = i {
-                s.scan = ((i + 1) % MAX_PLAYERS) as u8;
+                s.scan = ((i + 1) % MAX_PLAYERS) as u16;
             }
             i
         };
@@ -328,7 +330,7 @@ pub(crate) fn look(
         let p = &players[i];
         if sees(seed, haven, cols, occ, gun, p) {
             *s = Sentry {
-                target: i as u8,
+                target: i as u16,
                 target_id: p.id,
                 seen_at: tick,
                 next_shot: tick + def.lock_ticks.max(1) as u64,
@@ -363,8 +365,8 @@ pub(crate) fn rotating_pick(
         .map(|j| (start + j) % MAX_PLAYERS)
         .find(|&i| eligible(i, &players[i]))
 }
-// The cursor is a `u8`.
-const _: () = assert!(MAX_PLAYERS <= 256);
+// The cursor is a `u16`.
+const _: () = assert!(MAX_PLAYERS <= u16::MAX as usize);
 
 /// The gun: a burst while the target is in sight, in reach and in line.
 /// `(slot, aim)` is the gun's roster slot and the key its aim wobble is
@@ -444,7 +446,7 @@ pub(crate) fn fire(
     let upto = (hit.t * n as f32) as usize + 1;
     let (stop_t, _, _) = ranged::world_stop(seed, haven, cols, occ, gun, seg, n, upto, ARROW_R_M);
     (hit.t <= stop_t).then_some(Round {
-        victim: hit.slot as u8,
+        victim: hit.slot as u16,
         damage: def.damage,
         range_cm: (reach * hit.t / 10.0) as u16,
     })
@@ -514,7 +516,7 @@ mod tests {
             lose_ticks: 90,
             spread_pm: 0,
         };
-        let mut players: [Player; MAX_PLAYERS] = std::array::from_fn(|_| Player::default());
+        let mut players: Box<[Player; MAX_PLAYERS]> = crate::boxed_array(Player::default());
         let mut found = None;
         'search: for i in 0..400 {
             let (gx, gz) = (

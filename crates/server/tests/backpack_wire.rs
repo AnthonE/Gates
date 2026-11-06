@@ -63,7 +63,7 @@ const SPEAR: u16 = 0;
 const FILLER: u16 = 7;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn pump(

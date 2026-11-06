@@ -14,7 +14,7 @@ const SPAWN: (f32, f32) = (2048.0, 2048.0);
 const Q_CM: i32 = 3;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn world_slot(core: &ShardCore, id: u32) -> usize {

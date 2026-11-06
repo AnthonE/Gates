@@ -37,10 +37,11 @@ pub const SLOT_LEAVING: u32 = 2;
 const STATE_BITS: u32 = 2;
 const STATE_MASK: u32 = (1 << STATE_BITS) - 1;
 
-/// The last generation a slot may mint. A player id is `generation << 8 |
-/// slot` (`net.rs`) and bit 31 is `limits::MOB_ID_TAG`, so 23 bits of
-/// generation reach an id; a slot that gets here retires ([`SlotTable::claim`]).
-pub const ID_GEN_MAX: u32 = 0x007F_FFFF;
+/// The last generation a slot may mint. A player id is
+/// `protocol::player_id(generation, slot)` and bit 31 is
+/// `limits::MOB_ID_TAG`, so the bits between reach an id; a slot that gets
+/// here retires ([`SlotTable::claim`]).
+pub const ID_GEN_MAX: u32 = (1 << (31 - protocol::PLAYER_SLOT_BITS)) - 1;
 
 #[inline]
 pub fn pack(state: u32, generation: u32) -> u32 {

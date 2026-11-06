@@ -2747,10 +2747,10 @@ fn drain_saves(
             // (`SaveMsg::key`).
             Some(key) => key,
             None => {
-                // `id = generation << 8 | slot` (see `install`), so the
-                // slot is the low byte and the generation check is the id
-                // equality below.
-                let slot = (msg.id & 0xFF) as usize;
+                // `id = player_id(generation, slot)` (see `install`), so
+                // the slot is the low bits and the generation check is the
+                // id equality below.
+                let slot = protocol::player_id_slot(msg.id);
                 if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
                     continue;
                 }
@@ -3515,7 +3515,7 @@ fn install(
     // wrap — a wrapped id is an old tenant's, and a reconnect loop 2²³ long
     // would have been handed whatever still names it — so the mask is a
     // backstop; it costs nothing and `tests/mob.rs` asserts it.
-    let id = ((generation & PLAYER_ID_GEN_MASK) << 8) | slot as u32;
+    let id = protocol::player_id(generation & PLAYER_ID_GEN_MASK, slot);
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
@@ -6846,7 +6846,7 @@ mod tests {
         let mut store = SaveStore::new();
         let stats = Arc::new(ShardStats::default());
         let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
-        let id = |gen: u32, slot: usize| (gen << 8) | slot as u32;
+        let id = |gen: u32, slot: usize| protocol::player_id(gen, slot);
         let tenant = PlayerKey::new(b"slot-3-generation-2").expect("fits");
         let evicted = PlayerKey::new(b"an-evicted-sleeper").expect("fits");
         // Slot 3 was re-claimed: generation 2 holds it now. Slot 4 is a guest.
@@ -6923,12 +6923,12 @@ mod tests {
         for (s, key) in who.iter().enumerate() {
             keys[s] = KeySlot {
                 key: Some(*key),
-                id: (1 << 8) | s as u32,
+                id: protocol::player_id(1, s as usize),
                 ..KeySlot::default()
             };
         }
         let rec = |s: u32| SaveMsg {
-            id: (1 << 8) | s,
+            id: protocol::player_id(1, s as usize),
             key: None,
             save: sim_core::persist::PlayerSave::EMPTY,
         };

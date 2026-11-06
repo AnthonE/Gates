@@ -1205,7 +1205,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     // Decoded into a scratch array first, because a refusal in the last
     // record must leave the world untouched: a half-loaded shard is a
     // shard whose operator cannot tell what it is running.
-    let mut players = [Player::default(); MAX_PLAYERS];
+    let mut players: Box<[Player; MAX_PLAYERS]> = crate::boxed_array(Player::default());
     for slot in players.iter_mut().take(n_players) {
         let mut rec = [0u8; PLAYER_SAVE_BYTES];
         rec.copy_from_slice(r.take(PLAYER_SAVE_BYTES)?);

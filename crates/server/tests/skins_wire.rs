@@ -24,7 +24,7 @@ const SKIN: u16 = 41;
 const OTHER: u16 = 42;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn probe_catalog() -> ItemCatalog {

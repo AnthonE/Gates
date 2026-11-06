@@ -29,7 +29,7 @@ const INTERIOR_M: f32 = 1700.0;
 
 /// Player id for connection slot `s` as `install` mints them (generation 1).
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// A core with the full cap connected and every body herded into a 60 m

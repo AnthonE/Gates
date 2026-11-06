@@ -100,7 +100,7 @@ pub enum ToScribe {
     /// A frame relayed from the talker in `slot`; `langs` holds a bit for
     /// each language a listener reads (`1 << lang`).
     Voice {
-        slot: u8,
+        slot: u16,
         id: u32,
         wallet: Option<PlayerKey>,
         frame: VoiceFrame,
@@ -108,7 +108,7 @@ pub enum ToScribe {
     },
     /// A chat line fanned out from `slot`, and its readers' languages.
     Chat {
-        slot: u8,
+        slot: u16,
         id: u32,
         wallet: Option<PlayerKey>,
         channel: Channel,
@@ -122,7 +122,7 @@ pub enum ToScribe {
 /// `to_lang` is 0, else only to those who read `to_lang`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Said {
-    pub slot: u8,
+    pub slot: u16,
     pub to_lang: u8,
     pub caption: Caption,
 }
@@ -158,7 +158,7 @@ impl Scribe {
             return true;
         };
         out.push(ToScribe::Voice {
-            slot: slot as u8,
+            slot: slot as u16,
             id,
             wallet,
             frame: *frame,
@@ -181,7 +181,7 @@ impl Scribe {
             return true;
         };
         out.push(ToScribe::Chat {
-            slot: slot as u8,
+            slot: slot as u16,
             id,
             wallet,
             channel,
@@ -263,7 +263,7 @@ pub fn spawn(cfg: ScribeConfig, stats: Arc<ShardStats>) -> Result<Scribe, String
 /// Who said it, and where a caption of it goes.
 #[derive(Clone, Copy, Debug)]
 struct Talk {
-    slot: u8,
+    slot: u16,
     id: u32,
     wallet: Option<PlayerKey>,
     /// The utterance's number, or a chat line's `caption_key`.
@@ -489,7 +489,7 @@ impl Desk {
         }
         ear.line = ear.line.wrapping_add(1);
         let talk = Talk {
-            slot: slot as u8,
+            slot: slot as u16,
             id: ear.id,
             wallet: ear.wallet,
             line: ear.line,

@@ -85,9 +85,65 @@ pub fn ring_index(tick: u32) -> usize {
     (tick as u64 / SNAPSHOT_INTERVAL_TICKS) as usize % SENT_SNAPSHOT_RING
 }
 
+/// One bit per player slot: `tags_owed` and the rest of the owed drips, and
+/// any other set of slots. Fixed width, `Copy`, no allocation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayerSet([u64; PLAYER_SET_WORDS]);
+const PLAYER_SET_WORDS: usize = sim_core::limits::MAX_PLAYERS.div_ceil(64);
+
+impl PlayerSet {
+    pub const EMPTY: Self = Self([0; PLAYER_SET_WORDS]);
+    /// Every player slot, and nothing past `MAX_PLAYERS`.
+    pub const ALL: Self = {
+        let mut w = [u64::MAX; PLAYER_SET_WORDS];
+        let tail = sim_core::limits::MAX_PLAYERS % 64;
+        if tail != 0 {
+            w[PLAYER_SET_WORDS - 1] = (1u64 << tail) - 1;
+        }
+        Self(w)
+    };
+    /// Just slot `i`.
+    #[inline]
+    pub fn one(i: usize) -> Self {
+        let mut s = Self::EMPTY;
+        s.insert(i);
+        s
+    }
+    #[inline]
+    pub fn insert(&mut self, i: usize) {
+        self.0[i / 64] |= 1 << (i % 64);
+    }
+    #[inline]
+    pub fn remove(&mut self, i: usize) {
+        self.0[i / 64] &= !(1 << (i % 64));
+    }
+    #[inline]
+    pub fn contains(&self, i: usize) -> bool {
+        self.0[i / 64] & (1 << (i % 64)) != 0
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|&w| w == 0)
+    }
+    /// The lowest slot in the set.
+    #[inline]
+    pub fn first(&self) -> Option<usize> {
+        self.0
+            .iter()
+            .position(|&w| w != 0)
+            .map(|i| i * 64 + self.0[i].trailing_zeros() as usize)
+    }
+    #[inline]
+    pub fn and(mut self, o: &Self) -> Self {
+        for (a, b) in self.0.iter_mut().zip(o.0) {
+            *a &= b;
+        }
+        self
+    }
+}
+
 /// Every player slot's tag bit (`ClientNetState::tags_owed`).
-pub const TAGS_ALL: u128 = u128::MAX >> (128 - sim_core::limits::MAX_PLAYERS);
-const _: () = assert!(sim_core::limits::MAX_PLAYERS <= 128);
+pub const TAGS_ALL: PlayerSet = PlayerSet::ALL;
 
 /// `ClientNetState::held_tiles`: a tile is `1 << HELD_TILE_SHIFT` build cells
 /// on a side (48 m), and the map is `HELD_TILES_SIDE` tiles square — every
@@ -492,17 +548,17 @@ pub struct ClientNetState {
     /// Which player slots' tags (`EventMsg::Tag`) this client is owed: bit
     /// `i` is slot `i`. All set on a fresh connection, so a late joiner
     /// learns everyone already here; cleared one per tick as each is sent.
-    pub tags_owed: u128,
+    pub tags_owed: PlayerSet,
     /// Which player slots' agent marks (`EventMsg::Agent`, v107) this client
     /// is owed: `tags_owed`'s shape, all at join and on a resync. A bit for a
     /// slot whose tenant is not an agent clears without a send.
-    pub agents_owed: u128,
+    pub agents_owed: PlayerSet,
     /// Which agents' crew marks (`EventMsg::Crew`, v154) this client is owed:
     /// `agents_owed`'s shape, and set for everyone when one moves.
-    pub crews_owed: u128,
+    pub crews_owed: PlayerSet,
     /// World slots whose worn set this connection is owed (`SUB_WORN`),
     /// `tags_owed`'s shape: all of them at join and on a resync.
-    pub worn_owed: u128,
+    pub worn_owed: PlayerSet,
     /// A set the platform reported for this connection that has not yet
     /// found room in the command queue (`ShardCore::skins_owned`).
     pub skins_pending: Option<sim_core::skin::SkinSet>,

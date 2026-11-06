@@ -866,7 +866,7 @@ pub struct Mob {
     /// The state's timer: `brain::Cond::Timer` holds from this tick on.
     pub state_until: u64,
     /// The remembered target, a player slot, or `brain::NO_TARGET`.
-    pub target: u8,
+    pub target: u16,
     /// The senses notice nobody but an attacker until this tick — how an
     /// animal that gave up on a target it could not reach stays given up.
     pub calm_until: u64,
@@ -1131,7 +1131,7 @@ pub fn slot_of_id(id: u32) -> Option<usize> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Bite {
     pub mob_slot: u8,
-    pub victim: u8,
+    pub victim: u16,
     pub damage: u16,
     pub range_cm: u16,
     /// Per mille of corruption the bite carries (`MobDef::fel_bite`, when
@@ -1589,10 +1589,10 @@ pub fn hurt_slot(
     mob.calm_until = 0;
     mob.hurt_at = tick;
     if let Some(attacker) = attacker {
-        if mob.target != attacker as u8 {
+        if mob.target != attacker as u16 {
             mob.tries = 0;
         }
-        mob.target = attacker as u8;
+        mob.target = attacker as u16;
         // EV_HIT is the attacker's own fact and the server routes it by
         // `a`, so a tagged mob id in `b` reaches the hand that swung or
         // fired and nothing else — the hitmarker, exactly as a player hit

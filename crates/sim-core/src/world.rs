@@ -2551,7 +2551,8 @@ impl SlotHint {
 pub struct World {
     pub seed: u64,
     pub tick: u64,
-    pub players: [Player; MAX_PLAYERS],
+    /// Boxed: 816 B × `MAX_PLAYERS` is too much for wasm's stack.
+    pub players: Box<[Player; MAX_PLAYERS]>,
     pub scatter: ScatterTable,
     /// The haven pad site (TERRAIN.md §1 stage 8). Resolved once here
     /// because it is a bounded argmax over the road ring — world init,
@@ -2850,7 +2851,7 @@ impl World {
         Self {
             seed,
             tick: 0,
-            players: [Player::default(); MAX_PLAYERS],
+            players: crate::boxed_array(Player::default()),
             scatter: ScatterTable::alpha_default(),
             mob: mob::MobContent::EMPTY,
             nets: Box::default(),
@@ -7375,7 +7376,7 @@ impl World {
             Command::Sit { id, seat } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
-                    crate::seat::sit(&town, &mut self.players, slot, seat);
+                    crate::seat::sit(&town, &mut *self.players, slot, seat);
                 }
             }
             Command::Wire { id, wire } => {
@@ -8453,7 +8454,7 @@ impl World {
     }
 
     pub fn tick(&mut self, commands: &[Command]) {
-        self.slot_hint.rebuild(&self.players);
+        self.slot_hint.rebuild(&*self.players);
         self.events.clear();
         self.trust.clear(self.tick);
         self.safe_zone();
@@ -10341,7 +10342,7 @@ impl World {
             let mut b = [0u8; 48];
             b[0] = m.state as u8;
             b[1] = m.status;
-            b[2] = m.target;
+            b[2] = m.target as u8;
             b[3] = m.tries;
             b[4] = m.stuck;
             b[5] = m.leg;
@@ -10362,6 +10363,7 @@ impl World {
             // A bred brain's latched choice (`brain::Nets`): zero for every
             // animal no net drives, so a world without one hashes as it did.
             b[46] = m.pick;
+            b[47] = (m.target >> 8) as u8;
             h.update(&b);
             if m.pressed_at != 0 {
                 h.update(&m.pressed_at.to_le_bytes());

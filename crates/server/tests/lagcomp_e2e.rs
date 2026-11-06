@@ -27,7 +27,7 @@ const TICK_MS: f64 = 1000.0 / 30.0;
 const FRAME_MS: f64 = TICK_MS / 2.0;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// A one-way pipe: a fixed delay, plus up to `jitter_ms` more per

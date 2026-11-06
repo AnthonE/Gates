@@ -83,7 +83,7 @@ use std::time::{Duration, Instant};
 /// magnitude lower. Overflow policy: **drop newest, counted, and written
 /// into the log as a gap line**. Proposed default, DECISIONS.md §open
 /// ("trust ledger v1").
-pub const TRUST_TAP_RING_CAP: usize = 2048;
+pub const TRUST_TAP_RING_CAP: usize = 12_288;
 const _: () = assert!(
     TRUST_TAP_RING_CAP >= 2 * MAX_TRUST_ROWS_PER_TICK,
     "the sink ring must hold two worst-case ticks, or a writer one poll late \
