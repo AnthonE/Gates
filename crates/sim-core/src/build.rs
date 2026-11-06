@@ -2312,7 +2312,7 @@ fn occupied_at(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8, loc
         LOC_DIAG_B => m.diag_b | m.half_diag_b | m.low_diag_b,
         _ => 0,
     };
-    field & (1u16 << level) != 0
+    field & (1u32 << level) != 0
 }
 
 /// Does the piece at store index `i` still have what holds it up? The one

@@ -8,6 +8,9 @@ use sim_core::movement::Body;
 use sim_core::terrain;
 use sim_core::world::{EventQueue, Player, World};
 use sim_core::worldsave;
+
+/// The half-storey above the ground's socket: codes past the whole storeys.
+const HALF0: u8 = sim_core::limits::MAX_BUILD_LEVELS as u8;
 const SEED: u64 = 20260731;
 const CX: u16 = 682;
 const CZ: u16 = 682;
@@ -73,8 +76,8 @@ fn half_walls_bear_half_storeys_and_collapse_their_actual_dependents() {
             !place(&mut w, &mut p, 2, 1, LOC_PLANE),
             "half a wall cannot support a full-height ceiling"
         );
-        assert!(place(&mut w, &mut p, 2, 8, LOC_PLANE));
-        assert!(place(&mut w, &mut p, 12, 8, loc));
+        assert!(place(&mut w, &mut p, 2, HALF0, LOC_PLANE));
+        assert!(place(&mut w, &mut p, 12, HALF0, loc));
         assert!(place(&mut w, &mut p, 2, 1, LOC_PLANE));
         let mut blob = vec![0; worldsave::WORLD_SAVE_MAX_BYTES];
         let n = worldsave::encode(&w, &mut blob).unwrap();
@@ -85,7 +88,7 @@ fn half_walls_bear_half_storeys_and_collapse_their_actual_dependents() {
             restored.pieces.cols().get(CX, CZ),
             w.pieces.cols().get(CX, CZ)
         );
-        assert!(restored.pieces.find(CX, CZ, 8, LOC_PLANE).is_some());
+        assert!(restored.pieces.find(CX, CZ, HALF0, LOC_PLANE).is_some());
         let mut budget = MAX_REMOVALS_PER_TICK;
         build::demolish(
             &DeployContent::EMPTY,
@@ -111,17 +114,17 @@ fn low_cover_bears_no_floor_and_offset_edges_cannot_interpenetrate() {
     let (mut w, mut p) = fixture();
     assert!(place(&mut w, &mut p, 0, 0, LOC_PLANE));
     assert!(place(&mut w, &mut p, 13, 0, LOC_EDGE_XLO));
-    for level in [8, 1] {
+    for level in [HALF0, 1] {
         assert!(!place(&mut w, &mut p, 2, level, LOC_PLANE));
     }
     assert!(place(&mut w, &mut p, 1, 0, LOC_EDGE_ZLO));
-    assert!(!place(&mut w, &mut p, 12, 8, LOC_EDGE_ZLO));
+    assert!(!place(&mut w, &mut p, 12, HALF0, LOC_EDGE_ZLO));
 }
 #[test]
 fn partial_edges_block_only_their_drawn_height_on_both_axes_and_diagonals() {
     let haven = terrain::haven(SEED);
     for shape in [SHAPE_HALF_WALL, SHAPE_LOW_WALL] {
-        for level in [0, 8, 2, 10] {
+        for level in [0, HALF0, 2, HALF0 + 2] {
             for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_DIAG_A, LOC_DIAG_B] {
                 let mut cols = ColIndex::new();
                 cols.add(CX, CZ, level, loc, shape, 0);

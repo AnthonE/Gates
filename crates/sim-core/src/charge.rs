@@ -1043,7 +1043,7 @@ fn blast_seen(
             let m = pieces.cols().get(cx, cz);
             let base = crate::collide::col_base_y(seed, haven, pieces.cols(), cx, cz);
             for level in 0..MAX_BUILD_SOCKETS as u8 {
-                let bit = 1u16 << level;
+                let bit = 1u32 << level;
                 let ly = base + crate::build::level_y(level);
                 let mut consider = |loc: u8, present: bool| {
                     if !present || n >= BLAST_TARGET_CAP {

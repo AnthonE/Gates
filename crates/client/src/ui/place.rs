@@ -631,7 +631,7 @@ fn socket_crossed(
         }
         let nbase = column_floor(seed, haven, cols, nx, nz);
         for level in 1..MAX_BUILD_SOCKETS as u8 {
-            let bit = 1u16 << level;
+            let bit = 1u32 << level;
             if planes & bit == 0 || here_planes & bit != 0 {
                 continue;
             }

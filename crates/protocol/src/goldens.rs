@@ -601,7 +601,7 @@ pub fn event_move_refused() -> (u8, u8, u8, u8, u8) {
 /// by nothing. This is that case.
 ///
 /// The handle is a real `deploy::box_key(291, 744, 5, 0)` — `cx << 16 |
-/// cz << 4 | level` — and not a round number, because the whole risk on a
+/// cz << 5 | level` — and not a round number, because the whole risk on a
 /// packed address is a field sliding within it, and three parts that are
 /// each distinguishable from the other two is what makes a slide move
 /// bytes. It is also nothing like `action_move`'s bag id, so a fixture
@@ -612,7 +612,7 @@ pub fn event_move_refused() -> (u8, u8, u8, u8, u8) {
 /// would also accept — a fixture that only the wire would take is a
 /// weaker statement about the same bytes.
 pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
-    (0x0123_2E85, 0, 6, 2, 9, 13)
+    (0x0123_5D05, 0, 6, 2, 9, 13)
 }
 
 /// Opening a box (wire v19). The kind is the packed-address one on
@@ -623,7 +623,7 @@ pub fn action_move_box() -> (u32, u8, u8, u8, u8, u16) {
 /// — for the same reason its handle differs from `action_move`'s: two
 /// fixtures that share a constant cannot catch a copy-paste between them.
 pub fn action_container() -> (u8, u32) {
-    (2, 0x0058_3E93)
+    (2, 0x0058_7D23)
 }
 
 /// Closing whatever is open. The one legal shape of a close, pinned

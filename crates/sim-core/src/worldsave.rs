@@ -256,7 +256,9 @@ use crate::worldcont::WorldContRec;
 /// two counted sections after the turrets' lists; no older file reads.
 /// **37 — room to build** (the 512-player cap): the piece, deploy, hearth,
 /// box, lock and bag counts are `u32`, so a store past 65 535 can be said;
-/// no older file reads.
+/// and a socket code means sixteen whole storeys then sixteen halves (it was
+/// eight and eight), so every stored level reads differently; no older file
+/// reads.
 pub const WORLD_SAVE_FORMAT: u16 = 37;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads

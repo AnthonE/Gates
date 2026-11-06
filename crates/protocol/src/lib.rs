@@ -2703,11 +2703,12 @@ const MOVE_COUNT_BITS: u32 = 16;
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
 /// Build-grid field widths (limits.rs: `MAX_BUILD_COORD` 2048 cells,
-/// `MAX_BUILD_SOCKETS` 16, thirteen locs, `MAX_PIECE_DEFS` 96 rows). Coord,
+/// `MAX_BUILD_SOCKETS` 32, thirteen locs, `MAX_PIECE_DEFS` 96 rows). Coord,
 /// level, and loc widths are exact; piece rows past the cap refuse at
 /// decode. Shared with the event lane's piece records (`event.rs`).
 pub(crate) const BUILD_CELL_BITS: u32 = 11;
-pub(crate) const BUILD_LEVEL_BITS: u32 = 4;
+pub(crate) const BUILD_LEVEL_BITS: u32 = 5;
+const _: () = assert!(1 << BUILD_LEVEL_BITS == sim_core::limits::MAX_BUILD_SOCKETS);
 /// Widened 2 → 4 in wire v40 (triangles v0): the piece grid gained four
 /// triangle halves and two diagonals, ten locs where four filled the old
 /// width exactly. V67 uses three more for stair directions, leaving three
@@ -6396,7 +6397,7 @@ mod tests {
 
         for (kind, cont) in [
             (CONT_BAG, 1u32),
-            (CONT_BOX, 0x0123_2E85),
+            (CONT_BOX, 0x0123_5D05),
             (CONT_WORLD, 0x0093_005C),
             (CONT_BAG, u32::MAX),
             (CONT_SELF, 0),

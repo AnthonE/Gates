@@ -325,67 +325,67 @@ pub fn tri_half_has(loc: u8, dx: f32, dz: f32) -> bool {
     }
 }
 
-/// Per-column occupancy, one bit per level (MAX_BUILD_SOCKETS = 16 fits u16
-/// exactly). Edge masks live in their canonical column (build.rs: low-x/
+/// Per-column occupancy, one bit per socket (MAX_BUILD_SOCKETS = 32 fits u32
+/// exactly; the riser kinds and triangle halves, four bits a socket, a u128). Edge masks live in their canonical column (build.rs: low-x/
 /// low-z), so a cell's +x boundary is its +x neighbor's `*_xlo`.
 ///
 /// The suffixes were `_w`/`_n` until 2026-08-15 and named bearings that had
 /// since moved (`build.rs`'s `LOC_EDGE_XLO` doc). Axes, now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColMasks {
-    pub planes: u16,
-    pub floor_frames: u16,
+    pub planes: u32,
+    pub floor_frames: u32,
     /// Four-bit circulation kind per socket; zero is the original straight flight.
-    pub riser_kind: u64,
+    pub riser_kind: u128,
     /// One flag per triangular half per level: its centre is an opening.
-    pub tri_frames: u64,
-    pub stairs: u16,
-    pub stairs_xhi: u16,
-    pub stairs_zlo: u16,
-    pub stairs_xlo: u16,
-    pub half_xlo: u16,
-    pub half_zlo: u16,
-    pub half_diag_a: u16,
-    pub half_diag_b: u16,
-    pub low_xlo: u16,
-    pub low_zlo: u16,
-    pub low_diag_a: u16,
-    pub low_diag_b: u16,
-    pub walls_xlo: u16,
-    pub walls_zlo: u16,
-    pub doors_xlo: u16,
-    pub doors_zlo: u16,
+    pub tri_frames: u128,
+    pub stairs: u32,
+    pub stairs_xhi: u32,
+    pub stairs_zlo: u32,
+    pub stairs_xlo: u32,
+    pub half_xlo: u32,
+    pub half_zlo: u32,
+    pub half_diag_a: u32,
+    pub half_diag_b: u32,
+    pub low_xlo: u32,
+    pub low_zlo: u32,
+    pub low_diag_a: u32,
+    pub low_diag_b: u32,
+    pub walls_xlo: u32,
+    pub walls_zlo: u32,
+    pub doors_xlo: u32,
+    pub doors_zlo: u32,
     /// Window edges (catalogue v1): a body-block the movement walk treats
     /// as a wall and the shot walk treats as a wall with an aperture
     /// (`WINDOW_SILL_M..WINDOW_HEAD_M`, jambs at the doorway's posts).
-    pub wins_xlo: u16,
-    pub wins_zlo: u16,
+    pub wins_xlo: u32,
+    pub wins_zlo: u32,
     /// Wall-frame edges: no collision at all until an insert exists — the
     /// bits are here so occupancy (`build::occupied_at`, the collapse
     /// cascade, the claim probe) can see the piece, not so anything
     /// blocks on it.
-    pub frames_xlo: u16,
-    pub frames_zlo: u16,
+    pub frames_xlo: u32,
+    pub frames_zlo: u32,
     /// Triangle half-planes (triangles v0): standable ground over their
     /// own half of the cell, nothing over the other (`piece_ground`'s
     /// half tests). Named by the corner the right angle sits in —
     /// `build::LOC_TRI_*`'s map.
-    pub tri_xlo_zlo: u16,
-    pub tri_xhi_zlo: u16,
-    pub tri_xlo_zhi: u16,
-    pub tri_xhi_zhi: u16,
+    pub tri_xlo_zlo: u32,
+    pub tri_xhi_zlo: u32,
+    pub tri_xlo_zhi: u32,
+    pub tri_xhi_zhi: u32,
     /// Diagonal walls: full-span blocks along their own line, to bodies
     /// and shots alike, wholly inside the cell.
-    pub diag_a: u16,
-    pub diag_b: u16,
+    pub diag_a: u32,
+    pub diag_b: u32,
     /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
     /// closed door deployable and blocks its full span (deploy.rs keeps
     /// these in lockstep with the door records).
-    pub shut_xlo: u16,
-    pub shut_zlo: u16,
+    pub shut_xlo: u32,
+    pub shut_zlo: u32,
     /// Closed window panels seal the aperture; bars leave shooting gaps.
-    pub panes_xlo: u16,
-    pub panes_zlo: u16,
+    pub panes_xlo: u32,
+    pub panes_zlo: u32,
     /// The column's **plate**: how many `build::BUILD_BASE_Q_M` bands its
     /// level-0 floor stands above the band its own terrain would give it
     /// (build plate v1, `build::plate_for`). Zero is the old rule exactly —
@@ -408,7 +408,7 @@ impl Default for ColMasks {
 
 impl ColMasks {
     /// Same order as `build::STAIR_LOCS`: +Z, +X, -Z, -X.
-    pub fn stair_masks(&self) -> [u16; 4] {
+    pub fn stair_masks(&self) -> [u32; 4] {
         [
             self.stairs,
             self.stairs_xhi,
@@ -539,11 +539,11 @@ impl ColMasks {
         if level as usize >= MAX_BUILD_SOCKETS {
             return false;
         }
-        let bit = 1u16 << level;
+        let bit = 1u32 << level;
         if self.planes & bit != 0 {
             return true;
         }
-        let half = |mask: u16, loc: u8| {
+        let half = |mask: u32, loc: u8| {
             mask & bit != 0 && !self.tri_is_frame(level, loc) && tri_half_has(loc, dx, dz)
         };
         half(self.tri_xlo_zlo, LOC_TRI_XLO_ZLO)
@@ -566,7 +566,7 @@ impl ColMasks {
         if level as usize >= MAX_BUILD_SOCKETS {
             return false;
         }
-        let bit = 1u16 << level;
+        let bit = 1u32 << level;
         let mask = match loc {
             LOC_EDGE_XLO => {
                 self.walls_xlo
@@ -603,7 +603,7 @@ impl ColMasks {
         }
     }
     /// Partial-height edges at this address. The mask is also support's source.
-    pub fn partial_edges(&self, loc: u8) -> (u16, u16) {
+    pub fn partial_edges(&self, loc: u8) -> (u32, u32) {
         match loc {
             LOC_EDGE_XLO => (self.half_xlo, self.low_xlo),
             LOC_EDGE_ZLO => (self.half_zlo, self.low_zlo),
@@ -625,7 +625,7 @@ impl ColMasks {
 
     /// The mask a (shape, loc) pair lives in, or None for shapes with no
     /// collision footprint.
-    fn field(&mut self, shape: u8, loc: u8) -> Option<&mut u16> {
+    fn field(&mut self, shape: u8, loc: u8) -> Option<&mut u32> {
         match shape {
             SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => Some(&mut self.planes),
             SHAPE_FLOOR_FRAME => Some(&mut self.floor_frames),
@@ -1041,7 +1041,7 @@ impl ColIndex {
             };
             let shift = level as u32 * 4;
             self.masks[i].riser_kind =
-                (self.masks[i].riser_kind & !(15 << shift)) | ((kind as u64) << shift);
+                (self.masks[i].riser_kind & !(15 << shift)) | ((kind as u128) << shift);
         }
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m |= 1 << level;

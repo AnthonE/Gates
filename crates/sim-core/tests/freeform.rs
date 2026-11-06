@@ -16,6 +16,9 @@ use sim_core::movement::{self, Body};
 use sim_core::sock::{beside, PieceAddr, Sock};
 use sim_core::world::{EventQueue, Player, World};
 
+/// The half-storey above the ground's socket: codes past the whole storeys.
+const HALF0: u8 = sim_core::limits::MAX_BUILD_LEVELS as u8;
+
 const SEED: u64 = 20260731;
 
 const FOUNDATION: u16 = 0;
@@ -349,10 +352,10 @@ fn a_triangle_spiral_climbs_round_its_body() {
     let bld = first.addr.bld;
     let body = first.addr.sock;
     // Up the first side at the ground, the second half a storey up, the
-    // third a storey up: levels 0, 8 (half of 0), 1.
+    // third a storey up: levels 0, HALF0 (half of 0), 1.
     let flights = [
         (0u8, Sock::tri_riser(body.at, body.dir)),
-        (8, Sock::tri_riser(body.at, body.dir + 4)),
+        (HALF0, Sock::tri_riser(body.at, body.dir + 4)),
         (1, Sock::tri_riser(body.at, body.dir + 8)),
     ];
     for (level, f) in flights {
@@ -403,7 +406,7 @@ fn a_triangle_spiral_climbs_round_its_body() {
     // Take the middle flight away and the one above it falls.
     let mid = PieceAddr {
         bld,
-        level: 8,
+        level: HALF0,
         sock: flights[1].1,
     };
     let i = w.pieces.find_addr(&mid).unwrap();

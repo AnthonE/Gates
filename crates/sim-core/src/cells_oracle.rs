@@ -48,7 +48,7 @@ pub(crate) fn floor_under(
         }
         let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
         for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
+            let bit = 1u32 << level;
             let y = base + crate::build::level_y(level as u8);
             let on_flat = flats & bit != 0 && fabs(y - feet_y) <= HAND;
             let on_stairs = stairs & bit != 0
@@ -105,7 +105,7 @@ pub(crate) fn piece_ground(
     let dz = z - bz as f32 * BUILD_CELL_M;
     let in_half = |loc: u8| tri_half_has(loc, dx, dz);
     for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
+        let bit = 1u32 << level;
         let floor = base + crate::build::level_y(level as u8);
         if (m.planes & bit != 0 || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, 0.0)))
             && floor <= lid
@@ -422,7 +422,7 @@ pub(crate) fn any_body_plane(
                 _ => dz >= dx,
             };
             for level in 0..MAX_BUILD_SOCKETS {
-                let bit = 1u16 << level;
+                let bit = 1u32 << level;
                 let here = m.planes & bit != 0
                     || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
                     || (m.tri_xlo_zlo & bit != 0
@@ -529,7 +529,7 @@ pub(crate) fn cell_planes_stop_shot(
                 _ => dz >= dx,
             };
             for level in 0..MAX_BUILD_SOCKETS {
-                let bit = 1u16 << level;
+                let bit = 1u32 << level;
                 // Which slab, not just whether one — the address is what
                 // `ranged.rs` charges structure damage against, and the OR
                 // this replaced could not say.
@@ -668,7 +668,7 @@ pub(crate) fn cell_edges_block(
         }
         let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
+            let bit = 1u32 << level;
             let has_wall = walls & bit != 0;
             let has_door = doors & bit != 0;
             let has_frame = frames & bit != 0;
@@ -756,7 +756,7 @@ pub(crate) fn cell_diags_block(
     }
     let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
+        let bit = 1u32 << level;
         if (m.diag_a | m.diag_b | m.half_diag_a | m.half_diag_b | m.low_diag_a | m.low_diag_b) & bit
             == 0
         {
@@ -839,7 +839,7 @@ pub(crate) fn cell_edges_stop_shot(
         }
         let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
+            let bit = 1u32 << level;
             if (walls | doors | wins | frames) & bit == 0 {
                 continue;
             }

@@ -189,8 +189,8 @@ fn rise(shape: u8) -> u8 {
 }
 
 /// The column sockets at or above `need` half-storeys, as a level mask.
-fn from(need: u8) -> u16 {
-    let mut m = 0u16;
+fn from(need: u8) -> u32 {
+    let mut m = 0u32;
     for b in 0..MAX_BUILD_SOCKETS as u8 {
         if half_steps(b) >= need {
             m |= 1 << b;
@@ -201,8 +201,8 @@ fn from(need: u8) -> u16 {
 
 /// A triangle corner's frame flags as a level mask (`ColMasks::tri_frames`
 /// packs four per level).
-fn tri_frame_bits(m: &ColMasks, corner: u32) -> u16 {
-    let mut out = 0u16;
+fn tri_frame_bits(m: &ColMasks, corner: u32) -> u32 {
+    let mut out = 0u32;
     for b in 0..MAX_BUILD_SOCKETS as u32 {
         if (m.tri_frames >> (b * 4 + corner)) & 1 != 0 {
             out |= 1 << b;
@@ -214,8 +214,8 @@ fn tri_frame_bits(m: &ColMasks, corner: u32) -> u16 {
 /// What stands over a cell's **centre**: a solid plane or triangle, a
 /// flight, or a diagonal wall through it. Frames are holes and do not count
 /// — a stair under a floor frame is out in the weather.
-fn centre_bits(m: &ColMasks) -> u16 {
-    let mut solid_tri = 0u16;
+fn centre_bits(m: &ColMasks) -> u32 {
+    let mut solid_tri = 0u32;
     for (corner, bits) in [m.tri_xlo_zlo, m.tri_xhi_zlo, m.tri_xlo_zhi, m.tri_xhi_zhi]
         .into_iter()
         .enumerate()
@@ -238,12 +238,12 @@ fn centre_bits(m: &ColMasks) -> u16 {
 
 /// What stands over a cell's **rim** — the centre's set plus the frames,
 /// because a floor frame's open middle still sits on the walls around it.
-fn rim_bits(m: &ColMasks) -> u16 {
+fn rim_bits(m: &ColMasks) -> u32 {
     centre_bits(m) | m.floor_frames | m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi
 }
 
 /// Every edge piece on one of a cell's two canonical edges.
-fn edge_bits(m: &ColMasks, zlo: bool) -> u16 {
+fn edge_bits(m: &ColMasks, zlo: bool) -> u32 {
     if zlo {
         m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo | m.half_zlo | m.low_zlo
     } else {

@@ -9,6 +9,9 @@ use sim_core::{
     occupy::Scratch,
     terrain,
 };
+
+/// The half-storey above the ground's socket: codes past the whole storeys.
+const HALF0: u8 = sim_core::limits::MAX_BUILD_LEVELS as u8;
 const SEED: u64 = 20260731;
 const CX: u16 = 682;
 const CZ: u16 = 682;
@@ -75,7 +78,7 @@ fn all_flights_walk_in_both_directions_after_every_quarter_turn() {
         SHAPE_STAIRS_SPIRAL,
     ] {
         for loc in STAIR_LOCS {
-            for level in [0, 8, 2] {
+            for level in [0, HALF0, 2] {
                 walk_flight(shape, loc, level, true, 0);
             }
         }
@@ -178,7 +181,7 @@ fn stacked_spirals_save_collapse_and_refuse_a_loaded_rotation() {
         for (row, level, loc) in [
             (SHAPE_FOUNDATION, 0, LOC_PLANE),
             (shape, 0, LOC_RISER),
-            (shape, 8, LOC_RISER_ZLO),
+            (shape, HALF0, LOC_RISER_ZLO),
             (shape, 1, LOC_RISER),
         ] {
             let before = w.pieces.len();

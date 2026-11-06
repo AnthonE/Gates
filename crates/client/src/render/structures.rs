@@ -1612,7 +1612,7 @@ fn edge_at(cols: &ColIndex, cx: Option<u16>, cz: Option<u16>, level: u8, loc: u8
     } else {
         m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
     };
-    mask & (1u16 << level) != 0
+    mask & (1u32 << level) != 0
 }
 
 /// How far below the lowest ground sample under its cell a foundation's

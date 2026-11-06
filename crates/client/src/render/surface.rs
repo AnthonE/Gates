@@ -110,7 +110,7 @@ pub fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> O
         cols.plate(bx, bz).unwrap_or(0),
     );
     for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
+        let bit = 1u32 << level;
         if (m.planes | tris) & bit == 0 {
             continue;
         }
@@ -299,7 +299,7 @@ pub fn floor_below(world: &WorldId, cols: &ColIndex, at: Vec3) -> f32 {
     );
     let mut best = ground;
     for level in 0..MAX_BUILD_SOCKETS {
-        if (m.planes | tris) & (1u16 << level) == 0 {
+        if (m.planes | tris) & (1u32 << level) == 0 {
             continue;
         }
         let top = base + build::level_y(level as u8);

@@ -639,13 +639,13 @@ pub const MAX_BUILDINGS: usize = 32_768;
 /// ~1,366 3 m cells; foundations further out die on the terrain rule first).
 pub const MAX_BUILD_COORD: usize = 2_048;
 
-/// Build levels (vertical storeys) per cell, 0-based. The wire carries the
-/// level in 3 bits — exactly this range. Proposed default, DECISIONS.md
-/// §open (build grid row).
-pub const MAX_BUILD_LEVELS: usize = 8;
-/// Whole and half-storey socket addresses. Whole storeys retain codes 0..8;
-/// codes 8..16 sit half a storey above the corresponding whole level.
-pub const MAX_BUILD_SOCKETS: usize = 16;
+/// Build levels (vertical storeys) per cell, 0-based: 16 (48 m) since the
+/// 512-player cap, 8 before. The wire carries a socket code in 5 bits
+/// (`protocol::BUILD_LEVEL_BITS`).
+pub const MAX_BUILD_LEVELS: usize = 16;
+/// Whole and half-storey socket addresses. Whole storeys retain codes 0..16;
+/// codes 16..32 sit half a storey above the corresponding whole level.
+pub const MAX_BUILD_SOCKETS: usize = 32;
 const _: () = assert!(MAX_BUILD_SOCKETS == MAX_BUILD_LEVELS * 2);
 
 /// Column-index slots (collide.rs): open-addressed map from build column

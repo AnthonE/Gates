@@ -1144,25 +1144,30 @@ impl BoxRec {
 
 /// Pack a box's grid address into the one container handle the move
 /// command carries. `cx`/`cz` are bounded by `MAX_BUILD_COORD` (2048, so
-/// eleven bits each: 16..27 and 4..15), `level` by `MAX_BUILD_SOCKETS` (16,
-/// four bits) and the body slot `loc` by its four wire bits, which ride at
-/// 27..31 — so slot 0, the one every box had before free placement put
-/// several in a cell, packs exactly as it always did.
+/// eleven bits each: 16..27 and 5..16), `level` by `MAX_BUILD_SOCKETS` (32,
+/// five bits, 0..5 — four until the 512-player cap's taller builds) and the
+/// body slot `loc` by its four wire bits, which ride at 27..31. Bit 31 is
+/// never set (`farm::HOST_GROUND` relies on it).
 ///
 /// Deliberately **not** `gather::cell_key`: that one packs `cx << 16 | cz`
 /// and spends all 32 bits on the pair, leaving nowhere for the level. A
 /// box on a second storey is a box, so the level is part of the address.
 pub fn box_key(cx: u16, cz: u16, level: u8, loc: u8) -> u32 {
-    ((loc as u32 & 0xF) << 27) | ((cx as u32) << 16) | ((cz as u32) << 4) | (level as u32 & 0xF)
+    ((loc as u32 & 0xF) << 27)
+        | ((cx as u32 & 0x7FF) << 16)
+        | ((cz as u32 & 0x7FF) << 5)
+        | (level as u32 & 0x1F)
 }
+const _: () = assert!(crate::limits::MAX_BUILD_SOCKETS <= 1 << 5);
+const _: () = assert!(crate::limits::MAX_BUILD_COORD <= 1 << 11);
 
 /// The address a box handle packs, `(cx, cz, level, loc)` — [`box_key`]'s
 /// inverse, for the verbs that name a place rather than a container.
 pub fn box_addr(key: u32) -> (u16, u16, u8, u8) {
     (
         ((key >> 16) & 0x7FF) as u16,
-        ((key >> 4) & 0x7FF) as u16,
-        (key & 0xF) as u8,
+        ((key >> 5) & 0x7FF) as u16,
+        (key & 0x1F) as u8,
         ((key >> 27) & 0xF) as u8,
     )
 }
