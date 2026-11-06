@@ -2314,7 +2314,12 @@ impl Plugin for GatesRenderPlugin {
                 audio::hands,
                 // The counter after the blight's moment is read, beside the
                 // fires (the tuple is at Bevy's limit).
-                (audio::fires, audio::geiger.after(blight::update)).chain(),
+                (
+                    audio::fires,
+                    audio::geiger.after(blight::update),
+                    audio::heartbeat,
+                )
+                    .chain(),
                 audio::bed,
                 audio::pump,
             )

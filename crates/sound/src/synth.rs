@@ -610,6 +610,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         }
         Cue::Geiger => geiger(&mut r),
         Cue::Headshot => headshot(&mut r),
+        Cue::Heartbeat => heartbeat(&mut r),
         // Rust's guns: the near report, by delegation, until a recording.
         Cue::ShotRifle | Cue::ShotSmg | Cue::ShotPistol | Cue::ShotShotgun | Cue::ShotBolt => {
             render_take(Cue::ShotGun, take)
@@ -1427,6 +1428,39 @@ fn fizzle(r: &mut Rng) -> Vec<f32> {
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);
+    }
+    out
+}
+
+/// One heartbeat heard from inside: "lub" then "dub" 0.17 s later — two
+/// low sine thumps falling in pitch (a valve's knock, not a drum), the
+/// second shorter and quieter, with a breath of low-passed noise on each
+/// attack so it reads as a body and not a synth kick.
+fn heartbeat(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.5);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let mut lp = Lp::new(400.0);
+    // (onset s, start Hz, end Hz, decay s, level)
+    for (t0, hz0, hz1, tau, amp) in [
+        (0.0, 62.0, 44.0, 0.075, 1.0),
+        (0.17, 70.0, 50.0, 0.055, 0.7),
+    ] {
+        let start = samples(t0);
+        let mut phase = 0.0f32;
+        for (k, v) in out[start..].iter_mut().enumerate() {
+            let t = k as f32 / sr;
+            if t > tau * 8.0 {
+                break;
+            }
+            let hz = hz1 + (hz0 - hz1) * (-t / 0.04).exp();
+            phase += TAU * hz / sr;
+            let env = attack(t, 0.004) * (-t / tau).exp();
+            *v += amp * env * (phase.sin() + 0.25 * r.noise() * (-t / 0.012).exp());
+        }
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v = lp.run(*v) * edges(i, n);
     }
     out
 }

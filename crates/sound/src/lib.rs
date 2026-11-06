@@ -567,11 +567,16 @@ pub enum Cue {
     StepSnow,
     /// A step in snow heard at another body, as [`Cue::RemoteStepSand`].
     RemoteStepSnow,
+    /// Your own heart while you are down (wounded v0): one "lub-dub", played
+    /// on a beat by `render/audio.rs` for as long as the crawl lasts — the
+    /// reference's Nov 2026 "heartbeat sound when wounded". Yours alone, so
+    /// not positional. Appended, the enum's append-order rule.
+    Heartbeat,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 153;
+pub const CUE_COUNT: usize = 154;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -733,6 +738,7 @@ impl Cue {
         Cue::KnockMetal,
         Cue::StepSnow,
         Cue::RemoteStepSnow,
+        Cue::Heartbeat,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -922,6 +928,8 @@ impl Cue {
             Cue::Geiger => 0.05,
             // Heard once a fight at most; a nudge so two are never one take.
             Cue::Headshot => 0.04,
+            // A heart does not change pitch beat to beat; barely a nudge.
+            Cue::Heartbeat => 0.01,
             // A mechanism with a fixed spring: a nudge, like the shots.
             Cue::DryFire => 0.03,
             // A whine's pitch is its whole character, and no two glances
@@ -1406,6 +1414,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The snow's step, yours and another body's: the step family's rows.
     STEP,
     RSTEP,
+    // Your heart while down: on the game bus, so turning the scenery down
+    // keeps it; under a shot's level, and a cooldown under its beat.
+    row(GAME,  0.0, 0.55, 300, 6, false),  // heartbeat
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).

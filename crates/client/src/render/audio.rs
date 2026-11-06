@@ -486,6 +486,9 @@ pub struct Sound {
     pub birds: Birds,
     /// The Verdigris counter's clock (`sound::geiger`), driven by [`geiger`].
     pub geiger: crate::sound::geiger::Geiger,
+    /// Seconds to your next heartbeat while you are down, driven by
+    /// [`heartbeat`]; zero when standing, so the first beat lands on the fall.
+    pub heart_s: f32,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -1079,6 +1082,42 @@ pub fn fires(
     };
     sound.play(Request::at(Cue::FireCrackle, at.to_array()));
     next.0 = 0.45 + 0.75 * r;
+}
+
+/// Seconds between beats at the start of a crawl, and at its end.
+const HEART_FAST_S: f32 = 0.7;
+const HEART_SLOW_S: f32 = 1.3;
+
+/// When the next beat is due, `left` of the way through the crawl's clock
+/// (1 on the fall, 0 at the roll): fast as you go down, slowing as the
+/// minute runs out.
+pub fn heart_gap(left: f32) -> f32 {
+    HEART_SLOW_S + (HEART_FAST_S - HEART_SLOW_S) * left.clamp(0.0, 1.0)
+}
+
+/// Your heart while you are down (wounded v0): a beat every
+/// [`heart_gap`] for as long as the crawl lasts — the reference's Nov 2026
+/// "heartbeat sound when wounded". Quiet the moment you stand or die.
+pub fn heartbeat(
+    net: NonSend<Net>,
+    crawl: Option<Res<super::wounded::Crawl>>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
+    if !core.wounded || core.dead {
+        sound.heart_s = 0.0;
+        return;
+    }
+    sound.heart_s -= time.delta_secs();
+    if sound.heart_s > 0.0 {
+        return;
+    }
+    sound.play(Request::own(Cue::Heartbeat));
+    // How far through the crawl, off the overlay's own countdown.
+    let total = core.wound_ticks.max(1) as f32 / sim_core::limits::TICK_HZ as f32;
+    let left = crawl.map_or(1.0, |c| c.secs_left / total);
+    sound.heart_s = heart_gap(left);
 }
 
 /// The Verdigris counter in your ear: clicks at the rate of the green where
