@@ -509,6 +509,9 @@ pub struct ClientNetState {
     /// The platform's last answer for this connection, kept so a gift
     /// handed out later is added to it rather than replacing it.
     pub skins_platform: sim_core::skin::SkinSet,
+    /// What the wallet holds on Solana, as last read (`skins::solana_of`),
+    /// kept apart so neither read's answer replaces the other's.
+    pub skins_solana: sim_core::skin::SkinSet,
     /// A priced gift's payment is queued and not yet answered
     /// (`Command::Pay`): asking again meanwhile charges nothing twice.
     pub paying: bool,
@@ -649,6 +652,7 @@ impl ClientNetState {
             worn_owed: TAGS_ALL,
             skins_pending: None,
             skins_platform: sim_core::skin::SkinSet::EMPTY,
+            skins_solana: sim_core::skin::SkinSet::EMPTY,
             paying: false,
             last_expo: None,
             last_hostile: None,

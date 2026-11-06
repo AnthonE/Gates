@@ -367,6 +367,9 @@ pub struct SkinsMsg {
     pub slot: usize,
     pub id: u32,
     pub owned: sim_core::skin::SkinSet,
+    /// The Solana read's answer, not the platform's EVM one
+    /// (`ShardCore::skins_solana`).
+    pub solana: bool,
 }
 
 /// Accept→sim: the name and picture the platform holds for the wallet in

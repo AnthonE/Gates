@@ -2778,7 +2778,22 @@ impl ShardCore {
         };
         if c.connected && c.id == id {
             c.skins_platform = owned;
-            c.skins_pending = Some(owned.union(gifted));
+            c.skins_pending = Some(owned.union(c.skins_solana).union(gifted));
+        }
+    }
+
+    /// What connection `slot`, player `id`, holds on Solana (`skins.rs`):
+    /// added to the platform's answer, which never replaces it. No mint to
+    /// settle: nothing on Solana is sold here. An answer that changes nothing
+    /// owes the sim nothing, so a dark collection is no work at all.
+    pub fn skins_solana(&mut self, slot: usize, id: u32, owned: sim_core::skin::SkinSet) {
+        let gifted = self.gifted(slot);
+        let Some(c) = self.clients.get_mut(slot) else {
+            return;
+        };
+        if c.connected && c.id == id && c.skins_solana != owned {
+            c.skins_solana = owned;
+            c.skins_pending = Some(c.skins_platform.union(owned).union(gifted));
         }
     }
 
@@ -2813,7 +2828,7 @@ impl ShardCore {
         }
         let gifted = self.gifts.of(&key, &self.world.skins);
         if let Some(c) = self.clients.get_mut(slot) {
-            c.skins_pending = Some(c.skins_platform.union(gifted));
+            c.skins_pending = Some(c.skins_platform.union(c.skins_solana).union(gifted));
         }
         Gift::Given
     }
@@ -11420,6 +11435,50 @@ mod tests {
         core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(owned(&core, 256), founder.union(paid));
         assert_eq!(core.gifts.len(), 1);
+    }
+
+    /// The Pill rides beside what the platform says: neither read's answer
+    /// takes the other's away, and neither does a gift.
+    #[test]
+    fn a_solana_item_is_added_to_the_platform_answer_not_swapped_for_it() {
+        use sim_core::skin::{SkinDef, SkinSet};
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        for i in 0..4 {
+            core.world.skins.defs[i] = SkinDef {
+                catalog: i as u16 + 1,
+                covers: 0,
+                unlock: false,
+            };
+        }
+        core.world.skins.count = 4;
+        let key = PlayerKey::new(format!("0x{:040x}", 0xa1).as_bytes()).unwrap();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        let owned = |core: &ShardCore| {
+            let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+            core.world.players[w].skins
+        };
+        let (mut paid, mut pill) = (SkinSet::EMPTY, SkinSet::EMPTY);
+        paid.insert(2);
+        pill.insert(3);
+
+        core.skins_solana(0, 256, pill);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(owned(&core), pill, "before the platform answers");
+        core.skins_owned(0, 256, paid);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(owned(&core), paid.union(pill), "the platform's keeps it");
+        core.skins_owned(0, 256, SkinSet::EMPTY);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(owned(&core), pill, "a skin sold on leaves the Pill");
+        core.skins_solana(0, 256, SkinSet::EMPTY);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(owned(&core).is_empty(), "a Pill sent on goes");
+        // Somebody else's id is a stale answer: dropped.
+        core.skins_solana(0, 999, pill);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(owned(&core).is_empty());
     }
 
     /// A lock's dials go only to a player near it: the turn before a solve

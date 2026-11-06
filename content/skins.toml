@@ -337,3 +337,17 @@ covers = "item.assault_rifle"
 tint = [242, 196, 92]
 season = "prism"
 # style: polished gold and brass body with hammered panels, glowing orange heat lines in the seams (--glow 3.0 --veins orange)
+
+# ── The Pill ─────────────────────────────────────────────────────────────────
+# A free cosmetic, a Solana NFT earned by ten minutes of hosted play, never
+# sold here: no coin, no price. Owned through `skins::SOLANA_ITEMS`, which
+# names this catalog; the shard reads the wallet's Solana items at sign-in.
+# Not `season = "launch"`: a gift topic gives every row of its season.
+[[skin]]
+id = "skin.tunic_pill"
+catalog = 33
+name = "Pill Tunic"
+covers = "item.armor_burlap_body"
+tint = [82, 98, 86]
+texture = "29cc12b676c2f3ffad3c29b9023c35ced65dba03b1f48a1cb3c8f6cb2ab9394c"
+season = "pill"
