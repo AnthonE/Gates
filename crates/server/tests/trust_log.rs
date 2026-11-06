@@ -45,7 +45,7 @@ fn key(s: &str) -> PlayerKey {
 }
 
 fn id_of(generation: u32, slot: usize) -> u32 {
-    (generation << 8) | slot as u32
+    protocol::player_id(generation, slot)
 }
 
 fn scratch(name: &str) -> PathBuf {

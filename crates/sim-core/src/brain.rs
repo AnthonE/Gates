@@ -96,7 +96,7 @@ pub const FINISHED: u8 = 1;
 pub const FAILED: u8 = 2;
 
 /// `Mob::target` when nothing is remembered.
-pub const NO_TARGET: u8 = u8::MAX;
+pub const NO_TARGET: u16 = u16::MAX;
 
 /// One condition a rule can test — the reference's `AIEvent` types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -841,7 +841,7 @@ pub struct Peer {
     pub live: bool,
     pub kind: u8,
     pub state: AiState,
-    pub target: u8,
+    pub target: u16,
     pub qx: i32,
     pub qz: i32,
     pub hurt_at: u64,
@@ -1023,7 +1023,7 @@ fn has_target(ctx: &Ctx, mob: &Mob) -> bool {
 /// A player an animal may chase: awake, alive, and not in THE GATE's safe
 /// zone — Rust's "animals no longer attack players in safe zones", so a
 /// wolf that followed someone to the gate gives up there.
-fn valid_target(players: &[Player; MAX_PLAYERS], t: u8) -> bool {
+fn valid_target(players: &[Player; MAX_PLAYERS], t: u16) -> bool {
     players
         .get(t as usize)
         .is_some_and(|p| p.active && !p.sleeping && !p.dead && !p.safe)
@@ -1222,7 +1222,7 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         day_r.max(r)
     };
     let (fx, fz) = yaw_dir(mob.yaw);
-    let mut best: Option<(i64, u8)> = None;
+    let mut best: Option<(i64, u16)> = None;
     for (i, p) in ctx.players.iter().enumerate() {
         if calm || !p.active || p.sleeping || p.dead || p.safe {
             continue;
@@ -1259,9 +1259,9 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         }
         // The one already being chased wins ties with anyone up to twice
         // as close: a charge does not swap victims on a step.
-        let score = if i as u8 == mob.target { d2 / 4 } else { d2 };
+        let score = if i as u16 == mob.target { d2 / 4 } else { d2 };
         if best.is_none_or(|(s, _)| score < s) {
-            best = Some((score, i as u8));
+            best = Some((score, i as u16));
         }
     }
     // A pack animal that found someone itself, fresh, calls its pack —
@@ -1297,12 +1297,12 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
 /// reach does not howl for it), and a badly hurt wolf does not answer. In a
 /// herd that never bites the same answer is a bolt: one stag running from
 /// someone sends its herd-mates running from them too, hurt or not.
-fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u8)> {
+fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u16)> {
     let pack = crate::mob::pack_of(slot)?;
     if def.attack > 0 && (mob.hp as u32) * 100 < (def.hp as u32) * ANSWER_PCT {
         return None;
     }
-    let mut best: Option<(i64, u8)> = None;
+    let mut best: Option<(i64, u16)> = None;
     for (i, p) in ctx.peers.iter().enumerate() {
         if i == slot || !p.live || p.kind != mob.kind || p.target == NO_TARGET {
             continue;
@@ -1634,7 +1634,7 @@ fn attack(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut B
     {
         bites.push(Bite {
             mob_slot: slot as u8,
-            victim: victim as u8,
+            victim: victim as u16,
             damage: def.attack,
             // A sentence's worth of precision for the death screen, not a
             // sim quantity; f32 sqrt is on wall 1's list.

@@ -142,18 +142,17 @@ fn reads_hand(act: &ActionMsg) -> bool {
     )
 }
 
-/// Ticks between two connections' crew-vital pushes: the period spread over
-/// every slot a push can go to (players, then seats), so slot `s` is due on
-/// its own phase and no two share a tick (`crew_vital_due`).
-const CREW_VITAL_STRIDE: u64 =
-    sim_core::deploy::CREW_VITAL_TICKS / (MAX_PLAYERS + MAX_SPECTATORS) as u64;
-const _: () = assert!(CREW_VITAL_STRIDE > 0);
+/// Every slot a crew-vital push can go to (players, then seats): the period
+/// is spread over them, so slot `s` is due on its own phase and a tick
+/// carries at most a couple (`crew_vital_due`).
+const CREW_VITAL_SLOTS: u64 = (MAX_PLAYERS + MAX_SPECTATORS) as u64;
 
 /// Whether connection `slot` is owed its crew-vital push this tick (NOW
 /// §0up 3): once per `CREW_VITAL_TICKS`, on a phase of its own, so a full
 /// shard's crew never ask for their bills on one tick.
 fn crew_vital_due(tick: u64, slot: usize) -> bool {
-    (tick + slot as u64 * CREW_VITAL_STRIDE).is_multiple_of(sim_core::deploy::CREW_VITAL_TICKS)
+    let phase = slot as u64 * sim_core::deploy::CREW_VITAL_TICKS / CREW_VITAL_SLOTS;
+    (tick + phase).is_multiple_of(sim_core::deploy::CREW_VITAL_TICKS)
 }
 
 /// Priority accumulator v0 weights (NETCODE.md §3): players w=100; the
@@ -347,7 +346,7 @@ pub struct ShardCore {
     /// World slots whose tenant has worn anything since it arrived. Only
     /// these are worth a `SUB_WORN`: a client draws a body it was never told
     /// about in nothing, so an outfit that has always been empty says nothing.
-    worn_dressed: u128,
+    worn_dressed: crate::client::PlayerSet,
     /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
     /// at next. One slot per call, so the work is O(1) per tick and every
     /// connected player is visited once every `MAX_PLAYERS` ticks (3.3 s at
@@ -545,9 +544,9 @@ struct Seat {
 }
 
 /// Where a mirrored event copy goes: `NO_SEAT` for an empty seat, else the
-/// target's connection slot. `u8` because `MAX_PLAYERS` fits one, and the
+/// target's connection slot. `u16` because `MAX_PLAYERS` fits one, and the
 /// table is copied into the mirror closure every tick.
-const NO_SEAT: u8 = u8::MAX;
+const NO_SEAT: u16 = u16::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
 /// The grids, in whole metres, a far report (v113) is snapped to for a
@@ -579,6 +578,17 @@ const OVEN_BY_SOMEONE: u32 = u32::MAX;
 /// arrives owed at once: 8 dresses 30 bodies in 4 ticks, at most 8 small
 /// records a tick into a ring of `EVENT_RING_CAP`.
 const WORN_DRIP_PER_TICK: usize = 8;
+
+/// Nametags, agent marks and crew marks one connection is sent a tick, each
+/// (`drip_client`). A joiner on a full shard knows every name in about four
+/// seconds; slots with nothing to say cost nothing.
+const TAG_DRIP_PER_TICK: usize = 4;
+
+/// Connected players past which a tick's interest pass is split over the
+/// cores (`update_all_interest`); below it a thread costs more than it buys.
+const INTEREST_PARALLEL_AT: usize = 64;
+/// Threads the interest pass may use, the calling one included.
+const INTEREST_THREADS_MAX: usize = 4;
 
 /// Minutes a wallet must play this wipe (`standings_minute`) before its
 /// sleeper is protected from eviction ([`ShardCore::evict_victim`]) and its
@@ -1101,7 +1111,7 @@ impl ShardCore {
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
             agent_names: [protocol::Name::EMPTY; MAX_PLAYERS],
             worn_seen: [WORN_NONE; MAX_PLAYERS],
-            worn_dressed: 0,
+            worn_dressed: crate::client::PlayerSet::EMPTY,
             admins: crate::admin::Admins::none(),
             banned: crate::admin::Bans::new(),
             autosave_at: 0,
@@ -1476,9 +1486,8 @@ impl ShardCore {
         if let Some(a) = self.standings_agent.get_mut(slot) {
             *a = agent;
             if agent {
-                let bit = 1u128 << slot;
                 for c in self.clients.iter_mut() {
-                    c.agents_owed |= bit;
+                    c.agents_owed.insert(slot);
                 }
             }
         }
@@ -1819,8 +1828,8 @@ impl ShardCore {
     fn note_standings(&mut self, n: usize) {
         use sim_core::works::{WORK_EV_LIT, WORK_EV_REKINDLED};
         use sim_core::world::TRUST_GIVE;
-        // Slots whose craft the sim refused this tick (`MAX_PLAYERS` <= 128).
-        let mut craft_refused = 0u128;
+        // Slots whose craft the sim refused this tick.
+        let mut craft_refused = crate::client::PlayerSet::EMPTY;
         for i in 0..self.world.events.len() {
             let ev = self.world.events.entries()[i];
             match ev.code {
@@ -1896,7 +1905,7 @@ impl ShardCore {
                 }
                 EV_CRAFT_REFUSED => {
                     if let Some(slot) = self.client_slot_of(ev.a) {
-                        craft_refused |= 1 << slot;
+                        craft_refused.insert(slot);
                     }
                 }
                 EV_DEATH => {
@@ -1923,7 +1932,7 @@ impl ShardCore {
             let Some(slot) = self.client_slot_of(id) else {
                 continue;
             };
-            if craft_refused & (1 << slot) == 0 && self.world.live_slot_of(id).is_some() {
+            if !craft_refused.contains(slot) && self.world.live_slot_of(id).is_some() {
                 self.played_minute[slot] = id;
             }
         }
@@ -1946,9 +1955,19 @@ impl ShardCore {
             &self.teams,
             &self.tags,
         );
-        let exempt = |id: u32| {
-            (0..MAX_PLAYERS).any(|s| clients[s].connected && clients[s].id == id && agent[s])
-        };
+        // The agents on the shard, gathered once: `exempt` is asked for every
+        // watcher of the wall scan, and a scan of every connection each time
+        // made it quadratic.
+        let mut agents = [0u32; MAX_PLAYERS];
+        let mut n_agents = 0;
+        for s in 0..MAX_PLAYERS {
+            if clients[s].connected && agent[s] {
+                agents[n_agents] = clients[s].id;
+                n_agents += 1;
+            }
+        }
+        let agents = &agents[..n_agents];
+        let exempt = |id: u32| agents.contains(&id);
         self.cheats.tick(
             tick,
             &self.world.players,
@@ -2724,17 +2743,16 @@ impl ShardCore {
                 WORN_NONE
             };
             if self.worn_seen[w] != now {
-                let bit = 1u128 << w;
                 if self.worn_seen[w].0 != now.0 {
-                    self.worn_dressed &= !bit; // a new tenant starts undressed
+                    self.worn_dressed.remove(w); // a new tenant starts undressed
                 }
                 if now.1 != [sim_core::gather::NO_ITEM; WEAR_SLOTS] {
-                    self.worn_dressed |= bit;
+                    self.worn_dressed.insert(w);
                 }
                 self.worn_seen[w] = now;
-                if self.worn_dressed & bit != 0 {
+                if self.worn_dressed.contains(w) {
                     for c in self.clients.iter_mut() {
-                        c.worn_owed |= bit;
+                        c.worn_owed.insert(w);
                     }
                 }
             }
@@ -2742,9 +2760,8 @@ impl ShardCore {
     }
 
     fn owe_tag(&mut self, slot: usize) {
-        let bit = 1u128 << slot;
         for c in self.clients.iter_mut() {
-            c.tags_owed |= bit;
+            c.tags_owed.insert(slot);
         }
     }
 
@@ -3487,9 +3504,10 @@ impl ShardCore {
         let world = &self.world;
         self.evict_ids.load(|id| {
             id & sim_core::limits::MOB_ID_TAG == 0
-                && floors
-                    .get((id & 0xFF) as usize)
-                    .is_some_and(|&f| id >> 8 <= f)
+                // One floor for every slot (`id_floors`), so the slot is not
+                // asked: an id from the old eight-bit layout decodes to a
+                // slot past `MAX_PLAYERS` and must not be dropped for it.
+                && protocol::player_id_gen(id) <= floors[0]
                 && !world.players.iter().any(|p| p.active && p.id == id)
         })
     }
@@ -4391,22 +4409,11 @@ impl ShardCore {
         crate::trustlog::Tap::drain(self, stats);
         self.pump_teams(stats, &mut send);
 
-        for slot in 0..MAX_PLAYERS {
-            if self.clients[slot].connected {
-                self.update_interest(slot, stats);
-            }
-        }
         // Spectator seats (`NETCODE.md` §2.3), decided once per tick: a seat
         // whose target left is fed nothing more from here on, and the accept
-        // loop closes it on its next sweep. A live seat measures interest
-        // from the body it watches, exactly as that player's own connection
-        // does — `clients[seat].id` IS the target's id.
+        // loop closes it on its next sweep.
         let live = self.live_seats();
-        for (i, &l) in live.iter().enumerate() {
-            if l {
-                self.update_interest(MAX_PLAYERS + i, stats);
-            }
-        }
+        self.update_all_interest(&live, stats);
         mark(Phase::Events);
         self.fan_out(&live, stats, ops, &mut send);
 
@@ -4499,7 +4506,7 @@ impl ShardCore {
         let mut mirror = [NO_SEAT; MAX_SPECTATORS];
         for (i, m) in mirror.iter_mut().enumerate() {
             if let (true, Some(seat)) = (live[i], self.watching[i]) {
-                *m = seat.target as u8;
+                *m = seat.target as u16;
             }
         }
         let watched = mirror.iter().any(|&t| t != NO_SEAT);
@@ -4653,7 +4660,7 @@ impl ShardCore {
     }
 
     /// This client's live world slot, or None while its join command is
-    /// still queued. `update_interest` refreshes the cache every tick, so
+    /// still queued. `interest_for` refreshes the cache every tick, so
     /// this is a validated read of it, never a scan — chat routing is
     /// O(recipients), not O(recipients × players).
     fn live_wslot(&self, slot: usize) -> Option<usize> {
@@ -7682,10 +7689,10 @@ impl ShardCore {
     }
 
     /// Resolve which connection slot player `id` belongs to. The shard mints
-    /// ids with the connection slot in the low byte (`net.rs`), so that slot
+    /// ids with the connection slot in the low bits (`net.rs`), so that slot
     /// is asked first; anything else (a test's arbitrary id) takes the scan.
     fn client_slot_of(&self, id: u32) -> Option<usize> {
-        let guess = (id & 0xFF) as usize;
+        let guess = protocol::player_id_slot(id);
         if guess < MAX_PLAYERS && self.clients[guess].connected && self.clients[guess].id == id {
             return Some(guess);
         }
@@ -7763,7 +7770,7 @@ impl ShardCore {
     /// arithmetic over the claim cache the tick just refreshed (upkeep v2's
     /// readout). A walk of the piece store with an O(1) answer for the
     /// base's own pieces, asked per feed press and by the crew vital's
-    /// push, which [`crew_vital_due`] holds to one connection a tick.
+    /// push, which [`crew_vital_due`] holds to a couple of connections a tick.
     /// `None` (counted) when the rows would not encode.
     fn encode_stock(&mut self, hi: usize, stats: &ShardStats) -> Option<usize> {
         let hr = self.world.deploys.hearths()[hi];
@@ -7898,9 +7905,8 @@ impl ShardCore {
             };
             if of != self.crew_of[slot] {
                 self.crew_of[slot] = of;
-                let bit = 1u128 << slot;
                 for c in self.clients.iter_mut() {
-                    c.crews_owed |= bit;
+                    c.crews_owed.insert(slot);
                 }
             }
         }
@@ -8756,94 +8762,101 @@ impl ShardCore {
             }
         }
 
-        // Who everyone is (v85): one owed tag per tick, lowest slot first.
-        // The bit clears only when the push is accepted, so a full ring
-        // delays a name and never loses one.
-        let owed = self.clients[slot].tags_owed;
-        if owed != 0 {
-            let i = owed.trailing_zeros() as usize;
-            let bit = 1u128 << i;
+        // Who everyone is (v85): up to `TAG_DRIP_PER_TICK` owed tags a tick,
+        // lowest slot first; an empty slot clears without spending one. The
+        // bit clears only when the push is accepted, so a full ring delays a
+        // name and never loses one.
+        let mut sent = 0;
+        while sent < TAG_DRIP_PER_TICK {
+            let Some(i) = self.clients[slot].tags_owed.first() else {
+                break;
+            };
             let row = self.tags.get(i).copied().unwrap_or_default();
             if row.id == 0 {
-                self.clients[slot].tags_owed &= !bit;
-            } else {
-                match protocol::encode_event_tag(
-                    row.id,
-                    &row.address,
-                    &row.name,
-                    row.pic,
-                    &row.guild,
-                    &mut self.ev_buf,
-                ) {
-                    Ok(len) => {
-                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            self.clients[slot].tags_owed &= !bit;
-                            ShardStats::bump(&stats.ev_sent);
-                        } else {
-                            return;
-                        }
+                self.clients[slot].tags_owed.remove(i);
+                continue;
+            }
+            sent += 1;
+            match protocol::encode_event_tag(
+                row.id,
+                &row.address,
+                &row.name,
+                row.pic,
+                &row.guild,
+                &mut self.ev_buf,
+            ) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].tags_owed.remove(i);
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
                     }
-                    Err(_) => {
-                        self.clients[slot].tags_owed &= !bit;
-                        ShardStats::bump(&stats.encode_range_errors);
-                    }
+                }
+                Err(_) => {
+                    self.clients[slot].tags_owed.remove(i);
+                    ShardStats::bump(&stats.encode_range_errors);
                 }
             }
         }
 
-        // Who is a program (v107): one owed mark per tick, `tags_owed`'s
-        // shape. A slot whose tenant is not an agent (or is not here) owes
-        // nothing and clears; the id sent is this tenancy's, so a later
-        // tenant of the slot is never marked by it.
-        let owed = self.clients[slot].agents_owed;
-        if owed != 0 {
-            let i = owed.trailing_zeros() as usize;
-            let bit = 1u128 << i;
+        // Who is a program (v107): `tags_owed`'s drip. A slot whose tenant
+        // is not an agent (or is not here) owes nothing and clears for free;
+        // the id sent is this tenancy's, so a later tenant of the slot is
+        // never marked by it.
+        let mut sent = 0;
+        while sent < TAG_DRIP_PER_TICK {
+            let Some(i) = self.clients[slot].agents_owed.first() else {
+                break;
+            };
             let target = self.clients.get(i).filter(|c| c.connected).map(|c| c.id);
-            match target.filter(|_| self.standings_agent.get(i) == Some(&true)) {
-                None => self.clients[slot].agents_owed &= !bit,
-                Some(id) => match protocol::encode_event_agent(id, &mut self.ev_buf) {
-                    Ok(len) => {
-                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            self.clients[slot].agents_owed &= !bit;
-                            ShardStats::bump(&stats.ev_sent);
-                        } else {
-                            return;
-                        }
+            let Some(id) = target.filter(|_| self.standings_agent.get(i) == Some(&true)) else {
+                self.clients[slot].agents_owed.remove(i);
+                continue;
+            };
+            sent += 1;
+            match protocol::encode_event_agent(id, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].agents_owed.remove(i);
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
                     }
-                    Err(_) => {
-                        self.clients[slot].agents_owed &= !bit;
-                        ShardStats::bump(&stats.encode_range_errors);
-                    }
-                },
+                }
+                Err(_) => {
+                    self.clients[slot].agents_owed.remove(i);
+                    ShardStats::bump(&stats.encode_range_errors);
+                }
             }
         }
 
-        // Whom each agent serves (v154): `agents_owed`'s shape. Only an agent
+        // Whom each agent serves (v154): `agents_owed`'s drip. Only an agent
         // here is told about; the id is this tenancy's, so a later tenant
         // of the slot is never marked by it.
-        let owed = self.clients[slot].crews_owed;
-        if owed != 0 {
-            let i = owed.trailing_zeros() as usize;
-            let bit = 1u128 << i;
+        let mut sent = 0;
+        while sent < TAG_DRIP_PER_TICK {
+            let Some(i) = self.clients[slot].crews_owed.first() else {
+                break;
+            };
             let target = self.clients.get(i).filter(|c| c.connected).map(|c| c.id);
-            match target.filter(|_| self.standings_agent.get(i) == Some(&true)) {
-                None => self.clients[slot].crews_owed &= !bit,
-                Some(id) => {
-                    match protocol::encode_event_crew(id, self.crew_of[i], &mut self.ev_buf) {
-                        Ok(len) => {
-                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                                self.clients[slot].crews_owed &= !bit;
-                                ShardStats::bump(&stats.ev_sent);
-                            } else {
-                                return;
-                            }
-                        }
-                        Err(_) => {
-                            self.clients[slot].crews_owed &= !bit;
-                            ShardStats::bump(&stats.encode_range_errors);
-                        }
+            let Some(id) = target.filter(|_| self.standings_agent.get(i) == Some(&true)) else {
+                self.clients[slot].crews_owed.remove(i);
+                continue;
+            };
+            sent += 1;
+            match protocol::encode_event_crew(id, self.crew_of[i], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].crews_owed.remove(i);
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
                     }
+                }
+                Err(_) => {
+                    self.clients[slot].crews_owed.remove(i);
+                    ShardStats::bump(&stats.encode_range_errors);
                 }
             }
         }
@@ -8857,27 +8870,24 @@ impl ShardCore {
         // body a tick.
         let visible = self.worn_visible(slot);
         for _ in 0..WORN_DRIP_PER_TICK {
-            let owed = self.clients[slot].worn_owed & visible;
-            if owed == 0 {
+            let Some(i) = self.clients[slot].worn_owed.and(&visible).first() else {
                 break;
-            }
-            let i = owed.trailing_zeros() as usize;
-            let bit = 1u128 << i;
+            };
             let (id, items, skins) = self.worn_seen[i];
-            if id == 0 || self.worn_dressed & bit == 0 {
-                self.clients[slot].worn_owed &= !bit;
+            if id == 0 || !self.worn_dressed.contains(i) {
+                self.clients[slot].worn_owed.remove(i);
             } else {
                 match protocol::encode_event_worn(id, &items, &skins, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            self.clients[slot].worn_owed &= !bit;
+                            self.clients[slot].worn_owed.remove(i);
                             ShardStats::bump(&stats.ev_sent);
                         } else {
                             return;
                         }
                     }
                     Err(_) => {
-                        self.clients[slot].worn_owed &= !bit;
+                        self.clients[slot].worn_owed.remove(i);
                         ShardStats::bump(&stats.encode_range_errors);
                     }
                 }
@@ -10144,7 +10154,7 @@ impl ShardCore {
 
     /// Does connection `slot`'s class-D interest array describe this tick?
     ///
-    /// `update_interest` gives up before pass 1 when the connection has no
+    /// `interest_for` gives up before pass 1 when the connection has no
     /// live body — a join command still queued, or a world slot whose
     /// tenant changed under it — and returns **without touching
     /// `interest`**, so the array is not "empty", it is meaningless.
@@ -10183,7 +10193,7 @@ impl ShardCore {
     /// Three pass-throughs, each load-bearing:
     ///
     /// - **The subject's own connection.** A body is never a candidate for
-    ///   itself (`update_interest` pass 1: `p.id != c.id`), so
+    ///   itself (`interest_for` pass 1: `p.id != c.id`), so
     ///   `interest[own]` is false *by construction* and filtering on it
     ///   alone would silently drop the copy the actor gets. That copy is
     ///   one message per event rather than one per client, and
@@ -10401,14 +10411,17 @@ impl ShardCore {
     /// own body and the bodies its class-D interest draws. A body out of
     /// interest stays owed (`worn_owed`), so it is dressed the tick it is
     /// drawn and a stranger across the island is not inventoried.
-    fn worn_visible(&self, slot: usize) -> u128 {
+    fn worn_visible(&self, slot: usize) -> crate::client::PlayerSet {
+        let mut m = crate::client::PlayerSet::EMPTY;
         if !self.interest_settled(slot) {
-            return 0;
+            return m;
         }
         let c = &self.clients[slot];
-        let mut m = 1u128 << c.own_wslot;
+        m.insert(c.own_wslot);
         for (w, &i) in c.interest.iter().enumerate() {
-            m |= u128::from(i) << w;
+            if i {
+                m.insert(w);
+            }
         }
         m
     }
@@ -10430,7 +10443,57 @@ impl ShardCore {
     /// a rank question (a tenant change, a death). Pass 2 turns the field
     /// into the two order statistics the bands compare against. Pass 3
     /// decides, on both bands at once, and accrues.
-    fn update_interest(&mut self, slot: usize, stats: &ShardStats) {
+    /// Every connected player's interest, then every live seat's — spread
+    /// over the cores on a crowded shard. One connection's set reads the
+    /// world and writes only its own `ClientNetState`, so the connections
+    /// are independent and the split changes no answer, only the clock:
+    /// at 512 clustered bodies this pass was 63 % of a tick on one core.
+    fn update_all_interest(&mut self, live: &[bool; MAX_SPECTATORS], stats: &ShardStats) {
+        let world = &self.world;
+        let connected = self.clients[..MAX_PLAYERS]
+            .iter()
+            .filter(|c| c.connected)
+            .count();
+        let threads = if connected < INTEREST_PARALLEL_AT {
+            1
+        } else {
+            std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(INTEREST_THREADS_MAX)
+        };
+        let (players, seats) = self.clients.split_at_mut(MAX_PLAYERS);
+        if threads <= 1 {
+            for c in players.iter_mut().filter(|c| c.connected) {
+                Self::interest_for(world, c, stats);
+            }
+        } else {
+            let chunk = MAX_PLAYERS.div_ceil(threads);
+            std::thread::scope(|sc| {
+                let mut parts = players.chunks_mut(chunk);
+                let mine = parts.next();
+                for part in parts {
+                    sc.spawn(move || {
+                        for c in part.iter_mut().filter(|c| c.connected) {
+                            Self::interest_for(world, c, stats);
+                        }
+                    });
+                }
+                for c in mine.into_iter().flatten().filter(|c| c.connected) {
+                    Self::interest_for(world, c, stats);
+                }
+            });
+        }
+        // Spectator seats (`NETCODE.md` §2.3): a live seat measures interest
+        // from the body it watches, exactly as that player's own connection
+        // does — `clients[seat].id` IS the target's id.
+        for (i, &l) in live.iter().enumerate() {
+            if l {
+                Self::interest_for(world, &mut seats[i], stats);
+            }
+        }
+    }
+
+    fn interest_for(world: &World, c: &mut ClientNetState, stats: &ShardStats) {
         /// Packed candidate index: `< MAX_PLAYERS` is a world slot, above
         /// it a roster slot — `encode_snapshot`'s packing, for the reason
         /// it has one. Players and animals are ranked in **one** field
@@ -10442,14 +10505,16 @@ impl ShardCore {
         /// decision falls through to distance — no special case needed.
         const ABSENT: i64 = i64::MAX;
 
-        if !self.interest_settled(slot) {
-            match Self::world_slot_of(&self.world, self.clients[slot].id) {
-                Some(w) => self.clients[slot].own_wslot = w,
+        let settled = c.own_wslot != usize::MAX
+            && world.players[c.own_wslot].active
+            && world.players[c.own_wslot].id == c.id;
+        if !settled {
+            match Self::world_slot_of(world, c.id) {
+                Some(w) => c.own_wslot = w,
                 None => return, // join command still queued
             }
         }
-        let c = &mut self.clients[slot];
-        let own = self.world.players[c.own_wslot].body;
+        let own = world.players[c.own_wslot].body;
         let mut overflow = false;
 
         // --- pass 1: measure, and settle what the rank has no say in.
@@ -10469,7 +10534,7 @@ impl ShardCore {
         // hundred players are spread over two kilometres.
         let mut n_near = 0usize;
         for (w, d2_out) in d2_of.iter_mut().enumerate().take(MAX_PLAYERS) {
-            let p = &self.world.players[w];
+            let p = &world.players[w];
             let live = p.active && p.id != c.id;
             if !live || c.tracked_id[w] != p.id {
                 // Tenant left or changed: the id the client knew is gone.
@@ -10499,7 +10564,7 @@ impl ShardCore {
         // the pending-removal set, so the client despawns it rather than
         // holding a corpse that never moves again.
         for s in 0..MAX_MOBS {
-            let m = &self.world.mobs.m[s];
+            let m = &world.mobs.m[s];
             if !m.alive {
                 if c.m_interest[s] {
                     overflow |= !c.pending_add(mob::mob_id(s));
@@ -10597,13 +10662,13 @@ impl ShardCore {
                     c.interest[w] = false;
                     c.accum[w] = 0.0;
                     c.unsent[w] = 0;
-                    overflow |= !c.pending_add(self.world.players[w].id);
+                    overflow |= !c.pending_add(world.players[w].id);
                 }
             } else if d2 <= AOI_ENTER_CM * AOI_ENTER_CM && key <= enter_key {
                 c.interest[w] = true;
                 c.accum[w] = 0.0;
                 c.unsent[w] = 0;
-                c.pending_remove(self.world.players[w].id);
+                c.pending_remove(world.players[w].id);
             }
             if c.interest[w] {
                 let d_m = ((d2 as f32).sqrt()) * 0.01;
@@ -11134,10 +11199,10 @@ mod tests {
     }
 
     /// The crew vital's stagger (NOW §0up 3): every slot a push can go to
-    /// is due exactly once a period, and never on the same tick as another
-    /// — so a full shard standing in its bases pays one bill a tick at most.
+    /// is due exactly once a period, spread evenly — so a full shard
+    /// standing in its bases pays a bill or two a tick at most.
     #[test]
-    fn crew_vital_pushes_are_one_slot_a_tick() {
+    fn crew_vital_pushes_are_spread_over_the_period() {
         let period = sim_core::deploy::CREW_VITAL_TICKS;
         let slots = MAX_PLAYERS + MAX_SPECTATORS;
         let mut due_ticks = vec![0u32; period as usize];
@@ -11148,9 +11213,10 @@ mod tests {
             assert_eq!(due.len(), 1, "slot {slot} is due once a period");
             due_ticks[(due[0] % period) as usize] += 1;
         }
+        let most = slots.div_ceil(period as usize) as u32;
         assert!(
-            due_ticks.iter().all(|&n| n <= 1),
-            "two slots share a push tick"
+            due_ticks.iter().all(|&n| n <= most),
+            "more than {most} slots share a push tick"
         );
     }
 
@@ -11173,7 +11239,7 @@ mod tests {
     fn a_gunshot_and_a_blast_carry_past_the_interest_set_as_reports() {
         let stats = ShardStats::default();
         let mut core = Box::new(ShardCore::new(SEED));
-        let ids = [PLAYER, (1 << 8) | 1, (1 << 8) | 2];
+        let ids = [PLAYER, protocol::player_id(1, 1), protocol::player_id(1, 2)];
         for (slot, &id) in ids.iter().enumerate() {
             assert!(core.connect(slot, id), "connect {slot}");
         }
@@ -12155,7 +12221,11 @@ mod tests {
         assert!(core.connect_as(2, 258, Some(key(0xc3)), None).is_some());
         core.tag_join(2, 258, Some(&key(0xc3)));
         let first = tags(&mut core);
-        assert_eq!(first.iter().filter(|t| t.0 == 2).count(), 1, "one per tick");
+        assert_eq!(
+            first.iter().filter(|t| t.0 == 2).count(),
+            3,
+            "up to TAG_DRIP_PER_TICK a tick"
+        );
         let mut late: Vec<u32> = first.iter().filter(|t| t.0 == 2).map(|t| t.1).collect();
         for _ in 0..3 {
             late.extend(tags(&mut core).iter().filter(|t| t.0 == 2).map(|t| t.1));

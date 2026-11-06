@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 /// Player id for connection slot `s`, as `install` mints them (generation
 /// 1) — `snapshot_budget.rs`'s helper, so both read the same shard.
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 struct Args {

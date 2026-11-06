@@ -48,7 +48,7 @@
 //! ## The identity table, and why it is here rather than in the blob
 //!
 //! A body in the world carries the id it had, and an id is
-//! `generation << 8 | slot` — minted per connection, meaningless after a
+//! `protocol::player_id(generation, slot)` — minted per connection, meaningless after a
 //! restart. So a saved sleeper is unclaimable unless something remembers
 //! *whose* it is, and the thing that knows is the shard's opaque
 //! `PlayerKey`, which `persist.rs` and `worldsave.rs` are both explicit
@@ -203,20 +203,22 @@ impl WorldBoot {
     }
 }
 
-/// Per slot, the highest connection generation among the player ids `world`
-/// holds (`WorldBoot::id_floors`). An id is `generation << 8 | slot`
-/// (`net.rs`); an animal's carries the mob tag and is no connection's.
+/// Per slot, the generation its next id must pass (`WorldBoot::id_floors`).
+/// An id is `protocol::player_id(generation, slot)` (`net.rs`); an animal's
+/// carries the mob tag and is no connection's.
 pub fn id_floors(world: &mut sim_core::world::World) -> [u32; sim_core::limits::MAX_PLAYERS] {
-    let mut floors = [0; sim_core::limits::MAX_PLAYERS];
+    // One floor for every slot, past the largest id saved: a new id then
+    // beats every saved one whatever slot it was minted in, and whatever
+    // layout it was minted under (ids had eight slot bits before v155, so
+    // a per-slot floor read from an old save would point at the wrong slot).
+    let mut top = 0u32;
     world.remap_player_ids(&mut |id| {
         if id & sim_core::limits::MOB_ID_TAG == 0 {
-            if let Some(f) = floors.get_mut((id & 0xFF) as usize) {
-                *f = (*f).max(id >> 8);
-            }
+            top = top.max(protocol::player_id_gen(id));
         }
         id
     });
-    floors
+    [top; sim_core::limits::MAX_PLAYERS]
 }
 
 /// Rotate `<path>.1` → `.2` and copy `<path>` → `.1`, exactly as the player
@@ -746,24 +748,33 @@ pub fn open(
 mod tests {
     use super::*;
 
-    /// A slot's floor is the highest generation any player id of that slot
-    /// in the world wears, so a restarted shard mints past all of them
-    /// (`SlotTable::start_past`).
+    /// Every slot's floor is past the largest player id the world holds, so
+    /// a restarted shard mints past all of them (`SlotTable::start_past`),
+    /// ids minted under the old eight-bit slot layout included.
     #[test]
-    fn the_id_floor_is_the_highest_generation_a_player_id_wears() {
+    fn the_id_floor_passes_every_saved_id() {
         use sim_core::world::Command;
         let mut w = sim_core::world::World::new(1);
         assert!(
             id_floors(&mut w).iter().all(|&f| f == 0),
             "an empty world holds no ids"
         );
+        let old_layout = (9 << 8) | 2;
         w.tick(&[
-            Command::Join { id: (3 << 8) | 1 },
-            Command::Join { id: (9 << 8) | 2 },
-            Command::Join { id: (4 << 8) | 2 },
+            Command::Join {
+                id: protocol::player_id(3, 1),
+            },
+            Command::Join { id: old_layout },
+            Command::Join {
+                id: protocol::player_id(4, 2),
+            },
         ]);
         let f = id_floors(&mut w);
-        assert_eq!((f[0], f[1], f[2], f[3]), (0, 3, 9, 0));
+        assert!(f.iter().all(|&g| g == 4));
+        for slot in [0, 1, 2, 300] {
+            assert!(protocol::player_id(f[slot] + 1, slot) > protocol::player_id(4, 2));
+            assert!(protocol::player_id(f[slot] + 1, slot) > old_layout);
+        }
     }
 
     /// The header's offsets are a hand-written layout, which is the shape

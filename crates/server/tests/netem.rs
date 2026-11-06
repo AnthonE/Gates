@@ -44,7 +44,7 @@ fn tick_at_us(k: u64) -> u64 {
 }
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 #[derive(Clone, Copy)]

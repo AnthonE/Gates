@@ -14,7 +14,7 @@
 //! the admission seam returns (`server/src/store.rs`), and whether that key
 //! came from a session token, a signature or a dev flag is one function's
 //! return type. `Player::id` is not saved either, and that is the same
-//! point from the other side — an id is `generation << 8 | slot`, minted
+//! point from the other side — an id is `generation << 10 | slot`, minted
 //! per connection and meaningless across two of them.
 //!
 //! Nor is anything elo owns. A player's profile, coins and items live in
@@ -148,7 +148,7 @@ impl SaveError {
 ///
 /// ## What is deliberately NOT here, and why
 ///
-/// - **`id`** — minted per connection (`generation << 8 | slot`). The key
+/// - **`id`** — minted per connection (`generation << 10 | slot`). The key
 ///   is the store's, outside the sim.
 /// - **`frame`** (the last input) — the client's, not the world's.
 ///   Restoring `seq` would lie to prediction about which input the sim last

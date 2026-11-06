@@ -1344,7 +1344,7 @@ pub struct Achievements {
     moved: Vec<u32>,
     moved_flag: Vec<bool>,
     /// (slot, row or set, the set's count as that row landed).
-    tells: [(u8, u8, u8); TELL_CAP],
+    tells: [(u16, u8, u8); TELL_CAP],
     tells_n: usize,
     sweep: usize,
     out: Option<rtrb::Producer<Batch>>,
@@ -1568,7 +1568,7 @@ impl Achievements {
             self.tells_dropped += 1;
             return;
         }
-        self.tells[self.tells_n] = (slot as u8, what, done);
+        self.tells[self.tells_n] = (slot as u16, what, done);
         self.tells_n += 1;
     }
 

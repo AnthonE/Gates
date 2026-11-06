@@ -29,7 +29,7 @@ const INTERIOR_M: f32 = 1700.0;
 
 /// Player id for connection slot `s` as `install` mints them (generation 1).
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// A core with the full cap connected and every body herded into a 60 m
@@ -1023,13 +1023,14 @@ fn a_near_animal_outranks_a_far_player() {
         m.alive = false;
         m.respawn_at = u64::MAX;
     }
-    // The whole player cap and enough animals beside them to fill the
+    // A hundred players and enough animals beside them to fill the
     // admission rank exactly before the far herd stands up: a hundred
     // players alone cannot (wire v121's enter rank is 137).
-    let near_herd = AOI_RANK_ENTER - (MAX_PLAYERS - 1);
-    for slot in 0..MAX_PLAYERS {
+    const PEERS: usize = 100;
+    let near_herd = AOI_RANK_ENTER - (PEERS - 1);
+    for slot in 0..PEERS {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        if (slot + 1) % 32 == 0 || slot + 1 == MAX_PLAYERS {
+        if (slot + 1) % 32 == 0 || slot + 1 == PEERS {
             core.tick_bare(&stats, |_, _, _| true);
         }
     }
@@ -1039,7 +1040,7 @@ fn a_near_animal_outranks_a_far_player() {
                 continue;
             }
             p.body.qz = q(1000.0);
-            let Some(slot) = (0..MAX_PLAYERS).find(|&s| id_of(s) == p.id) else {
+            let Some(slot) = (0..PEERS).find(|&s| id_of(s) == p.id) else {
                 continue;
             };
             p.body.qx = if slot == 0 {
@@ -1666,10 +1667,11 @@ fn the_filter_buys_nothing_on_a_clustered_shard() {
         .iter()
         .filter(|id| (0..MAX_PLAYERS).any(|s| id_of(s) == **id))
         .count();
-    assert_eq!(
-        players,
-        MAX_PLAYERS - 1,
-        "slot 0 can see only {players} of the 99 bodies stood on top of it — \
+    // At the 512-player cap the cluster is denser than the rank band, so the
+    // band is what binds: slot 0 sees a full band of its neighbours.
+    assert!(
+        players >= (MAX_PLAYERS - 1).min(AOI_RANK_ENTER) && players <= AOI_RANK_EXIT,
+        "slot 0 can see only {players} of the bodies stood on top of it — \
          the clustered fixture is not clustered, so the no-op claim is untested"
     );
 }

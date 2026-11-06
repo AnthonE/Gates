@@ -2747,10 +2747,10 @@ fn drain_saves(
             // (`SaveMsg::key`).
             Some(key) => key,
             None => {
-                // `id = generation << 8 | slot` (see `install`), so the
-                // slot is the low byte and the generation check is the id
-                // equality below.
-                let slot = (msg.id & 0xFF) as usize;
+                // `id = player_id(generation, slot)` (see `install`), so
+                // the slot is the low bits and the generation check is the
+                // id equality below.
+                let slot = protocol::player_id_slot(msg.id);
                 if slot >= MAX_PLAYERS || keys[slot].id != msg.id {
                     continue;
                 }
@@ -3505,7 +3505,7 @@ fn install(
         spawn_refusal(connection, send, REFUSE_FULL);
         return None;
     };
-    // Player id: slot in the low byte, claim generation above — unique
+    // Player id: slot in the low ten bits, claim generation above — unique
     // across slot reuse, stable for the connection's life.
     //
     // The generation is masked to 23 bits **so bit 31 is never set**, and
@@ -3515,7 +3515,7 @@ fn install(
     // wrap — a wrapped id is an old tenant's, and a reconnect loop 2²³ long
     // would have been handed whatever still names it — so the mask is a
     // backstop; it costs nothing and `tests/mob.rs` asserts it.
-    let id = ((generation & PLAYER_ID_GEN_MASK) << 8) | slot as u32;
+    let id = protocol::player_id(generation & PLAYER_ID_GEN_MASK, slot);
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
@@ -6176,17 +6176,21 @@ mod tests {
         let honest = SignWait::join(&pool, Some(4000));
         let mut flood: Vec<SignTicket> = Vec::new();
         let mut next = 0;
+        // Enough networks that their allowances overfill the pool (fifty
+        // did at the 100-player cap; the pool grows with the cap).
+        const SOURCES: usize = SIGN_WAITERS / ADMIT_PER_SOURCE as usize + 50;
+        const _: () = assert!(SOURCES < 4000);
         // Ten pools' worth: past the first fill, every join drops somebody.
         for _ in 0..10 * SIGN_WAITERS {
             flood.retain(&seated);
-            let mut holds = [0usize; 50];
+            let mut holds = vec![0usize; SOURCES];
             for t in &flood {
                 holds[SignWait::source(t.word)] += 1;
             }
             // The next address under its allowance, round robin: there is
-            // always one, as fifty allowances are more than the pool.
-            let source = (0..50)
-                .map(|k| (next + k) % 50)
+            // always one, as their allowances are more than the pool.
+            let source = (0..SOURCES)
+                .map(|k| (next + k) % SOURCES)
                 .find(|&s| holds[s] < ADMIT_PER_SOURCE as usize)
                 .expect("a dropped waiter gave its place back");
             next = source + 1;
@@ -6846,7 +6850,7 @@ mod tests {
         let mut store = SaveStore::new();
         let stats = Arc::new(ShardStats::default());
         let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
-        let id = |gen: u32, slot: usize| (gen << 8) | slot as u32;
+        let id = |gen: u32, slot: usize| protocol::player_id(gen, slot);
         let tenant = PlayerKey::new(b"slot-3-generation-2").expect("fits");
         let evicted = PlayerKey::new(b"an-evicted-sleeper").expect("fits");
         // Slot 3 was re-claimed: generation 2 holds it now. Slot 4 is a guest.
@@ -6923,12 +6927,12 @@ mod tests {
         for (s, key) in who.iter().enumerate() {
             keys[s] = KeySlot {
                 key: Some(*key),
-                id: (1 << 8) | s as u32,
+                id: protocol::player_id(1, s),
                 ..KeySlot::default()
             };
         }
         let rec = |s: u32| SaveMsg {
-            id: (1 << 8) | s,
+            id: protocol::player_id(1, s as usize),
             key: None,
             save: sim_core::persist::PlayerSave::EMPTY,
         };

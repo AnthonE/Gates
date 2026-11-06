@@ -108,7 +108,7 @@ const COUNT_B: u16 = 63;
 const COUNT_C: u16 = 27;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn world_slot(core: &ShardCore, id: u32) -> usize {

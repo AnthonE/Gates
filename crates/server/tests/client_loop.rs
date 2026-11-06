@@ -23,7 +23,7 @@ const SEED: u64 = 0x6A7E5;
 const TICK_MS: f64 = 1000.0 / 30.0;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// Put every join on one real beach spawn. `dev_spawn` is the documented

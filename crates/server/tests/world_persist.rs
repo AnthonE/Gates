@@ -7,7 +7,7 @@
 //!
 //! That is the part worth stating, because it is the one that makes world
 //! persistence *worth having* rather than merely working. A body carries
-//! the id it had, and an id is `generation << 8 | slot` — minted per
+//! the id it had, and an id is `generation << 10 | slot` — minted per
 //! connection, meaningless after a restart. So a world file that saved
 //! bodies and not identities would come back full of sleepers nobody could
 //! claim: everyone's base still standing, everyone's body still standing in
@@ -79,7 +79,7 @@ fn world_digest() -> u64 {
 }
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 fn key(s: &str) -> PlayerKey {

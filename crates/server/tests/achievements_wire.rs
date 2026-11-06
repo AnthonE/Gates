@@ -32,7 +32,7 @@ const DEFS: &[Def] = &[Def {
 }];
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 #[test]

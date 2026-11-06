@@ -23,7 +23,7 @@ const CX: u16 = 682;
 const CZ: u16 = 682;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// One lockstep pump (the craft_wire shape): inputs in, tick, events and

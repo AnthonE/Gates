@@ -2,14 +2,18 @@
 //! map, and per-tick work item caps here, each with its overflow policy
 //! stated. Server and protocol import these; nothing redefines them.
 
-/// Shard cap (knob, DECISIONS.md §open: 100 / 4-core VPS). Preallocation
-/// needs a number at boot; the accept path hard-refuses past it.
-pub const MAX_PLAYERS: usize = 100;
+/// Shard cap: bodies in the world, awake and asleep, and connections. Rust
+/// runs 500-player servers; at 100 clustered a tick cost 3.5 % of budget
+/// (`bin/profile`), so the cap was the limit, not the CPU. Preallocation
+/// needs a number at boot; the accept path hard-refuses past it. A player
+/// id carries its slot in `protocol::PLAYER_SLOT_BITS`.
+pub const MAX_PLAYERS: usize = 512;
 
 /// Commands the sim will apply in one tick. Overflow policy: **defer** —
 /// callers keep the tail for the next tick; the sim itself takes at most
 /// this many (`World::tick` ignores the excess rather than growing work).
-pub const MAX_COMMANDS_PER_TICK: usize = 256;
+pub const MAX_COMMANDS_PER_TICK: usize = 1_536;
+const _: () = assert!(MAX_COMMANDS_PER_TICK >= 2 * MAX_PLAYERS);
 
 /// Fixed sim rate (DESIGN.md §5.2). The tick number is the only clock.
 pub const TICK_HZ: u32 = 30;
@@ -186,7 +190,7 @@ pub const CLIENT_DG_RING: usize = 8 * SNAPSHOT_PARTS;
 /// graveyard back). Overflow policy: **refuse** the join / retry the
 /// return next tick. Proposed defaults, DECISIONS.md §open.
 pub const CTRL_RING_CAP: usize = 8;
-pub const GRAVEYARD_RING_CAP: usize = 256;
+pub const GRAVEYARD_RING_CAP: usize = 1_024;
 
 /// Each hop of the player-save path: sim → the store's index (accept loop),
 /// and the index → the file (storage thread). One cap for both because both
@@ -200,7 +204,8 @@ pub const GRAVEYARD_RING_CAP: usize = 256;
 /// autosave sweep re-takes the same player a few ticks later, and the record
 /// is idempotent (it is filed by key and overwrites in place). Proposed
 /// default, DECISIONS.md §open ("player persistence v0").
-pub const SAVE_RING_CAP: usize = 256;
+pub const SAVE_RING_CAP: usize = 1_024;
+const _: () = assert!(SAVE_RING_CAP > MAX_PLAYERS);
 
 /// World-save buffers in flight, each direction. **Two, because that is
 /// what a double buffer is**: one being written to disk while the next is
@@ -257,7 +262,7 @@ pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
 /// Overflow policy: **overwrite oldest**. It is a ring by construction and
 /// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
 /// nothing reachable is ever discarded. Cost:
-/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 32,000 B` of poses plus a
+/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 163,840 B` of poses plus a
 /// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
 /// nothing allocates in the tick (wall 2).
 ///
@@ -596,8 +601,10 @@ pub const CRAG_CACHE_LINES_ONE: usize = 512;
 /// ground's grade, the coarse points and the solid surface, `face.rs`; the
 /// skin's half-metre points get twice as many), on the shard's `World`: a
 /// walking body asks a few points a tick and a new row every few ticks.
+/// 64 a seat: at a fixed 8,192 a spread 512-player shard thrashed it and
+/// movement was a third of the tick (`bin/profile --pitch 60`).
 /// 52 B a point in all. Must stay a power of two.
-pub const FACE_CACHE_LINES: usize = 8_192;
+pub const FACE_CACHE_LINES: usize = (64 * MAX_PLAYERS).next_power_of_two();
 /// The same memos for one predicted body.
 pub const FACE_CACHE_LINES_ONE: usize = 512;
 
@@ -893,7 +900,7 @@ pub const SYNC_SCAN_PER_TICK: usize = 2_048;
 /// the `BAG_GONE_EVICTED` removal event. Never **refuse**: a death that
 /// silently kept the inventory would make the cap a way to dodge the
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
-pub const MAX_BACKPACKS: usize = 256;
+pub const MAX_BACKPACKS: usize = 1_024;
 
 /// Loose stacks lying on the ground at once (`grounditem.rs`: what a
 /// smashed barrel leaves behind). **Its own cap and not a share of
@@ -1242,7 +1249,10 @@ pub const MAX_HAVEN_CANDIDATES: usize = 256;
 /// peak, and stays under the 510 that the stair-rotation overflow test
 /// (`server/src/core.rs`) can raise in one tick, so that test still reaches
 /// a real overflow.
-pub const MAX_EVENTS_PER_TICK: usize = 500;
+///
+/// **2 560 since the 512-player cap**: the same 1.9× headroom over five times
+/// the firefight.
+pub const MAX_EVENTS_PER_TICK: usize = 2_560;
 
 /// "Dropped at your feet" lines one give-back (a craft cancel, a demolish
 /// refund, a pick-up, an unbolt) may announce: one per distinct item, so a
@@ -1366,7 +1376,7 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// many other people were shooting, which is the one thing a projectile
 /// must never do.
 /// Proposed default, DECISIONS.md §open (ranged v0).
-pub const MAX_ARROWS: usize = 128;
+pub const MAX_ARROWS: usize = 512;
 
 /// Arrows one archer may have in flight at once (`ranged::draw`) — their
 /// share of `MAX_ARROWS`, so the store cannot be filled by a handful of
@@ -1391,7 +1401,7 @@ pub const MAX_MODS: usize = 8;
 /// never the reason a shot is refused while every owner keeps to its share.
 /// Overflow policy: **refuse the shot**, `MAX_ARROWS`' policy for its
 /// reason — never steal a live round to make room.
-pub const MAX_BULLETS: usize = 2048;
+pub const MAX_BULLETS: usize = 10_240;
 
 /// Bullets one shooter may have in flight at once. A shotgun volley is up to
 /// `MAX_PELLETS` and an automatic holds three or four (a rifle round lives
@@ -1709,10 +1719,10 @@ pub const TRUST_ROWS_PER_COMMAND: usize = 1;
 ///
 /// Typed as the number, with the derivation asserted beside it: the knob
 /// registry (`ci/knob_registry.mjs`) reads literals and cannot evaluate an
-/// expression, which is `AOI_RANK_ENTER`'s lesson above. Cost: 256 × 12 B,
+/// expression, which is `AOI_RANK_ENTER`'s lesson above. Cost: 1 536 × 12 B,
 /// one boxed allocation at construction, nothing in the tick (wall 2).
 /// Registered in DECISIONS.md §open ("trust ledger v1").
-pub const MAX_TRUST_ROWS_PER_TICK: usize = 256;
+pub const MAX_TRUST_ROWS_PER_TICK: usize = 1_536;
 const _: () = assert!(
     MAX_TRUST_ROWS_PER_TICK == MAX_COMMANDS_PER_TICK * TRUST_ROWS_PER_COMMAND,
     "MAX_TRUST_ROWS_PER_TICK must stay the command ceiling times the rows one \

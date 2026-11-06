@@ -3106,7 +3106,7 @@ pub fn site_crosses_deploys(
 }
 
 /// The owner of a deployable no player placed: the town's public stations.
-/// Player ids are `(generation << 8) | slot` with generation ≥ 1, so 0 is
+/// Player ids are `(generation << 10) | slot` with generation ≥ 1, so 0 is
 /// never a player. It cannot be picked up, damaged or taxed by upkeep.
 pub const WORLD_OWNER: u32 = 0;
 

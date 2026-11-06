@@ -468,7 +468,7 @@ fn find(core: &ClientCore, board: Option<&Board>, kin: &Kin, crew: bool) -> u32 
     let tagged = core
         .tags()
         .filter(|t| t.id != core.player_id && kin.matches(t, core.is_agent(t.id), crew))
-        .max_by_key(|t| t.id >> 8)
+        .max_by_key(|t| protocol::player_id_gen(t.id))
         .map_or(0, |t| t.id);
     if tagged != 0 {
         return tagged;

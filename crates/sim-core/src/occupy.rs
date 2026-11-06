@@ -265,9 +265,10 @@ pub struct SlotCache {
     lat: Box<terrain::Lattice>,
 }
 
-/// Formation cells the cache keeps. A body touches at most four; a shard's
-/// roster spreads over a few hundred. A collision re-resolves, bit-identically.
-pub const ROCK_CACHE_LINES: usize = 256;
+/// Formation cells the cache keeps. A body touches at most four; a full
+/// shard's roster spreads over a thousand or more. A collision re-resolves,
+/// bit-identically.
+pub const ROCK_CACHE_LINES: usize = 1_024;
 
 /// How far a body is held off a rock's drawn surface, metres: the capsule's
 /// own radius, less a little so it reads as touching rather than hovering.

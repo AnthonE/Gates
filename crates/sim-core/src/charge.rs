@@ -399,7 +399,7 @@ pub fn dud(secret: u64, cc: &crate::combat::CombatContent, c: &ChargeRec) -> Opt
 /// cannot be exceeded — wall 4 satisfied by construction rather than by a
 /// drop rule.
 pub struct BlastKills {
-    entries: [(u8, u32, u16); crate::limits::MAX_PLAYERS],
+    entries: [(u16, u32, u16); crate::limits::MAX_PLAYERS],
     len: usize,
 }
 
@@ -419,12 +419,12 @@ impl BlastKills {
 
     /// `(victim slot, planter id, range_cm)` per finished body.
     #[inline]
-    pub fn entries(&self) -> &[(u8, u32, u16)] {
+    pub fn entries(&self) -> &[(u16, u32, u16)] {
         &self.entries[..self.len]
     }
 
     #[inline]
-    fn push(&mut self, victim: u8, owner: u32, range_cm: u16) {
+    fn push(&mut self, victim: u16, owner: u32, range_cm: u16) {
         if self.len < self.entries.len() {
             self.entries[self.len] = (victim, owner, range_cm);
             self.len += 1;
@@ -1252,7 +1252,7 @@ fn blast_seen(
         if died {
             // `EV_DEATH` is `World::die`'s now (wounded v0); a blast never
             // wounds, so the world will make the corpse and say so.
-            kills.push(slot as u8, c.owner, d.clamp(0, u16::MAX as i64) as u16);
+            kills.push(slot as u16, c.owner, d.clamp(0, u16::MAX as i64) as u16);
         }
     }
     if attacked {

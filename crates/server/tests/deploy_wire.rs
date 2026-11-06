@@ -107,7 +107,7 @@ fn buildable_block(seed: u64, cx0: u16, cz0: u16, w: u16, h: u16) -> (u16, u16) 
 }
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// One lockstep pump (the build_wire shape). Returns per-slot APPLIED flags.

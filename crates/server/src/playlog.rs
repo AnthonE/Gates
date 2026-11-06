@@ -153,7 +153,7 @@ pub enum What {
 pub enum Rec {
     Join {
         tick: u64,
-        slot: u8,
+        slot: u16,
         id: u32,
         key: Option<PlayerKey>,
         how: How,
@@ -161,7 +161,7 @@ pub enum Rec {
     },
     Leave {
         tick: u64,
-        slot: u8,
+        slot: u16,
         id: u32,
         key: Option<PlayerKey>,
         ticks: u64,
@@ -277,7 +277,7 @@ impl Tap {
         self.since[slot] = tick;
         self.push(Rec::Join {
             tick,
-            slot: slot as u8,
+            slot: slot as u16,
             id,
             key,
             how,
@@ -299,7 +299,7 @@ impl Tap {
         let tally = std::mem::take(&mut self.tally[slot]);
         self.push(Rec::Leave {
             tick,
-            slot: slot as u8,
+            slot: slot as u16,
             id,
             key,
             ticks: tick.saturating_sub(self.since[slot]),

@@ -441,7 +441,7 @@ fn a_sleepers_clock_runs_and_can_kill_it() {
 
 /// A returning player takes over the body, and does not get a second one.
 ///
-/// The ids differ on purpose — `generation << 8 | slot`, minted per
+/// The ids differ on purpose — `generation << 10 | slot`, minted per
 /// connection — because that difference *is* the problem `Command::Wake`
 /// exists to solve: the sim cannot recognise anybody, so the server names
 /// both ids and the sim moves the body from one to the other.
@@ -653,7 +653,7 @@ fn a_takeover_of_a_dead_body_respawns_holding_the_spawn_kit() {
 }
 
 /// **Waking a body with the id you were just handed.** Not an exotic case:
-/// a player id is `generation << 8 | slot`, and a restart resets the slot
+/// a player id is `generation << 10 | slot`, and a restart resets the slot
 /// table, so the first connection after one is minted exactly the id the
 /// body saved in that slot already carries.
 ///

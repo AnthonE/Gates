@@ -50,7 +50,7 @@ const BAG_ROW: u16 = 3;
 const BAG_ITEM: u16 = 5;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// One lockstep pump, keeping every event the server sent, decoded from the
@@ -637,7 +637,7 @@ fn the_death_screen_and_its_marker_survive_a_reconnect() {
 
 /// The id the slot table mints for `slot`'s second tenant: a reconnect.
 fn id2_of(slot: usize) -> u32 {
-    (2 << 8) | slot as u32
+    protocol::player_id(2, slot)
 }
 
 /// **Evicted while away, still your bag.** A full shard evicts the

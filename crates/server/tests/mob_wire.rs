@@ -20,7 +20,7 @@ use sim_core::movement::POS_XZ_Q;
 const SEED: u64 = 0xB1D_6E75;
 
 fn id_of(slot: usize) -> u32 {
-    (1 << 8) | slot as u32
+    protocol::player_id(1, slot)
 }
 
 /// Run to the next snapshot cadence tick and return this client's datagram.

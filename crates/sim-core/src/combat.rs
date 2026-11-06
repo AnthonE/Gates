@@ -2084,7 +2084,7 @@ mod tests {
     #[test]
     fn inert_content_never_hurts_anyone() {
         let cc = CombatContent::EMPTY;
-        let mut players = [Player::default(); MAX_PLAYERS];
+        let mut players = Box::new([Player::default(); MAX_PLAYERS]);
         for (i, p) in players.iter_mut().take(2).enumerate() {
             p.id = i as u32 + 1;
             p.active = true;
@@ -2124,7 +2124,7 @@ mod tests {
     #[test]
     fn the_landing_pays_the_ladder_off_the_span_it_is_handed() {
         let cc = CombatContent::probe_fixture();
-        let mut players = [Player::default(); MAX_PLAYERS];
+        let mut players = Box::new([Player::default(); MAX_PLAYERS]);
         for (i, p) in players.iter_mut().take(2).enumerate() {
             p.id = i as u32 + 1;
             p.active = true;

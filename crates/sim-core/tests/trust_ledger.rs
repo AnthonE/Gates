@@ -92,7 +92,7 @@ const FLOOD_MOVES: usize = MAX_COMMANDS_PER_TICK - FLOODERS as usize;
 /// Offered on the over-ceiling tick. The world applies the first
 /// `MAX_COMMANDS_PER_TICK` and leaves the tail to the caller (`limits.rs`:
 /// *defer*).
-const OVER_MOVES: usize = 300;
+const OVER_MOVES: usize = MAX_COMMANDS_PER_TICK + 44;
 
 /// Ticks per presence phase: flood ticks, then ceiling ticks, then one
 /// over-ceiling tick.
@@ -106,6 +106,10 @@ const FOUNDATION_ROW: u16 = 0;
 /// A fixture item with a stack ceiling (100) and no other role here.
 const GOODS: u16 = 7;
 const STACK: u16 = 100;
+/// What the restock writes into each box slot: past the stack ceiling on
+/// purpose (a direct write), so twelve slots cover a ceiling tick's
+/// one-unit withdrawals.
+const BOX_STOCK: u16 = MAX_COMMANDS_PER_TICK.div_ceil(BOX_SLOTS) as u16;
 
 fn storm_deploy() -> DeployContent {
     let mut d = DeployContent::probe_fixture();
@@ -287,7 +291,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
             s,
             ItemStack {
                 item: GOODS,
-                count: STACK,
+                count: BOX_STOCK.max(STACK),
                 cond: 0,
                 skin: 0,
                 ..ItemStack::EMPTY
