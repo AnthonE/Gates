@@ -879,10 +879,12 @@ fn a_rank_boundary_entity_does_not_flap() {
 ///   the ranking decision actually lands.
 #[test]
 fn a_near_animal_outranks_a_far_player() {
-    // The herd: every animal slot but one (wire v121's band is 192, so the
-    // displacement needs nearly the whole roster between the near peer and
-    // the far ones), and the converse's far herd.
-    const HERD: usize = sim_core::turret::TURRET_SLOT0 - 1;
+    // The herd: nearly the whole band (wire v121's band is 192, so the
+    // displacement needs that many between the near peer and the far ones)
+    // — every animal slot but one while the roster was 256, and the same
+    // 186 out of a bigger one now — and the converse's far herd.
+    const HERD: usize = 186;
+    const _: () = assert!(HERD < sim_core::turret::TURRET_SLOT0 && HERD < AOI_RANK_EXIT - 1);
     const FAR_HERD: usize = 64;
     /// Planar distance² in cm², the AOI convention (`core.rs`: 3 cm quanta
     /// widened into centimetres, in i64). Here to prove the scene rather
