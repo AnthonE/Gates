@@ -43,7 +43,7 @@ fn ent(id: u32) -> EntityState {
         id,
         // Spread along x so no two records are identical; well inside the
         // island and inside every range `check_ranges` enforces.
-        qx: 30_000 + id as i32 * 10,
+        qx: 30_000 + (id % 4_096) as i32 * 10,
         qy: 500,
         qz: 30_000,
         qvy: 0,
@@ -158,9 +158,21 @@ fn the_table_is_sized_on_the_world_and_says_so() {
     // The drop counter is the other half of wall 4's "stated overflow
     // policy": past the world's own size there is nothing left to hold,
     // and the refusal must be counted rather than silent.
+    // Rows are direct-mapped by the slot an id carries, so the world's
+    // whole population is every player slot and every roster slot; an id
+    // naming neither (a roster slot past the cap) has no row.
     let mut it = client_core::interp::Interp::new();
-    for id in 0..client_core::interp::INTERP_SLOTS as u32 + 3 {
-        it.push(10, &ent(id + 1));
+    for s in 0..MAX_PLAYERS {
+        it.push(10, &ent(protocol::player_id(1, s)));
+    }
+    for s in 0..sim_core::limits::MAX_MOBS {
+        it.push(10, &ent(sim_core::mob::mob_id(s)));
+    }
+    for k in 0..3 {
+        it.push(
+            10,
+            &ent(sim_core::mob::mob_id(sim_core::limits::MAX_MOBS + k)),
+        );
     }
     assert_eq!(it.ids().count(), client_core::interp::INTERP_SLOTS);
     assert_eq!(it.drops, 3, "the refusal must be counted, not silent");

@@ -713,12 +713,12 @@ const _: () = assert!(MAX_HEARTHS >= 64 * MAX_HEARTHS_PER_OWNER);
 
 /// Player auto turrets with a gun, shard-wide (`turret.rs`): each rides a
 /// roster slot below the town's sentries, taken from the animals' range —
-/// 64 leaves 187 animal slots, about three times what the shipped
-/// densities spawn. Past it, a placed turret stands inert until one comes
+/// 512 of a 1 024 roster leaves 507 animal slots, about eight times what
+/// the shipped densities spawn (was 64 of 256). Past it, a placed turret stands inert until one comes
 /// down or an idle one (dry or unpowered) gives its entry up to it
 /// (`turret::reconcile`). Was 24 until wire v121, which a few bases on a
 /// full shard used up.
-pub const MAX_TURRETS: usize = 64;
+pub const MAX_TURRETS: usize = 512;
 
 /// Guns a turret can carry (`deployables.toml` `[turret]` `guns`): the
 /// baked table is a fixed array this long, and a set naming more refuses to
@@ -1552,9 +1552,12 @@ pub const MAX_HITSCAN_MARK_SAMPLES: usize = 600;
 /// Sized against the wire as well as the tick: a dormant animal costs one
 /// comparison a tick, and a client is only ever sent the ones inside its
 /// 176 m interest band, which density — not this cap — decides.
-pub const MAX_MOBS: usize = 256;
-// Slots travel as `u8` (`brain.rs` howls, `mob.rs`), so 256 is the ceiling.
-const _: () = assert!(MAX_MOBS <= 256);
+///
+/// 1 024 since the 512-player cap, so the players' turrets have 512 slots
+/// (`MAX_TURRETS`) above the animals' range. Slots travel as `u16` (bites,
+/// howls) and the server packs a candidate index in one.
+pub const MAX_MOBS: usize = 1_024;
+const _: () = assert!(MAX_MOBS + MAX_PLAYERS <= u16::MAX as usize);
 
 /// The bit that says *this class-D entity is not a player*.
 ///

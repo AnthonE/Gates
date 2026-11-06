@@ -131,7 +131,7 @@ pub fn stream(
     let core = &net.session.core;
     let id = mob::mob_id(HELI_SLOT);
     let mut rs = client_core::interp::RemoteState::default();
-    let present = core.interp.ids().any(|i| i == id);
+    let present = core.interp.has(id);
     if !present {
         // Out of interest, or gone back out to sea.
         if let Some(e) = drawn.live.take() {

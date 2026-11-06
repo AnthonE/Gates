@@ -418,10 +418,6 @@ impl Turret {
         b[37..39].copy_from_slice(&self.carried.unwrap_or(0).to_le_bytes());
         b
     }
-
-    fn holds(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-        self.live && self.cx == cx && self.cz == cz && self.level == level && self.loc == loc
-    }
 }
 
 /// Bring the table in line with the deploy store: free an entry whose
@@ -435,6 +431,86 @@ impl Turret {
 /// and its power) takes the first entry whose own turret cannot; that one
 /// stands inert until there is room again. The probes run only on that
 /// full-table path, and stop once no idle entry is left.
+/// A deploy address as one sortable key.
+#[inline]
+fn addr_of(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
+    (cx as u64) << 32 | (cz as u64) << 16 | (level as u64) << 8 | loc as u64
+}
+
+/// The live table entries sorted by address, for a binary search: `n` rows
+/// of `(addr_of, entry)`.
+fn by_addr(table: &[Turret; MAX_TURRETS]) -> ([(u64, u16); MAX_TURRETS], usize) {
+    let mut out = [(0u64, 0u16); MAX_TURRETS];
+    let mut n = 0;
+    for (k, t) in table.iter().enumerate() {
+        if t.live {
+            out[n] = (addr_of(t.cx, t.cz, t.level, t.loc), k as u16);
+            n += 1;
+        }
+    }
+    out[..n].sort_unstable();
+    (out, n)
+}
+
+/// Every live entry's deploy record, found in **one pass** over the deploy
+/// store rather than a scan of it per entry: at 512 turrets and 32 768
+/// deploys the per-entry `Deploys::find` was millions of compares a tick.
+/// Only turret rows are asked about, and a turret's address holds nothing
+/// else (a body deployable takes a free slot of its own; a lock bolts only
+/// onto a door), so this is `find`'s answer for every entry.
+fn locate_recs(
+    dc: &DeployContent,
+    deploys: &Deploys,
+    sorted: &[(u64, u16)],
+) -> [Option<crate::deploy::DeployRec>; MAX_TURRETS] {
+    let mut recs = [None; MAX_TURRETS];
+    if sorted.is_empty() {
+        return recs;
+    }
+    for d in deploys.entries() {
+        if (d.row as usize) >= dc.defs.len() || dc.defs[d.row as usize].arch != ARCH_TURRET {
+            continue;
+        }
+        let key = addr_of(d.cx, d.cz, d.level, d.loc);
+        if let Ok(i) = sorted.binary_search_by_key(&key, |&(a, _)| a) {
+            let k = sorted[i].1 as usize;
+            if recs[k].is_none() {
+                recs[k] = Some(*d);
+            }
+        }
+    }
+    recs
+}
+
+/// Every live entry's box index, in one pass over the box store: the first
+/// box with its key, as `Deploys::box_index` answers.
+fn locate_boxes(deploys: &Deploys, table: &[Turret; MAX_TURRETS]) -> [Option<usize>; MAX_TURRETS] {
+    let mut keys = [(0u32, 0u16); MAX_TURRETS];
+    let mut n = 0;
+    for (k, t) in table.iter().enumerate() {
+        if t.live {
+            keys[n] = (box_key(t.cx, t.cz, t.level, t.loc), k as u16);
+            n += 1;
+        }
+    }
+    let mut out = [None; MAX_TURRETS];
+    if n == 0 {
+        return out;
+    }
+    let keys = &mut keys[..n];
+    keys.sort_unstable();
+    for (i, b) in deploys.boxes().iter().enumerate() {
+        let key = box_key(b.cx, b.cz, b.level, b.loc);
+        if let Ok(j) = keys.binary_search_by_key(&key, |&(a, _)| a) {
+            let k = keys[j].1 as usize;
+            if out[k].is_none() {
+                out[k] = Some(i);
+            }
+        }
+    }
+    out
+}
+
 pub fn reconcile(
     dc: &DeployContent,
     deploys: &Deploys,
@@ -446,19 +522,26 @@ pub fn reconcile(
 ) {
     let is_turret =
         |row: u8| (row as usize) < dc.defs.len() && dc.defs[row as usize].arch == ARCH_TURRET;
-    for (t, m) in table.iter_mut().zip(slots.iter_mut()) {
-        if t.live
-            && !deploys
-                .find(t.cx, t.cz, t.level, t.loc)
-                .is_some_and(|d| is_turret(d.row))
-        {
+    let (sorted, n) = by_addr(table);
+    let found = locate_recs(dc, deploys, &sorted[..n]);
+    for ((t, m), f) in table.iter_mut().zip(slots.iter_mut()).zip(found.iter()) {
+        if t.live && f.is_none() {
             *t = Turret::default();
             m.alive = false;
         }
     }
+    // What the table held before this pass, for the "already held" test. An
+    // entry cleared above held a turret that is gone, so no deploy matches
+    // it; an entry minted below holds a deploy already passed, and every
+    // turret's address is its own, so no later deploy matches that either.
+    let held = &sorted[..n];
     let mut idle: Option<[bool; MAX_TURRETS]> = None;
     for d in deploys.entries() {
-        if !is_turret(d.row) || table.iter().any(|t| t.holds(d.cx, d.cz, d.level, d.loc)) {
+        if !is_turret(d.row) {
+            continue;
+        }
+        let key = addr_of(d.cx, d.cz, d.level, d.loc);
+        if held.binary_search_by_key(&key, |&(a, _)| a).is_ok() {
             continue;
         }
         let k = match table.iter().position(|t| !t.live) {
@@ -535,14 +618,13 @@ pub fn step(
     }
     // Each entry's record and box, the gun in that box, and whether it has a
     // round for it: a dry gun neither shoots nor jams the guns around it.
-    let mut recs = [None; MAX_TURRETS];
-    let mut boxes = [None; MAX_TURRETS];
+    let (sorted, n) = by_addr(table);
+    let recs = locate_recs(dc, deploys, &sorted[..n]);
+    let boxes = locate_boxes(deploys, table);
     let mut hot = [false; MAX_TURRETS];
     for k in 0..MAX_TURRETS {
         let t = table[k];
         if t.live {
-            recs[k] = deploys.find(t.cx, t.cz, t.level, t.loc).copied();
-            boxes[k] = deploys.box_index(box_key(t.cx, t.cz, t.level, t.loc));
             let g = gun_in(def, deploys, boxes[k]);
             table[k].carried = g.map(|g| def.guns[g].item);
             // And power: Rust's turret is dead without its 10 rW

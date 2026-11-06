@@ -10170,7 +10170,7 @@ mod tests {
         assert!(deploys.insert(
             DeployRec {
                 cx: 300,
-                cz: 100,
+                cz: 200,
                 loc: LOC_PLANE,
                 row: SOLAR,
                 owner: 99,
@@ -10180,7 +10180,7 @@ mod tests {
             0,
         ));
         assert!(deploys.power_mut().add(WireRec {
-            from: box_key(300, 100, 0, LOC_PLANE),
+            from: box_key(300, 200, 0, LOC_PLANE),
             out: 0,
             to: box_key(last_cx, 100, 0, LOC_PLANE),
             inp: 0,

@@ -4619,7 +4619,7 @@ pub fn encode_event_hostile(until: u32, buf: &mut [u8]) -> Result<usize, WireErr
 /// Width of a gun's index among the town's sentries and then the players'
 /// turrets (v143; the sentries alone were 2 bits, so a turret's lock never
 /// left the shard).
-const SENTRY_BITS: u32 = 7;
+const SENTRY_BITS: u32 = 10;
 const LOCK_GUNS: usize = sim_core::sentry::SENTRIES + sim_core::limits::MAX_TURRETS;
 const _: () = assert!(LOCK_GUNS <= 1 << SENTRY_BITS);
 

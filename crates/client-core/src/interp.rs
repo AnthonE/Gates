@@ -240,8 +240,30 @@ impl Interp {
         }
     }
 
+    /// The one row id `id` may use: its player slot, or `MAX_PLAYERS` past
+    /// that for an animal's roster slot. Ids carry their slot
+    /// (`protocol::player_id_slot`, `mob::slot_of_id`), so the table is
+    /// direct-mapped and a lookup is O(1) — it was a scan of every row, and
+    /// the turret renderer asks once per gun per frame. A slot's next
+    /// tenant takes the row over (`push`): its old id is never sent again.
+    fn home(id: u32) -> Option<usize> {
+        if let Some(s) = sim_core::mob::slot_of_id(id) {
+            return Some(MAX_PLAYERS + s);
+        }
+        if id & sim_core::limits::MOB_ID_TAG != 0 {
+            return None;
+        }
+        let s = protocol::player_id_slot(id);
+        (s < MAX_PLAYERS).then_some(s)
+    }
+
     fn slot_of(&self, id: u32) -> Option<usize> {
-        (0..INTERP_SLOTS).find(|&i| self.used[i] && self.ids[i] == id)
+        Self::home(id).filter(|&s| self.used[s] && self.ids[s] == id)
+    }
+
+    /// Whether `id` has a sample to draw from ([`Self::ids`] names it).
+    pub fn has(&self, id: u32) -> bool {
+        self.slot_of(id).is_some_and(|s| self.len[s] > 0)
     }
 
     /// One snapshot sample. Ticks arrive monotonically (the view applies
@@ -260,7 +282,7 @@ impl Interp {
         let slot = match self.slot_of(e.id) {
             Some(s) => s,
             None => {
-                let Some(s) = (0..INTERP_SLOTS).find(|&i| !self.used[i]) else {
+                let Some(s) = Self::home(e.id) else {
                     self.drops += 1;
                     return;
                 };

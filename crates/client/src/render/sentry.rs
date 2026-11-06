@@ -252,7 +252,7 @@ pub fn stream(
         // A town sentry stands on its pedestal and draws big for the street
         // below; a player's turret stands on its own box at true size.
         let town = k < SENTRIES;
-        let present = core.interp.ids().any(|i| i == id);
+        let present = core.interp.has(id);
         if !present {
             if let Some(e) = drawn.live[k].take() {
                 commands.entity(e).despawn();

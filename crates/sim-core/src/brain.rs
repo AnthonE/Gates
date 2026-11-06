@@ -1144,7 +1144,7 @@ fn howl(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(def.howl_ticks as u64))
     {
         mob.howled_at = tick;
-        ctx.howls.push(slot as u8);
+        ctx.howls.push(slot as u16);
     }
 }
 
@@ -1633,7 +1633,7 @@ fn attack(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut B
         && ctx.tick % period == (slot as u64) % period
     {
         bites.push(Bite {
-            mob_slot: slot as u8,
+            mob_slot: slot as u16,
             victim: victim as u16,
             damage: def.attack,
             // A sentence's worth of precision for the death screen, not a

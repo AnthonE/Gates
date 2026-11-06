@@ -1130,7 +1130,7 @@ pub fn slot_of_id(id: u32) -> Option<usize> {
 /// borrow.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Bite {
-    pub mob_slot: u8,
+    pub mob_slot: u16,
     pub victim: u16,
     pub damage: u16,
     pub range_cm: u16,
@@ -1202,7 +1202,7 @@ const TURN_IN_PLACE: u16 = 64 << 8;
 /// `Bites`' split for `Bites`' reason. **Overflow drops the howl's sound**,
 /// never the call — the pack answers off the roster.
 pub struct Howls {
-    slots: [u8; crate::limits::MAX_HOWLS_PER_TICK],
+    slots: [u16; crate::limits::MAX_HOWLS_PER_TICK],
     len: usize,
 }
 
@@ -1226,12 +1226,12 @@ impl Howls {
     }
 
     #[inline]
-    pub fn entries(&self) -> &[u8] {
+    pub fn entries(&self) -> &[u16] {
         &self.slots[..self.len]
     }
 
     #[inline]
-    pub(crate) fn push(&mut self, slot: u8) {
+    pub(crate) fn push(&mut self, slot: u16) {
         if self.len < self.slots.len() {
             self.slots[self.len] = slot;
             self.len += 1;
