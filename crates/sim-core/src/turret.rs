@@ -405,17 +405,17 @@ pub struct Turret {
 
 impl Turret {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 37] {
-        let mut b = [0u8; 37];
+    pub fn hash_bytes(&self) -> [u8; 39] {
+        let mut b = [0u8; 39];
         b[0] = self.live as u8;
         b[1..3].copy_from_slice(&self.cx.to_le_bytes());
         b[3..5].copy_from_slice(&self.cz.to_le_bytes());
         b[5] = self.level;
         b[6] = self.loc;
         b[7..11].copy_from_slice(&self.owner.to_le_bytes());
-        b[11..34].copy_from_slice(&self.gun.hash_bytes());
-        b[34] = self.carried.is_some() as u8;
-        b[35..37].copy_from_slice(&self.carried.unwrap_or(0).to_le_bytes());
+        b[11..36].copy_from_slice(&self.gun.hash_bytes());
+        b[36] = self.carried.is_some() as u8;
+        b[37..39].copy_from_slice(&self.carried.unwrap_or(0).to_le_bytes());
         b
     }
 

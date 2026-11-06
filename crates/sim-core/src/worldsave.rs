@@ -2538,8 +2538,11 @@ mod tests {
         // 5_694_772 at format 35: each one's mode, a byte on 512.
         // 5_719_352 at format 36: electricity, 2 + 2,048 × 10 wires and
         // 2 + 512 × 8 charges.
+        // 6_421_508 with no format change, the 512-player cap: 412 more
+        // bodies × 681, 768 more bags × 388, 4,944 more charges × 25 —
+        // counts, so old saves load.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_719_352,
+            WORLD_SAVE_MAX_BYTES, 6_421_508,
             "the world save ceiling moved"
         );
     }
