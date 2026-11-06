@@ -21,7 +21,7 @@ use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 
 /// The watched body. Distinct from every other number below.
-const TARGET: u32 = 0x0207;
+const TARGET: u32 = protocol::player_id(2, 7);
 
 fn body(qx: i32, qz: i32, yaw: u16, pitch: u8, dead: bool) -> EntityState {
     EntityState {

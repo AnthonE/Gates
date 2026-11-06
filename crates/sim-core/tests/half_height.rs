@@ -162,7 +162,7 @@ fn socket_steps_preserve_old_addresses_and_stop_at_the_height_cap() {
         }
     }
     assert_eq!(level_step(0, -1), None);
-    assert_eq!(level_step(15, 1), None);
+    assert_eq!(level_step(MAX_BUILD_SOCKETS as u8 - 1, 1), None);
 }
 /// `NOW.md` §0mk item 5: a shot leaving a cell through its HIGH face is
 /// stopped by the wall stored on the next cell's low edge, and the stop

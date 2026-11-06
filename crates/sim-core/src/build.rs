@@ -6378,10 +6378,15 @@ mod tests {
     /// directly below it, which is one whole clause of `supported()`. A
     /// reverse map that forgets that clause passes every other fixture
     /// here, because a fallen plane happens to re-name the same edges.
+    const WALL_STACK_LEVELS: u8 = 8;
+
     fn grow_wall_stacks(pieces: &mut Pieces) {
         assert!(try_put(pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
         assert!(try_put(pieces, CX, CZ, 0, LOC_RISER, SHAPE_STAIRS));
-        for level in 0..MAX_BUILD_LEVELS as u8 {
+        // Eight storeys, not every one: the fixed-point comparison only
+        // means anything under `MAX_COLLAPSE_PIECES`, and sixteen storeys
+        // of four walls is past it.
+        for level in 0..WALL_STACK_LEVELS {
             // Both roles on both edge locs — all four edge masks live.
             assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_XLO, SHAPE_WALL));
             assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_ZLO, SHAPE_DOORWAY));
@@ -6473,7 +6478,11 @@ mod tests {
                 |p| grow_from_one_foundation(p, CX, CZ, 50),
                 50,
             ),
-            ("wall-stacks", grow_wall_stacks, 34),
+            (
+                "wall-stacks",
+                grow_wall_stacks,
+                2 + 4 * WALL_STACK_LEVELS as usize,
+            ),
             ("stacks-and-a-landing", grow_stacks_and_a_landing, 37),
         ];
         let bc = collapse_content();

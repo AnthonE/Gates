@@ -815,7 +815,11 @@ fn the_same_commands_land_on_the_same_box_state() {
 #[test]
 fn the_box_address_is_injective_over_every_legal_cell() {
     fn unpack(k: u32) -> (u16, u16, u8) {
-        ((k >> 16) as u16, ((k >> 4) & 0xFFF) as u16, (k & 0xF) as u8)
+        (
+            ((k >> 16) & 0x7FF) as u16,
+            ((k >> 5) & 0x7FF) as u16,
+            (k & 0x1F) as u8,
+        )
     }
     for cx in 0..MAX_BUILD_COORD as u16 {
         for cz in 0..MAX_BUILD_COORD as u16 {

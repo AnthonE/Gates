@@ -1,7 +1,8 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 114 kB — fixed-capacity by design (wall 4), and
-# (162 kB until the 512-player cap moved the players onto the heap;
+# `World` is 135 kB — fixed-capacity by design (wall 4), and
+# (114 kB until the turrets went 64 → 512, their table inline on `World`;
+# 162 kB until the 512-player cap moved the players onto the heap;
 # 160 kB until electricity put its part table on the world;
 # 158 kB until the recipe and research tables went 128 → 192 rows for
 # electricity; 157 kB until main's turret, carrying the gun in its box, merged in;

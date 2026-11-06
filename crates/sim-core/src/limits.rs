@@ -1282,8 +1282,9 @@ pub const MAX_COLLAPSE_PIECES: usize = 64;
 /// own cascade, so a tick's worst case is one capped collapse however
 /// much of the island is hanging in the air. No overflow policy — this is
 /// a rate, not a queue; the cursor wraps and nothing is skipped.
-/// Proposed default, DECISIONS.md §open (collapse v0).
-pub const SUPPORT_SWEEP_PER_TICK: usize = 32;
+/// 128 since the piece store went to 131 072: a whole pass is 1 024 ticks
+/// (34 s), the pass 32 gave over 32 768.
+pub const SUPPORT_SWEEP_PER_TICK: usize = 128;
 
 /// Structural piece removals the whole **tick** may make, across every
 /// path that takes a piece out of the store: a raider's killing blow
