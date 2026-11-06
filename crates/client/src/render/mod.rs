@@ -243,6 +243,7 @@ pub mod presence;
 // The plants the bush column grows: shrubs, berry bushes and hemp.
 /// Farming v2's plants, drawn off the plant mirror.
 pub mod crops;
+pub mod crows;
 pub mod plants;
 pub mod props;
 pub mod rig;
@@ -921,7 +922,13 @@ impl Plugin for GatesRenderPlugin {
                 textures::load,
                 icons::load,
                 anim::load,
-                (mobs::load, heli::load, sentry::load, worn::load),
+                (
+                    mobs::load,
+                    heli::load,
+                    sentry::load,
+                    worn::load,
+                    crows::load,
+                ),
                 // The held-item models. Loaded once here rather than per
                 // swap: `AssetServer` dedups, but a `load` still walks and
                 // hashes a path, and `viewmodel::swap` runs every frame.
@@ -2210,6 +2217,12 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             rainbow::drive.after(weather::update).run_if(world_running),
+        )
+        // Crows over the dead (the reference's Nov 2026 flocks): the bags and
+        // blasts this frame's drain delivered.
+        .add_systems(
+            Update,
+            crows::drive.after(feed::drain).run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig
         // lights the frame from it; the deck is composed after both.
