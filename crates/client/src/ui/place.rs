@@ -966,6 +966,11 @@ pub fn check(
         {
             Verdict::No(RESERVED_LINE)
         }
+        // Something built stands there: say what (the reference, Nov 2026,
+        // "Blocked by X" in place of "Cannot build in this area").
+        REFUSE_B_SPOT if piece_in_the_way(site, t).is_some() => {
+            Verdict::No(piece_in_the_way(site, t).unwrap_or("spot taken"))
+        }
         // Indexed rather than formatted: `Verdict::No` carries a
         // `&'static str`, and the table row IS the sentence the server's
         // refusal would arrive with.
@@ -976,6 +981,85 @@ pub fn check(
                 .unwrap_or("refused"),
         ),
     })
+}
+
+/// "Blocked by X" for the piece standing where `t` would go: the one at its
+/// address, or for a flight of stairs any flight in its cell and storey
+/// (they share the riser's volume whichever way they turn). `None` when the
+/// mirror shows nothing there, and the server's own sentence stands.
+fn piece_in_the_way(site: &Site<'_>, t: Target) -> Option<&'static str> {
+    let at = |loc: u8| site.store.find(t.cx, t.cz, t.level, loc);
+    let rec = at(t.loc).or_else(|| {
+        if sim_core::build::STAIR_LOCS.contains(&t.loc) {
+            sim_core::build::STAIR_LOCS.iter().find_map(|&l| at(l))
+        } else {
+            None
+        }
+    })?;
+    let shape = site.content.pieces.get(rec.row as usize)?.shape;
+    Some(blocked_by_piece(shape))
+}
+
+/// The sentence for a built piece in the way, by shape. Static so a
+/// `Verdict` can carry it, and lower-case to read like the server's lines.
+pub fn blocked_by_piece(shape: u8) -> &'static str {
+    use sim_core::build::{
+        SHAPE_FLOOR, SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FOUNDATION_STEPS, SHAPE_RAMP,
+        SHAPE_ROOF, SHAPE_STAIRS, SHAPE_STAIRS_L, SHAPE_STAIRS_SPIRAL, SHAPE_STAIRS_TRI_SPIRAL,
+        SHAPE_STAIRS_U, SHAPE_TRI_FLOOR_FRAME,
+    };
+    match shape {
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION => "blocked by a foundation",
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => "blocked by a wall",
+        SHAPE_DOORWAY => "blocked by a doorway",
+        SHAPE_WINDOW => "blocked by a window",
+        SHAPE_FRAME => "blocked by a wall frame",
+        SHAPE_FLOOR | SHAPE_TRI_FLOOR => "blocked by a floor",
+        SHAPE_FLOOR_FRAME | SHAPE_TRI_FLOOR_FRAME => "blocked by a floor frame",
+        SHAPE_ROOF | SHAPE_TRI_ROOF => "blocked by a roof",
+        SHAPE_STAIRS
+        | SHAPE_STAIRS_L
+        | SHAPE_STAIRS_U
+        | SHAPE_STAIRS_SPIRAL
+        | SHAPE_STAIRS_TRI_SPIRAL
+        | SHAPE_FOUNDATION_STEPS => "blocked by stairs",
+        SHAPE_RAMP => "blocked by a ramp",
+        _ => "spot taken",
+    }
+}
+
+/// How far from a refused footprint's centre a deployable is taken as the
+/// thing in its way, metres: about the widest footprint there is.
+const BLOCKER_NEAR_M: f32 = 2.5;
+
+/// The sentence for a deployable in the way, by archetype.
+pub fn blocked_by_deploy(arch: u8) -> &'static str {
+    use sim_core::deploy::*;
+    match arch {
+        ARCH_BAG => "blocked by a sleeping bag",
+        ARCH_HEARTH => "blocked by a hearth",
+        ARCH_BOX => "blocked by a box",
+        ARCH_FIRE => "blocked by a fire",
+        ARCH_FURNACE => "blocked by a furnace",
+        ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => "blocked by a workbench",
+        ARCH_DOOR | ARCH_GARAGE_DOOR => "blocked by a door",
+        ARCH_RECYCLER => "blocked by a recycler",
+        ARCH_RESEARCH => "blocked by a research table",
+        ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER => "blocked by a window",
+        ARCH_BARRICADE | ARCH_BARRICADE_BARBED => "blocked by a barricade",
+        ARCH_PLANTER => "blocked by a planter",
+        ARCH_TURRET => "blocked by a turret",
+        ARCH_VENDING => "blocked by a vending machine",
+        ARCH_FLOOR_SPIKES => "blocked by floor spikes",
+        ARCH_RUG => "blocked by a rug",
+        ARCH_CATCHER => "blocked by a water catcher",
+        ARCH_GENERATOR => "blocked by a generator",
+        ARCH_SOLAR => "blocked by a solar panel",
+        ARCH_BATTERY => "blocked by a battery",
+        ARCH_SWITCH | ARCH_SPLITTER | ARCH_COMBINER => "blocked by a power part",
+        ARCH_LIGHT => "blocked by a light",
+        _ => "spot taken",
+    }
 }
 
 /// How far round the aim the ghost looks for something to snap to on a
@@ -1693,18 +1777,32 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
     // SPOT. The loc rule is the sim's own function; an insert or a lock
     // wants the address it names (empty, or holding its door), and a body
     // deployable wants a free slot in its cell — `place_deploy`'s order.
-    if !loc_fits_placement(def.placement, t.loc)
-        || (!body && pose != Pose::CENTRE)
-        || (!body
-            && def.placement != PLACE_DOOR
-            && site.deploy_at(t.cx, t.cz, t.level, t.loc).is_some())
+    if !loc_fits_placement(def.placement, t.loc) || (!body && pose != Pose::CENTRE) {
+        return DeployVerdict::No("spot taken");
+    }
+    // Taken: name what stands there (the reference, Nov 2026, "Blocked by
+    // X") — the record at the aimed address, or for a body deployable the
+    // first of the cell's slots that is filled.
+    let occupant = if body {
+        sim_core::deploy::BODY_LOCS
+            .iter()
+            .find_map(|&l| site.deploy_at(t.cx, t.cz, t.level, l))
+    } else if def.placement != PLACE_DOOR {
+        site.deploy_at(t.cx, t.cz, t.level, t.loc)
+    } else {
+        None
+    };
+    if (!body && occupant.is_some())
         || (body
             && sim_core::deploy::BODY_LOCS.iter().all(|&l| {
                 site.deploy_at(t.cx, t.cz, t.level, l).is_some()
                     || (holds_items(def.arch) && box_key(t.cx, t.cz, t.level, l) == 0)
             }))
     {
-        return DeployVerdict::No("spot taken");
+        let why = occupant
+            .and_then(|r| site.deploy_defs.defs.get(r.row as usize))
+            .map_or("spot taken", |d| blocked_by_deploy(d.arch));
+        return DeployVerdict::No(why);
     }
 
     // REACH, measured to the sim's own point via the sim's own function —
@@ -1747,6 +1845,24 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
             t.level,
             pose,
         ) {
+            // A footprint that crosses another deployable's: name the
+            // nearest one on this floor ("Blocked by X").
+            if code == sim_core::deploy::REFUSE_D_SPOT {
+                let near = site
+                    .deploys
+                    .iter()
+                    .filter(|r| r.level == t.level)
+                    .map(|r| {
+                        let (x, z) = r.xz();
+                        ((x - ax).powi(2) + (z - az).powi(2), r)
+                    })
+                    .filter(|(d, _)| *d < BLOCKER_NEAR_M * BLOCKER_NEAR_M)
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+                    .and_then(|(_, r)| site.deploy_defs.defs.get(r.row as usize));
+                if let Some(d) = near {
+                    return DeployVerdict::No(blocked_by_deploy(d.arch));
+                }
+            }
             return DeployVerdict::No(super::refusals::DEPLOY[code as usize]);
         }
     }
@@ -2116,7 +2232,7 @@ mod tests {
         };
         assert_eq!(
             verdict(t, 0, SHAPE_WALL, &site, false, 0),
-            Verdict::No("spot taken")
+            Verdict::No("blocked by a wall")
         );
     }
 
@@ -2144,7 +2260,7 @@ mod tests {
                 };
                 assert_eq!(
                     verdict(target, 0, sim_core::build::SHAPE_STAIRS, &site, false, 0),
-                    Verdict::No("spot taken")
+                    Verdict::No("blocked by stairs")
                 );
             }
         }
