@@ -19,6 +19,7 @@ that means the file here.
 | [`RENDER.md`](RENDER.md) | how the Bevy client draws |
 | [`ART.md`](ART.md) | the visual bar. Outranks `RENDER.md` |
 | [`CONTENT.md`](CONTENT.md) | the schemas behind `content/*.toml` |
+| [`ANTICHEAT.md`](ANTICHEAT.md) | Gates' half of the anti-cheat plan: a profile per wallet before any payout, bred cheats, what 30 Hz and no WAL change. The plan of record is oneshot's |
 | [`SCALE.md`](SCALE.md) | what stops the island growing: every shard-wide cap, how full it is, what raising it takes |
 | [`PLAYERS.md`](PLAYERS.md) | the agent player: a player's inputs and a player's view, nothing more; the layers of a mind, the house agents, and what is designed next |
 | [`WORLD.md`](WORLD.md) | the fiction. §11 is a secret shared with Before Colony and never said in game |

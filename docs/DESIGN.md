@@ -619,6 +619,9 @@ evidence about the budget, not automatically a defect. Re-deriving them is
   (`ALPHA.md` §5); it would need a native client to attach to, and it would
   ban the agent players the training goal depends on (`DECISIONS.md`
   2026-08-01).
+- **Past v1** (operator, 2026-11-07): a profile per wallet before any payout,
+  bred cheats as the detector's data, evidence never a verdict:
+  `ANTICHEAT.md`.
 
 ## 11 · Milestones
 
