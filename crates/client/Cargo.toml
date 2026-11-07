@@ -367,6 +367,11 @@ name = "rig_asset"
 path = "tests/rig_asset.rs"
 required-features = ["render"]
 
+[[test]]
+name = "gait"
+path = "tests/gait.rs"
+required-features = ["render"]
+
 # The remote head override: that the pitch axis is DERIVED from the rig rather
 # than typed, and that the delta does not accumulate on a clip which never
 # touches the head. Runs `anim`'s systems on a bare `App` over a hand-built

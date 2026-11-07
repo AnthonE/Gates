@@ -156,6 +156,7 @@ pub mod ziggurat;
 pub mod canvas;
 pub mod heldgen;
 pub mod heldkit;
+pub mod ik;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
 // **Desktop only.** This module reaches a local elo launcher over a unix
@@ -1601,6 +1602,7 @@ impl Plugin for GatesRenderPlugin {
                 guards::arm.after(Stream),
                 fingers::bind,
                 anim::bind_spine.after(Stream),
+                ik::bind_legs.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
             )
@@ -1663,7 +1665,8 @@ impl Plugin for GatesRenderPlugin {
         // the animation player or need the hierarchy walked again.
         .add_systems(
             PostUpdate,
-            anim::pose_spine
+            (ik::unpose_legs, anim::pose_spine, ik::pose_feet)
+                .chain()
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running.or(portrait::on_menu)),
