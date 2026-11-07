@@ -261,18 +261,18 @@ impl Clip {
     /// The ground speed a locomotion loop's feet were authored for, m/s, and
     /// `None` for everything that is not one.
     ///
-    /// **Measured off `stumpy.glb`, not chosen**: the speed of the planted
-    /// foot against the hips (forward kinematics over the clip, the lowest
-    /// foot or toe within 3 cm of the ground, median over the stance). Walk
-    /// 1.05, jog 3.97, sprint 5.66, crouch ~0.5. [`BodyAnim::rate`] divides the
-    /// body's real speed by this, which is what stops a jogging body skating
-    /// at the sim's 3.0 m/s on a clip authored for 4.
+    /// **Measured off `stumpy.glb`, not chosen**, and measured again on every
+    /// run by `tests/gait.rs` (`every_stride_is_what_its_clip_does`): the
+    /// speed the planted toes go back under the body, median over the stance.
+    /// The toes, not the ankle, which rolls over them. [`BodyAnim::rate`]
+    /// divides the body's real speed by this, which is what stops a jogging
+    /// body skating at the sim's 2.8 m/s on a clip authored for 3.9.
     pub fn stride_mps(self) -> Option<f32> {
         match self {
-            Clip::Walk => Some(1.05),
-            Clip::Jog => Some(3.97),
+            Clip::Walk => Some(1.15),
+            Clip::Jog => Some(3.87),
             Clip::Sprint => Some(5.66),
-            Clip::CrouchWalk => Some(0.5),
+            Clip::CrouchWalk => Some(0.54),
             _ => None,
         }
     }
