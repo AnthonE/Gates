@@ -28,7 +28,7 @@
 //! is what its panel shows and the lit set the server announces; what turns
 //! into what is the wiki's (`agent::wiki::Page::{cooks, recycles}`).
 
-use crate::agent::build::{aim_point, e_picks_by, item_named, recipe_for, Stations};
+use crate::agent::build::{aim_point, craft_fits, e_picks_by, item_named, recipe_for, Stations};
 use crate::agent::hands::Hands;
 use crate::agent::home::{belt_move, HOLD_TICKS, SPOT_TRIES};
 use crate::agent::intent::{yaw_toward, Intent, Look};
@@ -1482,6 +1482,11 @@ impl DeviceJob {
             let Some((recipe, ..)) = recipe_for(core, item, &Stations::NONE) else {
                 return Tend::Fail(Why::NoRecipe);
             };
+            // A full pack drops what is made at the feet, where the wait
+            // for it never sees it (#573).
+            if !craft_fits(core, recipe, 1) {
+                return Tend::Fail(Why::PackFull);
+            }
             self.making = Some((item, 0));
             return Tend::Craft { recipe };
         }
@@ -1631,6 +1636,42 @@ mod tests {
         assert!(!should_run(Work::Warm, &core, &book, &fire));
         core.hp = 40;
         assert!(should_run(Work::Warm, &core, &book, &fire));
+    }
+
+    /// A warm-up with no fire to hand crafts one; at a full pack that
+    /// fire would fall at its feet, so it says the pack is full instead of
+    /// waiting on it (#573).
+    #[test]
+    fn a_warm_up_at_a_full_pack_does_not_craft_its_fire() {
+        let (mut core, _, id) = shipped();
+        let content = content::Content::from_sources(&SOURCES).unwrap();
+        core.recipes = crate::net::bake_all(&content).unwrap().craft;
+        core.recipes_have = core.recipes.recipe_count;
+        let (wood, stone) = (id("item.wood"), id("item.stone"));
+        let haven = *core.island().1.haven;
+        let hands = Hands::new(Default::default());
+        let body = EntityState::default();
+        let put = |core: &ClientCore| {
+            DeviceJob::new(Work::Warm).put_down(
+                core,
+                1,
+                &haven,
+                &body,
+                &hands,
+                0,
+                id("item.fire_pit"),
+                |_, _| false,
+                0,
+            )
+        };
+        core.inv[HOTBAR_SLOTS] = stack(wood, 1000);
+        assert!(matches!(put(&core), Tend::Craft { .. }), "room for it");
+        for i in 0..INV_SLOTS {
+            if i != HOTBAR_SLOTS {
+                core.inv[i] = stack(stone, 1);
+            }
+        }
+        assert!(matches!(put(&core), Tend::Fail(Why::PackFull)));
     }
 
     /// The Verdigris' heart is no place to warm up and mend; the walk out
