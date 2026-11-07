@@ -530,7 +530,8 @@ Remains, in order:
 ## 0chk · Cheat checks v0 landed — what arming still needs *(server lane)*
 
 `crates/server/src/cheat.rs` flags **snap hits**, **headshot rate** and **wall tracking** per player as
-`kind:"suspect"` lines in the anomaly log (name in `note`). Evidence only: nothing kicks or bans. Left:
+`kind:"suspect"` lines in the anomaly log (name in `note`). Evidence only: nothing kicks or bans. The long-term
+plan (a profile per wallet before any payout, bred cheats, the detector) is `ANTICHEAT.md`. Left:
 
 1. **Tune the thresholds on real play.** Every constant at the top of `cheat.rs` (`SNAP_DEG`, `HEAD_MIN_PCT`,
    `WALL_*`) is a first guess proven only on synthetic fixtures. Read the A1 playtest's `suspect` lines and
