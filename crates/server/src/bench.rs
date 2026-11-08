@@ -418,6 +418,9 @@ pub struct Bench<'a> {
     /// box runs it, not on a loopback shard in wall-clock time (`--warp`).
     /// The minds must decide inline (`MindArgs::inline`).
     pub warp: bool,
+    /// Record every seat's every tick of each warped run under this
+    /// directory, one `run-NN` per run (`--ticks`, `ticks.rs`).
+    pub ticks: Option<PathBuf>,
 }
 
 /// Every bot's mind, built once and played through every run, and the tally
@@ -572,7 +575,29 @@ fn play_warp(
         tallies.push(tally);
         island.seat(Survivor::with(mind, opts), &crate::lockstep::wallet(i))?;
     }
+    if let Some(dir) = &b.ticks {
+        let meta = crate::ticks::Meta {
+            seed: cfg.seed,
+            variant: u64::from(run),
+            arc_hour: BENCH_ARC_HOUR,
+            mind: b.mind.label(),
+            seats: island.seats.len(),
+        };
+        island.tape = Some(crate::ticks::TickLog::open(
+            &dir.join(format!("run-{run:02}")),
+            meta,
+        )?);
+    }
     island.run(b.duration.as_secs() * u64::from(sim_core::limits::TICK_HZ));
+    if let Some(tape) = island.tape.take() {
+        let w = tape.finish()?;
+        eprintln!(
+            "ticks: {} records, {:.1} MB → {}",
+            w.rows,
+            w.bytes as f64 / 1e6,
+            w.dir.display()
+        );
+    }
     let rules = island.core.standings.rules.clone();
     let mut out = Vec::with_capacity(tallies.len());
     for (i, tally) in tallies.iter().enumerate() {

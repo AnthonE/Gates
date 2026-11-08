@@ -58,6 +58,8 @@ pub struct Island {
     t0: Instant,
     /// Ticks stepped since the island was made.
     pub ticks: u64,
+    /// Every seat's every tick, when asked (`--ticks`, `ticks.rs`).
+    pub tape: Option<crate::ticks::TickLog>,
 }
 
 impl Island {
@@ -105,6 +107,7 @@ impl Island {
             haven,
             t0,
             ticks: 0,
+            tape: None,
         })
     }
 
@@ -162,12 +165,25 @@ impl Island {
                     }
                 }
             }
+            let mut sent = None;
             if self.core.wants_action(slot) {
                 if let Some(len) = s.bot.action(&mut act) {
                     if let Ok(msg) = decode_action(&act[..len]) {
                         self.core.push_action(slot, msg);
+                        sent = Some(msg);
                     }
                 }
+            }
+            if let Some(tape) = self.tape.as_mut() {
+                tape.row(
+                    self.ticks,
+                    slot,
+                    &s.bot,
+                    &s.view,
+                    s.id,
+                    &frame,
+                    sent.as_ref(),
+                );
             }
         }
         if self.core.world.tick % (60 * TICK_HZ as u64) == MINUTE_PHASE {

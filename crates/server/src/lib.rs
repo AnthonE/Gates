@@ -95,6 +95,8 @@ pub mod stats;
 pub mod status;
 pub mod store;
 pub mod team;
+/// Every tick of every agent on a lockstep island, for a frame-rate body (`--ticks`).
+pub mod ticks;
 /// The trust ledger's sink: every trust row, appended off the sim thread.
 pub mod trustlog;
 #[cfg(feature = "watch")]
