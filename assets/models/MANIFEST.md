@@ -1188,6 +1188,7 @@ with `ci/prop_kit.py sheet <names…>`.
 | files | what |
 |---|---|
 | `deploy/furnace`, `recycler`, `research_table`, `workbench2`, `workbench3` | the deployables that were cuboids |
+| `deploy/generator`, `solar`, `battery`, `switch`, `splitter`, `combiner`, `light` | the electricity rows (24–30), greyboxes until 2026-11-02; the small parts bake at 512 |
 | `deploy/door` | the wooden door (the metal door was its geometry under sheet metal until §Locks and the metal door) |
 | `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
