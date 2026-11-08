@@ -90,11 +90,14 @@ pub fn tracer_at(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32, mps: f32, gravi
     if dist <= 2.0 || mps <= 0.0 {
         return;
     }
-    let life = (dist / mps).clamp(0.03, 1.0);
+    // A streak trails its whole length behind its head: born at `start`, the
+    // first frame's would run back through the gun and the shooter.
+    let len = (mps * TRACER_STRETCH_S).min(TRACER_LEN_M).min(dist);
+    let life = ((dist - len) / mps).clamp(0.03, 1.0);
     fx.glow.spawn(Particle {
         left: life,
         life,
-        pos: start.into(),
+        pos: (start + dir * len).into(),
         vel: (dir * mps).into(),
         gravity,
         size0: 0.014,
@@ -103,11 +106,15 @@ pub fn tracer_at(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32, mps: f32, gravi
         c1: [5.0, 3.0, 1.0, 0.5],
         cell: super::atlas::STREAK,
         orient: Orient::Stretch,
-        stretch: 0.014,
-        len_max: 5.0,
+        stretch: TRACER_STRETCH_S,
+        len_max: TRACER_LEN_M.min(dist),
         ..Particle::default()
     });
 }
+
+/// Seconds of a tracer's flight its streak is drawn over, and its longest.
+const TRACER_STRETCH_S: f32 = 0.014;
+const TRACER_LEN_M: f32 = 5.0;
 
 /// Whether the client draws a miss the shard did not: the beam stopped on
 /// something, past the shard's own mark walk, with no drawn body in its line.

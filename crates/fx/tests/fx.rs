@@ -98,6 +98,109 @@ fn a_distant_spark_does_not_vanish() {
     );
 }
 
+/// A streak flying straight from the eye is short on screen: its length lies
+/// in depth, behind its head, not sideways across the view.
+#[test]
+fn a_streak_flying_away_is_foreshortened() {
+    let cam = Cam {
+        pos: v3::ZERO,
+        right: v3::X,
+        up: v3::Y,
+    };
+    let p = Particle {
+        left: 0.3,
+        life: 0.3,
+        pos: [0.0, 0.0, -10.0],
+        vel: [0.0, 0.0, -300.0],
+        size0: 0.01,
+        size1: 0.01,
+        c0: [1.0; 4],
+        c1: [1.0; 4],
+        orient: Orient::Stretch,
+        stretch: 0.02,
+        len_max: 5.0,
+        ..Particle::default()
+    };
+    let (pos, _, _) = Pool::quad(&p, &cam, v3::ZERO).expect("live");
+    for c in pos {
+        assert!(c[0].abs() < 0.05 && c[1].abs() < 0.05, "sideways: {c:?}");
+    }
+    // Its length is behind its head, toward the eye.
+    let near = pos.iter().map(|c| c[2]).fold(f32::MIN, f32::max);
+    let far = pos.iter().map(|c| c[2]).fold(f32::MAX, f32::min);
+    assert!(
+        (near - -5.0).abs() < 0.01 && (far - -10.0).abs() < 0.01,
+        "{near} to {far}"
+    );
+}
+
+/// A streak in any direction runs from its head straight back along its
+/// flight: both its ends are on that line.
+#[test]
+fn a_streak_is_a_true_line_from_its_head_back() {
+    let cam = Cam {
+        pos: v3::ZERO,
+        right: v3::X,
+        up: v3::Y,
+    };
+    let dir = v3::norm_or([1.0, 0.5, -1.0], v3::Z);
+    let head = [3.0, 1.0, -10.0];
+    let p = Particle {
+        left: 0.3,
+        life: 0.3,
+        pos: head,
+        vel: v3::scale(dir, 100.0),
+        size0: 0.01,
+        size1: 0.01,
+        c0: [1.0; 4],
+        c1: [1.0; 4],
+        orient: Orient::Stretch,
+        stretch: 0.02,
+        len_max: 5.0,
+        ..Particle::default()
+    };
+    let (pos, _, _) = Pool::quad(&p, &cam, v3::ZERO).expect("live");
+    let mid = |a: usize, b: usize| v3::scale(v3::add(pos[a], pos[b]), 0.5);
+    let (a, b) = (mid(0, 3), mid(1, 2));
+    let tail = v3::sub(head, v3::scale(dir, 2.0));
+    assert!(v3::dist2(b, head) < 1e-4, "its head at {b:?}");
+    assert!(v3::dist2(a, tail) < 1e-4, "its tail at {a:?}");
+}
+
+/// Dead head on, it is still something to see; and a longest shorter than the
+/// shortest draws the shortest, where the clamp used to panic.
+#[test]
+fn a_streak_head_on_or_short_is_drawn() {
+    let cam = Cam {
+        pos: v3::ZERO,
+        right: v3::X,
+        up: v3::Y,
+    };
+    let p = Particle {
+        left: 0.3,
+        life: 0.3,
+        pos: [0.0, 0.0, -10.0],
+        vel: [0.0, 0.0, -100.0],
+        size0: 0.01,
+        size1: 0.01,
+        c0: [1.0; 4],
+        c1: [1.0; 4],
+        orient: Orient::Stretch,
+        stretch: 0.02,
+        len_max: 0.001,
+        ..Particle::default()
+    };
+    let (pos, _, _) = Pool::quad(&p, &cam, v3::ZERO).expect("live");
+    let across = pos.iter().map(|c| c[1]).fold(f32::MIN, f32::max)
+        - pos.iter().map(|c| c[1]).fold(f32::MAX, f32::min);
+    let wide = pos.iter().map(|c| c[0]).fold(f32::MIN, f32::max)
+        - pos.iter().map(|c| c[0]).fold(f32::MAX, f32::min);
+    assert!(
+        across > 0.005 && wide > 0.005,
+        "edge on: {across} by {wide}"
+    );
+}
+
 /// A spark thrown into the surface it came off bounces back out of it.
 #[test]
 fn a_spark_does_not_fall_through_its_wall() {
