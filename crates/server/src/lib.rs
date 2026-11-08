@@ -42,6 +42,8 @@ pub mod auth;
 pub mod autopilot;
 /// GatesBench: a mind scored on fresh private islands (`gates-agent --bench`).
 pub mod bench;
+/// A learned body playing at frame rate (`ops/ticks/body.py`, `--body`).
+pub mod body;
 pub mod boot;
 pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.

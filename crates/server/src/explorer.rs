@@ -572,6 +572,10 @@ pub struct Senses {
     /// Strangers whose nametag it aimed at lately, in their slots
     /// (`team.near`, `follow:n<k>`): ids, 0 for none, packed to the front.
     pub near: [u32; crate::mind::NEAR_MAX],
+    /// Where the nearest tree, stone, ore, bush and hemp stood at the last
+    /// census, world metres: for a learned body's record (`ticks.rs`),
+    /// which turns each into a bearing and a distance. Never shown to a mind.
+    pub resources: [Option<[f32; 2]>; 5],
     /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
     pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -769,6 +773,17 @@ pub struct Memory {
 #[derive(Clone, Copy, Debug, Default)]
 struct Sweep {
     cells: [Sighting; KINDS],
+    /// The nearest of each kind this sweep: distance and where it stands.
+    nearest: [Option<(f32, [f32; 2])>; KINDS],
+}
+
+impl Sweep {
+    fn saw(&mut self, kind: usize, d: f32, b: u8, at: [f32; 2]) {
+        self.cells[kind].add(d, b);
+        if self.nearest[kind].is_none_or(|(n, _)| d < n) {
+            self.nearest[kind] = Some((d, at));
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -1529,6 +1544,22 @@ impl Survivor {
     /// hands turned it into input.
     pub fn intent(&self) -> Intent {
         self.last_intent
+    }
+
+    /// The frame that actually went out was `f`, not the one this body made
+    /// (a learned body sent it, `body.rs`): hold its view, its slot and its
+    /// input as this body's own, so the skills read where it really looks.
+    pub fn adopt_frame(&mut self, f: &InputFrame) {
+        self.hands.adopt(f.yaw, f.pitch);
+        self.sel = f.sel;
+        if let Some(core) = self.core.as_deref_mut() {
+            core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
+        }
+    }
+
+    /// The nearest open water its last probe found, world metres.
+    pub fn water_point(&self) -> Option<[f32; 2]> {
+        self.water_point
     }
 
     /// The team's base as its eyes found it.
@@ -7853,7 +7884,7 @@ impl Survivor {
                     // The census counts what a gather goal would go for:
                     // not the node it gave up on a moment ago.
                     if Some(target.key()) != self.skipped {
-                        self.sweep.cells[kind as usize].add(d, b);
+                        self.sweep.saw(kind as usize, d, b, [slot.x, slot.z]);
                     }
                     let nearer = self.recall[kind as usize].is_none_or(|(old, at)| {
                         tick.wrapping_sub(at) >= RECALL_SECS * TICK_HZ
@@ -7904,9 +7935,9 @@ impl Survivor {
             // In view now, or seen within the recall window and still
             // standing: a player remembers the rock they just turned from,
             // and the gather goal walks back to it (`RECALL_WALK_M`).
-            let mut cells = self.sweep.cells;
-            for (kind, cell) in cells.iter_mut().enumerate() {
-                if cell.count > 0 {
+            let mut sweep = self.sweep;
+            for kind in 0..KINDS {
+                if sweep.cells[kind].count > 0 {
                     continue;
                 }
                 if let Some((t, at)) = self.recall[kind] {
@@ -7916,11 +7947,12 @@ impl Survivor {
                         && Some(t.key()) != self.skipped
                         && d <= RECALL_WALK_M
                     {
-                        cell.add(d, b);
+                        sweep.saw(kind, d, b, [t.slot.x, t.slot.z]);
                     }
                 }
             }
-            let [trees, stone, ore, bushes, hemp] = cells;
+            self.senses.resources = sweep.nearest.map(|n| n.map(|(_, at)| at));
+            let [trees, stone, ore, bushes, hemp] = sweep.cells;
             self.senses.trees = trees;
             self.senses.stone_nodes = stone;
             self.senses.ore_nodes = ore;

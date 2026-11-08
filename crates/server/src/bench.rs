@@ -421,6 +421,9 @@ pub struct Bench<'a> {
     /// Record every seat's every tick of each warped run under this
     /// directory, one `run-NN` per run (`--ticks`, `ticks.rs`).
     pub ticks: Option<PathBuf>,
+    /// A learned body sends every bot's frames on warped runs (`--body`,
+    /// `body.rs`); the scripted hands otherwise.
+    pub body: Option<std::sync::Arc<crate::body::Weights>>,
 }
 
 /// Every bot's mind, built once and played through every run, and the tally
@@ -574,6 +577,12 @@ fn play_warp(
         before.push(tally.read());
         tallies.push(tally);
         island.seat(Survivor::with(mind, opts), &crate::lockstep::wallet(i))?;
+    }
+    if let Some(w) = &b.body {
+        for (i, seat) in island.seats.iter_mut().enumerate() {
+            let seed = (u64::from(run) << 16) | i as u64;
+            seat.body = Some(crate::body::LearnedBody::sampling(w.clone(), seed));
+        }
     }
     if let Some(dir) = &b.ticks {
         let meta = crate::ticks::Meta {

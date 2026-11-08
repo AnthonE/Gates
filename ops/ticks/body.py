@@ -55,35 +55,63 @@ try:
 except ImportError:
     raise SystemExit("body.py needs torch: pip install torch")
 
-FRAME_HEADS = [("buttons", BUTTON_BITS)] + HEADS  # buttons are bits, the rest classes
+PITCH_MAX = 10  # a tick's pitch change, clipped (wire units, 0.7° each)
+HOTBAR = 6  # sim_core::limits::HOTBAR_SLOTS
+# Classes after the seven button bits: the axes and the turn as clone.py has
+# them, then the pitch change and the hotbar slot.
+BODY_HEADS = HEADS + [("pitch", 2 * PITCH_MAX + 1), ("sel", HOTBAR)]
 PLAN_FIELDS = ["look", "where", "far", "move", "next"]  # plus 'hands', seven bits
 N_TURN = 2 * TURN_MAX + 1
 
 
 def frame_features(d):
-    """The frame each record sent, as an input: buttons, axes, its turn."""
+    """The frame each record sent, as an input: buttons, axes, its turn
+    (from the frame before; none on an episode's first), its pitch and its
+    slot. `crates/server/src/body.rs` builds the same from the frames it
+    sent."""
     ep = d["ep"]
     first = np.ones(len(d), bool)
     first[1:] = ep[1:] != ep[:-1]
     last_yaw = np.roll(d["f_yaw"], 1)
     last_yaw[first] = d["f_yaw"][first]
     tc = turn_class(turn(last_yaw, d["f_yaw"]))
+    last_pitch = np.roll(d["f_pitch"], 1).astype(np.int64)
+    last_pitch[first] = d["f_pitch"][first]
+    pc = np.clip(d["f_pitch"].astype(np.int64) - last_pitch, -PITCH_MAX, PITCH_MAX) + PITCH_MAX
     cols = [
         ((d["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(np.float32),
         (d["f_move_x"] / 127.0)[:, None].astype(np.float32),
         (d["f_move_z"] / 127.0)[:, None].astype(np.float32),
         onehot(tc, N_TURN),
+        (d["f_pitch"] / 255.0)[:, None].astype(np.float32),
+        onehot(np.minimum(d["f_sel"], HOTBAR - 1).astype(np.int64), HOTBAR),
     ]
-    return np.concatenate(cols, 1), tc, first
+    return np.concatenate(cols, 1), (tc, pc), first
 
 
-def frame_targets(d, tc):
+def frame_targets(d, classes):
+    tc, pc = classes
     return {
         "buttons": ((d["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(np.float32),
         "move_z": np.digitize(d["f_move_z"], MZ_EDGES).astype(np.int64),
         "move_x": np.digitize(d["f_move_x"], MX_EDGES).astype(np.int64),
         "turn": tc.astype(np.int64),
+        "pitch": pc.astype(np.int64),
+        "sel": np.minimum(d["f_sel"], HOTBAR - 1).astype(np.int64),
     }
+
+
+def class_values(d):
+    """What each axis bucket sends when the model picks it: the mean of what
+    the teacher sent in that bucket (the bucket's middle where it never did)."""
+    out = {}
+    for name, col, edges, mids in (("move_z", "f_move_z", MZ_EDGES, [-127, 0, 127]),
+                                   ("move_x", "f_move_x", MX_EDGES, [-127, -16, 0, 16, 127])):
+        v = d[col].astype(np.float64)
+        cls = np.digitize(d[col], edges)
+        out[name] = [int(round(v[cls == k].mean())) if (cls == k).any() else mids[k]
+                     for k in range(len(edges) + 1)]
+    return out
 
 
 def windows(ep, n, stride):
@@ -118,7 +146,7 @@ class Body(nn.Module):
                                            norm_first=True)
         self.tr = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(d)
-        self.out_frame = nn.Linear(d, BUTTON_BITS + sum(k for _, k in HEADS))
+        self.out_frame = nn.Linear(d, BUTTON_BITS + sum(k for _, k in BODY_HEADS))
         self.register_buffer("mask", torch.triu(torch.full((ctx, ctx), float("-inf")), 1))
 
     def forward(self, obs, frame_prev, plan=None, known=None):
@@ -144,7 +172,7 @@ class Body(nn.Module):
 def split_frame(z):
     out = {"buttons": z[..., :BUTTON_BITS]}
     at = BUTTON_BITS
-    for name, k in HEADS:
+    for name, k in BODY_HEADS:
         out[name] = z[..., at:at + k]
         at += k
     return out
@@ -153,7 +181,7 @@ def split_frame(z):
 def losses(model, fz, pz, ft, pt, pvalid, plan_weight=1.0):
     fo = split_frame(fz)
     loss = F.binary_cross_entropy_with_logits(fo["buttons"], ft["buttons"])
-    for name, _ in HEADS:
+    for name, _ in BODY_HEADS:
         loss = loss + F.cross_entropy(fo[name].flatten(0, 1), ft[name].flatten())
     if pz is not None:
         po = model.split_plan(pz)
@@ -172,11 +200,11 @@ class Data:
     def __init__(self, d, t, scale, ahead):
         self.d = d
         self.obs = observation(d, t, scale)
-        self.frame, tc, self.first = frame_features(d)
+        self.frame, classes, self.first = frame_features(d)
         # The frame before each record (zeros at an episode's start).
         self.frame_prev = np.roll(self.frame, 1, axis=0)
         self.frame_prev[self.first] = 0
-        self.ft = frame_targets(d, tc)
+        self.ft = frame_targets(d, classes)
         self.plan = mono.plans(d, t["none16"])
         # The plan `ahead` ticks on, where the same episode has one.
         n = len(d)
@@ -244,14 +272,14 @@ def own_plans(model, obs, fp, plan, known, share):
 def frame_preds(fz):
     fo = split_frame(fz)
     out = {"buttons": (fo["buttons"] > 0).float().numpy()}
-    for name, _ in HEADS:
+    for name, _ in BODY_HEADS:
         out[name] = fo[name].argmax(-1).numpy()
     return out
 
 
 def score(pred, y, turn_wire, mask):
     s = {"buttons": np.all(pred["buttons"][mask] == y["buttons"][mask], -1).mean()}
-    for name, _ in HEADS:
+    for name, _ in BODY_HEADS:
         s[name] = (pred[name][mask] == y[name][mask]).mean()
     want = np.clip(turn_wire[mask], -TURN_MAX * 256, TURN_MAX * 256)
     s["turn_err_deg"] = deg((pred["turn"][mask] - TURN_MAX) * 256.0 - want).mean()
@@ -285,7 +313,7 @@ def evaluate(model, data, te_starts, args, t):
     rep = {k: v[rows - 1] for k, v in data.ft.items()}  # the frame before
     turn_wire = turn(d["f_yaw"][rows - 1], d["f_yaw"][rows])
     changed = np.any(rep["buttons"] != y["buttons"], 1)
-    for name, _ in HEADS:
+    for name, _ in BODY_HEADS:
         changed |= rep[name] != y[name]
     every = np.ones(len(rows), bool)
     print(f"\nheld out: {len(rows)} ticks with {args.min_context}+ behind them, "
@@ -297,13 +325,13 @@ def evaluate(model, data, te_starts, args, t):
         cols.append(({"own": "own plan", "teacher": "teacher plan", "none": "no plan"}[m], cat))
     head = "".join(f"{name:>14s}" for name, _ in cols)
     print(f"{'changed ticks':16s}{head}")
-    for k in ["buttons", "move_z", "move_x", "turn"]:
+    for k in ["buttons", "move_z", "move_x", "turn", "pitch", "sel"]:
         print(f"  {k:14s}" + "".join(f"{score(p, y, turn_wire, changed)[k]:13.1%} "
                                      for _, p in cols))
     print(f"  {'turn error':14s}" + "".join(
         f"{score(p, y, turn_wire, changed)['turn_err_deg']:12.2f}° " for _, p in cols))
     print(f"{'all ticks':16s}{head}")
-    for k in ["buttons", "move_z", "move_x", "turn"]:
+    for k in ["buttons", "move_z", "move_x", "turn", "pitch", "sel"]:
         print(f"  {k:14s}" + "".join(f"{score(p, y, turn_wire, every)[k]:13.1%} "
                                      for _, p in cols))
     print(f"  {'turn error':14s}" + "".join(
@@ -361,6 +389,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--frame-dropout", type=float, default=0.0,
+                    help="share of last-frame inputs hidden in training")
     ap.add_argument("--plan-weight", type=float, default=0.2,
                     help="the plan's loss against the frame's")
     ap.add_argument("--plan-dropout", type=float, default=0.3,
@@ -402,6 +432,10 @@ def main():
         for i, b in enumerate(np.array_split(rng.permutation(tr_starts),
                                              max(len(tr_starts) // args.batch, 1))):
             obs, fp, plan, ft, pt, pvalid, _ = data.batch(b, args.ctx, "cpu")
+            if args.frame_dropout > 0:
+                # Hide the last frame now and then, so the model cannot only
+                # copy it: a body that copies stands still once it stops.
+                fp = fp * (torch.rand(fp.shape[:2]) >= args.frame_dropout)[..., None]
             known = torch.rand(obs.shape[:2]) >= args.plan_dropout
             if model.feed and args.own_plan > 0:
                 plan = own_plans(model, obs, fp, plan, known, args.own_plan)
@@ -420,7 +454,8 @@ def main():
         sample(model, data, te_starts, t, mono.AHEAD, 0)
     torch.save({"cfg": model.cfg, "state": model.state_dict(), "goals": t["goals"],
                 "actions": t["actions"], "scale": scale, "ahead": mono.AHEAD,
-                "format": "gates-body-1"}, args.out)
+                "values": class_values(d[~held]), "turn_max": TURN_MAX,
+                "pitch_max": PITCH_MAX, "hotbar": HOTBAR, "format": "gates-body-1"}, args.out)
     print(f"\nwrote {args.out}")
 
 

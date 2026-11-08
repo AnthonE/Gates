@@ -71,7 +71,9 @@ def features(d, c, t, scale, with_intent):
 
 def observation(o, t, scale):
     """What the client saw on these records: the goal, its own body, the
-    coarse sightings and the nearest tracked bodies. No frame, no intent."""
+    coarse sightings, the nearest tracked bodies and where the nearest of
+    each resource is. No frame, no intent. `crates/server/src/body.rs`
+    reads the same, in the same order."""
     f = np.float32
     n = len(o)
     cols = [onehot(o["goal"].astype(np.int64), len(t["goals"]) + 1)]
@@ -104,6 +106,15 @@ def observation(o, t, scale):
         np.clip(o["tr_dy"] / 5.0, -1, 1) * here,
         np.sin(face) * here,
         np.cos(face) * here,
+    ]
+    # The nearest tree, stone, ore, bush, hemp and water.
+    known = o["rs_here"].astype(f)
+    rang = o["rs_bearing"].astype(f) / 32768.0 * np.pi
+    cols += [
+        known,
+        np.sin(rang) * known,
+        np.cos(rang) * known,
+        np.minimum(o["rs_dist"] / 50.0, 1.0) * known,
     ]
     return np.concatenate([np.asarray(x, dtype=f).reshape(n, -1) for x in cols], axis=1)
 

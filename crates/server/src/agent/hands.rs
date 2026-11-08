@@ -299,6 +299,14 @@ impl Hands {
         self.out
     }
 
+    /// Someone else sent this frame's view (a learned body, `body.rs`): it
+    /// is the view held now, and the next turn starts from it.
+    pub fn adopt(&mut self, yaw: u16, pitch: u8) {
+        self.live = true;
+        self.out = (yaw, pitch);
+        self.aim = [yaw_deg(yaw), pitch_deg(pitch)];
+    }
+
     /// The hand believes the aim is on the look's target: past the
     /// reaction, within the fire cone of where the eye puts it, and with
     /// the target in sight (never on a body's last known bearing).

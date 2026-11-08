@@ -45,7 +45,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "gates-ticks-1";
+pub const FORMAT: &str = "gates-ticks-2";
 
 /// Bodies kept per record, nearest first.
 pub const TRACKS: usize = 8;
@@ -55,12 +55,18 @@ pub const SIGHTINGS: [&str; 9] = [
     "trees", "stone", "ore", "bushes", "hemp", "players", "humans", "animals", "water",
 ];
 
+/// The resources each record places exactly, in column order: the nearest
+/// of each kind at the agent's last census (`Senses::resources`), and the
+/// open water its last probe found.
+pub const RESOURCES: [&str; 6] = ["tree", "stone", "ore", "bush", "hemp", "water"];
+
 /// "None" for a `u16` column.
 pub const NONE16: u16 = u16::MAX;
 /// "None" for a `u8` slot column.
 pub const NONE8: u8 = u8::MAX;
 
 const S: usize = SIGHTINGS.len();
+const R: usize = RESOURCES.len();
 
 /// The record, in order: name, numpy type, count (1 is a scalar).
 pub const COLUMNS: &[(&str, &str, usize)] = &[
@@ -99,6 +105,11 @@ pub const COLUMNS: &[(&str, &str, usize)] = &[
     ("tr_vz", "<f4", TRACKS),
     ("tr_yaw", "<u2", TRACKS),
     ("tr_held", "<u2", TRACKS),
+    // The nearest of each resource: known, its bearing (as a track's) and
+    // how far, in metres.
+    ("rs_here", "u1", R),
+    ("rs_bearing", "<i2", R),
+    ("rs_dist", "<f4", R),
     // What the skill asked of the hands.
     ("in_look", "u1", 1),
     ("in_yaw", "<u2", 1),
@@ -146,6 +157,19 @@ fn type_bytes(t: &str) -> usize {
 /// Bytes in one record.
 pub fn row_bytes() -> usize {
     COLUMNS.iter().map(|(_, t, n)| type_bytes(t) * n).sum()
+}
+
+/// Where column `name` starts in a record, and the width of one of its
+/// values in bytes.
+pub fn column(name: &str) -> Option<(usize, usize)> {
+    let mut at = 0;
+    for (n, t, k) in COLUMNS {
+        if *n == name {
+            return Some((at, type_bytes(t)));
+        }
+        at += type_bytes(t) * k;
+    }
+    None
 }
 
 /// Little-endian appends onto a reused record buffer.
@@ -277,6 +301,7 @@ impl TickLog {
             "goals": self.goals,
             "actions": self.actions,
             "sightings": SIGHTINGS,
+            "resources": RESOURCES,
             "species": SPECIES,
             "track_flags": TRACK_FLAGS,
             "looks": LOOKS,
@@ -342,127 +367,8 @@ impl TickLog {
         }
         let goal = self.goal_index(seat, bot.goal());
         let action = self.action_index(action);
-        let summary = bot.summary(view, player);
-        let core = bot.core();
-        let body = view.get(player);
-        let me = body.map_or([0.0; 3], |b| {
-            [
-                b.qx as f32 * POS_XZ_Q,
-                b.qy as f32 * POS_Y_Q,
-                b.qz as f32 * POS_XZ_Q,
-            ]
-        });
-        let my_yaw = body.map_or(0, |b| b.yaw);
-        let alive = core.is_some_and(|c| !c.dead && c.hp > 0) && body.is_some_and(|b| !b.dead);
-
-        let mut near = [Near::default(); TRACKS];
-        let mut n = 0usize;
-        if let Some(core) = core {
-            let team = core.team();
-            let mates = &team.members[..usize::from(team.count).min(team.members.len())];
-            for t in bot.tracks().all().filter(|t| t.id != player) {
-                let row = near_of(t, me, my_yaw, mates.iter().any(|m| m.id == t.id));
-                // Keep the TRACKS nearest, sorted.
-                let mut at = n;
-                while at > 0 && near[at - 1].dist > row.dist {
-                    at -= 1;
-                }
-                if at >= TRACKS {
-                    continue;
-                }
-                let end = n.min(TRACKS - 1);
-                let mut k = end;
-                while k > at {
-                    near[k] = near[k - 1];
-                    k -= 1;
-                }
-                near[at] = row;
-                n = (n + 1).min(TRACKS);
-            }
-        }
-
-        let intent = bot.intent();
-        let (look, look_yaw, look_dist, look_dy) = look_of(&intent, bot, me);
-
         let mut buf = std::mem::take(&mut self.buf);
-        buf.clear();
-        let mut r = Rec(&mut buf);
-        r.u32(tick as u32);
-        r.u32(view.newest_applied.unwrap_or_default());
-        r.u8(seat.min(255) as u8);
-        r.u8(u8::from(alive));
-        r.u16(goal);
-        r.u32(bot.goal_ticks().unwrap_or(0));
-        r.u16(core.map_or(0, |c| c.hp));
-        r.u16(core.map_or(0, |c| c.hp_max));
-        r.u16(core.map_or(0, |c| c.food));
-        r.u16(core.map_or(0, |c| c.water));
-        r.f32(me[0]);
-        r.f32(me[1]);
-        r.f32(me[2]);
-        r.u16(my_yaw);
-        r.u8(body.map_or(0, |b| b.pitch));
-        r.u8(u8::from(body.is_some_and(|b| b.grounded)));
-        let sights = sightings(summary.as_ref());
-        for s in &sights {
-            r.u8(s.count);
-        }
-        for s in &sights {
-            r.u8(s.nearest_m);
-        }
-        for s in &sights {
-            r.u8(s.bearing);
-        }
-        for t in &near {
-            r.u8(t.species);
-        }
-        for t in &near {
-            r.u8(t.flags);
-        }
-        for t in &near {
-            r.i16(t.bearing);
-        }
-        for t in &near {
-            r.f32(t.dist);
-        }
-        for t in &near {
-            r.f32(t.dx);
-        }
-        for t in &near {
-            r.f32(t.dz);
-        }
-        for t in &near {
-            r.f32(t.dy);
-        }
-        for t in &near {
-            r.f32(t.vx);
-        }
-        for t in &near {
-            r.f32(t.vz);
-        }
-        for t in &near {
-            r.u16(t.yaw);
-        }
-        for t in &near {
-            r.u16(t.held);
-        }
-        r.u8(look);
-        r.u16(look_yaw);
-        r.f32(look_dist);
-        r.f32(look_dy);
-        r.i8(intent.move_x);
-        r.i8(intent.move_z);
-        r.u16(intent.travel.unwrap_or(NONE16));
-        r.u8(intent.buttons);
-        r.u8(intent.sel.unwrap_or(NONE8));
-        r.u8(frame.buttons);
-        r.u16(frame.yaw);
-        r.u8(frame.pitch);
-        r.i8(frame.pitch_fine);
-        r.i8(frame.move_x);
-        r.i8(frame.move_z);
-        r.u8(frame.sel);
-        r.u8(action);
+        fill(&mut buf, tick, seat, goal, action, bot, view, player, frame);
         debug_assert_eq!(buf.len(), row_bytes(), "a record is its columns");
         if let Err(e) = self.out.write_all(&buf) {
             self.error = Some(format!("{}: {e}", self.dir.display()));
@@ -491,6 +397,162 @@ impl TickLog {
             bytes: self.rows * row_bytes() as u64,
         })
     }
+}
+
+/// One record into `buf` (cleared first): `bot` and `view` as they stand
+/// after `frame` went out, the goal and action as indices into whatever
+/// tables the caller keeps (the log's own, or a learned body's).
+#[allow(clippy::too_many_arguments)]
+pub fn fill(
+    buf: &mut Vec<u8>,
+    tick: u64,
+    seat: usize,
+    goal: u16,
+    action: u8,
+    bot: &Survivor,
+    view: &ClientView,
+    player: u32,
+    frame: &InputFrame,
+) {
+    let summary = bot.summary(view, player);
+    let core = bot.core();
+    let body = view.get(player);
+    let me = body.map_or([0.0; 3], |b| {
+        [
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        ]
+    });
+    let my_yaw = body.map_or(0, |b| b.yaw);
+    let alive = core.is_some_and(|c| !c.dead && c.hp > 0) && body.is_some_and(|b| !b.dead);
+
+    let mut near = [Near::default(); TRACKS];
+    let mut n = 0usize;
+    if let Some(core) = core {
+        let team = core.team();
+        let mates = &team.members[..usize::from(team.count).min(team.members.len())];
+        for t in bot.tracks().all().filter(|t| t.id != player) {
+            let row = near_of(t, me, my_yaw, mates.iter().any(|m| m.id == t.id));
+            // Keep the TRACKS nearest, sorted.
+            let mut at = n;
+            while at > 0 && near[at - 1].dist > row.dist {
+                at -= 1;
+            }
+            if at >= TRACKS {
+                continue;
+            }
+            let end = n.min(TRACKS - 1);
+            let mut k = end;
+            while k > at {
+                near[k] = near[k - 1];
+                k -= 1;
+            }
+            near[at] = row;
+            n = (n + 1).min(TRACKS);
+        }
+    }
+
+    let intent = bot.intent();
+    let (look, look_yaw, look_dist, look_dy) = look_of(&intent, bot, me);
+
+    buf.clear();
+    let mut r = Rec(buf);
+    r.u32(tick as u32);
+    r.u32(view.newest_applied.unwrap_or_default());
+    r.u8(seat.min(255) as u8);
+    r.u8(u8::from(alive));
+    r.u16(goal);
+    r.u32(bot.goal_ticks().unwrap_or(0));
+    r.u16(core.map_or(0, |c| c.hp));
+    r.u16(core.map_or(0, |c| c.hp_max));
+    r.u16(core.map_or(0, |c| c.food));
+    r.u16(core.map_or(0, |c| c.water));
+    r.f32(me[0]);
+    r.f32(me[1]);
+    r.f32(me[2]);
+    r.u16(my_yaw);
+    r.u8(body.map_or(0, |b| b.pitch));
+    r.u8(u8::from(body.is_some_and(|b| b.grounded)));
+    let sights = sightings(summary.as_ref());
+    for s in &sights {
+        r.u8(s.count);
+    }
+    for s in &sights {
+        r.u8(s.nearest_m);
+    }
+    for s in &sights {
+        r.u8(s.bearing);
+    }
+    for t in &near {
+        r.u8(t.species);
+    }
+    for t in &near {
+        r.u8(t.flags);
+    }
+    for t in &near {
+        r.i16(t.bearing);
+    }
+    for t in &near {
+        r.f32(t.dist);
+    }
+    for t in &near {
+        r.f32(t.dx);
+    }
+    for t in &near {
+        r.f32(t.dz);
+    }
+    for t in &near {
+        r.f32(t.dy);
+    }
+    for t in &near {
+        r.f32(t.vx);
+    }
+    for t in &near {
+        r.f32(t.vz);
+    }
+    for t in &near {
+        r.u16(t.yaw);
+    }
+    for t in &near {
+        r.u16(t.held);
+    }
+    let senses = bot.senses();
+    let mut places = [None; R];
+    places[..5].copy_from_slice(&senses.resources);
+    places[5] = bot.water_point();
+    let rel = places.map(|p| {
+        p.map(|[x, z]| {
+            let (dx, dz) = (x - me[0], z - me[2]);
+            (bearing(dx, dz, my_yaw), (dx * dx + dz * dz).sqrt())
+        })
+    });
+    for p in &rel {
+        r.u8(u8::from(p.is_some()));
+    }
+    for p in &rel {
+        r.i16(p.map_or(0, |(b, _)| b));
+    }
+    for p in &rel {
+        r.f32(p.map_or(0.0, |(_, d)| d));
+    }
+    r.u8(look);
+    r.u16(look_yaw);
+    r.f32(look_dist);
+    r.f32(look_dy);
+    r.i8(intent.move_x);
+    r.i8(intent.move_z);
+    r.u16(intent.travel.unwrap_or(NONE16));
+    r.u8(intent.buttons);
+    r.u8(intent.sel.unwrap_or(NONE8));
+    r.u8(frame.buttons);
+    r.u16(frame.yaw);
+    r.u8(frame.pitch);
+    r.i8(frame.pitch_fine);
+    r.i8(frame.move_x);
+    r.i8(frame.move_z);
+    r.u8(frame.sel);
+    r.u8(action);
 }
 
 /// `name`'s 1-based row in `table`, added if new.

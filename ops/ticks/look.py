@@ -32,7 +32,7 @@ import sys
 
 import numpy as np
 
-FORMAT = "gates-ticks-1"
+FORMAT = "gates-ticks-2"
 
 
 def dtype_of(header):

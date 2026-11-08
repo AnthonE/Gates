@@ -25,6 +25,7 @@ async fn a_short_scripted_bench_plays_counts_and_shuts_its_islands() {
         content: local_content(),
         warp: false,
         ticks: None,
+        body: None,
     };
     let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build");
     let mut runs = Vec::new();
@@ -83,6 +84,7 @@ async fn a_warped_bench_plays_a_minute_in_less_and_refuses_a_model() {
         content: local_content(),
         warp: true,
         ticks: None,
+        body: None,
     };
     let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build inline");
     let started = std::time::Instant::now();
@@ -136,6 +138,7 @@ async fn a_warped_bench_records_every_tick() {
         content: local_content(),
         warp: true,
         ticks: Some(dir.clone()),
+        body: None,
     };
     let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build inline");
     bench::run(&plan, &mut minds, 0)

@@ -45,6 +45,9 @@ pub struct Seat {
     pub key: String,
     /// Ticks it spent standing (alive, not on the death screen).
     pub alive_ticks: u32,
+    /// A learned body sending its frames in place of the scripted hands'
+    /// (`body.rs`), when one is seated.
+    pub body: Option<crate::body::LearnedBody>,
 }
 
 /// A lockstep island and its fleet.
@@ -140,6 +143,7 @@ impl Island {
             id,
             key: key.to_string(),
             alive_ticks: 0,
+            body: None,
         });
         Ok(slot)
     }
@@ -151,7 +155,11 @@ impl Island {
         let now = self.now();
         let mut act = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         for (slot, s) in self.seats.iter_mut().enumerate() {
-            let frame = s.bot.frame_at(&s.view, s.id, self.ticks as u16, now);
+            let mut frame = s.bot.frame_at(&s.view, s.id, self.ticks as u16, now);
+            if let Some(body) = s.body.as_mut() {
+                frame = body.drive(&s.bot, &s.view, s.id, self.ticks, slot, &frame);
+                s.bot.adopt_frame(&frame);
+            }
             if s.bot.core().is_some_and(|c| !c.dead && c.hp > 0) {
                 s.alive_ticks += 1;
             }
