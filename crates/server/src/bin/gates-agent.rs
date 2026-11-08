@@ -95,7 +95,7 @@ impl Shift {
     }
 }
 
-const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--warp [--ticks DIR] [--body FILE [--body-temp 1]]] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (AGENT-MANUAL.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too, and how the fleet played (each bot's goal entropy and kinds of goal, the fleet's mean pairwise Jensen-Shannon divergence, plan steps done) beside it as FILE.behaviour.json; the same goes to stderr. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. --ticks DIR records every bot's every tick of each warped run (what it saw, what its skill asked, the input it sent) as DIR/run-NN/ticks.bin and ticks.json, for training a body that plays at frame rate (ops/ticks/). --body FILE has a learned body (ops/ticks/export.py's gates-body-1) send every bot's frames on the warped runs in place of the scripted hands; the mind and the skills' actions stay scripted. Its result scores that body, not the mind alone: it is not one to submit. --body-temp T draws each frame from the model's odds at temperature T (default 1; 0 takes the likeliest frame). Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
+const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--bench-from 0] [--warp [--ticks DIR] [--body FILE [--body-temp 1] [--body-seed 0]]] [--bots 1] [--agent-name agent] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island 48 hours into its wipe (four works open for deposits), --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (AGENT-MANUAL.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too, and how the fleet played (each bot's goal entropy and kinds of goal, the fleet's mean pairwise Jensen-Shannon divergence, plan steps done) beside it as FILE.behaviour.json; the same goes to stderr. --warp plays each run on a lockstep island (no network, a synthetic clock) as fast as this machine goes: MINUTES of island time in seconds, the same score every time; only --scripted or --student minds, which decide without waiting. --ticks DIR records every bot's every tick of each warped run (what it saw, what its skill asked, the input it sent) as DIR/run-NN/ticks.bin and ticks.json, for training a body that plays at frame rate (ops/ticks/). --body FILE has a learned body (ops/ticks/export.py's gates-body-1) send every bot's frames on the warped runs in place of the scripted hands; the mind and the skills' actions stay scripted. Its result scores that body, not the mind alone: it is not one to submit. --body-temp T draws each frame from the model's odds at temperature T (default 1; 0 takes the likeliest frame); --body-seed S plays the same islands with other draws. --bench-from K starts at island variant K instead of 0, so islands a body trained on can be kept out of its score. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
 
 const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR] [--minds N] [--turncoat]\n--minds N (with --external or --mcp and --bots) lets only the first N bodies ask the mind, the founder first: the rest play the scripted policy as their characters and take the leaders' orders on team chat, so one paid mind leads a crew. --society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --turncoat makes every body serve whoever holds its hearth: once its hearth is taken (a new code or a crew clear refuses its press, or the cupboard is broken) it turns stray, forgets its crew's code and allies, leaves the team and says so on local chat; invite it and give it your code on team chat and it gets on your cupboard and works your base; nobody takes it on in ten minutes and it walks to THE GATE and plays alone. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
@@ -142,6 +142,10 @@ struct Options {
     body: Option<PathBuf>,
     /// `--body-temp T`: its sampling temperature, 0 for the likeliest frame.
     body_temp: f32,
+    /// `--body-seed S`: mixed into its draws.
+    body_seed: u64,
+    /// `--bench-from K`: the first island variant played (0 by default).
+    bench_from: u32,
     /// `--minds N`: only the fleet's first N bodies ask the mind; the rest
     /// play the scripted policy and take the leaders' orders. All by default.
     minds: Option<usize>,
@@ -179,6 +183,8 @@ impl Options {
             ticks: None,
             body: None,
             body_temp: 1.0,
+            body_seed: 0,
+            bench_from: 0,
             minds: None,
         };
         let mut args = std::env::args().skip(1);
@@ -335,6 +341,20 @@ impl Options {
                 }
                 "--body" => {
                     options.body = Some(PathBuf::from(args.next().ok_or("--body needs a file")?))
+                }
+                "--body-seed" => {
+                    options.body_seed = args
+                        .next()
+                        .ok_or("--body-seed needs a number")?
+                        .parse()
+                        .map_err(|_| "invalid --body-seed")?;
+                }
+                "--bench-from" => {
+                    options.bench_from = args
+                        .next()
+                        .ok_or("--bench-from needs a run number")?
+                        .parse()
+                        .map_err(|_| "invalid --bench-from")?;
                 }
                 "--body-temp" => {
                     let t: f32 = args
@@ -1137,10 +1157,11 @@ async fn bench(options: Options) -> Result<(), String> {
             None => None,
         },
         body_temp: options.body_temp,
+        body_seed: options.body_seed,
     };
     let mut rows = Vec::with_capacity(runs as usize);
     for r in 0..runs {
-        let bots = server::bench::run(&plan, &mut minds, r).await?;
+        let bots = server::bench::run(&plan, &mut minds, options.bench_from + r).await?;
         let island: Vec<String> = bots.iter().map(|b| b.island.to_string()).collect();
         let (d, a): (u32, u32) = bots
             .iter()

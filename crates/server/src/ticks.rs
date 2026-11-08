@@ -45,7 +45,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "gates-ticks-3";
+pub const FORMAT: &str = "gates-ticks-4";
 
 /// Bodies kept per record, nearest first.
 pub const TRACKS: usize = 8;
@@ -138,6 +138,12 @@ pub const COLUMNS: &[(&str, &str, usize)] = &[
     ("t_move_z", "i1", 1),
     ("t_sel", "u1", 1),
     ("action", "u1", 1),
+    // Running counts, across every life: things received (each one's toast,
+    // `+5 Wood`), the units of them, and deaths. A tick's reward is what
+    // they grew by (`ops/ticks/rl.py`).
+    ("awards", "<u4", 1),
+    ("got", "<u4", 1),
+    ("deaths", "<u2", 1),
 ];
 
 /// `tr_species`: 0 is an empty row.
@@ -573,6 +579,9 @@ pub fn fill(
     r.i8(teacher.move_z);
     r.u8(teacher.sel);
     r.u8(action);
+    r.u32(bot.stats.gather_awards.min(u64::from(u32::MAX)) as u32);
+    r.u32(bot.gathered.iter().fold(0u32, |a, g| a.saturating_add(*g)));
+    r.u16(bot.stats.deaths.min(u64::from(u16::MAX)) as u16);
 }
 
 /// `name`'s 1-based row in `table`, added if new.

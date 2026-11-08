@@ -427,6 +427,9 @@ pub struct Bench<'a> {
     /// The learned body's sampling temperature (`--body-temp`; 0 takes the
     /// likeliest frame).
     pub body_temp: f32,
+    /// Mixed into every learned body's draws (`--body-seed`): another seed
+    /// plays the same island another way.
+    pub body_seed: u64,
 }
 
 /// Every bot's mind, built once and played through every run, and the tally
@@ -583,7 +586,7 @@ fn play_warp(
     }
     if let Some(w) = &b.body {
         for (i, seat) in island.seats.iter_mut().enumerate() {
-            let seed = (u64::from(run) << 16) | i as u64;
+            let seed = sim_core::rng::splitmix64(b.body_seed) ^ ((u64::from(run) << 16) | i as u64);
             seat.body = Some(crate::body::LearnedBody::sampling(
                 w.clone(),
                 seed,

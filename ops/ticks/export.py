@@ -29,7 +29,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import body as B  # noqa: E402
 import monologue as mono  # noqa: E402
-from clone import TURN_MAX, observation  # noqa: E402
+from clone import TURN_MAX  # noqa: E402
 from look import dtype_of, load  # noqa: E402
 
 import torch  # noqa: E402

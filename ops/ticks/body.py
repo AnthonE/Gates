@@ -171,13 +171,17 @@ class Body(nn.Module):
         self.out_frame = nn.Linear(d, BUTTON_BITS + sum(k for _, k in BODY_HEADS))
         self.register_buffer("mask", torch.triu(torch.full((ctx, ctx), float("-inf")), 1))
 
-    def forward(self, obs, frame_prev, plan=None, known=None):
+    def hidden(self, obs, frame_prev, plan=None, known=None):
+        """Every position's last hidden state, before the heads."""
         b, t, _ = obs.shape
         x = self.obs(obs) + self.frame(frame_prev) + self.pos.weight[:t]
         if self.feed:
             p = sum(self.plan_emb[k](plan[k]) for k in self.plan_emb) + self.plan_hands(plan["hands"])
             x = x + torch.where(known[..., None], p, self.plan_unknown)
-        h = self.norm(self.tr(x, mask=self.mask[:t, :t], is_causal=True))
+        return self.norm(self.tr(x, mask=self.mask[:t, :t], is_causal=True))
+
+    def forward(self, obs, frame_prev, plan=None, known=None):
+        h = self.hidden(obs, frame_prev, plan, known)
         frame = self.out_frame(h)
         plan_out = self.out_plan(h) if self.monologue else None
         return frame, plan_out
