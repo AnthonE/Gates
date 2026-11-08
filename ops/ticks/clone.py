@@ -58,6 +58,22 @@ def triples(d):
 def features(d, c, t, scale, with_intent):
     o, p = d[c], d[c - 1]
     f = np.float32
+    cols = [observation(o, t, scale)]
+    # The last frame it sent, and the last turn.
+    cols.append(((p["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(f))
+    cols.append((p["f_move_x"] / 127.0)[:, None].astype(f))
+    cols.append((p["f_move_z"] / 127.0)[:, None].astype(f))
+    cols.append(onehot(turn_class(turn(d["f_yaw"][c - 2], p["f_yaw"])), 2 * TURN_MAX + 1))
+    if with_intent:
+        cols.append(intent(o, p, t))
+    return np.concatenate(cols, axis=1)
+
+
+def observation(o, t, scale):
+    """What the client saw on these records: the goal, its own body, the
+    coarse sightings and the nearest tracked bodies. No frame, no intent."""
+    f = np.float32
+    n = len(o)
     cols = [onehot(o["goal"].astype(np.int64), len(t["goals"]) + 1)]
     cols.append((np.log1p(o["goal_ticks"].astype(f)) / 8.0)[:, None])
     cols.append((o["hp"] / np.maximum(o["hp_max"], 1).astype(f))[:, None])
@@ -69,7 +85,7 @@ def features(d, c, t, scale, with_intent):
     cols += [seen, np.minimum(o["see_count"], 10).astype(f) / 10, o["see_m"].astype(f) / 255]
     bear = np.zeros(o["see_bearing"].shape + (8,), dtype=f)
     np.put_along_axis(bear, np.clip(o["see_bearing"], 0, 7)[..., None].astype(np.int64), 1.0, axis=-1)
-    cols.append((bear * seen[..., None]).reshape(len(c), -1))
+    cols.append((bear * seen[..., None]).reshape(n, -1))
     # The nearest bodies.
     here = (o["tr_species"] > 0).astype(f)
     sp = np.zeros(o["tr_species"].shape + (3,), dtype=f)
@@ -80,8 +96,8 @@ def features(d, c, t, scale, with_intent):
     face = turn(o["yaw"][:, None], o["tr_yaw"]).astype(f) / 32768.0 * np.pi
     cols += [
         here,
-        sp.reshape(len(c), -1),
-        bits.reshape(len(c), -1),
+        sp.reshape(n, -1),
+        bits.reshape(n, -1),
         np.sin(ang) * here,
         np.cos(ang) * here,
         np.minimum(o["tr_dist"] / 50.0, 1.0) * here,
@@ -89,31 +105,32 @@ def features(d, c, t, scale, with_intent):
         np.sin(face) * here,
         np.cos(face) * here,
     ]
-    # The last frame it sent, and the last turn.
-    cols.append(((p["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(f))
-    cols.append((p["f_move_x"] / 127.0)[:, None].astype(f))
-    cols.append((p["f_move_z"] / 127.0)[:, None].astype(f))
-    cols.append(onehot(turn_class(turn(d["f_yaw"][c - 2], p["f_yaw"])), 2 * TURN_MAX + 1))
-    if with_intent:
-        none16 = t["none16"]
-        aimed = (o["in_yaw"] != none16).astype(f)
-        want = turn(p["f_yaw"], o["in_yaw"]).astype(f) / 32768.0 * np.pi
-        travel = (o["in_travel"] != none16).astype(f)
-        tra = turn(p["f_yaw"], o["in_travel"]).astype(f) / 32768.0 * np.pi
-        cols += [
-            onehot(o["in_look"].astype(np.int64), 4),
-            (aimed * np.sin(want))[:, None],
-            (aimed * np.cos(want))[:, None],
-            (np.minimum(o["in_dist"] / 50.0, 1.0))[:, None].astype(f),
-            (np.clip(o["in_dy"] / 5.0, -1, 1))[:, None].astype(f),
-            (o["in_move_x"] / 127.0)[:, None].astype(f),
-            (o["in_move_z"] / 127.0)[:, None].astype(f),
-            travel[:, None],
-            (travel * np.sin(tra))[:, None],
-            (travel * np.cos(tra))[:, None],
-            ((o["in_buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(f),
-        ]
-    return np.concatenate([np.asarray(x, dtype=f).reshape(len(c), -1) for x in cols], axis=1)
+    return np.concatenate([np.asarray(x, dtype=f).reshape(n, -1) for x in cols], axis=1)
+
+
+def intent(o, p, t):
+    """The skill's intent on records `o`, its angles from the last frame's
+    view (`p`)."""
+    f = np.float32
+    none16 = t["none16"]
+    aimed = (o["in_yaw"] != none16).astype(f)
+    want = turn(p["f_yaw"], o["in_yaw"]).astype(f) / 32768.0 * np.pi
+    travel = (o["in_travel"] != none16).astype(f)
+    tra = turn(p["f_yaw"], o["in_travel"]).astype(f) / 32768.0 * np.pi
+    cols = [
+        onehot(o["in_look"].astype(np.int64), 4),
+        (aimed * np.sin(want))[:, None],
+        (aimed * np.cos(want))[:, None],
+        (np.minimum(o["in_dist"] / 50.0, 1.0))[:, None].astype(f),
+        (np.clip(o["in_dy"] / 5.0, -1, 1))[:, None].astype(f),
+        (o["in_move_x"] / 127.0)[:, None].astype(f),
+        (o["in_move_z"] / 127.0)[:, None].astype(f),
+        travel[:, None],
+        (travel * np.sin(tra))[:, None],
+        (travel * np.cos(tra))[:, None],
+        ((o["in_buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(f),
+    ]
+    return np.concatenate([np.asarray(x, dtype=f).reshape(len(o), -1) for x in cols], axis=1)
 
 
 def targets(d, c):
