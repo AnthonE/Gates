@@ -512,13 +512,14 @@ fn turn_class(turn: i16, max: usize) -> usize {
     (steps.clamp(-(max as i64), max as i64) + max as i64) as usize
 }
 
-/// A class drawn from logits `v` (softmax), `u` uniform in [0, 1).
-fn draw(v: &[f32], u: f32) -> usize {
+/// A class drawn from logits `v` at temperature `t` (softmax of `v / t`),
+/// `u` uniform in [0, 1).
+fn draw(v: &[f32], u: f32, t: f32) -> usize {
     let top = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let sum: f32 = v.iter().map(|x| (x - top).exp()).sum();
+    let sum: f32 = v.iter().map(|x| ((x - top) / t).exp()).sum();
     let mut acc = 0.0;
     for (i, x) in v.iter().enumerate() {
-        acc += (x - top).exp() / sum;
+        acc += ((x - top) / t).exp() / sum;
         if u < acc {
             return i;
         }
@@ -562,6 +563,8 @@ pub struct LearnedBody {
     /// Draws each output from the model's odds when set; takes the likeliest
     /// otherwise.
     rng: Option<Pcg32>,
+    /// The draws' temperature: below 1 nearer the likeliest frame.
+    temp: f32,
 }
 
 impl LearnedBody {
@@ -588,18 +591,24 @@ impl LearnedBody {
             frame_logits: vec![0.0; w.out_frame.n_out],
             plan_logits: vec![0.0; w.out_plan.as_ref().map_or(0, |p| p.n_out)],
             rng: None,
+            temp: 1.0,
             w,
         }
     }
 
-    /// A body that draws its frame from the model's odds instead of taking
-    /// the likeliest frame, its draws seeded by `seed` (the same seed plays
-    /// the same). Taking the likeliest frame copies the last one: a body
-    /// standing still stays standing, since starting to walk is never the
-    /// single likeliest thing on any one tick.
-    pub fn sampling(w: Arc<Weights>, seed: u64) -> Self {
+    /// A body that draws its frame from the model's odds at temperature
+    /// `temp` instead of taking the likeliest frame, its draws seeded by
+    /// `seed` (the same seed plays the same); a `temp` of 0 takes the
+    /// likeliest. A body copied from a teacher's runs alone, taking the
+    /// likeliest frame, copies the last one: standing still, it stays
+    /// standing, since starting to walk is never the single likeliest thing
+    /// on any one tick.
+    pub fn sampling(w: Arc<Weights>, seed: u64, temp: f32) -> Self {
         let mut b = Self::new(w);
-        b.rng = Some(Pcg32::new(splitmix64(seed), 0x626f_6479));
+        if temp > 0.0 {
+            b.rng = Some(Pcg32::new(splitmix64(seed), 0x626f_6479));
+            b.temp = temp;
+        }
         b
     }
 
@@ -736,6 +745,7 @@ impl LearnedBody {
         let w = Arc::clone(&self.w);
         let z = &self.frame_logits;
         let rng = &mut self.rng;
+        let t = self.temp;
         let mut uniform = || {
             rng.as_mut()
                 .map(|r| (r.next_u32() >> 8) as f32 / 16_777_216.0)
@@ -743,7 +753,7 @@ impl LearnedBody {
         let mut buttons = 0u8;
         for (b, x) in z.iter().enumerate().take(BUTTON_BITS) {
             let on = match uniform() {
-                Some(u) => u < 1.0 / (1.0 + (-x).exp()),
+                Some(u) => u < 1.0 / (1.0 + (-x / t).exp()),
                 None => *x > 0.0,
             };
             if on {
@@ -753,7 +763,7 @@ impl LearnedBody {
         let mut at = BUTTON_BITS;
         let mut head = |n: usize| {
             let v = &z[at..at + n];
-            let k = uniform().map_or_else(|| argmax(v), |u| draw(v, u));
+            let k = uniform().map_or_else(|| argmax(v), |u| draw(v, u, t));
             at += n;
             k
         };

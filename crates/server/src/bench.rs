@@ -424,6 +424,9 @@ pub struct Bench<'a> {
     /// A learned body sends every bot's frames on warped runs (`--body`,
     /// `body.rs`); the scripted hands otherwise.
     pub body: Option<std::sync::Arc<crate::body::Weights>>,
+    /// The learned body's sampling temperature (`--body-temp`; 0 takes the
+    /// likeliest frame).
+    pub body_temp: f32,
 }
 
 /// Every bot's mind, built once and played through every run, and the tally
@@ -581,7 +584,11 @@ fn play_warp(
     if let Some(w) = &b.body {
         for (i, seat) in island.seats.iter_mut().enumerate() {
             let seed = (u64::from(run) << 16) | i as u64;
-            seat.body = Some(crate::body::LearnedBody::sampling(w.clone(), seed));
+            seat.body = Some(crate::body::LearnedBody::sampling(
+                w.clone(),
+                seed,
+                b.body_temp,
+            ));
         }
     }
     if let Some(dir) = &b.ticks {
