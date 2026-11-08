@@ -154,6 +154,8 @@ pub fn row(
     json!({
         "format": ROW_FORMAT,
         "t": (t * 1000.0).round() / 1000.0,
+        // The server tick the body had seen: `ticks.rs`'s `seen`.
+        "tick": summary.tick,
         "n": n,
         "source": source.label(),
         "harness": harness,

@@ -1031,6 +1031,9 @@ pub struct Survivor {
     tracks: Box<Tracks>,
     /// The only writer of the view: every skill's look goes through them.
     hands: Hands,
+    /// What the frame's skills asked of the hands last frame (`ticks.rs`
+    /// records it beside the frame the hands made of it).
+    last_intent: Intent,
     /// The legs' way somewhere, and the coarse map of where they have been.
     route: Route,
     frontier: Frontier,
@@ -1335,6 +1338,7 @@ impl Survivor {
             memory: Memory::default(),
             sweep: Sweep::default(),
             tracks: Box::new(Tracks::new()),
+            last_intent: Intent::IDLE,
             hands: Hands::new(opts.skill),
             route: Route::new(),
             frontier: Frontier::new(),
@@ -1519,6 +1523,12 @@ impl Survivor {
 
     pub fn senses(&self) -> &Senses {
         &self.senses
+    }
+
+    /// What the skills asked of the hands on the last frame, before the
+    /// hands turned it into input.
+    pub fn intent(&self) -> Intent {
+        self.last_intent
     }
 
     /// The team's base as its eyes found it.
@@ -1904,6 +1914,7 @@ impl Survivor {
             core.predict.adopt_authoritative(body);
         }
         let intent = self.decide(core, view, player, now);
+        self.last_intent = intent;
         let body = view.get(player);
         // A skill that names no slot keeps the one in hand.
         let base = InputFrame {

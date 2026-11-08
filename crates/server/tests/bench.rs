@@ -24,6 +24,7 @@ async fn a_short_scripted_bench_plays_counts_and_shuts_its_islands() {
         name: "bench",
         content: local_content(),
         warp: false,
+        ticks: None,
     };
     let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build");
     let mut runs = Vec::new();
@@ -81,6 +82,7 @@ async fn a_warped_bench_plays_a_minute_in_less_and_refuses_a_model() {
         name: "bench",
         content: local_content(),
         warp: true,
+        ticks: None,
     };
     let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build inline");
     let started = std::time::Instant::now();
@@ -110,4 +112,76 @@ async fn a_warped_bench_plays_a_minute_in_less_and_refuses_a_model() {
     };
     let err = jev.build().err().expect("a model mind cannot warp");
     assert!(err.contains("--warp"), "{err}");
+}
+
+/// **Every tick, recorded** (`--ticks`, `server::ticks`): a warped run
+/// writes one fixed-size record per seat per tick, and a header that names
+/// the record and the goals it saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_warped_bench_records_every_tick() {
+    use server::ticks::{row_bytes, COLUMNS, FORMAT};
+    let dir = std::env::temp_dir().join(format!("gates-ticks-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mind = MindArgs {
+        source: Source::Scripted,
+        inline: true,
+        ..MindArgs::default()
+    };
+    let seconds = 20;
+    let plan = Bench {
+        mind: &mind,
+        bots: 2,
+        duration: Duration::from_secs(seconds),
+        name: "bench",
+        content: local_content(),
+        warp: true,
+        ticks: Some(dir.clone()),
+    };
+    let mut minds = bench::minds(&mind, "bench", 2).expect("scripted minds build inline");
+    bench::run(&plan, &mut minds, 0)
+        .await
+        .expect("a warped run");
+
+    let run = dir.join("run-00");
+    let header: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run.join("ticks.json")).expect("a header"))
+            .expect("the header is JSON");
+    let bin = std::fs::read(run.join("ticks.bin")).expect("records");
+    let rows = 2 * seconds as usize * sim_core::limits::TICK_HZ as usize;
+    assert_eq!(header["format"], FORMAT);
+    assert_eq!(header["rows"], rows as u64, "a record per seat per tick");
+    assert_eq!(header["row_bytes"], row_bytes() as u64);
+    assert_eq!(bin.len(), rows * row_bytes(), "the file is its records");
+    assert_eq!(
+        header["dtype"].as_array().map(Vec::len),
+        Some(COLUMNS.len())
+    );
+    let goals = header["goals"].as_array().expect("a goal table");
+    assert!(!goals.is_empty(), "the mind picked goals: {header}");
+
+    // Records are tick-major, seat-minor: the first two are tick 0.
+    let field = |row: usize, name: &str| -> &[u8] {
+        let mut at = row * row_bytes();
+        for (n, t, k) in COLUMNS {
+            let w = t.as_bytes().last().map_or(0, |c| (c - b'0') as usize) * k;
+            if *n == name {
+                return &bin[at..at + w];
+            }
+            at += w;
+        }
+        panic!("no column {name}");
+    };
+    let u32_at = |row, name| u32::from_le_bytes(field(row, name).try_into().unwrap());
+    assert_eq!((u32_at(0, "tick"), field(0, "seat")[0]), (0, 0));
+    assert_eq!((u32_at(1, "tick"), field(1, "seat")[0]), (0, 1));
+    assert_eq!(u32_at(rows - 1, "tick"), rows as u32 / 2 - 1);
+    // The bodies moved and their minds ran goals.
+    let moved = (0..rows).any(|r| field(r, "f_move_z")[0] != 0 || field(r, "f_move_x")[0] != 0);
+    assert!(moved, "some frame walked");
+    let goaled = (0..rows).filter(|&r| field(r, "goal") != [0, 0]).count();
+    assert!(
+        goaled > rows / 2,
+        "most ticks run a goal: {goaled} of {rows}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
