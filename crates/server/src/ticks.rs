@@ -45,7 +45,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "gates-ticks-2";
+pub const FORMAT: &str = "gates-ticks-3";
 
 /// Bodies kept per record, nearest first.
 pub const TRACKS: usize = 8;
@@ -128,6 +128,15 @@ pub const COLUMNS: &[(&str, &str, usize)] = &[
     ("f_move_x", "i1", 1),
     ("f_move_z", "i1", 1),
     ("f_sel", "u1", 1),
+    // What the scripted hands made of the same tick: the frame itself
+    // when they drive, the expert's answer when a learned body does
+    // (`body.rs`; the label DAgger trains on).
+    ("t_buttons", "u1", 1),
+    ("t_yaw", "<u2", 1),
+    ("t_pitch", "u1", 1),
+    ("t_move_x", "i1", 1),
+    ("t_move_z", "i1", 1),
+    ("t_sel", "u1", 1),
     ("action", "u1", 1),
 ];
 
@@ -350,7 +359,8 @@ impl TickLog {
     }
 
     /// One seat's tick: `bot` and `view` as they stand after `frame` went
-    /// out (the frame's perception has run), `action` if one went with it.
+    /// out (the frame's perception has run), `teacher` the frame the
+    /// scripted hands made of it, `action` if one went with it.
     #[allow(clippy::too_many_arguments)]
     pub fn row(
         &mut self,
@@ -360,6 +370,7 @@ impl TickLog {
         view: &ClientView,
         player: u32,
         frame: &InputFrame,
+        teacher: &InputFrame,
         action: Option<&ActionMsg>,
     ) {
         if self.error.is_some() {
@@ -368,7 +379,9 @@ impl TickLog {
         let goal = self.goal_index(seat, bot.goal());
         let action = self.action_index(action);
         let mut buf = std::mem::take(&mut self.buf);
-        fill(&mut buf, tick, seat, goal, action, bot, view, player, frame);
+        fill(
+            &mut buf, tick, seat, goal, action, bot, view, player, frame, teacher,
+        );
         debug_assert_eq!(buf.len(), row_bytes(), "a record is its columns");
         if let Err(e) = self.out.write_all(&buf) {
             self.error = Some(format!("{}: {e}", self.dir.display()));
@@ -413,6 +426,7 @@ pub fn fill(
     view: &ClientView,
     player: u32,
     frame: &InputFrame,
+    teacher: &InputFrame,
 ) {
     let summary = bot.summary(view, player);
     let core = bot.core();
@@ -552,6 +566,12 @@ pub fn fill(
     r.i8(frame.move_x);
     r.i8(frame.move_z);
     r.u8(frame.sel);
+    r.u8(teacher.buttons);
+    r.u16(teacher.yaw);
+    r.u8(teacher.pitch);
+    r.i8(teacher.move_x);
+    r.i8(teacher.move_z);
+    r.u8(teacher.sel);
     r.u8(action);
 }
 

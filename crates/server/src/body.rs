@@ -710,7 +710,9 @@ impl LearnedBody {
             (None, _) => 0,
         };
         let mut row = std::mem::take(&mut self.row);
-        ticks::fill(&mut row, tick, seat, 0, 0, bot, view, player, scripted);
+        ticks::fill(
+            &mut row, tick, seat, 0, 0, bot, view, player, scripted, scripted,
+        );
         let mut obs = std::mem::take(&mut self.obs_in);
         let mut fin = std::mem::take(&mut self.frame_in);
         self.w.observation(&row, goal, &mut obs);

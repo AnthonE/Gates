@@ -155,9 +155,10 @@ impl Island {
         let now = self.now();
         let mut act = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         for (slot, s) in self.seats.iter_mut().enumerate() {
-            let mut frame = s.bot.frame_at(&s.view, s.id, self.ticks as u16, now);
+            let scripted = s.bot.frame_at(&s.view, s.id, self.ticks as u16, now);
+            let mut frame = scripted;
             if let Some(body) = s.body.as_mut() {
-                frame = body.drive(&s.bot, &s.view, s.id, self.ticks, slot, &frame);
+                frame = body.drive(&s.bot, &s.view, s.id, self.ticks, slot, &scripted);
                 s.bot.adopt_frame(&frame);
             }
             if s.bot.core().is_some_and(|c| !c.dead && c.hp > 0) {
@@ -190,6 +191,7 @@ impl Island {
                     &s.view,
                     s.id,
                     &frame,
+                    &scripted,
                     sent.as_ref(),
                 );
             }

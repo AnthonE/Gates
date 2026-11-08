@@ -30,6 +30,19 @@ t + AHEAD: what a spectator would read over its head before it moves.
   which is what a mind steering the body would do. On the recordings so far
   its own plan has cost more frame accuracy than it gave; run both and look.
 
+**On its own play (DAgger).** A body copied from the teacher's runs only
+ever saw where the teacher went; once its own small errors take it
+somewhere else (a tree approached from the wrong side) it has nothing to
+copy. Bench a body with `--ticks`: its records hold the frame it sent
+(`f_*`) and the frame the scripted hands made of the same tick (`t_*`),
+which is the expert's answer from where the body really stood. Training
+always learns `t_*`, from the frames actually sent, so those runs beside the
+teacher's teach it to recover:
+
+    gates-agent --bench 10 --bench-runs 4 --warp --bots 8 --scripted \
+        --body body.json --ticks runs/dagger1
+    python3 ops/ticks/body.py runs/dagger1 runs/ticks   # held out: the last run listed
+
 **Scored** like `clone.py`: on the held-out run, against repeating the last
 frame, on every tick and on the ticks where the frame changed. Only
 positions with `--min-context` ticks behind them are scored.
@@ -68,16 +81,23 @@ def frame_features(d):
     """The frame each record sent, as an input: buttons, axes, its turn
     (from the frame before; none on an episode's first), its pitch and its
     slot. `crates/server/src/body.rs` builds the same from the frames it
-    sent."""
+    sent. Also the classes of the teacher's frame (`t_*`: the scripted
+    hands' answer on the same tick) as turns and pitch changes from the
+    frame sent before it, which is what the body decodes from."""
     ep = d["ep"]
     first = np.ones(len(d), bool)
     first[1:] = ep[1:] != ep[:-1]
     last_yaw = np.roll(d["f_yaw"], 1)
     last_yaw[first] = d["f_yaw"][first]
     tc = turn_class(turn(last_yaw, d["f_yaw"]))
-    last_pitch = np.roll(d["f_pitch"], 1).astype(np.int64)
-    last_pitch[first] = d["f_pitch"][first]
-    pc = np.clip(d["f_pitch"].astype(np.int64) - last_pitch, -PITCH_MAX, PITCH_MAX) + PITCH_MAX
+    # The teacher's turn and pitch change, from the frame actually sent the
+    # tick before (the body's own first frame starts from the hands' view).
+    sent_yaw = np.roll(d["f_yaw"], 1)
+    sent_yaw[first] = d["t_yaw"][first]
+    t_tc = turn_class(turn(sent_yaw, d["t_yaw"]))
+    sent_pitch = np.roll(d["f_pitch"], 1).astype(np.int64)
+    sent_pitch[first] = d["t_pitch"][first]
+    t_pc = np.clip(d["t_pitch"].astype(np.int64) - sent_pitch, -PITCH_MAX, PITCH_MAX) + PITCH_MAX
     cols = [
         ((d["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(np.float32),
         (d["f_move_x"] / 127.0)[:, None].astype(np.float32),
@@ -86,18 +106,20 @@ def frame_features(d):
         (d["f_pitch"] / 255.0)[:, None].astype(np.float32),
         onehot(np.minimum(d["f_sel"], HOTBAR - 1).astype(np.int64), HOTBAR),
     ]
-    return np.concatenate(cols, 1), (tc, pc), first
+    return np.concatenate(cols, 1), (t_tc, t_pc), first
 
 
 def frame_targets(d, classes):
+    """The teacher's frame on each record: what the scripted hands made of
+    it (the frame sent, on a teacher's own recording)."""
     tc, pc = classes
     return {
-        "buttons": ((d["buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(np.float32),
-        "move_z": np.digitize(d["f_move_z"], MZ_EDGES).astype(np.int64),
-        "move_x": np.digitize(d["f_move_x"], MX_EDGES).astype(np.int64),
+        "buttons": ((d["t_buttons"][:, None] >> np.arange(BUTTON_BITS)) & 1).astype(np.float32),
+        "move_z": np.digitize(d["t_move_z"], MZ_EDGES).astype(np.int64),
+        "move_x": np.digitize(d["t_move_x"], MX_EDGES).astype(np.int64),
         "turn": tc.astype(np.int64),
         "pitch": pc.astype(np.int64),
-        "sel": np.minimum(d["f_sel"], HOTBAR - 1).astype(np.int64),
+        "sel": np.minimum(d["t_sel"], HOTBAR - 1).astype(np.int64),
     }
 
 
@@ -105,8 +127,8 @@ def class_values(d):
     """What each axis bucket sends when the model picks it: the mean of what
     the teacher sent in that bucket (the bucket's middle where it never did)."""
     out = {}
-    for name, col, edges, mids in (("move_z", "f_move_z", MZ_EDGES, [-127, 0, 127]),
-                                   ("move_x", "f_move_x", MX_EDGES, [-127, -16, 0, 16, 127])):
+    for name, col, edges, mids in (("move_z", "t_move_z", MZ_EDGES, [-127, 0, 127]),
+                                   ("move_x", "t_move_x", MX_EDGES, [-127, -16, 0, 16, 127])):
         v = d[col].astype(np.float64)
         cls = np.digitize(d[col], edges)
         out[name] = [int(round(v[cls == k].mean())) if (cls == k).any() else mids[k]
@@ -311,7 +333,7 @@ def evaluate(model, data, te_starts, args, t):
     rows = np.concatenate([r.reshape(-1) for r in rows])
     y = {k: v[rows] for k, v in data.ft.items()}
     rep = {k: v[rows - 1] for k, v in data.ft.items()}  # the frame before
-    turn_wire = turn(d["f_yaw"][rows - 1], d["f_yaw"][rows])
+    turn_wire = turn(d["f_yaw"][rows - 1], d["t_yaw"][rows])
     changed = np.any(rep["buttons"] != y["buttons"], 1)
     for name, _ in BODY_HEADS:
         changed |= rep[name] != y[name]
