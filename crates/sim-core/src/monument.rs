@@ -466,7 +466,9 @@ pub const REFUSE_S_KIND: u32 = 1;
 pub const REFUSE_S_REACH: u32 = 2;
 /// At the reader without the door's card.
 pub const REFUSE_S_CARD: u32 = 3;
-pub const REFUSE_S_MAX: u32 = REFUSE_S_CARD;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_S_DOWN: u32 = 4;
+pub const REFUSE_S_MAX: u32 = REFUSE_S_DOWN;
 
 /// What one swipe wears off a card, in condition points: a 400 card opens
 /// four doors, a 200 card two (Rust's green/blue 4, red 2).

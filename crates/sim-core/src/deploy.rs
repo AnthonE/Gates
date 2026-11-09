@@ -628,8 +628,10 @@ pub const REFUSE_D_WIRE_FAR: u32 = 29;
 pub const REFUSE_D_WIRE_PORT: u32 = 30;
 /// A wire that would feed a part its own power back (`power::would_loop`).
 pub const REFUSE_D_WIRE_LOOP: u32 = 31;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_D_DOWN: u32 = 32;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_WIRE_LOOP;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_DOWN;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does

@@ -169,10 +169,12 @@ pub const REFUSE_CR_WORLD: u32 = 7;
 /// The output is an unlock's (`skin.rs`, Rust's Frog Boots) and this player
 /// does not own it. Nothing at a table or a bench fixes it: it is given.
 pub const REFUSE_CR_OWNED: u32 = 8;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_CR_DOWN: u32 = 9;
 /// The highest craft refusal; both ends of the wire refuse anything past it.
 /// `CR`, not `C`: `survival.rs`'s consume refusals own `REFUSE_C_*`, and the
 /// domain gate scans the prefix crate-wide.
-pub const REFUSE_CR_MAX: u32 = REFUSE_CR_OWNED;
+pub const REFUSE_CR_MAX: u32 = REFUSE_CR_DOWN;
 
 /// One baked recipe row. `out_count == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

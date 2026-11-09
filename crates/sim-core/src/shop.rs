@@ -52,7 +52,9 @@ pub const REFUSE_SH_TAKINGS: u32 = 7;
 pub const REFUSE_SH_ALLOWED: u32 = 8;
 /// Every shop record on the island is spoken for (`MAX_SHOPS`).
 pub const REFUSE_SH_CAP: u32 = 9;
-pub const REFUSE_SH_MAX: u32 = REFUSE_SH_CAP;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_SH_DOWN: u32 = 10;
+pub const REFUSE_SH_MAX: u32 = REFUSE_SH_DOWN;
 
 /// One offer: `lot` of `item` for `price` of the coin. `lot == 0` is an
 /// empty row, and an empty row is all zeros.

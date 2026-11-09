@@ -409,6 +409,7 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_SLOT, REFUSE_M_TABLE, REFUSE_M_TURRET, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
+        sim_core::inventory::REFUSE_M_DOWN => super::wounded::HANDS_LINE,
         REFUSE_M_SLOT => "that slot is not addressable",
         REFUSE_M_EMPTY => "there is nothing in that slot",
         REFUSE_M_COUNT => "that is more than the stack holds",
