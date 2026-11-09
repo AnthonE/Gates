@@ -25,6 +25,11 @@ through `crates/server/examples/school.rs` and play as they are.
 | `scripted-bred.json.gz` | `scripted` + `gs1:wsO1nW7fY_xy0FAbuxvy6w` | 74.1 ± 22.6 |
 | `opus.json.gz` | the Opus rows, `--val 0 --epochs 60` | 29.7 ± 6.7 |
 | `opus-bred.json.gz` | `opus` + `gs1:W22DgiReCdTJCPwmfgXmgTjAi5rNizJf6VI3DvJU3BZecKK4h15Al2Dk` | 55.4 ± 7.9 |
+| `opus-fixed.json.gz` | the Opus rows, `--val 0 --epochs 60`, trainer as of 480687c (templated walk picks learnt) | 40.8 ± 8.0 * |
+| `opus-fixed-bred.json.gz` | `opus-fixed` + `gs1:mPeE6LdepVeQhnLQfVHG_HWgHvIcdZ2bvcdZkprsfZiRyn5YQMHVFjMwQuI` (40 generations, `--minutes 30`) | 92.1 ± 13.4 * |
+
+\* Benched on 2026-11-02's build, where the scripted policy scores 24.5 ± 5.1, `opus.json.gz` 23.2 ± 6.3 and `opus-bred.json.gz` 60.2 ± 11.0;
+the other rows are from their own builds.
 
 Held out is 24 lockstep islands (`school` variants 30000-30023), 2 bodies,
 30 minutes each, 95% intervals. The scripted policy itself scores
