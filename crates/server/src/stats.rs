@@ -302,6 +302,8 @@ pub fn favour_for(now: u16, view: Option<u16>, playout: u8) -> u8 {
 
 #[derive(Default)]
 pub struct ShardStats {
+    /// Start-to-start interval error, separate from tick work duration.
+    pub tick_jitter: crate::tick_jitter::TickJitter,
     /// Sim ticks completed.
     pub ticks: AtomicU64,
     /// The world tick, published every tick for the welcome message and

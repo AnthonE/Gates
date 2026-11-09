@@ -5468,6 +5468,7 @@ fn sim_thread(
     let tick_dur = Duration::from_nanos(1_000_000_000 / TICK_HZ as u64);
     let mut next = Instant::now();
     let mut lead = PaceLead::default();
+    let mut previous_start = None;
     // The boundary loop: clock read and sleep live here and only here;
     // the tick body makes no syscalls (L1 — the sleep IS the boundary).
     // The phase marks below read the clock from inside `tick_marked`, which
@@ -5476,6 +5477,10 @@ fn sim_thread(
     let us = |d: Duration| d.as_micros().min(u64::MAX as u128) as u64;
     while !shutdown.load(Ordering::Relaxed) {
         let t_iter = Instant::now();
+        if let Some(previous) = previous_start {
+            stats.tick_jitter.record(t_iter - previous, tick_dur);
+        }
+        previous_start = Some(t_iter);
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
             // A spectator seat: no body, no command, no save — a connection's
