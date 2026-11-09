@@ -10948,18 +10948,23 @@ mod tests {
     #[test]
     fn a_downed_use_refuses_the_table_and_switch_but_still_opens_a_door() {
         let mut w = World::new(20260913);
-        w.tick(&[Command::Join { id: 1 }]);
-        let p = &mut w.players[0];
-        p.wounded = true;
-        p.wound_until = 100_000;
-        let cx = build::build_cell_of(p.body.qx as f32 * POS_XZ_Q) as u16;
-        let cz = build::build_cell_of(p.body.qz as f32 * POS_XZ_Q) as u16;
-        p.body = Body::at(
-            w.seed,
-            &w.haven,
-            (cx as f32 + 0.5) * build::BUILD_CELL_M,
-            (cz as f32 + 0.5) * build::BUILD_CELL_M,
-        );
+        let mut idle = World::new(20260913);
+        for world in [&mut w, &mut idle] {
+            world.tick(&[Command::Join { id: 1 }]);
+            let p = &mut world.players[0];
+            p.wounded = true;
+            p.wound_until = 100_000;
+            let cx = build::build_cell_of(p.body.qx as f32 * POS_XZ_Q) as u16;
+            let cz = build::build_cell_of(p.body.qz as f32 * POS_XZ_Q) as u16;
+            p.body = Body::at(
+                world.seed,
+                &world.haven,
+                (cx as f32 + 0.5) * build::BUILD_CELL_M,
+                (cz as f32 + 0.5) * build::BUILD_CELL_M,
+            );
+        }
+        let cx = build::build_cell_of(w.players[0].body.qx as f32 * POS_XZ_Q) as u16;
+        let cz = build::build_cell_of(w.players[0].body.qz as f32 * POS_XZ_Q) as u16;
         for (arch, expected) in [
             (
                 deploy::ARCH_RESEARCH,
@@ -10975,8 +10980,6 @@ mod tests {
             ),
             (deploy::ARCH_DOOR, None),
         ] {
-            w.deploy.def_count = 1;
-            w.deploy.defs[0].arch = arch;
             let rec = deploy::DeployRec {
                 cx,
                 cz,
@@ -10994,32 +10997,27 @@ mod tests {
                 arch,
                 ..Default::default()
             };
-            w.deploys
-                .restore(&[rec], &[0], &[0], &[], &[box_rec], &[oven], &[]);
-            w.events.clear();
-            let before = w.state_hash();
-            let seat = w.trust.seat();
-            w.apply(
-                &Command::Use {
-                    id: 1,
-                    cx,
-                    cz,
-                    level: 0,
-                    loc: 0,
-                },
-                seat,
-                &mut 0,
-                &mut [0; MAX_PLAYERS],
-                &mut [None; MAX_PLAYERS],
-            );
+            for world in [&mut w, &mut idle] {
+                world.deploy.def_count = 1;
+                world.deploy.defs[0].arch = arch;
+                world
+                    .deploys
+                    .restore(&[rec], &[0], &[0], &[], &[box_rec], &[oven], &[]);
+            }
+            w.tick(&[Command::Use {
+                id: 1,
+                cx,
+                cz,
+                level: 0,
+                loc: 0,
+            }]);
+            idle.tick(&[]);
             if let Some((code, reason)) = expected {
-                let ev = w.events.entries();
-                assert_eq!(ev.len(), 1, "arch {arch}");
-                assert_eq!(
-                    (ev[0].code, ev[0].a, ev[0].b, ev[0].c),
-                    (code, 1, reason, 0)
-                );
-                assert_eq!(w.state_hash(), before);
+                let mut answers = w.events.entries().iter().filter(|e| e.code == code);
+                let e = answers.next().expect("the downed use was refused");
+                assert_eq!((e.a, e.b, e.c), (1, reason, 0));
+                assert!(answers.next().is_none(), "arch {arch} answered twice");
+                assert_eq!(w.state_hash(), idle.state_hash());
             } else {
                 assert!(
                     w.deploys.entries()[0].open,
