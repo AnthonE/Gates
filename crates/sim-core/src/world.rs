@@ -3083,6 +3083,40 @@ impl World {
             .filter(|&s| !self.players[s].dead && !self.players[s].wounded)
     }
 
+    /// Resolve a hand action, answering a downed body on that verb's own
+    /// refusal lane. Missing players and corpses keep their existing silence.
+    /// `b` and `c` use the event's layout; gather and reload add the held
+    /// item here, and reload also restates the unchanged magazine.
+    fn hand_slot(&mut self, id: u32, code: u8, b: u32, c: u32) -> Option<usize> {
+        let slot = self.slot_of(id)?;
+        let p = &self.players[slot];
+        if p.dead {
+            return None;
+        }
+        if !p.wounded {
+            return Some(slot);
+        }
+        let (b, c) = match code {
+            EV_GATHER_REFUSED => ((combat::held_item(p) as u32) << 16 | b, c),
+            EV_RELOAD_REFUSED => {
+                let item = combat::held_item(p);
+                let pair = self.combat.held_ranged(item).map_or(0, |def| {
+                    let gun = combat::held_gun(p);
+                    let cap = self.combat.modded(def, gun.mods).magazine;
+                    if cap == 0 {
+                        0
+                    } else {
+                        ranged::mag_pair(gun.loaded, cap)
+                    }
+                });
+                ((item as u32) << 16 | b, pair)
+            }
+            _ => (b, c),
+        };
+        self.events.push(code, id, b, c);
+        None
+    }
+
     /// The slot of a player who is **conscious** — standing or down, but
     /// not a corpse. What a downed body may still do is the reference's
     /// short list (`reference/WOUNDED.md` §2.3): move slowly, look, and
@@ -6444,7 +6478,9 @@ impl World {
                 slot: inv,
                 target,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) =
+                    self.hand_slot(id, EV_CONSUME_REFUSED, survival::REFUSE_C_DOWN, 0)
+                {
                     self.treat(slot, inv as usize, target);
                 }
             }
@@ -6454,7 +6490,12 @@ impl World {
                 count,
                 target,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_MOVE_REFUSED,
+                    inventory::REFUSE_M_DOWN,
+                    inventory::addr(inventory::CONT_SELF, inv, inventory::CONT_SELF, inv),
+                ) {
                     self.give(seat, slot, inv as usize, count, target);
                 }
             }
@@ -6614,7 +6655,7 @@ impl World {
                 count,
                 skin,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_CRAFT_REFUSED, craft::REFUSE_CR_DOWN, 0) {
                     craft::enqueue(
                         &self.craft,
                         &self.gather,
@@ -6632,7 +6673,7 @@ impl World {
                 }
             }
             Command::Reskin { id, slot, skin } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) = self.hand_slot(id, EV_CRAFT_REFUSED, craft::REFUSE_CR_DOWN, 0) {
                     crate::skin::reskin(
                         &self.skins,
                         &self.deploy,
@@ -6653,7 +6694,9 @@ impl World {
                 }
             }
             Command::Research { id, slot } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) =
+                    self.hand_slot(id, EV_RESEARCH_REFUSED, crate::research::REFUSE_R_DOWN, 0)
+                {
                     crate::research::study(
                         &self.research,
                         &mut self.players[s],
@@ -6663,7 +6706,9 @@ impl World {
                 }
             }
             Command::Unlock { id, recipe } => {
-                if let Some(s) = self.live_slot_of(id) {
+                if let Some(s) =
+                    self.hand_slot(id, EV_RESEARCH_REFUSED, crate::research::REFUSE_R_DOWN, 0)
+                {
                     crate::research::unlock(
                         &self.research,
                         &self.craft,
@@ -6676,7 +6721,7 @@ impl World {
                 }
             }
             Command::CraftFastTrack { id, index, recipe } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_CRAFT_REFUSED, craft::REFUSE_CR_DOWN, 0) {
                     craft::fast_track(
                         &self.craft,
                         &self.deploy,
@@ -6689,7 +6734,7 @@ impl World {
                 }
             }
             Command::CraftCancel { id, index } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_CRAFT_REFUSED, craft::REFUSE_CR_DOWN, 0) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
                         &self.craft,
@@ -6715,7 +6760,7 @@ impl World {
                 freehand,
                 plate,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     // A piece may not be built through a deployable that
                     // stands where it would go (free placement). Asked here
                     // because the build verb does not hold the deploy table;
@@ -6762,7 +6807,7 @@ impl World {
                 level,
                 sock,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     // `Place`'s rule: never through a deployable.
                     let blocked = row < self.build.piece_count
                         && build::lattice_site(&self.pieces, bld, level, sock).is_ok_and(|site| {
@@ -6804,7 +6849,7 @@ impl World {
                 tri,
                 plate,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     let blocked = row < self.build.piece_count
                         && build::free_site(
                             self.seed,
@@ -6855,7 +6900,8 @@ impl World {
                 loc,
                 pose,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     if !self.deploy_seen(slot, row, (cx, cz, level, loc), pose) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
@@ -6881,7 +6927,8 @@ impl World {
                 }
             }
             Command::Feed { id, cx, cz, level } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     if !self.hearth_seen(slot, cx, cz, level) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
@@ -6905,7 +6952,8 @@ impl World {
                 level,
                 row,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     if !self.hearth_seen(slot, cx, cz, level) {
                         self.events
                             .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
@@ -6943,8 +6991,35 @@ impl World {
                     // at. Which asks first is immaterial: at most one of
                     // them answers for any address.
                     // Down, only the door: research and the oven are hand
-                    // work, which `live_slot_of` refuses everywhere else.
+                    // work, which `hand_slot` refuses everywhere else.
                     let down = self.players[slot].wounded;
+                    if down {
+                        let key = deploy::box_key(cx, cz, level, loc);
+                        if self.deploys.table_index(key).is_some() {
+                            self.events.push(
+                                EV_RESEARCH_REFUSED,
+                                id,
+                                crate::research::REFUSE_R_DOWN,
+                                0,
+                            );
+                            return;
+                        }
+                        let switch = self
+                            .deploys
+                            .find_index(cx, cz, level, loc)
+                            .is_some_and(|i| {
+                                let row = self.deploys.entries()[i].row as usize;
+                                self.deploy
+                                    .defs
+                                    .get(row)
+                                    .is_some_and(|d| d.arch == deploy::ARCH_SWITCH)
+                            });
+                        if self.deploys.oven_index(key).is_some() || switch {
+                            self.events
+                                .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_DOWN, 0);
+                            return;
+                        }
+                    }
                     let (eye, feet) = self.hand(slot);
                     let (seed, haven, cols, doors, content) = (
                         self.seed,
@@ -7038,7 +7113,20 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    if deploy {
+                        EV_DEPLOY_REFUSED
+                    } else {
+                        EV_BUILD_REFUSED
+                    },
+                    if deploy {
+                        deploy::REFUSE_D_DOWN
+                    } else {
+                        build::REFUSE_B_DOWN
+                    },
+                    0,
+                ) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     // A planter with plants in it comes up empty or not at
                     // all, a box's rule (farming v2).
@@ -7138,7 +7226,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     build::rotate(
                         &self.build,
                         &self.deploys,
@@ -7162,7 +7250,8 @@ impl World {
                 op,
                 code,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     // The one branch: a crew op addresses the hearth on
                     // the cell body, every other op addresses the lock on
                     // a door's edge. `deploy::op_is_crew` is the split,
@@ -7251,7 +7340,7 @@ impl World {
                 loc,
                 material,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     build::upgrade(
                         &self.build,
                         &self.deploys,
@@ -7274,7 +7363,7 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0) {
                     build::repair(
                         &self.build,
                         &self.deploy,
@@ -7300,7 +7389,7 @@ impl World {
             } => {
                 // A charge is not thrown from hands wrapping a bandage.
                 if let Some(slot) = self
-                    .live_slot_of(id)
+                    .hand_slot(id, EV_BUILD_REFUSED, build::REFUSE_B_DOWN, 0)
                     .filter(|&s| !survival::hands_busy(&self.players[s]))
                 {
                     if !self.charge_seen(slot, deploy, (cx, cz, level, loc)) {
@@ -7327,7 +7416,12 @@ impl World {
                 }
             }
             Command::Vend { id, offer, times } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_VEND_REFUSED,
+                    crate::vend::REFUSE_V_DOWN,
+                    offer as u32,
+                ) {
                     let town = self.haven.town;
                     crate::vend::trade(
                         &self.vend,
@@ -7342,7 +7436,12 @@ impl World {
                 }
             }
             Command::Wheel { id, colour, stake } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_WHEEL_REFUSED,
+                    crate::casino::REFUSE_CA_DOWN,
+                    (colour as u32) << 16 | stake as u32,
+                ) {
                     let town = self.haven.town;
                     crate::casino::bet(
                         &mut self.casino,
@@ -7357,7 +7456,12 @@ impl World {
                 }
             }
             Command::Slots { id, machine, mult } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_SLOTS_REFUSED,
+                    crate::casino::REFUSE_CA_DOWN,
+                    (machine as u32) << 8 | mult as u32,
+                ) {
                     let town = self.haven.town;
                     crate::casino::spin(
                         &mut self.casino,
@@ -7380,7 +7484,8 @@ impl World {
                 }
             }
             Command::Wire { id, wire } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     crate::power::connect(
                         &self.deploy,
                         &self.power_def,
@@ -7393,7 +7498,8 @@ impl World {
                 }
             }
             Command::Unwire { id, key } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     crate::power::unwire(
                         &self.deploy,
                         &self.pieces,
@@ -7405,7 +7511,12 @@ impl World {
                 }
             }
             Command::Shop { id, key, act } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_SHOP_REFUSED,
+                    key,
+                    (crate::shop::REFUSE_SH_DOWN << 24) | act.packed(),
+                ) {
                     let reach = self
                         .deploys
                         .vending_index(key)
@@ -7424,7 +7535,12 @@ impl World {
                 }
             }
             Command::Extract { id, target, max } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_ARC_REFUSED,
+                    crate::works::REFUSE_A_DOWN,
+                    (crate::works::OP_EXTRACT as u32) << 8 | target as u32,
+                ) {
                     crate::works::extract(
                         &self.works_def,
                         &self.works,
@@ -7442,7 +7558,12 @@ impl World {
                 target,
                 arg,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_ARC_REFUSED,
+                    crate::works::REFUSE_A_DOWN,
+                    (op as u32) << 8 | target as u32,
+                ) {
                     match op {
                         crate::lore::OP_TALK | crate::lore::OP_READ => crate::lore::act(
                             &self.lore_def,
@@ -7480,7 +7601,12 @@ impl World {
                 }
             }
             Command::Swipe { id, door } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_SWIPE_REFUSED,
+                    crate::monument::REFUSE_S_DOWN,
+                    door as u32,
+                ) {
                     let z = self.haven.ziggurat;
                     // The lever is pulled from where it can be seen: not
                     // through its own shut door (`monument::swipe`).
@@ -7505,7 +7631,9 @@ impl World {
                 }
             }
             Command::Consume { id, slot: inv } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) =
+                    self.hand_slot(id, EV_CONSUME_REFUSED, survival::REFUSE_C_DOWN, 0)
+                {
                     // A bandage takes its time in the hands
                     // (`survival::begin_use`); food goes down at once.
                     let tick = self.tick;
@@ -7540,10 +7668,18 @@ impl World {
                 count,
             } => {
                 let i = inv as usize;
-                if let Some(slot) = self.live_slot_of(id).filter(|_| {
-                    // A disarmed backpack module would destroy the drop.
-                    self.backpack.base_ticks != 0 && i < INV_SLOTS && count > 0
-                }) {
+                if let Some(slot) = self
+                    .hand_slot(
+                        id,
+                        EV_MOVE_REFUSED,
+                        inventory::REFUSE_M_DOWN,
+                        inventory::addr(inventory::CONT_SELF, inv, inventory::CONT_SELF, inv),
+                    )
+                    .filter(|_| {
+                        // A disarmed backpack module would destroy the drop.
+                        self.backpack.base_ticks != 0 && i < INV_SLOTS && count > 0
+                    })
+                {
                     let p = &mut self.players[slot];
                     let n = count.min(p.inv[i].count);
                     if n > 0 {
@@ -7599,7 +7735,9 @@ impl World {
                 }
             }
             Command::Drink { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) =
+                    self.hand_slot(id, EV_CONSUME_REFUSED, survival::REFUSE_C_DOWN, 0)
+                {
                     // The one verb that can kill the player who pressed it.
                     // Handled exactly as a clock death and a combat death
                     // are — the callee counts it and announces it, the
@@ -7619,7 +7757,8 @@ impl World {
                 }
             }
             Command::Loot { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_MOVE_REFUSED, inventory::REFUSE_M_DOWN, 0)
+                {
                     let town = self.haven.town;
                     let (eye, feet) = self.hand(slot);
                     let (seed, haven, cols, doors) = (
@@ -7649,7 +7788,8 @@ impl World {
                 }
             }
             Command::Pickup { id, target } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_MOVE_REFUSED, inventory::REFUSE_M_DOWN, 0)
+                {
                     // The nearest loose stack in reach — a barrel's scatter
                     // or a landed arrow, which is a loose stack the tick it
                     // comes to rest (`spent.rs`) — or an arrow standing in a
@@ -7701,7 +7841,10 @@ impl World {
                 // An emptied crate is out of the world until it refills.
                 let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
                 let gone = self.slot_lives.is_harvested(cx, cz);
-                if let Some(slot) = self.live_slot_of(id).filter(|_| !gone) {
+                if let Some(slot) = self
+                    .hand_slot(id, EV_MOVE_REFUSED, inventory::REFUSE_M_DOWN, 0)
+                    .filter(|_| !gone)
+                {
                     let loot_seed = self.secret_seed();
                     self.world_conts.open(
                         self.seed,
@@ -7720,7 +7863,8 @@ impl World {
                 }
             }
             Command::Pick { id, cell } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_GATHER_REFUSED, gather::REFUSE_G_DOWN, 0)
+                {
                     let (cx, cz) = ((cell >> 16) as u16, (cell & 0xFFFF) as u16);
                     let s = self.slot_cache.slot(
                         self.seed,
@@ -7775,14 +7919,16 @@ impl World {
                 qx,
                 qz,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     if let Err(why) = self.plant(slot, inv_slot, host, spot, (qx, qz)) {
                         self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
                     }
                 }
             }
             Command::Tend { id, plant, act } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN, 0)
+                {
                     if let Err(why) = self.tend(slot, plant, act) {
                         self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
                     }
@@ -7797,7 +7943,12 @@ impl World {
                 to_slot,
                 count,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(
+                    id,
+                    EV_MOVE_REFUSED,
+                    inventory::REFUSE_M_DOWN,
+                    inventory::addr(from_kind, from_slot, to_kind, to_slot),
+                ) {
                     self.move_item(
                         seat, slot, cont, from_kind, from_slot, to_kind, to_slot, count,
                     );
@@ -7837,7 +7988,8 @@ impl World {
                 // `live_slot_of`: a corpse and a sleeper do not reload,
                 // for the reason `hitscan` restates the same rule — the
                 // arm belongs to a body somebody is driving.
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_RELOAD_REFUSED, ranged::REFUSE_RL_DOWN, 0)
+                {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::reload(
                         self.tick,
@@ -7852,7 +8004,8 @@ impl World {
                 }
             }
             Command::Unload { id } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_RELOAD_REFUSED, ranged::REFUSE_RL_DOWN, 0)
+                {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     ranged::unload(
                         self.tick,
@@ -7867,7 +8020,8 @@ impl World {
                 }
             }
             Command::Attach { id, slot: inv } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_RELOAD_REFUSED, ranged::REFUSE_RL_DOWN, 0)
+                {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     crate::attach::attach(
                         &self.combat,
@@ -7882,7 +8036,8 @@ impl World {
                 }
             }
             Command::Detach { id, bit } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                if let Some(slot) = self.hand_slot(id, EV_RELOAD_REFUSED, ranged::REFUSE_RL_DOWN, 0)
+                {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     crate::attach::detach(
                         &self.combat,
@@ -10789,6 +10944,91 @@ mod tests {
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (2048.0, 2048.0);
+
+    #[test]
+    fn a_downed_use_refuses_the_table_and_switch_but_still_opens_a_door() {
+        let mut w = World::new(20260913);
+        w.tick(&[Command::Join { id: 1 }]);
+        let p = &mut w.players[0];
+        p.wounded = true;
+        p.wound_until = 100_000;
+        let cx = build::build_cell_of(p.body.qx as f32 * POS_XZ_Q) as u16;
+        let cz = build::build_cell_of(p.body.qz as f32 * POS_XZ_Q) as u16;
+        p.body = Body::at(
+            w.seed,
+            &w.haven,
+            (cx as f32 + 0.5) * build::BUILD_CELL_M,
+            (cz as f32 + 0.5) * build::BUILD_CELL_M,
+        );
+        for (arch, expected) in [
+            (
+                deploy::ARCH_RESEARCH,
+                Some((EV_RESEARCH_REFUSED, crate::research::REFUSE_R_DOWN)),
+            ),
+            (
+                deploy::ARCH_FIRE,
+                Some((EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN)),
+            ),
+            (
+                deploy::ARCH_SWITCH,
+                Some((EV_DEPLOY_REFUSED, deploy::REFUSE_D_DOWN)),
+            ),
+            (deploy::ARCH_DOOR, None),
+        ] {
+            w.deploy.def_count = 1;
+            w.deploy.defs[0].arch = arch;
+            let rec = deploy::DeployRec {
+                cx,
+                cz,
+                owner: 1,
+                hp: 100,
+                ..Default::default()
+            };
+            let box_rec = deploy::BoxRec {
+                cx,
+                cz,
+                owner: 1,
+                ..Default::default()
+            };
+            let oven = crate::oven::OvenState {
+                arch,
+                ..Default::default()
+            };
+            w.deploys
+                .restore(&[rec], &[0], &[0], &[], &[box_rec], &[oven], &[]);
+            w.events.clear();
+            let before = w.state_hash();
+            let seat = w.trust.seat();
+            w.apply(
+                &Command::Use {
+                    id: 1,
+                    cx,
+                    cz,
+                    level: 0,
+                    loc: 0,
+                },
+                seat,
+                &mut 0,
+                &mut [0; MAX_PLAYERS],
+                &mut [None; MAX_PLAYERS],
+            );
+            if let Some((code, reason)) = expected {
+                let ev = w.events.entries();
+                assert_eq!(ev.len(), 1, "arch {arch}");
+                assert_eq!(
+                    (ev[0].code, ev[0].a, ev[0].b, ev[0].c),
+                    (code, 1, reason, 0)
+                );
+                assert_eq!(w.state_hash(), before);
+            } else {
+                assert!(
+                    w.deploys.entries()[0].open,
+                    "a downed body can still open its door"
+                );
+                assert!(w.events.entries().iter().any(|e| e.code == EV_DOOR));
+            }
+        }
+    }
 
     /// Rust's traps (`World::prick_deploys`): floor spikes cut a body
     /// standing on them and spare one a step off the board; a barbed

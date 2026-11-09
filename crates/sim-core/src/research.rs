@@ -109,10 +109,12 @@ pub const REFUSE_R_BENCH: u32 = 6;
 /// at this table. Its own reason because its remedy is the one no other
 /// refusal gives — wait.
 pub const REFUSE_R_BUSY: u32 = 7;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_R_DOWN: u32 = 8;
 /// The highest live reason, named rather than counted — the domain gate
 /// reads this and the wire's field width is bounded against it (three
 /// bits, so this is the last reason that fits without a turn).
-pub const REFUSE_R_MAX: u32 = REFUSE_R_BUSY;
+pub const REFUSE_R_MAX: u32 = REFUSE_R_DOWN;
 
 /// The research table's two working slots (research table v1). The table
 /// is a box record, `BOX_SLOTS` wide like every container, and every slot

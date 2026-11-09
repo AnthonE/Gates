@@ -345,6 +345,8 @@ pub const REFUSE_B_SAFE: u32 = 15;
 /// Not from the water (water pass): a swimmer builds nothing until its feet
 /// find the bottom (`movement::swimming`).
 pub const REFUSE_B_SWIMMING: u32 = 16;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_B_DOWN: u32 = 17;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").

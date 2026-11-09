@@ -45,9 +45,11 @@ pub const REFUSE_G_TOOL: u32 = 1;
 /// tool (Q4, operator 2026-08-15); the fix the sentence names is a
 /// re-craft, because re-craft is the repair (Q3).
 pub const REFUSE_G_BROKEN: u32 = 2;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_G_DOWN: u32 = 3;
 /// The highest live reason, named rather than counted — the ledger the
 /// wire's field width is bounded against (`protocol::event`).
-pub const REFUSE_G_MAX: u32 = REFUSE_G_BROKEN;
+pub const REFUSE_G_MAX: u32 = REFUSE_G_DOWN;
 
 /// How many looks an ore node is drawn through: whole, then a quarter, a half
 /// and three quarters mined (`EV_NODE_STAGE`). The last hit breaks it.
