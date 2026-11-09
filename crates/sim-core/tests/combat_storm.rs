@@ -74,12 +74,13 @@
 //! population, and the two do not fit in one fixture. The withdrawal side
 //! is `NOW.md`'s, named there.
 //!
-//! Nobody moves either: `move_x`/`move_z` are zero and the bodies stand on
-//! their marks. So the rewind depth every command carries drives
-//! `Rewind::pose_at`'s **lookup** at population — a hundred distinct
-//! depths a tick against the one a unit fixture spends — and cannot be
-//! read as a claim about the correction. Lag compensation over a real
-//! link is `NOW.md` §0lc's and stays there.
+//! The static runs keep the saturation checks above. A strafing variant
+//! also drives movement through input, then repeats with every granted
+//! rewind depth set to zero. Each body must actually move, and the death
+//! counts must change for both gun and knife duels: looking up a history
+//! of stationary poses cannot satisfy that check (`NOW.md` §0cs item 1).
+//! The moving fight also repeats byte for byte and survives save/load.
+//! Lag compensation over a real link remains `NOW.md` §0lc's.
 
 #![allow(clippy::disallowed_macros)]
 
@@ -88,7 +89,9 @@ use sim_core::bots::{brawl_step, BrawlPlan};
 use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M};
 use sim_core::combat::CombatContent;
 use sim_core::gather::{ItemStack, STRIKE_DELAY_TICKS};
-use sim_core::limits::{MAX_BACKPACKS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS};
+use sim_core::limits::{
+    MAX_BACKPACKS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS, REWIND_TICKS,
+};
 use sim_core::movement::Body;
 use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World, EV_BAG_REMOVED};
@@ -170,6 +173,10 @@ const DUEL_SPACING: i32 = 7;
 /// Five ticks is well inside the ~32 ticks the fastest weapon here needs
 /// to kill, so nobody dies naked.
 const RESTOCK_TICKS: u64 = 5;
+
+/// Eight walking ticks travel about 75 cm: enough to leave the historical
+/// hit volume, while turning back keeps the duel near its buildable cell.
+const STRAFE_HALF_PERIOD: u64 = 8;
 
 /// `CombatContent::probe_fixture`'s item 0: 34 damage, 2 m reach — three
 /// swings to a 100 hp kill.
@@ -309,13 +316,16 @@ struct Storm {
     saw_bag_evicted: bool,
     /// Deaths summed over every duellist at the end of the storm.
     deaths: u32,
+    deaths_by_player: [u16; PLAYERS],
+    /// Horizontal movement observed between ticks, excluding respawns.
+    moving_ticks: [u16; PLAYERS],
     /// The fewest bodies on their feet on any one tick.
     min_standing: usize,
     /// Every distinct event code the storm announced — the breadth check.
     codes: [bool; 64],
 }
 
-fn storm() -> Storm {
+fn storm(strafe: bool, granted_favour: bool) -> Storm {
     let mut w = World::new(SEED);
     // Combat is armed and gathering is not: `World::new` leaves
     // `GatherContent::EMPTY` in place, so no scatter cell is a swingable
@@ -370,6 +380,8 @@ fn storm() -> Storm {
         overflow_ticks: 0,
         saw_bag_evicted: false,
         deaths: 0,
+        deaths_by_player: [0; PLAYERS],
+        moving_ticks: [0; PLAYERS],
         min_standing: PLAYERS,
         codes: [false; 64],
     };
@@ -390,13 +402,31 @@ fn storm() -> Storm {
         for (i, down) in was_down.iter_mut().enumerate() {
             *down = w.players[i].dead;
         }
+        let before: [(i32, i32); PLAYERS] =
+            std::array::from_fn(|i| (w.players[i].body.qx, w.players[i].body.qz));
         cmds.clear();
         for _ in 0..STEPS_PER_TICK {
             for (i, plan) in plans.iter_mut().enumerate() {
                 if t < KNIFE_START && !is_shooter(i) {
                     continue;
                 }
-                cmds.push(brawl_step(plan, &mut rng, was_down[i]));
+                let mut cmd = brawl_step(plan, &mut rng, was_down[i]);
+                if let Command::Input { frame, favour, .. } = &mut cmd {
+                    if strafe {
+                        // Opposite headings need opposite local sticks to
+                        // strafe together across the duel's firing line.
+                        frame.move_x =
+                            if (t / STRAFE_HALF_PERIOD).is_multiple_of(2) == i.is_multiple_of(2) {
+                                127
+                            } else {
+                                -127
+                            };
+                    }
+                    if !granted_favour {
+                        *favour = 0;
+                    }
+                }
+                cmds.push(cmd);
             }
         }
         assert!(
@@ -405,6 +435,13 @@ fn storm() -> Storm {
         );
 
         w.tick(&cmds);
+
+        for (i, &(qx, qz)) in before.iter().enumerate() {
+            let p = &w.players[i];
+            if !was_down[i] && !p.dead && (p.body.qx, p.body.qz) != (qx, qz) {
+                s.moving_ticks[i] += 1;
+            }
+        }
 
         // ---- the invariant, every tick ----
         assert!(
@@ -457,6 +494,7 @@ fn storm() -> Storm {
         .take(PLAYERS)
         .map(|p| p.deaths as u32)
         .sum();
+    s.deaths_by_player = std::array::from_fn(|i| w.players[i].deaths);
 
     // Quiet the world before the hash is taken, for `raid_storm.rs`'s
     // reason: a world save puts every body to bed on load, so a
@@ -485,7 +523,7 @@ fn storm() -> Storm {
 /// fight is still standing at the end of it.
 #[test]
 fn test_combat_storm() {
-    let s = storm();
+    let s = storm(false, true);
 
     assert_eq!(
         s.peak_bags, MAX_BACKPACKS,
@@ -526,11 +564,14 @@ fn test_combat_storm() {
 /// these unreachable at population, this names which.
 #[test]
 fn the_storm_walks_the_combat_verbs() {
+    assert_combat_verbs(&storm(false, true));
+}
+
+fn assert_combat_verbs(s: &Storm) {
     use sim_core::world::{
         EV_BAG_DROPPED, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
         EV_RELOAD_REFUSED, EV_RESPAWN, EV_SHOT, EV_SWING,
     };
-    let s = storm();
     for (code, what) in [
         (EV_SWING, "somebody swung"),
         (EV_HIT, "a swing landed on a body part"),
@@ -575,8 +616,8 @@ fn the_storm_walks_the_combat_verbs() {
 /// this is the first time it crosses that path anywhere near full.
 #[test]
 fn the_combat_storm_is_deterministic_and_saves_whole() {
-    let a = storm();
-    let b = storm();
+    let a = storm(false, true);
+    let b = storm(false, true);
     assert_eq!(
         a.hash, b.hash,
         "two identical combat storms disagreed on the state hash"
@@ -586,13 +627,49 @@ fn the_combat_storm_is_deterministic_and_saves_whole() {
         "two identical combat storms wrote different world saves"
     );
 
+    assert_save_restores(&a);
+}
+
+fn assert_save_restores(s: &Storm) {
     let mut w = World::new(SEED);
     w.combat = CombatContent::probe_fixture();
     w.backpack = BackpackContent::probe_fixture();
-    w.load(&a.save).expect("the storm's world must load");
+    w.load(&s.save).expect("the storm's world must load");
     assert_eq!(
         w.state_hash(),
-        a.hash,
+        s.hash,
         "a combat storm's world did not survive its own save/load round trip"
     );
+}
+
+#[test]
+fn strafing_makes_rewind_change_the_fight_and_replays_whole() {
+    let rewound = storm(true, true);
+    let present = storm(true, false);
+    for s in [&rewound, &present] {
+        for (i, &ticks) in s.moving_ticks.iter().enumerate() {
+            assert!(
+                ticks as usize >= REWIND_TICKS,
+                "duellist {i} moved on only {ticks} ticks; its history must contain movement"
+            );
+        }
+        assert_combat_verbs(s);
+        assert_eq!(s.overflow_ticks, 0, "the moving fight dropped events");
+    }
+    for shooter in [false, true] {
+        assert!(
+            rewound
+                .deaths_by_player
+                .iter()
+                .zip(&present.deaths_by_player)
+                .enumerate()
+                .any(|(i, (a, b))| is_shooter(i) == shooter && a != b),
+            "rewind did not change a death count in the {} duels",
+            if shooter { "gun" } else { "knife" }
+        );
+    }
+    let replay = storm(true, true);
+    assert_eq!(rewound.hash, replay.hash, "the moving fight did not replay");
+    assert_eq!(rewound.save, replay.save, "the moving saves differ");
+    assert_save_restores(&rewound);
 }
