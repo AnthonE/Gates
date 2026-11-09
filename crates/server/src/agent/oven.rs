@@ -82,6 +82,9 @@ const STAND_SLACK_M: f32 = 0.6;
 /// A device goes down this far from the feet, in front.
 const PUT_NEAR_M: f32 = 1.5;
 const PUT_FAR_M: f32 = 3.5;
+/// With nowhere in reach to put it (its own yard all round), it walks to
+/// the nearest open cell this many cells off.
+const OPEN_CELLS: i32 = 6;
 /// An answer to a deploy, an open, a move or a switch comes within this long.
 const VERDICT_TICKS: u32 = 3 * TICK_HZ;
 /// After a move is answered, the panel catches up this soon.
@@ -589,11 +592,39 @@ fn put_cell(
 ) -> Option<(u16, u16)> {
     let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
     let (fx, fz) = sim_core::yaw_dir(body.yaw);
-    let (ax, az) = (x + fx * 2.5, z + fz * 2.5);
+    let aim = (x + fx * 2.5, z + fz * 2.5);
+    open_cell(
+        core,
+        seed,
+        haven,
+        body,
+        refused,
+        avoid,
+        2,
+        (PUT_NEAR_M, PUT_FAR_M),
+        aim,
+    )
+}
+
+/// The cell `put_cell` would take within `reach` cells of the body and
+/// `(near, far)` metres of its feet, the one nearest `aim`.
+#[allow(clippy::too_many_arguments)]
+fn open_cell(
+    core: &ClientCore,
+    seed: u64,
+    haven: &Haven,
+    body: &EntityState,
+    refused: &[(u16, u16)],
+    avoid: impl Fn(u16, u16) -> bool,
+    reach: i32,
+    (near, far): (f32, f32),
+    (ax, az): (f32, f32),
+) -> Option<(u16, u16)> {
+    let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
     let (bx, bz) = (build_cell_of(x), build_cell_of(z));
     let mut best: Option<(f32, u16, u16)> = None;
-    for dz in -2..=2 {
-        for dx in -2..=2 {
+    for dz in -reach..=reach {
+        for dx in -reach..=reach {
             let (cx, cz) = (bx + dx, bz + dz);
             if !(0..MAX_BUILD_COORD as i32).contains(&cx)
                 || !(0..MAX_BUILD_COORD as i32).contains(&cz)
@@ -604,7 +635,7 @@ fn put_cell(
             let (mx, mz) = cell_center(cx, cz);
             let d = (mx - x).hypot(mz - z);
             let score = (mx - ax).hypot(mz - az);
-            if !(PUT_NEAR_M..=PUT_FAR_M).contains(&d)
+            if !(near..=far).contains(&d)
                 || refused.contains(&(cx, cz))
                 || best.is_some_and(|(b, ..)| score >= b)
                 || avoid(cx, cz)
@@ -1201,6 +1232,9 @@ pub struct DeviceJob {
     /// A warm-up begun in the Verdigris walks out to here before it puts
     /// a fire down.
     out: Option<[f32; 2]>,
+    /// Nowhere in reach took the device (its own yard all round): it walks
+    /// to this open cell first.
+    yard: Option<(u16, u16)>,
 }
 
 impl DeviceJob {
@@ -1220,6 +1254,7 @@ impl DeviceJob {
             session: None,
             keep: Keep::NONE,
             out: None,
+            yard: None,
         }
     }
 
@@ -1431,7 +1466,24 @@ impl DeviceJob {
                         verdigris(core, haven, mx, mz)
                     })
             };
-            return self.put_down(core, seed, haven, body, hands, row, item, avoid, tick);
+            if let Some(tend) =
+                self.put_down(core, seed, haven, body, hands, row, item, avoid, tick)
+            {
+                return tend;
+            }
+            // Its own yard all round (or nothing but floor): out to the
+            // nearest open cell, then put it down there.
+            let Some((cx, cz)) = self.yard else {
+                return Tend::Fail(Why::NoSpot);
+            };
+            let (mx, mz) = cell_center(cx, cz);
+            return match route.to(core, body, [mx, mz], PUT_FAR_M - 1.0, false, tick) {
+                step @ Step::Walk { .. } => Tend::Go(step.walk().unwrap_or(Intent::IDLE)),
+                Step::Blocked => Tend::Fail(Why::Stuck),
+                // There, and still nothing in reach takes it.
+                Step::Arrived => Tend::Fail(Why::NoSpot),
+                Step::Wait => Tend::Go(Intent::walk(yaw_toward(mx - x, mz - z))),
+            };
         };
         self.device = Some(device);
         // Beside it, at arm's length.
@@ -1464,7 +1516,8 @@ impl DeviceJob {
 
     /// Put the device down in front of the body: crafted first from the
     /// pack (a fire pit; a recycler is made at a bench, by the craft goal),
-    /// onto the belt, held up while the eyes find the spot.
+    /// onto the belt, held up while the eyes find the spot. `None`: nowhere
+    /// in reach takes it, and `yard` is the cell to walk to, if any.
     #[allow(clippy::too_many_arguments)]
     fn put_down(
         &mut self,
@@ -1477,28 +1530,44 @@ impl DeviceJob {
         item: u16,
         avoid: impl Fn(u16, u16) -> bool,
         tick: u32,
-    ) -> Tend {
+    ) -> Option<Tend> {
         if carried(core, item) == 0 {
             let Some((recipe, ..)) = recipe_for(core, item, &Stations::NONE) else {
-                return Tend::Fail(Why::NoRecipe);
+                return Some(Tend::Fail(Why::NoRecipe));
             };
             self.making = Some((item, 0));
-            return Tend::Craft { recipe };
+            return Some(Tend::Craft { recipe });
         }
         let Some(slot) =
             (0..HOTBAR_SLOTS).find(|&i| core.inv[i].count > 0 && core.inv[i].item == item)
         else {
-            return match belt_move(core, item) {
+            return Some(match belt_move(core, item) {
                 Some((from, to, count)) => Tend::Belt { from, to, count },
                 None => Tend::Fail(Why::MissingInputs),
-            };
+            });
         };
         let refused = &self.refused[..self.spots.min(SPOT_TRIES)];
         let cell = self
             .placing
-            .or_else(|| put_cell(core, seed, haven, body, refused, avoid));
+            .or_else(|| put_cell(core, seed, haven, body, refused, &avoid));
         let Some((cx, cz)) = cell else {
-            return Tend::Fail(Why::NoSpot);
+            // Nowhere in reach: the nearest open cell further off, to walk
+            // to (`None` out).
+            if self.yard.is_none() {
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                self.yard = open_cell(
+                    core,
+                    seed,
+                    haven,
+                    body,
+                    refused,
+                    &avoid,
+                    OPEN_CELLS,
+                    (0.0, f32::MAX),
+                    (x, z),
+                );
+            }
+            return None;
         };
         let (mx, mz) = cell_center(cx, cz);
         let intent = Intent {
@@ -1509,14 +1578,14 @@ impl DeviceJob {
         let held = *self.held.get_or_insert(tick);
         if tick.wrapping_sub(held) >= HOLD_TICKS && hands.settled() {
             self.held = None;
-            return Tend::Deploy {
+            return Some(Tend::Deploy {
                 row,
                 cx,
                 cz,
                 intent,
-            };
+            });
         }
-        Tend::Go(intent)
+        Some(Tend::Go(intent))
     }
 }
 
@@ -1646,6 +1715,86 @@ mod tests {
         let [ox, oz] = out_of_verdigris(&core, &haven, hx, hz);
         assert!(!verdigris(&core, &haven, ox, oz));
         assert!((ox - wx).hypot(oz - wz) < (hx - wx).hypot(hz - wz));
+    }
+
+    /// Standing in its own yard, where no fire may go (#586): the warm-up
+    /// walks out to the nearest open cell and puts the pit down there,
+    /// rather than failing on the spot.
+    #[test]
+    fn a_warm_up_in_its_own_yard_walks_out_to_put_the_fire_down() {
+        let (mut core, book, id) = shipped();
+        let pit = id("item.fire_pit");
+        core.deploy_defs.defs[0].item = pit;
+        core.deploy_defs.defs[0].hp = 50;
+        core.deploy_defs.def_count = 1;
+        core.deploy_defs_have = 1;
+        core.inv[0] = stack(pit, 1);
+        let (seed, haven) = {
+            let (seed, occ) = core.island();
+            (seed, *occ.haven)
+        };
+        // Open ground all round some cell.
+        let open = |cx: u16, cz: u16| {
+            (-4..=4).all(|dz: i32| {
+                (-4..=4).all(|dx: i32| {
+                    let (x, z) = (i32::from(cx) + dx, i32::from(cz) + dz);
+                    foundation_goes(seed, &haven, x as u16, z as u16)
+                })
+            })
+        };
+        let (bx, bz) = (100..MAX_BUILD_COORD as u16 - 100)
+            .step_by(37)
+            .flat_map(|cz| {
+                (100..MAX_BUILD_COORD as u16 - 100)
+                    .step_by(37)
+                    .map(move |cx| (cx, cz))
+            })
+            .find(|&(cx, cz)| open(cx, cz))
+            .expect("open ground somewhere");
+        // Its yard: the plot and round it, as `near_plot` has it.
+        let yard = |cx: u16, cz: u16| {
+            (i32::from(cx) - i32::from(bx)).abs() <= 2 && (i32::from(cz) - i32::from(bz)).abs() <= 2
+        };
+        let at = |x: f32, z: f32| EntityState {
+            qx: (x / POS_XZ_Q) as i32,
+            qy: (sim_core::terrain::ground(seed, &haven, x, z) / sim_core::movement::POS_Y_Q)
+                as i32,
+            qz: (z / POS_XZ_Q) as i32,
+            ..EntityState::default()
+        };
+        let (mx, mz) = cell_center(bx, bz);
+        let hands = Hands::new(Default::default());
+        let mut route = Route::new();
+        let mut stats = OvenStats::default();
+        let mut job = DeviceJob::new(Work::Warm);
+        let mut step = |core: &mut ClientCore, job: &mut DeviceJob, body: &EntityState| {
+            job.step(
+                core, seed, &haven, body, &hands, &mut route, &book, None, yard, &mut stats, 1,
+            )
+        };
+        let tend = step(&mut core, &mut job, &at(mx, mz));
+        assert!(
+            matches!(tend, Tend::Go(i) if i != Intent::IDLE),
+            "walks out of its yard, not {tend:?}"
+        );
+        let (ox, oz) = job.yard.expect("an open cell to walk to");
+        assert!(!yard(ox, oz));
+        // At the walk's end, the pit is held up over a cell outside the yard.
+        let (cx, cz) = cell_center(ox, oz);
+        let d = (cx - mx).hypot(cz - mz);
+        let reach = PUT_FAR_M - 1.0;
+        let there = at(cx + (mx - cx) / d * reach, cz + (mz - cz) / d * reach);
+        let there = EntityState {
+            yaw: yaw_toward(cx - mx, cz - mz),
+            ..there
+        };
+        match step(&mut core, &mut job, &there) {
+            Tend::Go(Intent {
+                look: Look::Point([lx, _, lz]),
+                ..
+            }) => assert!(!yard(build_cell_of(lx) as u16, build_cell_of(lz) as u16)),
+            tend => panic!("holds the pit up over open ground, not {tend:?}"),
+        }
     }
 
     /// Meat, wood and a fire to cook on: a cook can go; no wood, no meat,
