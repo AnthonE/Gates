@@ -255,6 +255,9 @@ enum Piece {
 }
 
 pub struct ShardCore {
+    chunk_versions: Box<[u32]>,
+    old_piece_chunks: Vec<(u32, u16)>,
+    old_bag_chunks: Vec<(u32, Option<u16>, u32)>,
     pub world: World,
     pub clients: Box<[ClientNetState]>,
     /// Ticks the sim loop's last catch-up sprint ran ahead of every
@@ -1084,6 +1087,9 @@ impl ShardCore {
         clients.resize_with(MAX_CONNS, ClientNetState::new);
         Self {
             world: World::with_haven(seed, haven),
+            chunk_versions: vec![0; protocol::chunk::COUNT].into_boxed_slice(),
+            old_piece_chunks: Vec::with_capacity(sim_core::limits::MAX_PIECES),
+            old_bag_chunks: Vec::with_capacity(sim_core::limits::MAX_BACKPACKS),
             clients: clients.into_boxed_slice(),
             pace_slack: (0, 0),
             queued: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
@@ -4385,7 +4391,25 @@ impl ShardCore {
             }
         }
         mark(Phase::Sim);
+        self.old_piece_chunks.clear();
+        for p in self.world.pieces.entries() {
+            if let Some(chunk) = protocol::chunk::at_cell(p.cx, p.cz) {
+                self.old_piece_chunks.push((p.id, chunk));
+            }
+        }
+        self.old_bag_chunks.clear();
+        for b in self.world.backpacks.entries() {
+            let chunk = protocol::chunk::at_cm(i64::from(b.qx) * 3, i64::from(b.qz) * 3);
+            self.old_bag_chunks.push((b.id, chunk, b.owner));
+        }
         self.world.tick(&self.cmd_buf[..n]);
+        if self.world.events.dropped > 0 {
+            // An omitted event cannot identify its chunk. Invalidate every
+            // epoch conservatively; the existing overflow path resyncs clients.
+            for version in &mut self.chunk_versions {
+                *version = version.wrapping_add(1);
+            }
+        }
         mark(Phase::Interest);
         self.note_standings(n);
         self.note_achievements(n);
@@ -5426,6 +5450,147 @@ impl ShardCore {
         }
     }
 
+    fn address_chunk(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<u16> {
+        if let Some(id) = sim_core::build::spelled_id(cx, cz, level, loc) {
+            self.world
+                .pieces
+                .find(cx, cz, level, loc)
+                .and_then(|p| protocol::chunk::at_cell(p.cx, p.cz))
+                .or_else(|| {
+                    self.old_piece_chunks
+                        .iter()
+                        .find(|p| p.0 == id)
+                        .map(|p| p.1)
+                })
+        } else {
+            protocol::chunk::at_cell(cx, cz)
+        }
+    }
+
+    fn note_chunk_event(&mut self, ev: sim_core::world::SimEvent) {
+        let chunk = match ev.code {
+            EV_PIECE_PLACED | EV_PIECE_REMOVED | EV_DEPLOY_PLACED | EV_DEPLOY_REMOVED | EV_DOOR
+            | EV_OVEN | EV_STRUCT_HIT | EV_PIECE_REPAIRED => self.address_chunk(
+                (ev.a >> 16) as u16,
+                ev.a as u16,
+                (ev.b >> 16) as u8,
+                (ev.b >> 8) as u8,
+            ),
+            EV_WIRE => {
+                let (cx, cz, level, loc) = sim_core::deploy::box_addr(ev.a);
+                self.address_chunk(cx, cz, level, loc)
+            }
+            EV_BAG_DROPPED => self
+                .world
+                .backpacks
+                .find(ev.a)
+                .and_then(|b| protocol::chunk::at_cm(i64::from(b.qx) * 3, i64::from(b.qz) * 3)),
+            EV_BAG_REMOVED => self
+                .old_bag_chunks
+                .iter()
+                .find(|b| b.0 == ev.a)
+                .and_then(|b| b.1),
+            _ => None,
+        };
+        if let Some(id) = chunk {
+            let v = &mut self.chunk_versions[id as usize];
+            *v = v.wrapping_add(1);
+        }
+    }
+
+    fn chunk_visible(&self, slot: usize, at: (i64, i64)) -> bool {
+        protocol::chunk::at_cm(at.0, at.1).is_some_and(|id| self.clients[slot].chunks.contains(id))
+    }
+
+    fn drip_chunks(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        let Some(w) = self.live_wslot(slot) else {
+            return true;
+        };
+        if self.clients[slot].chunks.reset {
+            let Ok(n) = protocol::encode_event_chunk(0, 0, 3, &mut self.ev_buf) else {
+                return false;
+            };
+            if !send(Lane::Event, slot, &self.ev_buf[..n]) {
+                return false;
+            }
+            self.clients[slot].chunks.reset = false;
+            ShardStats::bump(&stats.ev_sent);
+        }
+        let b = self.world.players[w].body;
+        let here = interest::body_cm(b.qx, b.qz);
+        // At most one AOI window of lifecycle frames; nearest new chunks first.
+        for _ in 0..protocol::chunk::VISIBLE_CAP {
+            let leaving = self.clients[slot].chunks.next_leave(here);
+            let Some(chunk) = leaving.or_else(|| self.clients[slot].chunks.next_enter(here)) else {
+                return true;
+            };
+            let state = if leaving.is_some() { 2 } else { 0 };
+            let version = self.chunk_versions[chunk as usize];
+            let Ok(n) = protocol::encode_event_chunk(chunk, version, state, &mut self.ev_buf)
+            else {
+                return false;
+            };
+            if !send(Lane::Event, slot, &self.ev_buf[..n]) {
+                return false;
+            }
+            ShardStats::bump(&stats.ev_sent);
+            let c = &mut self.clients[slot];
+            if leaving.is_some() {
+                c.chunks.leave(chunk);
+            } else if !c.chunks.enter(chunk, version) {
+                c.ev_resync();
+                return false;
+            }
+            c.piece_sync_cursor = self.world.pieces.len();
+            c.deploy_sync_cursor = self.world.deploys.len();
+            c.bag_sync_cursor = self.world.backpacks.len();
+        }
+        // The lifecycle budget is spent, but the ring accepted every
+        // frame. Let unrelated walks and the entered chunks make progress;
+        // remaining enters are offered next tick.
+        true
+    }
+
+    fn commit_chunks(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        let c = &self.clients[slot];
+        if c.piece_sync_reset
+            || c.deploy_sync_reset
+            || c.bag_sync_reset
+            || c.piece_sync_cursor != 0
+            || c.deploy_sync_cursor != 0
+            || c.bag_sync_cursor != 0
+        {
+            return true;
+        }
+        for _ in 0..4 {
+            let next = self.clients[slot].chunks.next_commit(&self.chunk_versions);
+            let Some(sub) = next else {
+                return true;
+            };
+            let version = self.chunk_versions[sub.chunk as usize];
+            let Ok(n) = protocol::encode_event_chunk(sub.chunk, version, 1, &mut self.ev_buf)
+            else {
+                return false;
+            };
+            if !send(Lane::Event, slot, &self.ev_buf[..n]) {
+                return false;
+            }
+            self.clients[slot].chunks.ready(sub.chunk, version);
+            ShardStats::bump(&stats.ev_sent);
+        }
+        true
+    }
+
     /// The event lane's first half: this tick's sim events routed to their
     /// audiences. A refused push (or a dropped sim event) flags the affected
     /// clients for `ev_resync` — the walk restarts; nothing is silently lost.
@@ -5439,6 +5604,7 @@ impl ShardCore {
         self.raid_checks = 0;
         for i in 0..self.world.events.len() {
             let ev = self.world.events.entries()[i];
+            self.note_chunk_event(ev);
             match ev.code {
                 EV_GATHER => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
@@ -6048,9 +6214,7 @@ impl ShardCore {
                                 // The record's cell, not the event's address:
                                 // a piece the grid cannot name is addressed by
                                 // its spelled id, which is no place at all.
-                                if !self
-                                    .point_event_visible(slot, interest::cell_cm(rec.cx, rec.cz))
-                                {
+                                if !self.chunk_visible(slot, interest::cell_cm(rec.cx, rec.cz)) {
                                     ShardStats::bump(&stats.piece_events_skipped);
                                     continue;
                                 }
@@ -6582,18 +6746,24 @@ impl ShardCore {
                         ShardStats::bump(&stats.encode_range_errors);
                         continue;
                     }
-                    // Broadcast to everyone, unfiltered (an absence is the
-                    // one thing no walk re-derives), and **no walk restart**
-                    // — the bag walk reads tail-down, so the entry the
-                    // swap-remove moved is one it already sent
-                    // (`drip_client`). Unlike a piece's removal this one
-                    // names no place to aim at (`held_tiles`): the bag is
-                    // gone from the store and the event is its id, which
-                    // says where only to a client that was told the bag.
+                    // Capture before the sim removes the record: its id alone
+                    // says no location. A bag born and gone in this tick was
+                    // never walked to a client, so there is nothing to remove.
+                    let Some(&(_, chunk, owner)) = self.old_bag_chunks.iter().find(|b| b.0 == ev.a)
+                    else {
+                        continue;
+                    };
                     match encode_event_bag_removed(ev.a, ev.b as u8, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if self.clients[slot].id != owner
+                                    && !chunk
+                                        .is_some_and(|id| self.clients[slot].chunks.contains(id))
+                                {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -6608,15 +6778,9 @@ impl ShardCore {
                     }
                 }
                 EV_DOOR => {
-                    // Aimed like the placement that put the door there
-                    // (`EV_DEPLOY_PLACED`'s predicate, owner exempt). A
-                    // client that walked away keeps its stale record, and
-                    // that is safe by the re-arm argument: to come back
-                    // inside `AOI_ENTER` it must move past the re-arm
-                    // distance, the re-arm re-walks everything in range,
-                    // and a walk record overwrites the door's open and lock
-                    // bits (`DeploySet::insert`, `seal_for`) before the
-                    // player can reach it.
+                    // Subscribers hear the state change, with the owner
+                    // exempt. Leaving discards the record; an entry snapshot
+                    // reconstructs its current open and lock bits.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     // Where the door is: a door in a doorway the grid
@@ -6848,7 +7012,7 @@ impl ShardCore {
                                 // exempt), against the same anchor: a
                                 // stage turned after a client's walk can
                                 // only reach it here.
-                                if !self.owned_event_visible(slot, rec.owner, at) {
+                                if rec.owner != c.id && !self.point_event_visible(slot, at) {
                                     ShardStats::bump(&stats.plant_events_skipped);
                                     continue;
                                 }
@@ -7177,8 +7341,7 @@ impl ShardCore {
                     // placement — the wall is a world fact, and anyone in
                     // earshot of the base should see it come apart, while a
                     // raid 500 m off is nobody's radar. The hp it restates
-                    // is restated again by the walk a re-arm runs (`EV_DOOR`'s
-                    // argument). No sync walk moves: nothing left the store.
+                    // is restated again by the next entry snapshot. No sync walk moves: nothing left the store.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let deploy = ev.b & STRUCT_DEPLOY_BIT != 0;
                     let (level, loc, row) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8, ev.b as u8);
@@ -7359,20 +7522,9 @@ impl ShardCore {
                     }
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    // The cell the walks and placements marked it at: its
-                    // own, or for an address that spells an id, the cell of
-                    // the piece it names while that still stands (a door
-                    // taken out of a freeform doorway). A spelled id whose
-                    // piece is gone names no place, so it still goes to
-                    // everyone — an id says nothing about where.
-                    let tile = match sim_core::build::spelled_id(cx, cz, level, loc) {
-                        None => Some((cx, cz)),
-                        Some(_) => self
-                            .world
-                            .pieces
-                            .find(cx, cz, level, loc)
-                            .map(|r| (r.cx, r.cz)),
-                    };
+                    // Freeform ids are resolved through the pre-tick map
+                    // even after their supporting piece has disappeared.
+                    let removed_chunk = self.address_chunk(cx, cz, level, loc);
                     match encode_event_removed(piece, cx, cz, level, loc, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -7385,8 +7537,8 @@ impl ShardCore {
                                 // `drop_deploy` names the owner in `c`.
                                 let own = !piece && ev.c == self.clients[slot].id;
                                 if !own
-                                    && tile
-                                        .is_some_and(|(x, z)| !self.clients[slot].holds_tile(x, z))
+                                    && !removed_chunk
+                                        .is_some_and(|id| self.clients[slot].chunks.contains(id))
                                 {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
@@ -7410,22 +7562,8 @@ impl ShardCore {
                                 // clamps its own cursor where it reads it
                                 // (`drip_client` carries the argument).
                                 //
-                                // **A removal is not aimed at the anchor, it
-                                // is aimed at what the client may hold**
-                                // (`held_tiles`). A placement a client is
-                                // not told about costs it nothing — it has
-                                // no record to be wrong about — but a
-                                // removal it is not told about is a wall
-                                // that stands in its world forever, because
-                                // nothing re-derives an absence: the walk
-                                // sends what IS there and has no way to say
-                                // what stopped being. So the test is not
-                                // "is it near" but "was it ever told about
-                                // this tile": a superset (a no-op removal)
-                                // is safe, and a client 500 m from a raid it
-                                // never saw is not handed every wall that
-                                // falls in it — the killing blow is the one
-                                // `EV_STRUCT_HIT` never says.
+                                // Subscribed chunks hold the record; a departed
+                                // chunk was explicitly discarded at unsubscribe.
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                     ShardStats::bump(&stats.ev_sent);
                                 } else {
@@ -8077,6 +8215,7 @@ impl ShardCore {
             let c = &mut self.clients[slot];
             if c.seen_held_epoch != epoch {
                 c.seen_held_epoch = epoch;
+                c.chunks.clear();
                 c.piece_sync_cursor = 0;
                 c.piece_sync_reset = true;
                 c.deploy_sync_cursor = 0;
@@ -8094,7 +8233,6 @@ impl ShardCore {
             .filter(|t| t.piece_anchor_valid)
             .map(|t| t.piece_anchor_cm);
         let here = followed.unwrap_or(interest::body_cm(body.qx, body.qz));
-        let len = self.world.pieces.len();
         let lives = self.world.slot_lives.len();
         let c = &mut self.clients[slot];
         let moved = match followed {
@@ -8108,21 +8246,9 @@ impl ShardCore {
             c.piece_anchor_cm = here;
             c.piece_anchor_valid = true;
         } else if moved {
-            // Re-arm from the tail, and **without** the reset bit: the
-            // client keeps every piece it has been told about and the
-            // address-keyed apply dedups whatever arrives twice. A
-            // re-arm mid-walk cannot livelock the way a removal
-            // restart could — a full-store walk is 32 ticks and a
-            // sprinter covers 5.9 m of the 32 m that triggers this
-            // (`interest::PIECE_SCAN_BATCH` carries the arithmetic).
-            //
-            // The deployable and backpack walks share the anchor, so
-            // they re-arm with it: a record the old anchor skipped may
-            // be in range of the new one.
+            // Structural snapshots are armed by chunk enters, not anchor
+            // motion. Only the remaining point-filtered walks re-arm here.
             c.piece_anchor_cm = here;
-            c.piece_sync_cursor = len;
-            c.deploy_sync_cursor = self.world.deploys.len();
-            c.bag_sync_cursor = self.world.backpacks.len();
             c.plant_sync_cursor = self.world.farm.len();
             // So do the stores whose events are aimed at a point: the
             // harvested set from the tail, without its reset (the client
@@ -8150,10 +8276,13 @@ impl ShardCore {
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
         // First, before anything here can return on a full ring: the
-        // anchor every class-S filter and walk measures from. Armed below
+        // anchor the remaining point-filtered walks measure from. Armed below
         // the early returns, a client that kept its own ring full kept it
         // unarmed, and an unarmed anchor used to pass every event.
         self.arm_walks(slot, stats);
+        if !self.drip_chunks(slot, stats, send) {
+            return;
+        }
         if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
             return;
         }
@@ -9138,7 +9267,6 @@ impl ShardCore {
         // of this drip.
         let c = &self.clients[slot];
         let pieces = self.world.pieces.entries();
-        let anchor = c.piece_anchor_cm;
         let owed = if c.piece_sync_reset {
             pieces.len()
         } else {
@@ -9161,7 +9289,8 @@ impl ShardCore {
             // makes what was consumed adjacent to what was already sent.
             for src in pieces[owed - window..owed].iter().rev() {
                 scanned += 1;
-                if !interest::rec_in_interest(anchor, src) {
+                if !protocol::chunk::at_cell(src.cx, src.cz).is_some_and(|id| c.chunks.pending(id))
+                {
                     continue;
                 }
                 // Every record names a live building (`Pieces`' contract).
@@ -9253,7 +9382,6 @@ impl ShardCore {
         // owed, because its map draws them wherever it stands.
         let c = &self.clients[slot];
         let deploys = self.world.deploys.entries();
-        let anchor = c.piece_anchor_cm;
         let viewer = c.id;
         let owed = if c.deploy_sync_reset {
             deploys.len()
@@ -9277,7 +9405,10 @@ impl ShardCore {
             let mut scanned = 0usize;
             for src in deploys[owed - window..owed].iter().rev() {
                 scanned += 1;
-                if !interest::deploy_in_interest(anchor, viewer, src, &self.world.pieces) {
+                let at = interest::deploy_cell(src, &self.world.pieces);
+                if src.owner != viewer
+                    && !protocol::chunk::at_cell(at.0, at.1).is_some_and(|id| c.chunks.pending(id))
+                {
                     continue;
                 }
                 let dst = &mut wire[n];
@@ -9321,7 +9452,7 @@ impl ShardCore {
             // (`route_events`).
             for d in &wire[..n] {
                 let (x, z) = interest::deploy_cell(d, &self.world.pieces);
-                if interest::point_in_interest(anchor, interest::cell_cm(x, z)) {
+                if self.chunk_visible(slot, interest::cell_cm(x, z)) {
                     self.mark_held(slot, x, z);
                 }
             }
@@ -9419,7 +9550,10 @@ impl ShardCore {
             let mut scanned = 0usize;
             for b in bags[owed - window..owed].iter().rev() {
                 scanned += 1;
-                if !interest::bag_in_interest(anchor, viewer, b) {
+                if b.owner != viewer
+                    && !protocol::chunk::at_cm(i64::from(b.qx) * 3, i64::from(b.qz) * 3)
+                        .is_some_and(|id| c.chunks.pending(id))
+                {
                     continue;
                 }
                 batch[n] = WireBag::of(b);
@@ -9453,6 +9587,10 @@ impl ShardCore {
             } else {
                 done(&mut self.clients[slot]);
             }
+        }
+
+        if !self.commit_chunks(slot, stats, send) {
+            return;
         }
 
         // Loose-stack walk (ground items v0), drip-fed and read upward.
@@ -10377,7 +10515,7 @@ impl ShardCore {
     /// The owner hears it from anywhere, because its walks send it its own
     /// records from anywhere.
     fn owned_event_visible(&self, slot: usize, owner: u32, at_cm: (i64, i64)) -> bool {
-        owner == self.clients[slot].id || self.point_event_visible(slot, at_cm)
+        owner == self.clients[slot].id || self.chunk_visible(slot, at_cm)
     }
 
     /// Where the structure at address `(cx, cz, level, loc)` stands, and its
@@ -12555,6 +12693,11 @@ mod tests {
         assert!(core.world.events.is_empty(), "ring quiet again");
         core.clients[0].bag_sync_cursor = 0;
         core.clients[0].bag_sync_reset = false;
+
+        // `pumped` bypasses tick's pre-removal capture. Supply the
+        // removed id's owner explicitly so this exercises both domains.
+        core.old_bag_chunks
+            .push((42, protocol::chunk::at_cm(0, 0), PLAYER));
 
         // Just outside the domain: why == 3 fits the two-bit field, so
         // the encoder alone would put it on the wire.

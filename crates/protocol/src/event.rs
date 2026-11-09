@@ -674,7 +674,8 @@ const SUB_WIRE: u32 = 111;
 /// draws `(agent, crew of <of's name>)`. To every session as it moves, and
 /// to a joiner for each agent there.
 const SUB_CREW: u32 = 112;
-const SUB_MAX: u32 = SUB_CREW;
+const SUB_CHUNK: u32 = 113;
+const SUB_MAX: u32 = SUB_CHUNK;
 /// Widths of a wire's ports (`sim_core::power::ports`).
 const WIRE_PORT_OUT_BITS: u32 = 2;
 const WIRE_PORT_IN_BITS: u32 = 1;
@@ -1936,6 +1937,11 @@ impl Default for SkinCatalog {
 /// so equality is well-defined (the goldens compare decoded values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventMsg {
+    /// Reliable class-S lifecycle: 0 begins a full snapshot (discard the
+    /// previous chunk), 1 commits the version after preceding data, 2
+    /// unsubscribes, 3 resets all subscription metadata (chunk/version zero).
+    /// Re-entry always begins a fresh bounded snapshot.
+    Chunk { chunk: u16, version: u32, state: u8 },
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
@@ -2890,6 +2896,25 @@ fn begin(buf: &mut [u8], subtype: u32) -> Result<BitWriter<'_>, WireError> {
     w.write(KIND_EVENT, KIND_BITS)?;
     w.write(subtype, SUB_BITS)?;
     Ok(w)
+}
+
+pub fn encode_event_chunk(
+    chunk: u16,
+    version: u32,
+    state: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if chunk as usize >= crate::chunk::COUNT
+        || state > 3
+        || (state == 3 && (chunk != 0 || version != 0))
+    {
+        return Err(WireError::Malformed);
+    }
+    let mut w = begin(buf, SUB_CHUNK)?;
+    w.write(chunk as u32, 16)?;
+    w.write(version, 32)?;
+    w.write(state as u32, 2)?;
+    Ok(w.finish())
 }
 
 pub fn encode_event_gather(
@@ -6743,6 +6768,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         return Err(WireError::Malformed);
     }
     let msg = match r.read(SUB_BITS)? {
+        SUB_CHUNK => {
+            let chunk = r.read(16)? as u16;
+            let version = r.read(32)?;
+            let state = r.read(2)? as u8;
+            if chunk as usize >= crate::chunk::COUNT
+                || state > 3
+                || (state == 3 && (chunk != 0 || version != 0))
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Chunk {
+                chunk,
+                version,
+                state,
+            }
+        }
         SUB_GATHER => EventMsg::Gather {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,

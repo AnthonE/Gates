@@ -362,6 +362,7 @@ pub struct ClientNetState {
     /// holds (it is owed a reset batch either way) and the placement
     /// broadcast passes unfiltered for that window, which is one tick.
     pub piece_anchor_valid: bool,
+    pub chunks: crate::chunks::Subscriptions,
     /// The 48 m tiles this connection **may hold** a piece or deployable in:
     /// a bit is set wherever its anchor sends it a record (the piece and
     /// deploy walks, the placement events; an owner's own deployables far
@@ -659,6 +660,7 @@ impl ClientNetState {
             piece_sync_reset: true,
             piece_anchor_cm: (0, 0),
             piece_anchor_valid: false,
+            chunks: crate::chunks::Subscriptions::default(),
             held_tiles: [0; HELD_TILE_WORDS],
             held_epoch: 0,
             seen_held_epoch: 0,
@@ -731,6 +733,7 @@ impl ClientNetState {
     /// resend. The inventory shadow stays — it re-diffs against the world
     /// by itself.
     pub fn ev_resync(&mut self) {
+        self.chunks.clear();
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;
