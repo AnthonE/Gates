@@ -1,11 +1,11 @@
 //! A stack handed from one player to another (`Command::Give`, `NOW.md`
 //! §5d): aimed at a standing, awake body in hand reach, what fits in their
 //! pack moves and the rest stays with the giver. Every other shape of the
-//! verb changes nothing, and only a full pack says so.
+//! verb changes nothing; a full pack or a downed giver gets a refusal.
 use sim_core::{
     gather::{GatherContent, ItemStack},
     input::InputFrame,
-    inventory::REFUSE_M_GIVE,
+    inventory::{self, CONT_SELF, REFUSE_M_DOWN, REFUSE_M_GIVE},
     limits::INV_SLOTS,
     movement::{Body, POS_XZ_Q, POS_Y_Q},
     world::{Command, World, EV_GATHER, EV_MOVE_REFUSED, EV_TRUST, TRUST_GIVE},
@@ -143,13 +143,12 @@ fn a_stack_keeps_its_condition_and_its_skin() {
 }
 
 /// Out of reach, at a sleeper, a downed body, a corpse, yourself, an empty
-/// slot, a zero count, a slot past the pack and from a giver who is down:
-/// nothing moves and nothing is said, as a syringe out of reach says
-/// nothing.
+/// slot, a zero count and a slot past the pack: nothing moves and nothing
+/// is said, as a syringe out of reach says nothing.
 #[test]
 fn every_wrong_give_changes_nothing() {
     type Setup = fn(&mut World) -> (u8, u16, u32);
-    let cases: [(&str, Setup); 9] = [
+    let cases: [(&str, Setup); 8] = [
         ("out of reach", |w| {
             w.players[1].body.qz += 200; // six metres further
             (3, 30, TAKER)
@@ -171,12 +170,6 @@ fn every_wrong_give_changes_nothing() {
         ("an empty slot", |_| (4, 30, TAKER)),
         ("a zero count", |_| (3, 0, TAKER)),
         ("a slot past the pack", |_| (INV_SLOTS as u8, 30, TAKER)),
-        // Down, the hands are gone (`live_slot_of`), whoever they aim at.
-        ("a downed giver", |w| {
-            w.players[0].wounded = true;
-            w.players[0].wound_until = w.tick + 900;
-            (3, 30, TAKER)
-        }),
     ];
     for (what, setup) in cases {
         let mut w = fixture();
@@ -189,6 +182,34 @@ fn every_wrong_give_changes_nothing() {
         assert_eq!(count(&w, EV_TRUST), 0, "{what}: a trust row was kept");
         assert!(w.trust.is_empty(), "{what}: the ledger kept a row");
     }
+}
+
+#[test]
+fn a_downed_giver_keeps_the_stack_and_gets_a_refusal() {
+    let mut w = fixture();
+    w.players[0].wounded = true;
+    w.players[0].wound_until = w.tick + 900;
+    give(&mut w, 3, 30, TAKER);
+    assert_eq!(wood(&w, 0), 30, "the giver lost wood");
+    assert_eq!(wood(&w, 1), 0, "the taker gained wood");
+    let r: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_MOVE_REFUSED)
+        .collect();
+    assert_eq!(r.len(), 1);
+    assert_eq!(
+        (r[0].a, r[0].b, r[0].c),
+        (
+            GIVER,
+            REFUSE_M_DOWN,
+            inventory::addr(CONT_SELF, 3, CONT_SELF, 3)
+        )
+    );
+    assert_eq!(count(&w, EV_GATHER), 0);
+    assert_eq!(count(&w, EV_TRUST), 0);
+    assert!(w.trust.is_empty());
 }
 
 /// A pack with no room for any of it refuses and says why; a pack with room
