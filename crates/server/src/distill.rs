@@ -111,27 +111,34 @@ impl<S: DecisionSource> Recorder<S> {
         harness: Option<&str>,
         model: Option<&str>,
     ) -> Result<Self, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("--record {}: {e}", dir.display()))?;
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let n = OPENED.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("{secs}-{}-{n}.jsonl", std::process::id()));
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("--record {}: {e}", path.display()))?;
-        eprintln!("record: decisions to {}", path.display());
+        let (out, path) = new_rows(dir)?;
         Ok(Self {
             inner,
-            out: Some(std::io::BufWriter::new(file)),
+            out: Some(out),
             path,
             rows: 0,
             harness: harness.map(str::to_owned),
             model: model.map(str::to_owned),
         })
     }
+}
+
+/// A new file of rows in `dir` (made if missing), named so that bots, runs
+/// and processes never share one.
+fn new_rows(dir: &Path) -> Result<(std::io::BufWriter<std::fs::File>, PathBuf), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("--record {}: {e}", dir.display()))?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let n = OPENED.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{secs}-{}-{n}.jsonl", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("--record {}: {e}", path.display()))?;
+    eprintln!("record: decisions to {}", path.display());
+    Ok((std::io::BufWriter::new(file), path))
 }
 
 /// One recorded decision: what [`ROW_FORMAT`] means.
@@ -237,6 +244,146 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
 
     fn plan_done(&self) -> u32 {
         self.inner.plan_done()
+    }
+}
+
+/// DAgger (Ross, Gordon and Bagnell 2011): a student plays, and a teacher
+/// says what it would have done in each place the student got itself to
+/// (`--dagger STUDENT.json` beside the mind that teaches and `--record DIR`).
+///
+/// A student trained on its teacher's own play has only seen where the
+/// teacher goes. Its first mistake puts it somewhere the teacher never was,
+/// where it was taught nothing, and the mistakes compound. So here the
+/// student decides and the body does what it says; the teacher is asked the
+/// same question and its answer is what the row records, with `dagger: true`
+/// and what was `acted` on. Train on those rows beside the teacher's own
+/// (`ops/distill/train.py`), play the new student the same way, and again.
+///
+/// `beta` is the share of turns the teacher's answer is acted on instead:
+/// the first rounds of the original keep the teacher's hand on the wheel.
+/// The teacher's notes, plans and lines are dropped: the body is the
+/// student's. A turn the teacher fails is played and not recorded.
+pub struct Dagger<T> {
+    teacher: T,
+    actor: Student,
+    beta: f32,
+    out: Option<std::io::BufWriter<std::fs::File>>,
+    path: PathBuf,
+    rows: u64,
+    agreed: u64,
+    harness: Option<String>,
+    model: Option<String>,
+}
+
+impl<T: DecisionSource> Dagger<T> {
+    pub fn open(
+        teacher: T,
+        actor: Student,
+        beta: f32,
+        dir: &Path,
+        harness: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Self, String> {
+        let (out, path) = new_rows(dir)?;
+        eprintln!("dagger: the student plays; the teacher's answers are the rows");
+        Ok(Self {
+            teacher,
+            actor,
+            beta: beta.clamp(0.0, 1.0),
+            out: Some(out),
+            path,
+            rows: 0,
+            agreed: 0,
+            harness: harness.map(str::to_owned),
+            model: model.map(str::to_owned),
+        })
+    }
+
+    /// Whether turn `n` is one the teacher's answer is acted on: `beta` of
+    /// them, spread evenly (the golden ratio's sequence), the same every run.
+    fn teachers_turn(&self, n: u64) -> bool {
+        let x = n.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40;
+        (x as f32) < self.beta * (1u64 << 24) as f32
+    }
+}
+
+impl<T: DecisionSource> DecisionSource for Dagger<T> {
+    /// What plays the body is the student.
+    fn kind(&self) -> SourceKind {
+        self.actor.kind()
+    }
+
+    fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let mut newest = *summary;
+        let label = self.teacher.decide_fresh(summary, &mut || {
+            let newer = fresher();
+            if let Some(n) = newer {
+                newest = n;
+            }
+            newer
+        });
+        // The student answers the look the teacher's answer is paired with.
+        let acted = match (self.actor.decide(&newest), &label) {
+            (Ok(_), Ok(l)) if self.teachers_turn(self.rows) => Choice {
+                say: Say::Quiet,
+                code: None,
+                ..*l
+            },
+            (Ok(c), _) => c,
+            // What the student knows none of, the teacher plays.
+            (Err(_), Ok(l)) => Choice {
+                say: Say::Quiet,
+                code: None,
+                ..*l
+            },
+            (Err(e), Err(_)) => return Err(e),
+        };
+        if let (Ok(label), Some(out)) = (&label, self.out.as_mut()) {
+            let mut line = row(
+                &newest,
+                label,
+                self.teacher.kind(),
+                self.rows,
+                self.harness.as_deref(),
+                self.model.as_deref(),
+            );
+            line["dagger"] = json!(true);
+            line["acted"] = json!(acted.goal.label().as_str());
+            if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                eprintln!(
+                    "dagger: {} could not be written; recording stopped",
+                    self.path.display()
+                );
+                self.out = None;
+            }
+            self.rows += 1;
+            self.agreed += u64::from(label.goal == acted.goal);
+            if self.rows.is_multiple_of(100) {
+                eprintln!(
+                    "dagger: {} rows, the student agreed with its teacher on {:.0}%",
+                    self.rows,
+                    100.0 * self.agreed as f64 / self.rows as f64
+                );
+            }
+        }
+        Ok(acted)
+    }
+
+    fn set_feared(&mut self, feared: bool) {
+        self.teacher.set_feared(feared);
+    }
+
+    /// The teacher is shown who the body is, as it would be playing it.
+    fn set_context(&mut self, ctx: &serde_json::Map<String, serde_json::Value>) {
+        self.teacher.set_context(ctx);
     }
 }
 

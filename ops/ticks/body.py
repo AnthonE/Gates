@@ -30,6 +30,16 @@ t + AHEAD: what a spectator would read over its head before it moves.
   which is what a mind steering the body would do. On the recordings so far
   its own plan has cost more frame accuracy than it gave; run both and look.
 
+**Where it comes from.** Cloning play at frame rate with a causal model is
+Pearce and Zhu 2021 (Counter-Strike from recorded matches) and Baker et al.
+2022 (VPT, Minecraft from video). Writing the plan beside the action and
+learning both from a teacher is Hu and Clune 2023, "Thought Cloning". The
+plan written a little ahead and read back is Moshi's inner monologue
+(Défossez et al. 2024), a speech model's. Swapping a share of the teacher's
+plans for the model's own while training is scheduled sampling (Bengio et
+al. 2015). What is ours is the pairing on this game's ticks, and the
+numbers below.
+
 **Scored** like `clone.py`: on the held-out run, against repeating the last
 frame, on every tick and on the ticks where the frame changed. Only
 positions with `--min-context` ticks behind them are scored.

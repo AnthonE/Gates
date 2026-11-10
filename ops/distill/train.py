@@ -22,6 +22,18 @@ recordings (one per bot run) are held out to measure agreement, so a run
 never grades itself. A pick is weighted by what followed it: the goal got
 done, failed, or the body died before the next decision. Autopilot turns
 (the scripted policy standing in for a model) are left out unless asked.
+
+A student taught this way has only seen where its teacher goes; its own
+mistakes take it elsewhere, and they compound. DAgger (Ross, Gordon and
+Bagnell 2011) has the student play while the teacher says what it would have
+done in each place the student reached, then trains on both, and again:
+
+    cargo run -p server --release --bin gates-agent -- --local --bots 8 --seconds 1200 \\
+        --dagger student.json --record runs/dagger1 --scripted        # or --external ..., the real teacher
+    python3 ops/distill/train.py runs/scripted runs/dagger1 -o student2.json
+
+Its rows say `dagger: true` and what was `acted` on. The teacher's answer is
+the label; what followed weighs it only where the student did the same.
 """
 import argparse
 import datetime
@@ -72,6 +84,8 @@ def what_followed(row, nxt):
     """'done', 'failed', 'interrupted', 'died', or None when unknown."""
     if nxt is None:
         return None
+    if row.get("dagger") and row.get("acted") != row["goal"]:
+        return None  # what followed was the student's pick, not this one
     if (nxt["obs"].get("deaths") or 0) > (row["obs"].get("deaths") or 0):
         return "died"
     last = nxt["obs"].get("last_goal") or {}

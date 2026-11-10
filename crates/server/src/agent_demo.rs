@@ -234,7 +234,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--journal FILE] [--memory FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--commander 0xWALLET] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--character FILE] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nChoose one mind: --scripted, --external, --mcp or --student. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (AGENT-MANUAL.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --commander names the one wallet, person or agent, whose team-chat lines a scripted body takes as orders, and nobody else's then (a crew is capped at seven, leaving the commander a seat on its team): follow, stay, wood, stone, ore, cloth, home, patrol, defend, opening with a job (guards, farmers, runners, founder), a teammate's name or all to say who it is for. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; AGENT-MANUAL.md). Decisions are never more often than once a second. --character FILE (TOML, or JSON by its .json name) says who the body is: name, kind, persona, goal, quirks and [traits] (ambition, risk, greed, sociability, honesty, patience, grit, 0-100), sent to an external or MCP mind on every turn; the traits tune the scripted policy (when it runs, how far it loots, how full it carries, whether it raids) and, without --temperament, when it fights. A fleet's file holds a [culture] and [members.\"NAME\"] tables; a body it does not name takes the culture with traits of its own. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, its wallet, name, kind and crew, where it stands (world metres: the file stays on this machine), whether it is alive, its kills and deaths, and its mind's thought and strategy (null for a scripted turn): what the house's runner shows for the bodies it hosts. --memory FILE keeps what the body remembers (places it has seen, as a bearing and metres from where it stands; people it met and how they treated it; what happened to it; the strategy and life story its mind wrote), shown to an external or MCP mind every turn (a scripted or student body acts on it only by running sooner, hurt, from one who killed it) and written back atomically as it plays; each body of a fleet keeps its own beside it, named as its journal is. A corrupt file is set aside and the body starts fresh. --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--dagger STUDENT.json [--dagger-beta 0]] [--journal FILE] [--memory FILE] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--commander 0xWALLET] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--character FILE] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos] [--tactics ga1:...|off]\n--tactics picks the bred brain (examples/zoo.rs --agent) that decides when to run from wolves and which hand to fight them with (default: agent::combat::DEFAULT_TACTICS; off: the hand-written sum); its eyes and hands stay a person's, and against people the sum always decides.\nChoose one mind: --scripted, --external, --mcp or --student. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (AGENT-MANUAL.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --commander names the one wallet, person or agent, whose team-chat lines a scripted body takes as orders, and nobody else's then (a crew is capped at seven, leaving the commander a seat on its team): follow, stay, wood, stone, ore, cloth, home, patrol, defend, opening with a job (guards, farmers, runners, founder), a teammate's name or all to say who it is for. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; AGENT-MANUAL.md). Decisions are never more often than once a second. --character FILE (TOML, or JSON by its .json name) says who the body is: name, kind, persona, goal, quirks and [traits] (ambition, risk, greed, sociability, honesty, patience, grit, 0-100), sent to an external or MCP mind on every turn; the traits tune the scripted policy (when it runs, how far it loots, how full it carries, whether it raids) and, without --temperament, when it fights. A fleet's file holds a [culture] and [members.\"NAME\"] tables; a body it does not name takes the culture with traits of its own. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --dagger FILE (with a mind and --record) has that student play the body while the mind is asked each turn what it would have done there: its answers are the rows, for training the student on where it goes itself, not only where its teacher went (--dagger-beta 0..1: the share of turns the mind's answer is acted on). --journal FILE appends one JSON line per decision: when, the goal, the reason, any line it said and to whom, what answered, its wallet, name, kind and crew, where it stands (world metres: the file stays on this machine), whether it is alive, its kills and deaths, and its mind's thought and strategy (null for a scripted turn): what the house's runner shows for the bodies it hosts. --memory FILE keeps what the body remembers (places it has seen, as a bearing and metres from where it stands; people it met and how they treated it; what happened to it; the strategy and life story its mind wrote), shown to an external or MCP mind every turn (a scripted or student body acts on it only by running sooner, hurt, from one who killed it) and written back atomically as it plays; each body of a fleet keeps its own beside it, named as its journal is. A corrupt file is set aside and the body starts fresh. --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
 
 /// Which source decides: the explicit scripted policy, or an agent the
 /// operator brings. Never swapped for another at runtime.
@@ -282,6 +282,11 @@ pub struct MindArgs {
     pub voice: bool,
     /// Where every decision is recorded for distilling (`--record DIR`).
     pub record: Option<std::path::PathBuf>,
+    /// A student that plays the body while the chosen mind's answers are
+    /// what `--record` writes (`--dagger FILE`, `distill::Dagger`), and the
+    /// share of turns the mind's answer is acted on (`--dagger-beta`).
+    pub dagger: Option<std::path::PathBuf>,
+    pub dagger_beta: f32,
     /// Where the body keeps its journal (`--journal FILE`): what it is doing
     /// and why, one line per decision, the shape the house's runner reads.
     pub journal: Option<std::path::PathBuf>,
@@ -352,6 +357,8 @@ impl Default for MindArgs {
             autopilot: AUTOPILOT_DEFAULT,
             voice: false,
             record: None,
+            dagger: None,
+            dagger_beta: 0.0,
             journal: None,
             wallet: None,
             name: None,
@@ -413,6 +420,16 @@ impl MindArgs {
             "--voice" => self.voice = true,
             "--record" => {
                 self.record = Some(args.next().ok_or("--record needs a directory")?.into())
+            }
+            "--dagger" => {
+                self.dagger = Some(args.next().ok_or("--dagger needs a student's file")?.into())
+            }
+            "--dagger-beta" => {
+                self.dagger_beta = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|b| (0.0..=1.0).contains(b))
+                    .ok_or("--dagger-beta needs a share, 0 to 1")?
             }
             "--journal" => self.journal = Some(args.next().ok_or("--journal needs a file")?.into()),
             "--memory" => self.memory = Some(args.next().ok_or("--memory needs a file")?.into()),
@@ -563,6 +580,15 @@ impl MindArgs {
         &self,
         speech: Option<crate::agent_voice::SpeechTx>,
     ) -> Result<Mind, String> {
+        if self.dagger.is_some()
+            && (self.record.is_none() || matches!(self.source, Source::Student(_)))
+        {
+            return Err(
+                "--dagger FILE plays that student while the chosen mind (--scripted, --external \
+                        or --mcp) teaches: it needs that mind and --record DIR for its answers"
+                    .into(),
+            );
+        }
         if self.inline && !matches!(self.source, Source::Scripted | Source::Student(_)) {
             return Err(
                 "--warp plays the scripted policy or a --student: a model or a \
@@ -709,6 +735,23 @@ impl MindArgs {
     }
 
     fn recorded(&self, source: impl DecisionSource, cfg: MindConfig) -> Result<Mind, String> {
+        if let (Some(file), Some(dir)) = (&self.dagger, &self.record) {
+            let (harness, model) = self.labels();
+            let student = crate::distill::Student::load(file)?;
+            let source = crate::distill::Dagger::open(
+                source,
+                student,
+                self.dagger_beta,
+                dir,
+                harness,
+                model,
+            )?;
+            return if self.inline {
+                Mind::inline(source, cfg)
+            } else {
+                Mind::new(source, cfg)
+            };
+        }
         match &self.record {
             Some(dir) => {
                 let (harness, model) = self.labels();
@@ -822,6 +865,23 @@ mod tests {
         assert_eq!(taught.source, Source::Student("brain.json".into()));
         assert_eq!(taught.record, Some("runs".into()));
         assert!(parse("--student").is_err() && parse("--record").is_err());
+        let dagger =
+            parse("--dagger brain.json --dagger-beta 0.25 --record runs --scripted").unwrap();
+        assert_eq!(dagger.dagger, Some("brain.json".into()));
+        assert_eq!(
+            (dagger.dagger_beta, &dagger.source),
+            (0.25, &Source::Scripted)
+        );
+        assert!(parse("--dagger").is_err() && parse("--dagger-beta 2").is_err());
+        // It needs a teacher and somewhere for the teacher's answers.
+        assert!(parse("--dagger brain.json --scripted")
+            .unwrap()
+            .build()
+            .is_err());
+        assert!(parse("--dagger a.json --student b.json --record runs")
+            .unwrap()
+            .build()
+            .is_err());
         let kept = parse("--journal j/rook.jsonl --scripted").unwrap();
         assert_eq!(kept.journal, Some("j/rook.jsonl".into()));
         assert!(
