@@ -191,11 +191,11 @@ impl crate::Session {
         let replay = Replay::new(rec, datagrams.clone(), ev_tx);
         // A spectator's tape replays as a spectator: the core interpolates
         // the watched body, which is the one a film follows.
-        let core = if watching.is_some() {
+        let core = Box::new(if watching.is_some() {
             client_core::core::ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
         } else {
             client_core::core::ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
-        };
+        });
         let session = Self {
             core,
             applied: 0,

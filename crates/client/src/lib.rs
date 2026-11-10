@@ -410,7 +410,10 @@ pub struct Frame {
 /// One connected session. Owns the core and the connection; a renderer
 /// drives it by calling `pump` and reading `core`.
 pub struct Session {
-    pub core: ClientCore,
+    /// On the heap: at the 512-player cap a `ClientCore` is too big to move
+    /// around by value (a handful of sessions in one future overflowed a
+    /// 2 MiB stack, and the browser's whole stack is 4 MiB).
+    pub core: Box<ClientCore>,
     /// Every `APPLIED*` bit `on_stream` raised since the last drain, OR'd.
     ///
     /// **This word used to be discarded** (`let _ = self.core.on_stream(..)`),
@@ -766,11 +769,11 @@ impl Session {
             // is the correct thing to do.
         });
 
-        let core = if watching.is_some() {
+        let core = Box::new(if watching.is_some() {
             ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
         } else {
             ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
-        };
+        });
         Ok(Self {
             core,
             applied: 0,
@@ -1118,11 +1121,11 @@ impl Session {
         net::web::spawn_action_writer(writer, act_rx);
 
         let wire = net::web::WebWire::new(&transport)?;
-        let core = if watching.is_some() {
+        let core = Box::new(if watching.is_some() {
             ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
         } else {
             ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
-        };
+        });
         Ok(Self {
             core,
             applied: 0,
