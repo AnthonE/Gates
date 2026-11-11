@@ -6566,3 +6566,150 @@ fn the_minds_we_ship_hold_no_tools() {
         );
     }
 }
+
+/// A travelling mind for the walk-out tests: the scripted mind while `.0`
+/// is 0 (it builds the base), `.2` whenever it may be chosen while 1, and
+/// a stand otherwise. External, so the travel goals are on offer.
+struct Outing(std::sync::Arc<std::sync::atomic::AtomicU8>, Scripted, Goal);
+
+impl server::mind::DecisionSource for Outing {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let mode = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        if mode == 0 {
+            return self.1.decide(s);
+        }
+        let goal = if mode == 1 && s.allows(self.2) {
+            self.2
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// **Behind its own box, a founder still walks out of its base.** The
+/// door walk goes straight from point to point, and the base's box stands
+/// in the middle of the stair cell: a body south of it walked into the box
+/// head on, came no closer for two seconds, and the goal that wanted it
+/// outside failed "could not reach a target" (#574, a `go` from inside its
+/// own walls, 2 s). It steps round the box now, as the team's door walk
+/// steps round what stands in its way.
+#[test]
+fn a_founder_behind_its_own_box_walks_out_of_its_base() {
+    use server::agent::build::{Milestone, Region};
+    use sim_core::build::{column_floor_y, BUILD_CELL_M};
+    use std::sync::atomic::Ordering;
+
+    let mode = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let walk = Goal::Walk(server::mind::Walk {
+        bearing: 0,
+        metres: 14,
+    });
+    let mind = Mind::inline(
+        Outing(mode.clone(), Scripted::default(), walk),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let mut kit = vec![stack("item.wood", 1000); 5];
+    kit.extend(vec![stack("item.stone", 1000); 7]);
+    kit.extend([
+        stack("item.cloth", 60),
+        stack("item.metal_frags", 100),
+        stack("item.lowgrade", 50),
+    ]);
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+    let built = h.until(60_000, |b| {
+        b.builder().survey().milestone >= Milestone::Done
+            || b.core()
+                .is_some_and(|c| b.builder().stations(c).furnace.is_some())
+    });
+    assert!(built, "the base never stood: {}", h.explain());
+    let plan = h.bot.builder().plan().expect("a plot");
+    let haven = h.shard.world.haven;
+    // The far corner of the plot's cell, where the core, the stair cell
+    // and the airlock meet.
+    let corner = [
+        (f32::from(plan.cx) + 1.0) * BUILD_CELL_M,
+        (f32::from(plan.cz) + 1.0) * BUILD_CELL_M,
+    ];
+    let stair = (plan.cx + 1, plan.cz);
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(stair.0, stair.1, 0, sim_core::build::LOC_PLANE)
+            .is_some_and(|d| h.shard.world.deploy.defs[usize::from(d.row)].arch
+                == sim_core::deploy::ARCH_BOX),
+        "the base's box stands in the stair cell"
+    );
+    // Whatever the scripted mind was at runs out, then the body is south
+    // of the box, past the leave's own retry clock.
+    mode.store(2, Ordering::Relaxed);
+    h.until(120 * TICK_HZ, |b| {
+        matches!(b.goal(), None | Some(Goal::Wait))
+    });
+    let plate = h
+        .shard
+        .world
+        .pieces
+        .cols()
+        .plate(plan.cx, plan.cz)
+        .unwrap_or(0);
+    let floor = column_floor_y(SEED, &haven, plan.cx, plan.cz, plate);
+    let mut b = sim_core::movement::Body::at(SEED, &haven, corner[0] + 1.5, corner[1] - 2.4);
+    b.qy = sim_core::movement::quant_y(floor);
+    h.stage(move |p| p.body = b);
+    h.until(32 * TICK_HZ, |_| false);
+    let failed = h.bot.stats.goals_failed;
+
+    mode.store(1, Ordering::Relaxed);
+    let out = |h: &Harness| {
+        let me = h.me();
+        let p = [me.body.qx as f32 * 0.03, me.body.qz as f32 * 0.03];
+        (p[0] - corner[0]).hypot(p[1] - corner[1]) > 7.0
+            && h.bot.builder().region_of(p) == Region::Outside
+    };
+    for _ in 0..60 * TICK_HZ {
+        if out(&h) || h.bot.stats.goals_failed > failed {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        out(&h),
+        "never got out from behind its box: {:?} {}",
+        h.bot.history.iter().last(),
+        h.explain()
+    );
+    assert_eq!(h.bot.stats.goals_failed, failed, "a goal failed on the way");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
