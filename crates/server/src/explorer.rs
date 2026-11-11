@@ -2630,9 +2630,20 @@ impl Survivor {
         if matches!(active.goal, Goal::Cook | Goal::Warm) && outcome == Outcome::Done {
             self.borrow_off = false;
         }
+        // A walk that came to nothing inside a teammate's walls, where a
+        // door would not let it out a moment ago, says the door: its
+        // target was never the trouble (#581, a patrol from the team's
+        // base, "could not reach a target" in 2 s).
+        let said = match outcome {
+            Outcome::Failed(Why::Stuck) => self
+                .leave
+                .walled_in(self.here, tick)
+                .map_or(outcome, Outcome::Failed),
+            _ => outcome,
+        };
         let report = Report {
             goal: active.goal,
-            outcome,
+            outcome: said,
             gained: active.gained,
             secs: tick.wrapping_sub(active.started) / TICK_HZ,
         };

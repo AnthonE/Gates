@@ -6713,3 +6713,91 @@ fn a_founder_behind_its_own_box_walks_out_of_its_base() {
     assert_eq!(h.bot.stats.goals_failed, failed, "a goal failed on the way");
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
+
+/// **Locked inside the team's base, a walk that fails says the lock.**
+/// Living in its teammate's base, the agent is inside when the teammate
+/// bolts a code lock on the door and never says the code. Sent on patrol,
+/// it tries the door, is refused, and none of the ring's posts can be
+/// walked to from inside the walls. That used to end "could not reach a
+/// target" two seconds in (#581), which named the posts; it names the lock
+/// now, as its own base's door walk always has.
+#[test]
+fn a_teammate_locked_inside_the_team_s_base_says_the_lock_and_not_its_target() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+    use sim_core::deploy::ACCESS_OP_SET_CODE;
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(&[Goal::JoinTeam, Goal::Patrol], None),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let (bx, bz) = move_in(&mut h, at);
+    assert!(h.bot.memory().shared, "it lives in the team's base");
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+
+    // The teammate is back at its door, locks it, and goes.
+    let by_the_door = place(bxf + 1.5, bzf + 1.0);
+    h.stage_puppet(move |p| p.body = by_the_door);
+    let lock = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.lock_code")
+    };
+    h.stage_puppet(move |p| p.inv[HOTBAR_SLOTS] = lock);
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.lock,
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    h.puppet_act(ActionMsg::Access {
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+        op: ACCESS_OP_SET_CODE,
+        code: 2468,
+    });
+    let w = &h.shard.world;
+    assert!(
+        w.deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open)
+            && !w.deploys.lock_passes(bx, bz, 0, LOC_EDGE_ZLO, ID),
+        "the door is shut, and its lock does not know the agent"
+    );
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+
+    // The agent inside, with something in hand to patrol with.
+    let (inside, spear) = (place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6), h.spear);
+    h.stage(move |p| {
+        p.body = inside;
+        p.inv[0] = spear;
+    });
+    let failed = h.bot.stats.goals_failed;
+    let over = h.until(240 * TICK_HZ, |b| {
+        b.stats.goals_failed > failed
+            && b.history
+                .iter()
+                .last()
+                .is_some_and(|r| r.goal == Goal::Patrol)
+    });
+    let last = h.bot.history.iter().last();
+    assert!(over, "no patrol failed: {last:?} {}", h.explain());
+    assert_eq!(
+        last.map(|r| r.outcome),
+        Some(Outcome::Failed(Why::Locked)),
+        "{last:?} {}",
+        h.explain()
+    );
+    assert!(inside_base(feet(&h), (bx, bz)), "{:?}", feet(&h));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
