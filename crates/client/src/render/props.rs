@@ -32,7 +32,7 @@
 //! already lists.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, MeshTag, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::gather::cell_key;
@@ -788,6 +788,41 @@ pub fn tint_pool() -> [f32; TINT_POOL] {
         let t = (i as f32 / (TINT_POOL - 1) as f32) * 2.0 - 1.0;
         1.0 + TINT_SWING * t
     })
+}
+
+/// The ground's cold (`terrain::cold`) at which a tree starts to carry snow,
+/// and at which it carries all it will. **(knob)**
+pub const FROST_COLD: (f32, f32) = (0.25, 0.75);
+
+/// How much snow a tree standing on ground this cold carries, `0..=1`: none
+/// off the snow, and on it a third less on some trees than on others (off
+/// the cell key, so two players see the same laden pine).
+pub fn tree_frost(cold: f32, key: u32) -> f32 {
+    let on = ((cold - FROST_COLD.0) / (FROST_COLD.1 - FROST_COLD.0)).clamp(0.0, 1.0);
+    on * (0.67 + 0.33 * hash01(key, 0xf205_7000))
+}
+
+/// [`tree_frost`] as a crown or a card carries it to its shader
+/// (`foliage.wgsl`, `tree_card.wgsl`): the low byte of the mesh's tag.
+pub fn frost_tag(frost: f32) -> MeshTag {
+    MeshTag((frost.clamp(0.0, 1.0) * 255.0).round() as u32)
+}
+
+/// The tag bit that says the mesh is wood, not leaves: snow lies along the
+/// top of a limb and not down a trunk (`foliage.wgsl`).
+pub const FROST_WOOD: u32 = 0x100;
+
+/// [`frost_tag`] for a trunk and its limbs.
+pub fn frost_tag_wood(frost: f32) -> MeshTag {
+    MeshTag(frost_tag(frost).0 | FROST_WOOD)
+}
+
+/// Whether a tree stands bare: a broadleaf on ground cold enough to whiten
+/// has dropped its leaves, so the snow holds pines and bare limbs and
+/// nothing in leaf. A picture of the season, not a fact of the tree: the
+/// sim's slot is the tree it always was.
+pub fn winter_bare(variant: usize, cold: f32) -> bool {
+    tree::deciduous(variant) && cold >= FROST_COLD.0
 }
 
 /// Which tint a slot draws, from the cell key alone.
@@ -3202,14 +3237,22 @@ pub fn spawn_outer_tree(
         rotation: Quat::from_rotation_y(yaw),
         scale: Vec3::splat(slot.scale),
     };
+    // A bare tree out here is a few pixels of twig and its card would be a
+    // crown in leaf: like a snag's, it draws nothing.
+    let cold = terrain::cold(world.seed, slot.x, slot.z, slot.y);
+    if winter_bare(variant, cold) {
+        return;
+    }
     // The card where the client has one — two triangles for the hull's 105,
     // and a tree's own silhouette rather than a lathed cone.
     if let Some(cards) = &a.cards {
+        let frost = tree_frost(cold, key);
         commands.entity(parent).with_child((
             fellable,
             Grow::tree(slot.scale),
             cards.card(variant),
             MeshMaterial3d(cards.materials[tint_of(key)].clone()),
+            frost_tag(frost),
             transform,
         ));
         return;
@@ -3459,6 +3502,16 @@ pub fn spawn_slot(
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
     let is_tree = slot.occupant == Occupant::Tree;
+    // The cold: the snow a tree or a shrub carries on its crown, its limbs,
+    // its card and its leaves (`foliage.wgsl`, `tree_card.wgsl`), and
+    // whether a broadleaf stands bare in it ([`winter_bare`]).
+    let cold = if is_tree || slot.occupant == Occupant::Shrub {
+        terrain::cold(seed, slot.x, slot.z, slot.y)
+    } else {
+        0.0
+    };
+    let frost = tree_frost(cold, key);
+    let bare = is_tree && !snag && winter_bare(variant, cold);
     // A picked plant grows back (`gather::grow_span`); a tree's parts carry
     // their own `Grow` below.
     let regrow = sim_core::gather::grow_span(slot.occupant as u8).filter(|_| !is_tree);
@@ -3503,6 +3556,7 @@ pub fn spawn_slot(
             Mesh3d(mesh),
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
+            frost_tag_wood(frost),
             transform,
             super::skin::Skin { tree: true },
         ));
@@ -3591,6 +3645,7 @@ pub fn spawn_slot(
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(mat.clone()),
                     transform,
+                    frost_tag(frost),
                     super::plants::fade_band(),
                 ));
             }
@@ -3633,7 +3688,7 @@ pub fn spawn_slot(
     // What makes two independent entities agree is that neither stores the
     // bearing: both derive it from the cell key (`fell_bearing`), which is
     // also what makes two CLIENTS agree.
-    if is_tree && !snag {
+    if is_tree && !snag && !bare {
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
@@ -3643,6 +3698,7 @@ pub fn spawn_slot(
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
             MeshMaterial3d(a.canopy_material(variant, key).clone()),
             tree::lod_band(&lod.near),
+            frost_tag(frost),
             transform,
         ));
     }
@@ -3674,6 +3730,19 @@ pub fn spawn_slot(
                 tree::lod_band(&lod.far),
                 transform,
             ));
+        } else if bare {
+            // A bare tree's far half is its own limbs, as a snag's is: the
+            // card is a crown in leaf.
+            e.with_child((
+                fellable(FellPart::Far),
+                Topple { t: -1.0 },
+                Grow::tree(slot.scale),
+                Mesh3d(a.pines[variant].clone()),
+                MeshMaterial3d(a.trunk_material(variant, key).clone()),
+                tree::lod_band(&lod.far),
+                frost_tag_wood(frost),
+                transform,
+            ));
         } else if let Some(cards) = &a.cards {
             e.with_child((
                 fellable(FellPart::Far),
@@ -3682,6 +3751,7 @@ pub fn spawn_slot(
                 cards.card(variant),
                 MeshMaterial3d(cards.materials[tint].clone()),
                 tree::lod_band(&lod.far),
+                frost_tag(frost),
                 transform,
             ));
         } else {

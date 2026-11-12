@@ -12,8 +12,8 @@
 //   · `march.x > 0` — a slab of cloud from `slab.x` to `slab.y` metres,
 //     raymarched: the deck's coverage field gives each column its cloud and
 //     its height, a tiling 3D noise erodes the edges into cauliflower, and a
-//     short march toward the light shades it (Beer–Lambert, a second softer
-//     scattering order, a two-lobe phase for the silver lining).
+//     short march toward the light shades it (Beer–Lambert, two softer
+//     scattering orders, a two-lobe phase for the silver lining).
 // Both write premultiplied cloud over the moon's halo, in deck units, the
 // cube's contract, so every reader of the deck reads one sky. The weather's
 // fog over it is `sky_fog.wgsl`'s, drawn after the atmosphere.
@@ -103,6 +103,34 @@ const HUE_MAX: f32 = 3.0;
 const MAX_RUN_M: f32 = 14000.0;
 // The light march's first step, m; each after it twice the last.
 const LIGHT_FIRST_M: f32 = 40.0;
+// How much of its body a column just past the field's threshold keeps.
+const SCRAP_BODY: f32 = 0.6;
+// How hard the fine noise tears a cloud's fringe (0 none).
+const FRINGE_TEAR: f32 = 0.55;
+// The density below which a cloud thins toward nothing (`density`'s toe).
+const EDGE_TOE: f32 = 0.45;
+// The light that has scattered once on its way in: its share of the beam
+// and how much slower cloud puts it out.
+const ONCE_SHARE: f32 = 0.18;
+const ONCE_REACH: f32 = 0.45;
+// The light that has scattered many times: a little, everywhere, so the
+// heart of a cumulus is grey and not black.
+const MANY_SHARE: f32 = 0.03;
+const MANY_REACH: f32 = 0.05;
+// Sky light on a cloud's base as a share of its top's, and how much of it
+// the cloud between a point and the sky leaves at its deepest. Lower than
+// a real belly's: the atmosphere lays its whole column of blue over a
+// cloud as it does over space, so a belly drawn at its own grey reads as
+// pale as the sky beside it.
+const SKY_AT_BASE: f32 = 0.12;
+const SKY_DEEP: f32 = 0.45;
+const SKY_REACH: f32 = 0.12;
+// The field threshold (1 − cover) under which the deck is an overcast and
+// over which it is fair-weather cumulus. The three orders and the dark
+// belly above are a cumulus's; an overcast keeps the even light it was
+// tuned with (one scattered order, a belly at half its top).
+const HEAVY_THRESH: f32 = 0.12;
+const FAIR_THRESH: f32 = 0.40;
 
 // `sky::deck_hue_for`: the hue of the atmosphere's transmittance at `y`,
 // undone, so a cloud composited through it comes out grey and not tan.
@@ -160,7 +188,9 @@ fn density(p: vec3<f32>, lod: f32, dlod: f32, detail: i32) -> f32 {
         return 0.0;
     }
     let c = (field_at(p.xz + slab_warp(p, h), lod + 0.5) - cl.top.w) / cl.base.w;
-    let shape = slab_shape(h, c);
+    // A column barely past the threshold is a scrap, not a pellet: thinner,
+    // so the erosion below tears it instead of leaving a small solid ball.
+    let shape = slab_shape(h, c) * mix(SCRAP_BODY, 1.0, smoothstep(0.25, 1.5, c));
     if shape <= 0.0 || detail == 0 {
         return shape;
     }
@@ -170,13 +200,24 @@ fn density(p: vec3<f32>, lod: f32, dlod: f32, detail: i32) -> f32 {
     // small cauliflower on the big.
     let w = (p + cl.wind.xyz) / cl.slab.w;
     var n = textureSampleLevel(detail_tex, detail_samp, w, dlod).r;
+    var nf = n;
     if detail > 1 {
         let wf = vec3(w.z, w.x, w.y) * 3.1 + vec3(0.37, 0.11, 0.73);
-        let nf = textureSampleLevel(detail_tex, detail_samp, wf, dlod + 1.63).r;
+        nf = textureSampleLevel(detail_tex, detail_samp, wf, dlod + 1.63).r;
         n = n * 0.7 + nf * 0.3;
     }
     let e = (1.0 - n) * (0.55 + 0.3 * h);
-    return clamp((shape - e) / (1.0 - e), 0.0, 1.0);
+    var d = clamp((shape - e) / (1.0 - e), 0.0, 1.0);
+    if detail > 1 {
+        // The fringe alone is torn again by the fine noise: wisps off the
+        // lumps, none off the core.
+        let fe = (1.0 - nf) * FRINGE_TEAR * (1.0 - d);
+        d = clamp((d - fe) / (1.0 - fe), 0.0, 1.0);
+    }
+    // A toe: the outermost of a cloud is haze, not skin. A step of the
+    // march through it takes a few percent, so an edge is a gradient over
+    // several steps where it was one step's on-or-off.
+    return d * smoothstep(0.0, EDGE_TOE, d);
 }
 
 // The slab, raymarched: premultiplied cloud radiance and coverage.
@@ -216,6 +257,12 @@ fn march(d: vec3<f32>, px: vec2<f32>) -> vec4<f32> {
     let ph2 = phase_soft(ct);
     let sigma = cl.march.z;
     let lsteps = i32(cl.march.y);
+    let fair = smoothstep(HEAVY_THRESH, FAIR_THRESH, cl.top.w);
+    let once_share = mix(0.35, ONCE_SHARE, fair);
+    let once_reach = mix(0.25, ONCE_REACH, fair);
+    let many_share = MANY_SHARE * fair;
+    let sky_base = mix(0.5, SKY_AT_BASE, fair);
+    let sky_deep = mix(1.0, SKY_DEEP, fair);
 
     var trans = 1.0;
     var lum = vec3(0.0);
@@ -254,10 +301,18 @@ fn march(d: vec3<f32>, px: vec2<f32>) -> vec4<f32> {
                 s *= 2.0;
             }
             let tau = od * sigma;
-            let sun = cl.light.w * (ph * exp(-tau) + 0.35 * ph2 * exp(-0.25 * tau));
-            // Sky light from above: a base sees less of the sky than a top.
+            // Three orders of the sun: the beam, the light that scattered
+            // once on the way in, and the light that scattered many times.
+            // Each carries further through cloud than the last and
+            // remembers less of where the sun is, so the lit side is white,
+            // the far side grey, and the fall between them is the form.
+            let sun = cl.light.w * (ph * exp(-tau)
+                + once_share * ph2 * exp(-once_reach * tau)
+                + many_share * exp(-MANY_REACH * tau));
+            // Sky light from above: a base sees less of the sky than a top,
+            // and so does a point with cloud between it and the sun's side.
             let hgt = clamp((p.y - cl.slab.x) / (cl.slab.y - cl.slab.x), 0.0, 1.0);
-            let amb = mix(0.5, 1.0, hgt);
+            let amb = mix(sky_base, 1.0, hgt) * (sky_deep + (1.0 - sky_deep) * exp(-SKY_REACH * tau));
             let lit = cl.top.rgb * sun + cl.base.rgb * amb;
             let a = 1.0 - exp(-rho * sigma * dtf);
             lum += trans * a * lit;

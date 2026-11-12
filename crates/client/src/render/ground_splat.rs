@@ -177,10 +177,12 @@ pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
 /// (170, 137, 95), an orange the reference never shows. **(knob)**
 pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.45, 0.35, 0.20];
 
-/// Lying snow, linear (snow v0): sRGB about 205 grey, under fresh snow's
-/// ~0.8 so a sunlit drift keeps its relief rather than clipping white.
+/// Lying snow, linear (snow v0): fresh snow's ~0.8. At 0.6 it drew a 170
+/// grey under a brighter sky and read as gravel; at this a sunlit drift
+/// reads ~200 and its relief is the drifts' own shading
+/// (`ground_splat.wgsl`), which the tone curve keeps under white.
 /// **(knob)**
-pub const SNOW_ALBEDO: f32 = 0.6;
+pub const SNOW_ALBEDO: f32 = 0.82;
 /// How far under the lowest place it was seen falling the snow fades in, m:
 /// a degree of air at the lapse `[climate]` ships.
 pub const SNOW_FADE_M: f32 = 10.0;

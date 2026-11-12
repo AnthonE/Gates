@@ -836,6 +836,70 @@ pub fn exposure_ev100(frac: f32) -> f32 {
     DAY_EV100 - TWILIGHT_OPEN_STOPS * s * s * (3.0 - 2.0 * s)
 }
 
+/// How far the exposure opens while the eye stands in shade, stops. **(knob)**
+///
+/// Shade here is the sky's fill and nothing else, about a third of the light
+/// of the sunlit ground beside it, and against the fixed exposure a frame
+/// shot behind a hill read a median of 60 where `ART.md` §3's reference
+/// median is 104: most of a stop under, on every north slope, under every
+/// cloud and in every doorway. An eye opens in the shade as it does at dusk
+/// ([`TWILIGHT_OPEN_STOPS`]). At 0.7 the shaded frame's median reads ~80 and
+/// a sunlit hill seen from the shade is bright, not blown.
+pub const SHADE_OPEN_STOPS: f32 = 0.7;
+/// How long the eye takes to cover most of the way, seconds.
+pub const SHADE_ADAPT_S: f32 = 1.5;
+/// How often the land between the eye and the sun is looked for, seconds.
+pub const SHADE_LOOK_S: f32 = 0.25;
+/// How far toward the sun the look goes, metres.
+pub const SHADE_REACH_M: f32 = 1500.0;
+/// The height the look stops at, metres: over any land the island has.
+pub const SHADE_CEIL_M: f32 = 400.0;
+
+/// The stops the exposure is open by with `shade` of the sun kept from the
+/// eye, `0..=1`: a cloud over its disk (`WeatherNow::sun_cover`), the land
+/// ([`land_shades`]) or a roof. Only while the sun is what lights the frame
+/// (`lux_share`, [`sun_lux`]), and not under a sky that puts the sun out
+/// everywhere (`veil`, `WeatherNow::occlusion_floor`): an overcast, a fog
+/// and a storm are dark because the weather is, and were tuned so.
+pub fn shade_open(shade: f32, veil: f32, lux_share: f32) -> f32 {
+    SHADE_OPEN_STOPS
+        * shade.clamp(0.0, 1.0)
+        * (1.0 - veil).clamp(0.0, 1.0)
+        * lux_share.clamp(0.0, 1.0)
+}
+
+/// Whether the land stands between `eye` and the sun: a march toward
+/// `to_sun` over the ground the frame draws, in steps that grow with the
+/// distance. A hill's own shadow reaches past the shadow cascades, so this
+/// reads the land and not a shadow map.
+pub fn land_shades(seed: u64, haven: &sim_core::terrain::Haven, eye: Vec3, to_sun: Vec3) -> bool {
+    if to_sun.y <= 0.01 {
+        return false;
+    }
+    let mut t = 2.0;
+    while t < SHADE_REACH_M {
+        let p = eye + to_sun * t;
+        if p.y > SHADE_CEIL_M {
+            return false;
+        }
+        if sim_core::terrain::ground(seed, haven, p.x, p.z) > p.y {
+            return true;
+        }
+        t = t * 1.12 + 1.0;
+    }
+    false
+}
+
+/// The eye's shade as [`day_night`] keeps it between frames.
+#[derive(Default)]
+pub struct EyeShade {
+    /// The stops the exposure is open by; `None` before the first frame.
+    open: Option<f32>,
+    /// The last look for the land ([`land_shades`]) and how long ago, seconds.
+    land: bool,
+    since: f32,
+}
+
 /// How many times its own lumens a flame is drawn at, deep in the night.
 ///
 /// The exposure is daylight's ([`DAY_EV100`]) and never adapts, so a flame
@@ -1008,7 +1072,7 @@ pub const FEL_GRADE_SAT: f32 = 1.10;
 /// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
-// Ten (eleven natively), which clippy counts: the flame gain is written here
+// Fourteen (fifteen natively), which clippy counts: the flame gain is written here
 // for the reason the sun is — this is the one owner of the hour. The fog's
 // sunlit share (`shafts.rs`) is the one owner of the fog, and the film, native
 // only, owns the grade while it rolls.
@@ -1019,6 +1083,10 @@ pub fn day_night(
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
     #[cfg(not(target_arch = "wasm32"))] film: Option<Res<super::film::Film>>,
+    time: Res<Time>,
+    world: Option<Res<super::WorldId>>,
+    eye: Option<Res<Eye>>,
+    mut shade: Local<EyeShade>,
     mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
@@ -1036,6 +1104,44 @@ pub fn day_night(
     if gain.0 != g {
         gain.0 = g;
     }
+    // A film owns its exposure and its grade while it rolls (`film::lens`).
+    #[cfg(not(target_arch = "wasm32"))]
+    let filming = film.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let filming = false;
+    // The eye in shade ([`SHADE_OPEN_STOPS`]): under a cloud, behind a hill
+    // or under a roof. Eased, and where it is on the first frame, so a
+    // probe's first shot is not mid-adaptation. Not in a film, whose shots
+    // were exposed by hand.
+    shade.since += time.delta_secs();
+    if shade.open.is_none() || shade.since >= SHADE_LOOK_S {
+        shade.since = 0.0;
+        shade.land = match (&world, &eye) {
+            (Some(world), Some(eye)) if eye.placed && !w.underwater => {
+                land_shades(world.seed, &world.haven, eye.pos, to_sun(frac))
+            }
+            _ => false,
+        };
+    }
+    let kept = if shade.land || w.sheltered {
+        1.0
+    } else {
+        w.sun_cover
+    };
+    let want = if filming {
+        0.0
+    } else {
+        shade_open(kept, w.occlusion_floor(), lux_share)
+    };
+    let open = match shade.open {
+        // Settled within a hundredth of a stop: the exposure stops moving.
+        Some(was) if (want - was).abs() > 0.01 => {
+            was + (want - was) * (1.0 - (-time.delta_secs() / SHADE_ADAPT_S).exp())
+        }
+        _ => want,
+    };
+    shade.open = Some(open);
+    let ev100 = exposure_ev100(frac) - open;
     // What puts the sun's shadows out: `occ`, less two terms where something
     // else draws them. Where shafts are drawn, fog dims the sun and only
     // cloud puts its shadows out: the shafts ARE its shadows, in the air.
@@ -1093,8 +1199,7 @@ pub fn day_night(
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
             disk.intensity = if elev > 0.0 {
-                sun_disk_intensity(d.illuminance, exposure_ev100(frac))
-                    * (1.0 - w.sun_cover.max(w.fog))
+                sun_disk_intensity(d.illuminance, ev100) * (1.0 - w.sun_cover.max(w.fog))
             } else {
                 0.0
             };
@@ -1126,7 +1231,7 @@ pub fn day_night(
             lux: sun_now.0,
             casts: sun_now.1,
             elev,
-            ev100: exposure_ev100(frac),
+            ev100,
             lux_share,
             fill: light * (1.0 - 0.35 * w.dark) * (1.0 - 0.25 * w.fel),
             shadow_m: effective.shadow_m,
@@ -1134,9 +1239,8 @@ pub fn day_night(
     );
     if let Ok((mut amb, mut env, sky, fog, exposure, grading)) = cam.single_mut() {
         if let Some(mut ex) = exposure {
-            let want = exposure_ev100(frac);
-            if ex.ev100 != want {
-                ex.ev100 = want;
+            if ex.ev100 != ev100 {
+                ex.ev100 = ev100;
             }
         }
         // **The handover, and the two terms are complements by construction.**
@@ -1185,12 +1289,7 @@ pub fn day_night(
                 fog.directional_light_color = super::sky::fog_glow();
             }
         }
-        // The Verdigris' grade, a little darker and greener-lit. A film owns
-        // the grade while it rolls (`film::lens`).
-        #[cfg(not(target_arch = "wasm32"))]
-        let filming = film.is_some();
-        #[cfg(target_arch = "wasm32")]
-        let filming = false;
+        // The Verdigris' grade, a little darker and greener-lit.
         if let (Some(mut g), false) = (grading, filming) {
             let ev = FEL_GRADE_EV * w.fel;
             let sat = 1.0 + (FEL_GRADE_SAT - 1.0) * w.fel;

@@ -22,6 +22,39 @@
 #import "shaders/foliage_common.wgsl"::{displace, grazing_keep, local_height, origin_rand}
 #import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
+// Snow on a crown (`fragment`): its colour, linear; the normal's height it
+// starts to lie at and lies whole at; how far a clump moves that; and a
+// clump's size, metres.
+const FROST_RGB: vec3<f32> = vec3<f32>(0.78, 0.80, 0.83);
+const FROST_UP: vec2<f32> = vec2<f32>(-0.50, 0.15);
+const FROST_BREAK: f32 = 0.9;
+const FROST_CLUMP_M: f32 = 0.45;
+// `props::FROST_WOOD`, and the normal's height snow starts to lie on a limb
+// at and lies whole at.
+const FROST_WOOD: u32 = 0x100u;
+const FROST_WOOD_UP: vec2<f32> = vec2<f32>(0.25, 0.60);
+
+fn frost_hash(p: vec3<i32>) -> f32 {
+    var h = (bitcast<u32>(p.x) * 0x8da6b343u) ^ (bitcast<u32>(p.y) * 0xd8163841u)
+        ^ (bitcast<u32>(p.z) * 0xcb1ab31fu);
+    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+    h = (h ^ (h >> 12u)) * 0x297a2d39u;
+    h = h ^ (h >> 15u);
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// Value noise on a unit lattice, `0..1`.
+fn frost_clump(p: vec3<f32>) -> f32 {
+    let i = vec3<i32>(floor(p));
+    let f = p - floor(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let x00 = mix(frost_hash(i), frost_hash(i + vec3<i32>(1, 0, 0)), u.x);
+    let x10 = mix(frost_hash(i + vec3<i32>(0, 1, 0)), frost_hash(i + vec3<i32>(1, 1, 0)), u.x);
+    let x01 = mix(frost_hash(i + vec3<i32>(0, 0, 1)), frost_hash(i + vec3<i32>(1, 0, 1)), u.x);
+    let x11 = mix(frost_hash(i + vec3<i32>(0, 1, 1)), frost_hash(i + vec3<i32>(1, 1, 1)), u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
     var out: VertexOutput;
@@ -117,6 +150,31 @@ fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
         tex = vec4<f32>(mix(tex.rgb, vec3<f32>(dot(tex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722))), dry), tex.a);
 #endif
         pbr_input.material.base_color = c * tex;
+    }
+#endif
+
+    // Snow on the boughs. A tree on the cold ground carries how much in its
+    // mesh tag's low byte (`props::frost_tag`), and nothing else is tagged.
+    // On a crown it lies on what faces the sky, in clumps a bough across,
+    // and a laden bough passes no light from behind. On wood
+    // (`props::FROST_WOOD`) it lies along the top of a limb and not down
+    // the trunk.
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    let tag = mesh_functions::get_tag(in.instance_index);
+    let frost = f32(tag & 0xffu) / 255.0;
+    if frost > 0.0 {
+        let clump = frost_clump(in.world_position.xyz / FROST_CLUMP_M);
+        var lie = 0.0;
+        if (tag & FROST_WOOD) != 0u {
+            lie = frost * smoothstep(FROST_WOOD_UP.x, FROST_WOOD_UP.y, pbr_input.N.y + (clump - 0.5) * 0.3);
+        } else {
+            lie = frost * smoothstep(FROST_UP.x, FROST_UP.y, pbr_input.N.y + (clump - 0.5) * FROST_BREAK);
+            pbr_input.material.diffuse_transmission *= 1.0 - lie;
+        }
+        pbr_input.material.base_color = vec4<f32>(
+            mix(pbr_input.material.base_color.rgb, FROST_RGB, lie),
+            pbr_input.material.base_color.a,
+        );
     }
 #endif
 

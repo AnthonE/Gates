@@ -456,6 +456,28 @@ fn value3(p: vec3<f32>) -> f32 {
 }
 
 // `value3` on the ground's own xz: four corners instead of eight.
+// Snow's own surface (`fragment`'s snow block). The slope it lies on, as the
+// normal's height: none under the first, whole over the second.
+const SNOW_SLOPE: vec2<f32> = vec2<f32>(0.50, 0.72);
+// Thin snow lies in patches: their size, metres; how far the patch field
+// moves the cover; how far the ground's relief frays a patch's edge; and
+// the edge's half-width, in cover.
+const SNOW_PATCH_M: f32 = 3.2;
+const SNOW_PATCH: f32 = 1.3;
+const SNOW_EDGE_BREAK: f32 = 0.25;
+const SNOW_PATCH_EDGE: f32 = 0.07;
+// Its colour over its albedo (`ground_splat::SNOW_ALBEDO`): a white that
+// leans a little to the sky's side.
+const SNOW_HUE: vec3<f32> = vec3<f32>(0.97, 0.985, 1.0);
+// The drifts' wavelength and steepest slope, and the wind ripple's.
+const SNOW_DRIFT_M: f32 = 5.0;
+const SNOW_DRIFT_SLOPE: f32 = 0.18;
+const SNOW_RIPPLE_M: f32 = 0.7;
+const SNOW_RIPPLE_SLOPE: f32 = 0.16;
+// The crystal grain's depth in value, and the surface's roughness.
+const SNOW_GRAIN: f32 = 0.05;
+const SNOW_ROUGH: f32 = 0.78;
+
 fn value2(p: vec2<f32>) -> f32 {
     let i = vec2<i32>(floor(p));
     let f = p - floor(p);
@@ -1188,16 +1210,51 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         * smoothstep(band.x - band.z, band.x, dry)
         * (1.0 - smoothstep(band.y, band.y + band.z, dry))
         * smoothstep(band.w - band.z, band.w, clamp(zone.z, 0.0, 1.0));
-    let snow = max(fallen, clamp(zone.z, 0.0, 1.0))
-        * smoothstep(0.55, 0.85, in.world_normal.y)
-        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
-        * (1.0 - smoothstep(0.02, 0.25, fel));
-    base = mix(base, vec3(splat.snow.z), snow);
-
-    // The photograph, last: a scalar field with a mean of 1, so it contributes
+    // The photograph: a scalar field with a mean of 1, so it contributes
     // relief and not colour.
     let lit = dot(bw, grain) + road_weight * road_grain;
-    pbr_input.material.base_color = vec4(base * lit, 1.0);
+    // It lies on a slope up to about fifty degrees; past that the face is
+    // bare.
+    let snow_on = max(fallen, clamp(zone.z, 0.0, 1.0))
+        * smoothstep(SNOW_SLOPE.x, SNOW_SLOPE.y, in.world_normal.y)
+        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
+        * (1.0 - smoothstep(0.02, 0.25, fel));
+    // Where it is thin it lies in patches a few metres across, not as a
+    // wash: a low field decides where the patches are, and the ground's own
+    // relief frays their edges (it fills a hollow before a high point). Past
+    // where a pixel can hold a patch, the cover is a blend again.
+    let patchy = 4.0 * snow_on * (1.0 - snow_on);
+    let held = 1.0 - smoothstep(0.6, 2.5, fp_m);
+    let pp = wp.xz / SNOW_PATCH_M;
+    let field = 0.65 * value2(pp) + 0.35 * value2(pp * 2.7 + vec2<f32>(3.1, 7.7));
+    let cover = snow_on + patchy * held * ((field - 0.5) * SNOW_PATCH + (1.0 - lit) * SNOW_EDGE_BREAK);
+    let soft = mix(0.5, SNOW_PATCH_EDGE, held);
+    let snow = smoothstep(0.5 - soft, 0.5 + soft, cover);
+    // Snow is its own surface: the ground's photograph is under it, not on
+    // it. Drifts a few metres across and the wind's ripple under a metre
+    // shade it (the normal, below); here only a faint packing of the two and
+    // a grain that is gone before it is finer than a pixel.
+    var snow_dh = vec2<f32>(0.0);
+    var snow_lit = 1.0;
+    if snow > 0.0 {
+        // Each scale is gone before a pixel spans it.
+        let near = 1.0 - smoothstep(0.008, 0.02, fp_m);
+        let mid = 1.0 - smoothstep(0.12, 0.35, fp_m);
+        let far = 1.0 - smoothstep(1.0, 2.5, fp_m);
+        let pd = wp.xz / SNOW_DRIFT_M;
+        // The ripple's lattice is turned off the drifts'.
+        let pr = vec2<f32>(wp.x * 0.8 - wp.z * 0.6, wp.x * 0.6 + wp.z * 0.8) / SNOW_RIPPLE_M;
+        let e = 0.25;
+        let d0 = value2(pd);
+        let r0 = value2(pr);
+        let gd = vec2<f32>(value2(pd + vec2(e, 0.0)) - d0, value2(pd + vec2(0.0, e)) - d0) / e;
+        let gr = vec2<f32>(value2(pr + vec2(e, 0.0)) - r0, value2(pr + vec2(0.0, e)) - r0) / e;
+        snow_dh = gd * (SNOW_DRIFT_SLOPE * far)
+            + vec2<f32>(0.8 * gr.x + 0.6 * gr.y, -0.6 * gr.x + 0.8 * gr.y) * (SNOW_RIPPLE_SLOPE * mid);
+        let fine = (2.0 * value2(wp.xz / 0.035) - 1.0) * near;
+        snow_lit = 1.0 + 0.05 * (d0 - 0.5) * far + 0.06 * (r0 - 0.5) * mid + SNOW_GRAIN * fine;
+    }
+    pbr_input.material.base_color = vec4(mix(base * lit, splat.snow.z * SNOW_HUE * snow_lit, snow), 1.0);
 
     // What lies under water — the sea's shelf and the lakes' beds alike.
     let under = splat.caustics.x - wp.y;
@@ -1275,7 +1332,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // drift `CLAUDE.md` names twice. `tests/ground_splat.rs` holds our knob
     // clear of it instead, which is the half that IS ours.
     let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
-    pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_ra.r) * wet_keep;
+    pbr_input.material.perceptual_roughness = mix((dot(bw, rough_map) + road_weight * road_ra.r) * wet_keep, SNOW_ROUGH, snow);
     // Obsidian is glass, and a pool is liquid.
     if fel > 0.0 {
         let glassy = mix(1.0, splat.fel_rock.w, fel * bw.w);
@@ -1298,14 +1355,18 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
     let wall_relief = t0.relief * (bw.x * wm.x) + t1.relief * (bw.y * wm.y)
         + t2.relief * (bw.z * wm.z) + t3.relief * (bw.w * wm.w);
-    pbr_input.N = normalize(tbn * vec3(g + road_g * road_relief, 1.0)
-        + wall_relief - dot(wall_relief, wn) * wn);
+    // Under the snow the ground's own relief is buried.
+    let bare = 1.0 - snow;
+    pbr_input.N = normalize(tbn * vec3((g + road_g * road_relief) * bare, 1.0)
+        + (wall_relief - dot(wall_relief, wn) * wn) * bare);
     // The block's facet, only where the surface is rock and only across the
     // surface: the tilt's component along N is removed so a facet leans and
     // never lifts.
     let n0 = pbr_input.N;
-    let lean = (rock_tilt - dot(rock_tilt, n0) * n0) * bw.w;
-    pbr_input.N = normalize(n0 + lean);
+    let lean = (rock_tilt - dot(rock_tilt, n0) * n0) * bw.w * bare;
+    // The drifts and the ripple, across the surface.
+    let drift = vec3<f32>(-snow_dh.x, 0.0, -snow_dh.y) * snow;
+    pbr_input.N = normalize(n0 + lean + drift - dot(drift, n0) * n0);
     // A pool is level.
     pbr_input.N = normalize(mix(pbr_input.N, wn, pool));
     // The Verdigris' glow, never under water.
@@ -1339,7 +1400,8 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
             wm,
         ),
     );
-    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ra.g));
+    // The photograph's creases are under the snow too.
+    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(mix(ao + road_weight * road_ra.g, 1.0, snow)));
 
     out.color = apply_pbr_lighting(pbr_input);
 #ifdef CLOUD_SHADOWS

@@ -32,6 +32,13 @@ struct CardParams {
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> card: CardParams;
 
+// Snow on a card (`fragment`): its colour, linear (`foliage.wgsl`'s
+// `FROST_RGB`); the atlas luma it starts to lie at and lies whole at; and the
+// dusting every texel of a laden tree keeps.
+const CARD_FROST_RGB: vec3<f32> = vec3<f32>(0.78, 0.80, 0.83);
+const CARD_FROST_LUMA: vec2<f32> = vec2<f32>(0.03, 0.14);
+const CARD_FROST_FLOOR: f32 = 0.25;
+
 fn ring_holds(wp: vec3<f32>) -> bool {
     let local = vec2<i32>(floor(wp.xz / card.params.x)) - card.window.xy;
     let side = card.window.z;
@@ -149,10 +156,28 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifdef VERTEX_UVS
     if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
         var c = pbr_bindings::material.base_color;
+        // The snow the tree carries (`props::tree_frost`): a tile's card has
+        // it in its vertex colour, as blue over red, and a ring's in its mesh
+        // tag. The tint is the red alone.
+        var frost = 0.0;
 #ifdef VERTEX_COLORS
-        c *= in.color;
+        frost = max(in.color.b - in.color.r, 0.0);
+        c *= vec4<f32>(in.color.rrr, in.color.a);
 #endif
-        pbr_input.material.base_color = c * cut_read(uv, duv);
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+        frost = max(frost, f32(mesh_functions::get_tag(in.instance_index) & 0xffu) / 255.0);
+#endif
+        let tex = cut_read(uv, duv);
+        var col = c * tex;
+        if frost > 0.0 {
+            // The card bakes a needle facing up brighter than one facing
+            // down (`far_trees::CARD_LIGHT_FLOOR`), so the bright texels are
+            // where the snow lies; the rest keeps a dusting.
+            let up = smoothstep(CARD_FROST_LUMA.x, CARD_FROST_LUMA.y, dot(tex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)));
+            let lie = frost * (CARD_FROST_FLOOR + (1.0 - CARD_FROST_FLOOR) * up);
+            col = vec4<f32>(mix(col.rgb, CARD_FROST_RGB, lie), col.a);
+        }
+        pbr_input.material.base_color = col;
     }
 #endif
 #ifdef VISIBILITY_RANGE_DITHER

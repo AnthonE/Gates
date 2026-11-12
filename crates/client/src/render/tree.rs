@@ -221,6 +221,12 @@ pub fn species_of(variant: usize) -> usize {
     (variant / SEEDS_PER_SPECIES).min(SPECIES.len() - 1)
 }
 
+/// Whether a pool variant is a tree that drops its leaves for the winter
+/// (`props::winter_bare`): the broadleaf, never the pine or the palm.
+pub fn deciduous(variant: usize) -> bool {
+    matches!(SPECIES[species_of(variant)].tree_type, TreeType::Deciduous)
+}
+
 /// Ceiling on one conifer's triangles, bark and needles together.
 ///
 /// Measured rather than chosen. At the client's 5×5×64 m prop ring the p90 is

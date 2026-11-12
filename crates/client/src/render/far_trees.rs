@@ -220,7 +220,15 @@ pub fn init(
         .map(|v| {
             let mut b = TileBuild::new((0, 0));
             let (u0, u1) = (v as f32 / pool as f32, (v + 1) as f32 / pool as f32);
-            push_quad(&mut b, Vec3::ZERO, dims[v].half_w, dims[v].h, u0, u1, 1.0);
+            push_quad(
+                &mut b,
+                Vec3::ZERO,
+                dims[v].half_w,
+                dims[v].h,
+                (u0, u1),
+                1.0,
+                0.0,
+            );
             meshes.add(tile_mesh(b))
         })
         .collect();
@@ -605,6 +613,12 @@ fn push_card(
         return;
     }
     let variant = props::species_variant(slot, pool);
+    // A broadleaf on the cold ground stands bare (`props::winter_bare`), and
+    // a card is a crown in leaf: none is drawn, as for a snag.
+    let cold = terrain::cold_memo(&mut b.lat, world.seed, slot.x, slot.z, slot.y);
+    if props::winter_bare(variant, cold) {
+        return;
+    }
     let d = dims[variant];
     let y = terrain_mesh::far_ground_y(world.seed, &world.haven, slot.x, slot.z) - CARD_SINK_M;
     let u0 = variant as f32 / pool as f32;
@@ -618,21 +632,34 @@ fn push_card(
     // The near ring's per-instance value spread, in the vertex colour here
     // because a tile is one material.
     let tint = props::tint_pool()[props::tint_of(key)];
+    // The snow the tree carries (`props::tree_frost`), which a ring card has
+    // in its mesh tag: here in the vertex colour, as blue over red.
+    let frost = props::tree_frost(cold, key);
     push_quad(
         b,
         Vec3::new(slot.x, y, slot.z),
         d.half_w * slot.scale,
         d.h * slot.scale,
-        ua,
-        ub,
+        (ua, ub),
         tint,
+        frost,
     );
 }
 
 /// One card: four corners on the base line, lifted by their share of the
 /// height, with the sideways offset in `uv_b` for the vertex stage.
-fn push_quad(b: &mut TileBuild, base: Vec3, hw: f32, h: f32, ua: f32, ub: f32, tint: f32) {
-    let c = [tint, tint, tint, 1.0];
+fn push_quad(
+    b: &mut TileBuild,
+    base: Vec3,
+    hw: f32,
+    h: f32,
+    (ua, ub): (f32, f32),
+    tint: f32,
+    frost: f32,
+) {
+    // A grey tint, and the tree's snow as how far blue stands over red
+    // (`tree_card.wgsl` reads it back and tints by red alone).
+    let c = [tint, tint, tint + frost, 1.0];
     for (s, t) in [(-1.0f32, 0.0f32), (1.0, 0.0), (1.0, 1.0), (-1.0, 1.0)] {
         b.pos.push([base.x, base.y + t * h, base.z]);
         b.uv.push([if s < 0.0 { ua } else { ub }, 1.0 - t]);
