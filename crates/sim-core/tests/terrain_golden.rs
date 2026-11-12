@@ -226,7 +226,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `Haven::ore_pm` rescales.
 /// **Moved → `0x6105_AA2B_C6A0_F13F` at the snow's conifers** (2026-10-28, wipe):
 /// every tree in `Biome::Snow` is `terrain::CONIFER_SPECIES`, no broadleaf.
-const GOLDEN_TERRAIN_HASH: u64 = 0x6105_AA2B_C6A0_F13F;
+/// **Moved → `0xFAA7_0C40_CA79_D87C` at the taiga** (2026-11-12, wipe): the Snow row's
+/// trees 24 → 90 and scrub 20 → 70 per mille, and a tree there keeps
+/// `terrain::SNOW_BROADLEAF_SHARE` of the painted broadleaf. No height moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0xFAA7_0C40_CA79_D87C;
 
 #[test]
 fn test_terrain_golden() {
