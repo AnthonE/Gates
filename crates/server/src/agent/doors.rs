@@ -659,6 +659,9 @@ pub struct Leave {
     last: Option<(OpAddr, u32)>,
     checked: Option<u32>,
     held: Option<u32>,
+    /// A door on the way out that could not be got through: when, where
+    /// the body stood, and why.
+    failed: Option<(u32, [f32; 2], Why)>,
 }
 
 impl Leave {
@@ -666,6 +669,18 @@ impl Leave {
     pub fn held(&self, tick: u32) -> bool {
         self.held
             .is_some_and(|t| tick.wrapping_sub(t) < LEAVE_RETRY_TICKS)
+    }
+
+    /// Still where a door would not let it out a moment ago (`here`,
+    /// metres): why that door did not. A walk that then comes to nothing
+    /// inside the walls failed for this, not for its own target.
+    pub fn walled_in(&self, here: [f32; 2], tick: u32) -> Option<Why> {
+        self.failed
+            .filter(|&(at, p, _)| {
+                tick.wrapping_sub(at) < LEAVE_RETRY_TICKS
+                    && (p[0] - here[0]).hypot(p[1] - here[1]) <= LEAVE_M
+            })
+            .map(|(.., why)| why)
     }
 
     /// Through the nearest door on its floor within `within`, not passed
@@ -744,6 +759,12 @@ impl Leave {
                 Some(Through::Go(Intent::IDLE))
             }
             Through::GaveUp(_) | Through::Fail(_) => {
+                let why = match step {
+                    Through::Fail(why) => why,
+                    _ => Why::Door,
+                };
+                let at = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+                self.failed = Some((tick, at, why));
                 self.doors.clear();
                 self.held = Some(tick);
                 None
@@ -778,6 +799,7 @@ impl Leave {
             // Out: the next time in is a new way.
             self.passed = [None; MAX_DOORS];
             self.n = 0;
+            self.failed = None;
             return None;
         }
         if !self.through_nearest(core, body, LEAVE_M, tick) {

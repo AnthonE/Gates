@@ -6566,3 +6566,238 @@ fn the_minds_we_ship_hold_no_tools() {
         );
     }
 }
+
+/// A travelling mind for the walk-out tests: the scripted mind while `.0`
+/// is 0 (it builds the base), `.2` whenever it may be chosen while 1, and
+/// a stand otherwise. External, so the travel goals are on offer.
+struct Outing(std::sync::Arc<std::sync::atomic::AtomicU8>, Scripted, Goal);
+
+impl server::mind::DecisionSource for Outing {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let mode = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        if mode == 0 {
+            return self.1.decide(s);
+        }
+        let goal = if mode == 1 && s.allows(self.2) {
+            self.2
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// **Behind its own box, a founder still walks out of its base.** The
+/// door walk goes straight from point to point, and the base's box stands
+/// in the middle of the stair cell: a body south of it walked into the box
+/// head on, came no closer for two seconds, and the goal that wanted it
+/// outside failed "could not reach a target" (#574, a `go` from inside its
+/// own walls, 2 s). It steps round the box now, as the team's door walk
+/// steps round what stands in its way.
+#[test]
+fn a_founder_behind_its_own_box_walks_out_of_its_base() {
+    use server::agent::build::{Milestone, Region};
+    use sim_core::build::{column_floor_y, BUILD_CELL_M};
+    use std::sync::atomic::Ordering;
+
+    let mode = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let walk = Goal::Walk(server::mind::Walk {
+        bearing: 0,
+        metres: 14,
+    });
+    let mind = Mind::inline(
+        Outing(mode.clone(), Scripted::default(), walk),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let mut kit = vec![stack("item.wood", 1000); 5];
+    kit.extend(vec![stack("item.stone", 1000); 7]);
+    kit.extend([
+        stack("item.cloth", 60),
+        stack("item.metal_frags", 100),
+        stack("item.lowgrade", 50),
+    ]);
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+    let built = h.until(60_000, |b| {
+        b.builder().survey().milestone >= Milestone::Done
+            || b.core()
+                .is_some_and(|c| b.builder().stations(c).furnace.is_some())
+    });
+    assert!(built, "the base never stood: {}", h.explain());
+    let plan = h.bot.builder().plan().expect("a plot");
+    let haven = h.shard.world.haven;
+    // The far corner of the plot's cell, where the core, the stair cell
+    // and the airlock meet.
+    let corner = [
+        (f32::from(plan.cx) + 1.0) * BUILD_CELL_M,
+        (f32::from(plan.cz) + 1.0) * BUILD_CELL_M,
+    ];
+    let stair = (plan.cx + 1, plan.cz);
+    assert!(
+        h.shard
+            .world
+            .deploys
+            .find(stair.0, stair.1, 0, sim_core::build::LOC_PLANE)
+            .is_some_and(|d| h.shard.world.deploy.defs[usize::from(d.row)].arch
+                == sim_core::deploy::ARCH_BOX),
+        "the base's box stands in the stair cell"
+    );
+    // Whatever the scripted mind was at runs out, then the body is south
+    // of the box, past the leave's own retry clock.
+    mode.store(2, Ordering::Relaxed);
+    h.until(120 * TICK_HZ, |b| {
+        matches!(b.goal(), None | Some(Goal::Wait))
+    });
+    let plate = h
+        .shard
+        .world
+        .pieces
+        .cols()
+        .plate(plan.cx, plan.cz)
+        .unwrap_or(0);
+    let floor = column_floor_y(SEED, &haven, plan.cx, plan.cz, plate);
+    let mut b = sim_core::movement::Body::at(SEED, &haven, corner[0] + 1.5, corner[1] - 2.4);
+    b.qy = sim_core::movement::quant_y(floor);
+    h.stage(move |p| p.body = b);
+    h.until(32 * TICK_HZ, |_| false);
+    let failed = h.bot.stats.goals_failed;
+
+    mode.store(1, Ordering::Relaxed);
+    let out = |h: &Harness| {
+        let me = h.me();
+        let p = [me.body.qx as f32 * 0.03, me.body.qz as f32 * 0.03];
+        (p[0] - corner[0]).hypot(p[1] - corner[1]) > 7.0
+            && h.bot.builder().region_of(p) == Region::Outside
+    };
+    for _ in 0..60 * TICK_HZ {
+        if out(&h) || h.bot.stats.goals_failed > failed {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        out(&h),
+        "never got out from behind its box: {:?} {}",
+        h.bot.history.iter().last(),
+        h.explain()
+    );
+    assert_eq!(h.bot.stats.goals_failed, failed, "a goal failed on the way");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// **Locked inside the team's base, a walk that fails says the lock.**
+/// Living in its teammate's base, the agent is inside when the teammate
+/// bolts a code lock on the door and never says the code. Sent on patrol,
+/// it tries the door, is refused, and none of the ring's posts can be
+/// walked to from inside the walls. That used to end "could not reach a
+/// target" two seconds in (#581), which named the posts; it names the lock
+/// now, as its own base's door walk always has.
+#[test]
+fn a_teammate_locked_inside_the_team_s_base_says_the_lock_and_not_its_target() {
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_ZLO};
+    use sim_core::deploy::ACCESS_OP_SET_CODE;
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(
+        Prefer(&[Goal::JoinTeam, Goal::Patrol], None),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let (bx, bz) = move_in(&mut h, at);
+    assert!(h.bot.memory().shared, "it lives in the team's base");
+    let rows = server::population::base_rows(&content).unwrap();
+    let (bxf, bzf) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+
+    // The teammate is back at its door, locks it, and goes.
+    let by_the_door = place(bxf + 1.5, bzf + 1.0);
+    h.stage_puppet(move |p| p.body = by_the_door);
+    let lock = sim_core::gather::ItemStack {
+        count: 1,
+        ..common::stack(&content, "item.lock_code")
+    };
+    h.stage_puppet(move |p| p.inv[HOTBAR_SLOTS] = lock);
+    h.puppet_act(ActionMsg::Deploy {
+        row: rows.lock,
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+        pose: sim_core::footprint::Pose::CENTRE,
+    });
+    h.puppet_act(ActionMsg::Access {
+        cx: bx,
+        cz: bz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+        op: ACCESS_OP_SET_CODE,
+        code: 2468,
+    });
+    let w = &h.shard.world;
+    assert!(
+        w.deploys
+            .find(bx, bz, 0, LOC_EDGE_ZLO)
+            .is_some_and(|d| !d.open)
+            && !w.deploys.lock_passes(bx, bz, 0, LOC_EDGE_ZLO, ID),
+        "the door is shut, and its lock does not know the agent"
+    );
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+
+    // The agent inside, with something in hand to patrol with.
+    let (inside, spear) = (place(bxf + BUILD_CELL_M + 0.6, bzf + 0.6), h.spear);
+    h.stage(move |p| {
+        p.body = inside;
+        p.inv[0] = spear;
+    });
+    let failed = h.bot.stats.goals_failed;
+    let over = h.until(240 * TICK_HZ, |b| {
+        b.stats.goals_failed > failed
+            && b.history
+                .iter()
+                .last()
+                .is_some_and(|r| r.goal == Goal::Patrol)
+    });
+    let last = h.bot.history.iter().last();
+    assert!(over, "no patrol failed: {last:?} {}", h.explain());
+    assert_eq!(
+        last.map(|r| r.outcome),
+        Some(Outcome::Failed(Why::Locked)),
+        "{last:?} {}",
+        h.explain()
+    );
+    assert!(inside_base(feet(&h), (bx, bz)), "{:?}", feet(&h));
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}

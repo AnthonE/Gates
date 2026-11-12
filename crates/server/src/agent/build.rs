@@ -520,6 +520,12 @@ pub const WAYPOINT_M: f32 = 0.1;
 /// A waypoint the body has got no closer to in this long is not going to
 /// be reached.
 pub const PASSAGE_STALL_TICKS: u32 = 2 * TICK_HZ;
+/// A leg of the door walk that stalls is stepped round to one side, then
+/// the other (`doors::DODGE_TICKS` each, the team's door walk's own
+/// side-step), this many times a waypoint before the walk is given up:
+/// its own box stands in the stair cell's middle, a teammate's may lie
+/// anywhere on its floor, and a body is not always on the line.
+pub const PASSAGE_DODGES: u8 = 6;
 /// How far off the aim line `E` still takes a thing: the human client's
 /// `interact::AIM_RADIUS_M`.
 const E_AIM_RADIUS_M: f32 = 1.0;
@@ -1203,6 +1209,11 @@ pub struct Passage {
     held: Option<u32>,
     tries: u8,
     best: Option<(f32, u32)>,
+    /// A side-step round what stands on the leg: until this tick, along
+    /// this bearing; which side is next; and how many this waypoint.
+    dodge: Option<(u32, u16)>,
+    dodge_left: bool,
+    dodges: u8,
 }
 
 impl Passage {
@@ -1220,6 +1231,9 @@ impl Passage {
         held: None,
         tries: 0,
         best: None,
+        dodge: None,
+        dodge_left: false,
+        dodges: 0,
     };
 
     /// Mid-walk: a door may stand open, and switching now would leave it.
@@ -1428,6 +1442,8 @@ impl Passage {
         let left = (target[0] - x).hypot(target[1] - z);
         if left <= WAYPOINT_M {
             self.best = None;
+            self.dodge = None;
+            self.dodges = 0;
             // The leg just walked had its door open: shut it from here.
             self.shut = door;
             if self.stop == Some(self.at) {
@@ -1454,16 +1470,38 @@ impl Passage {
             }
             return Pass::Go(Intent::IDLE);
         }
+        let yaw = yaw_toward(target[0] - x, target[1] - z);
+        if let Some((until, side)) = self.dodge {
+            if tick.wrapping_sub(until) > u32::MAX / 2 {
+                return Pass::Go(Intent::walk(side));
+            }
+            self.dodge = None;
+            self.best = None;
+        }
         match self.best {
             Some((best, since)) if left > best - 0.05 => {
                 if tick.wrapping_sub(since) >= PASSAGE_STALL_TICKS {
-                    self.way = None;
-                    return Pass::Fail(Why::Stuck);
+                    if self.dodges >= PASSAGE_DODGES {
+                        self.way = None;
+                        return Pass::Fail(Why::Stuck);
+                    }
+                    // Something stands on the line: round it, a side at a
+                    // time, as a person steps round a box.
+                    self.dodges += 1;
+                    self.dodge_left = !self.dodge_left;
+                    let quarter = 1u16 << 14;
+                    let side = if self.dodge_left {
+                        yaw.wrapping_sub(quarter)
+                    } else {
+                        yaw.wrapping_add(quarter)
+                    };
+                    self.dodge = Some((tick.wrapping_add(crate::agent::doors::DODGE_TICKS), side));
+                    return Pass::Go(Intent::walk(side));
                 }
             }
             _ => self.best = Some((left, tick)),
         }
-        Pass::Go(Intent::walk(yaw_toward(target[0] - x, target[1] - z)))
+        Pass::Go(Intent::walk(yaw))
     }
 
     /// Eyes on the door, then the press once they have settled on it and
