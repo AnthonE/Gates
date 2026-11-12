@@ -51,6 +51,7 @@
 //! performance feature — which `CLAUDE.md`'s trap list already names once,
 //! about `COVER_FULL`.
 
+use bevy::anti_alias::contrast_adaptive_sharpening::ContrastAdaptiveSharpening;
 use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass};
@@ -681,6 +682,19 @@ pub fn shadow_vram_mb(g: Gfx) -> f32 {
     texels * 4.0 / (1024.0 * 1024.0)
 }
 
+/// How hard the frame is sharpened after TAA, `0..=1` (Bevy's default is
+/// 0.6, tuned for FXAA's heavier blur). **(knob)**
+pub const TAA_SHARPEN: f32 = 0.35;
+
+/// The sharpening pass TAA is drawn with.
+pub fn taa_sharpen() -> ContrastAdaptiveSharpening {
+    ContrastAdaptiveSharpening {
+        enabled: true,
+        sharpening_strength: TAA_SHARPEN,
+        denoise: false,
+    }
+}
+
 /// Push the chosen settings into the components that carry them.
 ///
 /// **It RECONCILES rather than reacting, and the difference is a bug this
@@ -737,7 +751,11 @@ pub fn apply(
         if t.taa && !capturing {
             e.remove::<Smaa>();
             e.insert(TemporalAntiAliasing::default());
+            // TAA's resolve is a blur; this gives the grass and the bark
+            // their edges back.
+            e.insert(taa_sharpen());
         } else {
+            e.remove::<ContrastAdaptiveSharpening>();
             // The jitter and the mip bias are TAA's required components and
             // outlive it: left behind, the frame shakes with nothing to
             // resolve it.
