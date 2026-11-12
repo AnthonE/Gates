@@ -32,7 +32,7 @@
 //! already lists.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, MeshTag, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::gather::cell_key;
@@ -788,6 +788,24 @@ pub fn tint_pool() -> [f32; TINT_POOL] {
         let t = (i as f32 / (TINT_POOL - 1) as f32) * 2.0 - 1.0;
         1.0 + TINT_SWING * t
     })
+}
+
+/// The ground's cold (`terrain::cold`) at which a tree starts to carry snow,
+/// and at which it carries all it will. **(knob)**
+pub const FROST_COLD: (f32, f32) = (0.25, 0.75);
+
+/// How much snow a tree standing on ground this cold carries, `0..=1`: none
+/// off the snow, and on it a third less on some trees than on others (off
+/// the cell key, so two players see the same laden pine).
+pub fn tree_frost(cold: f32, key: u32) -> f32 {
+    let on = ((cold - FROST_COLD.0) / (FROST_COLD.1 - FROST_COLD.0)).clamp(0.0, 1.0);
+    on * (0.67 + 0.33 * hash01(key, 0xf205_7000))
+}
+
+/// [`tree_frost`] as a crown or a card carries it to its shader
+/// (`foliage.wgsl`, `tree_card.wgsl`): the low byte of the mesh's tag.
+pub fn frost_tag(frost: f32) -> MeshTag {
+    MeshTag((frost.clamp(0.0, 1.0) * 255.0).round() as u32)
 }
 
 /// Which tint a slot draws, from the cell key alone.
@@ -3205,11 +3223,13 @@ pub fn spawn_outer_tree(
     // The card where the client has one — two triangles for the hull's 105,
     // and a tree's own silhouette rather than a lathed cone.
     if let Some(cards) = &a.cards {
+        let frost = tree_frost(terrain::cold(world.seed, slot.x, slot.z, slot.y), key);
         commands.entity(parent).with_child((
             fellable,
             Grow::tree(slot.scale),
             cards.card(variant),
             MeshMaterial3d(cards.materials[tint_of(key)].clone()),
+            frost_tag(frost),
             transform,
         ));
         return;
@@ -3557,6 +3577,13 @@ pub fn spawn_slot(
         }
         e.add_child(id);
     }
+    // The snow a tree or a shrub on the cold ground carries: on a crown, a
+    // card and a bush's leaves (`foliage.wgsl`, `tree_card.wgsl`).
+    let frost = if is_tree || slot.occupant == Occupant::Shrub {
+        frost_tag(tree_frost(terrain::cold(seed, slot.x, slot.z, slot.y), key))
+    } else {
+        MeshTag(0)
+    };
     // A plant's leaves (and a berry bush's berries), as more children of the
     // same slot: the wood above is opaque and matte, the leaves alpha-masked
     // and the berries glossy, and one `StandardMaterial` has one of each.
@@ -3591,6 +3618,7 @@ pub fn spawn_slot(
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(mat.clone()),
                     transform,
+                    frost.clone(),
                     super::plants::fade_band(),
                 ));
             }
@@ -3643,6 +3671,7 @@ pub fn spawn_slot(
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
             MeshMaterial3d(a.canopy_material(variant, key).clone()),
             tree::lod_band(&lod.near),
+            frost.clone(),
             transform,
         ));
     }
@@ -3682,6 +3711,7 @@ pub fn spawn_slot(
                 cards.card(variant),
                 MeshMaterial3d(cards.materials[tint].clone()),
                 tree::lod_band(&lod.far),
+                frost,
                 transform,
             ));
         } else {

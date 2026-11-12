@@ -1080,11 +1080,12 @@ fn build_tile(
             }
         }
         // The snow: the grass thins as the ground whitens and none
-        // stands on the Snow biome's ground (`terrain::COLD_BIOME_AT`).
+        // stands on the Snow biome's ground (`terrain::COLD_BIOME_AT`). The
+        // litter and the grit go with it: they lie under the snow, not on it.
         let snow = (terrain::cold_memo(&mut lat, seed, e.x, e.z, e.y) / terrain::COLD_BIOME_AT)
             .clamp(0.0, 1.0);
         if snow > 0.0
-            && masked(e.kind)
+            && (masked(e.kind) || matches!(e.kind, Clutter::Twig | Clutter::Pebble))
             && hash01(
                 (e.x * 64.0) as i32 as u32,
                 (e.z * 64.0) as i32 as u32 ^ 0x5e0f,
