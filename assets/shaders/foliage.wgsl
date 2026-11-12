@@ -29,6 +29,10 @@ const FROST_RGB: vec3<f32> = vec3<f32>(0.78, 0.80, 0.83);
 const FROST_UP: vec2<f32> = vec2<f32>(-0.50, 0.15);
 const FROST_BREAK: f32 = 0.9;
 const FROST_CLUMP_M: f32 = 0.45;
+// `props::FROST_WOOD`, and the normal's height snow starts to lie on a limb
+// at and lies whole at.
+const FROST_WOOD: u32 = 0x100u;
+const FROST_WOOD_UP: vec2<f32> = vec2<f32>(0.25, 0.60);
 
 fn frost_hash(p: vec3<i32>) -> f32 {
     var h = (bitcast<u32>(p.x) * 0x8da6b343u) ^ (bitcast<u32>(p.y) * 0xd8163841u)
@@ -151,18 +155,26 @@ fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
 
     // Snow on the boughs. A tree on the cold ground carries how much in its
     // mesh tag's low byte (`props::frost_tag`), and nothing else is tagged.
-    // It lies on what faces the sky, in clumps a bough across, and a laden
-    // bough passes no light from behind.
+    // On a crown it lies on what faces the sky, in clumps a bough across,
+    // and a laden bough passes no light from behind. On wood
+    // (`props::FROST_WOOD`) it lies along the top of a limb and not down
+    // the trunk.
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
-    let frost = f32(mesh_functions::get_tag(in.instance_index) & 0xffu) / 255.0;
+    let tag = mesh_functions::get_tag(in.instance_index);
+    let frost = f32(tag & 0xffu) / 255.0;
     if frost > 0.0 {
         let clump = frost_clump(in.world_position.xyz / FROST_CLUMP_M);
-        let lie = frost * smoothstep(FROST_UP.x, FROST_UP.y, pbr_input.N.y + (clump - 0.5) * FROST_BREAK);
+        var lie = 0.0;
+        if (tag & FROST_WOOD) != 0u {
+            lie = frost * smoothstep(FROST_WOOD_UP.x, FROST_WOOD_UP.y, pbr_input.N.y + (clump - 0.5) * 0.3);
+        } else {
+            lie = frost * smoothstep(FROST_UP.x, FROST_UP.y, pbr_input.N.y + (clump - 0.5) * FROST_BREAK);
+            pbr_input.material.diffuse_transmission *= 1.0 - lie;
+        }
         pbr_input.material.base_color = vec4<f32>(
             mix(pbr_input.material.base_color.rgb, FROST_RGB, lie),
             pbr_input.material.base_color.a,
         );
-        pbr_input.material.diffuse_transmission *= 1.0 - lie;
     }
 #endif
 

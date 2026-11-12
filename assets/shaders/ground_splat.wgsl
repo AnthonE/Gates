@@ -459,8 +459,13 @@ fn value3(p: vec3<f32>) -> f32 {
 // Snow's own surface (`fragment`'s snow block). The slope it lies on, as the
 // normal's height: none under the first, whole over the second.
 const SNOW_SLOPE: vec2<f32> = vec2<f32>(0.50, 0.72);
-// How far the ground's relief breaks a thinning edge into patches.
-const SNOW_EDGE_BREAK: f32 = 1.5;
+// Thin snow lies in patches: their size, metres; how far the patch field
+// moves the cover; how far the ground's relief frays a patch's edge; and
+// the edge's half-width, in cover.
+const SNOW_PATCH_M: f32 = 3.2;
+const SNOW_PATCH: f32 = 1.3;
+const SNOW_EDGE_BREAK: f32 = 0.25;
+const SNOW_PATCH_EDGE: f32 = 0.07;
 // Its colour over its albedo (`ground_splat::SNOW_ALBEDO`): a white that
 // leans a little to the sky's side.
 const SNOW_HUE: vec3<f32> = vec3<f32>(0.97, 0.985, 1.0);
@@ -1214,9 +1219,17 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         * smoothstep(SNOW_SLOPE.x, SNOW_SLOPE.y, in.world_normal.y)
         * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
         * (1.0 - smoothstep(0.02, 0.25, fel));
-    // It fills the ground's hollows first and its high points last, so where
-    // it thins the edge is patches in the relief rather than a wash of grey.
-    let snow = smoothstep(0.0, 1.0, snow_on + snow_on * (1.0 - snow_on) * 4.0 * (1.0 - lit) * SNOW_EDGE_BREAK);
+    // Where it is thin it lies in patches a few metres across, not as a
+    // wash: a low field decides where the patches are, and the ground's own
+    // relief frays their edges (it fills a hollow before a high point). Past
+    // where a pixel can hold a patch, the cover is a blend again.
+    let patchy = 4.0 * snow_on * (1.0 - snow_on);
+    let held = 1.0 - smoothstep(0.6, 2.5, fp_m);
+    let pp = wp.xz / SNOW_PATCH_M;
+    let field = 0.65 * value2(pp) + 0.35 * value2(pp * 2.7 + vec2<f32>(3.1, 7.7));
+    let cover = snow_on + patchy * held * ((field - 0.5) * SNOW_PATCH + (1.0 - lit) * SNOW_EDGE_BREAK);
+    let soft = mix(0.5, SNOW_PATCH_EDGE, held);
+    let snow = smoothstep(0.5 - soft, 0.5 + soft, cover);
     // Snow is its own surface: the ground's photograph is under it, not on
     // it. Drifts a few metres across and the wind's ripple under a metre
     // shade it (the normal, below); here only a faint packing of the two and

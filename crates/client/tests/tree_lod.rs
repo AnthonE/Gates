@@ -80,12 +80,18 @@ fn fixture() -> (App, PropAssets) {
     (app, a)
 }
 
+/// The seed `spawned` hands `spawn_slot`.
+const SEED: u64 = 7;
+
 fn slot(occupant: Occupant) -> Slot {
     Slot {
         occupant,
-        x: 14.0,
+        // Mid-island and low: temperate ground. The fixture stood at
+        // z = -7.25 until a broadleaf on the cold ground drew bare
+        // (`props::winter_bare`), and that is the arctic's side of the sea.
+        x: 2062.0,
         y: 12.5,
-        z: -7.25,
+        z: 2592.75,
         yaw: YAW,
         scale: 1.05,
         species: 0,
@@ -104,7 +110,7 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot) -> (Entity, Vec<Entity>) {
             &mut commands,
             parent,
             a,
-            7,
+            SEED,
             s,
             KEY,
             &TreeLod::default(),
@@ -377,6 +383,45 @@ fn spawn_slot_draws_both_wild_crops_picked_and_grown_back() {
             fruit += usize::from(g.fruit);
         }
         assert_eq!(fruit, 1, "a {occupant:?} carries one fruit part");
+    }
+}
+
+/// **A broadleaf on the cold ground stands bare, and a pine keeps its
+/// crown.** The snow holds pines and bare limbs and nothing in leaf
+/// (`props::winter_bare`); off the cold the same broadleaf is in leaf, which
+/// `the_canopy_wears_its_species_card` holds from the other side.
+#[test]
+fn a_broadleaf_stands_bare_on_the_cold_ground() {
+    use client::render::props::FROST_COLD;
+    let (mut app, a) = fixture();
+    let pool = a.pine_variants();
+    let warm = slot(Occupant::Tree);
+    let cold = Slot {
+        x: 14.0,
+        z: -7.25,
+        ..slot(Occupant::Tree)
+    };
+    assert!(
+        terrain::cold(SEED, warm.x, warm.z, warm.y) < FROST_COLD.0
+            && terrain::cold(SEED, cold.x, cold.z, cold.y) >= FROST_COLD.0,
+        "the fixture's two stances are no longer one temperate and one cold"
+    );
+    for (species, crowned) in [(0u8, true), (1u8, false)] {
+        let variant = want_variant(species, YAW, pool);
+        let (_, kids) = spawned(&mut app, &a, &Slot { species, ..cold });
+        let canopy = a.needle_mesh(variant).clone();
+        let has = kids.iter().any(|k| {
+            app.world()
+                .entity(*k)
+                .get::<Mesh3d>()
+                .is_some_and(|m| m.0 == canopy)
+        });
+        assert_eq!(
+            has,
+            crowned,
+            "species {species} on the cold ground: a crown was {}",
+            if has { "drawn" } else { "not drawn" }
+        );
     }
 }
 

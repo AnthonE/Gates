@@ -51,6 +51,19 @@ pub const GRASS_SHADOW_TILES: i32 = 1;
 /// How far past a tile's edge the player goes before the shadow-casting
 /// tiles are re-chosen, metres.
 const SHADOW_SLACK_M: f32 = 2.0;
+/// The share of the grass that still stands through the snow, as dead
+/// stalks, and how tall they stand against a living tuft. **(knob)**
+pub const SNOW_STALK_KEEP: f32 = 0.15;
+/// See [`SNOW_STALK_KEEP`].
+pub const SNOW_STALK_H: f32 = 0.6;
+/// The share of the forest's litter that shows through the snow as a dead
+/// stalk, and the share that still lies on it as a stick. **(knob)**
+pub const SNOW_TWIG_STALK: f32 = 0.07;
+/// See [`SNOW_TWIG_STALK`].
+pub const SNOW_TWIG_KEEP: f32 = 0.05;
+/// How much finer the stalks' patches are than the desert's grass patches
+/// (`ground_splat::desert_grass`, whose field they borrow): ~14 m across.
+pub const SNOW_STALK_PATCH: f32 = 2.4;
 /// Tiles filled per frame. The fill is 721 hash draws and a few thousand
 /// triangles; one a frame keeps the spike off the frame the player turns on.
 pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
@@ -1079,19 +1092,55 @@ fn build_tile(
                 continue;
             }
         }
-        // The snow: the grass thins as the ground whitens and none
-        // stands on the Snow biome's ground (`terrain::COLD_BIOME_AT`). The
-        // litter and the grit go with it: they lie under the snow, not on it.
+        // The snow: the grass thins as the ground whitens, and the litter
+        // and the grit go with it — they lie under the snow, not on it. What
+        // still shows through is the odd dead stalk and fallen stick
+        // ([`SNOW_STALK_KEEP`]), so the white has something standing in it.
         let snow = (terrain::cold_memo(&mut lat, seed, e.x, e.z, e.y) / terrain::COLD_BIOME_AT)
             .clamp(0.0, 1.0);
+        let buried = masked(e.kind) || matches!(e.kind, Clutter::Twig | Clutter::Pebble);
         if snow > 0.0
-            && (masked(e.kind) || matches!(e.kind, Clutter::Twig | Clutter::Pebble))
+            && buried
             && hash01(
                 (e.x * 64.0) as i32 as u32,
                 (e.z * 64.0) as i32 as u32 ^ 0x5e0f,
             ) < snow
         {
-            continue;
+            let roll = hash01(
+                (e.x * 64.0) as i32 as u32 ^ 0x57a1,
+                (e.z * 64.0) as i32 as u32,
+            );
+            // Dead grass stands in patches: thick here, a stalk or two there.
+            let patch = 0.25
+                + 1.5
+                    * super::ground_splat::desert_grass(
+                        e.x * SNOW_STALK_PATCH,
+                        e.z * SNOW_STALK_PATCH,
+                    );
+            let (stalk, stick) = match e.kind {
+                Clutter::Twig => (
+                    SNOW_TWIG_STALK * patch,
+                    SNOW_TWIG_STALK * patch + SNOW_TWIG_KEEP,
+                ),
+                Clutter::Pebble => (0.0, 0.0),
+                _ => (SNOW_STALK_KEEP * patch, 0.0),
+            };
+            if roll < stalk {
+                // A dead tuft, short and gone to straw.
+                n_cards += 1;
+                card_dry(
+                    &mut cards,
+                    Vec3::new(e.x, e.y, e.z),
+                    e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+                    seed_of(e),
+                    TUFT_H * SNOW_STALK_H * (0.7 + 0.6 * hash01(seed_of(e), 0x57a2)) * e.scale,
+                    1.0,
+                );
+                continue;
+            }
+            if roll >= stick {
+                continue;
+            }
         }
         // The desert's grass: the grass channel dries to straw with
         // the ground, and on the sand's golden patches the sand's own

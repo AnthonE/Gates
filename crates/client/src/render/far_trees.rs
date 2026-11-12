@@ -613,6 +613,12 @@ fn push_card(
         return;
     }
     let variant = props::species_variant(slot, pool);
+    // A broadleaf on the cold ground stands bare (`props::winter_bare`), and
+    // a card is a crown in leaf: none is drawn, as for a snag.
+    let cold = terrain::cold_memo(&mut b.lat, world.seed, slot.x, slot.z, slot.y);
+    if props::winter_bare(variant, cold) {
+        return;
+    }
     let d = dims[variant];
     let y = terrain_mesh::far_ground_y(world.seed, &world.haven, slot.x, slot.z) - CARD_SINK_M;
     let u0 = variant as f32 / pool as f32;
@@ -628,10 +634,7 @@ fn push_card(
     let tint = props::tint_pool()[props::tint_of(key)];
     // The snow the tree carries (`props::tree_frost`), which a ring card has
     // in its mesh tag: here in the vertex colour, as blue over red.
-    let frost = props::tree_frost(
-        terrain::cold_memo(&mut b.lat, world.seed, slot.x, slot.z, slot.y),
-        key,
-    );
+    let frost = props::tree_frost(cold, key);
     push_quad(
         b,
         Vec3::new(slot.x, y, slot.z),
