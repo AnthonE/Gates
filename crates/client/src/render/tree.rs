@@ -165,7 +165,9 @@ pub const SPECIES: [SpeciesDef; 3] = [
 /// The palm's index in [`SPECIES`] — the sim's `terrain::PALM_SPECIES`.
 pub const PALM: usize = 2;
 const _: () = assert!(PALM == sim_core::terrain::PALM_SPECIES as usize);
-// The sim stands only conifers on the snow (`terrain::CONIFER_SPECIES`).
+// The sim stands mostly conifers on the snow (`terrain::CONIFER_SPECIES`,
+// `terrain::SNOW_BROADLEAF_SHARE`); a broadleaf there draws bare
+// (`props::winter_bare`).
 const _: () = assert!(matches!(
     SPECIES[sim_core::terrain::CONIFER_SPECIES as usize].tree_type,
     TreeType::Evergreen

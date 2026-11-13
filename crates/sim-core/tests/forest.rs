@@ -634,6 +634,8 @@ fn a_species_region_is_dominated_and_not_pure() {
         let mut lo = [0u32; 2];
         let mut hi = [0u32; 2];
         let mut seen = [0u32; 2];
+        // [conifer, broadleaf] standing in `Biome::Snow`.
+        let mut snow = [0u32; 2];
         for cz in 0..CELLS_PER_SIDE {
             for cx in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &ScatterTable::alpha_default(), &haven, cx, cz);
@@ -659,15 +661,10 @@ fn a_species_region_is_dominated_and_not_pure() {
                 if desert {
                     continue;
                 }
-                // Under the snow every tree is a conifer, whatever the paint.
+                // Under the snow a tree keeps only a share of the paint's
+                // broadleaf: counted here, held below.
                 if terrain::biome_at(seed, s.y, s.x, s.z) == terrain::Biome::Snow {
-                    assert_eq!(
-                        s.species,
-                        terrain::CONIFER_SPECIES,
-                        "seed {seed}: a broadleaf at ({}, {}) stands in the snow",
-                        s.x,
-                        s.z
-                    );
+                    snow[usize::from(s.species != terrain::CONIFER_SPECIES)] += 1;
                     continue;
                 }
                 seen[s.species as usize] += 1;
@@ -719,6 +716,20 @@ fn a_species_region_is_dominated_and_not_pure() {
             seen[0] > 0 && seen[1] > 0,
             "seed {seed}: species {seen:?} — an island with one species on it"
         );
+        // The snow is pine country with birch stands in it: the broadleaf
+        // keeps `SNOW_BROADLEAF_SHARE` of the paint's draw, so it is there
+        // and it is the minority. A seed with no snow says nothing.
+        let snow_n = snow[0] + snow[1];
+        if snow_n >= 100 {
+            let birch = f64::from(snow[1]) / f64::from(snow_n);
+            assert!(
+                snow[1] > 0 && birch <= f64::from(terrain::SNOW_BROADLEAF_SHARE),
+                "seed {seed}: the snow's trees are {snow:?} [conifer, broadleaf] — \
+                 {:.0}% broadleaf against the {:.0}% ceiling, or none at all",
+                birch * 100.0,
+                terrain::SNOW_BROADLEAF_SHARE * 100.0
+            );
+        }
     }
 }
 

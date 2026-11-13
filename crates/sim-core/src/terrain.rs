@@ -7249,9 +7249,15 @@ pub const SLOT_SPECIES: u8 = PAINTED_SPECIES + 1;
 /// rock pool groups by this and not by [`SLOT_SPECIES`].
 pub const PAINTED_SPECIES: u8 = 2;
 
-/// The conifer: the painted draw's first species, and every tree standing in
-/// [`Biome::Snow`] — no broadleaf in the arctic or on the caps.
+/// The conifer: the painted draw's first species, and most of the trees
+/// standing in [`Biome::Snow`] ([`SNOW_BROADLEAF_SHARE`]).
 pub const CONIFER_SPECIES: u8 = 0;
+
+/// How much of the painted broadleaf share a tree in [`Biome::Snow`] keeps:
+/// the snow is pine country with birch stands in it, never a birch wood. A
+/// birch there stands bare (the client's `props::winter_bare`), so the snow
+/// holds pines and leafless trees and nothing in leaf. **(knob)**
+pub const SNOW_BROADLEAF_SHARE: f32 = 0.4;
 
 /// The desert's tree: a palm. Not painted — every tree standing in
 /// [`Biome::Desert`] is one, so the arid north reads as the reference game's
@@ -7615,11 +7621,15 @@ impl ScatterTable {
                 // and a heavy row here starves the highland's.
                 [30, 22, 6, 10, 70, 0, 0],
                 // The snow: Rust's arctic is its metal biome, so the ore
-                // leans to metal, among boulders and a few pines. Light, for
-                // the desert's reason and more so: the arctic is a band of
-                // the island, and the budget can only take ore down to half
-                // (`ORE_PM_MIN`), so a heavy row here would outvote it.
-                [24, 40, 18, 6, 20, 0, 0],
+                // leans to metal. The ore is light, for the desert's reason
+                // and more so: the arctic is a band of the island, and the
+                // budget can only take ore down to half (`ORE_PM_MIN`), so a
+                // heavy ore column here would outvote it. The trees and the
+                // scrub are a sparse taiga's, about the meadow's trees per
+                // hectare (13 on the shipped seed, from 3.7, which was the
+                // emptiest ground on the island) and the frozen scrub
+                // between them (9, from 2.8). Neither carries ore.
+                [90, 40, 18, 6, 70, 0, 0],
             ],
             clump_cap: [
                 f32::INFINITY,
@@ -8264,14 +8274,25 @@ fn scatter_in<C: Corners>(
         // `species_share` so a region is DOMINATED by one kind rather than
         // painted pure, and the fBm is read here rather than above the veto
         // because three cells in four are empty and owe nothing.
-        // A tree in the desert is a palm and one under the snow a conifer,
-        // whatever the painted field says.
+        // A tree in the desert is a palm whatever the painted field says,
+        // and one under the snow keeps a share of the field's broadleaf
+        // ([`SNOW_BROADLEAF_SHARE`]): mostly pine.
         species: match (occupant == Occupant::Tree)
             .then(|| biome(hy, moisture_in(c, seed, x, z), fel, cold))
         {
             Some(Biome::Desert) => PALM_SPECIES,
-            Some(Biome::Snow) => CONIFER_SPECIES,
-            _ => u8::from(
+            Some(b) => {
+                let keep = if b == Biome::Snow {
+                    SNOW_BROADLEAF_SHARE
+                } else {
+                    1.0
+                };
+                u8::from(
+                    ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0)
+                        < species_share_in(c, seed, x, z) * keep,
+                )
+            }
+            None => u8::from(
                 ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z),
             ),
         },
