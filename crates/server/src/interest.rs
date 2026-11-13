@@ -1,56 +1,11 @@
-//! Class-S interest: which structural records a connection is owed, and
-//! where it stands while deciding.
+//! Spatial helpers shared by structural walks and point-event filters.
 //!
-//! `NETCODE.md` §7 asks for **one spatial truth** serving both replication
-//! classes. Class D has had one since AOI v0 — a radial band with
-//! hysteresis, `AOI_ENTER_CM` in and `AOI_EXIT_CM` out. Class S had none at
-//! all: the join walk dripped the *entire* piece store to every client
-//! regardless of distance, 32 records a tick, so at `MAX_PIECES` a joiner
-//! spent 256 ticks (8.5 s) learning about every structure on the island
-//! (`reference/NETWORK.md` §9.2.1 — the reference game's own 2014 mistake).
-//!
-//! This is the filter, expressed in the numbers class D already uses rather
-//! than in new ones. Three parts:
-//!
-//! 1. **An anchor.** A client's walk is aimed from the position it was
-//!    armed at, not from wherever the player is this tick. Fixing it is
-//!    what makes the guarantee below a statement about a completed walk
-//!    rather than about a moving target.
-//! 2. **A radius**, [`PIECE_INTEREST_CM`] = `AOI_EXIT_CM`. The walk sends
-//!    what is inside it and skips the rest.
-//! 3. **A re-arm**, [`PIECE_REARM_CM`] = `AOI_EXIT_CM − AOI_ENTER_CM`.
-//!    Move further than that from the anchor and the walk is re-armed at
-//!    the new one. That difference is the class-D hysteresis band, spent
-//!    here as the margin the walk streams *ahead* of what the client is
-//!    promised.
-//!
-//! The guarantee those three buy, which `tests/piece_interest.rs` holds:
-//!
-//! > A client whose walk has completed holds every piece within
-//! > `AOI_ENTER_CM` of its player.
-//!
-//! Because the anchor is never more than `PIECE_REARM_CM` from the player
-//! (further re-arms), and `AOI_ENTER_CM + PIECE_REARM_CM = AOI_EXIT_CM` is
-//! exactly what the walk streamed. The same predicate gates the
-//! `EV_PIECE_PLACED` broadcast, so a piece placed *after* a walk finished
-//! is covered by the identical arithmetic — one predicate, two callers, no
-//! second opinion about where a client is.
-//!
-//! **Three walks, one anchor** (`NOW.md` §0n1 item 2). The deployable and
-//! backpack walks are aimed from the same anchor with the same radius, and
-//! the `EV_DEPLOY_PLACED` / `EV_BAG_DROPPED` broadcasts gate on the same
-//! predicate, so the guarantee above holds for all three stores. The one
-//! difference is the **owner's exemption** ([`owned_in_interest`]): a
-//! client is always owed the deployables and bags that are its own,
-//! wherever it stands, because the map draws them — its beds and hearths,
-//! and its death bag after a respawn on the far side of the island.
-//!
-//! **What this is not.** It is not §7's chunk subscription: there is still
-//! no grid, a re-arm re-walks the whole in-range set rather than the
-//! difference, and nothing is ever un-subscribed — a client keeps what it
-//! has been told (its mirror is capped at `MAX_PIECES`, the same bound the
-//! server's store carries, so "keep" is bounded, not unbounded). What it
-//! buys is the join cost and the raid cost, which is what §9.2.1 measured.
+//! Chunk subscriptions now live in `chunks`: discrete 64 m cells, using
+//! the same AOI enter/exit radii as class D. Structural walks send only
+//! pending subscriptions (plus owned records); reliable lifecycle frames
+//! discard a departed chunk and commit a completed snapshot's version.
+//! The radial helpers remain for non-structural point events and the
+//! other world-state walks which use the moving anchor.
 
 use sim_core::backpack::BackpackRec;
 use sim_core::build::PieceRec;

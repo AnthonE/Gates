@@ -2023,9 +2023,8 @@ fn a_late_joiner_sees_a_fire_burning() {
 /// **A fire's lit bit is aimed, names its striker to the striker alone, and
 /// a walk back restates it.** `EV_OVEN` used to reach every client on the
 /// island with the presser's id. Now a client 500 m off is not told the
-/// fire went out — so it still holds it lit — and when it walks back, the
-/// re-armed deploy walk restates every converter in range, the cold ones
-/// too, and the fire is out on its screen as well.
+/// fire went out. Unsubscribe removes its local fire; on returning, the
+/// new subscription reconstructs the converter with its current cold state.
 #[test]
 fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
     let stats = ShardStats::default();
@@ -2144,11 +2143,18 @@ fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
         "a client 500 m off was told the fire went out"
     );
     assert!(
-        clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
-        "the far client was meant to hold the stale state the walk back repairs"
+        !clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "unsubscribe must forget the departed chunk's fire state"
     );
 
-    // Back to the fire: the re-arm's walk says it is out.
+    assert!(!clients[1]
+        .1
+        .deploys
+        .entries()
+        .iter()
+        .any(|r| (r.cx, r.cz, r.level, r.loc) == (d.cx, d.cz, d.level, d.loc)));
+
+    // Back to the fire: subscribing reconstructs it with its current state.
     core.world.players[w1].body = sim_core::movement::Body::at(SEED, hv(SEED), base.0, base.1);
     for _ in 0..6 {
         pump(&mut core, &stats, &mut clients);
@@ -2157,6 +2163,12 @@ fn a_fire_is_told_in_range_and_a_walk_back_restates_it_out() {
         !clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
         "walking back left a fire burning that went out while it was away"
     );
+    assert!(clients[1]
+        .1
+        .deploys
+        .entries()
+        .iter()
+        .any(|r| (r.cx, r.cz, r.level, r.loc) == (d.cx, d.cz, d.level, d.loc)));
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
 

@@ -2283,6 +2283,10 @@ pub struct ClientCore {
     own_bag_pending: bool,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
+    /// The announced version of each subscribed structural chunk.
+    pub chunk_versions: Box<[Option<u32>]>,
+    /// True only after the ordered stream commits that chunk's snapshot.
+    pub chunk_ready: Box<[bool]>,
     /// Piece records the last `on_stream` call added or replaced.
     piece_changes: [PieceRec; protocol::PIECE_SYNC_BATCH],
     n_piece_changes: usize,
@@ -2672,6 +2676,8 @@ impl ClientCore {
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
+            chunk_versions: vec![None; protocol::chunk::COUNT].into_boxed_slice(),
+            chunk_ready: vec![false; protocol::chunk::COUNT].into_boxed_slice(),
             piece_changes: [PieceRec::default(); protocol::PIECE_SYNC_BATCH],
             n_piece_changes: 0,
             piece_defs: BuildContent::EMPTY,
@@ -2872,6 +2878,37 @@ impl ClientCore {
         self.events_applied += 1;
         let mut flags = 0u32;
         match msg {
+            EventMsg::Chunk {
+                chunk,
+                version,
+                state,
+            } => match state {
+                0 | 2 => {
+                    self.forget_chunk(chunk);
+                    self.chunk_ready[chunk as usize] = false;
+                    self.chunk_versions[chunk as usize] =
+                        if state == 0 { Some(version) } else { None };
+                    flags |= APPLIED_PIECES | APPLIED_DEPLOYS | APPLIED_BAGS;
+                }
+                1 => {
+                    let Some(previous) = self.chunk_versions[chunk as usize] else {
+                        self.event_errors += 1;
+                        return Err(WireError::Malformed);
+                    };
+                    if version.wrapping_sub(previous) >= (1 << 31) {
+                        self.event_errors += 1;
+                        return Err(WireError::Malformed);
+                    }
+                    self.chunk_versions[chunk as usize] = Some(version);
+                    self.chunk_ready[chunk as usize] = true;
+                }
+                3 => {
+                    // The following reset walks replace the mirrors.
+                    self.chunk_versions.fill(None);
+                    self.chunk_ready.fill(false);
+                }
+                _ => return Err(WireError::Malformed),
+            },
             EventMsg::Gather {
                 item,
                 added,
@@ -4704,6 +4741,66 @@ impl ClientCore {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Drop a chunk's mirrors and collision without playing destruction effects.
+    fn forget_chunk(&mut self, chunk: u16) {
+        // Doors are resolved while their supporting pieces still exist.
+        let mut i = self.deploys.len();
+        while i > 0 {
+            i -= 1;
+            let d = self.deploys.entries()[i];
+            let at = if sim_core::build::spelled_id(d.cx, d.cz, d.level, d.loc).is_some() {
+                self.pieces
+                    .find(d.cx, d.cz, d.level, d.loc)
+                    .and_then(|p| protocol::chunk::at_cell(p.cx, p.cz))
+            } else {
+                protocol::chunk::at_cell(d.cx, d.cz)
+            };
+            if at != Some(chunk) {
+                continue;
+            }
+            self.deploys.remove(d.cx, d.cz, d.level, d.loc);
+            self.pieces.del_solid(d.cx, d.cz, d.level, d.loc);
+            if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, d.row) {
+                self.pieces.set_insert(
+                    d.cx,
+                    d.cz,
+                    d.level,
+                    d.loc,
+                    self.deploy_defs.defs[d.row as usize].arch,
+                    false,
+                );
+            }
+            let key = sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc);
+            self.wires.retain(|w| w.from != key);
+            self.wires_gen = self.wires_gen.wrapping_add(1);
+            self.ovens.set(d.cx, d.cz, d.level, d.loc, false);
+            if self.pending_door == Some((d.cx, d.cz, d.level, d.loc)) {
+                self.pending_door = None;
+            }
+        }
+        let mut i = self.pieces.len();
+        while i > 0 {
+            i -= 1;
+            let p = self.pieces.entries()[i];
+            if protocol::chunk::at_cell(p.cx, p.cz) == Some(chunk) {
+                let (x, z, level, loc) = p.target();
+                self.pieces
+                    .remove(x, z, level, loc, &self.piece_defs, self.piece_defs_have);
+            }
+        }
+        let mut i = self.bags.len();
+        while i > 0 {
+            i -= 1;
+            let b = self.bags.entries()[i];
+            // The owner's death marker remains useful outside interest.
+            if b.id != self.own_bag
+                && protocol::chunk::at_cm(i64::from(b.qx) * 3, i64::from(b.qz) * 3) == Some(chunk)
+            {
+                self.bags.remove(b.id);
+            }
         }
     }
 

@@ -805,3 +805,112 @@ fn a_full_walk_finishes_before_a_sprinter_can_re_arm_it() {
     // to send.
     const { assert!(PIECE_SCAN_BATCH >= PIECE_SYNC_BATCH) };
 }
+
+#[test]
+fn chunk_unsubscribe_forgets_structures_and_reentry_reconstructs_them() {
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let (cx, cz) = buildable_block(CX, CZ, 2, 24, 64);
+    let spawn = sim_core::build::anchor(cx, cz, LOC_PLANE);
+    core.world.dev_spawn = Some(spawn);
+    let base = lay_base(&mut core, cx, cz, 2 * PIECE_SYNC_BATCH);
+    assert!(!base.is_empty());
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(clients[0].1.pieces.len(), base.len());
+    let chunk = protocol::chunk::at_cell(cx, cz).unwrap();
+    assert!(clients[0].1.chunk_versions[chunk as usize].is_some());
+    assert!(clients[0].1.chunk_ready[chunk as usize]);
+
+    stand_at(&mut core, id_of(0), spawn.0 + 600.0, spawn.1);
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(
+        clients[0].1.pieces.len(),
+        0,
+        "leaving must remove collision and drawing state"
+    );
+    assert_eq!(clients[0].1.chunk_versions[chunk as usize], None);
+    assert!(!core.clients[0].chunks.contains(chunk));
+    core.clients[0].ev_resync();
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    for (id, version) in clients[0].1.chunk_versions.iter().enumerate() {
+        assert_eq!(
+            version.is_some(),
+            core.clients[0].chunks.contains(id as u16)
+        );
+    }
+
+    stand_at(&mut core, id_of(0), spawn.0, spawn.1);
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(clients[0].1.pieces.len(), base.len());
+    assert!(clients[0].1.chunk_versions[chunk as usize].is_some());
+    assert!(clients[0].1.chunk_ready[chunk as usize]);
+}
+
+#[test]
+fn a_full_event_ring_does_not_commit_a_chunk_subscription() {
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let base = lay_base(&mut core, CX, CZ, PIECE_SYNC_BATCH);
+    assert!(!base.is_empty());
+    assert!(core.connect(0, id_of(0)));
+    for _ in 0..20 {
+        core.tick_bare(&stats, |_, _, _| false);
+    }
+    assert!(core.clients[0].chunks.entries().is_empty());
+    let mut clients = vec![(0, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(clients[0].1.pieces.len(), base.len());
+    assert!(core.clients[0].chunks.entries().iter().all(|s| !s.pending));
+}
+
+#[test]
+fn chunk_versions_follow_mutations_and_a_client_rejects_stale_commits() {
+    let stats = ShardStats::default();
+    let mut core = fixture();
+    let (cx, cz) = buildable_block(CX, CZ, 1, 1, 64);
+    core.world.dev_spawn = Some(sim_core::build::anchor(cx, cz, LOC_PLANE));
+    assert_eq!(lay_base(&mut core, cx, cz, 1).len(), 1);
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let chunk = protocol::chunk::at_cell(cx, cz).unwrap();
+    let before = clients[0].1.chunk_versions[chunk as usize].unwrap();
+    core.push_action(
+        0,
+        protocol::ActionMsg::Demolish {
+            deploy: false,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+        },
+    );
+    for _ in 0..40 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(core.world.pieces.is_empty());
+    assert!(clients[0].1.pieces.is_empty());
+    let after = clients[0].1.chunk_versions[chunk as usize].unwrap();
+    assert!(after.wrapping_sub(before) > 0);
+    let mut buf = [0u8; 32];
+    let n = protocol::encode_event_chunk(chunk, before, 1, &mut buf).unwrap();
+    assert!(clients[0].1.on_stream(&buf[..n]).is_err());
+    let n = protocol::encode_event_chunk(chunk, u32::MAX, 0, &mut buf).unwrap();
+    clients[0].1.on_stream(&buf[..n]).unwrap();
+    let n = protocol::encode_event_chunk(chunk, 0, 1, &mut buf).unwrap();
+    clients[0].1.on_stream(&buf[..n]).unwrap();
+}

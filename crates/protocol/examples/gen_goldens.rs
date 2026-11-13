@@ -43,6 +43,14 @@ fn write_fixture(name: &str, bytes: &[u8]) {
 fn main() {
     let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
 
+    for state in 0..=2 {
+        let len = protocol::encode_event_chunk(321, 0x12345678, state, &mut buf).unwrap();
+        write_fixture(&format!("event_chunk_{state}.bin"), &buf[..len]);
+    }
+
+    let len = protocol::encode_event_chunk(0, 0, 3, &mut buf).unwrap();
+    write_fixture("event_chunk_3.bin", &buf[..len]);
+
     let len = encode_input(&goldens::input_acks_only(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[0], &buf[..len]);
 

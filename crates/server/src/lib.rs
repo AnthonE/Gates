@@ -50,6 +50,7 @@ pub mod bugs;
 pub mod character;
 /// Cheat checks: snap hits, headshot rate, wall tracking (`cheat.rs`).
 pub mod cheat;
+pub mod chunks;
 pub mod client;
 /// Gates' Rust+: the team, team chat and raid alerts, from outside the game.
 pub mod companion;
