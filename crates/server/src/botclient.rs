@@ -40,15 +40,35 @@ use sim_core::rng::Pcg32;
 use sim_core::terrain::Haven;
 use sim_core::world::Command;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::error::{ConnectingError, ConnectionError};
 use wtransport::{Connection, Endpoint};
 
+/// Optional load-test counters sampled at a common wall-clock window.
+/// They count bytes where the existing per-session report counts them;
+/// the soak can exclude handshake/ramp-up and stop without waiting for a
+/// nominal tick budget to finish on a contended host.
+#[derive(Default)]
+pub struct BotMeter {
+    pub ready: AtomicBool,
+    pub stop: AtomicBool,
+    bytes: [AtomicU64; 4],
+}
+
+impl BotMeter {
+    /// Datagram in/out, framed event/action stream in/out, in that order.
+    pub fn snapshot(&self) -> [u64; 4] {
+        std::array::from_fn(|i| self.bytes[i].load(Ordering::Relaxed))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct BotReport {
+    /// Elapsed wall time from welcome through the final byte-counter sample.
+    pub elapsed_us: u64,
     pub player_id: u32,
     pub welcome: Option<Welcome>,
     /// Times the peer's HTTP/3 layer shed this bot's connect before the
@@ -794,6 +814,28 @@ pub async fn run_bot(
         duration,
         raid,
         None,
+        None,
+    )
+    .await
+}
+
+/// A walking load client with byte counters for an externally timed soak.
+/// The caller sets `stop` after taking its final counter sample.
+pub async fn run_metered_bot(
+    endpoint: &Endpoint<Client>,
+    server: SocketAddr,
+    seed_stream: u64,
+    duration: Duration,
+    meter: Arc<BotMeter>,
+) -> Result<BotReport, String> {
+    run_bot_inner(
+        endpoint,
+        Dial::Guest(server),
+        seed_stream,
+        duration,
+        None,
+        None,
+        Some(meter),
     )
     .await
 }
@@ -877,6 +919,7 @@ pub async fn run_driven_bot(
         duration,
         None,
         Some(driver),
+        None,
     )
     .await
 }
@@ -904,6 +947,7 @@ pub async fn run_guest_agent(
         duration,
         None,
         Some(driver),
+        None,
     )
     .await
 }
@@ -944,6 +988,7 @@ pub async fn run_agent_bot(
         duration,
         None,
         Some(driver),
+        None,
     )
     .await
 }
@@ -1062,12 +1107,14 @@ async fn run_bot_inner(
     duration: Duration,
     raid: Option<RaidRows>,
     mut driver: Option<&mut dyn BotDriver>,
+    meter: Option<Arc<BotMeter>>,
 ) -> Result<BotReport, String> {
     let mut connect_sheds = 0;
     let (connection, mut send, recv, welcome) = dial
         .join(endpoint, driver.is_some(), &mut connect_sheds)
         .await?;
 
+    let measured_start = std::time::Instant::now();
     let mut report = BotReport {
         player_id: welcome.player_id,
         welcome: Some(welcome),
@@ -1096,6 +1143,7 @@ async fn run_bot_inner(
     let tally = Arc::new(EventTally::new(raid.and_then(|r| r.base).map(|b| b.hearth)));
     let _event_pump = {
         let tally = tally.clone();
+        let meter = meter.clone();
         EventPump(tokio::spawn(async move {
             let mut recv = recv;
             let mut events_tx = events_tx;
@@ -1103,6 +1151,9 @@ async fn run_bot_inner(
                 tally
                     .bytes
                     .fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed);
+                if let Some(m) = &meter {
+                    m.bytes[2].fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed);
+                }
                 match decode_event(&buf[..len]) {
                     Ok(ev) => {
                         tally.received.fetch_add(1, Ordering::Relaxed);
@@ -1225,10 +1276,14 @@ async fn run_bot_inner(
     // The backstop, never the schedule — see `WALK_CEILING`.
     let ceiling = tokio::time::Instant::now() + duration * WALK_CEILING;
     let mut dg_buf = [0u8; DATAGRAM_BUDGET_BYTES];
+    if let Some(m) = &meter {
+        m.ready.store(true, Ordering::Release);
+    }
 
     loop {
         tokio::select! {
             _ = cadence.tick() => {
+                if meter.as_ref().is_some_and(|m| m.stop.load(Ordering::Acquire)) { break; }
                 report.ticks_walked += 1;
                 if let (Some(rx), Some(d)) = (events_rx.as_mut(), driver.as_deref_mut()) {
                     drain_driver_events(rx, d)?;
@@ -1347,6 +1402,7 @@ async fn run_bot_inner(
                         // On `Ok` only: what the socket took, not what we
                         // handed it (`net.rs` counts its side the same way).
                         report.dg_out_bytes += len as u64;
+                        if let Some(m) = &meter { m.bytes[1].fetch_add(len as u64, Ordering::Relaxed); }
                     }
                 }
                 report.last_executed_seq = view.last_executed_seq;
@@ -1441,6 +1497,7 @@ async fn run_bot_inner(
                                 report.reloads_sent += 1;
                                 report.actions_sent += 1;
                                 report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                                if let Some(m) = &meter { m.bytes[3].fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed); }
                                 took_the_tick = true;
                             } else {
                                 // Keep walking: a dead action lane is a
@@ -1473,6 +1530,7 @@ async fn run_bot_inner(
                             }
                             report.actions_sent += 1;
                             report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                            if let Some(m) = &meter { m.bytes[3].fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed); }
                             took_the_tick = true;
                         }
                     }
@@ -1488,6 +1546,7 @@ async fn run_bot_inner(
                         }
                         report.chats_sent += 1;
                         report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                        if let Some(m) = &meter { m.bytes[3].fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed); }
                     }
                     // Its voice: datagrams like a player's microphone, a
                     // few frames a tick at the pace they were spoken.
@@ -1648,6 +1707,7 @@ async fn run_bot_inner(
                                 if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
                                     report.actions_sent += 1;
                                     report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                                    if let Some(m) = &meter { m.bytes[3].fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed); }
                                 } else {
                                     // The stream is gone. Keep walking rather
                                     // than ending the run: a dead action lane
@@ -1672,6 +1732,7 @@ async fn run_bot_inner(
                 let dg = dg.map_err(|e| format!("receive: {e}"))?;
                 report.dg_in_count += 1;
                 report.dg_in_bytes += dg.len() as u64;
+                if let Some(m) = &meter { m.bytes[0].fetch_add(dg.len() as u64, Ordering::Relaxed); }
                 if peek_kind(&dg) == Ok(protocol::KIND_VOICE) {
                     // A player near it talking (v113): an agent with ears
                     // hears it; anyone else lets it go by.
@@ -1773,6 +1834,7 @@ async fn run_bot_inner(
     report.rounds_loaded = tally.rounds_loaded.load(Ordering::Relaxed);
     report.reloads_busy = tally.reloads_busy.load(Ordering::Relaxed);
     report.reloads_refused = tally.reloads_refused.load(Ordering::Relaxed);
+    report.elapsed_us = measured_start.elapsed().as_micros().min(u64::MAX as u128) as u64;
     Ok(report)
 }
 
