@@ -30,6 +30,12 @@ use super::{Eye, Net, WorldId};
 #[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct WeatherPin(pub Option<u8>);
 
+/// A film shot's cloud, `0..=1` as a preset's (clear is 0.35, overcast
+/// 0.9), over whatever the weather says: the sky a shot is framed for
+/// (`render/film.rs` `cloud`). `None` in play.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq)]
+pub struct CloudPin(pub Option<f32>);
+
 impl WeatherPin {
     /// A capture run's pin: the asked-for preset, clear by default.
     pub fn capture(preset: Option<u8>) -> Self {
@@ -373,6 +379,7 @@ pub fn update(
     feed: Res<Feed>,
     pin: Res<DayPin>,
     wpin: Res<WeatherPin>,
+    cpin: Option<Res<CloudPin>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
     net: Option<NonSend<Net>>,
@@ -390,7 +397,9 @@ pub fn update(
         Some(p) => weather::preset(p, 0),
         None => weather::now(world.seed, tick, &feed.env),
     };
-    now.cloud = pm(wx.cloud);
+    now.cloud = cpin
+        .and_then(|c| c.0)
+        .map_or(pm(wx.cloud), |c| c.clamp(0.0, 1.0));
     now.dark = pm(wx.dark);
     // Halved over arid ground, the sim's rule (`weather::local_rain`).
     let arid_pm = (sim_core::terrain::aridity(world.seed, eye.pos.x, eye.pos.z) * 1000.0)

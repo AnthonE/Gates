@@ -487,6 +487,10 @@ pub struct Shot {
     /// clear | overcast | fog | rain | heavy | storm. Unset is the tape's.
     #[serde(default)]
     pub weather: Option<String>,
+    /// The deck's cloud, 0 to 1, over the weather's own (clear is 0.35,
+    /// overcast 0.9): a sky with fewer clouds, or more, than a preset has.
+    #[serde(default)]
+    pub cloud: Option<f32>,
     /// Vertical field of view, degrees; a pair is a zoom.
     #[serde(default)]
     pub fov: Option<Span>,
@@ -561,6 +565,9 @@ impl Shot {
         }
         if let Some(w) = &self.weather {
             weather_code(w).ok_or_else(|| format!("shot `{n}`: unknown weather `{w}`"))?;
+        }
+        if self.cloud.is_some_and(|c| !(0.0..=1.0).contains(&c)) {
+            return Err(format!("shot `{n}`: cloud is 0 to 1"));
         }
         self.look.check(n)
     }
@@ -990,6 +997,7 @@ pub fn feed(
     time: Res<Time>,
     mut day: ResMut<super::rig::DayPin>,
     mut sky: ResMut<super::weather::WeatherPin>,
+    mut cloud: ResMut<super::weather::CloudPin>,
 ) {
     if film.phase == Phase::Seek {
         let settle_ms = film.script.settle as f64 * film.frame_ms();
@@ -1046,6 +1054,7 @@ pub fn feed(
         film.chase = None;
         film.pulled = None;
         *sky = super::weather::WeatherPin(shot.weather.as_deref().and_then(weather_code));
+        *cloud = super::weather::CloudPin(shot.cloud);
         if shot.hour.is_none() {
             *day = super::rig::DayPin(None);
         }

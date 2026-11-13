@@ -1,0 +1,18 @@
+{
+  "recording": "film/world.rec",
+  "out": "film/shots/world",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 45,
+  "settle": 30,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "cascades": 3, "shadow_m": 200, "blur_samples": 3},
+  "shots": [
+    {"name": "meadow", "len": 5.1, "hour": 0.25, "cloud": 0.35, "fov": 45, "ease": true, "keys": [{"t": 0, "pos": [1252, 3.0, 1752], "look": [1000, 60, 1400]}, {"t": 5.1, "pos": [1238, 2.4, 1740], "look": [995, 58, 1400]}], "at": 68.0, "weather": "clear"},
+    {"name": "arch", "len": 5.1, "hour": 0.55, "cloud": 0.33, "fov": 45, "keys": [{"t": 0, "pos": [2726.2, 4, 1986.1], "look": [2692, 7, 1975]}, {"t": 2.55, "pos": [2721.7, 4, 1991.5], "look": [2692, 7, 1975]}, {"t": 5.1, "pos": [2716.5, 4, 1995.6], "look": [2692, 7, 1975]}], "at": 80.0, "weather": "clear"},
+    {"name": "spires", "len": 5.1, "hour": 0.6, "cloud": 0.33, "fov": 45, "ease": true, "keys": [{"t": 0, "pos": [3339, 5, 1869], "look": [3389, 10, 1839]}, {"t": 5.1, "pos": [3350, 4.5, 1862], "look": [3389, 10, 1839]}], "at": 92.0, "weather": "clear"},
+    {"name": "forest-gold", "len": 5.1, "hour": 0.8, "cloud": 0.1, "fov": 50, "ease": true, "keys": [{"t": 0, "pos": [1300, 1.7, 1250], "look": [1340, 4, 1290]}, {"t": 5.1, "pos": [1314, 1.7, 1264], "look": [1354, 4, 1304]}], "look": {"exposure": 1.0, "temperature": 0.04}, "at": 104.0, "weather": "clear"},
+    {"name": "lake-sun", "len": 5.1, "hour": [0.8, 0.805], "cloud": 0.15, "fov": 42, "ease": true, "keys": [{"t": 0, "pos": [3300, 1.2, 2125], "look": [3520, 6, 2290]}, {"t": 5.1, "pos": [3306, 1.4, 2112], "look": [3525, 6, 2280]}], "look": {"temperature": 0.04}, "at": 116.0, "weather": "clear"}
+  ]
+}

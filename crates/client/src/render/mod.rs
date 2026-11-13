@@ -733,6 +733,7 @@ impl Plugin for GatesRenderPlugin {
             );
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
+            .init_resource::<weather::CloudPin>()
             .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
             .init_resource::<blight::Blight>()

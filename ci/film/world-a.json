@@ -1,0 +1,17 @@
+{
+  "recording": "film/world.rec",
+  "out": "film/shots/world",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 45,
+  "settle": 30,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "cascades": 3, "shadow_m": 200, "blur_samples": 3},
+  "shots": [
+    {"name": "sea-dawn", "len": 7.5, "hour": [0.024, 0.031], "cloud": 0.1, "fov": 38, "ease": true, "keys": [{"t": 0, "pos": [1215, 1.0, 760], "look": [870, 5, 300]}, {"t": 7.5, "pos": [1199, 1.5, 740], "look": [866, 6, 296]}], "look": {"exposure": 0.15, "temperature": 0.03, "shake": 0.04}, "at": 20.0, "weather": "clear"},
+    {"name": "snow-dawn", "len": 6.5, "hour": 0.055, "cloud": 0.12, "fov": 42, "ease": true, "keys": [{"t": 0, "pos": [1655, 1.6, 1010], "look": [1600, 34, 760]}, {"t": 6.5, "pos": [1625, 1.7, 1004], "look": [1590, 34, 760]}], "look": {"temperature": 0.03}, "at": 32.0, "weather": "clear"},
+    {"name": "snow-aerial", "len": 5.1, "hour": 0.12, "cloud": 0.15, "fov": 50, "ease": true, "keys": [{"t": 0, "pos": [1930, 75, 1080], "look": [1600, 60, 720]}, {"t": 5.1, "pos": [1880, 66, 1030], "look": [1590, 57, 712]}], "look": {"shutter": 0.35}, "at": 44.0, "weather": "clear"},
+    {"name": "forest-aerial", "len": 5.1, "hour": 0.3, "cloud": 0.28, "fov": 50, "ease": true, "keys": [{"t": 0, "pos": [1000, 170, 1800], "look": [1700, 20, 1700]}, {"t": 5.1, "pos": [1070, 165, 1770], "look": [1720, 20, 1690]}], "look": {"shutter": 0.35}, "at": 56.0, "weather": "clear"}
+  ]
+}

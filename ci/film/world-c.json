@@ -1,0 +1,18 @@
+{
+  "recording": "film/world.rec",
+  "out": "film/shots/world",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 45,
+  "settle": 30,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "cascades": 3, "shadow_m": 200, "blur_samples": 3},
+  "shots": [
+    {"name": "anvil", "len": 5.1, "hour": 0.82, "cloud": 0.12, "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [1938, 2, 3122], "look": [1973, 13, 3150]}, {"t": 5.1, "pos": [1946, 2.5, 3114], "look": [1973, 13, 3150]}], "look": {"temperature": 0.05}, "at": 128.0, "weather": "clear"},
+    {"name": "zig", "len": 5.1, "hour": 0.835, "cloud": 0.1, "fov": 32, "ease": true, "keys": [{"t": 0, "pos": [2380, 2.5, 3020], "look": [2496, 22, 3168]}, {"t": 5.1, "pos": [2386, 3.5, 3027], "look": [2496, 22, 3168]}], "look": {"exposure": 0.2, "temperature": 0.05}, "at": 140.0, "weather": "clear"},
+    {"name": "sea-sunset", "len": 5.1, "hour": [0.848, 0.852], "cloud": 0.12, "fov": 45, "ease": true, "keys": [{"t": 0, "pos": [3110, 1.4, 3200], "look": [3300, 5, 3380]}, {"t": 5.1, "pos": [3118, 1.2, 3209], "look": [3305, 5, 3385]}], "look": {"temperature": 0.04}, "at": 152.0, "weather": "clear"},
+    {"name": "dlake-sunset", "len": 5.1, "hour": 0.855, "cloud": 0.12, "fov": [44, 39], "ease": true, "keys": [{"t": 0, "pos": [1390, 1.0, 3170], "look": [1645, 5, 3365]}, {"t": 5.1, "pos": [1390, 1.2, 3170], "look": [1645, 5, 3365]}], "look": {"exposure": 0.3, "temperature": 0.05}, "at": 164.0, "weather": "clear"},
+    {"name": "gate", "len": 7.0, "hour": 0.8, "cloud": 0.18, "fov": 45, "ease": true, "keys": [{"t": 0, "pos": [1728, 24, 1880], "look": [1848, 52, 2040]}, {"t": 7.0, "pos": [1742, 46, 1897], "look": [1848, 56, 2040]}], "look": {"temperature": 0.04}, "at": 176.0, "weather": "clear"}
+  ]
+}

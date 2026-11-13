@@ -1,0 +1,197 @@
+{
+  "out": "film/ads/gates-world-trailer-16x9.mp4",
+  "size": [
+    1920,
+    1080
+  ],
+  "fps": 30,
+  "shots": "film/shots/world",
+  "bank": "film/bank",
+  "fade": 0.5,
+  "fade_in": 1.5,
+  "fade_out": 1.2,
+  "loudness": -14,
+  "crf": 16,
+  "maxrate": "9M",
+  "grade": "eq=contrast=1.04:saturation=1.06,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02",
+  "finish": {
+    "halation": 0.1,
+    "vignette": 0.3,
+    "grain": 3,
+    "letterbox": 2.39
+  },
+  "clips": [
+    {
+      "shot": "sea-dawn",
+      "in": 0.0,
+      "len": 7.5,
+      "game": 0.6
+    },
+    {
+      "shot": "snow-dawn",
+      "in": 0.0,
+      "len": 6.5,
+      "game": 0.5,
+      "transition": "fade",
+      "fade": 1.0
+    },
+    {
+      "shot": "snow-aerial",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "forest-aerial",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "meadow",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "arch",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "spires",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "forest-gold",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "lake-sun",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "anvil",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "zig",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "sea-sunset",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "dlake-sunset",
+      "in": 0.5,
+      "len": 4.087,
+      "game": 0.35,
+      "transition": "cut"
+    },
+    {
+      "shot": "gate",
+      "in": 0.3,
+      "len": 6.5,
+      "game": 0.4,
+      "transition": "cut"
+    }
+  ],
+  "captions": [
+    {
+      "at": 2.0,
+      "len": 3.8,
+      "text": "ONE ISLAND",
+      "size": 0.06,
+      "y": 0.74
+    },
+    {
+      "at": 13.4,
+      "len": 3.4,
+      "text": "FROM THE FROZEN SOUTH",
+      "size": 0.055,
+      "y": 0.76
+    },
+    {
+      "at": 17.5,
+      "len": 3.4,
+      "text": "THROUGH THE WILD HEART",
+      "size": 0.055,
+      "y": 0.76
+    },
+    {
+      "at": 41.9,
+      "len": 3.4,
+      "text": "TO THE GOLDEN SANDS",
+      "size": 0.055,
+      "y": 0.76
+    }
+  ],
+  "music": [
+    {
+      "src": "music_safe_zone.ogg",
+      "at": 0.0,
+      "in": 92.205,
+      "gain": 0.9,
+      "fade_in": 1.0,
+      "cut": 73.7,
+      "fade_out": 2.0
+    }
+  ],
+  "sfx": [
+    {
+      "src": "trailer_reverse.wav",
+      "at": 10.4,
+      "gain": 0.32
+    }
+  ],
+  "card": {
+    "len": 9.0,
+    "fade": 1.0,
+    "shot": "gate",
+    "at": 6.4,
+    "title": "GATES",
+    "lines": [
+      "THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER",
+      "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"
+    ]
+  },
+  "poster": {
+    "out": "film/ads/gates-world-key-art.png",
+    "shot": "sea-sunset",
+    "at": 2.5,
+    "size": [
+      1920,
+      1080
+    ],
+    "title": "GATES",
+    "lines": [
+      "ONE ISLAND. EVERY HOUR."
+    ],
+    "dim": 0.15,
+    "y": 0.3
+  }
+}
