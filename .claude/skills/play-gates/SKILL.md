@@ -102,10 +102,11 @@ arguments: `crates/server/AGENT-MANUAL.md`, "MCP".
 ## Cost and character
 
 Every decision is one API request, so `--max-requests-hour` is the spend
-bound; a strategist (`STRATEGIST_MODEL`, Sonnet by default) also thinks
-every 10 minutes on a thread of its own (`STRATEGIST_EVERY_S=0` turns it
-off). `CLAUDE_MODEL` picks the model (the script defaults to
-`claude-opus-5-5`; `CLAUDE_MODEL=claude-sonnet-5-5` costs less). To bill the
+bound; a strategist (`STRATEGIST_MODEL`, the same model by default) also
+thinks every 10 minutes on a thread of its own (`STRATEGIST_EVERY_S=0` turns
+it off). `CLAUDE_MODEL` picks the model (the script defaults to
+`claude-haiku-5-5`, the cheapest; `CLAUDE_MODEL=claude-opus-5-5` plays
+smarter for more). To bill the
 user's Claude plan instead of the key, add `--via claude-code` after the
 script, with `--think-ms 10000 --timeout-ms 30000`.
 

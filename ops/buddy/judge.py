@@ -29,7 +29,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL = os.environ.get("JUDGE_MODEL", "claude-sonnet-5-5")
+MODEL = os.environ.get("JUDGE_MODEL", "claude-haiku-5-5")
 SAMPLE = 150          # turns a body's digest shows the judge at most
 AXES = ("long_term_intent", "adapts_to_events", "remembers", "social_cunning", "personality", "variety")
 VERDICTS = ("mastermind", "between", "drone")
