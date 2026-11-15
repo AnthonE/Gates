@@ -26,7 +26,9 @@ pub const REFUSE_V_FULL: u32 = 4;
 /// The offer waits on a work no one has lit (`works.rs`): THE GATE's
 /// stalls restock as the island comes back.
 pub const REFUSE_V_LOCKED: u32 = 5;
-pub const REFUSE_V_MAX: u32 = REFUSE_V_LOCKED;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_V_DOWN: u32 = 6;
+pub const REFUSE_V_MAX: u32 = REFUSE_V_DOWN;
 
 /// One offer: at kiosk `vendor`, pay `pay_n` of `pay` for `get_n` of `get`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

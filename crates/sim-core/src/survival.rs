@@ -427,6 +427,8 @@ pub const REFUSE_C_NO_WATER: u32 = 3;
 /// Salt water (water pass): the content refuses the sea to the mouth
 /// (`drink_water_salt` zero), or the vessel in hand holds salt — boil it.
 pub const REFUSE_C_SALT: u32 = 4;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_C_DOWN: u32 = 5;
 /// The highest reason above — `DEATH_BY_MAX`'s posture for this ledger.
 /// The wire field is four bits, so a forged `reason` in 4..=15 fits the
 /// width (zero the encoder already refuses); the server refuses the whole
@@ -435,7 +437,7 @@ pub const REFUSE_C_SALT: u32 = 4;
 /// because `protocol`'s domain scrape reads this block as text and its
 /// exempt list is a wire-pass edit; `tests/domain_ledger.rs` fails if the
 /// literal stops naming the ledger's top.
-pub const REFUSE_C_MAX: u32 = 4;
+pub const REFUSE_C_MAX: u32 = REFUSE_C_DOWN;
 
 /// The deepest a wound gets, in hp it owes: Rust's `bleeding` meter tops
 /// out at 100.

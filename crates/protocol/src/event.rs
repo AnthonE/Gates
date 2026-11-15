@@ -928,10 +928,10 @@ const _: () = assert!(
 /// acknowledgement could not name back.
 const CONT_KIND_BITS: u32 = 3;
 const MOVE_SLOT_BITS: u32 = 5;
-/// Move-refusal reason width — `inventory::REFUSE_M_*` runs `1..=7` and
-/// zero is reserved as "no reason", refused at both ends the way
-/// `SUB_CONSUME_REFUSED` already refuses its own zero.
-const REFUSE_M_BITS: u32 = 4;
+/// Move-refusal reason width — widened to five bits at v156 for
+/// `REFUSE_M_DOWN`. Zero is reserved as "no reason", refused at both ends
+/// the way `SUB_CONSUME_REFUSED` already refuses its own zero.
+const REFUSE_M_BITS: u32 = 5;
 /// Death-cause width (`sim_core::world::DEATH_BY_*`). Widened 2 → 3 at
 /// wire v36: the two-bit field had been saturated since v24 (hand, clock,
 /// salt, arrow), so the next cause — the mob's bite — was a widening
@@ -1050,10 +1050,10 @@ const _: () = assert!(ARMOR_MAX_PCT < (1u32 << ARMOR_PCT_BITS));
 const HURT_SECTOR_BITS: u32 = 4;
 const _: () = assert!((HURT_SECTORS as u32) <= (1u32 << HURT_SECTOR_BITS));
 const CRAFT_Q_COUNT_BITS: u32 = 3;
-/// A `research::REFUSE_R_*` reason: seven values since v38 (the tree
-/// verb's parent and bench), and the decoder range-checks rather than
-/// trusting the width — the `BAG_GONE_BITS` posture.
-const RESEARCH_REFUSE_BITS: u32 = 3;
+/// A `research::REFUSE_R_*` reason: four bits since v156 for
+/// `REFUSE_R_DOWN`. The decoder range-checks rather than trusting the
+/// width — the `BAG_GONE_BITS` posture.
+const RESEARCH_REFUSE_BITS: u32 = 4;
 /// 7 → 8 at v123: `MAX_RECIPES` went 64 → 128, and a total of 128 needs the
 /// eighth bit.
 const RECIPE_TOTAL_BITS: u32 = 8;
@@ -5107,7 +5107,7 @@ pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_SWIPE_REFUSED)?;
-    w.write(code as u32, 2)?;
+    w.write(code as u32, 3)?;
     w.write(door as u32, 2)?;
     Ok(w.finish())
 }
@@ -8124,7 +8124,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
         }
         SUB_SWIPE_REFUSED => {
-            let code = r.read(2)? as u8;
+            let code = r.read(3)? as u8;
             let door = r.read(2)? as u8;
             if code == 0
                 || code as u32 > sim_core::monument::REFUSE_S_MAX
@@ -11610,7 +11610,7 @@ mod wire_domains {
             // in the receiver's pack.
             // 14 -> 15 at wire v148: `REFUSE_M_TURRET`, the turret panel's
             // slots.
-            live_max: 15,
+            live_max: 16,
         },
         Domain {
             what: "wear slot",
@@ -11647,7 +11647,7 @@ mod wire_domains {
             min_members: 4,
             bits: REFUSE_C_BITS,
             // 4 at v137: `REFUSE_C_SALT` (the water pass).
-            live_max: 4,
+            live_max: 5,
         },
         Domain {
             what: "casino refusal",
@@ -11659,7 +11659,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 5,
             bits: CASINO_CODE_BITS,
-            live_max: 5,
+            live_max: 6,
         },
         Domain {
             what: "reload refusal",
@@ -11671,7 +11671,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 6,
             bits: REFUSE_RL_BITS,
-            live_max: 6,
+            live_max: 7,
         },
         Domain {
             what: "gather refusal",
@@ -11683,7 +11683,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 2,
             bits: REFUSE_G_BITS,
-            live_max: 2,
+            live_max: 3,
         },
         Domain {
             what: "build refusal",
@@ -11697,7 +11697,7 @@ mod wire_domains {
             bits: REFUSE_B_BITS,
             // 15 at wire v92: `REFUSE_B_SAFE`, no charge planted in THE
             // GATE or on its stations. 16 at v137: `REFUSE_B_SWIMMING`.
-            live_max: 16,
+            live_max: 17,
         },
         Domain {
             what: "craft refusal",
@@ -11709,7 +11709,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 9,
             bits: REFUSE_CR_BITS,
-            live_max: 8,
+            live_max: 9,
         },
         Domain {
             what: "deploy refusal",
@@ -11726,7 +11726,7 @@ mod wire_domains {
             // `REFUSE_D_BAG_SPENT`.
             // 28 -> 31 at wire v150: a wire too long, a port it cannot
             // take, a loop (`REFUSE_D_WIRE_*`).
-            live_max: 31,
+            live_max: 32,
         },
         Domain {
             what: "container kind",
@@ -11795,9 +11795,9 @@ mod wire_domains {
             min_members: 8,
             bits: RESEARCH_REFUSE_BITS,
             // 6 -> 7 at wire v73 (research table v1): `REFUSE_R_BUSY`, a
-            // table already running. It saturates the three-bit field, so
-            // the next research reason is a widening and a turn.
-            live_max: 7,
+            // table already running. 7 -> 8 at v156: `REFUSE_R_DOWN`,
+            // widening the reason to four bits.
+            live_max: 8,
         },
         Domain {
             what: "deploy archetype",

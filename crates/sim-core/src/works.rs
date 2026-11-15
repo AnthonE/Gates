@@ -92,7 +92,9 @@ pub const REFUSE_A_RESTING: u32 = 8;
 pub const REFUSE_A_SHUT: u32 = 9;
 /// This wallet has taken out all the wipe allows (or has no wallet).
 pub const REFUSE_A_CAP: u32 = 10;
-pub const REFUSE_A_MAX: u32 = REFUSE_A_CAP;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_A_DOWN: u32 = 11;
+pub const REFUSE_A_MAX: u32 = REFUSE_A_DOWN;
 
 /// How close to a work's terminal a deposit must be, metres.
 pub const WORK_REACH_M: f32 = 4.0;

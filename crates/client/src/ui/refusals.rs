@@ -43,7 +43,7 @@
 // nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 9] = [
+pub const CRAFT: [&str; 10] = [
     "no such recipe",
     "bad count",
     "needs a station",
@@ -66,6 +66,7 @@ pub const CRAFT: [&str; 9] = [
     // the sentence says where one comes from rather than sending anyone to a
     // table. The unlock is a token, so it can be bought.
     "only its owners can make this — get one in a drop or buy one",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the
@@ -73,7 +74,7 @@ pub const CRAFT: [&str; 9] = [
 /// each names the act that fixes it — `CRAFT`'s blueprint sentence sets the
 /// bar. The fourth is said to a reader holding paper they already know,
 /// and the paper is kept, so the sentence says what it is still good for.
-pub const RESEARCH: [&str; 8] = [
+pub const RESEARCH: [&str; 9] = [
     "no research table in reach",
     "nothing to research - put an item in the table",
     "that cannot be researched",
@@ -82,11 +83,12 @@ pub const RESEARCH: [&str; 8] = [
     "unlock the node before it first",
     "no workbench of that level in reach",
     "the table is already researching",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 17] = [
+pub const BUILD: [&str; 18] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -111,6 +113,7 @@ pub const BUILD: [&str; 17] = [
     "not in THE GATE",
     // The water pass (v131): a swimmer builds nothing.
     "not while swimming",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.
@@ -119,7 +122,7 @@ pub const BUILD: [&str; 17] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 32] = [
+pub const DEPLOY: [&str; 33] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -164,6 +167,7 @@ pub const DEPLOY: [&str; 32] = [
     "that wire would be too long",
     "that part has no free port for it",
     "that would feed it its own power",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
@@ -184,7 +188,7 @@ pub const DEPLOY: [&str; 32] = [
 /// `EV_CONSUME_REFUSED`. So the sentences are worded to be true of
 /// whichever verb was pressed: only code 1 may name food, only code 3 may
 /// name water, and code 2 — the one both verbs reach — names neither.
-pub const CONSUME: [&str; 5] = [
+pub const CONSUME: [&str; 6] = [
     // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
     // because the refusal ring never carries it, and unreachable through
     // `hud::feedback`, which reads the landed half off `Feed::consumed`.
@@ -195,6 +199,7 @@ pub const CONSUME: [&str; 5] = [
     // The water pass (v131): the sea is not for the mouth, or the vessel
     // in hand holds salt.
     "that's salt water — boil it at a fire first",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `sim_core::gather`'s `REFUSE_G_*: u32` — a gather swing the node
@@ -204,18 +209,19 @@ pub const CONSUME: [&str; 5] = [
 /// `{}` that [`gather`] fills with the item's own label, because the
 /// point of the event's item field is saying *your torch cannot harvest
 /// this* instead of "bare hands" (`NOW.md` §0kit item 2).
-pub const GATHER: [&str; 3] = [
+pub const GATHER: [&str; 4] = [
     // Code 0 = "no refusal" — unreachable, `CONSUME[0]`'s posture.
     "nothing was refused",
     "{} cannot harvest this",
     // Q3: re-craft is the repair, so the sentence names the act that
     // fixes it — a refusal a player cannot act on reads as a bug.
     "{} is broken — craft a new one",
+    super::wounded::HANDS_LINE,
 ];
 
 /// `ranged::REFUSE_RL_*` — why a reload (or a trigger pull on an empty
 /// magazine) did nothing. `{}` is the held item, [`GATHER`]'s substitution.
-pub const RELOAD: [&str; 7] = [
+pub const RELOAD: [&str; 8] = [
     // Code 0 = "no refusal" — unreachable, `CONSUME[0]`'s posture.
     "nothing was refused",
     "{} takes no magazine",
@@ -226,6 +232,7 @@ pub const RELOAD: [&str; 7] = [
     "empty — press R to reload",
     "no ammunition left for {}",
     "nothing loaded in {}",
+    super::wounded::HANDS_LINE,
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.
@@ -267,6 +274,7 @@ pub fn research(code: u8) -> String {
 /// Why a kiosk trade was turned down (`sim_core::vend::REFUSE_V_*`).
 pub fn vend(code: u8) -> String {
     match code as u32 {
+        sim_core::vend::REFUSE_V_DOWN => super::wounded::HANDS_LINE.into(),
         sim_core::vend::REFUSE_V_REACH => "step up to the counter to trade".into(),
         sim_core::vend::REFUSE_V_FUNDS => "you cannot pay for that".into(),
         sim_core::vend::REFUSE_V_FULL => "no room in your pack for that".into(),
@@ -281,6 +289,7 @@ pub fn vend(code: u8) -> String {
 pub fn shop(code: u8) -> String {
     use sim_core::shop::*;
     match code as u32 {
+        sim_core::shop::REFUSE_SH_DOWN => super::wounded::HANDS_LINE.into(),
         REFUSE_SH_REACH => "step up to the machine".into(),
         REFUSE_SH_OFFER => "that offer changed or is gone — look again".into(),
         REFUSE_SH_STOCK => "sold out".into(),
@@ -297,6 +306,7 @@ pub fn shop(code: u8) -> String {
 pub fn casino(code: u8) -> String {
     use sim_core::casino::*;
     match code as u32 {
+        sim_core::casino::REFUSE_CA_DOWN => super::wounded::HANDS_LINE.into(),
         REFUSE_CA_REACH => "step up to it".into(),
         REFUSE_CA_BUSY => "it is spinning — wait for it to stop".into(),
         REFUSE_CA_FUNDS => "you do not have the junk".into(),
@@ -309,6 +319,7 @@ pub fn casino(code: u8) -> String {
 pub fn arc(code: u8) -> String {
     use sim_core::works::*;
     match code as u32 {
+        sim_core::works::REFUSE_A_DOWN => super::wounded::HANDS_LINE.into(),
         REFUSE_A_REACH => "step up to the work".into(),
         REFUSE_A_SEALED => "it is sealed — it opens later in the wipe".into(),
         // The sim says the same for fuel short of a dry tank's minimum.
@@ -328,6 +339,7 @@ pub fn arc(code: u8) -> String {
 /// Why a ziggurat door stayed shut.
 pub fn swipe(code: u8) -> String {
     match code as u32 {
+        sim_core::monument::REFUSE_S_DOWN => super::wounded::HANDS_LINE.into(),
         sim_core::monument::REFUSE_S_REACH => "step up to the reader".into(),
         sim_core::monument::REFUSE_S_CARD => "you need this door's keycard".into(),
         _ => "the door does not answer".into(),
@@ -646,6 +658,31 @@ mod tests {
                 "the client must not carry its own connect sentences"
             );
         }
+    }
+
+    #[test]
+    fn every_downed_reason_uses_the_recovery_hint() {
+        let expected = super::super::wounded::HANDS_LINE;
+        for text in [
+            craft(sim_core::craft::REFUSE_CR_DOWN as u8),
+            build(sim_core::build::REFUSE_B_DOWN as u8),
+            deploy(sim_core::deploy::REFUSE_D_DOWN as u8),
+            consume(sim_core::survival::REFUSE_C_DOWN as u8),
+            research(sim_core::research::REFUSE_R_DOWN as u8),
+            gather(sim_core::gather::REFUSE_G_DOWN as u8, "your Rock"),
+            reload(sim_core::ranged::REFUSE_RL_DOWN as u8, "your Revolver"),
+            vend(sim_core::vend::REFUSE_V_DOWN as u8),
+            shop(sim_core::shop::REFUSE_SH_DOWN as u8),
+            casino(sim_core::casino::REFUSE_CA_DOWN as u8),
+            arc(sim_core::works::REFUSE_A_DOWN as u8),
+            swipe(sim_core::monument::REFUSE_S_DOWN as u8),
+        ] {
+            assert_eq!(text, expected);
+        }
+        assert_eq!(
+            super::super::slots::refusal_text(sim_core::inventory::REFUSE_M_DOWN as u8),
+            expected
+        );
     }
 
     /// No two codes in a table may share a sentence, or a player cannot tell

@@ -120,7 +120,9 @@ pub const REFUSE_CA_BUSY: u32 = 3;
 pub const REFUSE_CA_FUNDS: u32 = 4;
 /// That colour already holds [`WHEEL_STAKE_MAX`] of the player's junk.
 pub const REFUSE_CA_CAP: u32 = 5;
-pub const REFUSE_CA_MAX: u32 = REFUSE_CA_CAP;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_CA_DOWN: u32 = 6;
+pub const REFUSE_CA_MAX: u32 = REFUSE_CA_DOWN;
 
 /// Draw channels, so a wheel spin and a reel never share a draw.
 const CH_WHEEL: u64 = 0x5748_4545_4C00_0001;

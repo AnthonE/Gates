@@ -178,10 +178,12 @@ pub const REFUSE_RL_EMPTY: u32 = 4;
 pub const REFUSE_RL_DRY: u32 = 5;
 /// An unload asked of a magazine that holds nothing (`unload`).
 pub const REFUSE_RL_UNLOADED: u32 = 6;
+/// The body is down and cannot perform this hand action.
+pub const REFUSE_RL_DOWN: u32 = 7;
 /// The highest reason above, named rather than counted — the discipline
 /// `REFUSE_G_MAX` and `EV_MAX` apply to a value domain, so the wire's
 /// field width is checked against a constant and not against a memory.
-pub const REFUSE_RL_MAX: u32 = REFUSE_RL_UNLOADED;
+pub const REFUSE_RL_MAX: u32 = REFUSE_RL_DOWN;
 
 /// Pack a magazine's state into one `u32` event field: loaded in the high
 /// half, the weapon's ceiling in the low half.

@@ -1409,7 +1409,9 @@ pub use voice::{
 /// v155: a player id is `generation << PLAYER_SLOT_BITS | slot` with ten
 /// slot bits (was eight), so a shard can seat more than 256. No layout moved;
 /// a v154 client would read every slot past 255 as the wrong player.
-pub const PROTO_VER: u16 = 155;
+/// v156 — downed hand actions answer on their refusal lane; move reasons
+/// widen to five bits, research reasons to four and swipe reasons to three.
+pub const PROTO_VER: u16 = 156;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
 /// below `limits::MOB_ID_TAG`, are the slot's claim generation.
