@@ -381,6 +381,7 @@ pub fn event_work_def() -> (
         act: 3,
         opens_at: 12 * 3600 * 30,
         fallback_at: 0xFFFF_FFFF,
+        countdown: 12 * 3600 * 30,
         floor: 1,
         ceiling: 32,
         fuel: (MAX_ITEM_DEFS - 1) as u16,
@@ -410,11 +411,13 @@ pub fn event_work_def() -> (
     (wc, b"THE CRUCIBLE", b"GUNPOWDER", b"SMELTING")
 }
 
-/// Work 1, open, half its first line in, a tank of 77, a share of 1234 and
+/// Work 1, counting down to tick 0xFEDC_BA98 (v156), half its first line in,
+/// a tank of 77, a share of 1234 and
 /// two unlocks held.
 pub fn event_work_state() -> (u8, sim_core::works::Work, u8, u32, u32) {
     let w = sim_core::works::Work {
-        state: sim_core::works::WORK_OPEN,
+        state: sim_core::works::WORK_COUNTDOWN,
+        lit_at: 0xFEDC_BA98,
         fuel: 77,
         got: [30_000, 0, (1 << 24) - 1, 0],
         ..Default::default()

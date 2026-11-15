@@ -2593,6 +2593,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::WorkState {
                     index,
                     state: work.state,
+                    lights_at: work.lit_at as u32,
                     fuel: work.fuel,
                     n,
                     got: work.got,

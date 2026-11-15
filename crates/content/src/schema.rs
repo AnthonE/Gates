@@ -2017,6 +2017,11 @@ pub struct Work {
     pub opens_hour: u32,
     /// The hour it lights itself if nobody paid.
     pub fallback_hour: u32,
+    /// Hours between its quota being met and it lighting (THE SEVERED GATE's
+    /// countdown); 0, the default, lights on the deposit that meets it.
+    /// Unpaid, it starts counting this long before `fallback_hour`.
+    #[serde(default)]
+    pub countdown_hours: u32,
     /// Set for the rest of the wipe once lit (an `unlock.` id).
     #[serde(default)]
     pub floor_unlock: Option<String>,
@@ -2037,7 +2042,7 @@ pub struct Work {
 pub struct ArcEffect {
     pub unlock: String,
     /// A knob the sim knows: `smelt_pct`, `heal_pct`, `research_pct`,
-    /// `gather_pct`, `extract_pct` (`sim_core::works::KNOB_*`).
+    /// `gather_pct`, `extract_pct`, `notice_pct` (`sim_core::works::KNOB_*`).
     pub knob: String,
     pub pct: u16,
 }

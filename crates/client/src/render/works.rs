@@ -21,7 +21,7 @@ use client_core::arc::WorkView;
 use sim_core::landmark::LandmarkKind;
 use sim_core::spot::{Spot, SITE_LANDMARK0, SITE_TOWN};
 use sim_core::terrain::Haven;
-use sim_core::works::{WORK_LIT, WORK_OPEN};
+use sim_core::works::{WORK_COUNTDOWN, WORK_LIT, WORK_OPEN};
 
 use super::fx::world::{FireFx, Tongues};
 use super::structures::FIRE_COLOR;
@@ -370,11 +370,16 @@ pub static LOOKS: [(u8, Look); 5] = [
     (SITE_TOWN, EXCHANGE),
 ];
 
-/// The look a work at `site` wears.
-pub fn look(site: u8) -> &'static Look {
+/// The look work `def` wears: its site's. A work past act II at the town is
+/// THE SEVERED GATE, whose terminal stands under the town's own broken ring
+/// (`gate_fx.rs`), so it wears [`PLINTH`] rather than a second exchange.
+pub fn look(def: &sim_core::works::WorkDef) -> &'static Look {
+    if def.spot.site == SITE_TOWN && def.act > 2 {
+        return &PLINTH;
+    }
     LOOKS
         .iter()
-        .find(|(s, _)| *s == site)
+        .find(|(s, _)| *s == def.spot.site)
         .map_or(&PLINTH, |(_, l)| l)
 }
 
@@ -421,7 +426,7 @@ pub fn spawn(
         let Some((x, _, z)) = sim_core::spot::world(&world.haven, &w.def.spot) else {
             continue;
         };
-        let look = look(w.def.spot.site);
+        let look = look(&w.def);
         let turn = Quat::from_rotation_y(site_yaw(&world.haven, &w.def.spot) + look.turn);
         let ground = |at: Vec3| {
             let p = turn * at;
@@ -668,7 +673,7 @@ fn stones(look: &Look) -> impl Iterator<Item = StoneAt> + '_ {
 /// third while it does, so a nearly dry tank still reads as burning).
 pub(super) fn wake(w: &WorkView) -> (f32, f32) {
     match w.state {
-        WORK_OPEN => (w.progress_pm() as f32 / 1000.0, 0.0),
+        WORK_OPEN | WORK_COUNTDOWN => (w.progress_pm() as f32 / 1000.0, 0.0),
         WORK_LIT if w.fuel > 0 => {
             let tank = w.fuel as f32 / w.def.fuel_max.max(1) as f32;
             (1.0, 0.35 + 0.65 * tank.clamp(0.0, 1.0))
@@ -708,7 +713,7 @@ pub fn light(
             continue;
         };
         let (color, lumens) = match w.state {
-            WORK_OPEN => (GLOW_OPEN, GLOW_LUMENS),
+            WORK_OPEN | WORK_COUNTDOWN => (GLOW_OPEN, GLOW_LUMENS),
             WORK_LIT if w.fuel == 0 => (GLOW_EMBER, GLOW_LUMENS),
             _ => (GLOW_OPEN, 0.0),
         };
@@ -759,7 +764,7 @@ pub fn animate(
             continue;
         };
         let (fill, heat) = wake(w);
-        let want = if w.state == WORK_OPEN || w.state == WORK_LIT {
+        let want = if w.state != sim_core::works::WORK_SEALED {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -801,7 +806,7 @@ pub fn animate(
             continue;
         }
         c.shown = key;
-        let l = look(w.def.spot.site);
+        let l = look(&w.def);
         let [r, g, b] = l.core_rgb;
         let burn = LinearRgba::rgb(r, g, b);
         // Core i wakes with the quota's i-th share, so a row lights in turn.
@@ -822,7 +827,7 @@ pub fn animate(
             continue;
         };
         let (fill, heat) = wake(w);
-        let want = if w.state == WORK_OPEN || w.state == WORK_LIT {
+        let want = if w.state != sim_core::works::WORK_SEALED {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -910,7 +915,7 @@ pub fn animate(
 
 /// How many stones a work's look lays out.
 fn stone_count(w: &WorkView) -> u8 {
-    look(w.def.spot.site).stones.max(1)
+    look(&w.def).stones.max(1)
 }
 
 fn smooth(x: f32) -> f32 {

@@ -822,6 +822,22 @@ impl MobContent {
         }
         c
     }
+
+    /// The table with every notice radius at `pct` per cent on top of what
+    /// the tier made it (`works::KNOB_NOTICE_PCT`: what leaks out of the open
+    /// Gate hears a noisy base from further off). 100 is the table as it is.
+    pub fn roused(mut self, pct: u32) -> Self {
+        if pct != 100 {
+            let t = FelTier {
+                notice_pct: pct.min(u16::MAX as u32) as u16,
+                ..FelTier::SAME
+            };
+            for d in self.defs.iter_mut() {
+                *d = t.apply(*d);
+            }
+        }
+        self
+    }
 }
 
 /// One roster slot. Every field a tick can move is hashed

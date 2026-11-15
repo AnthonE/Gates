@@ -1826,7 +1826,7 @@ impl ShardCore {
     /// (a drink, a reload, a slot move, a talk, a respawn), nor by a queue
     /// finishing on its own.
     fn note_standings(&mut self, n: usize) {
-        use sim_core::works::{WORK_EV_LIT, WORK_EV_REKINDLED};
+        use sim_core::works::{WORK_EV_COUNTDOWN, WORK_EV_LIT, WORK_EV_REKINDLED};
         use sim_core::world::TRUST_GIVE;
         // Slots whose craft the sim refused this tick.
         let mut craft_refused = crate::client::PlayerSet::EMPTY;
@@ -1847,7 +1847,13 @@ impl ShardCore {
                         self.note_work_deed(ev);
                     }
                 }
-                EV_WORK if ev.b == WORK_EV_LIT || ev.b == WORK_EV_REKINDLED => {
+                // A work with a countdown lights naming nobody: the deed is
+                // the deposit that met its quota and started the count.
+                EV_WORK
+                    if ev.b == WORK_EV_LIT
+                        || ev.b == WORK_EV_REKINDLED
+                        || ev.b == WORK_EV_COUNTDOWN =>
+                {
                     self.note_work_deed(ev);
                 }
                 EV_EXTRACTED => {
@@ -2000,7 +2006,7 @@ impl ShardCore {
     /// allocates unless something was earned, and the writer thread does the
     /// formatting.
     fn note_achievements(&mut self, n: usize) {
-        use sim_core::works::WORK_EV_LIT;
+        use sim_core::works::{WORK_EV_COUNTDOWN, WORK_EV_LIT};
         use sim_core::world::{
             EV_ARC_DID, EV_ASSIST, EV_BAG_DROPPED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CRAFT_DONE,
             EV_DEATH, EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_EXTRACTED, EV_GATHER, EV_GAVE,
@@ -2027,7 +2033,9 @@ impl ShardCore {
                 // announcement with the lock bit, matched to this tick's own
                 // `PlaceDeploy` of a lock at that address.
                 EV_DOOR if ev.b & 0b100 != 0 => ev.c,
-                EV_WORK if ev.b == WORK_EV_LIT => ev.c,
+                // The deposit that started a countdown lit it (the light
+                // itself names nobody: `c` is 0 and no slot answers).
+                EV_WORK if ev.b == WORK_EV_LIT || ev.b == WORK_EV_COUNTDOWN => ev.c,
                 EV_MECH_SOLVED => ev.b,
                 // The killer of another player.
                 EV_DEATH if ev.b != ev.a && ev.b & sim_core::limits::MOB_ID_TAG == 0 => ev.b,
@@ -2546,7 +2554,7 @@ impl ShardCore {
             .work_names
             .get(ev.a as usize)
             .map_or("a work", |n| n.as_str());
-        if ev.b == sim_core::works::WORK_EV_LIT {
+        if ev.b == sim_core::works::WORK_EV_LIT || ev.b == sim_core::works::WORK_EV_COUNTDOWN {
             let act = self
                 .world
                 .works_def

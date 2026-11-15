@@ -7547,11 +7547,14 @@ fn the_work_terminal_says_what_it_unlocks() {
     );
 
     w.state = WORK_SEALED;
+    assert_eq!(step(&w), (0, "OPEN"), "a work with no tank is open or not");
+    w.def.fuel_max = 100;
     assert_eq!(step(&w), (0, "BURNING"));
     w.state = WORK_OPEN;
     assert_eq!(step(&w).0, 1);
+    w.state = sim_core::works::WORK_COUNTDOWN;
+    assert_eq!(step(&w), (2, "COUNTING"));
     w.state = WORK_LIT;
-    w.def.fuel_max = 100;
     assert_eq!(step(&w), (2, "EMBERS"), "a dry tank");
     w.fuel = 5;
     assert_eq!(step(&w), (2, "BURNING"));
@@ -7827,4 +7830,60 @@ fn no_run_condition_takes_a_non_send_resource() {
             );
         }
     }
+}
+
+/// A work counting down leads the banner over an open one, its bar runs
+/// with the clock, and its lines say when it opens and that nothing more
+/// goes in (THE SEVERED GATE, wire v156).
+#[test]
+fn a_counting_work_leads_the_banner_and_says_when_it_opens() {
+    use client::ui::arc::{banner, countdown_pm, event_line, state_line, todo_line};
+    use client_core::arc::ArcView;
+    use sim_core::limits::TICK_HZ;
+    use sim_core::works::{WorkInput, WORK_COUNTDOWN, WORK_EV_COUNTDOWN, WORK_EV_LIT, WORK_OPEN};
+    let hour = 3600 * TICK_HZ as u64;
+    let mut a = ArcView {
+        count: 2,
+        ..ArcView::default()
+    };
+    for w in a.works.iter_mut().take(2) {
+        w.known = true;
+        w.synced = true;
+        w.def.n_inputs = 1;
+        w.def.inputs[0] = WorkInput { item: 1, need: 10 };
+    }
+    a.works[0].state = WORK_OPEN;
+    a.works[0].got[0] = 9;
+    let gate = &mut a.works[1];
+    gate.def.act = 3;
+    gate.def.countdown = 12 * hour;
+    gate.def.fuel_max = 0;
+    gate.state = WORK_COUNTDOWN;
+    gate.got[0] = 10;
+    gate.lights_at = (20 * hour) as u32;
+    let name = b"THE SEVERED GATE";
+    gate.name[..name.len()].copy_from_slice(name);
+    gate.name_len = name.len() as u8;
+
+    let now = 14.0 * hour as f64;
+    let b = banner(&a, now).expect("a banner");
+    assert_eq!(b.title, "ACT III · THE GATE");
+    assert_eq!(b.line, "THE SEVERED GATE · COUNTING DOWN · opens in 6 h");
+    assert_eq!(b.pm, Some(500), "half the countdown has run");
+    assert_eq!(countdown_pm(&a.works[0], now), None);
+    assert_eq!(state_line(&a.works[1], now), "COUNTING DOWN · opens in 6 h");
+    assert!(
+        todo_line(&a.works[1], now).contains("nothing more goes in"),
+        "{}",
+        todo_line(&a.works[1], now)
+    );
+    assert_eq!(
+        event_line(&a, 1, WORK_EV_COUNTDOWN as u8, None).as_deref(),
+        Some("THE SEVERED GATE IS COUNTING DOWN — it opens on its own hour")
+    );
+    assert_eq!(
+        event_line(&a, 1, WORK_EV_LIT as u8, None).as_deref(),
+        Some("THE SEVERED GATE HAS OPENED"),
+        "a work with no tank opens rather than burns"
+    );
 }

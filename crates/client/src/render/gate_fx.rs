@@ -1089,13 +1089,13 @@ pub fn animate(
     gate.arcs_seen = dist < ARC_FAR_M;
 
     // THE EXCHANGE is the gate's work: its quota mends the ring, its tank
-    // burns the veil.
+    // burns the veil. (THE SEVERED GATE stands at the town too, in act III.)
     let exchange = net.as_ref().and_then(|n| {
         n.session
             .core
             .arc
             .known()
-            .find(|(_, w)| w.def.spot.site == sim_core::spot::SITE_TOWN)
+            .find(|(_, w)| w.def.spot.site == sim_core::spot::SITE_TOWN && w.def.act <= 2)
             .map(|(_, w)| *w)
     });
     let (fill, heat) = exchange.as_ref().map_or((0.0, 0.0), super::works::wake);

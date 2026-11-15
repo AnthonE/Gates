@@ -1163,7 +1163,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             .try_into()
             .map_err(|_| WorldSaveError::Truncated)?;
         *work = crate::works::Work::from_bytes(raw);
-        if work.state > crate::works::WORK_LIT {
+        if work.state > crate::works::WORK_STATE_MAX {
             return Err(WorldSaveError::BadWork);
         }
     }

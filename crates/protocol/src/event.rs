@@ -552,7 +552,8 @@ const SUB_FIRE: u32 = 78;
 /// where it stands, its act and hours, its quota and tank, and the names of
 /// it and its unlocks.
 const SUB_WORK_DEF: u32 = 79;
-/// One work's state now (wire v95): sealed, open or lit, its tank, its quota
+/// One work's state now (wire v95): sealed, open, lit or counting down
+/// (v156, and the tick it lights), its tank, its quota
 /// so far, the receiver's own share, and every unlock the island holds.
 /// Per client, sent when it moves and to a joiner.
 const SUB_WORK_STATE: u32 = 80;
@@ -2455,6 +2456,9 @@ pub enum EventMsg {
     WorkState {
         index: u8,
         state: u8,
+        /// While `state` is `WORK_COUNTDOWN` (wire v156), the tick it
+        /// lights; 0 otherwise.
+        lights_at: u32,
         fuel: u32,
         n: u8,
         got: [u32; sim_core::limits::MAX_WORK_INPUTS],
@@ -4780,6 +4784,7 @@ pub fn encode_event_work_def(
         || d.act > 7
         || d.opens_at > u32::MAX as u64
         || d.fallback_at > u32::MAX as u64
+        || d.countdown > u32::MAX as u64
         || d.floor as usize > sim_core::limits::MAX_UNLOCKS
         || d.ceiling as usize > sim_core::limits::MAX_UNLOCKS
         || d.fuel_max >= 1 << 20
@@ -4799,6 +4804,7 @@ pub fn encode_event_work_def(
     w.write(d.act as u32, 3)?;
     w.write(d.opens_at as u32, 32)?;
     w.write(d.fallback_at as u32, 32)?;
+    w.write(d.countdown as u32, 32)?;
     w.write(d.floor as u32, 6)?;
     w.write(d.ceiling as u32, 6)?;
     w.write(d.fuel as u32, 16)?;
@@ -4855,7 +4861,7 @@ pub fn encode_event_work_state(
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if index as usize >= sim_core::limits::MAX_WORKS
-        || work.state > sim_core::works::WORK_LIT
+        || work.state > sim_core::works::WORK_STATE_MAX
         || n_inputs as usize > sim_core::limits::MAX_WORK_INPUTS
     {
         return Err(WireError::Range);
@@ -4863,6 +4869,10 @@ pub fn encode_event_work_state(
     let mut w = begin(buf, SUB_WORK_STATE)?;
     w.write(index as u32, 3)?;
     w.write(work.state as u32, 2)?;
+    // Counting down (wire v156): the tick it lights.
+    if work.state == sim_core::works::WORK_COUNTDOWN {
+        w.write(work.lit_at.min(u32::MAX as u64) as u32, 32)?;
+    }
     w.write(work.fuel.min((1 << 20) - 1), 20)?;
     w.write(n_inputs as u32, 3)?;
     for g in work.got.iter().take(n_inputs as usize) {
@@ -7842,6 +7852,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 act: r.read(3)? as u8,
                 opens_at: r.read(32)? as u64,
                 fallback_at: r.read(32)? as u64,
+                countdown: r.read(32)? as u64,
                 floor: r.read(6)? as u8,
                 ceiling: r.read(6)? as u8,
                 fuel: r.read(16)? as u16,
@@ -7911,9 +7922,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_WORK_STATE => {
             let index = r.read(3)? as u8;
             let state = r.read(2)? as u8;
+            let lights_at = if state == sim_core::works::WORK_COUNTDOWN {
+                r.read(32)?
+            } else {
+                0
+            };
             let fuel = r.read(20)?;
             let n = r.read(3)? as u8;
-            if state > sim_core::works::WORK_LIT || n as usize > sim_core::limits::MAX_WORK_INPUTS {
+            if state > sim_core::works::WORK_STATE_MAX
+                || n as usize > sim_core::limits::MAX_WORK_INPUTS
+            {
                 return Err(WireError::Malformed);
             }
             let mut got = [0u32; sim_core::limits::MAX_WORK_INPUTS];
@@ -7923,6 +7941,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::WorkState {
                 index,
                 state,
+                lights_at,
                 fuel,
                 n,
                 got,
@@ -11938,11 +11957,12 @@ mod wire_domains {
             home: "works.rs",
             prefix: "pub const KNOB_",
             ty: ": u8 = ",
-            // `KNOB_MAX` names the ledger. Five knobs in three bits at v132.
+            // `KNOB_MAX` names the ledger. Six knobs in three bits at v156
+            // (the open Gate's `KNOB_NOTICE_PCT`).
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 6,
             bits: BOOST_KNOB_BITS,
-            live_max: 4,
+            live_max: 5,
         },
     ];
 

@@ -3145,6 +3145,7 @@ impl ClientCore {
             EventMsg::WorkState {
                 index,
                 state,
+                lights_at,
                 fuel,
                 n: _,
                 got,
@@ -3153,6 +3154,7 @@ impl ClientCore {
             } => {
                 if let Some(w) = self.arc.works.get_mut(index as usize) {
                     w.state = state;
+                    w.lights_at = lights_at;
                     w.fuel = fuel;
                     w.got = got;
                     w.mine = mine;

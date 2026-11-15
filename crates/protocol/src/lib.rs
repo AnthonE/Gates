@@ -1409,7 +1409,13 @@ pub use voice::{
 /// v155: a player id is `generation << PLAYER_SLOT_BITS | slot` with ten
 /// slot bits (was eight), so a shard can seat more than 256. No layout moved;
 /// a v154 client would read every slot past 255 as the wrong player.
-pub const PROTO_VER: u16 = 155;
+///
+/// v156 — a work can count down (THE SEVERED GATE, `ARC.md` act III):
+/// `SUB_WORK_DEF` carries its `countdown` in ticks after `fallback_at`,
+/// `SUB_WORK_STATE` admits `WORK_COUNTDOWN` (3) and then the tick it lights,
+/// `SUB_WORK` admits `WORK_EV_COUNTDOWN` (6), an arc refusal admits
+/// `REFUSE_A_COUNTING` (11), and a work's boost may name `KNOB_NOTICE_PCT`.
+pub const PROTO_VER: u16 = 156;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
 /// below `limits::MOB_ID_TAG`, are the slot's claim generation.

@@ -4837,7 +4837,19 @@ impl World {
     /// animal hatched on wipe day is weak and wary and the same species is
     /// hardened once the works burn. The hit volumes stay content's.
     pub fn mob_now(&self) -> mob::MobContent {
-        self.mob.at_tier(self.works.fel_tier(&self.works_def))
+        self.mob
+            .at_tier(self.works.fel_tier(&self.works_def))
+            .roused(self.notice_pct())
+    }
+
+    /// How far animals notice, per cent, under the island's unlocks
+    /// (`works::KNOB_NOTICE_PCT`, the open Gate's).
+    pub fn notice_pct(&self) -> u32 {
+        crate::works::knob_pct(
+            &self.works_def,
+            self.works.unlocks,
+            crate::works::KNOB_NOTICE_PCT,
+        )
     }
 
     /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
@@ -9245,8 +9257,9 @@ impl World {
         // The island's tier, the top tier a turned animal fights from, and
         // the spread it turns in: all on the stack (wall 2).
         let tier = self.works.fel_tier(&self.works_def);
-        let mc = self.mob.at_tier(tier);
-        let fel_mc = self.mob.at_tier((mob::FEL_TIERS - 1) as u8);
+        let roused = self.notice_pct();
+        let mc = self.mob.at_tier(tier).roused(roused);
+        let fel_mc = self.mob.at_tier((mob::FEL_TIERS - 1) as u8).roused(roused);
         let blight = crate::blight::now(&self.blight, &self.haven, tick, tier);
         mob::step(
             seed,

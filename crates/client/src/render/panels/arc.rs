@@ -22,7 +22,9 @@ use crate::ui::arc as words;
 use crate::ui::craft::item_label;
 use client_core::arc::WorkView;
 use client_core::core::ClientCore;
-use sim_core::works::{ARG_ALL, NO_UNLOCK, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_LIT, WORK_OPEN};
+use sim_core::works::{
+    ARG_ALL, NO_UNLOCK, OP_DEPOSIT, OP_EXTRACT, OP_FUEL, WORK_COUNTDOWN, WORK_LIT, WORK_OPEN,
+};
 
 const WORK_W: f32 = 680.0;
 const ISLAND_W: f32 = 640.0;
@@ -69,6 +71,15 @@ pub fn build_work(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &I
         steps(p, &w);
         kit::line(p, words::todo_line(&w, now(core)), 13.0, TEXT);
         match w.state {
+            WORK_COUNTDOWN => labelled_bar(
+                p,
+                words::countdown_pm(&w, now(core)).unwrap_or(0),
+                BAR_TANK,
+                format!(
+                    "OPENS {}",
+                    words::span(words::hours_until(w.lights_at as u64, now(core))).to_uppercase()
+                ),
+            ),
             WORK_LIT if w.def.fuel_max > 0 => labelled_bar(
                 p,
                 words::tank_pct(&w) * 10,
@@ -561,6 +572,12 @@ fn works(p: &mut ChildSpawnerCommands, core: &ClientCore) {
         kit::section(p, w.name());
         kit::strong(p, words::state_line(w, now(core)), 13.0, TEXT);
         match w.state {
+            WORK_COUNTDOWN => kit::bar(
+                p,
+                words::countdown_pm(w, now(core)).unwrap_or(0),
+                BAR_TANK,
+                None,
+            ),
             WORK_LIT if w.def.fuel_max > 0 => kit::bar(p, words::tank_pct(w) * 10, BAR_TANK, None),
             WORK_LIT => {}
             _ => kit::bar(p, w.progress_pm(), BAR_FILL, None),

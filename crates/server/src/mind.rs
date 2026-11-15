@@ -828,6 +828,9 @@ fn arc_refusal(code: u8) -> &'static str {
         REFUSE_A_RESTING => "the server refused it: the mechanism is resting after a solve",
         REFUSE_A_SHUT => "the server refused it: the exchange has not opened",
         REFUSE_A_CAP => "the server refused it: this wallet has taken out all the wipe allows",
+        REFUSE_A_COUNTING => {
+            "the server refused it: the work's quota is met and it is counting down"
+        }
         _ => "the server refused it, with a code this build does not know",
     }
 }
@@ -1157,6 +1160,7 @@ impl WorkSense {
             "state": match self.state {
                 sim_core::works::WORK_OPEN => "open: takes deposits",
                 sim_core::works::WORK_LIT => "lit: burns fuel",
+                sim_core::works::WORK_COUNTDOWN => "counting down: its quota is met, it lights soon",
                 _ => "sealed",
             },
             "where": self.at.map(|p| p.json()),

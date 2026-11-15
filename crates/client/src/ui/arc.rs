@@ -5,8 +5,8 @@
 use client_core::arc::{ArcView, WorkView};
 use sim_core::limits::TICK_HZ;
 use sim_core::works::{
-    WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT, WORK_EV_OPENED, WORK_EV_REKINDLED, WORK_LIT,
-    WORK_OPEN, WORK_SEALED,
+    WORK_COUNTDOWN, WORK_EV_COUNTDOWN, WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT,
+    WORK_EV_OPENED, WORK_EV_REKINDLED, WORK_LIT, WORK_OPEN, WORK_SEALED,
 };
 
 /// Ticks an hour.
@@ -59,10 +59,26 @@ pub fn state_line(w: &WorkView, now: f64) -> String {
             w.progress_pm() / 10,
             span(hours_until(w.def.fallback_at, now))
         ),
+        WORK_COUNTDOWN => format!(
+            "COUNTING DOWN · opens {}",
+            span(hours_until(w.lights_at as u64, now))
+        ),
+        WORK_LIT if w.def.fuel_max == 0 => "OPEN · for the rest of the wipe".into(),
         WORK_LIT if w.fuel > 0 => format!("BURNING · tank {}%", tank_pct(w)),
         WORK_LIT => "EMBERS · its tank is dry".into(),
         _ => String::new(),
     }
+}
+
+/// How far a countdown has run, per mille: 0 the moment it starts, 1000 as
+/// it lights. `None` for a work not counting down.
+pub fn countdown_pm(w: &WorkView, now: f64) -> Option<u32> {
+    if w.state != WORK_COUNTDOWN || w.def.countdown == 0 {
+        return None;
+    }
+    let from = w.lights_at as f64 - w.def.countdown as f64;
+    let done = ((now - from) / w.def.countdown as f64).clamp(0.0, 1.0);
+    Some((done * 1000.0) as u32)
 }
 
 /// What the work's unlocks give, for everybody.
@@ -82,7 +98,12 @@ pub const STEPS: [&str; 3] = ["SEALED", "OPEN", "BURNING"];
 /// Where a work stands on [`STEPS`]: the step it is on (0..3), and the third
 /// step's own word, which is EMBERS once a lit work's tank has run dry.
 pub fn step(w: &WorkView) -> (usize, &'static str) {
-    let last = if w.state == WORK_LIT && w.def.fuel_max > 0 && w.fuel == 0 {
+    let last = if w.state == WORK_COUNTDOWN {
+        "COUNTING"
+    } else if w.def.fuel_max == 0 {
+        // A work with no tank (the Gate) is open or it is not.
+        "OPEN"
+    } else if w.state == WORK_LIT && w.fuel == 0 {
         "EMBERS"
     } else {
         STEPS[2]
@@ -107,6 +128,14 @@ pub fn todo_line(w: &WorkView, now: f64) -> String {
              island, or it wakes by itself {} with an empty tank.",
             span(hours_until(w.def.fallback_at, now))
         ),
+        WORK_COUNTDOWN if w.def.met(&w.got) => format!(
+            "Its quota is met and nothing more goes in. It opens {} for the whole island.",
+            span(hours_until(w.lights_at as u64, now))
+        ),
+        WORK_COUNTDOWN => format!(
+            "Nobody filled it, so it opens on its own hour, {}.",
+            span(hours_until(w.lights_at as u64, now))
+        ),
         WORK_LIT if w.def.fuel_max > 0 && w.fuel == 0 => format!(
             "Its tank is dry, so the boost is off. It relights on {} or more in one go.",
             thousands(sim_core::works::rekindle_min(&w.def))
@@ -114,7 +143,7 @@ pub fn todo_line(w: &WorkView, now: f64) -> String {
         WORK_LIT if w.def.fuel_max > 0 => {
             "Burning. Keep the tank fed and the boost stays on for everyone.".into()
         }
-        WORK_LIT => "Burning for the rest of the wipe.".into(),
+        WORK_LIT => "Open for the rest of the wipe.".into(),
         _ => String::new(),
     }
 }
@@ -133,7 +162,8 @@ pub fn times(pct: u16) -> String {
 /// fast`. `None` when its ceiling turns no knob.
 pub fn boost_line(w: &WorkView) -> Option<String> {
     use sim_core::works::{
-        KNOB_EXTRACT_PCT, KNOB_GATHER_PCT, KNOB_HEAL_PCT, KNOB_RESEARCH_PCT, KNOB_SMELT_PCT,
+        KNOB_EXTRACT_PCT, KNOB_GATHER_PCT, KNOB_HEAL_PCT, KNOB_NOTICE_PCT, KNOB_RESEARCH_PCT,
+        KNOB_SMELT_PCT,
     };
     let pct = w.boost_pct;
     if w.boost_knob == protocol::NO_BOOST || pct == 0 || pct == 100 {
@@ -145,10 +175,12 @@ pub fn boost_line(w: &WorkView) -> Option<String> {
         KNOB_RESEARCH_PCT => "research tables study",
         KNOB_GATHER_PCT => "every swing gathers",
         KNOB_EXTRACT_PCT => "the exchange lets out",
+        KNOB_NOTICE_PCT => "every animal hears",
         _ => return None,
     };
     let how = match w.boost_knob {
         KNOB_GATHER_PCT | KNOB_EXTRACT_PCT => "as much",
+        KNOB_NOTICE_PCT => "as far",
         _ => "as fast",
     };
     Some(if pct > 100 {
@@ -216,9 +248,16 @@ pub struct Banner {
     pub pm: Option<u32>,
 }
 
-/// The work the banner follows: an open one with the most paid in, else the
-/// next to open, else the lit one burning lowest.
+/// The work the banner follows: one counting down, else an open one with
+/// the most paid in, else the next to open, else the lit one burning lowest.
 pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
+    let counting = arc
+        .known()
+        .filter(|(_, w)| w.state == WORK_COUNTDOWN)
+        .min_by_key(|(_, w)| w.lights_at);
+    if counting.is_some() {
+        return counting;
+    }
     let open = arc
         .known()
         .filter(|(_, w)| w.state == WORK_OPEN)
@@ -241,6 +280,7 @@ pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
 pub fn banner(arc: &ArcView, now: f64) -> Option<Banner> {
     let (_, w) = focus(arc)?;
     let pm = match w.state {
+        WORK_COUNTDOWN => countdown_pm(w, now),
         WORK_OPEN => Some(w.progress_pm()),
         WORK_LIT if w.def.fuel_max > 0 => Some(tank_pct(w) * 10),
         _ => None,
@@ -260,9 +300,15 @@ pub fn event_line(arc: &ArcView, index: u8, what: u8, who: Option<&str>) -> Opti
     let by = who
         .map(|n| format!(" — {n} put the last in"))
         .unwrap_or_default();
+    let tankless = w.def.fuel_max == 0;
     Some(match what as u32 {
+        WORK_EV_OPENED if tankless => format!("{name} WAKES — bring what it needs"),
         WORK_EV_OPENED => format!("{name} IS OPEN — bring what it needs"),
+        WORK_EV_COUNTDOWN if who.is_some() => format!("{name} IS COUNTING DOWN{by}"),
+        WORK_EV_COUNTDOWN => format!("{name} IS COUNTING DOWN — it opens on its own hour"),
+        WORK_EV_LIT if tankless => format!("{name} HAS OPENED"),
         WORK_EV_LIT => format!("{name} BURNS{by}"),
+        WORK_EV_FALLBACK if tankless => format!("{name} HAS OPENED ON ITS OWN"),
         WORK_EV_FALLBACK => format!("{name} WOKE ON ITS OWN — its tank is empty"),
         WORK_EV_EMBERS => format!("{name} HAS GONE TO EMBERS"),
         WORK_EV_REKINDLED => format!("{name} IS FED AGAIN"),

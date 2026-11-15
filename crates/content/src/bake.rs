@@ -2422,6 +2422,12 @@ impl Content {
                     w.id
                 ));
             }
+            if w.countdown_hours > w.fallback_hour - w.opens_hour {
+                return Err(format!(
+                    "arc: {}: countdown_hours fits between opens_hour and fallback_hour",
+                    w.id
+                ));
+            }
             if w.inputs.is_empty() || w.inputs.len() > MAX_WORK_INPUTS {
                 return Err(format!("arc: {}: 1..={MAX_WORK_INPUTS} inputs", w.id));
             }
@@ -2458,6 +2464,7 @@ impl Content {
                 act: w.act,
                 opens_at: w.opens_hour as u64 * hour,
                 fallback_at: w.fallback_hour as u64 * hour,
+                countdown: w.countdown_hours as u64 * hour,
                 floor: code(&w.floor_unlock, &w.id)?,
                 ceiling: code(&w.ceiling_unlock, &w.id)?,
                 fuel,
@@ -2497,6 +2504,7 @@ impl Content {
                 "research_pct" => sim_core::works::KNOB_RESEARCH_PCT,
                 "gather_pct" => sim_core::works::KNOB_GATHER_PCT,
                 "extract_pct" => sim_core::works::KNOB_EXTRACT_PCT,
+                "notice_pct" => sim_core::works::KNOB_NOTICE_PCT,
                 k => return Err(format!("arc: effect {i}: no knob `{k}`")),
             };
             if e.pct == 0 || e.pct > 1000 {
@@ -2788,6 +2796,7 @@ impl Content {
             "lit" => When::Lit(work()?),
             "burning" => When::Burning(work()?),
             "embers" => When::Embers(work()?),
+            "counting" => When::Counting(work()?),
             "holds" => When::Holds(unlock()?),
             "lacks" => When::Lacks(unlock()?),
             "gift" => When::Gift(match arg {
@@ -3332,6 +3341,8 @@ pub enum When {
     Lit(u8),
     Burning(u8),
     Embers(u8),
+    /// Its quota is met and it is counting down (`works::WORK_COUNTDOWN`).
+    Counting(u8),
     Holds(u8),
     Lacks(u8),
     /// A gift topic's outcome, said by [`ArcText::gift_line`] and never by
@@ -3360,7 +3371,7 @@ pub enum Gift {
 
 impl When {
     pub fn holds(&self, works: &sim_core::works::Works) -> bool {
-        use sim_core::works::{WORK_LIT, WORK_OPEN, WORK_SEALED};
+        use sim_core::works::{WORK_COUNTDOWN, WORK_LIT, WORK_OPEN, WORK_SEALED};
         let w = |k: u8| works.w.get(k as usize).copied().unwrap_or_default();
         match *self {
             When::Always => true,
@@ -3369,6 +3380,7 @@ impl When {
             When::Lit(k) => w(k).state == WORK_LIT,
             When::Burning(k) => w(k).state == WORK_LIT && w(k).fuel > 0,
             When::Embers(k) => w(k).state == WORK_LIT && w(k).fuel == 0,
+            When::Counting(k) => w(k).state == WORK_COUNTDOWN,
             When::Holds(u) => sim_core::works::holds(works.unlocks, u),
             When::Lacks(u) => !sim_core::works::holds(works.unlocks, u),
             When::Gift(_) => false,

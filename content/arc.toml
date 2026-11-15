@@ -192,6 +192,44 @@ unlock = "unlock.wide_gate"
 knob = "extract_pct"
 pct = 150
 
+# THE SEVERED GATE — act III, the war effort (`ARC.md` §2). The broken ring
+# over the town's street, between its pylons: one quota for the whole island,
+# carried here by hand, its terminal under the ring on the far side from the
+# exchange's. Met, it does not light at once: it counts down for
+# `countdown_hours`, so everyone hears it coming, then it opens. Unpaid, it
+# starts counting that long before its fallback hour and opens on the posted
+# hour anyway. It has no tank: the Gate is open or it is not.
+#
+# Open, what it held shut leaks out: every animal on the island notices
+# from half as far again (its fright, its hunt and every noise), so a noisy
+# base draws them. The hours follow the three-week shape (`ARC.md` §1.5:
+# about an act a week); a shorter wipe shows its bar sealed.
+[[work]]
+id = "work.gate"
+name = "THE SEVERED GATE"
+site = "town"
+nth = 0
+at = [0.0, 0.0, -6.0]
+act = 3
+opens_hour = 240
+fallback_hour = 456
+countdown_hours = 12
+floor_unlock = "unlock.gate_open"
+fuel = "item.lowgrade"
+fuel_max = 0
+burn_per_hour = 0
+inputs = [
+    { item = "item.metal_frags", count = 40000 },
+    { item = "item.lowgrade", count = 25000 },
+    { item = "item.gears", count = 200 },
+    { item = "item.tech_trash", count = 100 },
+]
+
+[[effect]]
+unlock = "unlock.gate_open"
+knob = "notice_pct"
+pct = 150
+
 # ── The ancients' script (`ARC.md` F6) ────────────────────────────────────
 # One glyph per character, fixed forever, so learning it is mastery that
 # lasts. A player learns glyphs by reading the stones that teach them; a
@@ -203,7 +241,7 @@ alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 # People who talk. Each topic is a list of lines; the first whose `when`
 # holds is said. `when` is one of:
 #   sealed:<work> · open:<work> · lit:<work> · burning:<work> · embers:<work>
-#   holds:<unlock> · lacks:<unlock>
+#   counting:<work> · holds:<unlock> · lacks:<unlock>
 # and a line with no `when` always holds. Nothing here names what the
 # island is for (`WORLD.md` §11.3).
 
@@ -236,6 +274,15 @@ lines = [
     { when = "open:work.spine", text = "The Spine's terminal at the container yard is open. Metal, wood, rope and gears. Lit, it lifts heavy doors again, and while it has fuel every tool on the island bites half again as deep." },
     { when = "sealed:work.wells", text = "Three more works sleep past the Crucible: a well under the old keep, a lens in the far spires, and the Spine at the container yard. They wake one after another, and each wants more than the last." },
     { text = "The well, the lens and the Spine have all woken. A work that goes cold keeps what it gave us, but not its strength. Keep them fed." },
+]
+
+[[speaker.topic]]
+title = "THE GATE"
+lines = [
+    { when = "sealed:work.gate", text = "You walk under it every day. The ring over the street was whole once, and it held something shut. It wakes last of all, after every work out there. When it does, it will want more than all of them together." },
+    { when = "open:work.gate", text = "The terminal under the ring has woken. Metal, low grade, gears and the old salvage, more than the whole island has carried anywhere. It opens when the bars are full, or on its own hour. Either way, something comes through." },
+    { when = "counting:work.gate", text = "It is counting. Hear that? Bring your people inside your walls and keep them quiet. When it opens, everything out there will hear a hammer from half as far again as it does now." },
+    { text = "It is open. Whatever it held shut is out among the trees now, and it hears everything. A quiet base is a living one." },
 ]
 
 [[speaker.topic]]

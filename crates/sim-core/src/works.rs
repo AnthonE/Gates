@@ -12,6 +12,12 @@
 //! the floor is guaranteed and only the ceiling is contested
 //! (`WORLD.md` §4.3).
 //!
+//! A work with a **countdown** (THE SEVERED GATE, act III) does not light on
+//! the deposit that meets its quota: it counts down for `countdown` ticks and
+//! lights when that runs out, so the whole island hears it coming. Unpaid, it
+//! starts counting that long before its fallback hour, and still lights on
+//! the posted hour.
+//!
 //! Every unlock is global: it is a bit in [`Works::unlocks`], and a recipe
 //! names the bit it needs (`craft.rs`). Effects are content rows turning a
 //! knob code ([`knob_pct`]), never a `match` on which work it was
@@ -41,6 +47,12 @@ pub const WORK_SEALED: u8 = 0;
 pub const WORK_OPEN: u8 = 1;
 /// Burning: its floor holds, and its ceiling while the tank has fuel.
 pub const WORK_LIT: u8 = 2;
+/// Its quota is met (or its fallback hour is near) and it lights at
+/// [`Work::lit_at`]: a work with a countdown, between OPEN and LIT. Holds
+/// nothing yet.
+pub const WORK_COUNTDOWN: u8 = 3;
+/// The highest state.
+pub const WORK_STATE_MAX: u8 = WORK_COUNTDOWN;
 
 /// `EV_WORK.b`: it opened for deposits.
 pub const WORK_EV_OPENED: u32 = 1;
@@ -52,7 +64,10 @@ pub const WORK_EV_FALLBACK: u32 = 3;
 pub const WORK_EV_EMBERS: u32 = 4;
 /// Fuel went into a dry tank, at least [`rekindle_min`]; `c` is who.
 pub const WORK_EV_REKINDLED: u32 = 5;
-pub const WORK_EV_MAX: u32 = WORK_EV_REKINDLED;
+/// Its countdown started; `c` is who put the last of the quota in, 0 when
+/// its fallback hour started it.
+pub const WORK_EV_COUNTDOWN: u32 = 6;
+pub const WORK_EV_MAX: u32 = WORK_EV_COUNTDOWN;
 
 /// `Command::Arc` ops. One action carries every arc verb (the action lane
 /// has three codes left, `protocol` `the_action_lane_has_the_room_it_claims`).
@@ -92,7 +107,9 @@ pub const REFUSE_A_RESTING: u32 = 8;
 pub const REFUSE_A_SHUT: u32 = 9;
 /// This wallet has taken out all the wipe allows (or has no wallet).
 pub const REFUSE_A_CAP: u32 = 10;
-pub const REFUSE_A_MAX: u32 = REFUSE_A_CAP;
+/// Its quota is met and it is counting down: nothing more goes in.
+pub const REFUSE_A_COUNTING: u32 = 11;
+pub const REFUSE_A_MAX: u32 = REFUSE_A_COUNTING;
 
 /// How close to a work's terminal a deposit must be, metres.
 pub const WORK_REACH_M: f32 = 4.0;
@@ -121,7 +138,11 @@ pub const KNOB_GATHER_PCT: u8 = 3;
 /// How much coin a wallet may take out through the exchange this wipe
 /// (`server::standings`, applied to `extract_cap`).
 pub const KNOB_EXTRACT_PCT: u8 = 4;
-pub const KNOB_MAX: u8 = KNOB_EXTRACT_PCT;
+/// How far every animal notices, per cent: its fright and hunting range and
+/// every noise it hears (`mob::MobContent::roused`). The open Gate's: what
+/// leaks out hears a noisy base from further off (`ARC.md` §2, act III).
+pub const KNOB_NOTICE_PCT: u8 = 5;
+pub const KNOB_MAX: u8 = KNOB_NOTICE_PCT;
 
 /// One quota line: `need` of `item`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,6 +162,9 @@ pub struct WorkDef {
     pub opens_at: u64,
     /// The tick it lights itself if nobody paid.
     pub fallback_at: u64,
+    /// Ticks between its quota being met and it lighting; 0 lights on the
+    /// deposit that meets it.
+    pub countdown: u64,
     /// Unlock codes, `NO_UNLOCK` for none.
     pub floor: u8,
     pub ceiling: u8,
@@ -194,6 +218,7 @@ impl WorksContent {
             act: 0,
             opens_at: 0,
             fallback_at: 0,
+            countdown: 0,
             floor: NO_UNLOCK,
             ceiling: NO_UNLOCK,
             fuel: 0,
@@ -233,6 +258,7 @@ impl WorksContent {
             act: 2,
             opens_at: 0,
             fallback_at: 3600 * TICK_HZ as u64,
+            countdown: 0,
             floor: 1,
             ceiling: 2,
             fuel: 1,
@@ -260,6 +286,17 @@ impl WorksContent {
     }
 }
 
+impl WorkDef {
+    /// Whether every quota line is met by `got`.
+    pub fn met(&self, got: &[u32; MAX_WORK_INPUTS]) -> bool {
+        self.inputs
+            .iter()
+            .zip(got.iter())
+            .take(self.n_inputs as usize)
+            .all(|(i, g)| *g >= i.need)
+    }
+}
+
 /// One credited giver: a player id and their share in basis points of the
 /// quota (a whole quota is 10,000).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -276,6 +313,7 @@ pub struct Work {
     /// The burn's remainder, in fuel × 100 per cent × periods an hour, so a
     /// tank burning a fraction of a unit a period loses nothing to rounding.
     pub burn_acc: u32,
+    /// The tick it lit, or while [`WORK_COUNTDOWN`] the tick it will.
     pub lit_at: u64,
     pub got: [u32; MAX_WORK_INPUTS],
     pub credits: [Credit; MAX_WORK_CREDITS],
@@ -536,11 +574,32 @@ pub fn sweep(
             w.state = WORK_OPEN;
             events.push(EV_WORK, k as u32, WORK_EV_OPENED, 0);
         }
-        if w.state != WORK_LIT && tick >= def.fallback_at {
+        // The fallback hour. A work with a countdown starts counting that
+        // long before it, so it still lights on the posted hour.
+        let unlit = w.state == WORK_SEALED || w.state == WORK_OPEN;
+        if unlit && tick.saturating_add(def.countdown) >= def.fallback_at {
+            if def.countdown == 0 {
+                w.state = WORK_LIT;
+                w.lit_at = tick;
+                w.fuel = 0;
+                events.push(EV_WORK, k as u32, WORK_EV_FALLBACK, 0);
+            } else {
+                w.state = WORK_COUNTDOWN;
+                w.lit_at = def.fallback_at.max(tick);
+                events.push(EV_WORK, k as u32, WORK_EV_COUNTDOWN, 0);
+            }
+        }
+        if w.state == WORK_COUNTDOWN && tick >= w.lit_at {
             w.state = WORK_LIT;
             w.lit_at = tick;
-            w.fuel = 0;
-            events.push(EV_WORK, k as u32, WORK_EV_FALLBACK, 0);
+            w.burn_acc = 0;
+            if def.met(&w.got) {
+                w.fuel = def.fuel_max;
+                events.push(EV_WORK, k as u32, WORK_EV_LIT, 0);
+            } else {
+                w.fuel = 0;
+                events.push(EV_WORK, k as u32, WORK_EV_FALLBACK, 0);
+            }
         }
         if w.state == WORK_LIT && w.fuel > 0 && def.burn_per_hour > 0 {
             w.burn_acc = w
@@ -598,6 +657,7 @@ pub fn act(
             match w.state {
                 WORK_SEALED => return refuse(events, REFUSE_A_SEALED),
                 WORK_LIT => return refuse(events, REFUSE_A_LIT),
+                WORK_COUNTDOWN => return refuse(events, REFUSE_A_COUNTING),
                 _ => {}
             }
             if arg != ARG_ALL && arg >= def.n_inputs {
@@ -623,13 +683,15 @@ pub fn act(
                 return refuse(events, REFUSE_A_NOTHING);
             }
             w.credit(p.id, points);
-            let met = def
-                .inputs
-                .iter()
-                .zip(w.got.iter())
-                .take(def.n_inputs as usize)
-                .all(|(i, g)| *g >= i.need);
-            if met {
+            if def.met(&w.got) && def.countdown > 0 {
+                // Never later than the posted hour: paying early only ever
+                // brings it sooner.
+                w.state = WORK_COUNTDOWN;
+                w.lit_at = tick
+                    .saturating_add(def.countdown)
+                    .min(def.fallback_at.max(tick));
+                events.push(EV_WORK, k as u32, WORK_EV_COUNTDOWN, p.id);
+            } else if def.met(&w.got) {
                 w.state = WORK_LIT;
                 w.lit_at = tick;
                 w.fuel = def.fuel_max;
@@ -719,4 +781,107 @@ pub fn extract(
     }
     inv_take(&mut p.inv, wc.coin, take);
     events.push(EV_EXTRACTED, pid, target as u32, take);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOUR: u64 = 3600 * TICK_HZ as u64;
+
+    /// The probe fixture's one work with a two-hour countdown and a
+    /// ten-hour fallback.
+    fn counting() -> WorksContent {
+        let mut c = WorksContent::probe_fixture();
+        c.defs[0].countdown = 2 * HOUR;
+        c.defs[0].fallback_at = 10 * HOUR;
+        c
+    }
+
+    /// Every sweep tick from `from` to `to`, inclusive.
+    fn run(wc: &WorksContent, works: &mut Works, from: u64, to: u64, ev: &mut EventQueue) {
+        let first = from - from % WORKS_PERIOD_TICKS + WORKS_PHASE;
+        let mut t = first;
+        while t <= to {
+            if t >= from {
+                sweep(wc, works, t, 1, ev);
+            }
+            t += WORKS_PERIOD_TICKS;
+        }
+    }
+
+    fn whats(ev: &EventQueue) -> Vec<u32> {
+        ev.entries()
+            .iter()
+            .filter(|e| e.code == EV_WORK)
+            .map(|e| e.b)
+            .collect()
+    }
+
+    #[test]
+    fn an_unpaid_countdown_starts_early_and_opens_on_the_posted_hour() {
+        let wc = counting();
+        let mut works = Works::default();
+        let mut ev = EventQueue::default();
+        run(&wc, &mut works, 0, 8 * HOUR - 1, &mut ev);
+        assert_eq!(works.w[0].state, WORK_OPEN);
+        run(
+            &wc,
+            &mut works,
+            8 * HOUR,
+            8 * HOUR + WORKS_PERIOD_TICKS,
+            &mut ev,
+        );
+        assert_eq!(works.w[0].state, WORK_COUNTDOWN);
+        assert_eq!(works.w[0].lit_at, 10 * HOUR, "it lights on the posted hour");
+        assert!(
+            !holds(works.unlocks, wc.defs[0].floor),
+            "counting holds nothing"
+        );
+        run(
+            &wc,
+            &mut works,
+            8 * HOUR + WORKS_PERIOD_TICKS + 1,
+            10 * HOUR + WORKS_PERIOD_TICKS,
+            &mut ev,
+        );
+        assert_eq!(works.w[0].state, WORK_LIT);
+        assert_eq!(works.w[0].fuel, 0, "unpaid: an empty tank");
+        assert!(holds(works.unlocks, wc.defs[0].floor));
+        assert_eq!(
+            whats(&ev),
+            [WORK_EV_OPENED, WORK_EV_COUNTDOWN, WORK_EV_FALLBACK]
+        );
+    }
+
+    #[test]
+    fn a_paid_countdown_lights_with_a_full_tank() {
+        let wc = counting();
+        let mut works = Works::default();
+        let mut ev = EventQueue::default();
+        let w = &mut works.w[0];
+        w.state = WORK_COUNTDOWN;
+        w.got[0] = 6;
+        w.got[1] = 2;
+        w.lit_at = HOUR;
+        run(&wc, &mut works, 0, HOUR - 1, &mut ev);
+        assert_eq!(
+            works.w[0].state, WORK_COUNTDOWN,
+            "the countdown is not cut short"
+        );
+        run(&wc, &mut works, HOUR, HOUR + WORKS_PERIOD_TICKS, &mut ev);
+        assert_eq!(works.w[0].state, WORK_LIT);
+        assert_eq!(works.w[0].fuel, wc.defs[0].fuel_max);
+        assert_eq!(whats(&ev), [WORK_EV_LIT]);
+    }
+
+    #[test]
+    fn no_countdown_lights_at_the_fallback_hour_as_before() {
+        let wc = WorksContent::probe_fixture();
+        let mut works = Works::default();
+        let mut ev = EventQueue::default();
+        run(&wc, &mut works, 0, HOUR + WORKS_PERIOD_TICKS, &mut ev);
+        assert_eq!(works.w[0].state, WORK_LIT);
+        assert_eq!(whats(&ev), [WORK_EV_OPENED, WORK_EV_FALLBACK]);
+    }
 }

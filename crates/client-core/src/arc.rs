@@ -27,6 +27,8 @@ pub struct WorkView {
     pub boost_pct: u16,
     /// `sim_core::works::WORK_*`.
     pub state: u8,
+    /// While `state` is `WORK_COUNTDOWN`, the server tick it lights.
+    pub lights_at: u32,
     pub fuel: u32,
     pub got: [u32; MAX_WORK_INPUTS],
     /// This player's share, basis points of a quota.
