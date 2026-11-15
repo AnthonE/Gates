@@ -205,6 +205,7 @@ pub struct PropAssets {
     /// the wrecked car and the tyre stack. The oil barrel is `barrel` in red.
     road_sign: Handle<Mesh>,
     food_box: Handle<Mesh>,
+    vault: Handle<Mesh>,
     car_wreck: Handle<Mesh>,
     tire_stack: Handle<Mesh>,
     /// The ground pickups' massing (`Occupant::StonePile` …), where their
@@ -1874,7 +1875,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 30] = [
+pub const OCCUPANTS: [Occupant; 31] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1905,6 +1906,7 @@ pub const OCCUPANTS: [Occupant; 30] = [
     Occupant::Cactus,
     Occupant::WildCorn,
     Occupant::WildPumpkin,
+    Occupant::Vault,
 ];
 
 /// The roadside junk's colours, row for row with the sim's box tables.
@@ -1972,6 +1974,16 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
             1.0,
         ),
         Occupant::FoodCrate => boxes_mesh(&[([0., 0., 0.], [0.5, 0.2, 0.3], 0x8a6a3e)]),
+        // The sealed vault: an obsidian block (`terrain::VAULT_HALF_M`), a
+        // steel door set in its face and a gilt bar across the door.
+        Occupant::Vault => {
+            let [hx, hy, hz] = terrain::VAULT_HALF_M;
+            boxes_mesh(&[
+                ([0., 0., 0.], [hx, hy, hz], 0x1c1824),
+                ([0., -0.12, hz + 0.03], [0.5, 0.72, 0.04], 0x6d7378),
+                ([0., 0.08, hz + 0.08], [0.56, 0.06, 0.03], 0xb8901f),
+            ])
+        }
         Occupant::CarWreck => boxes_mesh_with(
             &authored(&terrain::CAR_WRECK_BOXES, &CAR_WRECK_HEX),
             linear,
@@ -2029,6 +2041,7 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::CacheSlot => 0.275,
         Occupant::OilBarrel => 0.6,
         Occupant::FoodCrate => 0.2,
+        Occupant::Vault => terrain::VAULT_HALF_M[1],
         Occupant::TireStack => terrain::TIRE_STACK_TOP_M * 0.5,
         // The box tables put ground at y = 0, like the authored structures.
         Occupant::RoadSign | Occupant::CarWreck => 0.0,
@@ -2323,6 +2336,7 @@ pub fn assets(
         cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
         road_sign: meshes.add(archetype_mesh(Occupant::RoadSign).expect("sign mesh")),
         food_box: meshes.add(archetype_mesh(Occupant::FoodCrate).expect("food box mesh")),
+        vault: meshes.add(archetype_mesh(Occupant::Vault).expect("vault mesh")),
         car_wreck: meshes.add(archetype_mesh(Occupant::CarWreck).expect("car mesh")),
         tire_stack: meshes.add(archetype_mesh(Occupant::TireStack).expect("tyre mesh")),
         pile: meshes.add(archetype_mesh(Occupant::StonePile).expect("pile mesh")),
@@ -3446,6 +3460,7 @@ pub fn spawn_slot(
                 }
             }
         }
+        Occupant::Vault => (a.vault.clone(), a.painted.clone()),
         Occupant::None => return,
     };
     // The desert's rock is sandstone: a rock or ore model there wears its

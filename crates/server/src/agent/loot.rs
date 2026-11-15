@@ -72,6 +72,9 @@ impl Prize {
             | Occupant::BlueCrate
             | Occupant::EliteCrate
             | Occupant::FoodCrate => Some(Prize::Crate),
+            // A sealed vault refuses everyone until THE SEVERED GATE opens
+            // (`works::gate_open_of`): a run would walk to a shut door.
+            Occupant::Vault => None,
             _ => None,
         }
     }

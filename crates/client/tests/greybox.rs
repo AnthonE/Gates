@@ -32,7 +32,7 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 30] = [
+const ALL: [Occupant; 31] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -63,6 +63,7 @@ const ALL: [Occupant; 30] = [
     Occupant::Cactus,
     Occupant::WildCorn,
     Occupant::WildPumpkin,
+    Occupant::Vault,
 ];
 
 /// `boxes_mesh` emits six faces a box, two triangles each, three unshared

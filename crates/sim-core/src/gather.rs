@@ -674,6 +674,7 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         | Occupant::FoodCrate
         | Occupant::CarWreck
         | Occupant::TireStack
+        | Occupant::Vault
         | Occupant::Shrub => None,
     }
 }

@@ -294,6 +294,8 @@ pub fn resolve(
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
+    // Whether a sealed vault opens, for the crate pick's prompt.
+    let gate_open = core.arc.gate_open();
     // The scatter pick needs the island, which does not exist until the
     // welcome names a seed — so this is `Option` and stands down rather than
     // guessing one. `render::world_placed`'s discipline, applied to a verb.
@@ -372,6 +374,9 @@ pub fn resolve(
                         handle: sim_core::gather::cell_key(open.cx, open.cz),
                         d2: open.d2,
                         aimed: true,
+                        // A vault says SEALED until the Gate is open.
+                        occupant: open.occupant,
+                        lit: gate_open,
                         ..Default::default()
                     };
                 }
@@ -1229,6 +1234,11 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }) {
                 open_panel(ui);
             }
+        }
+        // A sealed vault opens for nobody until the Gate does; the sim
+        // refuses it by the same rule (`works::gate_open_of`).
+        Verb::Crate if pick.occupant == sim_core::terrain::Occupant::Vault as u8 && !pick.lit => {
+            toast.warn(crate::ui::interact::VAULT_SEALED_LINE);
         }
         // A world container opens exactly the way a box does — the same
         // `ACT_CONTAINER`, the same panel — and the only difference is

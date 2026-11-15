@@ -65,6 +65,9 @@ pub const LOOT_ROADSIGN: usize = 7;
 /// `container = "food"` — the roadside food box (`Occupant::FoodCrate`),
 /// opened like a cache.
 pub const LOOT_FOOD: usize = 8;
+/// `container = "vault"` — a landmark's sealed vault (`Occupant::Vault`),
+/// shut until THE SEVERED GATE opens (`works::gate_open_of`).
+pub const LOOT_VAULT: usize = 9;
 
 /// One weighted row. Counts are inclusive bounds.
 #[derive(Clone, Copy, Debug)]

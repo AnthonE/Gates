@@ -7206,6 +7206,11 @@ pub enum Occupant {
     ///
     /// [`WildCorn`]: Occupant::WildCorn
     WildPumpkin = 30,
+    /// A sealed vault: a steel door in an obsidian block, standing at a
+    /// landmark where a barrel would (`landmark.rs`). It is a world container
+    /// (`loot.vault`), and it stays shut until THE SEVERED GATE is open
+    /// (`works::gate_open_of`, `ARC.md` act III). Solid, like a crate.
+    Vault = 31,
 }
 
 impl Occupant {
@@ -10179,7 +10184,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 31] = [
+pub const OCCUPANT_R_M: [f32; 32] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -10242,6 +10247,7 @@ pub const OCCUPANT_R_M: [f32; 31] = [
     SAGUARO_R_M,   // Cactus — broad phase; the trunk and SAGUARO_ARM_BOXES are the volume
     0.0,           // WildCorn — passable, like hemp
     0.0,           // WildPumpkin
+    VAULT_R_M,     // Vault — the block's half-diagonal
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -10259,7 +10265,7 @@ pub const OCCUPANT_R_M: [f32; 31] = [
 /// The palm is its own, shorter ([`PALM_TOP_M`], through [`slot_volume`]).
 /// It was the 5.7 m pine trunk, and arrows and roof-standers went straight
 /// through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 31] = [
+pub const OCCUPANT_TOP_M: [f32; 32] = [
     0.0,  // None
     33.0, // Tree — the broadleaf's drawn height; the palm is `PALM_TOP_M`
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -10297,6 +10303,7 @@ pub const OCCUPANT_TOP_M: [f32; 31] = [
     CACTUS_TOP_M,     // Cactus
     0.0,              // WildCorn
     0.0,              // WildPumpkin
+    VAULT_TOP_M,      // Vault — the block's top
 ];
 
 /// Widest scale `scatter` can hand a slot. Both draws top out at
@@ -10404,8 +10411,18 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         | Occupant::MushroomPatch => (0.0, 0.0),
         Occupant::Cactus => (SAGUARO_R_M, CACTUS_TOP_M),
         Occupant::WildCorn | Occupant::WildPumpkin => (0.0, 0.0),
+        Occupant::Vault => (VAULT_R_M, VAULT_TOP_M),
     }
 }
+
+/// A sealed vault's block: 1.6 m wide, 0.9 m deep, 1.8 m tall, drawn and
+/// collided as its half-diagonal's cylinder (`Occupant::Vault`).
+pub const VAULT_HALF_M: [f32; 3] = [0.8, 0.9, 0.45];
+pub const VAULT_R_M: f32 = 0.9179;
+pub const VAULT_TOP_M: f32 = 1.8;
+const _: () = assert!(
+    VAULT_R_M * VAULT_R_M >= VAULT_HALF_M[0] * VAULT_HALF_M[0] + VAULT_HALF_M[2] * VAULT_HALF_M[2]
+);
 
 /// How far a rock or an ore node stands below the ground at its slot on a
 /// slope: the ground's fall across its footprint, so its downhill edge meets
@@ -10441,7 +10458,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 31 && OCCUPANT_TOP_M.len() == 31);
+    assert!(OCCUPANT_R_M.len() == 32 && OCCUPANT_TOP_M.len() == 32);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -10495,6 +10512,8 @@ const _: () = {
     assert!(occupant_volume(Occupant::WildCorn).1 == OCCUPANT_TOP_M[29]);
     assert!(occupant_volume(Occupant::WildPumpkin).0 == OCCUPANT_R_M[30]);
     assert!(occupant_volume(Occupant::WildPumpkin).1 == OCCUPANT_TOP_M[30]);
+    assert!(occupant_volume(Occupant::Vault).0 == OCCUPANT_R_M[31]);
+    assert!(occupant_volume(Occupant::Vault).1 == OCCUPANT_TOP_M[31]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who

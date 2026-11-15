@@ -7728,6 +7728,7 @@ impl World {
                         (cont >> 16) as u16,
                         (cont & 0xFFFF) as u16,
                         &self.players[slot],
+                        self.works.gate_open(&self.works_def),
                     );
                 }
             }

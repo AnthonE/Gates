@@ -299,6 +299,36 @@ entries = [
     { item = "item.syringe", weight = 130, count_min = 1, count_max = 1 },
 ]
 
+# A landmark's sealed vault (`terrain::Occupant::Vault`): a steel door in an
+# obsidian block where a barrel would stand, shut until THE SEVERED GATE opens
+# (`ARC.md` act III, `works::gate_open_of`). It is the act's reward for every
+# group, not only whoever holds the town: the richest box outside the sanctum,
+# heavy on what the war is fought with. 3.5 mean rolls over a total of 1,000,
+# so a row's chance is 0.35 % a weight; it refills on the crate's clock.
+[[loot_table]]
+id = "loot.vault"
+container = "vault"
+rolls_min = 3
+rolls_max = 4
+hits = 5
+guaranteed = [{ item = "item.junk", count_min = 40, count_max = 40 }]
+entries = [
+    { item = "item.c4", weight = 40, count_min = 1, count_max = 1 },
+    { item = "item.rocket", weight = 50, count_min = 1, count_max = 2 },
+    { item = "item.satchel_charge", weight = 90, count_min = 1, count_max = 3 },
+    { item = "item.rifle_ammo_explosive", weight = 60, count_min = 6, count_max = 12 },
+    { item = "item.rifle_ammo", weight = 120, count_min = 20, count_max = 40 },
+    { item = "item.assault_rifle", weight = 40, count_min = 1, count_max = 1 },
+    { item = "item.bolt_rifle", weight = 30, count_min = 1, count_max = 1 },
+    { item = "item.rifle_body", weight = 70, count_min = 1, count_max = 2 },
+    { item = "item.tech_trash", weight = 90, count_min = 4, count_max = 10 },
+    { item = "item.gears", weight = 90, count_min = 4, count_max = 8 },
+    { item = "item.keycard_blue", weight = 50, count_min = 1, count_max = 1 },
+    { item = "item.keycard_red", weight = 30, count_min = 1, count_max = 1 },
+    { item = "item.medkit", weight = 140, count_min = 1, count_max = 2 },
+    { item = "item.syringe", weight = 100, count_min = 1, count_max = 2 },
+]
+
 # --- Roadside junk (Rust's roadside spawns: oil barrels, road signs, food
 # boxes, junk piles; `terrain.rs` "Roadside junk"). ---------------------------
 

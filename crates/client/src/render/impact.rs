@@ -221,6 +221,7 @@ impl Matter {
             x if x == Occupant::RoadSign as u8 => Matter::Metal,
             x if x == Occupant::FoodCrate as u8 => Matter::Wood,
             x if x == Occupant::CarWreck as u8 => Matter::Metal,
+            x if x == Occupant::Vault as u8 => Matter::Stone,
             _ => Matter::Dirt,
         }
     }

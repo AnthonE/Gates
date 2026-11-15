@@ -129,6 +129,12 @@ impl ArcView {
         sim_core::works::fel_tier_of(self.known().map(|(_, w)| (w.def.act, w.state)))
     }
 
+    /// Whether THE SEVERED GATE is open (`sim_core::works::gate_open_of`):
+    /// what a sealed vault waits on, by the rule the sim refuses it by.
+    pub fn gate_open(&self) -> bool {
+        sim_core::works::gate_open_of(self.known().map(|(_, w)| (w.def.act, w.state)))
+    }
+
     /// Whether unlock code `u` is held (`sim_core::works::holds`).
     pub fn holds(&self, u: u8) -> bool {
         sim_core::works::holds(self.unlocks, u)

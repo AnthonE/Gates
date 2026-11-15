@@ -138,6 +138,7 @@ pub fn occupant_of(table: usize) -> Occupant {
         crate::loot::LOOT_BLUE => Occupant::BlueCrate,
         crate::loot::LOOT_ELITE => Occupant::EliteCrate,
         crate::loot::LOOT_FOOD => Occupant::FoodCrate,
+        crate::loot::LOOT_VAULT => Occupant::Vault,
         _ => Occupant::None,
     }
 }
@@ -153,6 +154,7 @@ pub fn table_of(o: Occupant) -> Option<usize> {
         Occupant::BlueCrate => Some(crate::loot::LOOT_BLUE),
         Occupant::EliteCrate => Some(crate::loot::LOOT_ELITE),
         Occupant::FoodCrate => Some(crate::loot::LOOT_FOOD),
+        Occupant::Vault => Some(crate::loot::LOOT_VAULT),
         _ => None,
     }
 }
@@ -339,6 +341,7 @@ impl WorldConts {
         cx: u16,
         cz: u16,
         p: &Player,
+        gate_open: bool,
     ) -> Option<usize> {
         let handle = cell_key(cx, cz);
         if handle == 0 {
@@ -346,6 +349,11 @@ impl WorldConts {
         }
         let slot = terrain::scatter(seed, scatter, haven, cx as i32, cz as i32);
         let table = table_of(slot.occupant)?;
+        // A sealed vault opens for nobody until THE SEVERED GATE does
+        // (`works::gate_open_of`, the rule the client draws its door by).
+        if slot.occupant == Occupant::Vault && !gate_open {
+            return None;
+        }
 
         let (qx, qy, qz) = stand_q(slot.x, slot.y, slot.z);
         let dx = qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;

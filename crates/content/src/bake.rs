@@ -74,6 +74,7 @@ pub fn container_index(name: &str) -> Option<usize> {
         "oil_barrel" => sim_core::loot::LOOT_OIL_BARREL,
         "roadsign" => sim_core::loot::LOOT_ROADSIGN,
         "food" => sim_core::loot::LOOT_FOOD,
+        "vault" => sim_core::loot::LOOT_VAULT,
         _ => return None,
     })
 }

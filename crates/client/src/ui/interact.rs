@@ -332,8 +332,9 @@ pub struct Pick {
     /// and `research::blueprint_target` is the one reading of `cond`.
     pub cond: u16,
     pub teaches: Option<u16>,
-    /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
-    /// prompt can say berries or hemp. Zero for every other verb.
+    /// What a `Verb::Pick` is picking or a `Verb::Crate` opens — the
+    /// terrain occupant ordinal, so the prompt can say berries or hemp, or a
+    /// vault. Zero for every other verb.
     pub occupant: u8,
     /// A `Verb::Plant`'s crop, as the wire stated it (farming v2).
     pub plant: protocol::WirePlant,
@@ -359,7 +360,8 @@ pub struct Pick {
     /// why), so the caller stamps it after resolving. False on every
     /// other verb and on a fire nobody has heard about yet, which reads
     /// as "out" — the honest default, since an unheard fire is one this
-    /// client has no news of.
+    /// client has no news of. On a `Verb::Crate`, whether THE SEVERED GATE
+    /// is open (`ArcView::gate_open`), which is what unseals a vault.
     pub lit: bool,
     /// THE GATE's own station (`town::STATIONS`): anyone's to use, nobody's
     /// to take, and a recycler that pays the safe zone's share. Stamped by
@@ -705,10 +707,17 @@ impl Pick {
                     "SWING A BLADE TO BUTCHER"
                 }
             ),
+            Verb::Crate if self.occupant == Occupant::Vault as u8 && !self.lit => {
+                VAULT_SEALED_LINE.to_string()
+            }
+            Verb::Crate if self.occupant == Occupant::Vault as u8 => "[E] OPEN VAULT".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
 }
+
+/// A sealed vault's line, on the prompt and when `E` is pressed at it.
+pub const VAULT_SEALED_LINE: &str = "SEALED VAULT  ·  THE SEVERED GATE OPENS IT";
 
 /// What a carcass is called on the prompt, by its wire species
 /// (`WireBag::species`). Anything past the roster reads as the pig, the

@@ -1428,3 +1428,29 @@ fn a_crate_refill_waits_on_the_worlds_salt() {
         "the refill ignored the salt"
     );
 }
+
+/// A landmark's sealed vault opens for nobody until THE SEVERED GATE is
+/// open (`works::gate_open_of`: a work past act II lit), and then opens like
+/// any crate.
+#[test]
+fn a_vault_stays_sealed_until_the_gate_opens() {
+    use sim_core::works::{WorksContent, WORK_LIT, WORK_OPEN};
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::Vault);
+    let mut wc = WorksContent::probe_fixture();
+    wc.defs[0].act = 3;
+    w.works_def = wc;
+    w.works.w[0].state = WORK_OPEN;
+    join_at(&mut w, x, z);
+
+    open(&mut w, cx, cz);
+    assert_eq!(w.world_conts.len(), 0, "sealed: the open mints nothing");
+
+    w.works.w[0].state = WORK_LIT;
+    open(&mut w, cx, cz);
+    assert_eq!(w.world_conts.len(), 1, "the Gate is open: so is the vault");
+    assert_eq!(
+        w.world_conts.entries()[0].table as usize,
+        sim_core::loot::LOOT_VAULT
+    );
+}

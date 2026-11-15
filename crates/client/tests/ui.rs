@@ -7887,3 +7887,23 @@ fn a_counting_work_leads_the_banner_and_says_when_it_opens() {
         "a work with no tank opens rather than burns"
     );
 }
+
+/// A landmark's vault says SEALED until THE SEVERED GATE is open, and then
+/// opens like a crate; every other crate's prompt is unmoved.
+#[test]
+fn a_vault_says_sealed_until_the_gate_opens() {
+    use client::ui::interact::{Pick, Verb, VAULT_SEALED_LINE};
+    use protocol::event::ItemCatalog;
+    use sim_core::terrain::Occupant;
+    let mut p = Pick {
+        verb: Verb::Crate,
+        occupant: Occupant::Vault as u8,
+        ..Default::default()
+    };
+    assert_eq!(p.prompt(&ItemCatalog::EMPTY), VAULT_SEALED_LINE);
+    p.lit = true;
+    assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] OPEN VAULT");
+    p.occupant = Occupant::CrateSlot as u8;
+    p.lit = false;
+    assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] OPEN CRATE");
+}

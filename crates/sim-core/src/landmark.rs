@@ -123,6 +123,9 @@ const fn p(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, mat: Mat) -> Pa
 }
 
 /// A crate anchor in the landmark's frame: `(x, z, what)`.
+/// A kit's container: local (x, z) and what stands there. Seven kinds keep
+/// a sealed vault (`Occupant::Vault`) where a barrel stood, so THE SEVERED
+/// GATE opening (`ARC.md` act III) unseals a door at most landmarks.
 pub type Anchor = (f32, f32, Occupant);
 
 const F: f32 = -FOOTING_M;
@@ -190,7 +193,7 @@ const RUIN: &[Part] = &[
 const RUIN_CRATES: &[Anchor] = &[
     (-4.0, 4.0, Occupant::CacheSlot),
     (5.0, -4.5, Occupant::CrateSlot),
-    (0.0, -15.0, Occupant::BarrelSlot),
+    (0.0, -15.0, Occupant::Vault),
 ];
 
 const TOWER: &[Part] = &[
@@ -216,7 +219,7 @@ const TOWER: &[Part] = &[
 const TOWER_CRATES: &[Anchor] = &[
     (0.0, 0.0, Occupant::CacheSlot),
     (9.0, -9.0, Occupant::BarrelSlot),
-    (-9.0, 8.0, Occupant::BarrelSlot),
+    (-9.0, 8.0, Occupant::Vault),
 ];
 
 const STONES: &[Part] = &[
@@ -246,7 +249,7 @@ const STONES: &[Part] = &[
 const STONES_CRATES: &[Anchor] = &[
     (0.0, 3.5, Occupant::CrateSlot),
     (5.0, -5.0, Occupant::CacheSlot),
-    (-17.0, 0.0, Occupant::BarrelSlot),
+    (-17.0, 0.0, Occupant::Vault),
 ];
 
 const YARD: &[Part] = &[
@@ -301,7 +304,7 @@ const ARCH: &[Part] = &[
 ];
 const ARCH_CRATES: &[Anchor] = &[
     (0.0, 0.0, Occupant::CrateSlot),
-    (-3.0, -9.0, Occupant::BarrelSlot),
+    (-3.0, -9.0, Occupant::Vault),
 ];
 
 const SPIRES: &[Part] = &[
@@ -315,7 +318,7 @@ const SPIRES: &[Part] = &[
 ];
 const SPIRES_CRATES: &[Anchor] = &[
     (-1.0, -3.0, Occupant::CacheSlot),
-    (8.0, 1.0, Occupant::BarrelSlot),
+    (8.0, 1.0, Occupant::Vault),
 ];
 
 const QUARRY: &[Part] = &[
@@ -360,7 +363,7 @@ const QUARRY: &[Part] = &[
 ];
 const QUARRY_CRATES: &[Anchor] = &[
     (-10.0, -9.0, Occupant::CrateSlot),
-    (6.0, -14.0, Occupant::BarrelSlot),
+    (6.0, -14.0, Occupant::Vault),
     (0.0, -2.0, Occupant::BarrelSlot),
 ];
 
@@ -399,7 +402,7 @@ const RELAY: &[Part] = &[
 ];
 const RELAY_CRATES: &[Anchor] = &[
     (-4.0, -5.0, Occupant::CrateSlot),
-    (6.0, -6.0, Occupant::BarrelSlot),
+    (6.0, -6.0, Occupant::Vault),
 ];
 
 /// The boxes of a kind.

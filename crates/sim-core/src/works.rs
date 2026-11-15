@@ -511,6 +511,30 @@ pub fn fel_tier_of(works: impl Iterator<Item = (u8, u8)>) -> u8 {
     }
 }
 
+/// Whether THE SEVERED GATE is open, off each work's `(act, state)`: any
+/// work past act II lit. What a sealed vault waits on (`worldcont::open`,
+/// `Occupant::Vault`).
+///
+/// **One function for both sides**, as [`fel_tier_of`] is: the sim refuses
+/// a sealed vault by it and the client's prompt says SEALED by it
+/// (`ClientCore::arc`), so a vault the prompt offers opens.
+pub fn gate_open_of(mut works: impl Iterator<Item = (u8, u8)>) -> bool {
+    works.any(|(act, state)| act > 2 && state == WORK_LIT)
+}
+
+impl Works {
+    /// [`gate_open_of`] on this island.
+    pub fn gate_open(&self, wc: &WorksContent) -> bool {
+        gate_open_of(
+            wc.defs
+                .iter()
+                .zip(self.w.iter())
+                .take(wc.count as usize)
+                .map(|(d, w)| (d.act, w.state)),
+        )
+    }
+}
+
 /// Whether unlock code `u` is held. `NO_UNLOCK` always is.
 #[inline]
 pub fn holds(unlocks: u32, u: u8) -> bool {
