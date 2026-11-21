@@ -52,9 +52,9 @@ Environment=AGENT_NAME=%i
 Environment=THINK_MS=5000
 Environment=GATES_REPORTS_DIR=/var/lib/gates-protagonist/%i/reports
 Environment=CLAUDE_MODEL=claude-haiku-5-5
-Environment=STRATEGIST_MODEL=claude-sonnet-5-5
+Environment=STRATEGIST_MODEL=claude-haiku-5-5
 Environment=STRATEGIST_EVERY_S=600
-Environment=PLANNER_MODEL=claude-opus-5-5
+Environment=PLANNER_MODEL=claude-haiku-5-5
 Environment=PLANNER_PER_DAY=3
 Environment=GATES_POOL=/var/lib/gates-minds/pool.json
 Environment=GATES_POOL_USD=400

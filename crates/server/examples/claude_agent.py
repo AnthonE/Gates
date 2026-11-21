@@ -30,11 +30,11 @@ import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 # Kept under the body's --timeout-ms: a slow answer fails here, at once,
 # rather than arriving after the body has moved on to the next request.
 TIMEOUT_S = float(os.environ.get("CLAUDE_TIMEOUT_S", "15"))
-STRATEGIST_MODEL = os.environ.get("STRATEGIST_MODEL", "claude-sonnet-5-5")
+STRATEGIST_MODEL = os.environ.get("STRATEGIST_MODEL", MODEL)
 STRATEGIST_EFFORT = os.environ.get("STRATEGIST_EFFORT", "medium")
 STRATEGIST_EVERY_S = float(os.environ.get("STRATEGIST_EVERY_S", "600"))
 STRATEGIST_TIMEOUT_S = float(os.environ.get("STRATEGIST_TIMEOUT_S", "120"))
