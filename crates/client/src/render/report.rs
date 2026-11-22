@@ -791,7 +791,9 @@ pub fn web_crash(info: &std::panic::PanicHookInfo<'_>) {
 /// The module is still callable after one, and the first thing that calls
 /// into it panics on a `RefCell` the trap left borrowed (winit's runner,
 /// #535), so this one goes first and that echo is the second report the
-/// once-per-page rule drops. Grouped by the trap's first line.
+/// once-per-page rule drops. Grouped by the trap's first line. A JS
+/// exception thrown through the module comes here too, named by its class
+/// (`TypeError: …`): it leaves the same borrow behind (#604).
 #[cfg(target_arch = "wasm32")]
 pub fn web_trap(msg: &str) {
     let first = msg.lines().next().unwrap_or("").trim();
