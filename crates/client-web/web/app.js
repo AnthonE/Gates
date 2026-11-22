@@ -1350,12 +1350,22 @@ async function load(gfx, sizes) {
   /* A trap with no panic behind it (out of memory, a stack overflow) reaches
      here as a bare `RuntimeError` and nothing else: no panic hook ran, so no
      report went. File one, and say so over the frozen frame. The module stays
-     callable after a trap, but anything may fail inside it now. */
+     callable after a trap, but anything may fail inside it now.
+     A JS exception thrown through the module (a browser call wasm-bindgen
+     does not `catch`) is the same death: it unwinds the wasm frames without
+     Rust's drops, so winit's runner stays borrowed and the next event panics
+     "RefCell already borrowed" (#604). It is no `RuntimeError`; its stack
+     shows a wasm frame (V8 `wasm://`, Firefox `wasm-function[`, Safari
+     `[wasm code]`). */
   window.addEventListener("error", (e) => {
     const err = e.error;
-    if (!(err instanceof WebAssembly.RuntimeError) || window.gatesTrapped) return;
+    if (!err || window.gatesTrapped) return;
+    const trap = err instanceof WebAssembly.RuntimeError;
+    const stack = String(err.stack || "");
+    if (!trap && !/wasm:\/\/|wasm-function\[|\[wasm code\]/.test(stack)) return;
     window.gatesTrapped = true;
-    const msg = `${err.message}\n${String(err.stack || "").slice(0, 1500)}`;
+    const head = trap ? err.message : `${err.name || "Error"}: ${err.message}`;
+    const msg = `${head}\n${stack.slice(0, 1500)}`;
     try { if (mod.report_trap) mod.report_trap(msg); } catch (x) { /* the module is gone too far */ }
     window.gatesPanic(msg);
   });
