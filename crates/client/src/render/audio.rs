@@ -1875,6 +1875,16 @@ pub fn feed(
     for _ in feed.traded() {
         sound.play(Request::own(Cue::Trade));
     }
+    // A work changed (`ARC.md`): the whole island hears it, as it reads the
+    // toast off the same drained events. One cue a frame, thunder first.
+    if let Some(cue) = crate::ui::arc::frame_work_cue(&net.session.core.arc, feed.work_events()) {
+        sound.play(Request::own(cue));
+    }
+    // A lock opened somewhere (`ARC.md` F7): heard across the island, like
+    // its toast.
+    if !feed.mech_solves().is_empty() {
+        sound.play(Request::own(Cue::Unlock));
+    }
     // A town sentry locking on: the beep, at the gun, for everyone in
     // earshot — Rust's turret tells the whole town before it fires.
     {
@@ -2100,8 +2110,9 @@ pub fn fell(
     }
 }
 
-/// What stands at cell key `key`, the scatter's answer, cold.
-fn scatter_occupant(
+/// What stands at cell key `key`, the scatter's answer, cold. A world
+/// container's handle is that key, so the loot panel names it by this too.
+pub(crate) fn scatter_occupant(
     world: Option<&super::WorldId>,
     key: u32,
 ) -> Option<sim_core::terrain::Occupant> {

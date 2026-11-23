@@ -7883,9 +7883,123 @@ fn a_counting_work_leads_the_banner_and_says_when_it_opens() {
     );
     assert_eq!(
         event_line(&a, 1, WORK_EV_LIT as u8, None).as_deref(),
-        Some("THE SEVERED GATE HAS OPENED"),
+        Some("THE SEVERED GATE HAS OPENED — the landmarks' vaults are unsealed"),
         "a work with no tank opens rather than burns"
     );
+}
+
+/// Every act-II work lit and the Gate open: the banner follows the tank
+/// burning lowest, not the Gate (whose tankless 0% would hold it for the
+/// rest of the wipe). The Gate leads only when nothing else is lit.
+#[test]
+fn the_open_gate_gives_the_banner_back_to_the_lowest_tank() {
+    use client::ui::arc::{banner, focus};
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_LIT, WORK_SEALED};
+    let mut a = ArcView {
+        count: 4,
+        ..ArcView::default()
+    };
+    let rows: [(&[u8], u8, u32, u32); 4] = [
+        (b"THE FORGE", 2, 1000, 500),
+        (b"THE CRUCIBLE", 2, 1000, 100),
+        (b"THE LANTERN", 2, 1000, 800),
+        (b"THE SEVERED GATE", 3, 0, 0),
+    ];
+    for (w, (name, act, fuel_max, fuel)) in a.works.iter_mut().zip(rows) {
+        w.known = true;
+        w.synced = true;
+        w.state = WORK_LIT;
+        w.def.act = act;
+        w.def.fuel_max = fuel_max;
+        w.fuel = fuel;
+        w.name[..name.len()].copy_from_slice(name);
+        w.name_len = name.len() as u8;
+    }
+    let b = banner(&a, 0.0).expect("a banner");
+    assert_eq!(b.title, "ACT III · THE GATE");
+    assert_eq!(b.line, "THE CRUCIBLE · BURNING · tank 10%");
+    assert_eq!(b.pm, Some(100));
+
+    // A tank run dry is the lowest of all.
+    a.works[2].fuel = 0;
+    assert_eq!(focus(&a).map(|(i, _)| i), Some(2));
+    assert_eq!(
+        banner(&a, 0.0).expect("a banner").line,
+        "THE LANTERN · EMBERS · its tank is dry"
+    );
+
+    // With nothing else lit, the open Gate has it.
+    for w in a.works.iter_mut().take(3) {
+        w.state = WORK_SEALED;
+        w.known = false;
+    }
+    assert_eq!(focus(&a).map(|(i, _)| i), Some(3));
+    assert_eq!(
+        banner(&a, 0.0).expect("a banner").line,
+        "THE SEVERED GATE · OPEN · for the rest of the wipe"
+    );
+}
+
+/// The Gate opening, by quota or on its own hour, says the vaults are
+/// unsealed; a tankless work before act III and a tanked one do not.
+#[test]
+fn the_gate_opening_says_the_vaults_are_unsealed() {
+    use client::ui::arc::{event_line, VAULTS_CLAUSE};
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_EV_FALLBACK, WORK_EV_LIT};
+    let mut a = ArcView {
+        count: 3,
+        ..ArcView::default()
+    };
+    let rows: [(&[u8], u8, u32); 3] = [
+        (b"THE SEVERED GATE", 3, 0),
+        (b"THE DOOR", 2, 0),
+        (b"THE CRUCIBLE", 2, 1000),
+    ];
+    for (w, (name, act, fuel_max)) in a.works.iter_mut().zip(rows) {
+        w.known = true;
+        w.def.act = act;
+        w.def.fuel_max = fuel_max;
+        w.name[..name.len()].copy_from_slice(name);
+        w.name_len = name.len() as u8;
+    }
+    assert_eq!(
+        event_line(&a, 0, WORK_EV_LIT as u8, Some("ana")).as_deref(),
+        Some("THE SEVERED GATE HAS OPENED — the landmarks' vaults are unsealed")
+    );
+    assert_eq!(
+        event_line(&a, 0, WORK_EV_FALLBACK as u8, None).as_deref(),
+        Some("THE SEVERED GATE HAS OPENED ON ITS OWN — the landmarks' vaults are unsealed")
+    );
+    assert_eq!(
+        event_line(&a, 1, WORK_EV_LIT as u8, None).as_deref(),
+        Some("THE DOOR HAS OPENED")
+    );
+    let tanked = event_line(&a, 2, WORK_EV_LIT as u8, None).expect("a line");
+    assert!(!tanked.contains(VAULTS_CLAUSE), "{tanked}");
+}
+
+/// An opened world container is titled by what stands at its cell: a
+/// landmark's vault says VAULT, not CRATE.
+#[test]
+fn a_world_container_is_titled_by_what_stands_there() {
+    use client::ui::slots::{container_title, world_container_title};
+    use sim_core::inventory::CONT_WORLD;
+    use sim_core::terrain::Occupant;
+    assert_eq!(world_container_title(Occupant::Vault), "VAULT");
+    assert_eq!(world_container_title(Occupant::EliteCrate), "ELITE CRATE");
+    assert_eq!(world_container_title(Occupant::FoodCrate), "FOOD BOX");
+    assert_eq!(world_container_title(Occupant::CacheSlot), "CACHE");
+    for o in [
+        Occupant::CrateSlot,
+        Occupant::GreenCrate,
+        Occupant::BlueCrate,
+        Occupant::None,
+    ] {
+        assert_eq!(world_container_title(o), container_title(CONT_WORLD));
+        assert_eq!(world_container_title(o), "CRATE");
+    }
 }
 
 /// A landmark's vault says SEALED until THE SEVERED GATE is open, and then

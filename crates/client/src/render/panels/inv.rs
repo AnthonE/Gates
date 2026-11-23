@@ -63,7 +63,7 @@ use client_core::core::ClientCore;
 use sim_core::combat::ARMOR_MAX_PCT;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
-    is_own, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_BUSY, REFUSE_M_MAX,
+    is_own, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD, REFUSE_M_BUSY, REFUSE_M_MAX,
     REFUSE_M_NO_INPUT,
 };
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
@@ -82,8 +82,8 @@ use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
     looting, move_args, pip_fraction, quick_move_stack, refusal_text, refusal_text_in, slots_in,
-    take_only_bag, take_only_refused, takes_deposits, wear_slot_label, wearable_here, worn_pct,
-    worn_ward, worn_warmth, Drag, Grab, Quick, Sweep,
+    take_only_bag, take_only_refused, takes_deposits, wear_slot_label, wearable_here,
+    world_container_title, worn_pct, worn_ward, worn_warmth, Drag, Grab, Quick, Sweep,
 };
 use sim_core::oven::OvenLayout;
 
@@ -102,6 +102,7 @@ pub struct SlotCell {
 /// the page is being used for: quick craft, or the container you opened.
 /// The crafting menu is its own page (`craft::build_screen`, `Q`), reached
 /// by the tab strip across the top of both.
+#[allow(clippy::too_many_arguments)]
 pub fn build_screen(
     commands: &mut Commands,
     ui: &Ui,
@@ -110,6 +111,7 @@ pub fn build_screen(
     sel: u8,
     portrait: Option<&crate::render::portrait::Portrait>,
     hearth: Option<(u16, u16, u8)>,
+    world: Option<&crate::render::WorldId>,
 ) {
     super::page_frame(commands, ui, super::Seat::OnHotbar, true, |zone| {
         // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
@@ -163,7 +165,7 @@ pub fn build_screen(
                     } else if let Some(key) = super::turret::open_turret(core) {
                         turret_grid(row, core, icons, key);
                     } else if looting(core.cont_kind) {
-                        container_grid(row, core, icons);
+                        container_grid(row, core, icons, world);
                     } else {
                         craft::build_quick(row, ui, core, icons);
                     }
@@ -698,8 +700,21 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, se
 /// the wire ships `INV_SLOTS` slots whatever kind is open and the tail stays
 /// zero for a box, so a panel that drew all thirty would draw twelve slots
 /// and eighteen lies.
-fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+fn container_grid(
+    row: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    icons: &Icons,
+    world: Option<&crate::render::WorldId>,
+) {
     let kind = core.cont_kind;
+    // A world container is titled by what stands at its cell: a landmark's
+    // vault says VAULT. With no world (the probes) it is a CRATE.
+    let title = if kind == CONT_WORLD {
+        crate::render::audio::scatter_occupant(world, core.cont_handle)
+            .map_or(container_title(kind), world_container_title)
+    } else {
+        container_title(kind)
+    };
     // The body is not loot, and it is not drawn from here. It had a
     // branch at the top of this function until 2026-08-28, when it got
     // its own stream and its own permanent column beside this one —
@@ -730,7 +745,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
             // over RECYCLER said the wrong word first.
             section(col, &name);
         } else {
-            section(col, container_title(kind));
+            section(col, title);
             if let Some(bar) = container_bar(kind, &name) {
                 name_bar(col, bar);
             }

@@ -1595,10 +1595,12 @@ pub fn rebuild(
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
     who: Option<Res<super::screen::Who>>,
-    (card, friends, book): (
+    (card, friends, book, world): (
         Option<Res<super::profile::Profile>>,
         Option<Res<super::friends::Friends>>,
         Option<Res<super::contacts::Contacts>>,
+        // What stands at an open world container's cell (a vault's title).
+        Option<Res<super::WorldId>>,
     ),
 ) {
     let core = &net.session.core;
@@ -1632,6 +1634,7 @@ pub fn rebuild(
                 net.sel,
                 portrait.as_deref(),
                 hearth.as_ref().and_then(|h| h.0),
+                world.as_deref(),
             )
         }
         Panel::Craft => {

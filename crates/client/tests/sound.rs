@@ -3542,6 +3542,66 @@ fn a_charging_pig_snorts_fast_and_the_hunt_is_an_edge() {
     assert!(!s.rouse(pig, true), "a held charge announced twice");
 }
 
+// ---- the arc, heard (`ui::arc::work_cue`) -----------------------------------
+
+/// What a work changing sounds like, island-wide: the Gate opening and a
+/// countdown starting are thunder, a work waking, burning or fed again is
+/// the chime, a tank going dry is silent.
+#[test]
+fn a_work_event_plays_the_cue_its_table_names() {
+    use client::ui::arc::{frame_work_cue, work_cue};
+    use client_core::arc::ArcView;
+    use sim_core::works::{
+        WORK_EV_COUNTDOWN, WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT, WORK_EV_MAX,
+        WORK_EV_OPENED, WORK_EV_REKINDLED,
+    };
+    // (what, with a tank, tankless)
+    let table: [(u32, Option<Cue>, Option<Cue>); 6] = [
+        (WORK_EV_OPENED, Some(Cue::GateChime), Some(Cue::GateChime)),
+        (WORK_EV_LIT, Some(Cue::GateChime), Some(Cue::Thunder)),
+        (WORK_EV_FALLBACK, None, Some(Cue::Thunder)),
+        (WORK_EV_EMBERS, None, None),
+        (
+            WORK_EV_REKINDLED,
+            Some(Cue::GateChime),
+            Some(Cue::GateChime),
+        ),
+        (WORK_EV_COUNTDOWN, Some(Cue::Thunder), Some(Cue::Thunder)),
+    ];
+    assert_eq!(table.len() as u32, WORK_EV_MAX, "an event kind is missing");
+    for (what, tanked, tankless) in table {
+        assert_eq!(work_cue(what as u8, false), tanked, "event {what} tanked");
+        assert_eq!(
+            work_cue(what as u8, true),
+            tankless,
+            "event {what} tankless"
+        );
+    }
+    assert_eq!(work_cue(0, true), None);
+    assert_eq!(work_cue(WORK_EV_MAX as u8 + 1, true), None);
+
+    // A frame plays one cue, thunder over the chime, and a work whose row
+    // has not arrived is silent.
+    let mut a = ArcView {
+        count: 3,
+        ..ArcView::default()
+    };
+    a.works[0].known = true;
+    a.works[0].def.fuel_max = 1000;
+    a.works[1].known = true;
+    a.works[1].def.act = 3;
+    let lit = WORK_EV_LIT as u8;
+    assert_eq!(frame_work_cue(&a, &[]), None);
+    assert_eq!(frame_work_cue(&a, &[(0, lit, 0)]), Some(Cue::GateChime));
+    assert_eq!(frame_work_cue(&a, &[(1, lit, 0)]), Some(Cue::Thunder));
+    assert_eq!(
+        frame_work_cue(&a, &[(1, lit, 0), (0, lit, 0)]),
+        Some(Cue::Thunder)
+    );
+    assert_eq!(frame_work_cue(&a, &[(2, lit, 0)]), None, "an unknown row");
+    assert_eq!(frame_work_cue(&a, &[(255, lit, 0)]), None, "past the table");
+}
+
 // ---- the Verdigris counter (`sound::geiger`) --------------------------------
 
 mod geiger {

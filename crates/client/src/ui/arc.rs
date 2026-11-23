@@ -250,6 +250,9 @@ pub struct Banner {
 
 /// The work the banner follows: one counting down, else an open one with
 /// the most paid in, else the next to open, else the lit one burning lowest.
+/// A lit work with no tank (the open Gate) leads only when nothing else is
+/// lit: it reads 0% and would hold the banner for the rest of the wipe, so
+/// an act-II tank running dry would never show.
 pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
     let counting = arc
         .known()
@@ -272,9 +275,11 @@ pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
     if sealed.is_some() {
         return sealed;
     }
-    arc.known()
-        .filter(|(_, w)| w.state == WORK_LIT)
+    let lit = || arc.known().filter(|(_, w)| w.state == WORK_LIT);
+    lit()
+        .filter(|(_, w)| w.def.fuel_max > 0)
         .min_by_key(|(_, w)| tank_pct(w))
+        .or_else(|| lit().next())
 }
 
 pub fn banner(arc: &ArcView, now: f64) -> Option<Banner> {
@@ -301,19 +306,57 @@ pub fn event_line(arc: &ArcView, index: u8, what: u8, who: Option<&str>) -> Opti
         .map(|n| format!(" — {n} put the last in"))
         .unwrap_or_default();
     let tankless = w.def.fuel_max == 0;
+    // The Gate opening unseals the landmarks' vaults, by the rule the sim
+    // opens them by (`works::gate_open_of`: a work past act II lit).
+    let vaults = if tankless && w.def.act > 2 {
+        VAULTS_CLAUSE
+    } else {
+        ""
+    };
     Some(match what as u32 {
         WORK_EV_OPENED if tankless => format!("{name} WAKES — bring what it needs"),
         WORK_EV_OPENED => format!("{name} IS OPEN — bring what it needs"),
         WORK_EV_COUNTDOWN if who.is_some() => format!("{name} IS COUNTING DOWN{by}"),
         WORK_EV_COUNTDOWN => format!("{name} IS COUNTING DOWN — it opens on its own hour"),
-        WORK_EV_LIT if tankless => format!("{name} HAS OPENED"),
+        WORK_EV_LIT if tankless => format!("{name} HAS OPENED{vaults}"),
         WORK_EV_LIT => format!("{name} BURNS{by}"),
-        WORK_EV_FALLBACK if tankless => format!("{name} HAS OPENED ON ITS OWN"),
+        WORK_EV_FALLBACK if tankless => format!("{name} HAS OPENED ON ITS OWN{vaults}"),
         WORK_EV_FALLBACK => format!("{name} WOKE ON ITS OWN — its tank is empty"),
         WORK_EV_EMBERS => format!("{name} HAS GONE TO EMBERS"),
         WORK_EV_REKINDLED => format!("{name} IS FED AGAIN"),
         _ => return None,
     })
+}
+
+/// What [`event_line`] adds when the Gate opens.
+pub const VAULTS_CLAUSE: &str = " — the landmarks' vaults are unsealed";
+
+/// The sound a work changing makes, heard island-wide like its line. The
+/// Gate opening and a countdown starting are thunder (the THE GATE speaker:
+/// *"It is counting. Hear that?"*); a work waking, burning or fed again is
+/// the chime; a tank going dry is silent. `tankless` is the work's
+/// `def.fuel_max == 0`.
+pub fn work_cue(what: u8, tankless: bool) -> Option<crate::sound::Cue> {
+    use crate::sound::Cue;
+    match what as u32 {
+        WORK_EV_COUNTDOWN => Some(Cue::Thunder),
+        WORK_EV_LIT | WORK_EV_FALLBACK if tankless => Some(Cue::Thunder),
+        WORK_EV_OPENED | WORK_EV_LIT | WORK_EV_REKINDLED => Some(Cue::GateChime),
+        _ => None,
+    }
+}
+
+/// The one work cue a frame plays for `events` (the feed's `(work, what,
+/// who)`), thunder over the chime. A work whose row has not arrived is as
+/// silent as its line.
+pub fn frame_work_cue(arc: &ArcView, events: &[(u8, u8, u32)]) -> Option<crate::sound::Cue> {
+    events
+        .iter()
+        .filter_map(|&(index, what, _)| {
+            let w = arc.works.get(index as usize).filter(|w| w.known)?;
+            work_cue(what, w.def.fuel_max == 0)
+        })
+        .max_by_key(|&c| c == crate::sound::Cue::Thunder)
 }
 
 /// What the island hears when its fel tier climbs (`sim_core::blight::SURGE`):
