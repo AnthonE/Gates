@@ -133,7 +133,8 @@ pub struct OrderRow {
 /// your orders — no crew (`crew_of` is `None`), or yours. Then an ALL row
 /// with every order, and a FOLLOW and STAY row per such agent by its bare
 /// name (`name_of`: the tag's name, never the streamer-mode one), when
-/// that name can open a line (`crew::addressable`).
+/// that name can open a line (`crew::addressable`) and no other member,
+/// you included, goes by it.
 pub fn order_rows(
     team: &TeamView,
     me: u32,
@@ -165,8 +166,15 @@ pub fn order_rows(
             })
             .collect(),
     }];
+    // A body drops a line opening with any teammate's name (`for_me`), and
+    // names are not unique: one another member shares gets no row.
+    let shared = |id: u32, name: &str| {
+        team.members()
+            .iter()
+            .any(|m| m.id != id && name_of(m.id).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+    };
     for id in crew {
-        let Some(name) = name_of(id).filter(|n| crew::addressable(n)) else {
+        let Some(name) = name_of(id).filter(|n| crew::addressable(n) && !shared(id, n)) else {
             continue;
         };
         out.push(OrderRow {

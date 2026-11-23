@@ -154,16 +154,11 @@ pub fn for_me(text: &[u8], role: Option<Role>, mates: &[Who]) -> bool {
 /// A lock code in a team line: a lone number of one to four digits, the
 /// same rule `examples/claude_agent.py` keeps. Two numbers is no code.
 /// The digit in a name opening the line (`Miller-3 follow me`, the TEAM
-/// screen's order buttons) is no code either: a first word with a letter
-/// in it and nothing but letters, digits and `-_.'` is a name, and is
-/// skipped (`code: 1234` and `#1234` still give one).
+/// screen's order buttons) is no code either: a first word that is a name
+/// (`client_core::crew::is_name`, the rule the buttons keep) is skipped
+/// (`code: 1234` and `#1234` still give one).
 pub fn code(text: &[u8]) -> Option<LockCode> {
-    let first = head(text);
-    let name = first.iter().any(u8::is_ascii_alphabetic)
-        && first
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'\''));
-    let text = if name {
+    let text = if client_core::crew::is_name(head(text)) {
         let start = text
             .iter()
             .position(|b| !b.is_ascii_whitespace())

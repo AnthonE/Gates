@@ -94,11 +94,14 @@ fn an_agent_crewed_to_someone_else_is_hidden() {
 
 #[test]
 fn a_name_a_line_cannot_open_with_gets_no_row() {
-    let t = team(&[ME, MILLER, 8, 9]);
+    let t = team(&[ME, MILLER, 8, 9, 10, 11]);
     let named = |id| match id {
         MILLER => Some("Miller-3".into()),
         8 => Some("Big Al".into()),
         9 => Some("Al:".into()),
+        // The shard would read a lock code out of these.
+        10 => Some("Ash#2".into()),
+        11 => Some("007".into()),
         _ => None,
     };
     let r = order_rows(&t, ME, |id| id != ME, |_| None, named);
@@ -106,6 +109,32 @@ fn a_name_a_line_cannot_open_with_gets_no_row() {
     assert_eq!(who, ["ALL", "Miller-3"]);
     // No name told yet: the ALL row still reaches it.
     let r = order_rows(&t, ME, |id| id == MILLER, |_| None, |_| None);
+    let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
+    assert_eq!(who, ["ALL"]);
+}
+
+/// Names are not unique, and a body drops a line opening with a teammate's
+/// name: a name another member goes by (any case, you too) gets no row.
+#[test]
+fn a_name_two_members_share_gets_no_row() {
+    let t = team(&[ME, MILLER, ASH, BOB]);
+    // Two default buddies, one yours and one Bob's.
+    let named = |id| match id {
+        MILLER => Some("agent".into()),
+        ASH => Some("Agent".into()),
+        BOB => Some("Bob".into()),
+        _ => None,
+    };
+    let crew_of = |id| (id == ASH).then_some(BOB);
+    let r = order_rows(&t, ME, |id| id == MILLER || id == ASH, crew_of, named);
+    let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
+    assert_eq!(who, ["ALL"]);
+    // Your own name too.
+    let named = |id| match id {
+        ME | MILLER => Some("Ash".into()),
+        _ => None,
+    };
+    let r = order_rows(&t, ME, |id| id == MILLER, |_| None, named);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL"]);
 }

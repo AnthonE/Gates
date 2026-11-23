@@ -63,11 +63,20 @@ pub fn to_one(name: &str, o: Order) -> String {
     format!("{name} {}", o.words)
 }
 
-/// Whether a line can open with `name` and be read as for that body: the
-/// shard takes the first word as typed, trailing `:,!.?;` off, so a name
-/// with a space in it or such an ending cannot be addressed.
+/// Whether a line's first word is a name to the shard's ears: a letter in
+/// it and nothing but letters, digits and `-_.'`. The shard skips such a
+/// word when it looks for a lock code (`server::agent::orders::code`), so
+/// the digit in `Miller-3` is no code; the one in `Ash#2` or `007` would be.
+pub fn is_name(word: &[u8]) -> bool {
+    word.iter().any(u8::is_ascii_alphabetic)
+        && word
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'\''))
+}
+
+/// Whether a line can open with `name` and be read as for that body and
+/// nothing more: a name ([`is_name`]: no space, no lock code in it), and
+/// not ending in `:,!.?;`, which the shard takes off the first word.
 pub fn addressable(name: &str) -> bool {
-    !name.is_empty()
-        && !name.bytes().any(|b| b.is_ascii_whitespace())
-        && !name.ends_with([':', ',', '!', '.', '?', ';'])
+    is_name(name.as_bytes()) && !name.ends_with([':', ',', '!', '.', '?', ';'])
 }

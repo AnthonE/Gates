@@ -62,6 +62,18 @@ fn every_button_is_the_order_it_says() {
     }
 }
 
+/// A name the shard would read a lock code out of (any printable ASCII is
+/// a `protocol::Name`) gets no button of its own: the ALL row reaches it.
+#[test]
+fn a_name_with_a_code_in_it_gets_no_button() {
+    for name in ["Ash#2", "007", "Bot(2)", "Unit:7", "a 1"] {
+        assert!(protocol::Name::new(name).is_some(), "{name}");
+        assert!(!crew::addressable(name), "{name}");
+        let line = crew::to_one(name, crew::FOLLOW);
+        assert!(code(line.as_bytes()).is_some(), "{line}: why it has none");
+    }
+}
+
 #[test]
 fn a_named_line_reaches_only_that_body() {
     let roles = [None, Some(Role::Guard), Some(Role::Farmer)];
