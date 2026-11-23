@@ -938,6 +938,7 @@ mod tests {
             .unwrap();
         for i in 0..crate::mind::SUMMARY_NEEDS {
             s.needs[i] = (long(200 + i), u32::MAX);
+            s.needs_parts[i] = (u32::MAX, u32::MAX, u32::MAX);
         }
         s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
         for i in 0..crate::mind::SUMMARY_RAW {

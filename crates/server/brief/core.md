@@ -17,7 +17,7 @@ You can go anywhere. `go:<place>` walks to a named place; the option `walk:<bear
 
 # Reading what you see
 
-`in_view` is what you see now or saw in the last few minutes not far off, with how far and which way: a gather or supply goal walks back to it. With none of its kind in view, the goal only looks round for 20 s and may find none. `forage` is for `berry_bushes`; trees are `gather_wood`, hemp is `gather_hemp`. `pack` is what you carry. `base_next` is your own base's next step and what it still lacks after your pack (`missing`; `raw` is the same in raw materials): a shopping list, not what you have.
+`in_view` is what you see now or saw in the last few minutes not far off, with how far and which way: a gather or supply goal walks back to it. With none of its kind in view, the goal only looks round for 20 s and may find none. `forage` is for `berry_bushes`; trees are `gather_wood`, hemp is `gather_hemp`. `pack` is what you carry. `base_next` is your own base's next step and what it still lacks (`missing`; `raw` is the same in raw materials). `base_next.missing[].count` is `costs` minus what you carry (`you_carry`) and what your box holds (`boxed`): a shopping list, not what you have.
 
 `condition` is what your body feels past the meters. `bleeding`: nothing mends until a bandage or medkit closes it, so `heal`. `cold_hurting` (or a high `cold_pct`, with `air_c` under about 5): the cold is costing health and blocking regen; `warm` sits you by a lit fire (it puts one down), which also mends you to 80% fast, or get under your own roof, and wear warmer clothes. `wet_pct` makes the cold worse. `verdigris_pct` is the corrupted ground's sickness: walk out of it.
 

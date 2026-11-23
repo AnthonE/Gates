@@ -82,6 +82,12 @@
       "properties": {"name": {"type": "string"}, "count": {"type": "integer"}}
     },
     "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "need": {
+      "type": "object", "additionalProperties": false, "required": ["name", "count", "costs", "you_carry", "boxed"],
+      "description": "One thing the base's next step is short of: count is costs less you_carry (in the pack) less boxed (in its box).",
+      "properties": {"name": {"type": "string"}, "count": {"type": "integer"}, "costs": {"type": "integer"},
+                     "you_carry": {"type": "integer"}, "boxed": {"type": "integer"}}
+    },
     "sighting": {
       "type": "object", "additionalProperties": false, "required": ["count"],
       "description": "How many of a thing it can see; the nearest one's metres and bearing when there is one.",
@@ -290,7 +296,7 @@
         "night": {"type": "boolean"},
         "base_next": {
           "type": "object", "additionalProperties": false, "required": ["milestone", "missing", "raw", "waiting_on_work"],
-          "properties": {"milestone": {"type": "string"}, "missing": {"$ref": "#/$defs/items"}, "raw": {"$ref": "#/$defs/items"},
+          "properties": {"milestone": {"type": "string"}, "missing": {"type": "array", "items": {"$ref": "#/$defs/need"}}, "raw": {"$ref": "#/$defs/items"},
                          "waiting_on_work": {"type": ["string", "null"]}}
         },
         "stations": {

@@ -9231,13 +9231,15 @@ pub fn observe(
         .arc
         .granter(memory.base.held_by)
         .and_then(|(_, w)| Name::new(w.name().as_bytes()));
-    for &(item, units) in memory.base.needs() {
+    let base = &memory.base;
+    for (&(item, units), &parts) in base.needs().iter().zip(&base.need_parts) {
         let n = usize::from(s.needs_len);
         if let (Some(name), true) = (
             Name::new(core.catalog.name(usize::from(item))),
             n < s.needs.len(),
         ) {
             s.needs[n] = (name, units);
+            s.needs_parts[n] = parts;
             s.needs_len += 1;
         }
     }

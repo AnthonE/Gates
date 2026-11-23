@@ -1912,6 +1912,9 @@ pub struct Summary {
     pub milestone: Milestone,
     pub needs: [(Name, u32); SUMMARY_NEEDS],
     pub needs_len: u8,
+    /// Each need's parts, from the survey's one count: what the milestone
+    /// costs of it, what the pack carries and what the box holds.
+    pub needs_parts: [(u32, u32, u32); SUMMARY_NEEDS],
     /// What those come down to that nobody crafts here: to gather, hunt
     /// or loot.
     pub raw: [(Name, u32); SUMMARY_RAW],
@@ -2083,6 +2086,7 @@ impl Summary {
         milestone: Milestone::Shell,
         needs: [(Name::EMPTY, 0); SUMMARY_NEEDS],
         needs_len: 0,
+        needs_parts: [(0, 0, 0); SUMMARY_NEEDS],
         raw: [(Name::EMPTY, 0); SUMMARY_RAW],
         raw_len: 0,
         held_by: None,
@@ -2482,7 +2486,7 @@ impl Summary {
             "night": self.night,
             "base_next": {
                 "milestone": self.milestone.word(),
-                "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+                "missing": self.needs().iter().zip(&self.needs_parts).map(|((n, c), (costs, carry, boxed))| json!({"name": n.as_str(), "count": c, "costs": costs, "you_carry": carry, "boxed": boxed})).collect::<Vec<_>>(),
                 "raw": self.raw().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "waiting_on_work": self.held_by.map(|n| n.as_str().to_owned()),
             },
@@ -5805,5 +5809,32 @@ mod tests {
         s.items[2] = (name("Stone"), 1200);
         assert_eq!(scripted.pick(&s).0, Goal::FeedWork);
         assert_eq!(s.to_json()["base_next"]["waiting_on_work"], "THE CRUCIBLE");
+    }
+
+    /// `missing` shows the subtraction, not only its answer: 500 Wood in
+    /// the pack beside 90 missing read as a wrong number (#569, #572)
+    /// until the 590 the shell costs was said beside them.
+    #[test]
+    fn base_next_missing_shows_what_the_count_is_made_of() {
+        let mut s = Summary::EMPTY;
+        s.needs[0] = (name("Wood"), 90);
+        s.needs_parts[0] = (590, 500, 0);
+        s.needs[1] = (name("Stone"), 30);
+        s.needs_parts[1] = (100, 40, 30);
+        s.needs_len = 2;
+        let missing = &s.to_json()["base_next"]["missing"];
+        assert_eq!(
+            missing[0],
+            json!({"name": "Wood", "count": 90, "costs": 590, "you_carry": 500, "boxed": 0})
+        );
+        for row in missing.as_array().unwrap() {
+            let n = |k: &str| row[k].as_u64().unwrap();
+            assert_eq!(
+                n("count"),
+                n("costs") - n("you_carry") - n("boxed"),
+                "{row}"
+            );
+        }
+        assert_eq!(missing.as_array().unwrap().len(), 2);
     }
 }

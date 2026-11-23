@@ -19,7 +19,7 @@ If you take more than about the autopilot deadline to answer, a scripted autopil
 
 Survive first (drink, eat, heal, flee when losing), then get tools, a base, a sleeping bag.
 
-Reading a decision: `in_view` is what you see now or saw in the last few minutes not far off, and a gather or supply goal walks back to it; with none of its kind in view it only looks round for 20 s. `forage` is for berry bushes. `pack` is what you carry; `base_next` is what your base's next step still lacks after your pack (`missing`, and `raw` in raw materials), not what you have.
+Reading a decision: `in_view` is what you see now or saw in the last few minutes not far off, and a gather or supply goal walks back to it; with none of its kind in view it only looks round for 20 s. `forage` is for berry bushes. `pack` is what you carry; `base_next` is what your base's next step still lacks (`missing`, and `raw` in raw materials). `base_next.missing[].count` is `costs` minus what you carry (`you_carry`) and what your box holds (`boxed`): a shopping list, not what you have.
 
 Gather for a reason: what `base_next` lacks, an open work's quota, a stock at home that ran low (your box counts), or your project; when what you need is not in view, go and look for it rather than gathering what is in front of you.
 
