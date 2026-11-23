@@ -1843,6 +1843,13 @@ impl Plugin for GatesRenderPlugin {
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
         )
+        // A heal on another player the sim refused puts its wrap away. On
+        // the drain's run condition and after it, so each frame's refusals
+        // are read once.
+        .add_systems(
+            Update,
+            verbs::wrap_refused.after(feed::drain).run_if(world_running),
+        )
         // Electricity (`sim_core::power`): the wire tool acts on this frame's
         // pick, and the cables redraw when the wires move.
         .add_systems(

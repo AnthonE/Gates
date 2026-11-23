@@ -90,13 +90,30 @@ pub struct Bite {
 pub const BITE_S: f64 = 1.0;
 
 impl Bite {
-    /// May a mouthful go at `now`? Starts the clock when it does.
+    /// May a mouthful go at `now`? Starts the clock when it does, and a
+    /// refusal after it may be this mouthful's ([`WrapClock::settle`]).
+    ///
+    /// [`WrapClock::settle`]: crate::ui::wrap::WrapClock::settle
     pub fn take(&mut self, now: f64) -> bool {
         if self.last.is_some_and(|last| now - last < BITE_S) {
             return false;
         }
         self.last = Some(now);
+        self.wrap.settle();
         true
+    }
+}
+
+/// A heal on another player the sim refused (`REFUSE_C_FULL`: they were at
+/// full health) began no wrap, so the one its press started here is put
+/// away (`ui::wrap`): no arm, no countdown, and the hands free again.
+/// After the drain, so each frame's refusals are read once.
+pub fn wrap_refused(feed: Res<super::feed::Feed>, mut bite: ResMut<Bite>) {
+    if feed
+        .refusals()
+        .any(|(which, _, _)| which == super::feed::Refused::Consume)
+    {
+        bite.wrap.refused();
     }
 }
 
@@ -1123,7 +1140,8 @@ fn use_aimed(
         // the bite clock as the eat key is (`server::pace` paces both as a
         // mouthful). A bandage is wrapped on in your hands, so its press
         // starts the wrap the arm and the HUD draw, as one on yourself does
-        // (`use_slot`); the sim cancels it on the same switch of hands.
+        // (`use_slot`); the sim cancels it on the same switch of hands, and
+        // a refusal puts it away here (`wrap_refused`).
         Verb::Heal => {
             let core = &net.session.core;
             let Some(slot) = core.held_heal_slot() else {
@@ -1141,7 +1159,7 @@ fn use_aimed(
                 });
                 if sent && use_ticks > 0 {
                     let secs = f64::from(use_ticks) / f64::from(sim_core::limits::TICK_HZ);
-                    bite.wrap.begin(now, secs, slot, stack.item);
+                    bite.wrap.begin_on_other(now, secs, slot, stack.item);
                 }
             }
         }
