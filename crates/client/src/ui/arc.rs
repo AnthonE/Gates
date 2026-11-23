@@ -359,6 +359,15 @@ pub fn frame_work_cue(arc: &ArcView, events: &[(u8, u8, u32)]) -> Option<crate::
         .max_by_key(|&c| c == crate::sound::Cue::Thunder)
 }
 
+/// The one lock-solve cue a frame plays for `solves` (the feed's
+/// `(mechanism, who)`), heard island-wide like its line. `Cue::Unlock` is
+/// positional (the keypad's click, at the door) and the mixer refuses a
+/// positional cue with no place, so the solve is placed at `ears`: the
+/// listener's own position, full gain and centred, wherever the lock was.
+pub fn solve_request(solves: &[(u8, u32)], ears: [f32; 3]) -> Option<crate::sound::mixer::Request> {
+    (!solves.is_empty()).then(|| crate::sound::mixer::Request::at(crate::sound::Cue::Unlock, ears))
+}
+
 /// What the island hears when its fel tier climbs (`sim_core::blight::SURGE`):
 /// the front jumps outward at once.
 pub const SURGE_LINE: &str = "THE VERDIGRIS SURGES";

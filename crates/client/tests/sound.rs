@@ -3602,6 +3602,42 @@ fn a_work_event_plays_the_cue_its_table_names() {
     assert_eq!(frame_work_cue(&a, &[(255, lit, 0)]), None, "past the table");
 }
 
+/// The arc's cues reach the speakers. The mixer refuses a positional cue
+/// with no place and counts it as dropped, so every cue `work_cue` names
+/// (played as an own-fact) must be admitted, and a lock solve, placed at
+/// the ears, must be too — far from the origin, so a solve placed there
+/// instead would be culled.
+#[test]
+fn the_arc_s_cues_are_admitted_by_a_mixer_frame() {
+    use client::ui::arc::{solve_request, work_cue};
+    use sim_core::works::WORK_EV_MAX;
+    let ears = [900.0, 12.0, -700.0];
+    let mix = Mix::default();
+    let admitted = |req: Request| {
+        let mut m = Mixer::new();
+        m.push(req);
+        let started: Vec<Cue> = m.tick(16.0, ears, 0, &mix).iter().map(|s| s.cue).collect();
+        (started, m.dropped)
+    };
+
+    assert!(solve_request(&[], ears).is_none(), "no solve, no sound");
+    let solve = solve_request(&[(0, 7), (1, 9)], ears).expect("a solve is heard");
+    assert_eq!(solve.cue, Cue::Unlock);
+    assert_eq!(admitted(solve), (vec![Cue::Unlock], 0), "the solve");
+
+    for what in 0..=WORK_EV_MAX as u8 {
+        for tankless in [false, true] {
+            if let Some(cue) = work_cue(what, tankless) {
+                assert_eq!(
+                    admitted(Request::own(cue)),
+                    (vec![cue], 0),
+                    "work event {what}, tankless {tankless}"
+                );
+            }
+        }
+    }
+}
+
 // ---- the Verdigris counter (`sound::geiger`) --------------------------------
 
 mod geiger {

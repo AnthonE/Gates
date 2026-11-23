@@ -1801,6 +1801,7 @@ pub fn feed(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
     world: Option<Res<super::WorldId>>,
+    eye: Res<Eye>,
     mut sound: ResMut<Sound>,
     mut cont: Local<(u8, u32)>,
 ) {
@@ -1881,9 +1882,12 @@ pub fn feed(
         sound.play(Request::own(cue));
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island, like
-    // its toast.
-    if !feed.mech_solves().is_empty() {
-        sound.play(Request::own(Cue::Unlock));
+    // its toast — at the ears, since `Unlock` is positional. `place_eye` runs
+    // before `Stream`, so this is the very listener `pump` mixes against.
+    if let Some(req) =
+        crate::ui::arc::solve_request(feed.mech_solves(), [eye.pos.x, eye.pos.y, eye.pos.z])
+    {
+        sound.play(req);
     }
     // A town sentry locking on: the beep, at the gun, for everyone in
     // earshot — Rust's turret tells the whole town before it fires.
