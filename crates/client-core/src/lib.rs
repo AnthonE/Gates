@@ -28,6 +28,7 @@
 pub mod arc;
 pub mod clock;
 pub mod core;
+pub mod crew;
 pub mod interp;
 pub mod predict;
 pub mod view;

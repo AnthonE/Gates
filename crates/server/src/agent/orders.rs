@@ -153,7 +153,30 @@ pub fn for_me(text: &[u8], role: Option<Role>, mates: &[Who]) -> bool {
 
 /// A lock code in a team line: a lone number of one to four digits, the
 /// same rule `examples/claude_agent.py` keeps. Two numbers is no code.
+/// The digit in a name opening the line (`Miller-3 follow me`, the TEAM
+/// screen's order buttons) is no code either: a first word with a letter
+/// in it and nothing but letters, digits and `-_.'` is a name, and is
+/// skipped (`code: 1234` and `#1234` still give one).
 pub fn code(text: &[u8]) -> Option<LockCode> {
+    let first = head(text);
+    let name = first.iter().any(u8::is_ascii_alphabetic)
+        && first
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'\''));
+    let text = if name {
+        let start = text
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(text.len());
+        let rest = &text[start..];
+        let end = rest
+            .iter()
+            .position(u8::is_ascii_whitespace)
+            .unwrap_or(rest.len());
+        &rest[end..]
+    } else {
+        text
+    };
     let mut found = None;
     for w in words(text) {
         if !w.iter().all(u8::is_ascii_digit) {
@@ -255,5 +278,22 @@ mod tests {
     fn help_fits_one_line() {
         assert!(HELP.len() <= protocol::ChatText::CAP);
         assert!(protocol::ChatText::sanitize(HELP.as_bytes()).is_some());
+    }
+
+    /// A name opening the line is not a code, whatever digit it carries;
+    /// a number after it still is.
+    #[test]
+    fn a_name_with_a_digit_is_no_code() {
+        assert_eq!(code(b"Miller-3 follow me"), None);
+        assert_eq!(code(b"Miller-3: stay"), None);
+        assert_eq!(code(b"  bob_42"), None);
+        assert_eq!(
+            code(b"Miller-3 the code is 1234").map(LockCode::wire),
+            Some(1234)
+        );
+        assert_eq!(code(b"1234 is it").map(LockCode::wire), Some(1234));
+        assert_eq!(code(b"code: 1234").map(LockCode::wire), Some(1234));
+        assert_eq!(code(b"code:1234").map(LockCode::wire), Some(1234));
+        assert_eq!(code(b"#1234").map(LockCode::wire), Some(1234));
     }
 }

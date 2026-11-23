@@ -111,6 +111,84 @@ pub fn sent_line(op: u8) -> &'static str {
     }
 }
 
+/// An order button (`client_core::crew`): its label and the team line it
+/// sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderLine {
+    pub label: &'static str,
+    pub line: String,
+}
+
+/// A row of the ORDERS section: who it is for (`ALL`, or an agent's name,
+/// `id` 0 for all) and its buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderRow {
+    pub who: String,
+    pub id: u32,
+    pub orders: Vec<OrderLine>,
+}
+
+/// The order wheel (`docs/PLAYERS.md`): the team lines a crew's orders
+/// are, typed for you. Nothing unless a teammate is an agent that takes
+/// your orders — no crew (`crew_of` is `None`), or yours. Then an ALL row
+/// with every order, and a FOLLOW and STAY row per such agent by its bare
+/// name (`name_of`: the tag's name, never the streamer-mode one), when
+/// that name can open a line (`crew::addressable`).
+pub fn order_rows(
+    team: &TeamView,
+    me: u32,
+    is_agent: impl Fn(u32) -> bool,
+    crew_of: impl Fn(u32) -> Option<u32>,
+    name_of: impl Fn(u32) -> Option<String>,
+) -> Vec<OrderRow> {
+    use client_core::crew;
+    if team.count == 0 {
+        return Vec::new();
+    }
+    let mut members: Vec<_> = team.members().iter().map(|m| m.id).collect();
+    members.sort_by_key(|&id| id != team.leader);
+    let crew: Vec<u32> = members
+        .into_iter()
+        .filter(|&id| id != me && is_agent(id) && crew_of(id).is_none_or(|of| of == me))
+        .collect();
+    if crew.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![OrderRow {
+        who: "ALL".to_string(),
+        id: 0,
+        orders: crew::ORDERS
+            .iter()
+            .map(|&o| OrderLine {
+                label: o.label,
+                line: crew::to_all(o),
+            })
+            .collect(),
+    }];
+    for id in crew {
+        let Some(name) = name_of(id).filter(|n| crew::addressable(n)) else {
+            continue;
+        };
+        out.push(OrderRow {
+            orders: crew::ONE
+                .iter()
+                .map(|&o| OrderLine {
+                    label: o.label,
+                    line: crew::to_one(&name, o),
+                })
+                .collect(),
+            who: name,
+            id,
+        });
+    }
+    out
+}
+
+/// What the status line says once an order has gone out.
+pub fn ordered_line(line: &str) -> String {
+    format!("ordered: {line}")
+}
+
 /// The panel: a header, then every member, leader first marked `*`, with
 /// how far off they are; you read as "you". `name(id)` is the chat log's
 /// label (`ui::names::of`). Empty with no team.
