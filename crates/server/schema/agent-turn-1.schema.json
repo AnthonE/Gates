@@ -47,10 +47,11 @@
     },
     "places": {
       "type": "object", "additionalProperties": false,
-      "required": ["the_gate", "works", "stones", "locks", "ziggurat_doors"],
+      "required": ["the_gate", "works", "vaults", "stones", "locks", "ziggurat_doors"],
       "properties": {
         "the_gate": {"$ref": "#/$defs/place_or_null"},
         "works": {"type": "array", "items": {"$ref": "#/$defs/work"}},
+        "vaults": {"type": "string", "description": "Whether the landmarks' steel vault doors are sealed or open: they open with THE SEVERED GATE."},
         "stones": {
           "type": "object", "additionalProperties": false,
           "required": ["read", "known", "nearest_unread", "glyphs_i_read"],

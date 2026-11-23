@@ -4539,6 +4539,57 @@ fn a_survivor_empties_a_crate_through_its_panel() {
     );
 }
 
+/// A landmark's vault stays shut while THE SEVERED GATE does; once the
+/// Gate is lit, a loot run empties it like any crate.
+#[test]
+fn a_survivor_loots_a_vault_once_the_gate_is_open() {
+    use sim_core::terrain::Occupant;
+    let ((cx, cz), at) = common::container(Occupant::Vault);
+    let mind = Mind::inline(LootWhenSeen, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    h.until(5, |_| false);
+    // Opened (`Some`), and whether it is empty now.
+    let vault = |h: &Harness| {
+        h.shard
+            .world
+            .world_conts
+            .entries()
+            .iter()
+            .find(|c| (c.cx, c.cz) == (cx, cz))
+            .map(|c| c.is_empty())
+    };
+    h.until(20 * TICK_HZ, |_| false);
+    assert_eq!(vault(&h), None, "a sealed vault was opened");
+
+    let def = h.shard.world.works_def;
+    let k = (0..usize::from(def.count))
+        .find(|&k| def.defs[k].act > 2)
+        .expect("THE SEVERED GATE");
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &mut core.world;
+        w.works.w[k].state = sim_core::works::WORK_LIT;
+        let def = w.works_def;
+        w.works.refresh(&def);
+    }
+    for _ in 0..60 {
+        if vault(&h) == Some(true) {
+            break;
+        }
+        h.until(2 * TICK_HZ, |_| false);
+    }
+    assert_eq!(
+        vault(&h),
+        Some(true),
+        "the open vault was not emptied: {:?} {}",
+        h.bot.loot().stats,
+        h.explain()
+    );
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+}
+
 /// The starter stands, the pack holds what the stations cost: the
 /// workbench goes on a stone foundation behind the core, the furnace is
 /// crafted at it and goes on one of its own behind the stair cell (each put

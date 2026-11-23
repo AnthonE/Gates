@@ -28,6 +28,9 @@ pub enum Order {
     Stay,
     /// One supply run of that kind for the team's box.
     Supply(Goal),
+    /// One go at that goal: a loot run (`Goal::Loot`) or a feed of a
+    /// work's quota (`Goal::FeedWork`).
+    Run(Goal),
     /// Walk home, the team's base when it lives there.
     Home,
     /// Walk the ring round home until told otherwise.
@@ -40,7 +43,7 @@ pub enum Order {
 
 /// What `help` answers, within one chat line.
 pub const HELP: &str =
-    "say: follow, stay, wood, stone, ore, cloth, home, patrol, defend; start with guards, a name or all";
+    "say: follow, stay, wood, stone, ore, cloth, loot, feed, home, patrol, defend; start with guards, a name or all";
 
 /// The words of a line, lowercased, split on anything not a letter or a
 /// digit. No allocation: the caller walks them.
@@ -60,7 +63,7 @@ pub fn order(text: &[u8]) -> Option<Order> {
     let rank = |o: Order| match o {
         Order::Help => 0,
         Order::Stay => 1,
-        Order::Supply(_) => 2,
+        Order::Supply(_) | Order::Run(_) => 2,
         Order::Defend => 3,
         Order::Home => 4,
         Order::Patrol => 5,
@@ -79,6 +82,11 @@ pub fn order(text: &[u8]) -> Option<Order> {
             Order::Supply(Goal::SupplyOre)
         } else if is(w, &["cloth", "hemp"]) {
             Order::Supply(Goal::SupplyHemp)
+        } else if is(w, &["loot", "crates", "vault", "vaults"]) {
+            // Never "gate": "meet at the gate" is no order.
+            Order::Run(Goal::Loot)
+        } else if is(w, &["feed", "deposit", "quota"]) {
+            Order::Run(Goal::FeedWork)
         } else if is(w, &["defend", "defence", "defense", "protect"]) {
             Order::Defend
         } else if is(w, &["home", "base"]) {
@@ -171,7 +179,7 @@ mod tests {
 
     #[test]
     fn plain_words_are_orders() {
-        let cases: [(&str, Option<Order>); 18] = [
+        let cases: [(&str, Option<Order>); 23] = [
             ("guards patrol", Some(Order::Patrol)),
             ("defend the base!", Some(Order::Defend)),
             ("patrol, then come home", Some(Order::Home)),
@@ -185,6 +193,14 @@ mod tests {
             ("get stone pls", Some(Order::Supply(Goal::SupplyStone))),
             ("need metal ore", Some(Order::Supply(Goal::SupplyOre))),
             ("cloth!", Some(Order::Supply(Goal::SupplyHemp))),
+            ("all loot", Some(Order::Run(Goal::Loot))),
+            ("go open the VAULTS", Some(Order::Run(Goal::Loot))),
+            ("feed the works", Some(Order::Run(Goal::FeedWork))),
+            (
+                "deposit for the quota then go home",
+                Some(Order::Run(Goal::FeedWork)),
+            ),
+            ("meet me at the gate", None),
             ("go home", Some(Order::Home)),
             ("help", Some(Order::Help)),
             ("follow me, help?", Some(Order::Help)),

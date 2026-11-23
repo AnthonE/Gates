@@ -7350,8 +7350,11 @@ impl Survivor {
             .scanned_at
             .map_or(1, |at| tick.wrapping_sub(at).clamp(1, SCAN_CELLS_MAX));
         self.scanned_at = Some(tick);
+        // Read once for the batch: a landmark's vault is loot only once
+        // THE SEVERED GATE is open.
+        let gate_open = core.arc.gate_open();
         for _ in 0..cells {
-            self.scan_cell(core, body, &haven, tick);
+            self.scan_cell(core, body, &haven, tick, gate_open);
         }
         let mut bodies = [Sighting::default(); 2];
         let mut humans = Sighting::default();
@@ -7970,8 +7973,16 @@ impl Survivor {
     }
 
     /// Examine the next cell of the sight window; publish the census when a
-    /// sweep completes.
-    fn scan_cell(&mut self, core: &mut ClientCore, body: &EntityState, haven: &Haven, tick: u32) {
+    /// sweep completes. `gate_open`: THE SEVERED GATE is open, so a vault
+    /// is loot.
+    fn scan_cell(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        haven: &Haven,
+        tick: u32,
+        gate_open: bool,
+    ) {
         let haven = *haven;
         let dx = self.scan % SIGHT_WIDTH - SIGHT_CELLS;
         let dz = self.scan / SIGHT_WIDTH - SIGHT_CELLS;
@@ -8026,7 +8037,7 @@ impl Survivor {
             }
             // A barrel still standing, or a crate, in the cone with a
             // clear line: somewhere loot is.
-            if let Some(prize) = Prize::of(slot.occupant) {
+            if let Some(prize) = Prize::of(slot.occupant, gate_open) {
                 if (prize == Prize::Crate || !core.harvested.contains(target.key()))
                     && in_view(body, &slot)
                     && visible(core, &haven, body, target)
@@ -9333,17 +9344,29 @@ pub fn observe(
         s.gate = Some(Place::at(d, bearing));
     }
     let named = |item: u16| Name::new(core.catalog.name(usize::from(item))).unwrap_or(Name::EMPTY);
+    s.gate_open = core.arc.gate_open();
+    let now = core.server_tick_est();
     for (_, w) in core.arc.known() {
         let n = usize::from(s.works_len);
         if n >= s.works.len() {
             break;
         }
+        // A countdown runs to `lights_at`, paid into or its own hour come.
+        let opens_in_min = if w.state == sim_core::works::WORK_COUNTDOWN {
+            let left = (f64::from(w.lights_at) - now).max(0.0);
+            (left / f64::from(TICK_HZ * 60)).ceil() as u32
+        } else {
+            0
+        };
         let mut sense = crate::mind::WorkSense {
             name: Name::new(w.name().as_bytes()).unwrap_or(Name::EMPTY),
             state: w.state,
             fuel: named(w.def.fuel),
             fuel_room: w.def.fuel_max.saturating_sub(w.fuel),
             unlocks: Name::new(w.floor_name().as_bytes()).unwrap_or(Name::EMPTY),
+            tankless: w.def.fuel_max == 0,
+            paid: w.def.met(&w.got),
+            opens_in_min,
             ..crate::mind::WorkSense::EMPTY
         };
         if let (Some(b), Some((x, _, z))) = (body, sim_core::spot::world(core.haven(), &w.def.spot))

@@ -1127,9 +1127,10 @@ pub const BEARINGS: [&str; 8] = [
 ];
 
 /// A work (`ARC.md`) as its client knows it: its name, whether it is
-/// sealed, open or lit, where its terminal is, what its quota still takes
-/// while open, its fuel and the room in its tank while lit, and what
-/// lighting it unlocks.
+/// sealed, open, counting down or lit, where its terminal is, what its
+/// quota still takes while open, its fuel and the room in its tank while
+/// lit, and what lighting it unlocks. A work with no tank (THE SEVERED
+/// GATE) burns nothing once lit: it stays open for the rest of the wipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkSense {
     pub name: Name,
@@ -1140,6 +1141,13 @@ pub struct WorkSense {
     pub fuel: Name,
     pub fuel_room: u32,
     pub unlocks: Name,
+    /// It has no fuel tank (`WorkDef::fuel_max` 0).
+    pub tankless: bool,
+    /// Every quota line is met (`WorkDef::met`): a countdown it was paid
+    /// into, not its own fallback hour's.
+    pub paid: bool,
+    /// While counting down, the minutes until it lights, rounded up.
+    pub opens_in_min: u32,
 }
 
 impl WorkSense {
@@ -1152,20 +1160,37 @@ impl WorkSense {
         fuel: Name::EMPTY,
         fuel_room: 0,
         unlocks: Name::EMPTY,
+        tankless: false,
+        paid: false,
+        opens_in_min: 0,
     };
 
     fn json(&self) -> Value {
+        use sim_core::works::{WORK_COUNTDOWN, WORK_LIT, WORK_OPEN};
+        let lights = if self.tankless { "opens" } else { "lights" };
+        let state = match self.state {
+            WORK_OPEN => "open: takes deposits".to_string(),
+            WORK_LIT if self.tankless => "open: for the rest of the wipe".to_string(),
+            WORK_LIT => "lit: burns fuel".to_string(),
+            WORK_COUNTDOWN if self.paid => {
+                format!(
+                    "counting down: quota met, {lights} in {} min",
+                    self.opens_in_min
+                )
+            }
+            WORK_COUNTDOWN => format!(
+                "counting down to its own hour: {lights} in {} min",
+                self.opens_in_min
+            ),
+            _ => "sealed".to_string(),
+        };
+        let tank = self.state == WORK_LIT && !self.tankless;
         json!({
             "name": self.name.as_str(),
-            "state": match self.state {
-                sim_core::works::WORK_OPEN => "open: takes deposits",
-                sim_core::works::WORK_LIT => "lit: burns fuel",
-                sim_core::works::WORK_COUNTDOWN => "counting down: its quota is met, it lights soon",
-                _ => "sealed",
-            },
+            "state": state,
             "where": self.at.map(|p| p.json()),
             "still_needs": self.needs[..usize::from(self.needs_len)].iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
-            "fuel": (self.state == sim_core::works::WORK_LIT).then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
+            "fuel": tank.then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
             "unlocks": self.unlocks.as_str(),
         })
     }
@@ -1958,6 +1983,9 @@ pub struct Summary {
     pub gate: Option<Place>,
     pub works: [WorkSense; sim_core::limits::MAX_WORKS],
     pub works_len: u8,
+    /// THE SEVERED GATE is open (`client_core::arc::ArcView::gate_open`):
+    /// the landmarks' vaults open with `E`.
+    pub gate_open: bool,
     /// The ancients' stones (how many it has read of those it knows of,
     /// the nearest unread one in walking range, the glyphs it reads of the
     /// alphabet), their locks, and the ziggurat's card doors.
@@ -2159,6 +2187,7 @@ impl Summary {
         gate: None,
         works: [WorkSense::EMPTY; sim_core::limits::MAX_WORKS],
         works_len: 0,
+        gate_open: false,
         stones_read: 0,
         stones_known: 0,
         unread_stone: None,
@@ -2356,14 +2385,19 @@ impl Summary {
         Value::Array(out)
     }
 
-    /// THE GATE and the works, the stones, their locks and the ziggurat's
-    /// card doors, as its client knows them. Sent to an external source
-    /// beside the observation (the observation stays small).
-    /// Worker only (it allocates).
+    /// THE GATE and the works, the landmarks' vaults, the stones, their
+    /// locks and the ziggurat's card doors, as its client knows them. Sent
+    /// to an external source beside the observation (the observation stays
+    /// small). Worker only (it allocates).
     pub fn places_json(&self) -> Value {
         json!({
             "the_gate": self.gate.map(|p| p.json()),
             "works": self.works[..usize::from(self.works_len)].iter().map(WorkSense::json).collect::<Vec<_>>(),
+            "vaults": if self.gate_open {
+                "open: the landmarks' steel doors open with E; loot takes them"
+            } else {
+                "sealed: the steel doors at the landmarks open when THE SEVERED GATE does"
+            },
             "stones": {
                 "read": self.stones_read,
                 "known": self.stones_known,
@@ -3879,6 +3913,14 @@ impl Scripted {
                     },
                 ),
                 Order::Defend => (Goal::Defend, "defending home"),
+                Order::Run(g) => (
+                    g,
+                    if g == Goal::Loot {
+                        "on it: loot"
+                    } else {
+                        "on it: the works"
+                    },
+                ),
                 _ => (Goal::GoHome, "heading home"),
             };
             if s.offers(goal) {
@@ -5809,6 +5851,95 @@ mod tests {
         s.items[2] = (name("Stone"), 1200);
         assert_eq!(scripted.pick(&s).0, Goal::FeedWork);
         assert_eq!(s.to_json()["base_next"]["waiting_on_work"], "THE CRUCIBLE");
+    }
+
+    /// THE SEVERED GATE has no tank: lit, it is open for the rest of the
+    /// wipe, with no fuel to name. A countdown says whether a quota paid
+    /// for it or its own hour came, and how long is left; the vaults read
+    /// sealed until the Gate is open.
+    #[test]
+    fn the_gate_reads_open_and_a_countdown_says_what_started_it() {
+        use sim_core::works::{WORK_COUNTDOWN, WORK_LIT};
+        let mut s = Summary::EMPTY;
+        s.works[0] = WorkSense {
+            name: name("THE SEVERED GATE"),
+            state: WORK_COUNTDOWN,
+            tankless: true,
+            opens_in_min: 42,
+            ..WorkSense::EMPTY
+        };
+        s.works[1] = WorkSense {
+            name: name("THE CRUCIBLE"),
+            state: WORK_LIT,
+            fuel: name("Wood"),
+            fuel_room: 300,
+            ..WorkSense::EMPTY
+        };
+        s.works[2] = WorkSense {
+            name: name("THE EXCHANGE"),
+            state: WORK_COUNTDOWN,
+            paid: true,
+            opens_in_min: 5,
+            ..WorkSense::EMPTY
+        };
+        s.works_len = 3;
+        let v = s.places_json();
+        let works = &v["works"];
+        assert_eq!(
+            works[0]["state"],
+            "counting down to its own hour: opens in 42 min"
+        );
+        assert!(!works[0]["state"].as_str().unwrap().contains("quota"));
+        assert_eq!(works[1]["state"], "lit: burns fuel");
+        assert_eq!(works[1]["fuel"], json!({"name": "Wood", "room": 300}));
+        assert_eq!(
+            works[2]["state"],
+            "counting down: quota met, lights in 5 min"
+        );
+        assert!(v["vaults"].as_str().unwrap().starts_with("sealed"));
+
+        s.works[0].state = WORK_LIT;
+        s.gate_open = true;
+        let v = s.places_json();
+        assert_eq!(v["works"][0]["state"], "open: for the rest of the wipe");
+        assert!(v["works"][0]["fuel"].is_null(), "no tank, no fuel");
+        assert!(v["vaults"].as_str().unwrap().starts_with("open"));
+    }
+
+    /// `loot` and `feed` on team chat are a run each, once: a crew body
+    /// takes it, says so, and does not head home instead.
+    #[test]
+    fn a_crew_body_loots_and_feeds_the_works_when_told() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Loot] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        let mut ask = |s: &mut Summary, text: &str| {
+            s.heard.clear();
+            s.heard.push(heard(protocol::Channel::Team, text, false));
+            scripted.decide(s).unwrap()
+        };
+        let c = ask(&mut s, "all loot");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Loot, Some("on it: loot"))
+        );
+        let c = ask(&mut s, "feed the works");
+        assert_eq!(said(&c).as_deref(), Some("can't right now"), "not offered");
+        assert_ne!(c.goal, Goal::GoHome);
+        s.offer(Goal::FeedWork);
+        let c = ask(&mut s, "deposit for the quota");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::FeedWork, Some("on it: the works"))
+        );
+        let c = ask(&mut s, "meet me at the gate");
+        assert!(said(&c).is_none(), "no order");
     }
 
     /// `missing` shows the subtraction, not only its answer: 500 Wood in
