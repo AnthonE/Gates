@@ -386,6 +386,17 @@ impl SurvivalContent {
         item != NO_ITEM && self.revive.get(item as usize).copied().unwrap_or(false)
     }
 
+    /// Does `item` heal a standing player it is used on (`Command::Treat`
+    /// on someone awake)? Rust's medical tools: a row that heals and is
+    /// either a revive (the syringe, at once) or a use in the hands (the
+    /// bandage, wrapped on). The medkit is neither and stays self-only.
+    /// Derived from columns content already has, so no row grows one.
+    #[inline]
+    pub fn heals_other(&self, item: u16) -> bool {
+        self.row(item)
+            .is_some_and(|d| d.health > 0 && (self.revives(item) || d.use_ticks > 0))
+    }
+
     /// First nonempty recovery stack on the belt, in inventory order.
     /// The selected hand does not matter; the backpack never qualifies.
     pub fn belt_recovery_slot(&self, p: &Player) -> Option<usize> {
@@ -684,6 +695,18 @@ pub fn brew(def: ConsumableDef, p: &mut Player) {
     }
 }
 
+/// The medical half of `def` on `p`: the bleed it closes, then its heal
+/// ramp. Nothing spent and nothing said — shared by [`consume`] and a heal
+/// on someone else (`World::treat`), so the two cannot disagree about what
+/// a bandage does to a body.
+pub fn medicate(def: ConsumableDef, p: &mut Player, heal_pct: u32) {
+    p.bleed = p.bleed.saturating_sub(def.bleed.unsigned_abs());
+    if p.bleed == 0 {
+        p.bleed_acc = 0;
+    }
+    start_heal(def, p, heal_pct);
+}
+
 /// Start `def`'s heal ramp on `p` — the half of eating that does not spend
 /// anything, shared by `consume` and a revive (`World::treat`).
 pub fn start_heal(def: ConsumableDef, p: &mut Player, heal_pct: u32) {
@@ -770,11 +793,7 @@ pub fn consume(
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
     p.fel = (i32::from(p.fel) + i32::from(def.fel)).clamp(0, 1000) as u16;
     brew(def, p);
-    p.bleed = p.bleed.saturating_sub(def.bleed.unsigned_abs());
-    if p.bleed == 0 {
-        p.bleed_acc = 0;
-    }
-    start_heal(def, p, heal_pct);
+    medicate(def, p, heal_pct);
     events.push(
         EV_CONSUMED,
         p.id,
@@ -880,6 +899,7 @@ pub fn clear_use(p: &mut Player) {
     p.use_slot = 0;
     p.use_sel = 0;
     p.use_item = NO_ITEM;
+    p.use_target = 0;
 }
 
 /// Is there water within `DRINK_REACH_M` of this body, planar? Five taps

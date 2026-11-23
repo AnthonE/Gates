@@ -1603,6 +1603,9 @@ pub struct Player {
     /// A use in the hands (Rust's `MedicalTool`, `survival::begin_use`): the
     /// tick it lands (0 for none), the slot and item it will spend, and the
     /// hand that was up when it began. Switching hands cancels it.
+    /// `use_target` is the player it is being wrapped on, by id (0 for this
+    /// body itself): a bandage on a teammate (`World::treat`), landed by
+    /// `World::land_treat` rather than `survival::tick_use`.
     ///
     /// None of these is hashed or saved, for `hostile`'s reason: the hp a
     /// wound takes and the item a use spends are hashed when they move, and
@@ -1613,6 +1616,7 @@ pub struct Player {
     pub use_slot: u8,
     pub use_sel: u8,
     pub use_item: u16,
+    pub use_target: u32,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1765,6 +1769,7 @@ impl Default for Player {
             use_slot: 0,
             use_sel: 0,
             use_item: NO_ITEM,
+            use_target: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
             born: 0,
@@ -1792,9 +1797,11 @@ pub enum Command {
         id: u32,
         target: u32,
     },
-    /// Use the medicine in inventory slot `slot` on `target`, a downed body
-    /// the sender is aiming at in hand reach (`NOW.md` §0wnd item 1): an
-    /// item with `revive` (the syringe) stands it up at once and heals it.
+    /// Use the medicine in inventory slot `slot` on `target`, a body the
+    /// sender is aiming at in hand reach (`NOW.md` §0wnd item 1): on a
+    /// downed one an item with `revive` (the syringe) stands it up at once
+    /// and heals it; on a standing one a syringe heals at once and a
+    /// bandage is wrapped on (`World::treat_standing`).
     Treat {
         id: u32,
         slot: u8,
@@ -5124,7 +5131,17 @@ impl World {
     /// roll stands it, and the item's heal starts on it. An item that does
     /// not revive is refused as `consume` refuses a non-food; a target out
     /// of reach is silent, as an out-of-reach hand revive is.
+    ///
+    /// A standing, awake target is [`Self::treat_standing`]'s instead: a
+    /// syringe or a bandage on a hurt teammate.
     fn treat(&mut self, slot: usize, inv: usize, target: u32) {
+        if let Some(t) = self
+            .slot_of(target)
+            .filter(|&t| self.standing_other(slot, t))
+        {
+            self.treat_standing(slot, inv, t);
+            return;
+        }
         let id = self.players[slot].id;
         let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
         let def = self.survival.row(stack.item);
@@ -5158,6 +5175,130 @@ impl World {
         survival::start_heal(def, &mut self.players[t], heal_pct);
     }
 
+    /// Whether `t` is a standing, awake player who is not `slot` itself —
+    /// the body a heal on someone else and a give are aimed at.
+    fn standing_other(&self, slot: usize, t: usize) -> bool {
+        let q = &self.players[t];
+        t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
+    }
+
+    /// A syringe or a bandage on a standing teammate (`Command::Treat`,
+    /// Rust's medical tool used on another player): the item must heal
+    /// another (`SurvivalContent::heals_other` — the medkit stays
+    /// self-only, refused as a non-food is), and the target must be aimed
+    /// at in hand reach with nothing in the way (`reaches_body`, silent
+    /// otherwise). A target at full hp with no wound is `REFUSE_C_FULL` to
+    /// the healer and spends nothing.
+    ///
+    /// A syringe lands at once: one is spent and its bleed and heal go on
+    /// the target (`survival::medicate`), never its food or water. A
+    /// bandage is wrapped on in the healer's hands exactly as one on
+    /// themselves is (`survival::begin_use`), and [`Self::land_treat`]
+    /// spends it on its tick — the wrap is never skipped on someone else,
+    /// or two players could heal each other faster than either can heal
+    /// themselves.
+    fn treat_standing(&mut self, slot: usize, inv: usize, t: usize) {
+        let id = self.players[slot].id;
+        let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
+        let Some(def) = self
+            .survival
+            .row(stack.item)
+            .filter(|_| stack.count > 0 && self.survival.heals_other(stack.item))
+        else {
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_NOT_FOOD, 0);
+            return;
+        };
+        if !self.reaches_body(slot, t) {
+            return;
+        }
+        let q = &self.players[t];
+        if q.hp >= q.hp_max && q.bleed == 0 {
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_FULL, 0);
+            return;
+        }
+        if def.use_ticks > 0 {
+            let (tick, to) = (self.tick, self.players[t].id);
+            let p = &mut self.players[slot];
+            let idle = p.use_at == 0;
+            if !survival::begin_use(&self.survival, inv, p, tick) {
+                self.events
+                    .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_NOT_FOOD, 0);
+            } else if idle {
+                // A second press mid-wrap does nothing (`begin_use`), so
+                // only a wrap this press began is aimed at the target.
+                p.use_target = to;
+            }
+            return;
+        }
+        self.spend_treat(slot, inv, stack.item, t, def);
+    }
+
+    /// The bandage being wrapped on a teammate lands, or is put away. The
+    /// hand switched or the item gone cancels it as `survival::tick_use`
+    /// does; on its tick the target is checked again — still standing,
+    /// awake, in reach and hurt — and only then is one spent. A failed
+    /// check spends nothing: a target who walked off, went down or was
+    /// healed meanwhile is the healer's wrap wasted, never their bandage.
+    fn land_treat(&mut self, i: usize) {
+        let p = &self.players[i];
+        let inv = p.use_slot as usize;
+        let s = p.inv.get(inv).copied().unwrap_or_default();
+        if p.frame.sel != p.use_sel || s.count == 0 || s.item != p.use_item {
+            survival::clear_use(&mut self.players[i]);
+            return;
+        }
+        if self.tick < p.use_at {
+            return;
+        }
+        let target = p.use_target;
+        survival::clear_use(&mut self.players[i]);
+        let Some(t) = self.slot_of(target).filter(|&t| self.standing_other(i, t)) else {
+            return;
+        };
+        if !self.reaches_body(i, t) {
+            return;
+        }
+        let q = &self.players[t];
+        if q.hp >= q.hp_max && q.bleed == 0 {
+            let id = self.players[i].id;
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_FULL, 0);
+            return;
+        }
+        if let Some(def) = self.survival.row(s.item) {
+            self.spend_treat(i, inv, s.item, t, def);
+        }
+    }
+
+    /// Spend one of `item` from `slot`'s pack slot `inv` on `t`: the
+    /// healer hears `EV_CONSUMED` (who used it, the item and the slot, as
+    /// their own eat says it) and the target's bleed and heal start.
+    fn spend_treat(
+        &mut self,
+        slot: usize,
+        inv: usize,
+        item: u16,
+        t: usize,
+        def: survival::ConsumableDef,
+    ) {
+        let id = self.players[slot].id;
+        let s = &mut self.players[slot].inv[inv];
+        s.count -= 1;
+        if s.count == 0 {
+            *s = ItemStack::default();
+        }
+        self.events
+            .push(EV_CONSUMED, id, ((item as u32) << 16) | inv as u32, 0);
+        let heal_pct = crate::works::knob_pct(
+            &self.works_def,
+            self.works.unlocks,
+            crate::works::KNOB_HEAL_PCT,
+        );
+        survival::medicate(def, &mut self.players[t], heal_pct);
+    }
+
     /// Hand up to `count` of inventory slot `inv` to `target`
     /// (`Command::Give`): a standing, awake player — not down, not dead, not
     /// a sleeper, not yourself — aimed at in hand reach with nothing in the
@@ -5181,10 +5322,10 @@ impl World {
         if stack.count == 0 || count == 0 {
             return;
         }
-        let Some(t) = self.slot_of(target).filter(|&t| {
-            let q = &self.players[t];
-            t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
-        }) else {
+        let Some(t) = self
+            .slot_of(target)
+            .filter(|&t| self.standing_other(slot, t))
+        else {
             return;
         };
         if !self.reaches_body(slot, t) {
@@ -5871,6 +6012,7 @@ impl World {
                     use_slot: 0,
                     use_sel: 0,
                     use_item: NO_ITEM,
+                    use_target: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                     // The save does not carry it: the clock starts here.
@@ -8746,8 +8888,11 @@ impl World {
             if self.expose(i, tick, &wx, night) {
                 continue;
             }
-            // The bandage being wrapped lands, or was put away.
-            if self.players[i].use_at != 0 {
+            // The bandage being wrapped lands, or was put away. One being
+            // wrapped on a teammate is the world's: it needs their body.
+            if self.players[i].use_target != 0 {
+                self.land_treat(i);
+            } else if self.players[i].use_at != 0 {
                 let heal_pct = crate::works::knob_pct(
                     &self.works_def,
                     self.works.unlocks,

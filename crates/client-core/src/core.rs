@@ -5397,6 +5397,22 @@ impl ClientCore {
         .then_some(self.input.sel)
     }
 
+    /// The selected hotbar slot, when what is in it heals a standing
+    /// teammate (`SurvivalContent::heals_other`, read off the catalog row
+    /// it rides): a row that heals and either revives (the syringe, at
+    /// once) or is wrapped on (the bandage). The medkit is neither. `E` on
+    /// a standing player sends it (`ActionMsg::Treat`).
+    pub fn held_heal_slot(&self) -> Option<u8> {
+        let item = self.held_item();
+        (item != NO_ITEM
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.health > 0 && (r.revive || r.use_ticks > 0)))
+        .then_some(self.input.sel)
+    }
+
     /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
     /// hand. The client's own mirror, which is the only place this is
     /// known — `EntityState::held` is what *others* see of this body.

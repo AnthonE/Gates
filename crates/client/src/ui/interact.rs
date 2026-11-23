@@ -125,6 +125,11 @@ pub enum Verb {
     /// not press.
     TechTree,
     Assist,
+    /// A standing, awake player, with a syringe or a bandage in hand
+    /// (`ClientCore::held_heal_slot`): `E` uses it on them
+    /// (`ActionMsg::Treat`). `handle` is their id, `item` what is in hand.
+    /// Aimed, by [`resolve_heal`]; a downed body stays `Assist`.
+    Heal,
     /// A kiosk in the town (THE GATE, `sim_core::vend`): `handle` is the
     /// vendor index. Resolved by nearness like `Take`, from the town's own
     /// layout — there is no record on the wire to aim at.
@@ -253,6 +258,9 @@ impl Verb {
             Verb::Sit => 24,
             Verb::Switch => 27,
             Verb::Part => 28,
+            // Unreachable for `Take`'s reason: a body is folded in by its
+            // own resolver, never scored against a deployable.
+            Verb::Heal => 29,
         }
     }
 
@@ -276,6 +284,7 @@ impl Verb {
             // ground is the same mesh whatever is in it).
             Verb::Take => "ITEM",
             Verb::Assist => "WOUNDED PLAYER",
+            Verb::Heal => "PLAYER",
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
@@ -642,6 +651,9 @@ impl Pick {
             }
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
+            // The HUD names the player (`heal_prompt`'s `who`); the KIND
+            // stands in where no name is to hand.
+            Verb::Heal => heal_prompt(catalog, self.item, self.verb.label()),
             Verb::Shop => "[E] SHOP".to_string(),
             Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
             Verb::Slots => "[E] PLAY SLOTS".to_string(),
@@ -2895,6 +2907,52 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// `E` with a syringe or a bandage in hand on a standing player
+/// (`Verb::Heal`): the player [`resolve_give`] would name, `held` the heal
+/// item in hand (`ClientCore::held_heal_slot`'s), `None` for anything else.
+/// The prompt shows on a player at full health too: their hp is not this
+/// client's to see, and the sim's `REFUSE_C_FULL` answers the press.
+pub fn resolve_heal(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    held: Option<u16>,
+) -> Pick {
+    let Some(item) = held else {
+        return Pick::default();
+    };
+    match nearest_player(aim, own, entities) {
+        Some((t, id)) => Pick {
+            verb: Verb::Heal,
+            handle: id,
+            item,
+            aimed: true,
+            d2: (t * sim_core::assist::ASSIST_REACH_M).powi(2),
+            ..Default::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// Fold a [`resolve_heal`] pick into `E`'s: it wins where nothing nearer is
+/// aimed at, and never over a downed body — `E` on one is the help up or
+/// the syringe's revive (`Verb::Assist`), whatever is in hand.
+pub fn fold_heal(aimed: &mut Pick, heal: Pick) {
+    if aimed.verb == Verb::Assist || heal.is_none() {
+        return;
+    }
+    if !aimed.aimed || heal.d2 < aimed.d2 {
+        *aimed = heal;
+    }
+}
+
+/// The heal's line: who and with what. `who` is the player's label
+/// (`ui::names`).
+pub fn heal_prompt(catalog: &ItemCatalog, item: u16, who: &str) -> String {
+    let item = crate::ui::craft::item_label(catalog, item).to_uppercase();
+    format!("[E] HEAL {who} WITH {item}")
+}
+
 /// A sleeper is an aimed `E` target: the body the crosshair is on, lying
 /// where the sim's lying capsule is (`ranged::body_crossing`), inside the
 /// help-up ray's reach. The server proves the reach again every tick
@@ -3024,6 +3082,16 @@ fn resolve_player(
     own: u32,
     entities: &[(u32, protocol::EntityState)],
 ) -> Option<u32> {
+    nearest_player(aim, own, entities).map(|(_, target)| target)
+}
+
+/// [`resolve_player`] with how far along the hand's reach the aim enters
+/// the body (`assist::aimed`'s fraction), for folding against other picks.
+fn nearest_player(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+) -> Option<(f32, u32)> {
     let body = Body {
         qx: quant_xz(aim.x),
         qy: quant_y(aim.y),
@@ -3058,7 +3126,7 @@ fn resolve_player(
             }
         }
     }
-    best.map(|(_, target)| target)
+    best
 }
 
 /// The give key's line: what, how many and to whom, and while the key is
@@ -3304,6 +3372,77 @@ mod assist_tests {
             resolve_assist(aim, 1, &[(3, target), (2, target)]).handle,
             2
         );
+    }
+
+    #[test]
+    fn heal_needs_a_heal_item_in_hand_and_never_takes_a_downed_body() {
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: 128,
+            crouched: false,
+        };
+        let friend = protocol::EntityState {
+            qx: quant_xz(10.0),
+            qy: quant_y(0.0),
+            qz: quant_xz(11.5),
+            ..Default::default()
+        };
+        const BANDAGE: u16 = 7;
+        let pick = resolve_heal(aim, 1, &[(2, friend)], Some(BANDAGE));
+        assert_eq!(pick.verb, Verb::Heal);
+        assert_eq!((pick.handle, pick.item), (2, BANDAGE));
+        assert!(pick.aimed);
+        assert!(heal_prompt(&ItemCatalog::EMPTY, BANDAGE, "ANNA").starts_with("[E] HEAL ANNA"));
+        assert!(pick
+            .prompt(&ItemCatalog::EMPTY)
+            .starts_with("[E] HEAL PLAYER"));
+        assert!(
+            resolve_heal(aim, 1, &[(2, friend)], None).is_none(),
+            "no heal item in hand"
+        );
+        assert!(resolve_heal(aim, 2, &[(2, friend)], Some(BANDAGE)).is_none());
+        let animal = sim_core::mob::mob_id(3);
+        assert!(resolve_heal(aim, 1, &[(animal, friend)], Some(BANDAGE)).is_none());
+        for absent in [
+            protocol::EntityState {
+                dead: true,
+                ..friend
+            },
+            protocol::EntityState {
+                sleeping: true,
+                ..friend
+            },
+            protocol::EntityState {
+                qz: quant_xz(14.0),
+                ..friend
+            },
+        ] {
+            assert!(resolve_heal(aim, 1, &[(2, absent)], Some(BANDAGE)).is_none());
+        }
+
+        // A downed body is the help up's, a syringe in hand or not.
+        let down = protocol::EntityState {
+            wounded: true,
+            ..friend
+        };
+        assert!(resolve_heal(aim, 1, &[(2, down)], Some(BANDAGE)).is_none());
+        let mut e = resolve_assist(aim, 1, &[(2, down)]);
+        fold_heal(&mut e, resolve_heal(aim, 1, &[(2, down)], Some(BANDAGE)));
+        assert_eq!(e.verb, Verb::Assist);
+        // ...and stays it with a standing player beside it in the aim.
+        let mut e = resolve_assist(aim, 1, &[(2, down), (3, friend)]);
+        fold_heal(
+            &mut e,
+            resolve_heal(aim, 1, &[(2, down), (3, friend)], Some(BANDAGE)),
+        );
+        assert_eq!((e.verb, e.handle), (Verb::Assist, 2));
+        // With no body down, the standing one is the pick.
+        let mut e = Pick::default();
+        fold_heal(&mut e, resolve_heal(aim, 1, &[(3, friend)], Some(BANDAGE)));
+        assert_eq!((e.verb, e.handle), (Verb::Heal, 3));
     }
 
     #[test]

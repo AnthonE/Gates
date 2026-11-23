@@ -4085,6 +4085,12 @@ pub fn prompt(
                 "[E] INJECT {}",
                 crate::ui::craft::item_label(&net.session.core.catalog, item).to_uppercase()
             )
+        } else if aimed.0.verb == crate::ui::interact::Verb::Heal {
+            // The one `E` line that names a person, so it is composed here
+            // where the names are (`ui::names`), as the give key's is.
+            let core = &net.session.core;
+            let who = crate::ui::names::shown(core, aimed.0.handle);
+            crate::ui::interact::heal_prompt(&core.catalog, aimed.0.item, &who)
         } else {
             match aimed.0.prompt(&net.session.core.catalog) {
                 // A kiosk names its stall, so six counters are six shops

@@ -453,6 +453,25 @@ pub fn resolve(
         if !help.is_none() && (!aimed.0.aimed || help.d2 < aimed.0.d2) {
             aimed.0 = help;
         }
+        // A syringe or a bandage in hand offers `E` on a standing player
+        // too (`Verb::Heal`); a downed body stays the help up's.
+        let heal_item = core
+            .held_heal_slot()
+            .map(|slot| core.inv[slot as usize].item);
+        let heal = interact::resolve_heal(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+            heal_item,
+        );
+        interact::fold_heal(&mut aimed.0, heal);
         let sleeper = interact::resolve_sleeper(
             SwingAim {
                 x,
@@ -732,7 +751,14 @@ pub fn keys(
             Action::Demolish,
         ];
         if on(Action::Interact) && crate::ui::wounded::allows(aimed.0.verb) {
-            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+            use_aimed(
+                &mut net,
+                &aimed.0,
+                &mut toast,
+                ui.as_deref_mut(),
+                &mut bite,
+                now,
+            );
         } else if HAND_KEYS.iter().any(|&a| on(a))
             // The left click too: it places, eats, reads and repairs, and
             // the sim drops every one of those from a downed body unsaid.
@@ -798,7 +824,14 @@ pub fn keys(
         }
     }
     if on(Action::Interact) {
-        use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        use_aimed(
+            &mut net,
+            &aimed.0,
+            &mut toast,
+            ui.as_deref_mut(),
+            &mut bite,
+            now,
+        );
         if aimed.0.verb == Verb::Hearth {
             hearth.0 = Some((aimed.0.cx, aimed.0.cz, aimed.0.level));
         }
@@ -1058,7 +1091,14 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
 }
 
 /// Dispatch `E` on the resolved pick.
-fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>) {
+fn use_aimed(
+    net: &mut Net,
+    pick: &Pick,
+    toast: &mut Toast,
+    ui: Option<&mut Ui>,
+    bite: &mut Bite,
+    now: f64,
+) {
     match pick.verb {
         Verb::Swipe => {
             let door = pick.handle as u8;
@@ -1079,6 +1119,32 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 });
             }
         },
+        // A syringe or a bandage on a standing player: the treat verb, on
+        // the bite clock as the eat key is (`server::pace` paces both as a
+        // mouthful). A bandage is wrapped on in your hands, so its press
+        // starts the wrap the arm and the HUD draw, as one on yourself does
+        // (`use_slot`); the sim cancels it on the same switch of hands.
+        Verb::Heal => {
+            let core = &net.session.core;
+            let Some(slot) = core.held_heal_slot() else {
+                return;
+            };
+            let stack = core.inv[slot as usize];
+            let use_ticks = core.catalog.row(stack.item as usize).use_ticks;
+            if use_ticks > 0 && bite.wrap.progress(now).is_some() {
+                return;
+            }
+            if bite.take(now) {
+                let target = pick.handle;
+                let sent = send(net, toast, "heal", |buf| {
+                    protocol::encode_action_treat(slot, target, buf)
+                });
+                if sent && use_ticks > 0 {
+                    let secs = f64::from(use_ticks) / f64::from(sim_core::limits::TICK_HZ);
+                    bite.wrap.begin(now, secs, slot, stack.item);
+                }
+            }
+        }
         Verb::Door => {
             let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
             if send(net, toast, "use", |buf| {
