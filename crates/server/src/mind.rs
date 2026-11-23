@@ -1266,6 +1266,21 @@ impl Sighting {
             "bearing": BEARINGS[self.bearing as usize % 8],
         })
     }
+
+    /// The death backpack's sighting, with what the pack held at that
+    /// death (`held_at_death`) and how long ago (`died_ago_s`) while it
+    /// is known.
+    fn json_held(&self, held: &[(Name, u32)], ago_s: u32) -> Value {
+        let mut v = self.json();
+        if !held.is_empty() {
+            v["held_at_death"] = held
+                .iter()
+                .map(|(n, c)| json!({"name": n.as_str(), "count": c}))
+                .collect();
+            v["died_ago_s"] = ago_s.into();
+        }
+        v
+    }
 }
 
 /// Bodies that could hurt this one that a summary describes, nearest first.
@@ -1883,6 +1898,11 @@ pub struct Summary {
     pub bags: u8,
     /// The backpack it dropped at its last death, while it stands.
     pub backpack: Sighting,
+    /// What the pack held at that death, heaviest first, and how long ago
+    /// it died: kept until the backpack is gone or got back.
+    pub lost: [(Name, u32); crate::memory::SEEN_LOST],
+    pub lost_len: u8,
+    pub lost_ago_s: u32,
     /// Its base, if it has one.
     pub home: HomeSense,
     /// One of its sleeping bags would take it now.
@@ -2043,6 +2063,9 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        lost: [(Name::EMPTY, 0); crate::memory::SEEN_LOST],
+        lost_len: 0,
+        lost_ago_s: 0,
         home: HomeSense {
             state: HomeState::None,
             distance: Distance::Here,
@@ -2453,7 +2476,7 @@ impl Summary {
             "deaths": self.deaths,
             "respawns": self.respawns,
             "sleeping_bags_down": self.bags,
-            "my_death_backpack": self.backpack.json(),
+            "my_death_backpack": self.backpack.json_held(&self.lost[..usize::from(self.lost_len)], self.lost_ago_s),
             "home": self.home.json(),
             "a_sleeping_bag_is_ready": self.bag_ready,
             "night": self.night,

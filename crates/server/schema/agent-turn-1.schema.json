@@ -91,6 +91,17 @@
         "bearing": {"$ref": "#/$defs/bearing"}
       }
     },
+    "death_backpack": {
+      "type": "object", "additionalProperties": false, "required": ["count"],
+      "description": "The backpack its last death dropped, while it stands: a sighting, and, until the backpack is gone or got back, what the pack held when it died and how long ago. A backpack of common things rots in about 5 minutes.",
+      "properties": {
+        "count": {"type": "integer"},
+        "nearest_m": {"type": "integer"},
+        "bearing": {"$ref": "#/$defs/bearing"},
+        "held_at_death": {"$ref": "#/$defs/items", "description": "The pack's heaviest kinds when it died, at most 3. Not what it carries now: that is `pack`."},
+        "died_ago_s": {"type": "integer"}
+      }
+    },
     "place": {
       "type": "object", "additionalProperties": false, "required": ["distance", "metres", "bearing"],
       "description": "A distance band, about how many metres (to the nearest ten), and a relative bearing; never where.",
@@ -273,7 +284,7 @@
         "deaths": {"type": "integer"},
         "respawns": {"type": "integer"},
         "sleeping_bags_down": {"type": "integer"},
-        "my_death_backpack": {"$ref": "#/$defs/sighting"},
+        "my_death_backpack": {"$ref": "#/$defs/death_backpack"},
         "home": {"$ref": "#/$defs/home"},
         "a_sleeping_bag_is_ready": {"type": "boolean"},
         "night": {"type": "boolean"},

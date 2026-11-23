@@ -196,6 +196,10 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   owner is about (`raid_owner`: online, asleep, quiet or unknown, from its
   own watch of the base), how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
+  After a death, `my_death_backpack.held_at_death` is what the pack held
+  (heaviest 3) until the backpack is gone or got back, which `memory`
+  then tells ("my death backpack is gone (rotted or looted)", "I got
+  my backpack back").
 - `options`: the goals it may pick now, by label. Nothing it could do is
   hidden for having failed: a goal that came to nothing a moment ago stays
   here and is named in `observation.failed_lately`.

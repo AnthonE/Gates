@@ -549,6 +549,61 @@ impl FoodBook {
     }
 }
 
+/// The pack's heaviest kinds kept a second apart, for what a death takes.
+const CARRIED_ROWS: usize = crate::memory::SEEN_LOST;
+/// A death whose backpack was not tagged as its own after this long (it
+/// dropped none, or the client's join missed it) has nothing to walk back
+/// for: what it held is no longer shown.
+const LOST_UNTAGGED_TICKS: u32 = 30 * TICK_HZ;
+
+/// What the pack held when the body last died, its heaviest kinds by
+/// units: kept while the backpack that death dropped stands
+/// ([`Senses::lost`]), so a mind that kept counts in its notes sees what
+/// went with the body.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lost {
+    /// The tick it died at.
+    pub tick: u32,
+    /// `(item, units)`, heaviest first; zero units is no row.
+    pub items: [(u16, u32); CARRIED_ROWS],
+    /// The backpack that death dropped (`ClientCore::own_bag`), once
+    /// tagged; 0 until then.
+    pub bag: u32,
+    /// The backpack an earlier death left standing when it died: not
+    /// this one's.
+    pub before: u32,
+}
+
+impl Lost {
+    /// The rows that hold something, heaviest first.
+    pub fn rows(&self) -> &[(u16, u32)] {
+        let n = self.items.iter().take_while(|&&(_, u)| u > 0).count();
+        &self.items[..n]
+    }
+}
+
+/// The pack's heaviest kinds by units, the stacks of one item merged,
+/// heaviest first (a tie to the earlier slot): what a death would take.
+fn heaviest(core: &ClientCore) -> [(u16, u32); CARRIED_ROWS] {
+    let inv = &core.inv[..INV_SLOTS];
+    let mut rows = [(0u16, 0u32); CARRIED_ROWS];
+    for (i, st) in inv.iter().enumerate() {
+        if st.count == 0 || inv[..i].iter().any(|o| o.count > 0 && o.item == st.item) {
+            continue;
+        }
+        let units: u32 = inv[i..]
+            .iter()
+            .filter(|o| o.count > 0 && o.item == st.item)
+            .map(|o| u32::from(o.count))
+            .sum();
+        if let Some(at) = rows.iter().position(|&(_, u)| units > u) {
+            rows.copy_within(at..CARRIED_ROWS - 1, at + 1);
+            rows[at] = (st.item, units);
+        }
+    }
+    rows
+}
+
 /// What perception last published. Built by the per-frame scans from the
 /// client's own view cone, line of sight and received deltas.
 #[derive(Clone, Copy, Debug, Default)]
@@ -579,6 +634,9 @@ pub struct Senses {
     pub threats_len: u8,
     /// The backpack from its last death, while it stands.
     pub backpack: Sighting,
+    /// What the pack held at that death, until the backpack is gone or
+    /// got back.
+    pub lost: Option<Lost>,
     /// A person or a wolf seen within `THREAT_RECALL_SECS`.
     pub hostile: bool,
     /// The same, not counting people inside the town's safe zone, where
@@ -1199,6 +1257,14 @@ pub struct Survivor {
     deferred: Option<(Choice, Instant)>,
     /// An idle look round: since when, from which heading, which offset.
     glance: Option<(u32, u16, u8)>,
+    /// The pack's heaviest kinds at the last once-a-second look, and at the
+    /// one before: a death takes the newer unless it found the pack already
+    /// emptied (the death's own inventory landing a frame early).
+    carried: [(u16, u32); CARRIED_ROWS],
+    carried_prev: [(u16, u32); CARRIED_ROWS],
+    /// The death backpack (`ClientCore::own_bag`) as last looked at: one
+    /// gone between two looks is told.
+    bag_last: u32,
     water_at: Option<u32>,
     water_yaw: Option<u16>,
     /// The nearest open water the last probe found, metres.
@@ -1437,6 +1503,9 @@ impl Survivor {
             welcomed: None,
             deferred: None,
             glance: None,
+            carried: [(0, 0); CARRIED_ROWS],
+            carried_prev: [(0, 0); CARRIED_ROWS],
+            bag_last: 0,
             water_at: None,
             water_yaw: None,
             water_point: None,
@@ -2028,6 +2097,7 @@ impl Survivor {
         if let Some((note, facts)) = self.bugs.due(now) {
             eprintln!("{}", crate::bugs::file(&note, facts));
         }
+        self.note_backpack(core, tick);
         if body.dead || core.dead {
             // The death screen's answer: one of its own ready bags, unless
             // home is where it was just fought over; else the beach.
@@ -6445,6 +6515,16 @@ impl Survivor {
             }
             Do::Done => {
                 self.home.stats.recovered += 1;
+                // Emptied, or only what fitted taken: either way what it
+                // held at the death is in the pack now, or still in there.
+                let kind = if core.own_bag == 0 {
+                    crate::memory::EventKind::BagBack
+                } else {
+                    crate::memory::EventKind::BagPart
+                };
+                self.perceived.event(kind, None);
+                self.senses.lost = None;
+                self.bag_last = core.own_bag;
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
             }
@@ -6454,6 +6534,50 @@ impl Survivor {
             }
             Do::Belt { .. } | Do::Deploy { .. } => Intent::IDLE,
         }
+    }
+
+    /// The death backpack gone since the last frame without a walk back
+    /// for it (it rotted, or somebody looted it): told once, with what it
+    /// held, and forgotten. Looked at every frame, the death screen's too;
+    /// a walk back settles its own ([`Self::recover`]), so the look waits
+    /// while one runs.
+    fn note_backpack(&mut self, core: &ClientCore, tick: u32) {
+        if self.goal.is_some_and(|a| a.goal == Goal::Recover) {
+            return;
+        }
+        let bag = core.own_bag;
+        // The first backpack tagged since the death is the one it dropped.
+        if let Some(lost) = self.senses.lost.as_mut() {
+            if lost.bag == 0 && bag != 0 && bag != lost.before {
+                lost.bag = bag;
+            }
+        }
+        if self.bag_last != 0 && bag == 0 {
+            // What it held goes only with its own backpack: an earlier
+            // death's going says nothing of what the last one took.
+            let last = self.bag_last;
+            if let Some(lost) = self.senses.lost.filter(|l| l.bag == last) {
+                self.senses.lost = None;
+                self.tell_lost(core, lost);
+            }
+            self.perceived
+                .event(crate::memory::EventKind::BagGone, None);
+        } else if self
+            .senses
+            .lost
+            .is_some_and(|l| l.bag == 0 && tick.wrapping_sub(l.tick) >= LOST_UNTAGGED_TICKS)
+        {
+            self.senses.lost = None;
+        }
+        self.bag_last = bag;
+    }
+
+    /// What a death took, or a backpack went with, on the look's `lost`.
+    fn tell_lost(&mut self, core: &ClientCore, lost: Lost) {
+        self.perceived
+            .set_lost(lost.rows().iter().filter_map(|&(item, units)| {
+                Name::new(core.catalog.name(usize::from(item))).map(|n| (n, units))
+            }));
     }
 
     /// Work on the base (`agent::build::Builder`): the plot, then the next
@@ -7505,6 +7629,12 @@ impl Survivor {
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            // What a death would take now: never read at the death itself,
+            // whose snapshot can empty the pack before the death is read.
+            if !core.dead && !core.wounded {
+                self.carried_prev = self.carried;
+                self.carried = heaviest(core);
+            }
             self.memory.doors = self.builder.doors(core);
             // A new session knows no plot: the base from before is taken up
             // again where its own bag lies in the airlock, not taken for a
@@ -8061,6 +8191,23 @@ impl Survivor {
                 if let Some(i) = by {
                     let p = &mut self.perceived.people[i];
                     p.killed_me = p.killed_me.saturating_add(1);
+                }
+                // What the pack held, from the last look at it while alive:
+                // the backpack it drops holds it now.
+                let carried = if self.carried.iter().any(|&(_, u)| u > 0) {
+                    self.carried
+                } else {
+                    self.carried_prev
+                };
+                let lost = Lost {
+                    tick,
+                    items: carried,
+                    bag: 0,
+                    before: core.own_bag,
+                };
+                if !lost.rows().is_empty() {
+                    self.senses.lost = Some(lost);
+                    self.tell_lost(core, lost);
                 }
                 self.perceived.event(crate::memory::EventKind::Died, by);
                 if let Some(own) = self.tracks.own() {
@@ -9058,6 +9205,19 @@ pub fn observe(
     s.respawns = memory.respawns;
     s.bags = memory.bags;
     s.backpack = senses.backpack;
+    if let Some(lost) = senses.lost {
+        for &(item, units) in lost.rows() {
+            let n = usize::from(s.lost_len);
+            if let (Some(name), true) = (
+                Name::new(core.catalog.name(usize::from(item))),
+                n < s.lost.len(),
+            ) {
+                s.lost[n] = (name, units);
+                s.lost_len += 1;
+            }
+        }
+        s.lost_ago_s = s.tick.wrapping_sub(lost.tick) / TICK_HZ;
+    }
     s.home = memory.home;
     s.bag_ready = core.any_bag_ready();
     s.night = crate::agent::tracks::night(s.tick, &core.env);
@@ -10407,6 +10567,91 @@ mod tests {
         assert_eq!(
             (bot.home.stats.wakes_on_bag, bot.home.stats.wakes_on_beach),
             (1, 3)
+        );
+    }
+
+    /// A death says what the pack held (#578, #592, #594): on the death's
+    /// event and on its backpack while that stands, from the last look at
+    /// the pack alive, never the pack at the death, whose emptying can land
+    /// first. The backpack gone without a walk back, that is said and what
+    /// it held is no longer shown.
+    #[test]
+    fn a_death_says_what_it_took_until_its_backpack_is_gone() {
+        let (mut bot, view, _) = fixture();
+        let now = Instant::now();
+        let wood = ItemStack {
+            item: 5,
+            count: 1000,
+            cond: 0,
+            skin: 0,
+            ..ItemStack::EMPTY
+        };
+        for slot in 10..15 {
+            bot.core.as_mut().unwrap().inv[slot] = wood;
+        }
+        bot.frame_at(&view, 1, 1, now);
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let emptied: Vec<InvSlot> = (4..15)
+            .map(|slot| InvSlot {
+                slot,
+                stack: ItemStack::EMPTY,
+            })
+            .collect();
+        let n = protocol::event::encode_event_inv(&emptied, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        // A look a second on finds the pack already emptied.
+        let mut view = view;
+        view.newest_applied = Some(1 + TICK_HZ);
+        bot.frame_at(&view, 1, 2, now);
+        let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, 0, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let body = *view.get(1).unwrap();
+        let bag = protocol::event::WireBag {
+            id: 77,
+            qx: body.qx,
+            qy: body.qy,
+            qz: body.qz,
+            kind: protocol::event::BAG_KIND_PACK,
+        };
+        let n = protocol::event::encode_event_bag_dropped(&bag, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        assert_eq!(bot.core.as_ref().unwrap().own_bag, 77, "its backpack");
+        view.newest_applied = Some(1 + 3 * TICK_HZ);
+        bot.frame_at(&view, 1, 3, now);
+        let s = bot.summary(&view, 1).unwrap();
+        let pack = &s.to_json()["my_death_backpack"];
+        assert_eq!(
+            pack["held_at_death"],
+            serde_json::json!([{"name": "Wood", "count": 5000}, {"name": "Bat", "count": 1}]),
+            "{pack}"
+        );
+        assert_eq!(pack["died_ago_s"], 2);
+        let turn = crate::external::External::observation(1, &s);
+        let errs = crate::external::turn_schema::errors(&turn);
+        assert!(errs.is_empty(), "{errs:#?}");
+        let mut memory = crate::memory::Memory::default();
+        memory.ingest(&s, 100);
+        assert_eq!(
+            memory.json(&s, 100)["events"][0]["what"],
+            "I died carrying 5000 Wood, 1 Bat"
+        );
+        // A request carried that look.
+        bot.perceived.clear();
+
+        // It rots before the body walks back.
+        let n = protocol::event::encode_event_bag_removed(77, 0, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        bot.frame_at(&view, 1, 4, now);
+        let s = bot.summary(&view, 1).unwrap();
+        let pack = &s.to_json()["my_death_backpack"];
+        assert!(pack.get("held_at_death").is_none(), "{pack}");
+        assert!(pack.get("died_ago_s").is_none(), "{pack}");
+        memory.ingest(&s, 130);
+        let events = memory.json(&s, 130)["events"].clone();
+        assert_eq!(
+            events[1]["what"],
+            "my death backpack is gone (rotted or looted): 5000 Wood, 1 Bat lost",
+            "{events}"
         );
     }
 

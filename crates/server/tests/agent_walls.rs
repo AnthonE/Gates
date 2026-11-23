@@ -1332,7 +1332,9 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
 /// walk away, it wakes on that bag, walks back and loots its backpack.
 #[test]
 fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
-    let mut h = Harness::new(false);
+    let (told, heard) = Told::new();
+    let mind = Mind::inline(told, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, scene(), mind);
     let content = common::content();
     let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
         count,
@@ -1415,9 +1417,14 @@ fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
         "the death backpack is tagged"
     );
 
-    // 3. Back to the backpack, and everything in it comes home.
+    // 3. Back to the backpack, and everything in it comes home. Its first
+    //    look awake told its mind what the pack held when it died.
     let back = h.until(4_000, |b| b.home().stats.recovered >= 1);
     assert!(back, "no recovery: {}", h.explain());
+    assert!(
+        heard.died_carrying() >= 1,
+        "the death never said what the pack held"
+    );
     let core = h.bot.core().unwrap();
     assert_eq!(core.own_bag, 0, "the backpack was emptied");
     assert!(
@@ -1427,6 +1434,10 @@ fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
         "the hatchet came back: {}",
         h.explain()
     );
+    // Its memory is told it got the backpack back, not that it rotted.
+    let told = h.until(20 * TICK_HZ, |_| heard.backs() >= 1);
+    assert!(told, "never told it got its backpack back");
+    assert_eq!(heard.gone(), 0, "its own walk back is no rotted bag");
     for verb in ["craft", "deploy", "respawn", "loot"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
     }
@@ -1437,6 +1448,60 @@ fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
         "the agent's frame loop touched the allocator"
     );
     println!("{}", h.explain());
+}
+
+/// The scripted policy, counting what each look tells its memory about a
+/// death and its backpack. Atomics only: it decides inline, on the frame.
+struct Told(Scripted, std::sync::Arc<Heard>);
+
+#[derive(Default)]
+struct Heard {
+    died_carrying: std::sync::atomic::AtomicU32,
+    backs: std::sync::atomic::AtomicU32,
+    gone: std::sync::atomic::AtomicU32,
+}
+
+impl Heard {
+    fn died_carrying(&self) -> u32 {
+        self.died_carrying
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn backs(&self) -> u32 {
+        self.backs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn gone(&self) -> u32 {
+        self.gone.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Told {
+    fn new() -> (Self, std::sync::Arc<Heard>) {
+        let heard = std::sync::Arc::new(Heard::default());
+        (Self(Scripted::default(), heard.clone()), heard)
+    }
+}
+
+impl server::mind::DecisionSource for Told {
+    fn kind(&self) -> server::mind::SourceKind {
+        self.0.kind()
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::memory::EventKind;
+        use std::sync::atomic::Ordering::Relaxed;
+        for e in s.seen.events() {
+            let count = match e.kind {
+                EventKind::Died if !s.seen.lost().is_empty() => &self.1.died_carrying,
+                EventKind::BagBack => &self.1.backs,
+                EventKind::BagGone => &self.1.gone,
+                _ => continue,
+            };
+            count.fetch_add(1, Relaxed);
+        }
+        self.0.decide(s)
+    }
 }
 
 /// Half an hour of play, the shipped clock, no staging and no animals: the

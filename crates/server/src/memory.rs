@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 pub const SEEN_PEOPLE: usize = 8;
 pub const SEEN_PLACES: usize = 16;
 pub const SEEN_EVENTS: usize = 6;
+/// What a death took that one look carries: the pack's heaviest kinds.
+pub const SEEN_LOST: usize = 3;
 /// What the memory keeps, newest first out when full (the contract's caps).
 pub const PLACES_MAX: usize = 24;
 pub const PEOPLE_MAX: usize = 24;
@@ -172,6 +174,13 @@ pub enum EventKind {
     Died,
     /// It killed `who`.
     Killed,
+    /// Its death backpack went before it walked back for it: it rotted,
+    /// or somebody looted it. What was in it is the look's `lost`.
+    BagGone,
+    /// It walked back to its death backpack and emptied it.
+    BagBack,
+    /// It took what fitted from its death backpack; the rest lies there.
+    BagPart,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -197,6 +206,10 @@ pub struct Perceived {
     pub places_len: u8,
     pub events: [EventSeen; SEEN_EVENTS],
     pub events_len: u8,
+    /// What the pack held at the death its `Died` tells, or what went with
+    /// the backpack its `BagGone` tells: `(item, units)`, heaviest first.
+    pub lost: [(Name, u32); SEEN_LOST],
+    pub lost_len: u8,
 }
 
 impl Default for Perceived {
@@ -219,6 +232,8 @@ impl Perceived {
             who: None,
         }; SEEN_EVENTS],
         events_len: 0,
+        lost: [(Name::EMPTY, 0); SEEN_LOST],
+        lost_len: 0,
     };
 
     pub fn people(&self) -> &[PersonSeen] {
@@ -231,6 +246,20 @@ impl Perceived {
 
     pub fn events(&self) -> &[EventSeen] {
         &self.events[..usize::from(self.events_len)]
+    }
+
+    pub fn lost(&self) -> &[(Name, u32)] {
+        &self.lost[..usize::from(self.lost_len)]
+    }
+
+    /// What a death took, or a backpack went with: the first
+    /// [`SEEN_LOST`] rows, heaviest first.
+    pub fn set_lost(&mut self, rows: impl IntoIterator<Item = (Name, u32)>) {
+        self.lost_len = 0;
+        for row in rows.into_iter().take(SEEN_LOST) {
+            self.lost[usize::from(self.lost_len)] = row;
+            self.lost_len += 1;
+        }
     }
 
     /// Player `from`'s row, made if there is room: its index.
@@ -662,19 +691,50 @@ impl Memory {
             m.about(now);
         }
         let who = |e: &EventSeen| e.who.and_then(|w| labels.get(usize::from(w))).cloned();
+        // "16206 Wood, 44 Stone": what the pack held, so a mind that kept
+        // counts in its notes learns they went with the body.
+        let lost = seen
+            .lost()
+            .iter()
+            .map(|(name, units)| format!("{units} {}", name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
         let mut death_told = false;
         for e in seen.events() {
             match (e.kind, who(e)) {
                 (EventKind::Died, Some(name)) => {
                     death_told = true;
-                    self.event(format!("I was killed by {name}"), now)
+                    let what = if lost.is_empty() {
+                        format!("I was killed by {name}")
+                    } else {
+                        format!("I was killed by {name} while carrying {lost}")
+                    };
+                    self.event(what, now)
                 }
                 (EventKind::Died, None) => {
                     death_told = true;
-                    self.event("I died, and no player did it".into(), now)
+                    let what = if lost.is_empty() {
+                        "I died, and no player did it".into()
+                    } else {
+                        format!("I died carrying {lost}")
+                    };
+                    self.event(what, now)
                 }
                 (EventKind::Killed, Some(name)) => self.event(format!("I killed {name}"), now),
                 (EventKind::Killed, None) => {}
+                (EventKind::BagGone, _) => {
+                    let what = if lost.is_empty() {
+                        "my death backpack is gone (rotted or looted)".into()
+                    } else {
+                        format!("my death backpack is gone (rotted or looted): {lost} lost")
+                    };
+                    self.event(what, now)
+                }
+                (EventKind::BagBack, _) => self.event("I got my backpack back".into(), now),
+                (EventKind::BagPart, _) => self.event(
+                    "I took what fitted from my backpack; the rest is still in it".into(),
+                    now,
+                ),
             }
         }
         for p in seen.places() {
@@ -1273,6 +1333,53 @@ pub(crate) mod tests {
             what,
             ["I was killed by Ash", "my home was attacked", "I died"]
         );
+    }
+
+    /// A death says what the pack held, so counts kept in notes are known
+    /// to have gone with the body; the backpack's end is told after it.
+    #[test]
+    fn a_death_says_what_it_carried_and_the_backpack_how_it_ended() {
+        let wood = Name::new(b"Wood").unwrap();
+        let stone = Name::new(b"Stone").unwrap();
+        let mut s = Summary::EMPTY;
+        s.seen.event(EventKind::Died, None);
+        s.seen.set_lost([(wood, 16206), (stone, 44)]);
+        let mut m = Memory::default();
+        m.ingest(&s, 10);
+        let mut later = Summary::EMPTY;
+        let ash = later
+            .seen
+            .person(9, tag("Ash"), protocol::Address::GUEST, false)
+            .unwrap();
+        later.seen.event(EventKind::Died, Some(ash));
+        later.seen.set_lost([(wood, 5000)]);
+        m.ingest(&later, 20);
+        for kind in [EventKind::BagGone, EventKind::BagBack, EventKind::BagPart] {
+            let mut s = Summary::EMPTY;
+            s.seen.event(kind, None);
+            m.ingest(&s, 30);
+        }
+        let what: Vec<&str> = m.events.iter().map(|e| e.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "I died carrying 16206 Wood, 44 Stone",
+                "I was killed by Ash while carrying 5000 Wood",
+                "my death backpack is gone (rotted or looted)",
+                "I got my backpack back",
+                "I took what fitted from my backpack; the rest is still in it",
+            ]
+        );
+        // Three long rows still make one line within its bound.
+        let long = Name::new(&[b'x'; protocol::MAX_ITEM_NAME_BYTES]).unwrap();
+        let mut s = Summary::EMPTY;
+        s.seen.event(EventKind::BagGone, None);
+        s.seen.set_lost([(long, u32::MAX); 4]);
+        assert_eq!(s.seen.lost().len(), SEEN_LOST);
+        m.ingest(&s, 40);
+        let last = &m.events.back().unwrap().what;
+        assert!(last.len() <= EVENT_MAX, "{last}");
+        assert!(last.starts_with("my death backpack is gone (rotted or looted): 4294967295 x"));
     }
 
     /// A scripted body keeps its memory too, and acts on one thing in it:

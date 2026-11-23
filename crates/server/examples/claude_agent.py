@@ -375,7 +375,10 @@ def save_notes(notes):
         print(f"notes: {e}", file=sys.stderr)
 
 
-def turn_content(request, recent, frame, notes, chat_log, strategy=None):
+DIED_SINCE = "you died: the counts in your notes are void; observation.pack is what you carry"
+
+
+def turn_content(request, recent, frame, notes, chat_log, strategy=None, died=False):
     turn = {
         "observation": request["observation"],
         "options": request["options"],
@@ -388,6 +391,8 @@ def turn_content(request, recent, frame, notes, chat_log, strategy=None):
         "notes": notes,
         "chat_log": list(chat_log),
     }
+    if died:
+        turn["since_last_turn"] = DIED_SINCE
     if request.get("memory"):
         turn["memory"] = request["memory"]
     strategy = request.get("strategy") or strategy
@@ -796,6 +801,8 @@ class Triggers:
     def __init__(self):
         self.first = True
         self.deaths = None
+        # A death the tactician has not been told of yet (`since_last_turn`).
+        self.died = False
         self.attacked = False
         self.people = set()
         self.enemies_seen = {}
@@ -810,6 +817,7 @@ class Triggers:
         if isinstance(deaths, int):
             if self.deaths is not None and deaths > self.deaths:
                 why.append("you died")
+                self.died = True
             self.deaths = deaths
         home = obs.get("home") if isinstance(obs.get("home"), dict) else {}
         attacked = bool((request.get("team") or {}).get("home_attacked") or home.get("under_attack"))
@@ -1017,8 +1025,10 @@ def main():
         voice = bool(request.get("voice"))
         system = tactician_system(brief, request, persona, voice, can_share)
         try:
-            answer = ask(system, turn_content(request, recent, frame, notes, chat_log, strategist.echo()),
+            answer = ask(system, turn_content(request, recent, frame, notes, chat_log, strategist.echo(),
+                                              triggers.died),
                          schema(can_share, voice))
+            triggers.died = False
             goal = answer["goal"]
             if (goal not in request["options"] and not walk_ok(goal, request["options"])
                     and not hold_ok(goal, request["options"])
