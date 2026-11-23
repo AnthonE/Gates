@@ -8582,6 +8582,11 @@ impl BotDriver for Survivor {
         self.bag_leg = BagLeg::Here;
         self.team_bag_failed = None;
         self.recover_job = RecoverJob::default();
+        // The new client cannot see the last session's death backpack (its
+        // own-bag join is made at a death): forgotten, never told as gone,
+        // since it may well still stand.
+        self.bag_last = 0;
+        self.senses.lost = None;
         self.stash_job = StashJob::default();
         self.ledger.clear();
         self.loot.clear();
@@ -10653,6 +10658,61 @@ mod tests {
             "my death backpack is gone (rotted or looted): 5000 Wood, 1 Bat lost",
             "{events}"
         );
+    }
+
+    /// A rejoin's new client has no join to the last session's death
+    /// backpack, which may still stand (backpacks outlive a restart): it is
+    /// forgotten, not told as rotted or looted.
+    #[test]
+    fn a_rejoin_forgets_the_death_backpack_and_does_not_call_it_gone() {
+        let (mut bot, view, _) = fixture();
+        let now = Instant::now();
+        bot.frame_at(&view, 1, 1, now);
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, 0, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let body = *view.get(1).unwrap();
+        let bag = protocol::event::WireBag {
+            id: 77,
+            qx: body.qx,
+            qy: body.qy,
+            qz: body.qz,
+            kind: protocol::event::BAG_KIND_PACK,
+        };
+        let n = protocol::event::encode_event_bag_dropped(&bag, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        bot.frame_at(&view, 1, 2, now);
+        assert_eq!(bot.bag_last, 77, "its backpack");
+        assert!(bot.senses.lost.is_some(), "what it held");
+        bot.perceived.clear();
+
+        let old = bot.core.as_ref().unwrap();
+        let (catalog, hp, food, water) = (old.catalog, old.hp, old.food, old.water);
+        bot.welcome(&Welcome {
+            seed: SEED,
+            player_id: 1,
+            tick: 100,
+            dev: true,
+            blight_salt: 0,
+        });
+        // Its catalog and vitals come over the wire a moment later.
+        let core = bot.core.as_mut().unwrap();
+        core.catalog = catalog;
+        (core.hp, core.hp_max, core.food, core.max_food) = (hp, hp, food, food);
+        (core.water, core.max_water) = (water, water);
+        assert_eq!(core.own_bag, 0, "the new client has no join to it");
+        bot.frame_at(&view, 1, 3, now);
+        let gone = bot
+            .perceived
+            .events()
+            .iter()
+            .any(|e| e.kind == crate::memory::EventKind::BagGone);
+        assert!(!gone, "{:?}", bot.perceived.events());
+        assert!(bot.perceived.lost().is_empty());
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(s.to_json()["my_death_backpack"]
+            .get("held_at_death")
+            .is_none());
     }
 
     #[test]
