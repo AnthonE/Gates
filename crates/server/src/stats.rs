@@ -391,8 +391,9 @@ pub struct ShardStats {
     /// (`agents_only`): the door doing its job, counted apart from both of
     /// the above.
     pub refused_agents_only: AtomicU64,
-    /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
-    /// the door before claiming a slot (`admin::Bans`).
+    /// Handshakes that proved a banned wallet, or a guest's from a banned
+    /// address, refused `REFUSE_ADMIN` at the door before claiming a slot
+    /// (`admin::Bans`, `admin::GuestBans`).
     pub refused_banned: AtomicU64,
     /// Handshakes that proved a wallet already seated on another connection,
     /// refused `REFUSE_IN_USE` before claiming a slot (one wallet, one body).
@@ -911,7 +912,7 @@ pub struct ShardStats {
     /// happening", the log answers "what happened".
     pub admin_refused: AtomicU64,
     /// Bans lifted by `/unban` (a miss or an ambiguous prefix is an
-    /// `admin_refused`).
+    /// `admin_refused`); an `/unban guests` that lifted any counts once.
     pub admin_unbanned: AtomicU64,
     /// Anomaly records the log ring refused (`anomaly.rs`, wall 4's drop
     /// policy). **Deliberately not in `anomaly::WATCHED`**: a full log ring

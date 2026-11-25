@@ -10,7 +10,8 @@
 //! 2. a banned wallet that dials again is refused at the door with the same
 //!    code (the check that was never written: `bans.contains` had no
 //!    caller), the ban file holds it, and `/unban` lets it back in;
-//! 3. a stranger's `/kick` closes nothing.
+//! 3. a stranger's `/kick` closes nothing;
+//! 4. `/ban` on a guest from loopback (the shard's own host) only kicks it.
 //!
 //! Asserts are on observable state; every wait is a bounded poll on a fact,
 //! with a deadline only as a hang guard.
@@ -96,6 +97,27 @@ async fn join(ep: &Ep, h: &ShardHandle, k: &AgentKey, name: &str) -> Session {
     s
 }
 
+/// Join as a guest (no wallet) and wait until the body is placed and alive.
+async fn join_guest(ep: &Ep, h: &ShardHandle) -> Session {
+    let mut s = Session::connect_as(
+        ep,
+        &h.local_addr.to_string(),
+        protocol::Address::GUEST,
+        &client::Join::Player { watchable: false },
+        |_, _, _| None,
+    )
+    .await
+    .expect("a guest joins a shard that takes guests");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !(s.core.predict.started && s.core.hp > 0) {
+            frame(&mut [&mut s]).await;
+        }
+    })
+    .await
+    .expect("placed and alive");
+    s
+}
+
 /// Type `line` into chat, which is all an admin verb is on the wire.
 fn type_line(s: &Session, line: &str) {
     let mut b = [0u8; 64];
@@ -171,28 +193,44 @@ async fn a_kick_closes_a_guest() {
     let h = shard(&ka, 20_261_016, None).await;
     let ep = endpoint(&h);
     let mut admin = join(&ep, &h, &ka, "admin").await;
-    let mut guest = Session::connect_as(
-        &ep,
-        &h.local_addr.to_string(),
-        protocol::Address::GUEST,
-        &client::Join::Player { watchable: false },
-        |_, _, _| None,
-    )
-    .await
-    .expect("a guest joins a shard that takes guests");
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !(guest.core.predict.started && guest.core.hp > 0) {
-            frame(&mut [&mut guest]).await;
-        }
-    })
-    .await
-    .expect("placed and alive");
+    let mut guest = join_guest(&ep, &h).await;
     let id = guest.welcome.player_id;
 
     type_line(&admin, &format!("/kick {id}"));
     closed_by_admin(&mut admin, &mut guest).await;
     assert_eq!(hear(&mut admin, 0).await, format!("[server] kicked {id}"));
     assert_eq!(ShardStats::get(&h.stats.admin_kicked), 1);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **A guest from the shard's own host is kicked, never address-banned.**
+/// `/ban` on a guest bans the address it joined from, but loopback is where
+/// the inhabitants and the house agents dial from: the guest is closed with
+/// the admin's reason, the admin is told why there was no ban, and a guest
+/// from loopback still joins after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ban_on_a_local_guest_only_kicks_it() {
+    let ka = key(8);
+    let h = shard(&ka, 20_261_017, None).await;
+    let ep = endpoint(&h);
+    let mut admin = join(&ep, &h, &ka, "admin").await;
+    let mut guest = join_guest(&ep, &h).await;
+    let id = guest.welcome.player_id;
+
+    type_line(&admin, &format!("/ban {id}"));
+    closed_by_admin(&mut admin, &mut guest).await;
+    assert_eq!(
+        hear(&mut admin, 0).await,
+        format!("[server] {id} is a local guest: kicked, not banned")
+    );
+    assert_eq!(ShardStats::get(&h.stats.admin_kicked), 1);
+    drop(guest);
+
+    let back = join_guest(&ep, &h).await;
+    assert!(!back.closed());
+    assert_eq!(ShardStats::get(&h.stats.refused_banned), 0);
+    type_line(&admin, "/unban guests");
+    assert_eq!(hear(&mut admin, 0).await, "[server] no address bans");
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 

@@ -4985,16 +4985,16 @@ impl ShardCore {
                     return;
                 };
                 let act = if ban {
-                    // The wallet, not the id: an id is meaningless after a
-                    // reconnect, which is the whole point of a ban.
-                    let Some(key) = self.keys[slot] else {
-                        ops.log.push(
-                            Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
-                        );
-                        self.answer(from_slot, admin::no_wallet_line(id), stats, send);
-                        return;
-                    };
-                    AdminAct::Ban { by: who, id, key }
+                    match self.keys[slot] {
+                        // The wallet, not the id: an id is meaningless
+                        // after a reconnect, which is the whole point of a
+                        // ban.
+                        Some(key) => AdminAct::Ban { by: who, id, key },
+                        // A guest has none: the accept loop bans the
+                        // address it joined from, which only it knows
+                        // (`admin::GuestBans`), and answers how it went.
+                        None => AdminAct::BanGuest { by: who, id },
+                    }
                 } else {
                     AdminAct::Kick { by: who, id }
                 };
@@ -5027,6 +5027,18 @@ impl ShardCore {
                 }
                 let _ = self.banned.remove_prefix(&prefix);
                 logged = logged.note(prefix.as_bytes());
+            }
+            AdminCmd::UnbanGuests => {
+                // The address bans are the accept loop's alone; it says
+                // how many it lifted.
+                let act = AdminAct::UnbanGuests { by: who };
+                if !ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok()) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).note(b"guests"));
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
+                    return;
+                }
+                logged = logged.note(b"guests");
             }
             AdminCmd::Say { text } => {
                 // The house's line, marked and sent from `from = 0` — an
