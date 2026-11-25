@@ -17,11 +17,12 @@
 //! broken node, so all of it but the bush-pick runs here. `water`, `feed`,
 //! `hurt` and `shots` take `NonSend<Net>`, and `place` and `steps` that and
 //! the island; `bed`, `remote_steps` and `remote_hands` take the island as a
-//! plain `Res<WorldId>`, so none of those can run without a world. `hands`
-//! and `remote_heard` take the session as an `Option` and return before
-//! doing anything without one, so scheduling them here would assert
-//! nothing. `remote_swings` reads `Feed::swings`, which only `feed::drain`
-//! can fill.
+//! plain `Res<WorldId>`, so none of those can run without a world: they run
+//! in `tests/audio_world.rs`, the whole in-world chain over a replayed
+//! session and its island. `hands` and `remote_heard` take the session as
+//! an `Option` and return before doing anything without one, so scheduling
+//! them here would assert nothing. `remote_swings` reads `Feed::swings`,
+//! which only `feed::drain` can fill.
 //!
 //! No window, no GPU, no socket, no device: `MinimalPlugins`, the real bank
 //! (`build_bank`, as a boot calls it), and the engine's frame buffer, which is
