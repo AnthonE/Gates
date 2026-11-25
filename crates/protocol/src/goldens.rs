@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 202] = [
+pub const FIXTURES: [&str; 204] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -365,6 +365,10 @@ pub const FIXTURES: [&str; 202] = [
     // A sleeping bag given to a teammate (v157): the far corner of the grid
     // on the top storey, to a receiver with every id bit high.
     "action_bag_give.bin",
+    // A player's map marks to the shard, and on to a teammate (v157): a
+    // full set with every field at its width's edge.
+    "action_pins.bin",
+    "event_team_pins.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2595,6 +2599,33 @@ pub fn action_bag_give() -> (u16, u16, u8, u32) {
         (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8,
         0x8000_0403,
     )
+}
+
+/// A full set of map marks (v157): the island's far corner and its origin,
+/// the last colour and picture, a label of every length up to the longest,
+/// and the printable range's two ends inside them.
+pub fn action_pins() -> crate::PinSet {
+    let labels = ["", "~", "RAID ME", "!", "LOOT~HERE!"];
+    let mut set = crate::PinSet::NONE;
+    for (i, label) in labels.iter().enumerate() {
+        let i = i as u16;
+        let pin = crate::WirePin::new(
+            crate::PIN_POS_MAX_M - i,
+            i * 811,
+            (crate::PIN_COLOURS - 1).min(i as u8 + 1),
+            i as u8 % crate::PIN_ICONS,
+            label,
+        )
+        .expect("a golden label is a label");
+        set.push(pin);
+    }
+    set
+}
+
+/// [`action_pins`]' set relayed from a teammate with bits in both halves
+/// of their id.
+pub fn event_team_pins() -> (u32, crate::PinSet) {
+    ((0x0089 << 8) | 6, action_pins())
 }
 
 /// The detach verb (v144) on the last attachment bit.

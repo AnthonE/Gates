@@ -86,7 +86,11 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Arc { .. } => Kind::Move,
         // A team verb tells every member: a door's pace.
         // A bag given moves two players' bag lists: a team verb's pace.
-        ActionMsg::Use { .. } | ActionMsg::Team { .. } | ActionMsg::BagGive { .. } => Kind::Use,
+        // So does a set of map marks, which tells every member (v157).
+        ActionMsg::Use { .. }
+        | ActionMsg::Team { .. }
+        | ActionMsg::BagGive { .. }
+        | ActionMsg::Pins(_) => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,
         ActionMsg::Place { .. }

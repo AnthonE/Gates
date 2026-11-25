@@ -613,7 +613,9 @@ pub struct ShardStats {
     pub chat_ring_drops: AtomicU64,
     /// Chat relays a recipient's event ring refused. Chat has no sync
     /// walk to restart, so unlike every other event this does not force
-    /// an `ev_resync` — the line is simply lost, and counted.
+    /// an `ev_resync` — the line is simply lost, and counted. A teammate's
+    /// map marks (`EventMsg::TeamPins`, v157) are counted here too: a relay
+    /// with no walk either, mended by the next set the mate sends.
     pub chat_undelivered: AtomicU64,
     /// C→S voice frames decoded and ringed (v113).
     pub voice_ok: AtomicU64,

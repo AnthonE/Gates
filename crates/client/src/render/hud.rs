@@ -1800,8 +1800,12 @@ pub struct TapePointInk(usize);
 
 /// A map mark riding the marker row (Rust pins your marks to the compass):
 /// its badge in the mark's colour and its three characters and distance.
+/// Slots `0..PINS_MAX` are your own; the last is your team's nearest
+/// (v157), in the team's green.
 #[derive(Component)]
 pub struct PinMark(usize);
+/// The marker row's mark slots: your own, and the team's nearest.
+const COMPASS_PINS: usize = crate::ui::map::PINS_MAX + 1;
 #[derive(Component)]
 pub struct PinMarkBadge(usize);
 #[derive(Component)]
@@ -2716,7 +2720,8 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
             Pickable::IGNORE,
         ))
         .with_children(|row| {
-            for i in 0..crate::ui::map::PINS_MAX {
+            // Your marks, then one more: the nearest of your team's (v157).
+            for i in 0..COMPASS_PINS {
                 row.spawn((
                     PinMark(i),
                     Node {
@@ -4298,7 +4303,9 @@ pub fn compass(
 /// Your map marks on the compass's marker row, the way the reference pins
 /// them: the mark's colour at its bearing, its label's three characters (or
 /// its number) and how far. Dimmed and held at the nearer end while it is
-/// behind you, as the death marker is.
+/// behind you, as the death marker is. After them, the nearest of your
+/// team's marks (v157), in the team's green, with its label's three
+/// characters or the mate's initial.
 #[allow(clippy::type_complexity)]
 pub fn compass_pins(
     net: NonSend<super::Net>,
@@ -4312,12 +4319,26 @@ pub fn compass_pins(
     let [x, _, z] = core.predict.render_position();
     let facing = crate::look::bearing_deg(look.yaw);
     let pins = pins.as_ref().map(|p| &p.0);
+    let team = crate::ui::map::TeamPins::gather(core.team_pins(), core.player_id)
+        .nearest(x, z)
+        .map(|(p, _)| p);
+    // The mark in slot `i`: where it rides, how it looks, and whose — 0 for
+    // your own.
     let mark = |i: usize| {
+        if i == crate::ui::map::PINS_MAX {
+            let p = team?;
+            return Some((
+                crate::ui::death::compass_mark(facing, (x, z), p.at),
+                p.style,
+                p.owner,
+            ));
+        }
         let p = pins?;
         let &to = p.marks().get(i)?;
         Some((
             crate::ui::death::compass_mark(facing, (x, z), to),
             p.style(i),
+            0,
         ))
     };
     for (pin, mut node, mut vis) in &mut marks {
@@ -4330,7 +4351,7 @@ pub fn compass_pins(
         if *vis != want {
             *vis = want;
         }
-        if let Some((m, _)) = m {
+        if let Some((m, _, _)) = m {
             let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
             if node.left != left {
                 node.left = left;
@@ -4338,24 +4359,32 @@ pub fn compass_pins(
         }
     }
     for (pin, mut bg) in &mut badges {
-        let Some((m, style)) = mark(pin.0) else {
+        let Some((m, style, owner)) = mark(pin.0) else {
             continue;
         };
-        let [r, g, b] = style.rgb();
         let alpha = if m.off_row { 0.45 } else { 1.0 };
-        let want = Color::srgba_u8(r, g, b, (alpha * 255.0) as u8);
+        let want = if owner != 0 {
+            super::team::MATE_INK.with_alpha(alpha)
+        } else {
+            let [r, g, b] = style.rgb();
+            Color::srgba_u8(r, g, b, (alpha * 255.0) as u8)
+        };
         if bg.0 != want {
             bg.0 = want;
         }
     }
     for (pin, mut text, mut ink) in &mut texts {
-        let Some((m, style)) = mark(pin.0) else {
+        let Some((m, style, owner)) = mark(pin.0) else {
             continue;
         };
         let d = crate::ui::death::short_distance(m.dist_m);
-        let want = match style.compass_label() {
-            "" => format!("{} {d}", pin.0 + 1),
-            l => format!("{l} {d}"),
+        let want = match (style.compass_label(), owner) {
+            ("", 0) => format!("{} {d}", pin.0 + 1),
+            ("", owner) => {
+                let who = crate::ui::names::shown(core, owner);
+                format!("{} {d}", crate::ui::map::mate_initial(&who))
+            }
+            (l, _) => format!("{l} {d}"),
         };
         if text.0 != want {
             text.0 = want;

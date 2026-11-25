@@ -163,6 +163,52 @@ pub struct Readout;
 #[derive(Resource, Default)]
 pub struct MapPins(pub map::Pins);
 
+/// When the marks last went to the team (`ui::map::PinShare`, v157). One
+/// session's: a new one starts from a team that has none of yours.
+#[derive(Resource, Default)]
+pub struct MapShare(pub map::PinShare);
+
+/// Your marks to your team (v157, Rust's team markers): the whole set when
+/// it changes, at most every `PIN_SHARE_S`, and again when a mate comes on
+/// awake, since the shard keeps nobody's (`ui::map::PinShare` decides).
+/// Runs on every screen the world runs under, so a mate who joins while the
+/// map is shut still gets them. The island's marks are this island's: one
+/// from another seed never goes.
+pub fn share(
+    net: Option<NonSend<Net>>,
+    world: Option<Res<WorldId>>,
+    time: Res<Time<Real>>,
+    mut pins: ResMut<MapPins>,
+    mut share: ResMut<MapShare>,
+) {
+    let (Some(net), Some(world)) = (net, world) else {
+        return;
+    };
+    if pins.0.seed() != world.seed {
+        pins.0.for_seed(world.seed);
+    }
+    let core = &net.session.core;
+    let now = time.elapsed_secs_f64();
+    let own = pins.0.wire();
+    let Some(set) = share.0.due(&own, core.team(), core.player_id, now) else {
+        return;
+    };
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    let sent = protocol::encode_action_pins(&set, &mut buf)
+        .ok()
+        .is_some_and(|len| net.session.send_action(&buf[..len]).is_ok());
+    if sent {
+        share.0.sent(set, now);
+    } else {
+        share.0.refused(now);
+    }
+}
+
+/// A new session's team has none of your marks yet.
+pub fn share_forget(mut share: ResMut<MapShare>) {
+    share.0 = map::PinShare::default();
+}
+
 /// Where the map's crosshair sits: on SCREEN (UI px), where the mouse moves
 /// it while the map is held instead of turning the view, and the island
 /// fraction under it, which a right click marks or clears.
@@ -187,6 +233,9 @@ pub struct MapCursor {
     /// `Esc` to put back. While it is `Some` the map stays up with `G` let
     /// go and the keyboard is the label's (`label`).
     typing: Option<(usize, map::PinStyle)>,
+    /// `ClientCore::team_pins_gen` as last drawn: the team's marks move
+    /// while the map is up, and the layer redraws when they do.
+    team_gen: u32,
 }
 
 /// The help line under the island; [`aim`] rewrites it while a label is
@@ -534,6 +583,7 @@ pub fn setup(
         drag: None,
         dirty: true,
         typing: None,
+        team_gen: net.session.core.team_pins_gen,
     };
     let bearing = bearing_text(look.yaw);
 
@@ -1288,9 +1338,15 @@ pub fn aim(
     mut pins: ResMut<MapPins>,
     icons: Option<Res<super::icons::Icons>>,
     sound: Option<ResMut<super::audio::Sound>>,
+    net: NonSend<Net>,
     mut help: Query<&mut Text, With<MapHelp>>,
     layer: Query<(Entity, Option<&Children>), With<PinLayer>>,
 ) {
+    let core = &net.session.core;
+    if cursor.team_gen != core.team_pins_gen {
+        cursor.team_gen = core.team_pins_gen;
+        cursor.dirty = true;
+    }
     let (w, h) = (cursor.w, cursor.h);
     let cam = &mut camera.0;
     let d = motion.delta;
@@ -1387,9 +1443,20 @@ pub fn aim(
         commands.entity(*k).despawn();
     }
     let icons = icons.as_deref();
+    // Your team's marks (v157) under your own, so a click always lands on
+    // one of yours: `drawn_pins` puts them in that order.
+    let team = map::TeamPins::gather(core.team_pins(), core.player_id);
     commands.entity(layer).with_children(|l| {
-        for (i, (&at, &style)) in pins.0.marks().iter().zip(pins.0.styles()).enumerate() {
-            spawn_pin(l, i + 1, at, style, icons, typing == Some(i));
+        for pin in map::drawn_pins(&pins.0, &team) {
+            match pin {
+                map::DrawnPin::Own { n, at, style } => {
+                    spawn_pin(l, n, at, style, icons, typing == Some(n - 1));
+                }
+                map::DrawnPin::Mate(m) => {
+                    let who = crate::ui::names::shown(core, m.owner);
+                    spawn_team_pin(l, map::mate_initial(&who), m.at, m.style);
+                }
+            }
         }
     });
 }
@@ -1470,22 +1537,66 @@ pub fn label(
 pub fn spawn_pin(
     layer: &mut ChildSpawnerCommands,
     n: usize,
-    (x, z): (f32, f32),
+    at: (f32, f32),
     style: map::PinStyle,
     icons: Option<&super::icons::Icons>,
     typing: bool,
 ) {
-    let (px, py) = map::world_to_map(x, z, 1);
     let [r, g, b] = style.rgb();
     let fill = Color::srgb_u8(r, g, b);
-    let picture = style
+    // A picture that has not loaded (or was never baked) falls back to the
+    // number rather than an empty badge — `render/icons.rs`'s rule.
+    let inner = match style
         .icon_stem()
-        .and_then(|k| icons.and_then(|i| i.glyph(k)));
+        .and_then(|k| icons.and_then(|i| i.glyph(k)))
+    {
+        Some(h) => PinInner::Picture(h),
+        None => PinInner::Text(format!("{n}")),
+    };
     let label = if typing {
         format!("{}_", style.label_raw())
     } else {
         style.label().to_string()
     };
+    let edge = if typing { Color::WHITE } else { PIN_EDGE };
+    spawn_diamond(layer, at, fill, edge, inner, label, fill);
+}
+
+/// A teammate's mark (v157): the team's green diamond with the mate's
+/// initial in it, and the label they gave it under it in the same green —
+/// the team's colour, as their dot on this map and their name over their
+/// head are, so a mark of theirs never reads as one of yours. `pub` for
+/// `tests/map_marks.rs`, as [`spawn_pin`] is.
+pub fn spawn_team_pin(
+    layer: &mut ChildSpawnerCommands,
+    initial: char,
+    at: (f32, f32),
+    style: map::PinStyle,
+) {
+    let ink = super::team::MATE_INK;
+    let inner = PinInner::Text(initial.to_string());
+    let label = style.label().to_string();
+    spawn_diamond(layer, at, ink, PIN_EDGE, inner, label, ink);
+}
+
+/// What a mark's diamond holds.
+enum PinInner {
+    Picture(Handle<Image>),
+    Text(String),
+}
+
+/// A mark's diamond at world `(x, z)` in `fill` edged in `edge`, holding
+/// `inner`, and `label` under it in `ink`.
+fn spawn_diamond(
+    layer: &mut ChildSpawnerCommands,
+    (x, z): (f32, f32),
+    fill: Color,
+    edge: Color,
+    inner: PinInner,
+    label: String,
+    ink: Color,
+) {
+    let (px, py) = map::world_to_map(x, z, 1);
     layer
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -1508,14 +1619,12 @@ pub fn spawn_pin(
                 },
                 UiTransform::from_rotation(Rot2::degrees(45.0)),
                 BackgroundColor(fill),
-                BorderColor::all(if typing { Color::WHITE } else { PIN_EDGE }),
+                BorderColor::all(edge),
             ));
-            // Turned back upright inside the diamond. A picture that has not
-            // loaded (or was never baked) falls back to the number rather
-            // than an empty badge — `render/icons.rs`'s rule.
+            // Turned back upright inside the diamond.
             let upright = UiTransform::from_rotation(Rot2::degrees(-45.0));
-            match picture {
-                Some(h) => {
+            match inner {
+                PinInner::Picture(h) => {
                     diamond.with_child((
                         ImageNode::new(h).with_color(PIN_TEXT),
                         Node {
@@ -1526,8 +1635,8 @@ pub fn spawn_pin(
                         upright,
                     ));
                 }
-                None => {
-                    diamond.with_child((ui::strong(format!("{n}"), 10.0, PIN_TEXT), upright));
+                PinInner::Text(t) => {
+                    diamond.with_child((ui::strong(t, 10.0, PIN_TEXT), upright));
                 }
             }
             // Just under the diamond's lower point (half a diagonal below
@@ -1543,7 +1652,7 @@ pub fn spawn_pin(
                     justify_content: JustifyContent::Center,
                     ..default()
                 })
-                .with_child((ui::strong(label, SITE_LABEL_PX, fill), ui::TEXT_SHADOW));
+                .with_child((ui::strong(label, SITE_LABEL_PX, ink), ui::TEXT_SHADOW));
             }
         });
 }

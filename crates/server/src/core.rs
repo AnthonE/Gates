@@ -621,6 +621,7 @@ fn team_only(bytes: &[u8]) -> bool {
     match protocol::decode_event(bytes) {
         Ok(protocol::EventMsg::Chat { channel, .. }) => channel == protocol::Channel::Team,
         Ok(protocol::EventMsg::Caption(c)) => c.channel == protocol::Channel::Team,
+        Ok(protocol::EventMsg::TeamPins { .. }) => true,
         _ => false,
     }
 }
@@ -4138,6 +4139,13 @@ impl ShardCore {
                     // reach the sim.
                     ActionMsg::Team { op, target } => {
                         c.pending_team = Some((op, target));
+                        continue;
+                    }
+                    // Map marks for the team (v157) are the team verbs'
+                    // kind: relayed after the tick, on the shard, and never
+                    // seen by the sim, the WAL or the hash.
+                    ActionMsg::Pins(set) => {
+                        c.pending_pins = Some(set);
                         continue;
                     }
                     ActionMsg::CraftCancel { index, recipe } => Command::CraftCancel {
@@ -7975,8 +7983,8 @@ impl ShardCore {
         }
     }
 
-    /// The tick's team verbs (`team.rs`), then, once a second, the bodies
-    /// that left the world leave their teams.
+    /// The tick's team verbs (`team.rs`) and map marks, then, once a
+    /// second, the bodies that left the world leave their teams.
     fn pump_teams(
         &mut self,
         stats: &ShardStats,
@@ -7985,6 +7993,12 @@ impl ShardCore {
         for slot in 0..MAX_PLAYERS {
             if let Some((op, target)) = self.clients[slot].pending_team.take() {
                 self.team_op(slot, op, target, stats, send);
+            }
+        }
+        // After the verbs, so a set goes to the team as it stands now.
+        for slot in 0..MAX_PLAYERS {
+            if let Some(pins) = self.clients[slot].pending_pins.take() {
+                self.relay_pins(slot, &pins, stats, send);
             }
         }
         let tick = self.world.tick;
@@ -7997,6 +8011,47 @@ impl ShardCore {
                     // A woken body's new id, the tick before its body lands.
                     || clients.iter().any(|c| c.connected && c.id == id)
             });
+        }
+    }
+
+    /// Connection `slot`'s map marks to each teammate connected now, and
+    /// nobody else (v157, Rust's team markers): encoded once, on the bare
+    /// `send`, so a spectator watching a mate never sees them (`fan_out`'s
+    /// confidence rule; `team_only` says so too). A player with no team is
+    /// relayed to nobody, silently: the client sends its set to a team it
+    /// believes it has, and the next team view tells it otherwise. Nothing
+    /// is kept — a mate who joins later hears the set when the sender's
+    /// client sees them join and sends it again. A ring that refuses loses
+    /// the set, counted; the sender's next change repairs it.
+    fn relay_pins(
+        &mut self,
+        slot: usize,
+        pins: &protocol::PinSet,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let from = self.clients[slot].id;
+        let mates = self.teams.team_of(from);
+        if !self.clients[slot].connected || mates.is_empty() {
+            return;
+        }
+        let len = match protocol::encode_event_team_pins(from, pins, &mut self.ev_buf) {
+            Ok(len) => len,
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                return;
+            }
+        };
+        for to in 0..MAX_PLAYERS {
+            let c = &self.clients[to];
+            if to == slot || !c.connected || c.id == from || !mates.contains(&c.id) {
+                continue;
+            }
+            if send(Lane::Event, to, &self.ev_buf[..len]) {
+                ShardStats::bump(&stats.ev_sent);
+            } else {
+                ShardStats::bump(&stats.chat_undelivered);
+            }
         }
     }
 

@@ -14,6 +14,7 @@
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::chat::{read_text, write_text, Channel, ChatText};
 use crate::loc_max;
+use crate::pins::PinSet;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
     DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, PLATE_BIAS, PLATE_BITS, POS_XZ_BITS,
@@ -680,7 +681,12 @@ const SUB_CREW: u32 = 112;
 /// landed. Own-fact, `SUB_RECOVERED`'s audience: the one healed. See
 /// `EventMsg::Healed`.
 const SUB_HEALED: u32 = 113;
-const SUB_MAX: u32 = SUB_HEALED;
+/// A teammate's whole set of map marks (wire v157, `ActionMsg::Pins`): whose,
+/// and the set (`pins::PinSet`), empty when they took them all down.
+/// Team-only: relayed by the shard to the sender's team and nobody else,
+/// never the spectator mirror. See `EventMsg::TeamPins`.
+const SUB_TEAM_PINS: u32 = 114;
+const SUB_MAX: u32 = SUB_TEAM_PINS;
 /// Widths of a wire's ports (`sim_core::power::ports`).
 const WIRE_PORT_OUT_BITS: u32 = 2;
 const WIRE_PORT_IN_BITS: u32 = 1;
@@ -2578,6 +2584,10 @@ pub enum EventMsg {
     Crew { id: u32, of: u32 },
     /// The receiver's team (v108) — see [`TeamView`].
     Team(TeamView),
+    /// Teammate `from`'s whole set of map marks (v157), which replaces the
+    /// one they sent before; an empty set takes theirs off your map. Never
+    /// from nobody or an animal, and both ends refuse one.
+    TeamPins { from: u32, pins: PinSet },
     /// A vending machine's offers as the receiver sees them (v118) — see
     /// [`ShopView`].
     Shop(ShopView),
@@ -6438,6 +6448,21 @@ impl TeamView {
     }
 }
 
+/// Teammate `from`'s map marks — see `EventMsg::TeamPins`.
+pub fn encode_event_team_pins(
+    from: u32,
+    pins: &PinSet,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from == 0 || from & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TEAM_PINS)?;
+    w.write(from, 32)?;
+    pins.write(&mut w)?;
+    Ok(w.finish())
+}
+
 /// The receiver's team — see [`TeamView`].
 pub fn encode_event_team(view: &TeamView, buf: &mut [u8]) -> Result<usize, WireError> {
     if !view.valid() {
@@ -8350,6 +8375,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::Healed { by, item }
         }
         SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
+        SUB_TEAM_PINS => {
+            let from = r.read(32)?;
+            if from == 0 || from & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::TeamPins {
+                from,
+                pins: PinSet::read(&mut r)?,
+            }
+        }
         SUB_SHOP => {
             let mut view = ShopView {
                 key: r.read(32)?,
@@ -10261,6 +10296,47 @@ mod tests {
         for bad in [no_leader, twice, far, headless, ghost] {
             assert_eq!(encode_event_team(&bad, &mut buf), Err(WireError::Range));
         }
+    }
+
+    /// A teammate's marks (v157) cross with whose they are, an empty set
+    /// included, and neither end takes a set from nobody or an animal or
+    /// past the cap.
+    #[test]
+    fn team_pins_name_their_owner() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut pins = PinSet::NONE;
+        let from = crate::player_id(3, 7);
+        let len = encode_event_team_pins(from, &pins, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::TeamPins { from, pins })
+        );
+        for i in 0..crate::PINS_MAX as u16 {
+            let pin = crate::WirePin::new(4000 + i, 9, 1, 2, "MEET").unwrap();
+            assert!(pins.push(pin));
+        }
+        let len = encode_event_team_pins(from, &pins, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::TeamPins { from, pins })
+        );
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        for by in [0, mob] {
+            assert_eq!(
+                encode_event_team_pins(by, &pins, &mut buf),
+                Err(WireError::Range)
+            );
+            let mut w = begin(&mut buf, SUB_TEAM_PINS).unwrap();
+            w.write(by, 32).unwrap();
+            w.write(0, 3).unwrap();
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
+        let mut w = begin(&mut buf, SUB_TEAM_PINS).unwrap();
+        w.write(from, 32).unwrap();
+        w.write(crate::PINS_MAX as u32 + 1, 3).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
 
     /// A heal by another player (v157) crosses with the healer and the

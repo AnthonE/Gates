@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 202] = [
+const GOLDEN: [&[u8]; 204] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -265,6 +265,8 @@ const GOLDEN: [&[u8]; 202] = [
     include_bytes!("golden/event_healed.bin"),
     include_bytes!("golden/action_repair_item.bin"),
     include_bytes!("golden/action_bag_give.bin"),
+    include_bytes!("golden/action_pins.bin"),
+    include_bytes!("golden/event_team_pins.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -598,8 +600,11 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 200);
     // A sleeping bag given to a teammate (v157).
     g!(seen, golden_action, 201);
+    // A player's map marks, and the same relayed to a teammate (v157).
+    g!(seen, golden_action, 202);
+    g!(seen, golden_event, 203);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 202, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 204, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1069,6 +1074,16 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_repair_item(slot, &mut buf).unwrap()
+        }
+        "action_pins.bin" => {
+            let set = protocol::goldens::action_pins();
+            assert_eq!(set.n as usize, protocol::PINS_MAX, "{name}: a full set");
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Pins(set),
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_pins(&set, &mut buf).unwrap()
         }
         "action_bag_give.bin" => {
             let (cx, cz, level, target) = protocol::goldens::action_bag_give();
@@ -2913,6 +2928,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_crew(id, of, &mut buf).unwrap()
+        }
+        "event_team_pins.bin" => {
+            let (from, pins) = protocol::goldens::event_team_pins();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::TeamPins { from, pins },
+                "{name}"
+            );
+            protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap()
         }
         "event_healed.bin" => {
             let (by, item) = protocol::goldens::event_healed();

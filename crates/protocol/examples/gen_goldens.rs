@@ -341,6 +341,12 @@ fn main() {
     let (cx, cz, level, target) = goldens::action_bag_give();
     let len = protocol::encode_action_bag_give(cx, cz, level, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[201], &buf[..len]);
+    // A player's map marks, and the same relayed to a teammate (v157).
+    let len = protocol::encode_action_pins(&goldens::action_pins(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[202], &buf[..len]);
+    let (from, pins) = goldens::event_team_pins();
+    let len = protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[203], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

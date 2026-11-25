@@ -595,6 +595,10 @@ pub struct ClientNetState {
     /// A team verb that left the action hand this tick, run after the sim
     /// step (`ShardCore::pump_teams`); never a `Command`.
     pub pending_team: Option<(u8, u32)>,
+    /// A set of map marks that left the action hand this tick, relayed to
+    /// the team after the sim step (`ShardCore::pump_teams`, v157); never a
+    /// `Command`, and never kept once relayed.
+    pub pending_pins: Option<protocol::PinSet>,
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -718,6 +722,7 @@ impl ClientNetState {
             last_team: None,
             team_sent_at: 0,
             pending_team: None,
+            pending_pins: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,

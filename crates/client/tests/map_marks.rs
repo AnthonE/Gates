@@ -24,7 +24,7 @@
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::icons::Icons;
-use client::render::map::{spawn_mark, spawn_pin};
+use client::render::map::{spawn_mark, spawn_pin, spawn_team_pin};
 use client::ui::map::{Mark, MarkKind, PinStyle, PIN_COLOURS, PIN_ICONS};
 
 /// Every kind. A `match` over each one so a kind added without a row here
@@ -292,6 +292,57 @@ fn every_pin_look_spawns_and_draws_what_it_says() {
                     assert_eq!(kids.len(), 1 + usize::from(want.is_some()), "{case}");
                 }
             }
+        }
+    }
+}
+
+/// A teammate's mark under test (v157): its look.
+#[derive(Resource)]
+struct TeamPinSubject(PinStyle);
+
+fn team_pin_system(mut commands: Commands, subject: Res<TeamPinSubject>, mut out: ResMut<Drawn>) {
+    let e = commands
+        .spawn(Node::default())
+        .with_children(|layer| spawn_team_pin(layer, 'R', (2048.0, 2048.0), subject.0))
+        .id();
+    out.0 = Some(e);
+}
+
+/// A teammate's mark spawns, labelled or not, whatever picture they gave
+/// it: the mate's initial in the diamond, and their label under it.
+#[test]
+fn a_teammates_pin_spawns_with_their_initial() {
+    for icon in 0..PIN_ICONS.len() {
+        for label in ["", "raid"] {
+            let mut style = PinStyle::default();
+            style.icon = icon as u8;
+            for c in label.chars() {
+                style.push_label(c);
+            }
+            let mut app = App::new();
+            app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+            app.init_asset::<Image>();
+            app.init_resource::<Drawn>();
+            app.insert_resource(TeamPinSubject(style));
+            app.add_systems(Update, team_pin_system);
+            app.update();
+            let case = format!("icon {icon}, label {label:?}");
+            let parent = app.world().resource::<Drawn>().0.expect("drew");
+            let &[anchor] = children(&app, parent).as_slice() else {
+                panic!("{case}: one anchor per mark");
+            };
+            let kids = children(&app, anchor);
+            let &[inside] = children(&app, kids[0]).as_slice() else {
+                panic!("{case}: one thing in the diamond");
+            };
+            assert_eq!(text_of(&app, inside).as_deref(), Some("R"), "{case}");
+            let got = kids.get(1).and_then(|row| {
+                children(&app, *row)
+                    .into_iter()
+                    .find_map(|e| text_of(&app, e))
+            });
+            let want = (!label.is_empty()).then(|| label.to_ascii_uppercase());
+            assert_eq!(got, want, "{case}");
         }
     }
 }

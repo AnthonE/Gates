@@ -1213,6 +1213,11 @@ impl Plugin for GatesRenderPlugin {
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
             .init_resource::<map::MapPins>()
+            // Your marks to your team (v157), on every screen the world runs
+            // under; a new session's team starts with none of yours.
+            .init_resource::<map::MapShare>()
+            .add_systems(Update, map::share.run_if(world_running))
+            .add_systems(OnEnter(Screen::Loading), map::share_forget)
             .init_resource::<map::MapCursor>()
             .init_resource::<map::MapCamera>()
             // The mouse is the map's while it is held: the crosshair and the

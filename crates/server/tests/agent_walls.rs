@@ -239,6 +239,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Reskin { .. } => "reskin",
         ActionMsg::RepairItem { .. } => "repair_item",
         ActionMsg::BagGive { .. } => "bag_give",
+        ActionMsg::Pins(_) => "pins",
         ActionMsg::SkinsRefresh => "skins_refresh",
         ActionMsg::CraftCancel { .. } => "cancel",
         ActionMsg::CraftFastTrack { .. } => "fasttrack",

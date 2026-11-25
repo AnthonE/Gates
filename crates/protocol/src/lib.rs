@@ -49,6 +49,7 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod lang;
+pub mod pins;
 pub mod secret;
 pub mod version;
 pub mod voice;
@@ -123,8 +124,8 @@ pub use event::{
     STANDING_TICKER_BYTES, STANDING_TOP,
 };
 pub use event::{
-    encode_event_team, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_MAX,
-    TEAM_POS_MAX_M,
+    encode_event_team, encode_event_team_pins, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE,
+    TEAM_DEAD, TEAM_MAX, TEAM_POS_MAX_M,
 };
 pub use event::{encode_event_turret, encode_event_wire, TurretView};
 pub use event::{
@@ -132,6 +133,9 @@ pub use event::{
     DEED_RELOAD,
 };
 pub use lang::{lang_code, lang_name, lang_of, LANGS, LANG_BITS, LANG_MAX};
+pub use pins::{
+    pin_label_byte, PinSet, WirePin, PINS_MAX, PIN_COLOURS, PIN_ICONS, PIN_LABEL_MAX, PIN_POS_MAX_M,
+};
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 pub use sim_core::shop::ShopAct;
@@ -1426,7 +1430,10 @@ pub use voice::{
 /// a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
 /// table's item repair percent after its header (`CraftContent::repair_pct`).
 /// Action 47 gives a sleeping bag of yours to a teammate
-/// (`ActionMsg::BagGive`): its address and their id.
+/// (`ActionMsg::BagGive`): its address and their id. Action 48 sends your
+/// whole set of map marks (`ActionMsg::Pins`, `pins::PinSet`), and
+/// `SUB_TEAM_PINS` (114) relays it to each teammate with your id
+/// (`EventMsg::TeamPins`).
 pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
@@ -2630,6 +2637,10 @@ const ACT_REPAIR_ITEM: u32 = 46;
 /// the receiver's id. The team is the shard's check, the bag and the
 /// receiver's cap the sim's (`deploy::Deploys::give_bag`).
 const ACT_BAG_GIVE: u32 = 47;
+/// The sender's whole set of map marks (wire v157, Rust's team markers):
+/// a count and each mark (`pins::PinSet`). Never a command: the shard
+/// relays it to the sender's team (`EventMsg::TeamPins`) and keeps none.
+const ACT_PINS: u32 = 48;
 /// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
 const WIRE_OUT_BITS: u32 = 2;
 const WIRE_IN_BITS: u32 = 1;
@@ -2680,7 +2691,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_BAG_GIVE;
+const ACT_MAX: u32 = ACT_PINS;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2851,6 +2862,10 @@ pub enum ActionMsg {
         level: u8,
         target: u32,
     },
+    /// The sender's whole set of map marks (v157), to show their team.
+    /// Never reaches the sim: the shard relays it to each teammate
+    /// (`EventMsg::TeamPins`) and drops it for a player with no team.
+    Pins(PinSet),
     /// Ask the server to read the owned skin set again. Answered by the
     /// server outside the sim; see `ACT_SKINS_REFRESH`.
     SkinsRefresh,
@@ -3752,6 +3767,15 @@ pub fn encode_action_bag_give(
     Ok(w.finish())
 }
 
+/// `ActionMsg::Pins` — the sender's whole set of map marks.
+pub fn encode_action_pins(set: &PinSet, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PINS, ACTION_SUB_BITS)?;
+    set.write(&mut w)?;
+    Ok(w.finish())
+}
+
 /// `ActionMsg::Vend` — trade offer `offer`, `times` over.
 pub fn encode_action_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if offer as usize >= sim_core::limits::MAX_VEND_OFFERS
@@ -4307,6 +4331,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 target,
             }
         }
+        ACT_PINS => ActionMsg::Pins(PinSet::read(&mut r)?),
         ACT_SKINS_REFRESH => ActionMsg::SkinsRefresh,
         ACT_VEND => {
             let offer = r.read(7)? as u8;
@@ -6725,6 +6750,64 @@ mod tests {
         assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
+    /// A set of map marks (v157) round-trips at its field edges, empty
+    /// included, and neither end takes a set past the cap, a mark out of
+    /// range or a label byte past printable ASCII.
+    #[test]
+    fn the_pins_action_round_trips() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut set = PinSet::NONE;
+        let n = encode_action_pins(&set, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::Pins(set)));
+        for i in 0..PINS_MAX as u16 {
+            let pin = WirePin::new(
+                PIN_POS_MAX_M - i,
+                i,
+                PIN_COLOURS - 1,
+                (i % PIN_ICONS as u16) as u8,
+                &"~ZZ RAID 9"[..(i as usize * 2).min(PIN_LABEL_MAX)],
+            )
+            .unwrap();
+            assert!(set.push(pin));
+        }
+        let n = encode_action_pins(&set, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::Pins(set)));
+        // Out of range on the way out.
+        let mut bad = set;
+        bad.pins[1].colour = PIN_COLOURS;
+        assert_eq!(encode_action_pins(&bad, &mut buf), Err(WireError::Range));
+        let mut bad = set;
+        bad.n = PINS_MAX as u8 + 1;
+        assert_eq!(encode_action_pins(&bad, &mut buf), Err(WireError::Range));
+        // Forged on the way in: six marks, a control byte in a label, and a
+        // label that ends in a space.
+        let forge = |n: u32, ch: u32| {
+            let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_PINS, ACTION_SUB_BITS).unwrap();
+            w.write(n, 3).unwrap();
+            for _ in 0..n {
+                w.write(7, 12).unwrap();
+                w.write(9, 12).unwrap();
+                w.write(0, 3).unwrap();
+                w.write(0, 3).unwrap();
+                w.write(2, 4).unwrap();
+                w.write(b'A' as u32, 7).unwrap();
+                w.write(ch, 7).unwrap();
+            }
+            let len = w.finish();
+            decode_action(&buf[..len])
+        };
+        assert!(matches!(forge(1, b'B' as u32), Ok(ActionMsg::Pins(_))));
+        assert_eq!(
+            forge(PINS_MAX as u32 + 1, b'B' as u32),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(forge(1, 0x07), Err(WireError::Malformed));
+        assert_eq!(forge(1, b' ' as u32), Err(WireError::Malformed));
+    }
+
     /// A skinned hand survives both snapshot paths, and a present-zero
     /// skin — a second spelling of "no skin" — is refused.
     #[test]
@@ -6850,12 +6933,12 @@ mod tests {
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
         // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44,
-        // the wire (v150) 45, the bench repair (v157) 46, and the bag give
-        // (v157) 47.
-        assert_eq!(ACT_MAX, ACT_BAG_GIVE);
+        // the wire (v150) 45, the bench repair (v157) 46, the bag give
+        // (v157) 47, and the team's map marks (v157) 48.
+        assert_eq!(ACT_MAX, ACT_PINS);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            16,
+            15,
             "the spare action codes moved — say so where the count is written"
         );
     }
