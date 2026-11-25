@@ -478,6 +478,9 @@ pub struct ShardCore {
     cheats: crate::cheat::Checks,
     /// The cheat checks' sight-line memo (`terrain::Lattice`).
     cheat_lat: Box<sim_core::terrain::Lattice>,
+    /// The newest flags, named, for an admin's `/suspects`; the anomaly log
+    /// keeps them all. Not sim state.
+    suspects: crate::cheat::Suspects,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -1138,6 +1141,7 @@ impl ShardCore {
             achievements: crate::achievements::Achievements::off(),
             cheats: crate::cheat::Checks::new(),
             cheat_lat: Box::new(sim_core::terrain::Lattice::new()),
+            suspects: crate::cheat::Suspects::new(),
             gifts: crate::gifts::Gifts::off(),
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
@@ -1946,7 +1950,8 @@ impl ShardCore {
     }
 
     /// This tick's aims, shots and hits through the cheat checks
-    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named.
+    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named,
+    /// and a row in the ring an admin's `/suspects` reads.
     fn note_cheats(&mut self, ops: &mut Ops<'_>) {
         use crate::anomaly::{Kind, Record};
         let tick = self.world.tick;
@@ -1976,6 +1981,7 @@ impl ShardCore {
         let agents = &agents[..n_agents];
         let exempt = |id: u32| agents.contains(&id);
         let world = &self.world;
+        let suspects = &mut self.suspects;
         self.cheats.tick(
             tick,
             &world.players,
@@ -1988,12 +1994,13 @@ impl ShardCore {
                 let name = tags
                     .iter()
                     .find(|t| t.id == f.who)
-                    .map_or("", |t| t.name.as_str());
+                    .map_or(protocol::Name::EMPTY, |t| t.name);
                 ops.log.push(
                     Record::new(tick, Kind::Suspect, f.check as u16, f.who)
                         .with(f.a, f.b, f.c)
-                        .note(name.as_bytes()),
+                        .note(name.as_str().as_bytes()),
                 );
+                suspects.push(tick, f, name);
             },
         );
     }
@@ -5162,6 +5169,23 @@ impl ShardCore {
                     line.push_str(&c.id.to_string());
                 }
                 self.answer(from_slot, format!("{n} on:{line}"), stats, send);
+            }
+            AdminCmd::Suspects => {
+                // The window's flags, newest first, a line each, to the
+                // admin alone: evidence to go and watch (`/tp <id>`), and
+                // the log's `suspect` lines hold the rest.
+                let lines: Vec<String> = self
+                    .suspects
+                    .recent(tick)
+                    .map(|s| admin::suspect_line(s, tick))
+                    .collect();
+                logged = logged.with(lines.len() as i64, 0, 0);
+                if lines.is_empty() {
+                    self.answer(from_slot, admin::no_suspects_line(), stats, send);
+                }
+                for line in lines {
+                    self.answer(from_slot, line, stats, send);
+                }
             }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. }
@@ -11505,6 +11529,94 @@ mod tests {
         core.world.tick(&[]);
         assert!(core.world.events.is_empty(), "ring quiet after setup");
         core
+    }
+
+    /// `/suspects`: an admin hears the window's flags a line each, newest
+    /// first, or that there are none, and the act is logged; a stranger hears
+    /// nothing and the refusal is logged, as for `/kick`.
+    #[test]
+    fn suspects_answers_the_admin_alone_newest_first() {
+        use crate::anomaly::{Kind, Record};
+        use crate::cheat::{Check, Flag};
+        const ADMIN: &str = "0x00112233445566778899aabbccddeeff00112233";
+        const OTHER: &str = "0xffeeddccbbaa99887766554433221100ffeeddcc";
+        let stats = std::sync::Arc::new(ShardStats::default());
+        let mut core = ShardCore::new(SEED);
+        core.install_admins(crate::admin::Admins::parse(ADMIN).unwrap());
+        let key = |s: &str| PlayerKey::new(s.as_bytes()).unwrap();
+        let (me, them) = (protocol::player_id(1, 0), protocol::player_id(1, 1));
+        assert!(core.connect_as(0, me, Some(key(ADMIN)), None).is_some());
+        assert!(core.connect_as(1, them, Some(key(OTHER)), None).is_some());
+        core.tick_bare(&stats, |_, _, _| true);
+
+        let (tx, mut rx) = rtrb::RingBuffer::<Record>::new(64);
+        let mut log = crate::anomaly::Sink::new(tx, stats.clone());
+        let mut ask = |core: &mut ShardCore, slot: usize| -> Vec<(usize, String)> {
+            core.push_chat(
+                slot,
+                ChatMsg {
+                    channel: protocol::Channel::Global,
+                    text: protocol::ChatText::sanitize(b"/suspects").unwrap(),
+                },
+            );
+            let mut save_now = false;
+            let mut ops = Ops {
+                log: &mut log,
+                admin_tx: None,
+                admin_answers: None,
+                save_now: &mut save_now,
+            };
+            let mut heard = Vec::new();
+            core.tick(&stats, &mut ops, |lane, to, bytes| {
+                if let (Lane::Event, Ok(EventMsg::Chat { text, .. })) = (lane, decode_event(bytes))
+                {
+                    let text = String::from_utf8_lossy(text.as_bytes()).into_owned();
+                    heard.push((to, text));
+                }
+                true
+            });
+            heard
+        };
+        let logged = |rx: &mut rtrb::Consumer<Record>| {
+            std::iter::from_fn(|| rx.pop().ok())
+                .filter(|r| matches!(r.kind, Kind::AdminAct | Kind::AdminRefused))
+                .map(|r| (r.kind, r.what, r.who, r.a))
+                .collect::<Vec<_>>()
+        };
+        let verb = crate::admin::VERB_SUSPECTS;
+
+        assert_eq!(
+            ask(&mut core, 0),
+            [(0, "[server] no suspects in the last 5 min".to_string())]
+        );
+        assert_eq!(logged(&mut rx), [(Kind::AdminAct, verb, me, 0)]);
+
+        let flag = |check, a, b, c| Flag {
+            who: them,
+            check,
+            a,
+            b,
+            c,
+        };
+        let bob = protocol::Name::new("Bob").unwrap();
+        core.suspects.push(0, flag(Check::Snap, 5, 12, 41), bob);
+        core.suspects
+            .push(1, flag(Check::Wall, 3, me as i64, 42), bob);
+        assert_eq!(
+            ask(&mut core, 0),
+            [
+                (
+                    0,
+                    format!("[server] #{them} Bob wall_track 3 on #{me} 42m 0s ago")
+                ),
+                (0, format!("[server] #{them} Bob snap 5/12 41deg 0s ago")),
+            ]
+        );
+        assert_eq!(logged(&mut rx), [(Kind::AdminAct, verb, me, 2)]);
+
+        let heard = ask(&mut core, 1);
+        assert!(heard.is_empty(), "a stranger hears nothing: {heard:?}");
+        assert_eq!(logged(&mut rx), [(Kind::AdminRefused, verb, them, 0)]);
     }
 
     /// The standings are tallied per wallet off the sim's own events: a

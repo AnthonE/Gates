@@ -111,6 +111,8 @@ pub const VERB_RESTART: u16 = 13;
 /// `/arena` and `/leave` (v153): anybody's, logged because they move a
 /// player to another server.
 pub const VERB_TRAVEL: u16 = 14;
+/// `/suspects`: the cheat checks' flags, read by an admin.
+pub const VERB_SUSPECTS: u16 = 15;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
@@ -128,6 +130,7 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Restart { .. } | AdminCmd::RestartCancel => VERB_RESTART,
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
+        AdminCmd::Suspects => VERB_SUSPECTS,
         AdminCmd::Arena | AdminCmd::Leave => VERB_TRAVEL,
         // A `/bug` is never an admin act; it has its own `Kind`, and
         // `/top` and `/team` are anybody's.
@@ -658,6 +661,38 @@ pub fn brain_line(
     )
 }
 
+/// One `/suspects` row: who (id and the name they had when it flagged),
+/// which check, its numbers, and how long ago — `#259 Bob snap 5/12 41deg
+/// 2m ago`. The check's word is the anomaly log's (`cheat::Check::name`),
+/// so a row greps straight to its line there. Numbers are clamped to a u32
+/// so the row fits a chat line whatever a check ever writes.
+pub fn suspect_line(s: &crate::cheat::Suspect, now: u64) -> String {
+    use crate::cheat::Check;
+    let n = |v: i64| v.clamp(0, u32::MAX as i64);
+    let f = &s.flag;
+    let (a, b, c) = (n(f.a), n(f.b), n(f.c));
+    let what = match f.check {
+        Check::Snap => format!("{a}/{b} {c}deg"),
+        Check::Head => format!("{a}/{b} {c}%"),
+        Check::Wall => format!("{a} on #{b} {c}m"),
+    };
+    let secs = now.saturating_sub(s.tick) / sim_core::limits::TICK_HZ as u64;
+    let ago = if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", secs / 60)
+    };
+    let name = s.name.as_str();
+    let sep = if name.is_empty() { "" } else { " " };
+    format!("#{}{sep}{name} {} {what} {ago} ago", f.who, f.check.name())
+}
+
+/// `/suspects`' answer when nothing flagged in the window.
+pub fn no_suspects_line() -> String {
+    let mins = crate::cheat::WINDOW_TICKS / sim_core::limits::TICK_HZ as u64 / 60;
+    format!("no suspects in the last {mins} min")
+}
+
 /// `/weather`'s answer to the admin: the preset it asked for, by the word
 /// `/weather` takes, and when the sky gets there.
 pub fn weather_line(mode: u8) -> String {
@@ -818,9 +853,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Every answer an admin gets to a kick, ban or unban (the accept loop's
-    /// and the sim's own refusals) reads whole after the `[server] ` mark at
-    /// its longest: a ten-digit id, a full list.
+    /// Every answer an admin gets to a kick, ban, unban or `/suspects` (the
+    /// accept loop's and the sim's own refusals) reads whole after the
+    /// `[server] ` mark at its longest: a ten-digit id, a full list, a
+    /// longest name and numbers past any a check writes.
     #[test]
     fn the_admin_answers_fit_a_chat_line() {
         let room = ChatText::CAP - "[server] ".len();
@@ -842,11 +878,66 @@ mod tests {
             unban_line(&pre, &Ok(key(A))),
             unban_line(&pre, &Err(UnbanMiss::None)),
             unban_line(&pre, &Err(UnbanMiss::Ambiguous(MAX_BANS))),
-        ] {
+            no_suspects_line(),
+        ]
+        .into_iter()
+        .chain(
+            [
+                crate::cheat::Check::Snap,
+                crate::cheat::Check::Head,
+                crate::cheat::Check::Wall,
+            ]
+            .map(|check| {
+                let flag = crate::cheat::Flag {
+                    who: u32::MAX,
+                    check,
+                    a: i64::MAX,
+                    b: i64::MAX,
+                    c: i64::MIN,
+                };
+                let name = "W".repeat(protocol::NAME_MAX_BYTES);
+                let s = crate::cheat::Suspect {
+                    tick: 0,
+                    flag,
+                    name: protocol::Name::new(&name).unwrap(),
+                };
+                suspect_line(&s, crate::cheat::WINDOW_TICKS)
+            }),
+        ) {
             assert!(line.len() <= room, "{line:?} is {} bytes", line.len());
             assert!(AdminReply::new(1, &line).is_some(), "{line:?}");
         }
         assert_eq!(banned_line(257, &key(A)), "banned 257 (0x001122334455)");
+        use crate::cheat::Check;
+        let row = |check, a, b, c, name: &str, ago_s: u64| {
+            let flag = crate::cheat::Flag {
+                who: 259,
+                check,
+                a,
+                b,
+                c,
+            };
+            let tick = 10_000;
+            let s = crate::cheat::Suspect {
+                tick,
+                flag,
+                name: protocol::Name::new(name).unwrap(),
+            };
+            suspect_line(&s, tick + ago_s * sim_core::limits::TICK_HZ as u64)
+        };
+        assert_eq!(
+            row(Check::Snap, 5, 12, 41, "Bob", 130),
+            "#259 Bob snap 5/12 41deg 2m ago"
+        );
+        assert_eq!(
+            row(Check::Head, 14, 20, 70, "", 9),
+            "#259 headshots 14/20 70% 9s ago"
+        );
+        assert_eq!(
+            row(Check::Wall, 3, 300, 42, "Bob", 0),
+            "#259 Bob wall_track 3 on #300 42m 0s ago"
+        );
+        assert_eq!(no_suspects_line(), "no suspects in the last 5 min");
         let v4 = GuestSource::of("203.0.113.7".parse().unwrap());
         assert_eq!(
             guest_banned_line(1026, &v4, 1),

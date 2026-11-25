@@ -157,6 +157,11 @@ pub enum AdminCmd {
     Brain,
     /// `/who`: the connected player ids, said to the asker only.
     Who,
+    /// `/suspects` (or `/sus`): the cheat checks' flags in their window —
+    /// who, which check, its numbers and how long ago — newest first, said
+    /// to the asking admin only. Admin-only: a flag is evidence about a
+    /// named player, never a public accusation.
+    Suspects,
     /// `/top` (or `/standings`, `/lb`): the wipe's standings and where the
     /// asker stands, said to the asker only. Anyone may ask.
     Top,
@@ -287,6 +292,7 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "save" => Some(AdminCmd::SaveNow),
         "brain" => Some(AdminCmd::Brain),
         "who" => Some(AdminCmd::Who),
+        "suspects" | "sus" => (parts.next().is_none()).then_some(AdminCmd::Suspects),
         "top" | "standings" | "lb" | "leaderboard" => Some(AdminCmd::Top),
         "arena" | "ranked" => (parts.next().is_none()).then_some(AdminCmd::Arena),
         "leave" | "back" => (parts.next().is_none()).then_some(AdminCmd::Leave),
@@ -510,6 +516,16 @@ mod tests {
         };
         let night = (sim_core::limits::DAY_PORTION * 1000.0) as u16;
         assert!(frac_pm > night && frac_pm < 1000);
+    }
+
+    #[test]
+    fn suspects_parses_bare() {
+        assert_eq!(parse(&text("/suspects")), Some(AdminCmd::Suspects));
+        assert_eq!(parse(&text("/sus")), Some(AdminCmd::Suspects));
+        assert_eq!(parse(&text("/ sus")), Some(AdminCmd::Suspects));
+        for bad in ["/suspects 259", "/sus all", "/suspect"] {
+            assert_eq!(parse(&text(bad)), None, "{bad}");
+        }
     }
 
     #[test]

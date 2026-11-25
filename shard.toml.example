@@ -367,6 +367,7 @@ seed = 20260731
 #   /tp <id>            put yourself at that player's feet
 #   /give <item> <n>    put items in your own pockets (n defaults to 1)
 #   /save               write the world now rather than at the cadence
+#   /suspects           the cheat checks' flags of the last 5 min (/sus)
 #
 # The id is the number the death screen and the chat prefix already show.
 # A ban is remembered as the WALLET (an id means nothing after a reconnect)
@@ -389,6 +390,11 @@ seed = 20260731
 # that cannot be opened REFUSES THE BOOT rather than downgrading silently —
 # an operator who asked for a log and got none would be reading an empty
 # file after the incident they wanted it for.
+#
+# The cheat checks' `suspect` flags are written only here (an admin reads the
+# last five minutes' with `/suspects`), so a shard that pays out
+# (`extract_cap`, prizes) or sells tickets (`entitle_origin`) REFUSES THE
+# BOOT without this key.
 # anomaly_file = "gates-anomaly.jsonl"
 
 # WHERE ADMIN BANS LAST. Unset ⇒ a `/ban` holds until the shard restarts.
