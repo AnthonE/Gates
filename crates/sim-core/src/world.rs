@@ -1026,7 +1026,16 @@ pub const EV_PLANT_GONE: u8 = 74;
 /// hold the part `a`, as a door's state is.
 pub const EV_WIRE: u8 = 75;
 
-pub const EV_MAX: u8 = EV_WIRE;
+/// EV_HEALED: a = the player healed, b = the player who healed them, c =
+/// the item. A syringe or a bandage on a standing teammate landed
+/// (`World::spend_treat`: the syringe at once, the bandage as its wrap
+/// lands), so the one healed is told by whom — `EV_CONSUMED` tells only
+/// the healer. Own-fact to `a`, `EV_RECOVERED`'s audience; a downed body
+/// helped up hears that instead, and a refused or put-away heal says
+/// nothing. One per heal that spent an item.
+pub const EV_HEALED: u8 = 76;
+
+pub const EV_MAX: u8 = EV_HEALED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -5276,7 +5285,8 @@ impl World {
 
     /// Spend one of `item` from `slot`'s pack slot `inv` on `t`: the
     /// healer hears `EV_CONSUMED` (who used it, the item and the slot, as
-    /// their own eat says it) and the target's bleed and heal start.
+    /// their own eat says it), the target hears `EV_HEALED` (by whom), and
+    /// the target's bleed and heal start.
     fn spend_treat(
         &mut self,
         slot: usize,
@@ -5293,6 +5303,8 @@ impl World {
         }
         self.events
             .push(EV_CONSUMED, id, ((item as u32) << 16) | inv as u32, 0);
+        self.events
+            .push(EV_HEALED, self.players[t].id, id, item as u32);
         let heal_pct = crate::works::knob_pct(
             &self.works_def,
             self.works.unlocks,

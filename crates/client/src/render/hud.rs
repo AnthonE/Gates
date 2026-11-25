@@ -3434,6 +3434,11 @@ pub fn feedback(
         let who = crate::ui::names::shown(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
+    // Another player healed us standing (wire v157): who. A downed body
+    // helped up is told it got up instead (`Recovered`).
+    for &(by, _item) in feed.healed_by() {
+        toast.say(crate::ui::interact::healed_by_line(core, by));
+    }
 
     // A blueprint learned — the research verbs' LANDED half, whose refused
     // half is the `Refused::Research` arm above. `Feed::learned` had no reader

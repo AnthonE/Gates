@@ -69,8 +69,8 @@ use sim_core::world::{
     EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
-    EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_HEALED, EV_MECH_SOLVED, EV_NODE_STAGE,
+    EV_PAID, EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
     EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
@@ -6515,6 +6515,26 @@ impl ShardCore {
                         encode_event_recovered(ev.b as u16, ev.c as u16, &mut self.ev_buf)
                     };
                     match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_HEALED => {
+                    // Own-fact to the one healed, `EV_RECOVERED`'s audience:
+                    // who healed them and with what (the healer's own answer
+                    // is `EV_CONSUMED`). A lost one is a line never drawn —
+                    // the hp bar still moves — so the resync is all it owes.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    match protocol::encode_event_healed(ev.b, ev.c as u16, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);

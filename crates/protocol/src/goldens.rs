@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 199] = [
+pub const FIXTURES: [&str; 200] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -358,6 +358,8 @@ pub const FIXTURES: [&str; 199] = [
     // crew mark.
     "hello_commander.bin",
     "event_crew.bin",
+    // A heal by another player (v157): the healer and the item.
+    "event_healed.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2356,6 +2358,12 @@ pub fn hello_commander() -> Hello {
 /// in both halves.
 pub fn event_crew() -> (u32, u32) {
     ((0x0123 << 8) | 9, (0x0045 << 8) | 3)
+}
+
+/// A heal by another player (v157): the healer, an id with bits in both
+/// halves, and an item whose two bytes differ.
+pub fn event_healed() -> (u32, u16) {
+    ((0x0067 << 8) | 5, 0x0129)
 }
 
 /// A part's wires taken up (v150).

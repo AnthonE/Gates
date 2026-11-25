@@ -330,6 +330,10 @@ fn main() {
     let (id, of) = goldens::event_crew();
     let len = protocol::encode_event_crew(id, of, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[198], &buf[..len]);
+    // A heal by another player (v157).
+    let (by, item) = goldens::event_healed();
+    let len = protocol::encode_event_healed(by, item, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[199], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

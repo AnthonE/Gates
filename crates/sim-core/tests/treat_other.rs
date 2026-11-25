@@ -3,7 +3,8 @@
 //! player). A syringe lands at once; a bandage is wrapped on in the
 //! healer's hands and spends nothing until it lands. The medkit stays
 //! self-only, a full target refuses, and a target out of reach or behind a
-//! wall is silent. The downed revive path is `tests/assist.rs`'s and
+//! wall is silent. A heal that lands tells the one healed who healed them
+//! (`EV_HEALED`); one refused or put away tells them nothing. The downed revive path is `tests/assist.rs`'s and
 //! `tests/wounded.rs`'s, and one case here holds that it did not move.
 use sim_core::{
     build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE},
@@ -13,7 +14,7 @@ use sim_core::{
     limits::INV_SLOTS,
     movement::{Body, POS_XZ_Q, POS_Y_Q},
     survival::{ConsumableDef, SurvivalContent, REFUSE_C_FULL, REFUSE_C_NOT_FOOD},
-    world::{Command, World, EV_CONSUMED, EV_CONSUME_REFUSED, EV_RECOVERED},
+    world::{Command, World, EV_CONSUMED, EV_CONSUME_REFUSED, EV_HEALED, EV_RECOVERED},
 };
 
 const HEALER: u32 = 1;
@@ -163,6 +164,16 @@ fn count(w: &World, code: u8) -> usize {
     w.events.entries().iter().filter(|e| e.code == code).count()
 }
 
+/// This tick's `EV_HEALED`s as (healed, healer, item).
+fn healed(w: &World) -> Vec<(u32, u32, u32)> {
+    w.events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_HEALED)
+        .map(|e| (e.a, e.b, e.c))
+        .collect()
+}
+
 fn left(w: &World, slot: u8) -> u16 {
     w.players[0].inv[slot as usize].count
 }
@@ -196,9 +207,15 @@ fn a_syringe_heals_a_standing_player_over_its_ramp_and_spends_one() {
         (HEALER, (SYRINGE as u32) << 16 | S_SYRINGE as u32),
         "EV_CONSUMED names who used it, the item and their slot"
     );
+    assert_eq!(
+        healed(&w),
+        [(HURT, HEALER, SYRINGE as u32)],
+        "the one healed hears who healed them, and with what"
+    );
     assert!(w.players[1].heal_rem > 0, "the heal never started");
     for _ in 0..90 {
         hold(&mut w, S_SYRINGE);
+        assert!(healed(&w).is_empty(), "the ramp said it again");
     }
     assert_eq!(w.players[1].hp, 65, "the syringe's 15 over its ramp");
     assert_eq!(w.players[0].hp, 40, "the healer healed themselves");
@@ -215,14 +232,27 @@ fn a_bandage_closes_a_teammates_bleed_only_when_the_wrap_lands() {
     assert_ne!(w.players[0].use_at, 0, "no wrap began");
     assert_eq!(w.players[0].use_target, HURT);
     assert_eq!(count(&w, EV_CONSUMED), 0);
+    assert!(
+        healed(&w).is_empty(),
+        "the press said healed before the wrap"
+    );
     for t in 1..WRAP {
         hold(&mut w, S_BANDAGE);
         assert_eq!(left(&w, S_BANDAGE), 2, "spent {t} ticks into the wrap");
         assert!(w.players[1].bleed > 0, "the bleed closed {t} ticks in");
         assert_eq!(w.players[1].heal_rem, 0, "the heal began {t} ticks in");
+        assert!(healed(&w).is_empty(), "healed said {t} ticks into the wrap");
     }
-    hold(&mut w, S_BANDAGE);
-    hold(&mut w, S_BANDAGE);
+    let mut heard = Vec::new();
+    for _ in 0..2 {
+        hold(&mut w, S_BANDAGE);
+        heard.extend(healed(&w));
+    }
+    assert_eq!(
+        heard,
+        [(HURT, HEALER, BANDAGE as u32)],
+        "the wrap's landing tells the one healed, once"
+    );
     assert_eq!(left(&w, S_BANDAGE), 1, "the wrap landed and spent nothing");
     assert_eq!(w.players[1].bleed, 0, "the bandage did not close the bleed");
     assert!(
@@ -244,6 +274,10 @@ fn a_full_unhurt_target_is_refused_and_keeps_the_item() {
         assert_eq!(left(&w, slot), 2, "slot {slot}: a refused heal was spent");
         assert_eq!(w.players[0].use_at, 0, "slot {slot}: a wrap began");
         assert_eq!(w.players[1].heal_rem, 0);
+        assert!(
+            healed(&w).is_empty(),
+            "slot {slot}: a refused heal said healed"
+        );
     }
     // Full hp with a bleed is hurt: the bandage has a wound to close.
     let mut w = fixture();
@@ -262,6 +296,7 @@ fn a_medkit_is_refused_on_someone_else() {
     assert_eq!(left(&w, S_MEDKIT), 2, "a refused medkit was spent");
     assert_eq!(w.players[1].heal_rem, 0);
     assert_eq!(w.players[1].hp, 50);
+    assert!(healed(&w).is_empty());
 }
 
 /// Out of reach, at a sleeper or a corpse, or at yourself: nothing is
@@ -298,6 +333,7 @@ fn a_heal_out_of_reach_or_on_the_wrong_body_is_silent() {
             assert_eq!(left(&w, slot), 2, "{what}, slot {slot}: spent");
             assert_eq!(w.players[0].use_at, 0, "{what}, slot {slot}: a wrap began");
             assert_eq!(count(&w, EV_CONSUMED), 0, "{what}, slot {slot}");
+            assert!(healed(&w).is_empty(), "{what}, slot {slot}: said healed");
             if slot == S_SYRINGE || what == "out of reach" {
                 assert_eq!(
                     count(&w, EV_CONSUME_REFUSED),
@@ -320,6 +356,7 @@ fn switching_hands_mid_wrap_spends_nothing() {
     assert_eq!(w.players[0].use_at, 0, "the wrap outlived the hand");
     for _ in 0..=WRAP {
         hold(&mut w, 5);
+        assert!(healed(&w).is_empty(), "a put-away wrap said healed");
     }
     assert_eq!(left(&w, S_BANDAGE), 2, "a put-away wrap was spent");
     assert!(w.players[1].bleed > 0, "a put-away wrap closed the bleed");
@@ -340,6 +377,7 @@ fn a_wrap_landing_on_a_target_gone_out_of_reach_spends_nothing() {
     w.players[1].body.qz += 200;
     for _ in 0..WRAP {
         hold(&mut w, S_BANDAGE);
+        assert!(healed(&w).is_empty(), "a wrap on nobody said healed");
     }
     assert_eq!(w.players[0].use_at, 0, "the wrap never ended");
     assert_eq!(left(&w, S_BANDAGE), 2, "a wrap on nobody was spent");
@@ -363,6 +401,10 @@ fn the_downed_revive_path_is_unchanged() {
     assert!(!w.players[1].wounded, "the syringe did not stand them up");
     assert_eq!(left(&w, S_SYRINGE), 1);
     assert_eq!(count(&w, EV_RECOVERED), 1);
+    assert!(
+        healed(&w).is_empty(),
+        "a body helped up hears it got up, as it did before"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -491,5 +533,6 @@ fn a_heal_through_a_wall_is_silent_and_spends_nothing() {
         assert_eq!(w.players[1].heal_rem, 0);
         assert_eq!(count(&w, EV_CONSUMED), 0);
         assert_eq!(count(&w, EV_CONSUME_REFUSED), 0);
+        assert!(healed(&w).is_empty(), "slot {slot}");
     }
 }

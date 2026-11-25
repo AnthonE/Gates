@@ -72,27 +72,27 @@ pub use event::{
     encode_event_death_mark, encode_event_deploy_defs, encode_event_deploy_placed,
     encode_event_deploy_refused, encode_event_deploy_sync, encode_event_door, encode_event_drank,
     encode_event_env, encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
-    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
-    encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
-    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
-    encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
-    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vessel,
-    encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
-    shot_is_bullet, shot_is_gun, shot_is_instant, shot_is_quiet, EventMsg, GunRow, InvSlot,
-    ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
-    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
-    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
-    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
-    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
-    VEND_BATCH,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_healed, encode_event_health,
+    encode_event_heard, encode_event_hit, encode_event_hostile, encode_event_howl,
+    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_node_stage,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_sentry_lock, encode_event_shot, encode_event_skins,
+    encode_event_skins_owned, encode_event_slot_change, encode_event_slot_grow_sync,
+    encode_event_slot_respawned, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_stump_grubbed, encode_event_swing,
+    encode_event_swipe_refused, encode_event_tag, encode_event_vend, encode_event_vend_offers,
+    encode_event_vend_refused, encode_event_vessel, encode_event_vitals, encode_event_weak_mark,
+    encode_event_worn, encode_event_wounded, shot_is_bullet, shot_is_gun, shot_is_instant,
+    shot_is_quiet, EventMsg, GunRow, InvSlot, ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow,
+    WireBag, WireGItem, WireToss, BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH,
+    COIN_ELO, COIN_JUNK, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH,
+    SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{encode_event_achievement, Achieved};
@@ -1124,9 +1124,11 @@ pub use voice::{
 /// count; the sim drops it in a bag at your feet.
 /// v98 — what a body wears. `SUB_WORN` (89) carries a player's id and the
 /// item in each wear slot, so other clients draw what they wear.
-/// v99 — medicine on a downed body. `ACT_TREAT` (31, the last five-bit
-/// code) carries an inventory slot and the target's id; the sim stands the
-/// body up if the item revives (`Command::Treat`). The item catalog row
+/// v99 — medicine on another player. `ACT_TREAT` (31, the last five-bit
+/// code) carries an inventory slot and the target's id; the sim stands a
+/// downed body up if the item revives, and (since, with no wire change) a
+/// syringe or a bandage heals a standing one (`Command::Treat`, v157's
+/// `SUB_HEALED`). The item catalog row
 /// grows a `revive` bit after `holster`, so the client offers the verb. On
 /// an animal's record `crouched` now means the brain's hunt (chase, attack
 /// or orbit), so a client voices a hunting animal and not a grazing one.
@@ -1418,7 +1420,9 @@ pub use voice::{
 ///
 /// v157 — a craft cancel (`ACT_CANCEL`) closes with the recipe the click saw
 /// at its index, in 8 bits as `ACT_FASTTRACK`'s does, so a queue that moved
-/// under it refuses instead of cancelling the next job.
+/// under it refuses instead of cancelling the next job. And `SUB_HEALED`
+/// (113) tells a player another healed standing who did it and with what
+/// (`EventMsg::Healed`).
 pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
@@ -2557,9 +2561,12 @@ const ACT_ARC: u32 = 29;
 /// Drop `count` of an inventory slot on the ground (wire v97,
 /// `Command::Drop`).
 const ACT_DROP: u32 = 30;
-/// Use the medicine in an inventory slot on a downed body (wire v99,
-/// `Command::Treat`): the slot and the target's id. Reach, the target's
-/// state and whether the item revives are the sim's verdict.
+/// Use the medicine in an inventory slot on another player (wire v99,
+/// `Command::Treat`): the slot and the target's id. A downed body is stood
+/// up by an item that revives; a standing, hurt one is healed by a syringe
+/// at once or a bandage wrapped on (`SurvivalContent::heals_other`), and
+/// hears who healed them (`EventMsg::Healed`, v157). Reach, the target's
+/// state and what the item does are the sim's verdict.
 const ACT_TREAT: u32 = 31;
 /// Hand a stack to another player (wire v102, `Command::Give`): the slot,
 /// the count and the receiver's id. **The thirty-third action**, so it
@@ -3039,8 +3046,10 @@ pub enum ActionMsg {
     /// Drop `count` of inventory slot `slot` on the ground (wire v97). The
     /// slot is shape-checked here; an empty one is the sim's no-op.
     Drop { slot: u8, count: u16 },
-    /// Use inventory slot `slot` on downed body `target` (wire v99). The
-    /// slot is shape-checked here; everything else is the sim's verdict.
+    /// Use inventory slot `slot` on player `target` (wire v99): stand them
+    /// up if they are down and it revives, heal them if they stand and it
+    /// is a syringe or a bandage. The slot is shape-checked here;
+    /// everything else is the sim's verdict.
     Treat { slot: u8, target: u32 },
     /// Hand `count` of inventory slot `slot` to player `target` (wire
     /// v102). Slot and a nonzero count are shape-checked here; reach, the

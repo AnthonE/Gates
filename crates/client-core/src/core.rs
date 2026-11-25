@@ -1974,6 +1974,10 @@ pub struct ClientCore {
     /// by)` per lock solved — read once in `render/feed.rs`.
     arc_texts: crate::arc::Ring<(u8, u8, u8), TOAST_RING>,
     mech_solves: crate::arc::Ring<(u8, u32), TOAST_RING>,
+    /// `(healer, item)` per heal another player landed on this body
+    /// (`EventMsg::Healed`, v157) — drop-oldest, read once in
+    /// `render/feed.rs`.
+    healed_by: crate::arc::Ring<(u32, u16), TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2770,6 +2774,7 @@ impl ClientCore {
             lore: Box::default(),
             arc_texts: Default::default(),
             mech_solves: Default::default(),
+            healed_by: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -4349,6 +4354,7 @@ impl ClientCore {
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
+            EventMsg::Healed { by, item } => self.healed_by.push((by, item)),
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
                 self.assist = (0, 0, 0);
@@ -5226,6 +5232,11 @@ impl ClientCore {
     /// Oldest lock solved: `(mechanism, by)`.
     pub fn pop_mech_solved(&mut self) -> Option<(u8, u32)> {
         self.mech_solves.pop()
+    }
+
+    /// Oldest heal another player landed on this body: `(healer, item)`.
+    pub fn pop_healed_by(&mut self) -> Option<(u32, u16)> {
+        self.healed_by.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.

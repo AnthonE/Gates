@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 199] = [
+const GOLDEN: [&[u8]; 200] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -262,6 +262,7 @@ const GOLDEN: [&[u8]; 199] = [
     include_bytes!("golden/event_wire.bin"),
     include_bytes!("golden/hello_commander.bin"),
     include_bytes!("golden/event_crew.bin"),
+    include_bytes!("golden/event_healed.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -589,8 +590,10 @@ fn test_protocol_golden() {
     // An agent's commander (v154).
     g!(seen, golden_stream, 197);
     g!(seen, golden_event, 198);
+    // A heal by another player (v157).
+    g!(seen, golden_event, 199);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 199, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 200, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2880,6 +2883,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_crew(id, of, &mut buf).unwrap()
+        }
+        "event_healed.bin" => {
+            let (by, item) = protocol::goldens::event_healed();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Healed { by, item },
+                "{name}"
+            );
+            protocol::encode_event_healed(by, item, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

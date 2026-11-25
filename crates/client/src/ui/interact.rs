@@ -2953,6 +2953,12 @@ pub fn heal_prompt(catalog: &ItemCatalog, item: u16, who: &str) -> String {
     format!("[E] HEAL {who} WITH {item}")
 }
 
+/// The line a player healed by another reads (`EventMsg::Healed`): who,
+/// as every surface draws them (`ui::names::shown`, streamer-safe).
+pub fn healed_by_line(core: &client_core::core::ClientCore, by: u32) -> String {
+    format!("HEALED BY {}", crate::ui::names::shown(core, by))
+}
+
 /// A sleeper is an aimed `E` target: the body the crosshair is on, lying
 /// where the sim's lying capsule is (`ranged::body_crossing`), inside the
 /// help-up ray's reach. The server proves the reach again every tick
@@ -3443,6 +3449,31 @@ mod assist_tests {
         let mut e = Pick::default();
         fold_heal(&mut e, resolve_heal(aim, 1, &[(3, friend)], Some(BANDAGE)));
         assert_eq!((e.verb, e.handle), (Verb::Heal, 3));
+    }
+
+    /// A heal by another player, off the wire, is the healed player's
+    /// "HEALED BY" line, naming the healer as every surface does: by
+    /// their tag once it has landed, by id before.
+    #[test]
+    fn a_heal_from_another_player_reads_healed_by_their_name() {
+        use client_core::core::ClientCore;
+        const HEALER: u32 = 259;
+        const SYRINGE: u16 = 40;
+        let mut core = Box::new(ClientCore::new(42, 1, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_healed(HEALER, SYRINGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the heal applies");
+        assert_eq!(core.pop_healed_by(), Some((HEALER, SYRINGE)));
+        assert_eq!(core.pop_healed_by(), None, "one heal, one line");
+        assert_eq!(healed_by_line(&core, HEALER), "HEALED BY #259");
+
+        let address =
+            protocol::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf").unwrap();
+        let name = protocol::Name::new("Quillon").unwrap();
+        let guild = protocol::Guild::NONE;
+        let len = protocol::encode_event_tag(HEALER, &address, &name, 0, &guild, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the tag applies");
+        assert_eq!(healed_by_line(&core, HEALER), "HEALED BY Quillon");
     }
 
     #[test]
