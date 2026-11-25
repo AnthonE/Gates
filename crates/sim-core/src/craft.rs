@@ -506,9 +506,11 @@ pub fn rearm(cc: &CraftContent, dc: &DeployContent, deploys: &Deploys, tick: u64
 }
 
 /// Apply one cancel (`Command::CraftCancel`, &mut [ItemStack::default(); INV_SLOTS]): refund the remaining units'
-/// inputs (the in-progress unit refunds whole) and close the gap. An
-/// index naming no live job is ignored — a cancel racing a completion is
-/// a race, not an attack.
+/// inputs (the in-progress unit refunds whole) and close the gap. Ignored
+/// unless the job at `index` is live and still one of `recipe`: the index
+/// was read off a queue the click saw, and a head that finished in between
+/// shifted the queue left, so the next job would be refunded instead. A
+/// cancel racing a completion is ignored, as a fast-track is (wire v157).
 ///
 /// `spill` is `step`'s buffer and the fall-point is the same — the
 /// crafter's feet — because a cancel is the one give-back of the four with
@@ -531,10 +533,11 @@ pub fn cancel(
     tick: u64,
     p: &mut Player,
     index: u16,
+    recipe: u16,
     spill: &mut [ItemStack; INV_SLOTS],
 ) {
     let index = index as usize;
-    if index >= CRAFT_QUEUE || p.jobs[index].remaining == 0 {
+    if index >= CRAFT_QUEUE || p.jobs[index].remaining == 0 || p.jobs[index].recipe != recipe {
         return;
     }
     let job = p.jobs[index];
@@ -944,7 +947,7 @@ mod tests {
         assert!(ev.is_empty(), "queued: {:?}", ev.entries());
         assert_eq!((p.inv[0], p.inv[1].count), (broken, 0), "the whole one");
         let mut spill = [ItemStack::default(); INV_SLOTS];
-        cancel(&cc, &gc, &dc, &nod, 11, &mut p, 0, &mut spill);
+        cancel(&cc, &gc, &dc, &nod, 11, &mut p, 0, 0, &mut spill);
         assert_eq!(p.inv[0], broken, "a cancel mended the broken one");
         assert_eq!(
             p.inv[1],
@@ -1079,6 +1082,7 @@ mod tests {
             55,
             &mut p,
             0,
+            0,
             &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(inv_count(&p.inv, 0), 30, "9 refunded");
@@ -1105,6 +1109,7 @@ mod tests {
             60,
             &mut p,
             0,
+            1,
             &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(inv_count(&p.inv, 1), 18, "2 of 4 came back");
@@ -1121,6 +1126,7 @@ mod tests {
             61,
             &mut p,
             3,
+            0,
             &mut [ItemStack::default(); INV_SLOTS],
         );
         cancel(
@@ -1131,9 +1137,47 @@ mod tests {
             61,
             &mut p,
             99,
+            0,
             &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(ev.len(), before);
+    }
+
+    /// The cancel race (`NOW.md` §0cq 7): the click saw A at index 0 and B
+    /// behind it, and A finished before the cancel arrived, so the queue
+    /// shifted left. A cancel naming (0, A) must not refund B, and one
+    /// naming (0, B) cancels B.
+    #[test]
+    fn a_cancel_racing_a_completion_leaves_the_next_job_alone() {
+        let (cc, gc) = fixture();
+        let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
+        let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 0, 1, 0, &mut ev); // A
+        enqueue(&cc, &gc, &SK, 0, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev); // B
+        assert!(ev.is_empty(), "both queued: {:?}", ev.entries());
+        step_nospill(&cc, &gc, 52, &mut p, &mut ev);
+        assert_eq!(p.jobs[0].recipe, 1, "A finished and B moved to the head");
+        let (jobs, inv) = (p.jobs, p.inv);
+
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        cancel(&cc, &gc, &dc, &nod, 53, &mut p, 0, 0, &mut spill);
+        assert_eq!(p.jobs, jobs, "a cancel of A took B off the queue");
+        assert_eq!(p.inv, inv, "a cancel of A refunded B");
+        assert!(spill.iter().all(|s| s.count == 0));
+
+        cancel(&cc, &gc, &dc, &nod, 53, &mut p, 0, 1, &mut spill);
+        assert_eq!(p.jobs[0], CraftJob::default(), "B was cancelled");
+        assert_eq!(
+            inv_count(&p.inv, 1),
+            inv_count(&inv, 1) + 4,
+            "B's 4 × item1"
+        );
+        assert_eq!(
+            inv_count(&p.inv, 2),
+            inv_count(&inv, 2) + 2,
+            "B's 2 × item2"
+        );
     }
 
     #[test]

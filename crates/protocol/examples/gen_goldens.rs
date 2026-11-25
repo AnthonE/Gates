@@ -385,7 +385,8 @@ fn main() {
     let len = encode_action_craft(recipe, count, skin, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[19], &buf[..len]);
 
-    let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
+    let (index, recipe) = goldens::action_cancel();
+    let len = encode_action_cancel(index, recipe, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[20], &buf[..len]);
 
     let (row, cx, cz, level, loc, freehand, plate) = goldens::action_place();

@@ -862,13 +862,13 @@ fn golden_action(fixture: &[u8], name: &str) {
             protocol::encode_action_skins_refresh(&mut buf).unwrap()
         }
         "action_cancel.bin" => {
-            let index = action_cancel();
+            let (index, recipe) = action_cancel();
             assert_eq!(
                 decode_action(fixture).unwrap(),
-                ActionMsg::CraftCancel { index },
+                ActionMsg::CraftCancel { index, recipe },
                 "{name}: decode mismatch"
             );
-            encode_action_cancel(index, &mut buf).unwrap()
+            encode_action_cancel(index, recipe, &mut buf).unwrap()
         }
         "action_place.bin" => {
             let (row, cx, cz, level, loc, freehand, plate) = action_place();

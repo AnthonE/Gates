@@ -6563,7 +6563,7 @@ mod tests {
         // The demux itself: this frame is chat, and an action frame is not.
         assert_eq!(peek_kind(&frame[..n]), Ok(KIND_CHAT));
         let mut act = [0u8; MAX_STREAM_MSG_BYTES];
-        let an = protocol::encode_action_cancel(0, &mut act).expect("encodes");
+        let an = protocol::encode_action_cancel(0, 0, &mut act).expect("encodes");
         assert_eq!(peek_kind(&act[..an]), Ok(protocol::KIND_ACTION));
 
         // The burst is accepted and ringed; everything past it is refused

@@ -1049,6 +1049,7 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
     w.tick(&[Command::CraftCancel {
         id: OWNER,
         index: 0,
+        recipe: 0,
     }]);
 
     assert_eq!(w.players[0].jobs[0].remaining, 0, "the job still cancelled");

@@ -1415,7 +1415,11 @@ pub use voice::{
 /// `SUB_WORK_STATE` admits `WORK_COUNTDOWN` (3) and then the tick it lights,
 /// `SUB_WORK` admits `WORK_EV_COUNTDOWN` (6), an arc refusal admits
 /// `REFUSE_A_COUNTING` (11), and a work's boost may name `KNOB_NOTICE_PCT`.
-pub const PROTO_VER: u16 = 156;
+///
+/// v157 — a craft cancel (`ACT_CANCEL`) closes with the recipe the click saw
+/// at its index, in 8 bits as `ACT_FASTTRACK`'s does, so a queue that moved
+/// under it refuses instead of cancelling the next job.
+pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
 /// below `limits::MOB_ID_TAG`, are the slot's claim generation.
@@ -2818,8 +2822,9 @@ pub enum ActionMsg {
     /// Ask the server to read the owned skin set again. Answered by the
     /// server outside the sim; see `ACT_SKINS_REFRESH`.
     SkinsRefresh,
-    /// Cancel the queue job at `index`, refunding remaining inputs.
-    CraftCancel { index: u16 },
+    /// Cancel the queue job at `index`, refunding remaining inputs, if it
+    /// is still `recipe` (v157).
+    CraftCancel { index: u16, recipe: u16 },
     /// Pull the queue job at `index` to the head, if it is still `recipe`.
     CraftFastTrack { index: u16, recipe: u16 },
     /// Place baked piece row `row` at build-grid address (cx, cz, level,
@@ -3763,14 +3768,19 @@ pub fn encode_action_fasttrack(
     Ok(w.finish())
 }
 
-pub fn encode_action_cancel(index: u16, buf: &mut [u8]) -> Result<usize, WireError> {
-    if index as usize >= sim_core::limits::CRAFT_QUEUE {
+/// Cancel the queue job at `index`, which the click saw as `recipe` (v157:
+/// the recipe rides as `encode_action_fasttrack`'s does, for its reason).
+pub fn encode_action_cancel(index: u16, recipe: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::CRAFT_QUEUE
+        || recipe as usize >= sim_core::limits::MAX_RECIPES
+    {
         return Err(WireError::Range);
     }
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_CANCEL, ACTION_SUB_BITS)?;
     w.write(index as u32, CANCEL_INDEX_BITS)?;
+    w.write(recipe as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -4256,10 +4266,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         },
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
-            if index as usize >= sim_core::limits::CRAFT_QUEUE {
+            let recipe = r.read(8)? as u16;
+            if index as usize >= sim_core::limits::CRAFT_QUEUE
+                || recipe as usize >= sim_core::limits::MAX_RECIPES
+            {
                 return Err(WireError::Malformed);
             }
-            ActionMsg::CraftCancel { index }
+            ActionMsg::CraftCancel { index, recipe }
         }
         ACT_PLACE => {
             let row = r.read(PIECE_ROW_BITS)? as u16;
@@ -5896,6 +5909,43 @@ mod tests {
             },
         };
         assert!(encode_action_shop(1, no_lot, &mut buf).is_err());
+    }
+
+    /// A cancel carries the recipe it saw at its index (v157), as a
+    /// fast-track does: the last index and the last recipe round-trip, and
+    /// an index or a recipe past its table neither encodes nor decodes.
+    #[test]
+    fn a_cancel_round_trips_the_recipe_it_saw() {
+        let (last_i, last_r) = (
+            (sim_core::limits::CRAFT_QUEUE - 1) as u16,
+            (sim_core::limits::MAX_RECIPES - 1) as u16,
+        );
+        let mut buf = [0u8; 8];
+        let n = encode_action_cancel(last_i, last_r, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]).unwrap(),
+            ActionMsg::CraftCancel {
+                index: last_i,
+                recipe: last_r
+            }
+        );
+        assert_eq!(
+            encode_action_cancel(last_i + 1, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_cancel(0, last_r + 1, &mut buf),
+            Err(WireError::Range)
+        );
+        // A forged recipe past the table: the same frame with the 8-bit
+        // field written by hand.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_CANCEL, ACTION_SUB_BITS).unwrap();
+        w.write(0, CANCEL_INDEX_BITS).unwrap();
+        w.write(last_r as u32 + 1, 8).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
     #[test]

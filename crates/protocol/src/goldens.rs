@@ -1697,9 +1697,9 @@ pub fn event_bags() -> ([BagAnchor; BAG_CAP], usize) {
     (bags, 3)
 }
 
-/// A cancel of queue job 2.
-pub fn action_cancel() -> u16 {
-    2
+/// A cancel of queue job 2, seen as recipe 37 (wire v157).
+pub fn action_cancel() -> (u16, u16) {
+    (2, 37)
 }
 
 /// A place request: (row, cx, cz, level, loc, freehand, plate) — a stone

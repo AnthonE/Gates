@@ -2057,10 +2057,12 @@ pub enum Command {
         id: u32,
         recipe: u16,
     },
-    /// Cancel the queue job at `index`, refunding its remaining inputs.
+    /// Cancel the queue job at `index`, refunding its remaining inputs, if
+    /// it is still a job of `recipe` (`craft::cancel`, wire v157).
     CraftCancel {
         id: u32,
         index: u16,
+        recipe: u16,
     },
     /// Pull the queue job at `index` to the head (`craft::fast_track`), if
     /// it is still a job of `recipe` — the reference's `FastTrackTask`.
@@ -6842,7 +6844,7 @@ impl World {
                     );
                 }
             }
-            Command::CraftCancel { id, index } => {
+            Command::CraftCancel { id, index, recipe } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
@@ -6853,6 +6855,7 @@ impl World {
                         self.tick,
                         &mut self.players[slot],
                         index,
+                        recipe,
                         &mut spill,
                     );
                     self.announce_spill(slot, &spill);

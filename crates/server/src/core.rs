@@ -4117,7 +4117,11 @@ impl ShardCore {
                         c.pending_team = Some((op, target));
                         continue;
                     }
-                    ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
+                    ActionMsg::CraftCancel { index, recipe } => Command::CraftCancel {
+                        id: c.id,
+                        index,
+                        recipe,
+                    },
                     ActionMsg::CraftFastTrack { index, recipe } => Command::CraftFastTrack {
                         id: c.id,
                         index,
