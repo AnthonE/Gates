@@ -514,6 +514,7 @@ offered, and a reply naming anything else is refused.
 | `follow:m<k>` | `follow`, after one teammate: the one `team.teammates` lists `k`th (from 1). Offered, one per teammate, beside the walk |
 | `reach:m<k>` | walk up to that teammate and stop in hand reach |
 | `give:m<k>:<item>` | walk up to that teammate and hand them every stack of the item. Offered as a form per teammate (`give:m2:<item>`); a live answer only, never a plan step (a plan with any give is refused) |
+| `heal:m<k>` | walk up to that teammate and use a bandage (a syringe if that is all) on them, the treat a player's `E` sends with one in hand. Offered only while they look hurt (seen down or dead lately, struck at, or asking for a heal: the shard sends nobody's health but your own), stand in sight, and you carry one; one already whole refuses it (`failed`, nothing spent) and is not offered again until a fresh sign |
 | `follow:n<k>` | `follow`, after a stranger: the one `team.near` lists `k`th, a body whose nametag it aimed at within 8 m in the last minute |
 | `give:<item>`, `authorize` | the social verbs (below) |
 

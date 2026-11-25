@@ -292,6 +292,14 @@ pub enum Goal {
     /// (`give:m2:<item>`, the item `Name::EMPTY`); a live answer only, never
     /// a plan step.
     GiveMate(u8, Name),
+    /// Heal one teammate, by slot as `FollowMate` (`heal:m2`): walk up to
+    /// them and use a bandage or a syringe on them, the treat a player
+    /// sends with `E` and one in hand (`Command::Treat` on someone
+    /// standing). The shard sends nobody's hp but one's own, so it is
+    /// offered for a teammate who looks hurt (`explorer`'s
+    /// `sense_hurt_mates`: down or dead lately, struck at, or asking for
+    /// it), up and in sight, while the pack holds a med that heals another.
+    HealMate(u8),
     /// `follow`, after a stranger whose nametag it aimed at within
     /// [`NEAR_AIM_M`] lately: the one `team.near` lists at this slot, from 1
     /// (`follow:n1`).
@@ -474,6 +482,7 @@ impl Goal {
             Goal::FollowMate(_) | Goal::FollowNear(_) => "follow",
             Goal::ReachMate(_) => "reach",
             Goal::GiveMate(..) => "give",
+            Goal::HealMate(_) => "heal",
         }
     }
 
@@ -506,7 +515,11 @@ impl Goal {
                 _ => put(b":<bearing>:<metres>"),
             }
         }
-        if let Goal::FollowMate(slot) | Goal::ReachMate(slot) | Goal::GiveMate(slot, _) = self {
+        if let Goal::FollowMate(slot)
+        | Goal::ReachMate(slot)
+        | Goal::GiveMate(slot, _)
+        | Goal::HealMate(slot) = self
+        {
             put(b":m");
             put(slot.to_string().as_bytes());
         }
@@ -576,6 +589,9 @@ impl Goal {
         }
         if key == "reach" {
             return mate(name).map(Goal::ReachMate);
+        }
+        if key == "heal" {
+            return mate(name).map(Goal::HealMate);
         }
         if key == "give" {
             if let Some((slot, item)) = name.split_once(':') {
@@ -721,6 +737,10 @@ impl Goal {
             Goal::FollowNear(k) => format!(
                 "Stay with the stranger team.near lists {k}th, whose nametag you aimed at."
             ),
+            Goal::HealMate(k) => format!(
+                "Heal teammate {k} (team.teammates' {k}th), who looks hurt: walk up and use a \
+                 bandage or syringe on them. One already whole refuses it and keeps the med."
+            ),
         }
     }
 }
@@ -772,6 +792,9 @@ pub enum Why {
     Session,
     /// A work refused the verb, with this code (`sim_core::works::REFUSE_A_*`).
     ArcRefused(u8),
+    /// The teammate a heal was for was whole: full health, not bleeding
+    /// (`REFUSE_C_FULL`).
+    Whole,
 }
 
 impl Why {
@@ -809,6 +832,7 @@ impl Why {
             Why::Blocked => "something else is in the way of it, so it could not reach it",
             Why::Session => "the session ended while it ran",
             Why::ArcRefused(code) => arc_refusal(code),
+            Why::Whole => "they were already whole (full health, not bleeding): nothing was spent",
         }
     }
 }
@@ -1969,14 +1993,15 @@ pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits:
 
 /// The most goals one request can offer: the fixed set, every craft and
 /// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
-/// (`HOLD_ANY`), a follow, a reach and a give form for each teammate, a
-/// follow for each stranger near, and a give for each item the pack lists.
+/// (`HOLD_ANY`), a follow, a reach, a give form and a heal for each
+/// teammate, a follow for each stranger near, and a give for each item the
+/// pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
     + 2
-    + 3 * protocol::TEAM_MAX
+    + 4 * protocol::TEAM_MAX
     + NEAR_MAX
     + SUMMARY_ITEMS;
 
@@ -4671,6 +4696,19 @@ mod tests {
         }
         assert_eq!(Goal::named("follow"), Some(Goal::Follow));
         assert_eq!(Goal::named("reach:m3"), Some(Goal::ReachMate(3)));
+        // A heal on one teammate, by slot; the plain heal is one's own.
+        assert_eq!(Goal::HealMate(2).label().as_str(), "heal:m2");
+        assert_eq!(Goal::HealMate(2).key(), "heal");
+        assert_eq!(Goal::named("heal:m2"), Some(Goal::HealMate(2)));
+        assert_eq!(Goal::named("heal"), Some(Goal::Heal));
+        for bad in ["heal:m0", "heal:m9", "heal:Ash", "heal:2"] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("heal:m2", s.options()), None, "not offered");
+        s.offer(Goal::HealMate(2));
+        assert_eq!(Goal::parse("heal:m2", s.options()), Some(Goal::HealMate(2)));
+        assert_eq!(Goal::parse("heal:m1", s.options()), None);
         assert_eq!(Goal::named("follow:n1"), Some(Goal::FollowNear(1)));
         assert_eq!(Goal::named("follow:n5"), None, "past NEAR_MAX");
         // A give to a slot: one form per teammate, filled in with the item.

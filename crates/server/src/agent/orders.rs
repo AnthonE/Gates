@@ -225,9 +225,42 @@ pub fn asks_to_team(text: &[u8]) -> bool {
     words(text).any(|w| is(w, &["team", "join", "invite", "squad", "group", "duo"]))
 }
 
+/// A teammate asking to be healed (`heal me`, `need a bandage`, `I'm
+/// hurt`): no order, but one of the signs that offers `heal:m<k>` for them
+/// (`explorer`'s `sense_hurt_mates`), since the shard sends nobody's hp
+/// but one's own.
+pub fn asks_heal(text: &[u8]) -> bool {
+    words(text).any(|w| {
+        is(
+            w,
+            &[
+                "heal", "heals", "healing", "bandage", "bandages", "syringe", "syringes", "meds",
+                "medic", "hurt", "bleeding",
+            ],
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_teammate_asks_to_be_healed_in_plain_words() {
+        for yes in [
+            "heal me",
+            "need a bandage!",
+            "I'm hurt",
+            "medic",
+            "syringe pls",
+        ] {
+            assert!(asks_heal(yes.as_bytes()), "{yes}");
+        }
+        for no in ["help", "health is fine", "go get wood", "healthy"] {
+            assert!(!asks_heal(no.as_bytes()), "{no}");
+        }
+        assert_eq!(order(b"heal me"), None, "no order");
+    }
 
     #[test]
     fn plain_words_are_orders() {

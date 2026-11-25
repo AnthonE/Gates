@@ -141,6 +141,14 @@ pub const NEAR_AIM_ACROSS_M: f32 = 0.6;
 /// A stranger aimed at keeps its `n` slot this long after.
 pub const NEAR_KEEP_TICKS: u32 = 60 * TICK_HZ;
 pub const GIVE_GOAL_SECS: u32 = 60;
+/// A heal on a teammate (`Goal::HealMate`) runs at most this long, seconds.
+pub const HEAL_MATE_GOAL_SECS: u32 = 60;
+/// A sign that a teammate is hurt (`Survivor::sense_hurt_mates`) keeps them
+/// offered this long after, seconds: nothing on the island mends a body
+/// by itself much faster.
+pub const HURT_KEEP_SECS: u32 = 300;
+/// A stranger's blow, or a wolf's bite, reaches a teammate from this near.
+pub const STRUCK_M: f32 = 4.0;
 /// An authorize (`Goal::Authorize`): the walk in through the team's doors to
 /// its cupboard and the press there, at most this long, seconds; one that
 /// came to nothing is not offered again for a while.
@@ -660,6 +668,10 @@ pub struct Senses {
     /// Its friend or a teammate, up and in sight, stands in hand reach
     /// ([`GIVE_REACH_M`]): someone a give would go to.
     pub give_to: bool,
+    /// The teammates a heal is offered for (`heal:m<k>`), a bit per slot
+    /// from bit 0 for `m1`: they look hurt, stand in sight, and the pack
+    /// holds a med that heals another (`Survivor::sense_hurt_mates`).
+    pub heal_mates: u8,
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
@@ -953,6 +965,9 @@ impl Target {
     }
 }
 
+/// An action whose answer a goal waits on. `Treat` is a med used on
+/// teammate `to` (`encode_action_treat`), answered by the healer's own
+/// consume toast or refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     Respawn,
@@ -960,6 +975,23 @@ enum Pending {
     Equip,
     Consume { item: u16, food: u16, water: u16 },
     Drink,
+    Treat { item: u16, to: u32 },
+}
+
+/// What it makes of one teammate's health, which the shard never sends
+/// (`Survivor::sense_hurt_mates`): when it last saw a sign they are hurt,
+/// and when a heal on them was refused as whole. Ticks; `id` 0 is a free
+/// row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MateCare {
+    id: u32,
+    hurt: Option<u32>,
+    whole: Option<u32>,
+}
+
+/// `a` is later than `b` on the wrapping tick clock.
+fn later(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) > 0
 }
 
 /// Health still on its way from meds used, read off the bar the way a
@@ -1323,6 +1355,8 @@ pub struct Survivor {
     /// The teammate slot a `follow:m<k>` or `reach:m<k>` goes after
     /// (`Goal::FollowMate`, `Goal::ReachMate`).
     follow_target: Option<u8>,
+    /// What it makes of each teammate's health (`sense_hurt_mates`).
+    mate_care: [MateCare; protocol::TEAM_MAX],
     /// The stranger a `follow:n<k>` goes after, by id (`Goal::FollowNear`).
     follow_near: Option<u32>,
     /// Strangers whose nametag its aim crossed within `NEAR_AIM_M`, and
@@ -1543,6 +1577,7 @@ impl Survivor {
             give_to: None,
             hand_target: 0,
             follow_target: None,
+            mate_care: [MateCare::default(); protocol::TEAM_MAX],
             follow_near: None,
             aimed: [(0, 0); crate::mind::NEAR_MAX],
             auth: Auth::default(),
@@ -2668,7 +2703,10 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
-        if matches!(goal, Goal::HandOver | Goal::Give(_) | Goal::GiveMate(..)) {
+        if matches!(
+            goal,
+            Goal::HandOver | Goal::Give(_) | Goal::GiveMate(..) | Goal::HealMate(_)
+        ) {
             self.hand = Hand::default();
         }
         // A give goes to whoever was in hand reach when it was chosen.
@@ -3187,6 +3225,11 @@ impl Survivor {
             }
             Goal::Give(name) => self.give(core, body, name, None, tick),
             Goal::GiveMate(slot, name) => self.give(core, body, name, Some(slot), tick),
+            Goal::HealMate(_) if elapsed >= HEAL_MATE_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::HealMate(slot) => self.heal_mate(core, body, slot, tick),
             Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
                 self.auth_failed = Some(tick);
                 self.home_job = HomeJob::default();
@@ -3683,6 +3726,252 @@ impl Survivor {
             .flatten()
             .map(|(at, seen)| (id, at, seen));
         self.hand_to(core, body, to, Handing::Item(item), tick)
+    }
+
+    /// A heal on a teammate (`Goal::HealMate`): up to them, eyes on their
+    /// chest at arm's length with the med in hand, and the treat a player
+    /// sends with `E` and one in hand (`encode_action_treat`). A syringe
+    /// lands at once; a bandage is wrapped on standing still with the hand
+    /// up (`wrap_until`) and lands on its tick. One med a goal. One already
+    /// whole refuses it (`REFUSE_C_FULL`) and keeps the med, and is not
+    /// offered again until a fresh sign (`mate_whole`). A treat the shard
+    /// said nothing to (out of reach, the aim off them, they moved off
+    /// mid-wrap) is tried again a few times.
+    fn heal_mate(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        slot: u8,
+        tick: u32,
+    ) -> Intent {
+        self.stats.phase = Phase::Healing;
+        let mut waiting = false;
+        if let Some((Pending::Treat { item, to }, _)) = self.awaiting {
+            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            match self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap) {
+                Ok(Some(Verdict::Ok)) => {
+                    if let Some(a) = self.goal.as_mut() {
+                        a.gained += 1;
+                    }
+                    self.end_goal(tick, Outcome::Done);
+                    return Intent::IDLE;
+                }
+                Ok(Some(Verdict::Full)) => {
+                    self.mate_whole(to, tick);
+                    self.end_goal(tick, Outcome::Failed(Why::Whole));
+                    return Intent::IDLE;
+                }
+                Ok(Some(_)) => {
+                    self.end_goal(tick, Outcome::Failed(Why::Refused));
+                    return Intent::IDLE;
+                }
+                Err(()) => {
+                    self.hand.aimed = None;
+                    self.hand.tries += 1;
+                    if self.hand.tries >= society::HAND_TRIES {
+                        self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                        return Intent::IDLE;
+                    }
+                }
+                Ok(None) => waiting = true,
+            }
+        }
+        let id = mate_in_slot(core, slot);
+        let Some((at, seen)) = (id != 0).then(|| self.mate_at(id, tick)).flatten() else {
+            if !waiting {
+                self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            }
+            return Intent::IDLE;
+        };
+        let pick = heal_other_slot(core);
+        // Held as a player holds it: the treat is `E` with it in hand.
+        let hold = pick
+            .map(|(inv, _)| inv)
+            .filter(|&inv| inv < HOTBAR_SLOTS)
+            .map(|inv| inv as u8);
+        let face = Intent {
+            look: Look::Point([at[0], at[1] + 1.0, at[2]]),
+            sel: hold,
+            ..Intent::IDLE
+        };
+        // An answer still coming: stand still, eyes on them.
+        if waiting {
+            return face;
+        }
+        let Some((inv, item)) = pick else {
+            self.end_goal(tick, Outcome::Failed(Why::NoMeds));
+            return Intent::IDLE;
+        };
+        // Only in the pack: onto the belt first, as a player drags it
+        // there, and a look for it there again in a moment.
+        if inv >= HOTBAR_SLOTS {
+            self.hand.aimed = None;
+            let due = self
+                .hand
+                .sent
+                .is_none_or(|(.., sent, _)| tick.wrapping_sub(sent) >= VERDICT_SECS * TICK_HZ);
+            if due {
+                if self.hand.tries >= society::HAND_TRIES {
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    return Intent::IDLE;
+                }
+                if let Some((from, to, count)) = home::belt_move(core, item) {
+                    if self.queue(|b| {
+                        protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, b)
+                    }) {
+                        self.hand.sent = Some((from, count, tick, core.move_seq));
+                        self.hand.tries += 1;
+                    }
+                }
+            }
+            return Intent { sel: None, ..face };
+        }
+        self.hand.sent = None;
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        if doors::walled_between(core, [x, z], [at[0], at[2]]) {
+            self.end_goal(tick, Outcome::Failed(Why::Walled));
+            return Intent::IDLE;
+        }
+        let d = (at[0] - x).hypot(at[2] - z);
+        if d > society::HAND_STAND_M {
+            self.stats.phase = Phase::Approaching;
+            self.hand.aimed = None;
+            let hurry = d > FOLLOW_RUN_M;
+            let walk = match self.route.to(
+                core,
+                body,
+                [at[0], at[2]],
+                society::HAND_STAND_M - 0.4,
+                hurry,
+                tick,
+            ) {
+                step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                Step::Wait | Step::Arrived | Step::Blocked => {
+                    Intent::walk(yaw_toward(at[0] - x, at[2] - z))
+                }
+            };
+            return Intent { sel: hold, ..walk };
+        }
+        // Out of sight at arm's length: looked round for, nothing sent.
+        // In sight, the med held a moment first: the hand a wrap is wrapped
+        // in is the one the shard has.
+        if !seen || self.sel != inv as u8 {
+            self.hand.aimed = None;
+            return face;
+        }
+        let aimed = *self.hand.aimed.get_or_insert(tick);
+        if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
+            && self.hands.settled()
+            && self.awaiting.is_none()
+            && self.queue(|b| protocol::encode_action_treat(inv as u8, id, b))
+        {
+            self.awaiting = Some((Pending::Treat { item, to: id }, tick));
+            self.verdict = None;
+            self.hand.aimed = None;
+            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            if wrap > 0 {
+                self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
+            }
+        }
+        face
+    }
+
+    /// Which teammates look hurt, for `heal:m<k>` (`Senses::heal_mates`).
+    /// The shard sends nobody's hp but one's own, so a teammate is hurt by
+    /// what a player sees of them: down or dead lately (a body helped up
+    /// stands at `sim_core::wound::WOUNDED_HP`, a fresh one at the
+    /// content's `spawn_hp`), struck at (a stranger's blow or shot their
+    /// way, a wolf's bite beside them), or asking for it on chat
+    /// (`orders::asks_heal`, marked as it is heard). A sign keeps for
+    /// [`HURT_KEEP_SECS`]; a heal refused as whole clears it until a sign
+    /// after that. Offered while they stand in sight and the pack holds a
+    /// med that heals another.
+    fn sense_hurt_mates(&mut self, core: &ClientCore, team: &protocol::TeamView, tick: u32) {
+        for c in &mut self.mate_care {
+            if c.id != 0 && !team.has(c.id) {
+                *c = MateCare::default();
+            }
+        }
+        let recall = GUARD_RECALL_SECS * TICK_HZ;
+        let fresh = |at: Option<u32>| at.filter(|&at| tick.wrapping_sub(at) < recall);
+        let med = heal_other_slot(core).is_some();
+        let mut mask = 0u8;
+        let mut slot = 0u8;
+        for m in team.members() {
+            if m.id == core.player_id {
+                continue;
+            }
+            slot += 1;
+            let track = self.tracks.get(m.id).copied();
+            let down = m.state == protocol::TEAM_DEAD
+                || track.is_some_and(|t| t.visible && (t.wounded || t.dead));
+            if down {
+                self.mark_hurt(m.id, tick);
+            }
+            if let Some(mate) = track.filter(|t| t.visible && t.active() && !t.wounded) {
+                let mut struck: Option<u32> = None;
+                for t in self.tracks.recent(tick, recall).filter(|t| t.visible) {
+                    let d = (t.pos[0] - mate.pos[0]).hypot(t.pos[2] - mate.pos[2]);
+                    let at = match t.species {
+                        Species::Pig => None,
+                        Species::Wolf => fresh(t.last_swing).filter(|_| d <= STRUCK_M),
+                        Species::Player => fresh(t.last_swing)
+                            .filter(|_| tracks::aims_at(t, mate.pos, mate.crouched, STRUCK_M))
+                            .max(fresh(t.last_shot).filter(|_| {
+                                tracks::aims_at(t, mate.pos, mate.crouched, f32::INFINITY)
+                            })),
+                    };
+                    struck = struck.max(at);
+                }
+                if let Some(at) = struck {
+                    self.mark_hurt(m.id, at);
+                }
+            }
+            if med && self.looks_hurt(m.id, tick) && self.mate_at(m.id, tick).is_some() {
+                mask |= 1 << (slot - 1);
+            }
+        }
+        self.senses.heal_mates = mask;
+    }
+
+    /// A sign at tick `at` that teammate `id` is hurt. One from before a
+    /// heal on them was refused as whole is not one.
+    fn mark_hurt(&mut self, id: u32, at: u32) {
+        let row = self
+            .mate_care
+            .iter()
+            .position(|c| c.id == id)
+            .or_else(|| self.mate_care.iter().position(|c| c.id == 0));
+        let Some(c) = row.map(|i| &mut self.mate_care[i]) else {
+            return;
+        };
+        c.id = id;
+        if c.whole.is_some_and(|w| !later(at, w)) {
+            return;
+        }
+        if c.hurt.is_none_or(|h| later(at, h)) {
+            c.hurt = Some(at);
+        }
+    }
+
+    /// Teammate `id` was found whole at `tick`: a heal on them refused.
+    fn mate_whole(&mut self, id: u32, tick: u32) {
+        if let Some(c) = self.mate_care.iter_mut().find(|c| c.id == id && id != 0) {
+            c.hurt = None;
+            c.whole = Some(tick);
+        }
+    }
+
+    /// Teammate `id` showed a sign of hurt within [`HURT_KEEP_SECS`].
+    fn looks_hurt(&self, id: u32, tick: u32) -> bool {
+        self.mate_care.iter().any(|c| {
+            c.id == id
+                && id != 0
+                && c.hurt.is_some_and(|h| {
+                    tick.wrapping_sub(h) < HURT_KEEP_SECS * TICK_HZ
+                        && c.whole.is_none_or(|w| later(h, w))
+                })
+        })
     }
 
     /// A turncoat's hearth taken: it forgets its crew, their code, their
@@ -6050,7 +6339,7 @@ impl Survivor {
     fn medic(&mut self, core: &ClientCore, tick: u32, calm: bool) {
         let owns_lane = matches!(
             self.goal(),
-            Some(Goal::Heal | Goal::Eat | Goal::Drink | Goal::Craft(_))
+            Some(Goal::Heal | Goal::HealMate(_) | Goal::Eat | Goal::Drink | Goal::Craft(_))
         );
         if owns_lane {
             self.medic = false;
@@ -7625,6 +7914,7 @@ impl Survivor {
         }
         self.give_to = give_to.map(|(.., id)| id);
         self.senses.give_to = self.give_to.is_some();
+        self.sense_hurt_mates(core, &team, tick);
         self.note_aimed(body, &team, tick);
         self.sense_turn(core, body, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
@@ -8247,6 +8537,10 @@ impl Survivor {
                 self.stats.heard += 1;
                 self.memory.chat_wake |= !channel.is_global();
             }
+            // A teammate asking to be healed looks hurt (`sense_hurt_mates`).
+            if !me && core.team().has(from) && crate::agent::orders::asks_heal(text.as_bytes()) {
+                self.mark_hurt(from, tick);
+            }
             let tag = core.tag(from);
             self.memory.chat.push(HeardLine {
                 from,
@@ -8571,6 +8865,13 @@ impl Survivor {
                     self.verdict = Some(Verdict::Ok);
                 }
             }
+            // A med on a teammate: the toast is the healer's own, for the
+            // item it spent.
+            if let Some((Pending::Treat { item: want, .. }, _)) = self.awaiting {
+                if want == item {
+                    self.verdict = Some(Verdict::Ok);
+                }
+            }
         }
         while let Some(reason) = core.pop_consume_refusal() {
             self.stats.refusals += 1;
@@ -8590,6 +8891,14 @@ impl Survivor {
                         Verdict::Full
                     } else {
                         Verdict::NoWater
+                    });
+                }
+                // Full is the teammate whole: nothing was spent.
+                Some((Pending::Treat { .. }, _)) => {
+                    self.verdict = Some(if u32::from(reason) == REFUSE_C_FULL {
+                        Verdict::Full
+                    } else {
+                        Verdict::Refused
                     });
                 }
                 _ => {}
@@ -9812,6 +10121,9 @@ pub fn observe(
             if s.items_len > 0 {
                 s.offer(Goal::GiveMate(slot, Name::EMPTY));
             }
+            if senses.heal_mates & (1 << (slot - 1)) != 0 {
+                s.offer(Goal::HealMate(slot));
+            }
         }
         for slot in 1..=s.team.near_len {
             s.offer(Goal::FollowNear(slot));
@@ -9899,6 +10211,35 @@ fn walk_target(body: &EntityState, leg: crate::mind::Walk) -> [f32; 2] {
     let edge = sim_core::movement::BORDER_MARGIN + WALK_STOP_M;
     let far = sim_core::terrain::ISLAND_SIZE - edge;
     [(x + dx * m).clamp(edge, far), (z + dz * m).clamp(edge, far)]
+}
+
+/// The pack's med for someone else, `(slot, item)`: a row that heals and
+/// is a revive or a use in the hands, as client-core's `held_heal_slot`
+/// reads the catalog (`SurvivalContent::heals_other`; the medkit stays
+/// self-only). What is no revive first, so a syringe is kept for a body
+/// that is down, then what heals most, then the belt before the pack (a
+/// heal moves one from the pack to the belt first: the treat is `E` with
+/// it in hand).
+fn heal_other_slot(core: &ClientCore) -> Option<(usize, u16)> {
+    let mut best: Option<(usize, u16, (bool, u16, bool))> = None;
+    for (i, st) in core.inv[..INV_SLOTS].iter().enumerate() {
+        let Some(r) = core
+            .catalog
+            .rows
+            .get(st.item as usize)
+            .filter(|_| st.count > 0)
+        else {
+            continue;
+        };
+        if r.health == 0 || !(r.revive || r.use_ticks > 0) {
+            continue;
+        }
+        let key = (!r.revive, r.health, i < HOTBAR_SLOTS);
+        if best.is_none_or(|(.., b)| key > b) {
+            best = Some((i, st.item, key));
+        }
+    }
+    best.map(|(i, item, _)| (i, item))
 }
 
 /// The teammate a request listed at `slot` (from 1), in the team view's

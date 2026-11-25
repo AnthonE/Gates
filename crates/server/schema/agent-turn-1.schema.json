@@ -16,7 +16,7 @@
       "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates", "near"],
       "properties": {
         "invite_from": {"type": ["string", "null"]},
-        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k> and give:m<k>:<item> name the kth (from 1)."},
+        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k>, give:m<k>:<item> and heal:m<k> name the kth (from 1)."},
         "near": {"type": "array", "items": {"type": "string"}, "description": "Strangers whose nametag this body aimed at within 8 m in the last minute; follow:n<k> names the kth (from 1)."}
       }
     },

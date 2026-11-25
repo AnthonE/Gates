@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 28] = [
+const EXPECTED_VERBS: [&str; 29] = [
     "craft",
     "consume",
     "drink",
@@ -101,6 +101,7 @@ const EXPECTED_VERBS: [&str; 28] = [
     "shop",
     "give",
     "drop",
+    "treat",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -634,6 +635,16 @@ impl Harness {
             ActionMsg::Place { .. } => Some(self.plan),
             ActionMsg::Upgrade { .. } | ActionMsg::Repair { .. } => Some(self.hammer),
             ActionMsg::Throw { .. } => Some(self.satchel),
+            // A med on someone else is `E` with it in hand: the slot sent is
+            // the one held.
+            ActionMsg::Treat { slot, .. } => {
+                let slot = usize::from(slot);
+                Some(if slot < HOTBAR_SLOTS {
+                    self.me().inv[slot].item
+                } else {
+                    u16::MAX
+                })
+            }
             _ => None,
         }
     }
@@ -2534,6 +2545,188 @@ fn a_teammate_gives_its_wood_to_the_teammate_in_reach() {
     assert_eq!(held(h.me()), 0, "the pack is empty of it");
     assert!(logged, "the ledger kept no give from it to the teammate");
     assert!(h.verbs.contains("give"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The heal test's decision source, an external one (a heal on a teammate
+/// is offered to the minds `go:` is): yes to a team, then `heal:m1` while
+/// it is on offer and the test has armed one (`.0`), else stand.
+struct HealWhenArmed(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+impl server::mind::DecisionSource for HealWhenArmed {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::External
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use std::sync::atomic::Ordering;
+        let goal = if s.offers(Goal::JoinTeam) {
+            Goal::JoinTeam
+        } else if s.offers(Goal::HealMate(1)) && self.0.load(Ordering::SeqCst) > 0 {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+            Goal::HealMate(1)
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// A heal on a hurt teammate (`heal:m<k>`). The shard sends nobody's hp
+/// but one's own, so a teammate standing whole in hand reach is not
+/// offered one, whatever the pack holds. Hurt and asking for it on team
+/// chat, they are: the agent puts the syringe from its pack on its belt,
+/// walks up holding it and sends the human client's treat, and their
+/// health rises in the sim. Found whole on a second try, the treat is
+/// refused, the syringe kept, and the offer gone. Both shards
+/// hash-identical, the frame path allocation-free.
+#[test]
+fn a_teammate_heals_the_hurt_teammate_who_asks() {
+    use sim_core::movement::POS_XZ_Q;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let armed = std::sync::Arc::new(AtomicU32::new(0));
+    let mind = Mind::inline(HealWhenArmed(armed.clone()), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, common::clearing(3), mind);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+
+    // Two syringes in the pack; the teammate two metres in front, whole.
+    let content = common::content();
+    let syringe = common::stack(&content, "item.syringe");
+    let item = syringe.item;
+    h.stage(move |p| {
+        p.inv[HOTBAR_SLOTS + 5] = sim_core::gather::ItemStack {
+            count: 2,
+            ..syringe
+        };
+    });
+    let me = h.me().body;
+    let (fx, fz) = sim_core::yaw_dir(h.bot.hands().view().0);
+    let haven = h.shard.world.haven;
+    let (x, z) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+    let mate = sim_core::movement::Body::at(SEED, &haven, x + fx * 2.0, z + fz * 2.0);
+    h.stage_puppet(move |p| {
+        p.body = mate;
+        p.hp = p.hp_max;
+        p.bleed = 0;
+    });
+    armed.store(1, Ordering::SeqCst);
+    let offered = |h: &Harness| {
+        h.bot
+            .summary(&h.view, ID)
+            .is_some_and(|s| s.allows(Goal::HealMate(1)))
+    };
+    let puppet = |h: &Harness| -> sim_core::world::Player {
+        *h.shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap()
+    };
+    let syringes = |h: &Harness| -> u32 {
+        h.me()
+            .inv
+            .iter()
+            .filter(|s| s.count > 0 && s.item == item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    // Whole and saying nothing: no heal on offer, so none is chosen.
+    for _ in 0..8 * TICK_HZ {
+        h.step();
+        assert!(
+            !offered(&h),
+            "a heal offered for a teammate with no sign of hurt"
+        );
+    }
+    assert_eq!(armed.load(Ordering::SeqCst), 1);
+
+    // Hurt, and asking: offered, chosen, and the syringe goes in.
+    h.stage_puppet(|p| p.hp = 30);
+    h.puppet_says_on(protocol::Channel::Team, "need a heal");
+    // The newest heal report, of one that ended `done` or of one that did
+    // not (the history keeps only the last few goals).
+    let heal = |h: &Harness, done: bool| {
+        h.bot
+            .history
+            .iter()
+            .filter(|r| r.goal == Goal::HealMate(1) && (r.outcome == Outcome::Done) == done)
+            .last()
+    };
+    for _ in 0..60 * TICK_HZ {
+        if heal(&h, true).is_some() || heal(&h, false).is_some() {
+            break;
+        }
+        h.step();
+    }
+    assert!(
+        heal(&h, false).is_none(),
+        "{:?}: {}",
+        heal(&h, false),
+        h.explain()
+    );
+    let report = heal(&h, true).unwrap_or_else(|| panic!("no heal ended: {}", h.explain()));
+    assert_eq!(report.gained, 1);
+    assert_eq!(syringes(&h), 1, "one syringe spent");
+    // The syringe's heal runs over its seconds.
+    for _ in 0..3 * TICK_HZ {
+        h.step();
+    }
+    let hp = puppet(&h).hp;
+    assert!(hp > 30, "the teammate's health did not rise: {hp}");
+    assert!(h.verbs.contains("treat"), "{:?}", h.verbs);
+    assert!(
+        h.held_checks > 0,
+        "the treat went without the syringe in hand"
+    );
+
+    // Whole again: the next try is refused, nothing spent, the offer gone.
+    h.stage_puppet(|p| {
+        p.hp = p.hp_max;
+        p.bleed = 0;
+    });
+    assert!(offered(&h), "the sign keeps a while after a heal");
+    armed.store(1, Ordering::SeqCst);
+    for _ in 0..60 * TICK_HZ {
+        if heal(&h, false).is_some() {
+            break;
+        }
+        h.step();
+    }
+    let report = heal(&h, false).unwrap_or_else(|| panic!("no refused heal: {}", h.explain()));
+    assert_eq!(
+        report.outcome,
+        Outcome::Failed(server::mind::Why::Whole),
+        "{report:?}: {}",
+        h.explain()
+    );
+    assert_eq!(syringes(&h), 1, "nothing spent on a whole teammate");
+    h.step();
+    assert!(!offered(&h), "a teammate found whole is offered again");
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
