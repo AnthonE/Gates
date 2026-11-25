@@ -299,11 +299,13 @@ fn standing(p: &Player) -> bool {
     p.active && !p.dead && !p.sleeping
 }
 
-fn slot_of(players: &[Player; MAX_PLAYERS], id: u32) -> Option<usize> {
+/// The body `id` names, through `find` (the world's id → slot lookup), or
+/// `None` for an id no player wears: nobody, an animal, a structure.
+fn slot_of(find: &impl Fn(u32) -> Option<usize>, id: u32) -> Option<usize> {
     if id == 0 || id & MOB_ID_TAG != 0 || id == STRUCT_VICTIM {
         return None;
     }
-    players.iter().position(|p| p.active && p.id == id)
+    find(id)
 }
 
 impl Checks {
@@ -315,15 +317,18 @@ impl Checks {
     }
 
     /// One tick, after `World::tick`: read every body's aim, this tick's
-    /// shots and hits, and (on the cadence) the wall check. `exempt` names
-    /// players no check applies to; `mates` whether two are on one team;
-    /// `hidden` is the sight line ([`Ground::hidden`] on a shard).
+    /// shots and hits, and (on the cadence) the wall check. `find` is the
+    /// slot of `players` that holds an id (`World::player_slot` on a shard,
+    /// so a hit costs no scan of every body); `exempt` names players no
+    /// check applies to; `mates` whether two are on one team; `hidden` is
+    /// the sight line ([`Ground::hidden`] on a shard).
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
         tick: u64,
         players: &[Player; MAX_PLAYERS],
         events: &[SimEvent],
+        find: impl Fn(u32) -> Option<usize>,
         exempt: impl Fn(u32) -> bool,
         mates: impl Fn(u32, u32) -> bool,
         mut hidden: impl FnMut(V3, V3) -> bool,
@@ -356,7 +361,7 @@ impl Checks {
         for ev in events {
             match ev.code {
                 EV_SHOT => {
-                    let Some(w) = slot_of(players, ev.a) else {
+                    let Some(w) = slot_of(&find, ev.a) else {
                         continue;
                     };
                     let s = &mut self.slots[w];
@@ -370,8 +375,7 @@ impl Checks {
                     };
                 }
                 EV_HIT => {
-                    let (Some(w), Some(v)) = (slot_of(players, ev.a), slot_of(players, ev.b))
-                    else {
+                    let (Some(w), Some(v)) = (slot_of(&find, ev.a), slot_of(&find, ev.b)) else {
                         continue;
                     };
                     if w == v || exempt(ev.a) || mates(ev.a, ev.b) || self.slots[v].down {
@@ -622,6 +626,11 @@ mod tests {
         Box::new([Player::default(); MAX_PLAYERS])
     }
 
+    /// The fixtures write `players` directly, with no world to keep a hint.
+    fn scan(ps: &[Player; MAX_PLAYERS], id: u32) -> Option<usize> {
+        ps.iter().position(|p| p.active && p.id == id)
+    }
+
     fn run(
         c: &mut Checks,
         tick: u64,
@@ -634,6 +643,7 @@ mod tests {
             tick,
             ps,
             evs,
+            |id| scan(ps, id),
             |_| false,
             |_, _| false,
             |_, _| hidden,
@@ -836,6 +846,7 @@ mod tests {
                     10 + i * 10,
                     &ps,
                     &evs,
+                    |id| scan(&ps, id),
                     |id| agent && id == 1,
                     |_, _| mate,
                     |_, _| false,

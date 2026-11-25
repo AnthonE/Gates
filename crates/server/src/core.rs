@@ -1230,7 +1230,7 @@ impl ShardCore {
     /// their body (`admin::brain_line`), or why there is none.
     fn brain_answer(&self, who: u32) -> String {
         let w = &self.world;
-        let Some(me) = w.players.iter().find(|p| p.active && p.id == who) else {
+        let Some(me) = Self::world_slot_of(w, who).map(|s| &w.players[s]) else {
             return "no body to measure from".to_string();
         };
         let (mx, mz) = (
@@ -1975,10 +1975,12 @@ impl ShardCore {
         }
         let agents = &agents[..n_agents];
         let exempt = |id: u32| agents.contains(&id);
+        let world = &self.world;
         self.cheats.tick(
             tick,
-            &self.world.players,
-            self.world.events.entries(),
+            &world.players,
+            world.events.entries(),
+            |id| world.player_slot(id),
             exempt,
             |a, b| teams.mates(a, b),
             |from, to| ground.hidden(from, to),
@@ -2109,7 +2111,8 @@ impl ShardCore {
         let slot = self.achievements.sweep_next();
         if self.clients[slot].connected && self.achievements.tracks(slot) {
             let id = self.clients[slot].id;
-            if let Some(p) = self.world.players.iter().find(|p| p.active && p.id == id) {
+            if let Some(w) = Self::world_slot_of(&self.world, id) {
+                let p = &self.world.players[w];
                 self.achievements.swept(slot, &p.inv, &p.worn, p.glyphs);
             }
         }
@@ -2135,11 +2138,10 @@ impl ShardCore {
 
     /// Where a body stands, in quanta (`(0, 0)` when there is none).
     fn play_at(&self, id: u32) -> (i32, i32) {
-        self.world
-            .players
-            .iter()
-            .find(|p| p.active && p.id == id)
-            .map_or((0, 0), |p| (p.body.qx, p.body.qz))
+        Self::world_slot_of(&self.world, id).map_or((0, 0), |w| {
+            let b = &self.world.players[w].body;
+            (b.qx, b.qz)
+        })
     }
 
     /// This tick's events into the play log (`playlog.rs`): a line for each
@@ -4905,11 +4907,8 @@ impl ShardCore {
                 return;
             }
             if !back {
-                let in_town = self
-                    .world
-                    .players
-                    .iter()
-                    .find(|p| p.active && p.id == who)
+                let in_town = Self::world_slot_of(&self.world, who)
+                    .map(|w| &self.world.players[w])
                     .is_some_and(|p| {
                         sim_core::town::safe(
                             &self.world.haven.town,
@@ -6388,12 +6387,8 @@ impl ShardCore {
                     // keeps `born` and `died` (`World::die`), so "alive for"
                     // is the sim's clock and not a guess the client could
                     // make.
-                    let corpse = self
-                        .world
-                        .players
-                        .iter()
-                        .find(|p| p.active && p.id == ev.a)
-                        .copied();
+                    let corpse =
+                        Self::world_slot_of(&self.world, ev.a).map(|w| self.world.players[w]);
                     let (cause, item, range_cm, alive_s) = corpse
                         .map(|p| {
                             (
@@ -8827,8 +8822,13 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
+        // This connection's own body: the slot `interest_for` settled, else
+        // the lookup.
+        let own = self
+            .live_wslot(slot)
+            .or_else(|| Self::world_slot_of(&self.world, self.clients[slot].id));
         // The glyphs this player reads, whenever the mask moves.
-        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+        if let Some(wslot) = own {
             let mask = self.world.players[wslot].glyphs;
             if self.clients[slot].last_glyphs != Some(mask) {
                 match protocol::encode_event_glyphs(mask, &mut self.ev_buf) {
@@ -8863,7 +8863,7 @@ impl ShardCore {
 
         // What this player owns, whenever the sim's copy moves (a join's
         // first read, a refresh, a new session's reset to none).
-        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+        if let Some(wslot) = own {
             let owned = self.world.players[wslot].skins;
             if self.clients[slot].last_skins != Some(owned) {
                 match protocol::encode_event_skins_owned(&owned, &mut self.ev_buf) {
@@ -10265,9 +10265,12 @@ impl ShardCore {
     }
 
     /// Resolve the world slot player `id` landed in (join order is
-    /// deterministic but not slot-aligned with connections).
+    /// deterministic but not slot-aligned with connections). Asked per
+    /// client, per swing, shot and heard deed every tick, so it goes through
+    /// the sim's id → slot hint (`World::player_slot`) instead of a scan of
+    /// all `MAX_PLAYERS` bodies, one cache line each.
     fn world_slot_of(world: &World, id: u32) -> Option<usize> {
-        world.players.iter().position(|p| p.active && p.id == id)
+        world.player_slot(id)
     }
 
     /// Does connection `slot`'s class-D interest array describe this tick?
@@ -13478,5 +13481,97 @@ mod tests {
         assert!(back.entries.iter().flatten().any(|r| r.1 == 0x0201 && r.3));
         let _ = std::fs::remove_file(&file);
         assert_eq!(EvictIds::open(Some(file)).load(|_| true).unwrap(), 0);
+    }
+
+    /// `world_slot_of` reads the sim's id → slot hint, which is only a
+    /// hint: through joins, leaves into sleep, a death written straight
+    /// into `players` and its respawn, a takeover that hands a sleeper the
+    /// new connection's id, an eviction, and a return that rekeys the
+    /// evicted id's things, it names the slot the scan it replaced named,
+    /// for every id the shard ever minted and for ids no player wears.
+    #[test]
+    fn world_slot_of_answers_as_the_scan_through_churn() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let key = |n: u8| PlayerKey::new(format!("0x{:040x}", n).as_bytes()).unwrap();
+        let id = |gen: u32, s: usize| protocol::player_id(gen, s);
+        let mut minted: Vec<u32> = Vec::new();
+        let check = |core: &ShardCore, minted: &[u32], when: &str| {
+            let mob = sim_core::limits::MOB_ID_TAG;
+            let strays = [0, 1, mob, mob | 3, sim_core::world::STRUCT_VICTIM];
+            for &who in minted.iter().chain(strays.iter()) {
+                let scan = core
+                    .world
+                    .players
+                    .iter()
+                    .position(|p| p.active && p.id == who);
+                assert_eq!(
+                    ShardCore::world_slot_of(&core.world, who),
+                    scan,
+                    "{when}: id {who:#x}"
+                );
+            }
+        };
+        let tick = |core: &mut ShardCore| core.tick_bare(&stats, |_, _, _| true);
+
+        for s in 0..4 {
+            assert!(core
+                .connect_as(s, id(1, s), Some(key(s as u8 + 1)), None)
+                .is_some());
+            minted.push(id(1, s));
+        }
+        check(&core, &minted, "joins queued");
+        tick(&mut core);
+        check(&core, &minted, "joined");
+
+        core.disconnect(1);
+        core.disconnect(2);
+        tick(&mut core);
+        assert_eq!(core.world.sleepers(), 2);
+        check(&core, &minted, "two asleep");
+
+        let w = ShardCore::world_slot_of(&core.world, id(1, 0)).expect("seated");
+        core.world.players[w].dead = true;
+        core.world.players[w].hp = 0;
+        check(&core, &minted, "a corpse");
+        core.push_action(0, ActionMsg::Respawn { on_bag: false });
+        tick(&mut core);
+        assert!(!core.world.players[w].dead, "respawned");
+        check(&core, &minted, "respawned");
+
+        // Wallet 2 comes back to its sleeper: the body takes the new id.
+        assert!(core.connect_as(1, id(2, 1), Some(key(2)), None).is_some());
+        minted.push(id(2, 1));
+        tick(&mut core);
+        assert_eq!(ShardCore::world_slot_of(&core.world, id(1, 1)), None);
+        check(&core, &minted, "taken over");
+
+        for s in 4..MAX_PLAYERS {
+            assert!(core.connect(s, id(1, s)), "filler {s}");
+            minted.push(id(1, s));
+        }
+        tick(&mut core);
+        check(&core, &minted, "full");
+
+        // A stranger on a full shard evicts wallet 3's sleeper.
+        let (_, gone) = core
+            .connect_as(2, id(2, 2), Some(key(0xee)), None)
+            .expect("admitted");
+        assert_eq!(gone.expect("keyed victim").0, key(3));
+        minted.push(id(2, 2));
+        tick(&mut core);
+        assert_eq!(core.world.evictions, 1);
+        check(&core, &minted, "evicted");
+
+        // Wallet 3 returns through a filler's freed connection, evicting the
+        // filler's sleeper and rekeying its old id's things to the new one.
+        core.disconnect(5);
+        tick(&mut core);
+        assert!(core.connect_as(5, id(2, 5), Some(key(3)), None).is_some());
+        minted.push(id(2, 5));
+        tick(&mut core);
+        assert_eq!(core.world.evictions, 2);
+        assert!(ShardCore::world_slot_of(&core.world, id(2, 5)).is_some());
+        check(&core, &minted, "back after eviction");
     }
 }

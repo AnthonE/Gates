@@ -3113,6 +3113,19 @@ impl World {
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
+    /// [`Self::slot_of`] for the server, which asks it per client and per
+    /// event every tick: the slot holding player `id` — awake, asleep, down
+    /// or a corpse — or `None`. `0` and an animal's or a structure's id
+    /// (`MOB_ID_TAG` set) are never a player's and would miss the hint into
+    /// the full scan, so they answer at once. A pure read: the hint is the
+    /// tick's, and nothing here writes it.
+    pub fn player_slot(&self, id: u32) -> Option<usize> {
+        if id == 0 || id & crate::limits::MOB_ID_TAG != 0 {
+            return None;
+        }
+        self.slot_of(id)
+    }
+
     /// The slot of a player who is **standing**. A corpse keeps its slot
     /// while the death screen waits on it, so every verb that acts on the
     /// world resolves through this instead of `slot_of` — otherwise a body
