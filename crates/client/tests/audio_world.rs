@@ -196,8 +196,8 @@ fn ears(app: &mut App, at: Vec3) {
 ///
 /// Every frame, the mixer refused nothing: a refusal is a producer asking
 /// for a positional cue with no place, or past the queue's cap, and either
-/// is a sound the game never plays. `hurt` asked for its flesh hit as an
-/// own cue, and every blow on you was silent, until this said so.
+/// is a sound the game never plays. `hurt` asked for the positional flesh
+/// hit as an own cue, and every blow on you was silent, until this said so.
 fn frames(app: &mut App, n: usize) -> Vec<Cmd> {
     let mut out = Vec::new();
     for _ in 0..n {
@@ -326,8 +326,9 @@ fn the_world_chain_runs_and_an_idle_world_is_quiet() {
     assert_eq!(app.world().resource::<Engine>().dropped, 0);
 }
 
-/// A blow on you is the wet hit, Rust's, at your own head; the frame after
-/// is silent, and a fall nobody announced (hunger, thirst) makes no sound.
+/// A blow on you is the wet hit, Rust's, as your own: both ears, the row's
+/// gain; the frame after is silent, and a fall nobody announced (hunger,
+/// thirst) makes no sound.
 #[test]
 fn a_blow_on_you_lands_as_a_flesh_hit() {
     let (mut app, _replay) = world();
@@ -347,7 +348,7 @@ fn a_blow_on_you_lands_as_a_flesh_hit() {
     }
     let s = starts(&frames(&mut app, 1));
     assert_eq!(s.len(), 1, "one blow: {s:?}");
-    assert_own(s[0], Cue::FleshHit);
+    assert_own(s[0], Cue::FleshHitOwn);
     assert_eq!(app.world().resource::<LastHp>().0, 70);
 
     // `feed::drain` clears the feed every frame; with it clear, silence.
@@ -361,6 +362,28 @@ fn a_blow_on_you_lands_as_a_flesh_hit() {
         starts(&hungry).is_empty(),
         "an unannounced fall was heard: {hungry:?}"
     );
+}
+
+/// A film's camera is not the recorder's body (`film_hears`): a blow on the
+/// recorder is its own sound, and the film never hears it, wherever the
+/// camera stands. Played at the Eye, it rang at the lens.
+#[test]
+fn a_film_does_not_hear_a_blow_on_the_recorder() {
+    let (mut app, _replay) = world();
+    app.world_mut().resource_mut::<Sound>().film = true;
+    let c = core(&mut app);
+    c.hp_max = 100;
+    c.hp = 100;
+    frames(&mut app, 1);
+
+    core(&mut app).hp = 70;
+    {
+        let mut feed = app.world_mut().resource_mut::<Feed>();
+        feed.hurts = 1;
+        feed.hurt_damage = 30;
+    }
+    let s = starts(&frames(&mut app, 1));
+    assert!(s.is_empty(), "the film heard the recorder's blow: {s:?}");
 }
 
 /// The ears going under turn the beds: the submerged bed comes up as the

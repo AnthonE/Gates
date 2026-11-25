@@ -646,6 +646,9 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::PlaceMetal => render_take(Cue::ImpactMetal, take),
         Cue::RecyclerStart | Cue::RecyclerStop => render_take(Cue::Collapse, take),
         Cue::KnockMetal => render_take(Cue::ImpactMetal, take),
+        // A blow on you: the body's wet hit, by delegation. What makes it
+        // yours is its row.
+        Cue::FleshHitOwn => render_take(Cue::FleshHit, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

@@ -2587,7 +2587,6 @@ pub struct LastHp(pub u16);
 pub fn hurt(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
-    eye: Res<Eye>,
     mut last: ResMut<LastHp>,
     mut sound: ResMut<Sound>,
 ) {
@@ -2609,14 +2608,17 @@ pub fn hurt(
         // one): the flesh hit, not a grunt. Announced blows only, so hunger
         // and thirst stay quiet, and not under the headshot's crunch.
         //
-        // At the ears, `solve_request`'s way: `FleshHit` is positional (it
-        // is also a blow on a body out in the world, `contact_cue`), and the
-        // mixer refuses a positional cue with no place, so as an own cue
-        // every blow on you was silent (`tests/audio_world.rs` found it).
+        // Its own row, `FleshHitOwn`: `FleshHit` is positional (a blow on a
+        // body out in the world, `contact_cue`), and the mixer refuses a
+        // positional cue with no place, so asked for as an own cue every
+        // blow on you was silent (`tests/audio_world.rs` found it). Placed
+        // at the ears instead, it would pan to −3 dB, share its clock with
+        // a body you are hitting point-blank, and pass a film's filter: in
+        // a film the Eye is the camera, so the recorder's blows would ring
+        // at the lens.
         if feed.hurts > 0 && !feed.hurt_head {
             let g = crate::sound::hurt::weight(feed.hurt_damage, core.hp_max);
-            let ears = [eye.pos.x, eye.pos.y, eye.pos.z];
-            sound.play(Request::at(Cue::FleshHit, ears).with_gain(g));
+            sound.play(Request::own(Cue::FleshHitOwn).with_gain(g));
         }
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
