@@ -7991,15 +7991,48 @@ fn a_world_container_is_titled_by_what_stands_there() {
     assert_eq!(world_container_title(Occupant::EliteCrate), "ELITE CRATE");
     assert_eq!(world_container_title(Occupant::FoodCrate), "FOOD BOX");
     assert_eq!(world_container_title(Occupant::CacheSlot), "CACHE");
-    for o in [
-        Occupant::CrateSlot,
-        Occupant::GreenCrate,
-        Occupant::BlueCrate,
-        Occupant::None,
-    ] {
+    assert_eq!(world_container_title(Occupant::GreenCrate), "GREEN CRATE");
+    assert_eq!(world_container_title(Occupant::BlueCrate), "BLUE CRATE");
+    for o in [Occupant::CrateSlot, Occupant::None] {
         assert_eq!(world_container_title(o), container_title(CONT_WORLD));
         assert_eq!(world_container_title(o), "CRATE");
     }
+}
+
+/// The `[E] OPEN` prompt names a world container by the panel's own title,
+/// for every occupant that opens one: the prompt said OPEN CRATE over a
+/// panel titled CACHE, FOOD BOX or VAULT until both read one function.
+#[test]
+fn a_world_containers_prompt_names_what_its_panel_says() {
+    use client::ui::interact::{Pick, Verb};
+    use client::ui::slots::world_container_title;
+    use protocol::event::ItemCatalog;
+    use sim_core::limits::MAX_LOOT_TABLES;
+    use sim_core::terrain::Occupant;
+    use sim_core::worldcont::{occupant_of, table_of};
+    let mut seen = 0;
+    for table in 0..MAX_LOOT_TABLES {
+        let o = occupant_of(table);
+        if o == Occupant::None {
+            continue;
+        }
+        assert_eq!(table_of(o), Some(table), "{o:?}");
+        let p = Pick {
+            verb: Verb::Crate,
+            occupant: o as u8,
+            // The Gate is open, so a vault opens rather than saying SEALED.
+            lit: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            p.prompt(&ItemCatalog::EMPTY),
+            format!("[E] OPEN {}", world_container_title(o)),
+            "{o:?}"
+        );
+        seen += 1;
+    }
+    // Crate, cache, green, blue, elite, food box, vault.
+    assert_eq!(seen, 7);
 }
 
 /// A landmark's vault says SEALED until THE SEVERED GATE is open, and then

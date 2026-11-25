@@ -732,10 +732,25 @@ impl Pick {
             Verb::Crate if self.occupant == Occupant::Vault as u8 && !self.lit => {
                 VAULT_SEALED_LINE.to_string()
             }
-            Verb::Crate if self.occupant == Occupant::Vault as u8 => "[E] OPEN VAULT".to_string(),
+            // Named by the panel's own title, so `[E] OPEN CACHE` opens a
+            // panel that says CACHE.
+            Verb::Crate => format!(
+                "[E] OPEN {}",
+                crate::ui::slots::world_container_title(container_occupant(self.occupant))
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
+}
+
+/// The world container a pick's occupant ordinal names, read back through
+/// the sim's own table of them (`worldcont::occupant_of`), or
+/// `Occupant::None` for an ordinal that is no container.
+fn container_occupant(ordinal: u8) -> Occupant {
+    (0..sim_core::limits::MAX_LOOT_TABLES)
+        .map(sim_core::worldcont::occupant_of)
+        .find(|&o| o != Occupant::None && o as u8 == ordinal)
+        .unwrap_or(Occupant::None)
 }
 
 /// A sealed vault's line, on the prompt and when `E` is pressed at it.
