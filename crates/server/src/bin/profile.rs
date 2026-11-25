@@ -20,7 +20,20 @@
 //!
 //! ```text
 //! cargo run --release -p server --bin profile -- --clients 100 --ticks 600
+//! cargo run --release -p server --bin profile -- --clients 512 --fire 1
 //! valgrind --tool=callgrind target/release/profile --ticks 40   # per-fn
+//! ```
+//!
+//! `--fire 1` is the gun's worst case (`NOW.md` §0sc): every client holds an
+//! assault rifle's trigger at its cadence, aimed over the cluster so every
+//! round flies its whole reach, and reloads through the real action when the
+//! magazine runs dry. `--fire 2` never lets it run dry, the ceiling: every
+//! gun on the island firing at once with nobody reloading. Its callgrind
+//! wants the flight alone, or the setup's ticks bury it:
+//!
+//! ```text
+//! valgrind --tool=callgrind '--toggle-collect=sim_core::bullet::step*' \
+//!     target/release/profile --clients 100 --fire 2 --ticks 20
 //! ```
 //!
 //! Under callgrind the wall-clock column is meaningless (everything is ~50×
@@ -28,14 +41,15 @@
 //! ranking, which is deterministic and therefore the one profile this box
 //! can produce twice and get the same answer.
 
-use protocol::InputDatagram;
+use protocol::{ActionMsg, InputDatagram};
 use server::core::{Lane, Phase, ShardCore};
 use server::stats::ShardStats;
 use sim_core::build::{LOC_PLANE, MAT_TWIG, SHAPE_FOUNDATION};
+use sim_core::combat::GunState;
 use sim_core::gather::ItemStack;
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::{MAX_COMMANDS_PER_TICK, MAX_PIECES, MAX_PLAYERS};
-use sim_core::world::Command;
+use sim_core::limits::{HOTBAR_SLOTS, MAX_COMMANDS_PER_TICK, MAX_PIECES, MAX_PLAYERS};
+use sim_core::world::{Command, EV_SHOT};
 use std::time::{Duration, Instant};
 
 /// Player id for connection slot `s`, as `install` mints them (generation
@@ -68,6 +82,10 @@ struct Args {
     /// Sign every client in with a wallet, so achievements track all of
     /// them (`--wallets 1`); guests are tracked as nobody and cost nothing.
     wallets: bool,
+    /// `--fire 1`: every client fires an assault rifle and reloads when it
+    /// is dry. `--fire 2`: the magazine never empties. Zero holds the
+    /// spawn kit's bat, the historical profile.
+    fire: u8,
 }
 
 impl Default for Args {
@@ -84,6 +102,7 @@ impl Default for Args {
             spectators: 0,
             mobs_near: false,
             wallets: false,
+            fire: 0,
         }
     }
 }
@@ -111,11 +130,12 @@ fn parse_args() -> Args {
             }
             "--mobs-near" => a.mobs_near = val == "1",
             "--wallets" => a.wallets = val == "1",
+            "--fire" => a.fire = val.parse().unwrap_or(0).min(2),
             "--help" | "-h" => {
                 println!(
                     "profile [--clients N] [--pieces N] [--ticks N] [--slow N] [--warmup N] \
                      [--seed N] [--content DIR] [--pitch M] [--spectators N] [--mobs-near 1] \
-                     [--wallets 1]"
+                     [--wallets 1] [--fire 1|2]"
                 );
                 std::process::exit(0);
             }
@@ -131,8 +151,9 @@ fn parse_args() -> Args {
 
 /// The shard's own boot bake, minus the sockets. Every table matters here:
 /// an inert world does no work, so a profile of one would flatter every
-/// number in this file.
-fn build_core(a: &Args) -> ShardCore {
+/// number in this file. The content comes back too, so `--fire` can name
+/// its rows by id rather than by an index that moves with the table.
+fn build_core(a: &Args) -> (ShardCore, content::Content) {
     let content = match content::Content::load_dir(std::path::Path::new(&a.content_dir)) {
         Ok(c) => c,
         Err(e) => {
@@ -182,7 +203,7 @@ fn build_core(a: &Args) -> ShardCore {
             std::process::exit(1);
         }
     };
-    core
+    (core, content)
 }
 
 /// The herd's south-west corner: dry island interior on the default seed.
@@ -343,6 +364,142 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     core.world.pieces.len()
 }
 
+/// The gun `--fire` hands out, and its round: the automatic the population
+/// question is about (450 a minute, 170 m), not the cheapest gun on the
+/// island.
+const FIRE_GUN: &str = "item.assault_rifle";
+const FIRE_AMMO: &str = "item.rifle_ammo";
+/// About 15° above level on `InputFrame::pitch`'s scale (0 straight down,
+/// 255 straight up): high enough that a round clears the bodies round it
+/// and the ground under the cluster and flies its whole reach. A miss is
+/// the expensive shot — every tick of its flight walks the world.
+const FIRE_PITCH: u8 = 149;
+
+/// What `--fire` armed: the rows, and where each client keeps its gun.
+struct Armed {
+    gun: u16,
+    ammo: u16,
+    magazine: u16,
+    /// Ticks between shots: the triggers are staggered over them, so the
+    /// shard's rounds leave on every tick the way a real firefight's do
+    /// rather than all on one tick in four.
+    stagger: u64,
+    /// The world tick the triggers start from.
+    from: u64,
+    /// Each client's world slot and the hotbar slot its rifle landed in,
+    /// by connection slot.
+    world: Vec<usize>,
+    sel: Vec<u8>,
+}
+
+/// Hand every client the rifle and two stacks of its round through
+/// `Command::AdminGive`, the admin lane's verb, so the guns are minted the
+/// way the game mints them (full condition, empty magazine), and find where
+/// each one landed.
+fn arm(core: &mut ShardCore, content: &content::Content, a: &Args) -> Armed {
+    let row = |id: &str| {
+        content.item_index(id).unwrap_or_else(|| {
+            eprintln!("profile: --fire needs {id} in the content");
+            std::process::exit(1);
+        })
+    };
+    let (gun, ammo) = (row(FIRE_GUN), row(FIRE_AMMO));
+    let Some(def) = core.world.combat.held_ranged(gun) else {
+        eprintln!("profile: {FIRE_GUN} is not a ranged weapon");
+        std::process::exit(1);
+    };
+    let stack = core.world.gather.stack_max[ammo as usize];
+    let mut cmds = Vec::with_capacity(2 * a.clients);
+    for slot in 0..a.clients {
+        let id = id_of(slot);
+        cmds.push(Command::AdminGive {
+            id,
+            item: gun,
+            count: 1,
+        });
+        cmds.push(Command::AdminGive {
+            id,
+            item: ammo,
+            count: stack.saturating_mul(2),
+        });
+    }
+    core.world.tick(&cmds);
+    let mut world = Vec::with_capacity(a.clients);
+    let mut sel = Vec::with_capacity(a.clients);
+    for slot in 0..a.clients {
+        let id = id_of(slot);
+        let w = core
+            .world
+            .players
+            .iter()
+            .position(|p| p.active && p.id == id)
+            .unwrap_or_else(|| panic!("client {slot} has no body"));
+        let Some(h) = core.world.players[w].inv[..HOTBAR_SLOTS]
+            .iter()
+            .position(|s| s.count > 0 && s.item == gun)
+        else {
+            eprintln!("profile: client {slot}'s rifle did not land on the hotbar");
+            std::process::exit(1);
+        };
+        world.push(w);
+        sel.push(h as u8);
+    }
+    Armed {
+        gun,
+        ammo,
+        magazine: def.magazine,
+        stagger: u64::from(def.rate_ticks.max(1)),
+        from: core.world.tick,
+        world,
+        sel,
+    }
+}
+
+/// The fixture's top-up between ticks, `fill_pieces`' builder refill for a
+/// gun: the pack never runs out of rounds and the rifle never wears out,
+/// because a profile that stops firing halfway is a profile of a quiet
+/// shard. `bottomless` (`--fire 2`) also keeps the magazine full, so nobody
+/// ever stops to reload.
+fn rearm(core: &mut ShardCore, arm: &Armed, bottomless: bool) {
+    let g = &core.world.gather;
+    let (stack, ammo_cond, gun_cond) = (
+        g.stack_max[arm.ammo as usize],
+        g.cond_max[arm.ammo as usize],
+        g.cond_max[arm.gun as usize],
+    );
+    for (&w, &h) in arm.world.iter().zip(&arm.sel) {
+        let p = &mut core.world.players[w];
+        if sim_core::craft::inv_count(&p.inv, arm.ammo) < u32::from(arm.magazine) {
+            sim_core::gather::inv_add(&mut p.inv, arm.ammo, stack, stack, ammo_cond);
+        }
+        let s = &mut p.inv[h as usize];
+        if s.count == 0 || s.item != arm.gun {
+            continue;
+        }
+        s.cond = gun_cond;
+        let g = GunState::of(s.data);
+        if bottomless && g.loaded < arm.magazine {
+            s.data = GunState {
+                loaded: arm.magazine,
+                round: arm.ammo,
+                ..g
+            }
+            .data();
+        }
+    }
+}
+
+/// Whether connection slot `slot`'s rifle is dry and its hands are free to
+/// reload it (`ranged::reload` refuses one mid-cadence as busy).
+fn wants_reload(core: &ShardCore, arm: &Armed, slot: usize) -> bool {
+    let p = &core.world.players[arm.world[slot]];
+    let s = p.inv[arm.sel[slot] as usize];
+    s.count > 0
+        && s.item == arm.gun
+        && GunState::of(s.data).loaded == 0
+        && core.world.tick >= p.next_swing
+}
+
 /// Mean, p99 and worst of a sample, in microseconds. An empty sample
 /// (`--ticks 0`) is zeros rather than a panic.
 fn stat(v: &mut [Duration]) -> (f64, f64, f64) {
@@ -364,7 +521,7 @@ fn stat(v: &mut [Duration]) -> (f64, f64, f64) {
 fn main() {
     let a = parse_args();
     let stats = ShardStats::default();
-    let mut core = build_core(&a);
+    let (mut core, content) = build_core(&a);
     let pieces = fill_pieces(&mut core, a.pieces);
     fill_clients(&mut core, &stats, &a);
     // Seats watching the cluster, one target each in turn — the shard's own
@@ -380,6 +537,8 @@ fn main() {
     if a.mobs_near {
         herd_near(&mut core, &a);
     }
+    let armed = (a.fire > 0).then(|| arm(&mut core, &content, &a));
+    let bottomless = a.fire == 2;
 
     // Every client sends every tick, which is what a shard under load
     // looks like — an empty input buffer profiles the starve path instead.
@@ -391,21 +550,48 @@ fn main() {
     // shard where nobody has finished joining.
     let mut seq: u16 = 1;
     let mut last_snap = vec![0u16; MAX_PLAYERS + sim_core::limits::MAX_SPECTATORS];
-    let feed = |core: &mut ShardCore, seq: &mut u16, last_snap: &[u16]| {
+    // Returns the reloads it asked for, which is `--fire 1`'s only use for it.
+    let feed = |core: &mut ShardCore, seq: &mut u16, last_snap: &[u16]| -> u32 {
+        let mut reloads = 0u32;
+        if let Some(arm) = &armed {
+            rearm(core, arm, bottomless);
+        }
         for (slot, &ack) in last_snap.iter().enumerate().take(a.clients) {
+            // Held, because the arm is the verb this game is mostly made
+            // of and `gather::swing` early-outs without it — a profile of a
+            // hundred players who never chop is a profile of a shard nobody
+            // is playing. Under `--fire` the rifle is in hand instead, the
+            // trigger held from a tick of the cadence the slot picks, aimed
+            // over the cluster, and a dry magazine is reloaded through the
+            // real action the way a client's R key sends it.
+            let (buttons, pitch, sel) = match &armed {
+                Some(arm) => {
+                    // The stagger holds the first reload back too: every gun
+                    // is minted empty, and reloaded on one tick they would
+                    // all come up together and fire in step.
+                    let held = core.world.tick >= arm.from + slot as u64 % arm.stagger;
+                    if held
+                        && !bottomless
+                        && core.wants_action(slot)
+                        && wants_reload(core, arm, slot)
+                    {
+                        core.push_action(slot, ActionMsg::Reload);
+                        reloads += 1;
+                    }
+                    let buttons = if held { BTN_PRIMARY } else { 0 };
+                    (buttons, FIRE_PITCH, arm.sel[slot])
+                }
+                None => (BTN_PRIMARY, 0, 0),
+            };
             let mut dg = InputDatagram::new(ack, 0, 4);
             let _ = dg.push(InputFrame {
                 seq: *seq,
-                // Held, because the arm is the verb this game is mostly
-                // made of and `gather::swing` early-outs without it — a
-                // profile of a hundred players who never chop is a profile
-                // of a shard nobody is playing.
-                buttons: BTN_PRIMARY,
+                buttons,
                 move_x: 1,
                 move_z: 0,
                 yaw: seq.wrapping_mul(97),
-                pitch: 0,
-                sel: 0,
+                pitch,
+                sel,
                 pitch_fine: 0,
             });
             core.push_input(slot, &dg);
@@ -417,6 +603,7 @@ fn main() {
             core.push_input(slot, &InputDatagram::new(last_snap[slot], 0, 4));
         }
         *seq = seq.wrapping_add(1);
+        reloads
     };
 
     for _ in 0..a.warmup {
@@ -433,8 +620,13 @@ fn main() {
     // --- full ticks, each split into the core's phases by its marks.
     let mut full = Vec::with_capacity(a.ticks as usize);
     let mut phases: [Vec<Duration>; 6] = Default::default();
+    // `--fire`'s load, per full tick: rounds fired (`EV_SHOT`, one a pull)
+    // and rounds in the air after it (`bullet::step`'s whole store).
+    let mut shots: Vec<usize> = Vec::with_capacity(a.ticks as usize);
+    let mut aloft: Vec<usize> = Vec::with_capacity(a.ticks as usize);
+    let mut reloads = 0u32;
     for _ in 0..a.ticks {
-        feed(&mut core, &mut seq, &last_snap);
+        reloads += feed(&mut core, &mut seq, &last_snap);
         let snap_tick = (core.world.tick + 1) as u16;
         let t0 = Instant::now();
         let mut last = t0;
@@ -461,6 +653,11 @@ fn main() {
         for (v, d) in phases.iter_mut().zip(acc) {
             v.push(d);
         }
+        if armed.is_some() {
+            let ev = core.world.events.entries();
+            shots.push(ev.iter().filter(|e| e.code == EV_SHOT).count());
+            aloft.push(core.world.bullets.len());
+        }
     }
 
     // --- the sim alone. `World::tick` is public and takes the command
@@ -468,12 +665,26 @@ fn main() {
     // every line of netcode.
     let mut sim = Vec::with_capacity(a.ticks as usize);
     let mut sim_at = Vec::with_capacity(a.ticks as usize);
+    // The frames stay as the last full tick left them, so `--fire` keeps
+    // shooting here; its reloads are the commands the core would have built.
+    let mut cmds: Vec<Command> = Vec::with_capacity(a.clients);
     for _ in 0..a.ticks {
+        if let Some(arm) = &armed {
+            rearm(&mut core, arm, bottomless);
+            if !bottomless {
+                cmds.extend(
+                    (0..a.clients)
+                        .filter(|&slot| wants_reload(&core, arm, slot))
+                        .map(|slot| Command::Reload { id: id_of(slot) }),
+                );
+            }
+        }
         let at = core.world.tick;
         let t = Instant::now();
-        core.world.tick(&[]);
+        core.world.tick(&cmds);
         sim.push(t.elapsed());
         sim_at.push(at);
+        cmds.clear();
     }
     // `--slow N`: the N slowest bare sim ticks by number, so a p99 can be
     // traced to the periodic pass that lands on it.
@@ -537,6 +748,21 @@ fn main() {
         core.world.nav.expanded as f64 / ran as f64,
         sim_core::limits::NAV_EXPAND_PER_TICK
     );
+    // `--fire`'s load over the full ticks: what the phase table below paid
+    // for. A run whose shots read zero measured no gunfight at all.
+    if armed.is_some() {
+        let n = shots.len().max(1) as f64;
+        let avg = |v: &[usize]| v.iter().sum::<usize>() as f64 / n;
+        let max = |v: &[usize]| v.iter().copied().max().unwrap_or(0);
+        println!(
+            "         fire {FIRE_GUN} ({}) · {:.1} shots/tick · {} max · {:.0} rounds aloft · {} max · {reloads} reloads",
+            if bottomless { "bottomless" } else { "reloading" },
+            avg(&shots),
+            max(&shots),
+            avg(&aloft),
+            max(&aloft),
+        );
+    }
     println!();
     println!("  phase                         avg µs      p99 µs      max µs   % budget");
     println!("  ------------------------------------------------------------------------");
