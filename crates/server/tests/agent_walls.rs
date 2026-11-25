@@ -1496,7 +1496,7 @@ impl server::mind::DecisionSource for Told {
         use std::sync::atomic::Ordering::Relaxed;
         for e in s.seen.events() {
             let count = match e.kind {
-                EventKind::Died if !s.seen.lost().is_empty() => &self.1.died_carrying,
+                EventKind::Died if !s.seen.died_lost().is_empty() => &self.1.died_carrying,
                 EventKind::BagBack => &self.1.backs,
                 EventKind::BagGone => &self.1.gone,
                 _ => continue,

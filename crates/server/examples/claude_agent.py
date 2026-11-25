@@ -703,6 +703,19 @@ def post_share(caption, jpeg):
         return r.status
 
 
+def team_numbers_in(text):
+    """The numbers of one to four digits a team line carries, any of which
+    may be the team's lock code. A name opening the line (`Miller-3 follow
+    me`, the TEAM screen's order buttons) is skipped, the rule
+    `agent::orders::code` keeps: a first word with a letter in it and only
+    letters, digits and -_.' once :,!.?; are off its end."""
+    parts = str(text or "").split(None, 1)
+    if parts and re.fullmatch(r"[A-Za-z0-9_.'-]*[A-Za-z][A-Za-z0-9_.'-]*",
+                              re.sub(r"[:,!.?;]+$", "", parts[0])):
+        text = parts[1] if len(parts) > 1 else ""
+    return re.findall(r"(?<!\d)\d{1,4}(?!\d)", str(text or ""))
+
+
 def label(v):
     """A harness or model label as the platform takes one (1-48 of
     [A-Za-z0-9 ._:/@+-]), or None."""
@@ -1006,7 +1019,7 @@ def main():
                 how = "heard (voice)" if h.get("voice") else "heard"
                 print(f"{how} {h['from']}: {h['text']}", file=sys.stderr)
                 if h.get("channel") == "team":
-                    team_numbers.update(re.findall(r"(?<!\d)\d{1,4}(?!\d)", h["text"]))
+                    team_numbers.update(team_numbers_in(h["text"]))
         if spend.out():
             print(json.dumps({"id": request["id"], "error": "out of credit"}), flush=True)
             continue

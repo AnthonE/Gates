@@ -8,16 +8,20 @@
 //! agent's own replies are never taken as one.
 //!
 //! `/t follow me` · `/t stay` · `/t go get wood` (stone, ore, cloth) ·
-//! `/t go home` · `/t patrol` · `/t defend` · `/t help` ·
+//! `/t loot` (the crates, the vaults) · `/t feed the works` (deposit for
+//! the quota) · `/t go home` · `/t patrol` · `/t defend` · `/t help` ·
 //! `/t the code is 1234`.
 //!
 //! A line may open with who it is for ([`for_me`]): a job (`/t guards
 //! patrol`, `/t farmers get wood`), a teammate's name (`/t Miller-3
 //! follow`), or `all`. A line that opens with none of them is for everyone.
+//! That first word is no order ([`to_me`]): `Stone-2 follow me` is a
+//! follow for Stone-2, not a stone run.
 
 use crate::agent::lock::LockCode;
 use crate::agent::society::Role;
 use crate::mind::{Goal, Who};
+use client_core::crew::{self, Audience};
 
 /// What a teammate asked for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,17 +61,20 @@ fn is(word: &[u8], any: &[&str]) -> bool {
 }
 
 /// The order in a team line, if it gives one. `help` wins, then a stop,
-/// then a run, then home, then follow: "stop following" stops.
+/// then a run, then home, then follow: "stop following" stops. A supply
+/// word names what to fetch and outranks a feed, which names where it
+/// goes: `deposit wood` is a wood run for the box, `feed the works` a feed.
 pub fn order(text: &[u8]) -> Option<Order> {
     let mut found: Option<Order> = None;
     let rank = |o: Order| match o {
         Order::Help => 0,
         Order::Stay => 1,
+        Order::Run(Goal::FeedWork) => 3,
         Order::Supply(_) | Order::Run(_) => 2,
-        Order::Defend => 3,
-        Order::Home => 4,
-        Order::Patrol => 5,
-        Order::Follow => 6,
+        Order::Defend => 4,
+        Order::Home => 5,
+        Order::Patrol => 6,
+        Order::Follow => 7,
     };
     for w in words(text) {
         let o = if is(w, &["help", "commands", "orders"]) {
@@ -128,27 +135,63 @@ fn head(text: &[u8]) -> &[u8] {
     w
 }
 
+/// The line past its first word, as [`head`] splits it.
+fn past_head(text: &[u8]) -> &[u8] {
+    let start = text
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(text.len());
+    let rest = &text[start..];
+    let end = rest
+        .iter()
+        .position(u8::is_ascii_whitespace)
+        .unwrap_or(rest.len());
+    &rest[end..]
+}
+
+/// The job a line's audience word names (`client_core::crew::AUDIENCE`).
+fn job(a: Audience) -> Option<Role> {
+    match a {
+        Audience::All => None,
+        Audience::Guards => Some(Role::Guard),
+        Audience::Farmers => Some(Role::Farmer),
+        Audience::Runners => Some(Role::Runner),
+        Audience::Founder => Some(Role::Founder),
+    }
+}
+
 /// Whether a team line is for this body: its job (`role`, in a society),
 /// none of its teammates `mates` by name, or everyone. A line opening with
 /// a job is for that job's bodies only; with a teammate's name, for them
 /// only (its own name is never in `mates`, so a line naming it is for it).
+/// The audience words are `client_core::crew::AUDIENCE`, which the TEAM
+/// screen's buttons keep too.
 pub fn for_me(text: &[u8], role: Option<Role>, mates: &[Who]) -> bool {
     let w = head(text);
-    if w.is_empty() || is(w, &["all", "everyone", "everybody", "crew", "y'all"]) {
+    if w.is_empty() {
         return true;
     }
-    let jobs: [(Role, &[&str]); 4] = [
-        (Role::Guard, &["guard", "guards"]),
-        (Role::Farmer, &["farmer", "farmers"]),
-        (Role::Runner, &["runner", "runners"]),
-        (Role::Founder, &["founder", "boss"]),
-    ];
-    if let Some((job, _)) = jobs.iter().find(|(_, words)| is(w, words)) {
-        return role == Some(*job);
+    if let Some(a) = crew::audience(w) {
+        return job(a).is_none_or(|j| role == Some(j));
     }
     !mates
         .iter()
         .any(|m| !m.name.as_str().is_empty() && w.eq_ignore_ascii_case(m.name.as_str().as_bytes()))
+}
+
+/// What a team line says to this body, for [`order`]: `None` when it is
+/// for someone else ([`for_me`]), else the line past the first word when
+/// that word said who it is for (an audience, or `me`, its own name as
+/// its teammates see it), else the whole line. `Rock follow me`, heard by
+/// Rock, is a follow, not a stone run; `rocks please` is still a stone run.
+pub fn to_me<'a>(text: &'a [u8], me: &[u8], role: Option<Role>, mates: &[Who]) -> Option<&'a [u8]> {
+    if !for_me(text, role, mates) {
+        return None;
+    }
+    let w = head(text);
+    let routed = crew::audience(w).is_some()
+        || (!me.is_empty() && !w.is_empty() && w.eq_ignore_ascii_case(me));
+    Some(if routed { past_head(text) } else { text })
 }
 
 /// A lock code in a team line: a lone number of one to four digits, the
@@ -158,17 +201,8 @@ pub fn for_me(text: &[u8], role: Option<Role>, mates: &[Who]) -> bool {
 /// (`client_core::crew::is_name`, the rule the buttons keep) is skipped
 /// (`code: 1234` and `#1234` still give one).
 pub fn code(text: &[u8]) -> Option<LockCode> {
-    let text = if client_core::crew::is_name(head(text)) {
-        let start = text
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .unwrap_or(text.len());
-        let rest = &text[start..];
-        let end = rest
-            .iter()
-            .position(u8::is_ascii_whitespace)
-            .unwrap_or(rest.len());
-        &rest[end..]
+    let text = if crew::is_name(head(text)) {
+        past_head(text)
     } else {
         text
     };
@@ -197,7 +231,7 @@ mod tests {
 
     #[test]
     fn plain_words_are_orders() {
-        let cases: [(&str, Option<Order>); 23] = [
+        let cases: [(&str, Option<Order>); 28] = [
             ("guards patrol", Some(Order::Patrol)),
             ("defend the base!", Some(Order::Defend)),
             ("patrol, then come home", Some(Order::Home)),
@@ -218,6 +252,15 @@ mod tests {
                 "deposit for the quota then go home",
                 Some(Order::Run(Goal::FeedWork)),
             ),
+            ("feed the gate", Some(Order::Run(Goal::FeedWork))),
+            ("deposit at the works", Some(Order::Run(Goal::FeedWork))),
+            // What to fetch outranks where it goes.
+            ("deposit wood", Some(Order::Supply(Goal::SupplyWood))),
+            (
+                "feed the box some stone",
+                Some(Order::Supply(Goal::SupplyStone)),
+            ),
+            ("quota: ore", Some(Order::Supply(Goal::SupplyOre))),
             ("meet me at the gate", None),
             ("go home", Some(Order::Home)),
             ("help", Some(Order::Help)),
@@ -248,6 +291,46 @@ mod tests {
         assert!(!for_me(b"ash: stay", guard, &mates));
         assert!(for_me(b"Miller-4 follow", guard, &mates), "its own name");
         assert!(for_me(b"  ", guard, &mates));
+    }
+
+    /// The word that said who a line is for is no order: a name that is
+    /// an order word, or holds one, and `all` before a run.
+    #[test]
+    fn the_addressee_is_no_order() {
+        let mate = |name: &str| Who {
+            id: 7,
+            name: protocol::Name::new(name).unwrap(),
+            address: protocol::Address::GUEST,
+        };
+        let mates = [mate("Ash")];
+        let heard = |text: &str, me: &str| {
+            to_me(text.as_bytes(), me.as_bytes(), None, &mates).and_then(order)
+        };
+        assert_eq!(heard("Stone-2 follow me", "Stone-2"), Some(Order::Follow));
+        assert_eq!(heard("rock: stay", "Rock"), Some(Order::Stay));
+        assert_eq!(heard("Help-1 follow me", "Help-1"), Some(Order::Follow));
+        assert_eq!(heard("Hold-1 follow me", "Hold-1"), Some(Order::Follow));
+        assert_eq!(
+            heard("rocks please", "Rock"),
+            Some(Order::Supply(Goal::SupplyStone))
+        );
+        assert_eq!(
+            heard("stone please", "Rock"),
+            Some(Order::Supply(Goal::SupplyStone))
+        );
+        assert_eq!(heard("follow me", "Rock"), Some(Order::Follow));
+        assert_eq!(
+            heard("all get wood", ""),
+            Some(Order::Supply(Goal::SupplyWood))
+        );
+        assert_eq!(heard("crew, stay", ""), Some(Order::Stay));
+        assert_eq!(heard("Ash stay", "Rock"), None, "a teammate's");
+        // Its own name not told yet: the whole line, as before.
+        assert_eq!(
+            heard("Rock follow me", ""),
+            Some(Order::Supply(Goal::SupplyStone))
+        );
+        assert_eq!(heard("", "Rock"), None);
     }
 
     #[test]

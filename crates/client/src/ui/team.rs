@@ -129,12 +129,15 @@ pub struct OrderRow {
 }
 
 /// The order wheel (`docs/PLAYERS.md`): the team lines a crew's orders
-/// are, typed for you. Nothing unless a teammate is an agent that takes
-/// your orders — no crew (`crew_of` is `None`), or yours. Then an ALL row
-/// with every order, and a FOLLOW and STAY row per such agent by its bare
-/// name (`name_of`: the tag's name, never the streamer-mode one), when
-/// that name can open a line (`crew::addressable`) and no other member,
-/// you included, goes by it.
+/// are, typed for you. `crew_of` is whom an agent serves (`EventMsg::Crew`):
+/// `Some(you)` takes your orders; `None` is an agent with no commander,
+/// which takes any teammate's, or one whose commander is away, off the team
+/// or an agent, which takes only theirs (the shard sends 0 for all of
+/// these). Nothing unless a teammate agent is `None` or yours: then an ALL
+/// row with every order, and a FOLLOW and STAY row by its bare name
+/// (`name_of`: the tag's name, never the streamer-mode one) per agent
+/// crewed to you, when that name can open a line (`crew::addressable`)
+/// and no other member, you included, goes by it.
 pub fn order_rows(
     team: &TeamView,
     me: u32,
@@ -155,6 +158,12 @@ pub fn order_rows(
     if crew.is_empty() {
         return Vec::new();
     }
+    // Only one sure to be yours gets a row by name: a `None` may be
+    // another's, whose commander is away.
+    let named: Vec<u32> = crew
+        .into_iter()
+        .filter(|&id| crew_of(id) == Some(me))
+        .collect();
     let mut out = vec![OrderRow {
         who: "ALL".to_string(),
         id: 0,
@@ -173,7 +182,7 @@ pub fn order_rows(
             .iter()
             .any(|m| m.id != id && name_of(m.id).is_some_and(|n| n.eq_ignore_ascii_case(name)))
     };
-    for id in crew {
+    for id in named {
         let Some(name) = name_of(id).filter(|n| crew::addressable(n) && !shared(id, n)) else {
             continue;
         };

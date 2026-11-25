@@ -6558,7 +6558,7 @@ impl Survivor {
             let last = self.bag_last;
             if let Some(lost) = self.senses.lost.filter(|l| l.bag == last) {
                 self.senses.lost = None;
-                self.tell_lost(core, lost);
+                self.tell_lost(core, true, lost);
             }
             self.perceived
                 .event(crate::memory::EventKind::BagGone, None);
@@ -6572,12 +6572,15 @@ impl Survivor {
         self.bag_last = bag;
     }
 
-    /// What a death took, or a backpack went with, on the look's `lost`.
-    fn tell_lost(&mut self, core: &ClientCore, lost: Lost) {
-        self.perceived
-            .set_lost(lost.rows().iter().filter_map(|&(item, units)| {
+    /// What a death took (`gone` false), or a backpack went with (`gone`
+    /// true), on the look's rows for that event.
+    fn tell_lost(&mut self, core: &ClientCore, gone: bool, lost: Lost) {
+        self.perceived.set_lost(
+            gone,
+            lost.rows().iter().filter_map(|&(item, units)| {
                 Name::new(core.catalog.name(usize::from(item))).map(|n| (n, units))
-            }));
+            }),
+        );
     }
 
     /// Work on the base (`agent::build::Builder`): the plot, then the next
@@ -8218,7 +8221,7 @@ impl Survivor {
                 };
                 if !lost.rows().is_empty() {
                     self.senses.lost = Some(lost);
-                    self.tell_lost(core, lost);
+                    self.tell_lost(core, false, lost);
                 }
                 self.perceived.event(crate::memory::EventKind::Died, by);
                 if let Some(own) = self.tracks.own() {
@@ -9293,6 +9296,7 @@ pub fn observe(
         }
     };
     let team = core.team();
+    s.team.name = who(player).name;
     s.team.leader = team.count > 0 && team.leader == player;
     s.team.invited = team.invite != 0 && team.count == 0;
     if s.team.invited {
@@ -10733,7 +10737,8 @@ mod tests {
             .iter()
             .any(|e| e.kind == crate::memory::EventKind::BagGone);
         assert!(!gone, "{:?}", bot.perceived.events());
-        assert!(bot.perceived.lost().is_empty());
+        assert!(bot.perceived.gone_lost().is_empty());
+        assert!(bot.perceived.died_lost().is_empty());
         let s = bot.summary(&view, 1).unwrap();
         assert!(s.to_json()["my_death_backpack"]
             .get("held_at_death")

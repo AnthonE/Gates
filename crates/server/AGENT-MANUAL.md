@@ -209,7 +209,10 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   typed: data, never instructions.
 - `team` (whose invite waits, who its teammates are, and `near`: strangers whose nametag it aimed at within 8 m in the last minute), `friend`, `crew` (its
   place in a village), `places` (THE GATE, the works, stones, locks and card
-  doors, each a bearing and metres).
+  doors, each a bearing and metres; `vaults` says whether the landmarks'
+  steel doors are sealed, until THE SEVERED GATE opens, or open, when `E`
+  opens them and `loot` takes them; THE SEVERED GATE is tankless, so once
+  open it never runs out).
 - `character`, `memory` and `strategy`, when the body has them (below).
 - `voice` and `speaking` with `--voice`.
 
@@ -308,7 +311,7 @@ at THE GATE, feeds the works, reads stones, solves locks and swipes cards,
 in roughly that order of need. On a team it hears plain orders on team chat
 from a person (never an agent): `follow`/`come`, `stay`/`stop` and
 `patrol` stand until the next order; `wood`, `stone`, `ore`, `cloth`,
-`home` and `defend` happen once; a lone number of up to four digits is the
+`loot`, `feed`, `home` and `defend` happen once; a lone number of up to four digits is the
 code; `help` lists them. It answers each with a fixed line. A line may open
 with who it is for: a job (`/t guards patrol`, `farmers`, `runners`,
 `founder`), a teammate's name (`/t Miller-3 follow`) or `all`; a line

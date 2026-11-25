@@ -947,6 +947,10 @@ pub struct TeamSense {
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
     pub who_len: u8,
+    /// Its own name as its teammates see it (its nametag): a team line
+    /// opening with it is for it, and that word is no order
+    /// (`agent::orders::to_me`). Empty until the shard has said.
+    pub name: protocol::Name,
     /// Strangers whose nametag it aimed at within `NEAR_AIM_M` lately, in
     /// the slots `follow:n<k>` names (`explorer`'s `aimed`).
     pub near: [Who; NEAR_MAX],
@@ -2172,6 +2176,7 @@ impl Summary {
                 address: protocol::Address::GUEST,
             }; protocol::TEAM_MAX],
             who_len: 0,
+            name: protocol::Name::EMPTY,
             near: [Who {
                 id: 0,
                 name: protocol::Name::EMPTY,
@@ -3689,6 +3694,7 @@ impl Scripted {
         }
         let role = s.society.set.then_some(s.society.role);
         let mates = &s.team.who[..usize::from(s.team.who_len).min(s.team.who.len())];
+        let me = s.team.name.as_str().as_bytes();
         for line in s.heard.lines() {
             let named = |w: Option<protocol::Address>| {
                 line.channel == protocol::Channel::Team
@@ -3703,15 +3709,19 @@ impl Scripted {
             match line.channel {
                 protocol::Channel::Team => {
                     // With a commander, only its line (and the crew
-                    // leader's) is an order; a line may name who it is for.
-                    if (self.commander.is_some() && !leader) || !orders::for_me(text, role, mates) {
+                    // leader's) is an order; a line may name who it is
+                    // for, and that word is no order.
+                    if self.commander.is_some() && !leader {
                         continue;
                     }
+                    let Some(said) = orders::to_me(text, me, role, mates) else {
+                        continue;
+                    };
                     if let Some(code) = orders::code(text) {
                         self.code = Some(code);
                         self.reply("got the code");
                     }
-                    match orders::order(text) {
+                    match orders::order(said) {
                         Some(Order::Help) => self.reply(orders::HELP),
                         Some(Order::Follow) => {
                             self.standing = Some(Order::Follow);
@@ -5006,6 +5016,13 @@ mod tests {
         // Defend is a run, once: home not struck, it says so.
         let c = ask(&mut s, boss, false, "defend");
         assert_eq!(said(&c).as_deref(), Some("can't right now"));
+        // Its own name opening the line says who it is for: no stone run.
+        s.team.name = protocol::Name::new("Stone-2").unwrap();
+        let c = ask(&mut s, boss, false, "Stone-2 follow me");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Follow, Some("following you"))
+        );
     }
 
     /// A turncoat gone stray waits to be taken on, gets on its new team's

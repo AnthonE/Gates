@@ -56,7 +56,7 @@ Salvage (gears, pipes, blades, springs, tarp, rope, sewing kits, weapon bodies) 
 
 `places` lists THE GATE (the town; its stalls trade for junk) and the works. `buy:<item>` and `sell:<item>` trade at the gate: junk buys food, building kit, tools, parts and arms, and the SALVAGE stall pays junk for surplus cloth, fragments, wood and stone. Never fight at the gate: its guns shoot anyone who attacked a player lately, and trades are not offered then.
 
-A work takes a quota of goods while open (`still_needs`) and lights when it is met, unlocking things for the whole island (gunpowder, medicine...); a lit one burns fuel. `feed_work` takes what your pack holds of what the nearest one needs and puts it all in: it helps everyone and earns your team standing, so give what you have plenty of.
+A work takes a quota of goods while open (`still_needs`) and lights when it is met, unlocking things for the whole island (gunpowder, medicine...); a lit one burns fuel. `feed_work` takes what your pack holds of what the nearest one needs and puts it all in: it helps everyone and earns your team standing, so give what you have plenty of. THE SEVERED GATE has no tank: once open it stays open for the rest of the wipe and never runs out. `places.vaults` says whether the landmarks' steel doors are sealed (until THE SEVERED GATE opens) or open (`E` opens them, and `loot` takes what is inside).
 
 # Stones, locks and the Ziggurat
 

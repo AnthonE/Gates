@@ -55,7 +55,7 @@ fn a_team_of_people_has_no_orders() {
 #[test]
 fn an_agent_teammate_gets_an_all_row_and_its_own() {
     let t = team(&[ME, MILLER, BOB]);
-    let r = rows(&t, &[MILLER], |_| None);
+    let r = rows(&t, &[MILLER], |_| Some(ME));
     assert_eq!(r.len(), 2);
     assert_eq!((r[0].who.as_str(), r[0].id), ("ALL", 0));
     assert_eq!(
@@ -77,14 +77,32 @@ fn an_agent_teammate_gets_an_all_row_and_its_own() {
         r[1].orders.iter().map(|o| o.label).collect::<Vec<_>>(),
         ["FOLLOW", "STAY"]
     );
-    // Crewed to you is still yours.
-    assert_eq!(rows(&t, &[MILLER], |_| Some(ME)), r);
+}
+
+/// The shard says no crew both for an agent nobody commands (it takes any
+/// teammate's orders) and for one whose commander is away (it takes only
+/// theirs): the ALL row reaches the first, and neither gets a row by name.
+#[test]
+fn an_uncrewed_agent_gets_the_all_row_only() {
+    let t = team(&[ME, MILLER, BOB]);
+    let r = rows(&t, &[MILLER], |_| None);
+    let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
+    assert_eq!(who, ["ALL"]);
+    // One yours beside it: the ALL row, and a row for yours.
+    let t = team(&[ME, MILLER, ASH]);
+    let r = rows(&t, &[MILLER, ASH], |id| (id == ASH).then_some(ME));
+    let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
+    assert_eq!(who, ["ALL", "Ash"]);
 }
 
 #[test]
 fn an_agent_crewed_to_someone_else_is_hidden() {
     let t = team(&[BOB, ME, MILLER, ASH]);
-    let crew_of = |id| (id == MILLER).then_some(BOB);
+    let crew_of = |id| match id {
+        MILLER => Some(BOB),
+        ASH => Some(ME),
+        _ => None,
+    };
     let r = rows(&t, &[MILLER, ASH], crew_of);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL", "Ash"]);
@@ -94,7 +112,7 @@ fn an_agent_crewed_to_someone_else_is_hidden() {
 
 #[test]
 fn a_name_a_line_cannot_open_with_gets_no_row() {
-    let t = team(&[ME, MILLER, 8, 9, 10, 11]);
+    let t = team(&[ME, MILLER, 8, 9, 10, 11, 12, 13]);
     let named = |id| match id {
         MILLER => Some("Miller-3".into()),
         8 => Some("Big Al".into()),
@@ -102,13 +120,17 @@ fn a_name_a_line_cannot_open_with_gets_no_row() {
         // The shard would read a lock code out of these.
         10 => Some("Ash#2".into()),
         11 => Some("007".into()),
+        // A job's word, or all's: the line would go to them.
+        12 => Some("Boss".into()),
+        13 => Some("crew".into()),
         _ => None,
     };
-    let r = order_rows(&t, ME, |id| id != ME, |_| None, named);
+    let mine = |_| Some(ME);
+    let r = order_rows(&t, ME, |id| id != ME, mine, named);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL", "Miller-3"]);
     // No name told yet: the ALL row still reaches it.
-    let r = order_rows(&t, ME, |id| id == MILLER, |_| None, |_| None);
+    let r = order_rows(&t, ME, |id| id == MILLER, mine, |_| None);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL"]);
 }
@@ -125,7 +147,11 @@ fn a_name_two_members_share_gets_no_row() {
         BOB => Some("Bob".into()),
         _ => None,
     };
-    let crew_of = |id| (id == ASH).then_some(BOB);
+    let crew_of = |id| match id {
+        MILLER => Some(ME),
+        ASH => Some(BOB),
+        _ => None,
+    };
     let r = order_rows(&t, ME, |id| id == MILLER || id == ASH, crew_of, named);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL"]);
@@ -134,7 +160,7 @@ fn a_name_two_members_share_gets_no_row() {
         ME | MILLER => Some("Ash".into()),
         _ => None,
     };
-    let r = order_rows(&t, ME, |id| id == MILLER, |_| None, named);
+    let r = order_rows(&t, ME, |id| id == MILLER, |_| Some(ME), named);
     let who: Vec<_> = r.iter().map(|r| r.who.as_str()).collect();
     assert_eq!(who, ["ALL"]);
 }
@@ -144,8 +170,8 @@ fn every_line_fits_a_chat_line() {
     let t = team(&[ME, MILLER, ASH]);
     // The longest name a session may declare.
     let long = |id| (id == ASH).then(|| "x".repeat(protocol::NAME_MAX_BYTES));
-    let mut all = rows(&t, &[MILLER, ASH], |_| None);
-    all.extend(order_rows(&t, ME, |id| id == ASH, |_| None, long));
+    let mut all = rows(&t, &[MILLER, ASH], |_| Some(ME));
+    all.extend(order_rows(&t, ME, |id| id == ASH, |_| Some(ME), long));
     for row in &all {
         for o in &row.orders {
             assert!(o.line.len() <= protocol::CHAT_MAX_BYTES, "{}", o.line);

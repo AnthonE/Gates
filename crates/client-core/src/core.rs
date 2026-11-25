@@ -1270,7 +1270,9 @@ impl ClientCore {
     }
 
     /// The player agent `id` serves, a person on its team (`EventMsg::Crew`,
-    /// v154): what its nametag names as `crew of`. `None` for nobody.
+    /// v154): what its nametag names as `crew of`. `None` for nobody, and
+    /// for an agent whose commander is away, off its team or an agent (the
+    /// shard sends 0 for each), which still obeys only that commander.
     pub fn crew_of(&self, id: u32) -> Option<u32> {
         self.crews
             .get(protocol::player_id_slot(id))

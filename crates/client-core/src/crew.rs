@@ -53,6 +53,44 @@ pub const ONE: [Order; 2] = [FOLLOW, STAY];
 /// The word that opens a line for every body (`for_me`'s `all`).
 pub const ALL: &str = "all";
 
+/// Who a line is for when its first word is not a body's name: every
+/// body, or one job's (`server::agent::society::Role`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Audience {
+    All,
+    Guards,
+    Farmers,
+    Runners,
+    Founder,
+}
+
+/// The first words that make a line an audience's (`for_me`), any case.
+/// One home for the shard's ears and the buttons: a body that goes by one
+/// of these is never [`addressable`].
+pub const AUDIENCE: [(&str, Audience); 13] = [
+    (ALL, Audience::All),
+    ("everyone", Audience::All),
+    ("everybody", Audience::All),
+    ("crew", Audience::All),
+    ("y'all", Audience::All),
+    ("guard", Audience::Guards),
+    ("guards", Audience::Guards),
+    ("farmer", Audience::Farmers),
+    ("farmers", Audience::Farmers),
+    ("runner", Audience::Runners),
+    ("runners", Audience::Runners),
+    ("founder", Audience::Founder),
+    ("boss", Audience::Founder),
+];
+
+/// The audience a first word names, if it is one of [`AUDIENCE`].
+pub fn audience(word: &[u8]) -> Option<Audience> {
+    AUDIENCE
+        .iter()
+        .find(|(w, _)| word.eq_ignore_ascii_case(w.as_bytes()))
+        .map(|&(_, a)| a)
+}
+
 /// The line for everyone: `all <words>`.
 pub fn to_all(o: Order) -> String {
     format!("{ALL} {}", o.words)
@@ -75,8 +113,11 @@ pub fn is_name(word: &[u8]) -> bool {
 }
 
 /// Whether a line can open with `name` and be read as for that body and
-/// nothing more: a name ([`is_name`]: no space, no lock code in it), and
-/// not ending in `:,!.?;`, which the shard takes off the first word.
+/// nothing more: a name ([`is_name`]: no space, no lock code in it), not
+/// ending in `:,!.?;`, which the shard takes off the first word, and no
+/// [`audience`] word (`Boss` or `Guard` would send it to a job).
 pub fn addressable(name: &str) -> bool {
-    is_name(name.as_bytes()) && !name.ends_with([':', ',', '!', '.', '?', ';'])
+    is_name(name.as_bytes())
+        && !name.ends_with([':', ',', '!', '.', '?', ';'])
+        && audience(name.as_bytes()).is_none()
 }
