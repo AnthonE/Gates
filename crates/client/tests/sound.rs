@@ -2269,6 +2269,61 @@ fn intensity_decays_when_nothing_happens() {
     assert_eq!(d.intensity(), 0.0, "never decayed to calm");
 }
 
+/// **The score answers the open Gate at once** (`Director::answer`): over
+/// the intro mid-play and through a fight, never restarting the song it
+/// asked for; after it the gaps run as ever and the next song is another.
+/// The menus ignore it, and leaving the world drops one not yet started.
+#[test]
+fn an_answer_starts_its_song_at_once() {
+    let dt = 1.0 / 60.0;
+    let mut d = Director::new(Mode::World);
+    run(&mut d, 60.0);
+    assert_eq!(d.playing(), Some(music::INTRO));
+    d.bump(1.0);
+    assert_eq!(d.tier(), Tier::Combat);
+    d.answer(music::TENSE_TRACK);
+    assert_eq!(d.tick(dt), Some(music::TENSE_TRACK), "the answer waited");
+    assert_eq!(d.playing(), Some(music::TENSE_TRACK));
+    d.answer(music::TENSE_TRACK);
+    assert_eq!(d.tick(dt), None, "the song it asked for started over");
+
+    let len = music::TENSE_TRACK.len_s();
+    let played = run(&mut d, len + music::SONG_GAP_MAX_S + 60.0);
+    let (t, next) = played[0];
+    let gap = t - (len - dt);
+    assert!(
+        (music::SONG_GAP_MIN_S - 1.0..=music::SONG_GAP_MAX_S + 1.0).contains(&gap),
+        "{gap:.1}s of silence after the answer"
+    );
+    assert_ne!(next, music::TENSE_TRACK, "the answer played twice running");
+
+    // In a gap it starts at once too.
+    let mut t = 0.0;
+    while d.playing().is_some() && t < 1200.0 {
+        d.tick(1.0);
+        t += 1.0;
+    }
+    assert!(d.playing().is_none() && d.gap_s() > 0.0, "no gap found");
+    d.answer(music::TENSE_TRACK);
+    assert_eq!(
+        d.tick(dt),
+        Some(music::TENSE_TRACK),
+        "the answer waited out a gap"
+    );
+
+    let mut m = Director::new(Mode::Menu);
+    run(&mut m, 1.0);
+    m.answer(music::TENSE_TRACK);
+    assert!(run(&mut m, 1.0).is_empty(), "the menu answered");
+    assert_eq!(m.playing(), Some(music::INTRO));
+
+    let mut w = Director::new(Mode::World);
+    run(&mut w, 1.0);
+    w.answer(music::TENSE_TRACK);
+    w.reset(Mode::Menu);
+    assert!(run(&mut w, 1.0).is_empty(), "an answer outlived the world");
+}
+
 /// **The track table is the files.** Each `len_s` is read off the shipped
 /// Ogg's last granule, so a re-encode that changed a length fails here
 /// rather than cutting a song short or leaving a dead gap.
@@ -3635,6 +3690,203 @@ fn the_arc_s_cues_are_admitted_by_a_mixer_frame() {
                 );
             }
         }
+    }
+}
+
+/// THE SEVERED GATE opening, paid or on its own hour, asks the score for
+/// its song; nothing else a work does, no other work, and no row that has
+/// not arrived does.
+#[test]
+fn the_gate_opening_asks_the_score_for_its_song() {
+    use client::ui::arc::{frame_score_answer, GATE_TRACK};
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_EV_FALLBACK, WORK_EV_LIT, WORK_EV_MAX};
+    assert!(music::WORLD.contains(&GATE_TRACK), "{GATE_TRACK:?}");
+    let mut a = ArcView {
+        count: 4,
+        ..ArcView::default()
+    };
+    // An act III work with a tank, the Gate (past act II, no tank), and a
+    // tankless act II work; row 3 has not arrived.
+    a.works[0].known = true;
+    a.works[0].def.act = 3;
+    a.works[0].def.fuel_max = 1000;
+    a.works[1].known = true;
+    a.works[1].def.act = 3;
+    a.works[2].known = true;
+    a.works[2].def.act = 2;
+    a.works[3].def.act = 3;
+    for what in 0..=WORK_EV_MAX as u8 {
+        let opens = matches!(what as u32, WORK_EV_LIT | WORK_EV_FALLBACK);
+        assert_eq!(
+            frame_score_answer(&a, &[(1, what, 0)]),
+            opens.then_some(GATE_TRACK),
+            "the Gate, event {what}"
+        );
+        for other in [0u8, 2, 3, 255] {
+            assert_eq!(
+                frame_score_answer(&a, &[(other, what, 0)]),
+                None,
+                "work {other}, event {what}"
+            );
+        }
+    }
+    let lit = WORK_EV_LIT as u8;
+    assert_eq!(frame_score_answer(&a, &[]), None);
+    assert_eq!(
+        frame_score_answer(&a, &[(0, lit, 0), (1, lit, 7)]),
+        Some(GATE_TRACK)
+    );
+}
+
+// ---- the countdown's toll (`ui::arc::Toll`) ----------------------------------
+
+mod toll {
+    use super::{Cue, Mix, Mixer};
+    use client::ui::arc::{toll_mark, Toll, TOLL_CUE, TOLL_GAIN, TOLL_LAST_MIN};
+    use client_core::arc::ArcView;
+    use sim_core::limits::TICK_HZ;
+    use sim_core::works::{WORK_COUNTDOWN, WORK_LIT};
+
+    const SEC: i64 = TICK_HZ as i64;
+    const MIN: i64 = 60 * SEC;
+    const HOUR: i64 = 60 * MIN;
+    /// The tick the test's countdown opens on.
+    const OPENS: u32 = 3_000_000;
+
+    /// An island whose Gate (work 1) counts down to [`OPENS`], beside a
+    /// sealed work.
+    fn counting() -> ArcView {
+        let mut a = ArcView {
+            count: 2,
+            ..ArcView::default()
+        };
+        for w in &mut a.works[..2] {
+            w.known = true;
+            w.synced = true;
+        }
+        let g = &mut a.works[1];
+        g.def.act = 3;
+        g.def.countdown = (12 * HOUR) as u64;
+        g.state = WORK_COUNTDOWN;
+        g.lights_at = OPENS;
+        a
+    }
+
+    /// One frame with `left` ticks to go: whether it tolled.
+    fn at(t: &mut Toll, a: &ArcView, left: i64) -> bool {
+        t.step(a, (OPENS as i64 - left) as f64).is_some()
+    }
+
+    /// The ticks left at every toll from `from` down to `to`, a frame every
+    /// `dt` ticks.
+    fn tolls(t: &mut Toll, a: &ArcView, from: i64, to: i64, dt: i64) -> Vec<i64> {
+        (0..=(from - to) / dt)
+            .map(|i| from - i * dt)
+            .filter(|&left| at(t, a, left))
+            .collect()
+    }
+
+    #[test]
+    fn a_mark_is_the_hour_or_the_last_minute_it_passed() {
+        let m = |left: i64| toll_mark(left as f64);
+        assert_eq!(m(12 * HOUR), 720, "a countdown starts on its mark");
+        assert_eq!(m(12 * HOUR - 1), 720);
+        assert_eq!(m(11 * HOUR), 660);
+        assert_eq!(m(HOUR + 1), 120);
+        assert_eq!(m(HOUR), 60);
+        let last = TOLL_LAST_MIN as i64 * MIN;
+        assert_eq!(m(last + 1), 60, "the last hour waits for its minutes");
+        assert_eq!(m(last), TOLL_LAST_MIN);
+        assert_eq!(m(MIN + 1), 2);
+        assert_eq!(m(30 * SEC), 1);
+        assert_eq!(m(1), 1);
+        assert_eq!(m(0), 0, "due is the opening's own sound");
+        assert_eq!(m(-5 * SEC), 0);
+    }
+
+    /// A twelve-hour countdown, a frame a second: its start is silent (the
+    /// thunder is the event's), then one toll at each whole hour left and
+    /// one a minute in the last few, and the opening is no toll. Each toll
+    /// is the far bell, an own-fact the mixer admits wherever the ears are.
+    #[test]
+    fn a_countdown_tolls_each_hour_then_each_last_minute() {
+        let a = counting();
+        let mut t = Toll::default();
+        let heard = tolls(&mut t, &a, 12 * HOUR, -10 * SEC, SEC);
+        let want: Vec<i64> = (1..12)
+            .rev()
+            .map(|h| h * HOUR)
+            .chain((1..=TOLL_LAST_MIN as i64).rev().map(|m| m * MIN))
+            .collect();
+        assert_eq!(heard, want);
+
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, 2 * HOUR + 1));
+        let req = t
+            .step(&a, (OPENS as i64 - 2 * HOUR) as f64)
+            .expect("the two-hour mark tolled");
+        assert_eq!((req.cue, req.at, req.gain), (TOLL_CUE, None, TOLL_GAIN));
+        let mut mixer = Mixer::new();
+        mixer.push(req);
+        let started: Vec<Cue> = mixer
+            .tick(16.0, [900.0, 12.0, -700.0], 0, &Mix::default())
+            .iter()
+            .map(|s| s.cue)
+            .collect();
+        assert_eq!((started, mixer.dropped), (vec![TOLL_CUE], 0));
+    }
+
+    /// A join mid-countdown has passed no mark: it hears the next one.
+    #[test]
+    fn a_join_mid_countdown_waits_for_the_next_mark() {
+        let a = counting();
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, 3 * HOUR + 20 * MIN), "the join tolled");
+        assert!(!at(&mut t, &a, 3 * HOUR + 1));
+        assert!(at(&mut t, &a, 3 * HOUR));
+    }
+
+    /// A mark tolls once: the estimate settling back over it, then forward
+    /// again, is silent, and a frame that leaps marks tolls one. Two
+    /// countdowns passing marks on one frame are one toll.
+    #[test]
+    fn a_mark_tolls_once() {
+        let mut a = counting();
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, 2 * HOUR + 1));
+        assert!(at(&mut t, &a, 2 * HOUR - 1));
+        assert!(!at(&mut t, &a, 2 * HOUR + 3), "back over the mark");
+        assert!(!at(&mut t, &a, 2 * HOUR - 2), "the mark again");
+        assert!(at(&mut t, &a, 30 * SEC), "the leap");
+        assert!(!at(&mut t, &a, 20 * SEC));
+        assert!(!at(&mut t, &a, -SEC), "the opening tolled");
+
+        a.count = 3;
+        a.works[2] = a.works[1];
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, HOUR + 1));
+        assert!(at(&mut t, &a, HOUR));
+    }
+
+    /// The watch reads a countdown afresh after the arc lost its sync (a
+    /// rejoin's drip) and after the work left the countdown.
+    #[test]
+    fn a_resync_or_a_new_countdown_starts_over() {
+        let mut a = counting();
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, 5 * HOUR + 1));
+        a.works[0].synced = false;
+        assert!(!at(&mut t, &a, 5 * HOUR - 1), "an unsynced arc tolled");
+        a.works[0].synced = true;
+        assert!(!at(&mut t, &a, 4 * HOUR - 1), "the last session's mark");
+        assert!(at(&mut t, &a, 3 * HOUR));
+
+        a.works[1].state = WORK_LIT;
+        assert!(!at(&mut t, &a, HOUR));
+        a.works[1].state = WORK_COUNTDOWN;
+        assert!(!at(&mut t, &a, 2 * HOUR - 1), "an old countdown's mark");
+        assert!(at(&mut t, &a, HOUR));
     }
 }
 

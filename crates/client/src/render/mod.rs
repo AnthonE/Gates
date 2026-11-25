@@ -792,6 +792,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<hud::Pickups>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
+            .init_resource::<audio::Toll>()
             // Before `audio::build_bank` below: the bank is installed
             // through it.
             .init_resource::<audio::Engine>()
@@ -1383,10 +1384,11 @@ impl Plugin for GatesRenderPlugin {
         // streamers to have somewhere to put chunks, and the 3D pass has to
         // be running for the pipelines to specialize before the player is
         // looking at the result.
-        // The surge toast and the blight's moment start every session over.
+        // The surge toast, the blight's moment and the countdown's toll start
+        // every session over.
         app.add_systems(
             OnEnter(Screen::Loading),
-            (hud::forget_surge, blight::forget),
+            (hud::forget_surge, blight::forget, audio::forget_toll),
         );
         app.add_systems(
             OnEnter(Screen::Loading),

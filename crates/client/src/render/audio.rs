@@ -562,6 +562,19 @@ impl Sound {
     }
 }
 
+/// The countdown's toll (`ui::arc::Toll`): a resource rather than a
+/// `Local`, for `hud::Surge`'s reason — every session starts it over
+/// ([`forget_toll`]), so a rejoin whose arc is synced before [`feed`]'s first
+/// frame reads its countdown afresh instead of against the last session's
+/// marks.
+#[derive(Resource, Default)]
+pub struct Toll(pub crate::ui::arc::Toll);
+
+/// A new session: no countdown read yet.
+pub fn forget_toll(mut toll: ResMut<Toll>) {
+    toll.0 = Default::default();
+}
+
 /// Whether a film's camera hears this cue. Everything positional, the beds
 /// and the thunder; never the recorder's own sounds — its steps, its hurt
 /// and its death, the interface, and the Verdigris counter, whose clicks in
@@ -1840,6 +1853,7 @@ pub fn feed(
     world: Option<Res<super::WorldId>>,
     eye: Res<Eye>,
     mut sound: ResMut<Sound>,
+    mut toll: ResMut<Toll>,
     mut cont: Local<(u8, u32)>,
 ) {
     // A container opened under your hands: a box's or a crate's latch and
@@ -1917,6 +1931,19 @@ pub fn feed(
     // toast off the same drained events. One cue a frame, thunder first.
     if let Some(cue) = crate::ui::arc::frame_work_cue(&net.session.core.arc, feed.work_events()) {
         sound.play(Request::own(cue));
+    }
+    // THE SEVERED GATE opened: the score answers at once, off its schedule.
+    if let Some(track) =
+        crate::ui::arc::frame_score_answer(&net.session.core.arc, feed.work_events())
+    {
+        sound.music.answer(track);
+    }
+    // A countdown passed an hour, or a minute of its last few: the toll.
+    {
+        let core = &net.session.core;
+        if let Some(req) = toll.0.step(&core.arc, core.server_tick_est()) {
+            sound.play(req);
+        }
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island, like
     // its toast — at the ears, since `Unlock` is positional. `place_eye` runs
