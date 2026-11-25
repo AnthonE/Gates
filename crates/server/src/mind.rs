@@ -914,10 +914,15 @@ pub enum Fate {
     DroppedLoggingOff,
     /// Held, then dropped: the body went down, died or lost its link.
     DroppedDown,
+    /// Held, then put aside for a turn the autopilot played without
+    /// asking the mind (`autopilot::unasked`: its friend away, a harness
+    /// away).
+    DroppedForAutopilot,
     /// It came after its deadline, or to a request already given up.
     Late,
-    /// The autopilot chose it: the mind's own answer did not come, or
-    /// the mind was not asked ([`AnswerFate::why`] says which).
+    /// The autopilot chose it: the mind was asked and its own answer did
+    /// not come ([`AnswerFate::why`] says why). A turn the mind was never
+    /// asked for leaves its last answer's fate as it was.
     Autopilot,
 }
 
@@ -933,6 +938,7 @@ impl Fate {
             Fate::DroppedNotAllowed => "dropped: no longer on offer when it could run",
             Fate::DroppedLoggingOff => "dropped: logging off",
             Fate::DroppedDown => "dropped: you went down or lost the link first",
+            Fate::DroppedForAutopilot => "dropped: the autopilot took over while it was held",
             Fate::Late => "too late: it came after the deadline, never played",
             Fate::Autopilot => "not yours: the autopilot played the turn",
         }
@@ -944,7 +950,7 @@ impl Fate {
 pub struct AnswerFate {
     pub goal: Goal,
     pub fate: Fate,
-    /// Why the autopilot played the turn (the source's error, or its gate:
+    /// Why the autopilot played the turn (the source's error:
     /// `autopilot::why`); empty otherwise.
     pub why: Reason,
 }
@@ -3305,12 +3311,12 @@ impl Mind {
         };
         let Some((pending, sent)) = self.pending else {
             self.stats.late += 1;
-            self.last_late = answer.map(|c| c.goal).or(self.last_late);
+            self.refused_late(answer);
             return None;
         };
         if pending != id {
             self.stats.late += 1;
-            self.last_late = answer.map(|c| c.goal).or(self.last_late);
+            self.refused_late(answer);
             return None;
         }
         self.pending = None;
@@ -3325,9 +3331,9 @@ impl Mind {
                 Some(choice)
             }
             other => {
-                if let Some(late) = other {
+                if other.is_some() {
                     self.stats.late += 1;
-                    self.last_late = Some(late.goal);
+                    self.refused_late(other);
                 }
                 self.stats.failures += 1;
                 self.failures = (self.failures + 1).min(6);
@@ -3341,6 +3347,15 @@ impl Mind {
     /// last asked: never played, and the mind is told so.
     pub fn take_late(&mut self) -> Option<Goal> {
         self.last_late.take()
+    }
+
+    /// A late answer is kept for the mind to be told of, unless it was a
+    /// turn the autopilot played without asking it (`autopilot::unasked`):
+    /// that one was never the mind's, and its own last answer's fate stands.
+    fn refused_late(&mut self, answer: Option<Choice>) {
+        if let Some(c) = answer.filter(|c| !crate::autopilot::unasked(c.reason.as_str())) {
+            self.last_late = Some(c.goal);
+        }
     }
 
     /// Send one request if the floor, the backoff, the spend guard and the
@@ -4960,6 +4975,20 @@ mod tests {
         // A fresh answer is no late one.
         assert!(mind.poll(backoff + cfg.interval * 2).is_some());
         assert_eq!(mind.take_late(), None);
+        // Nor is a turn the autopilot played without asking it: that one
+        // was never the mind's, late or not.
+        let gate = Some(crate::autopilot::FRIEND_AWAY);
+        let mut gated =
+            Mind::inline(crate::autopilot::Autopilot::new(Counting(0), gate), cfg).unwrap();
+        s.friend = FriendSense {
+            set: true,
+            ..FriendSense::NONE
+        };
+        let t1 = Instant::now();
+        assert!(gated.ask(t1, &s));
+        assert!(gated.poll(t1 + cfg.timeout).is_none(), "expired answer");
+        assert_eq!(gated.stats.late, 1);
+        assert_eq!(gated.take_late(), None);
     }
 
     /// The mind reads what ran, why it ended and who chose it, and what

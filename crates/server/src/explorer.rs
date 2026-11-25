@@ -1896,9 +1896,23 @@ impl Survivor {
     }
 
     /// What became of an answer, for the mind's next look. A turn the
-    /// autopilot played is told as the autopilot's whatever became of it:
-    /// that the mind's own answer never came is what it needs to know.
+    /// autopilot played for one the mind missed is told as the autopilot's
+    /// whatever became of it: that its own answer never came is what it
+    /// needs to know. A turn it was never asked for (its friend away, a
+    /// harness away) is no answer of its own, so its last one's fate
+    /// stands (`recent_goals` shows the turn, by the autopilot); only one
+    /// still held, which such a turn always puts aside, is told dropped.
     fn answered(&mut self, choice: &Choice, fate: Fate) {
+        if crate::autopilot::unasked(choice.reason.as_str()) {
+            if let Some(held) = self
+                .answer
+                .as_mut()
+                .filter(|a| matches!(a.fate, Fate::Deferred { .. }))
+            {
+                held.fate = Fate::DroppedForAutopilot;
+            }
+            return;
+        }
         self.answer = Some(match crate::autopilot::why(choice.reason.as_str()) {
             Some(why) => AnswerFate {
                 goal: choice.goal,
@@ -11734,6 +11748,52 @@ mod tests {
         assert_eq!(bot.mind.stats.late, 1);
         assert_eq!(fate(&bot, &view).map(|(_, f)| f), Some(Fate::Late));
         assert_eq!(bot.goal(), Some(Goal::Wait), "the late answer never ran");
+    }
+
+    /// A turn the autopilot plays without asking the mind (its friend
+    /// away, a harness away) is no answer of the mind's: what became of
+    /// its own last one stands for its next look, and only one still held,
+    /// which the turn puts aside, is told dropped. (Review: a buddy whose
+    /// friend came back was told the goal it had played never ran.)
+    #[test]
+    fn a_turn_the_mind_was_never_asked_for_leaves_its_answer_s_fate() {
+        let (mut bot, view, _) = fixture();
+        let fate = |bot: &Survivor| {
+            bot.summary(&view, 1)
+                .unwrap()
+                .answer
+                .map(|a| (a.goal, a.fate))
+        };
+        let reason = format!(
+            "autopilot ({}my friend is away): scripted: nothing useful in view",
+            crate::autopilot::UNASKED
+        );
+        let unasked = |goal| Choice {
+            goal,
+            confidence: 1.0,
+            reason: Reason::from_text(&reason),
+            input_tokens: 0,
+            output_tokens: 0,
+            say: Say::Quiet,
+            code: None,
+        };
+        goal(&mut bot, Goal::GatherWood, 1);
+        bot.adopt(unasked(Goal::Explore), 2);
+        bot.adopt(unasked(Goal::Wait), 3);
+        assert_eq!(fate(&bot), Some((Goal::GatherWood, Fate::Played)));
+        let s = bot.summary(&view, 1).unwrap();
+        assert_eq!(
+            s.recent.iter().map(|r| (r.goal, r.by)).collect::<Vec<_>>(),
+            [(Goal::GatherWood, By::Mind), (Goal::Explore, By::Autopilot)]
+        );
+        // Its own answer held through a fight, put aside for such a turn.
+        let mut held = unasked(Goal::Drink);
+        held.reason = Reason::EMPTY;
+        bot.answered(&held, Fate::Deferred { fight: true });
+        bot.adopt(unasked(Goal::Explore), 4);
+        assert_eq!(fate(&bot), Some((Goal::Drink, Fate::DroppedForAutopilot)));
+        bot.adopt(unasked(Goal::Wait), 5);
+        assert_eq!(fate(&bot), Some((Goal::Drink, Fate::DroppedForAutopilot)));
     }
 
     /// An idle body looks about: while it waits, the view leaves where it

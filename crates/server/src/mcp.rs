@@ -156,8 +156,9 @@ impl DecisionSource for McpDoor {
         summary: &Summary,
         fresher: &mut dyn FnMut() -> Option<Summary>,
     ) -> Result<Choice, String> {
+        // Not asked: the autopilot's turn is told as none of the mind's.
         if self.presence.away(self.quiet) {
-            return Err("the harness is away".into());
+            return Err(format!("{}the harness is away", crate::autopilot::UNASKED));
         }
         self.door.decide_fresh(summary, fresher)
     }

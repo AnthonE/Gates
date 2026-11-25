@@ -203,10 +203,13 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   went and why, and `by` who chose it (`you`, `autopilot`, or `body` for
   the walk home at a session's end). `your_last_answer` is what became of
   the last answer the body took: `played`, `deferred` (a fight or a step
-  under way holds it), `dropped` (stale, no longer on offer, logging off or
-  down), `too late`, or `not yours` when the autopilot played the turn,
-  with `why` (its error, such as "external agent did not answer in time",
-  or "my friend is away").
+  under way holds it), `dropped` (stale, no longer on offer, logging off,
+  down, or the autopilot took over while it was held), `too late`, or `not
+  yours` when the autopilot played a turn the mind was asked for, with
+  `why` (its error, such as "external agent did not answer in time"). Turns
+  the mind was never asked for (its friend away, nobody near, a harness
+  away: `autopilot (unasked: ...)`) leave it as it was; `recent_goals`
+  shows them.
   After a death, `my_death_backpack.held_at_death` is what the pack held
   (heaviest 3) until the backpack is gone or got back, which `memory`
   then tells ("my death backpack is gone (rotted or looted)", "I got

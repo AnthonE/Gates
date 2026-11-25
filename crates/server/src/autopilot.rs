@@ -8,7 +8,10 @@
 //!   answers that one request, and the source is asked again at the next.
 //! - **Its friend is away** (`--friend`, [`friend_away`]). The scripted
 //!   policy plays and the source is not asked at all: a buddy costs model
-//!   calls only while the person it plays with is on the island.
+//!   calls only while the person it plays with is on the island. Its
+//!   reason says so ([`UNASKED`]), as does an MCP harness's while it is
+//!   away, so the mind is not told of a turn it was never asked for as an
+//!   answer of its own that never ran.
 //!
 //! `mind.rs`'s rule (no substituted decisions) is about a source that
 //! ANSWERED being overruled; here no answer came, and the substitute is
@@ -94,6 +97,11 @@ impl<P: DecisionSource> Autopilot<P> {
 /// How every turn the autopilot plays begins its reason.
 const SAYS: &str = "autopilot (";
 
+/// After [`SAYS`], on a turn the source was never asked for: its gate's,
+/// or one its source had no one to ask for (an MCP harness away, whose
+/// error begins so: `mcp::McpDoor`).
+pub const UNASKED: &str = "unasked: ";
+
 /// Whether a decision's reason is the autopilot's (`fly`): what a log, the
 /// distiller (`ops/distill/train.py`) and the bench (`bench.rs`) tell its
 /// turns by.
@@ -101,11 +109,21 @@ pub fn is_autopilot(reason: &str) -> bool {
     reason.starts_with(SAYS)
 }
 
+/// Whether the autopilot played a turn its source was never asked for
+/// ([`UNASKED`]): no answer of the mind's, given or missed, so what became
+/// of its own last one still stands (`explorer`'s `answered`).
+pub fn unasked(reason: &str) -> bool {
+    reason
+        .strip_prefix(SAYS)
+        .is_some_and(|rest| rest.starts_with(UNASKED))
+}
+
 /// Why the autopilot played a turn, out of its reason: the source's error
 /// ("external agent did not answer in time") or its gate's words ("my
 /// friend is away"), without the scripted policy's own reason after it.
 pub fn why(reason: &str) -> Option<&str> {
     let rest = reason.strip_prefix(SAYS)?;
+    let rest = rest.strip_prefix(UNASKED).unwrap_or(rest);
     Some(rest.split_once("): ").map_or(rest, |(why, _)| why))
 }
 
@@ -125,7 +143,7 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
         fresher: &mut dyn FnMut() -> Option<Summary>,
     ) -> Result<Choice, String> {
         if let Some(g) = self.gate.filter(|g| (g.rule)(s)) {
-            return self.fly((g.why)(s), s);
+            return self.fly(&format!("{UNASKED}{}", (g.why)(s)), s);
         }
         let mut newest = *s;
         let answer = self.primary.decide_fresh(s, &mut || {
@@ -230,6 +248,8 @@ mod tests {
             Some("external agent did not answer in time")
         );
         assert_eq!(why("mine"), None);
+        assert!(!unasked(c.reason.as_str()), "asked, and missed");
+        assert!(!unasked("mine"));
     }
 
     #[test]
@@ -243,6 +263,7 @@ mod tests {
         let c = gated.decide(&s).unwrap();
         assert!(c.reason.as_str().contains("my friend is away"));
         assert_eq!(why(c.reason.as_str()), Some("my friend is away"));
+        assert!(is_autopilot(c.reason.as_str()) && unasked(c.reason.as_str()));
         assert_eq!(gated.primary.0, 0, "no model call while the friend is away");
         assert!(friend_away(&s));
         s.friend.online = true;
@@ -300,7 +321,7 @@ mod tests {
                 SourceKind::External
             }
             fn decide(&mut self, _: &Summary) -> Result<Choice, String> {
-                Err("the harness is away".into())
+                Err(format!("{UNASKED}the harness is away"))
             }
             fn take_plan(&mut self) -> Option<Plan> {
                 self.0.take()
@@ -323,6 +344,9 @@ mod tests {
         let c = a.decide(&s).unwrap();
         assert_eq!(c.goal, Goal::GatherWood, "{}", c.reason.as_str());
         assert!(c.reason.as_str().contains("the plan my mind left"));
+        // A harness away was not asked (`mcp::McpDoor`), and its turn says so.
+        assert!(unasked(c.reason.as_str()));
+        assert_eq!(why(c.reason.as_str()), Some("the harness is away"));
         assert_eq!(plan.next(&s), Some(Goal::GatherWood));
         let mut bare = Summary::EMPTY;
         bare.offer(Goal::Build);
