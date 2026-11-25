@@ -727,7 +727,7 @@ fn the_rotor_is_heard_from_where_the_heli_is() {
     };
     use client::sound::engine::Cmd;
     let right = [1.0, 0.0];
-    let ears = |d: [f32; 3]| match rotor_place(d, right, 0.0, 48_000)[0] {
+    let ears = |d: [f32; 3]| match rotor_place(d, right, 0.0, 48_000, 0)[0] {
         Cmd::Place {
             ear_l, ear_r, lp, ..
         } => (ear_l, ear_r, lp),
@@ -767,7 +767,7 @@ fn the_rotor_is_heard_from_where_the_heli_is() {
         doppler(22.0)
     );
     assert_eq!(doppler(f32::NAN), 1.0);
-    match rotor_place([0.0, 0.0, 30.0], right, 22.0, 48_000) {
+    match rotor_place([0.0, 0.0, 30.0], right, 22.0, 48_000, 0) {
         [Cmd::Place { rate: a, .. }, Cmd::Place { rate: b, .. }] => {
             assert!(a == b && a < 1.0, "both layers fall together going away")
         }
@@ -806,4 +806,78 @@ fn the_rotor_is_heard_from_where_the_heli_is() {
         total(ROTOR_R_M * 0.7) > 0.02,
         "still heard across most of its range"
     );
+}
+
+/// With the ears under water the beds that still sound there go through the
+/// water's low-pass like every one-shot does: the rotor's two layers keep
+/// their pan and pitch and take the darker of the air's filter and the
+/// water's, the surf takes the water's at a bed's centre, and dry ears get
+/// exactly the places they always did.
+#[test]
+fn the_beds_under_water_go_through_the_water() {
+    use client::render::audio::{furnace_place, rotor_place, surf_place, BEDS, ROTOR_DARK_M};
+    use client::sound::engine::{self, Cmd};
+    let rate = 48_000;
+    let right = [0.6, 0.8];
+    let under = engine::lp_under(1.0, rate);
+    let half = engine::lp_under(0.5, rate);
+    assert!(under > 0 && half > under, "{half} then {under}");
+    let unplace = |c: Cmd| match c {
+        Cmd::Place {
+            slot,
+            ear_l,
+            ear_r,
+            lp,
+            rate,
+        } => (slot, ear_l, ear_r, lp, rate),
+        other => panic!("{other:?} is not a place"),
+    };
+    for d in [
+        [0.0, 0.0, 30.0],
+        [40.0, 12.0, -5.0],
+        [-0.3, 26.0, 0.2],
+        [0.0, 0.0, ROTOR_DARK_M * 0.9],
+        [150.0, 40.0, 180.0],
+    ] {
+        for receding in [-22.0, 0.0, 9.0] {
+            let dry = rotor_place(d, right, receding, rate, 0);
+            // Dry ears: the air's filter on the near layer, none on the far
+            // one, as before the water was folded in.
+            let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            assert_eq!(unplace(dry[0]).3, engine::lp_of(n, ROTOR_DARK_M, rate));
+            assert_eq!(unplace(dry[1]).3, 0, "the far layer was recorded dark");
+            for lp in [half, under] {
+                let wet = rotor_place(d, right, receding, rate, lp);
+                for (w, a) in wet.into_iter().zip(dry) {
+                    let (ws, wl, wr, wlp, wrate) = unplace(w);
+                    let (s, l, r, alp, arate) = unplace(a);
+                    assert_eq!(
+                        (ws, wl.to_bits(), wr.to_bits()),
+                        (s, l.to_bits(), r.to_bits())
+                    );
+                    assert_eq!(wrate.to_bits(), arate.to_bits(), "the pitch holds");
+                    assert_eq!(wlp, engine::darker(alp, lp), "at {d:?}");
+                    assert!(wlp > 0 && wlp <= lp, "water darkens: {wlp} against {lp}");
+                }
+            }
+        }
+    }
+
+    // The surf: centred, at its own pitch, and only the filter moves.
+    let surf = BEDS
+        .iter()
+        .position(|c| *c == client::sound::Cue::BedSurf)
+        .unwrap() as u8;
+    assert_eq!(unplace(surf_place(0)), (surf, 1.0, 1.0, 0, 1.0));
+    assert_eq!(unplace(surf_place(under)), (surf, 1.0, 1.0, under, 1.0));
+
+    // The furnace fades out under water; while it does it is filtered too,
+    // and its pan does not move for it.
+    let (dry, wet) = (
+        unplace(furnace_place([3.0, 0.5, 2.0], right, 0)),
+        unplace(furnace_place([3.0, 0.5, 2.0], right, under)),
+    );
+    assert_eq!(dry.3, 0, "dry ears hear the roar whole");
+    assert_eq!(wet.3, under);
+    assert_eq!((dry.0, dry.1, dry.2, dry.4), (wet.0, wet.1, wet.2, wet.4));
 }

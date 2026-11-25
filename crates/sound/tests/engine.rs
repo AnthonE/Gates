@@ -1317,6 +1317,23 @@ fn a_take_plays_its_own_slice_and_the_low_pass_is_one_pole() {
     let distant = dry.muffled(far);
     assert_eq!(lp_of_start(distant.muffled(under)), under);
     assert_eq!(lp_of_start(distant.muffled(half)), far.min(half));
+
+    // One rule for a start and a held slot: 0 is no filter, not the darkest,
+    // and otherwise the lower cutoff wins, whichever side it is on.
+    assert_eq!(engine::darker(0, 0), 0);
+    assert_eq!(engine::darker(0, under), under);
+    assert_eq!(engine::darker(far, 0), far);
+    assert_eq!(engine::darker(far, under), under);
+    for a in 0..=255u8 {
+        for b in [0, 1, under, half, far, 128, 255] {
+            let d = engine::darker(a, b);
+            assert_eq!(d, engine::darker(b, a), "{a} {b}");
+            assert_eq!(lp_of_start(dry.muffled(a).muffled(b)), d, "{a} {b}");
+            if a != 0 && b != 0 {
+                assert_eq!(d, a.min(b));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

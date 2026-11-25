@@ -1677,8 +1677,12 @@ pub struct SnapshotDef {
 ///
 /// Real submerged audio is a steep low-pass: the top end goes. One-shots get
 /// it — the engine's one pole, at `engine::lp_under` of the fade — and the
-/// beds and loops, which run unfiltered, are ducked and crossfaded to one
-/// *generated* dark (`synth::under`) instead.
+/// beds are ducked and crossfaded to one *generated* dark (`synth::under`).
+/// The beds that survive the crossfade, the surf and the heli's rotor, take
+/// the same `lp_under` on their held slots (`Cmd::Place`, folded with
+/// `engine::darker` into the rotor's own distance filter), so the sea's top
+/// end and the blades' slap do not come through the water untouched. The
+/// generated dark is not filtered again, and music is not in the world.
 pub const SNAPSHOTS: [SnapshotDef; 2] = [
     // Above.
     SnapshotDef {
