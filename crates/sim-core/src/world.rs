@@ -4370,6 +4370,43 @@ impl World {
         );
     }
 
+    /// Lay down each thrown weapon that came down this tick (`ranged::hurl`):
+    /// stuck where it went in when it met the world, else fallen onto the
+    /// surface under where it stopped — out of a body or an animal, that is
+    /// at their feet — as a loose stack of itself, or lost in deep water as
+    /// an arrow is.
+    fn land_hurls(&mut self) {
+        if self.arrows.hurls().is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        for h in self.arrows.hurls() {
+            let (x, y, z) = (
+                h.qx as f32 / 1000.0,
+                h.qy as f32 / 1000.0,
+                h.qz as f32 / 1000.0,
+            );
+            let at = if h.dir == [0; 3] {
+                crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+            } else {
+                crate::grounditem::stick_at(x, y, z)
+            };
+            if let Some(at) = at {
+                self.ground_items
+                    .drop_one(&self.backpack, at, h.stack, tick, h.dir);
+            }
+        }
+        self.arrows.clear_hurls();
+    }
+
     /// Blow up each exploding round that came down this tick where it
     /// stopped (`charge::blast`), then lay down its dead and land its
     /// animals the way a fuse's are (`charge::tick_fuses`' caller).
@@ -9098,7 +9135,22 @@ impl World {
             let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
                 || combat::waterlogged(&self.combat, &self.players[i])
                 || survival::hands_busy(&self.players[i]);
+            // A thrown spear comes down as a loose stack, and a throw never
+            // evicts one (`limits::DROP_HEADROOM`), so it needs the room.
+            let room = self.backpack.base_ticks != 0
+                && self.ground_items.len()
+                    < crate::limits::MAX_GROUND_ITEMS - crate::limits::DROP_HEADROOM;
+            // The spear aimed takes the arm as a drawn bow does; a plain
+            // click with it still swings (`ranged::hurl`).
             let took_arm = holstered
+                || ranged::hurl(
+                    tick,
+                    &self.combat,
+                    &mut self.arrows,
+                    &mut self.events,
+                    &mut self.players[i],
+                    room,
+                )
                 || ranged::draw(
                     tick,
                     &self.combat,
@@ -9970,6 +10022,7 @@ impl World {
         // After the deaths those arrows caused, so an arrow in a body that
         // just died falls out where it fell.
         self.settle_arrows();
+        self.land_hurls();
         self.unstick_arrows();
         self.light_fires();
         self.blow_rockets(&mut removals);
@@ -10513,6 +10566,11 @@ impl World {
             buf[38..40].copy_from_slice(&a.round.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
+            // A thrown weapon in flight is the item itself; an arrow folds
+            // nothing more, so no pinned hash of a bow's flight moves.
+            if a.hurled.count > 0 {
+                h.update(&a.hurled.to_le());
+            }
         }
         // Arrows that have landed (`spent.rs`). Length-prefixed, unlike the
         // block above — this store is dense with an explicit `len` where

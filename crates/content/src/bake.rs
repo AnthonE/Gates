@@ -19,7 +19,7 @@ use sim_core::build::{
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_NONE,
+    AmmoDef, ArmorDef, CombatContent, HurlDef, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_NONE,
 };
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -910,6 +910,25 @@ impl Content {
                 lit_bonus,
                 wear,
             };
+            // The spear's throw, in the round's units (`bake_ammo`):
+            // `validate` held every number to what the sim can fly.
+            if let Some(t) = &w.throw {
+                let rate2 = TICK_HZ * TICK_HZ;
+                let hurl = HurlDef {
+                    speed_mmpt: u16::try_from(t.speed_mps * 1000 / TICK_HZ)
+                        .map_err(|_| format!("bake: `{}` throw speed overflows u16", w.id))?,
+                    drop_mmpt2: u16::try_from((t.drop_mps2 * 1000 + rate2 / 2) / rate2)
+                        .map_err(|_| format!("bake: `{}` throw drop overflows u16", w.id))?,
+                    damage: u16::try_from(t.damage)
+                        .map_err(|_| format!("bake: `{}` throw damage overflows u16", w.id))?,
+                    windup_ticks: u8::try_from(u64::from(t.windup_ms) * u64::from(TICK_HZ) / 1000)
+                        .map_err(|_| format!("bake: `{}` throw windup overflows a byte", w.id))?,
+                };
+                if hurl.speed_mmpt == 0 || hurl.damage == 0 || hurl.windup_ticks == 0 {
+                    return Err(format!("bake: `{}` throws nothing", w.id));
+                }
+                cc.hurl[idx] = hurl;
+            }
         }
         Ok(cc)
     }

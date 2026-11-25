@@ -1861,6 +1861,17 @@ pub fn draw_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option
     (s.count > 0 && row.draws()).then_some((row.draw_ticks, row.nock_ticks))
 }
 
+/// Is the stack in hand a melee weapon the right mouse winds up to throw (the
+/// spear, `ItemRow::hurl_ticks`)? Held, the sim takes no swing and a click
+/// throws it (`ranged::hurl`).
+pub fn hurl_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> bool {
+    if inv.is_empty() {
+        return false;
+    }
+    let s = inv[(sel as usize).min(inv.len() - 1)];
+    s.count > 0 && catalog.row(s.item as usize).hurls()
+}
+
 /// Is the stack in hand a gun aimed down its sights — fired from the hip
 /// ([`Stroke::Shot`]) and not drawn? The revolver and the crossbow. The right
 /// mouse raises them (`render::input`, `BTN_AIM`): the view narrows, and the

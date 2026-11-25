@@ -1433,7 +1433,8 @@ pub use voice::{
 /// (`ActionMsg::BagGive`): its address and their id. Action 48 sends your
 /// whole set of map marks (`ActionMsg::Pins`, `pins::PinSet`), and
 /// `SUB_TEAM_PINS` (114) relays it to each teammate with your id
-/// (`EventMsg::TeamPins`).
+/// (`EventMsg::TeamPins`). A catalog row carries `hurl_ticks` after its
+/// `damage`: the windup a thrown spear needs (`combat::HurlDef`).
 pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,

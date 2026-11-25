@@ -226,6 +226,16 @@ pub fn hash(c: &Content) -> u64 {
                 }
             }
         }
+        // The throw reaches `HurlDef` and decides how a spear flies.
+        match &w.throw {
+            None => h.u(0),
+            Some(t) => {
+                h.u(1);
+                for v in [t.speed_mps, t.drop_mps2, t.damage, t.windup_ms] {
+                    h.u(v);
+                }
+            }
+        }
     }
 
     // The ballistics, on the object they belong to. These reach

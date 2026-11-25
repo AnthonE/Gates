@@ -141,6 +141,12 @@ reach_cm = 110
 
 # --- weapons proper ------------------------------------------------------
 
+# A spear is thrown too (Rust's): the right mouse held for `windup_ms`, a
+# click, and the spear itself flies as an arrow does and lies where it comes
+# down, to be picked up again (`sim-core/src/ranged.rs`, `hurl`). Its wall
+# damage and its head and leg are the row's own. Opening values, not the
+# reference's: a throw hits harder than a jab because it costs the spear,
+# and a head stays short of one kill on a naked body (`balance.rs`).
 [[weapon]]
 id = "item.spear_wood"
 kind = "melee"
@@ -150,6 +156,12 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 reach_cm = 175
+
+[weapon.throw]
+speed_mps = 20
+drop_mps2 = 10
+damage = 30
+windup_ms = 500
 
 # The stone head: between the wooden spear and the metal one.
 [[weapon]]
@@ -162,6 +174,12 @@ limb_pct = 50
 rate_per_min = 48
 reach_cm = 175
 
+[weapon.throw]
+speed_mps = 20
+drop_mps2 = 10
+damage = 35
+windup_ms = 500
+
 [[weapon]]
 id = "item.spear_metal"
 kind = "melee"
@@ -171,6 +189,12 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 reach_cm = 190
+
+[weapon.throw]
+speed_mps = 22
+drop_mps2 = 10
+damage = 45
+windup_ms = 500
 
 # --- Rust's tree melee (their item pages, 2026-10-17). Their damage runs
 # 40 (hammer, axe, icepick) · 50 (sword) · 60 (mace, cleaver) · 75

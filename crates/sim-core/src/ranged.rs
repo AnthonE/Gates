@@ -649,6 +649,11 @@ pub struct Arrow {
     /// straight line by the sag of the drop, and over an arrow's life that
     /// is centimetres.
     pub flown: u32,
+    /// A **thrown weapon** ([`hurl`]): the one item that left the hand,
+    /// condition, skin and data and all, which is what comes back down
+    /// where it stops ([`Hurled`]) — never `spent`, whose record keeps only
+    /// a round. Empty (`count == 0`) for every arrow a bow looses.
+    pub hurled: ItemStack,
 }
 
 impl Arrow {
@@ -759,6 +764,25 @@ pub struct Lit {
     n: usize,
     booms: [Boom; MAX_ARROWS],
     nb: usize,
+    hurls: [Hurled; MAX_ARROWS],
+    nh: usize,
+}
+
+/// Where a thrown weapon came down ([`hurl`]), handed to `World` to lay as
+/// a loose stack (`grounditem`) for [`Ignite`]'s reason: the ground item
+/// store is not this pass's to hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hurled {
+    /// Where it stopped, millimetres.
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    /// The item, as it left the hand.
+    pub stack: ItemStack,
+    /// The way it was flying if it **stuck** in the world (a trunk, a wall,
+    /// the dirt), `spent::stick_dir`'s byte an axis. Zero for one that
+    /// falls: out of a body or an animal, off a drum, out of flight.
+    pub dir: [i8; 3],
 }
 
 /// Where an exploding round came down, handed to `World` to blow up
@@ -799,6 +823,14 @@ impl Lit {
             struck: None,
         }; MAX_ARROWS],
         nb: 0,
+        hurls: [Hurled {
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            stack: ItemStack::EMPTY,
+            dir: [0; 3],
+        }; MAX_ARROWS],
+        nh: 0,
     };
 
     pub(crate) fn push(&mut self, f: Ignite) {
@@ -812,6 +844,14 @@ impl Lit {
         if self.nb < MAX_ARROWS {
             self.booms[self.nb] = b;
             self.nb += 1;
+        }
+    }
+
+    fn hurl(&mut self, h: Hurled) {
+        // At most one per arrow slot a tick, so it cannot be full.
+        if self.nh < MAX_ARROWS {
+            self.hurls[self.nh] = h;
+            self.nh += 1;
         }
     }
 }
@@ -860,6 +900,7 @@ impl Arrows {
             limb_pct: 100,
             life: 0,
             flown: 0,
+            hurled: ItemStack::EMPTY,
         }; MAX_ARROWS],
         lit: Lit::EMPTY,
     };
@@ -905,6 +946,15 @@ impl Arrows {
 
     pub fn clear_booms(&mut self) {
         self.lit.nb = 0;
+    }
+
+    /// The thrown weapons that came down since [`Arrows::clear_hurls`].
+    pub fn hurls(&self) -> &[Hurled] {
+        &self.lit.hurls[..self.lit.nh]
+    }
+
+    pub fn clear_hurls(&mut self) {
+        self.lit.nh = 0;
     }
 
     /// The first free slot for `owner`'s next arrow, or `None` when the
@@ -1155,6 +1205,7 @@ pub fn draw(
         limb_pct: def.limb_pct,
         life,
         flown: 0,
+        hurled: ItemStack::EMPTY,
     };
     // Announced only where an arrow actually left the bow — after the
     // cadence, the quiver and the store have all had their say. Every one
@@ -1169,6 +1220,116 @@ pub fn draw(
     );
     // And the shot wears the bow (`CombatContent::shot_wear`).
     cc.wear_shot(&mut p.inv[sel]);
+    true
+}
+
+/// **Throw the melee weapon in hand** (`combat::HurlDef`, Rust's thrown
+/// spear): the right mouse held for the row's windup, then a click, and the
+/// weapon leaves the hand as an arrow — the same flight, the same live body
+/// test, the same death screen naming it — carrying itself
+/// ([`Arrow::hurled`]) to lie where it stops ([`Hurled`]).
+///
+/// Returns `true` when the throw took the arm, so `World::tick` does not
+/// also swing: whenever the aim is held with a throwable weapon in hand, as
+/// a drawn bow does. **A plain click, aim up, is `false` and swings**: the
+/// spear is still a spear. A swimmer keeps only the swing
+/// (`combat::waterlogged`'s rule for anything that flies).
+///
+/// The windup is the bow's draw (`draw`) on the same two fields: the aim's
+/// first tick in hand puts the throw `windup_ticks` away on
+/// `Player::next_swing`, and `Player::draw_on` says whether this tick
+/// carries on an aim this weapon was already holding. Unlike the bow, a
+/// relaxed spear pushes nothing, because the swing reads that clock too.
+///
+/// `room` is the loose-stack store's say ([`crate::limits::DROP_HEADROOM`]):
+/// a throw lands as a loose stack and a throw never evicts, so past the drop
+/// line, or with the stack module disarmed, nothing leaves the hand.
+pub fn hurl(
+    tick: u64,
+    cc: &CombatContent,
+    arrows: &mut Arrows,
+    events: &mut EventQueue,
+    p: &mut Player,
+    room: bool,
+) -> bool {
+    let Some((def, melee)) = cc.held_hurl(held_item(p)) else {
+        return false;
+    };
+    if crate::movement::swimming(&p.body) || p.frame.buttons & BTN_AIM == 0 {
+        return false;
+    }
+    let held_on = p.draw_on == tick;
+    p.draw_on = tick + 1;
+    if !held_on {
+        p.next_swing = p.next_swing.max(tick + u64::from(def.windup_ticks));
+    }
+    if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
+        return true;
+    }
+    // Paid on the throw, as every arm pays its cadence: a refused one must
+    // not be retried every tick.
+    p.next_swing = tick + crate::gather::SWING_INTERVAL_TICKS;
+    let sel = (p.frame.sel as usize).min(INV_SLOTS - 1);
+    if cc.broken(p.inv[sel]) {
+        events.push(
+            crate::world::EV_GATHER_REFUSED,
+            p.id,
+            (held_item(p) as u32) << 16 | crate::gather::REFUSE_G_BROKEN,
+            0,
+        );
+        return true;
+    }
+    // Space before the weapon, always (`draw`'s rule): the arrow slot and
+    // the place it will lie, or it stays in the hand.
+    if !room {
+        return true;
+    }
+    let Some(ix) = arrows.free_for(p.id) else {
+        return true;
+    };
+    // The one in the hand goes, as itself: its condition, skin and data.
+    let mut thrown = ItemStack {
+        count: 1,
+        ..p.inv[sel]
+    };
+    p.inv[sel].count -= 1;
+    if p.inv[sel].count == 0 {
+        p.inv[sel] = ItemStack::EMPTY;
+    }
+    // A throw wears it as a landed blow does (`MeleeDef::wear`).
+    if (thrown.item as usize) < cc.cond_max.len() && cc.cond_max[thrown.item as usize] > 0 {
+        thrown.cond = thrown.cond.saturating_sub(melee.wear);
+    }
+
+    let (fx, fz) = yaw_dir(p.frame.yaw);
+    let (ch, sv) = pitch_dir(p.frame.pitch);
+    let speed = def.speed_mmpt as f32;
+    arrows.a[ix] = Arrow {
+        qx: p.body.qx * (POS_XZ_Q * MM_PER_M) as i32,
+        qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + eye_mm(p.crouched()),
+        qz: p.body.qz * (POS_XZ_Q * MM_PER_M) as i32,
+        vx: crate::fmath::floor_i32(fx * ch * speed),
+        vy: crate::fmath::floor_i32(sv * speed),
+        vz: crate::fmath::floor_i32(fz * ch * speed),
+        drop: def.drop_mmpt2,
+        owner: p.id,
+        item: thrown.item,
+        round: thrown.item,
+        damage: def.damage,
+        structure: melee.structure,
+        head_pct: melee.head_pct,
+        limb_pct: melee.limb_pct,
+        life: MAX_ARROW_LIFE_TICKS,
+        flown: 0,
+        hurled: thrown,
+    };
+    // Drawn as an arrow's tracer until a client draws the weapon itself.
+    events.push(
+        EV_SHOT,
+        p.id,
+        (p.frame.yaw as u32) << 8 | p.frame.pitch as u32,
+        (def.speed_mmpt as u32) << 16 | def.drop_mmpt2 as u32,
+    );
     true
 }
 
@@ -1203,6 +1364,20 @@ fn land(
     off: [i16; 3],
     struck: Option<Struck>,
 ) {
+    // A thrown weapon is never broken and never `spent`'s (whose record
+    // keeps only a round): it comes down whole, where it stopped, for
+    // `World` to lay. Out of a body it falls; only one that met the world
+    // stays stuck where it went in.
+    if a.hurled.count > 0 {
+        lit.hurl(Hurled {
+            qx: a.qx,
+            qy: a.qy,
+            qz: a.qz,
+            stack: a.hurled,
+            dir: if host.is_some() { [0; 3] } else { dir },
+        });
+        return;
+    }
     // A rocket leaves no shaft: where it came down goes to `World` to blow.
     if let Some(blast) = cc
         .ammo_def(a.round)

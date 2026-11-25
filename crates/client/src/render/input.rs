@@ -496,8 +496,13 @@ pub fn gather(
     // sim reads `BTN_AIM` only as "walk, do not sprint" for a weapon that
     // does not draw, which is the reference's own cost of aiming, and the
     // narrowed view is this side's (`viewmodel::animate`, `ADS_ZOOM`).
+    //
+    // **A spear is wound up to throw the same way** (Rust's): held, the
+    // windup runs and a click throws it rather than swinging
+    // (`ranged::hurl`), and the body walks as a drawn bow does.
     let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some()
-        || crate::ui::hold::sights_in_hand(&core.catalog, &core.inv, sel);
+        || crate::ui::hold::sights_in_hand(&core.catalog, &core.inv, sel)
+        || crate::ui::hold::hurl_in_hand(&core.catalog, &core.inv, sel);
     if draws && !downed && !holstered && locked && mouse.pressed(MouseButton::Right) {
         buttons |= BTN_AIM;
         buttons &= !BTN_SPRINT;

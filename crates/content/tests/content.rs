@@ -5550,3 +5550,63 @@ fn genes_live_on_crop_seeds_alone_and_nothing_eats_them_blind() {
         "past 100 per cent",
     );
 }
+
+/// A spear's throw (`[weapon.throw]`) reaches the sim in its units, and the
+/// validator refuses the throws the sim cannot fly — on a row that is not
+/// melee, too fast for the arrow's sampler, with no gravity, with a windup
+/// past the catalog's byte, or one that kills a naked head outright.
+#[test]
+fn a_spears_throw_bakes_and_the_bad_ones_are_refused() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let cc = c.bake_combat().expect("shipped combat bakes");
+    let idx = c.item_index("item.spear_wood").expect("the wooden spear") as usize;
+    let (hurl, melee) = cc.held_hurl(idx as u16).expect("the wooden spear throws");
+    let hz = sim_core::limits::TICK_HZ;
+    assert_eq!(hurl.speed_mmpt as u32, 20 * 1000 / hz);
+    assert_eq!(hurl.damage, 30);
+    assert_eq!(hurl.windup_ticks as u32, 500 * hz / 1000);
+    assert!(hurl.drop_mmpt2 > 0);
+    assert_eq!(melee.damage, 20, "the swing is the row's own");
+    // A hatchet throws nothing.
+    let hatchet = c.item_index("item.hatchet_stone").unwrap();
+    assert!(cc.held_hurl(hatchet).is_none());
+
+    let throw = "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500";
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 2000\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500",
+        "the arrow's sampler can trace",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 0\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500",
+        "the arrow's sampler can trace",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 0\ndamage = 30\nwindup_ms = 500",
+        "drop_mps2 0 must be nonzero",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 10000",
+        "outside 1..=255",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 50\nwindup_ms = 500",
+        "kills a naked",
+    );
+    // Only a melee weapon is thrown: a bow's throw is refused.
+    refuses(
+        "weapons.toml",
+        "draw_ms = 1000",
+        &format!("draw_ms = 1000\n\n{throw}"),
+        "only a melee weapon is thrown",
+    );
+}

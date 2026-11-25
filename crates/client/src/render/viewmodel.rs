@@ -2619,9 +2619,17 @@ pub fn animate(
     // A crossbow or a revolver is fired, not swung: it kicks on each shot
     // the sim reports as this player's, and never chops.
     let shoots = def.is_some_and(|d| d.stroke == Stroke::Shot);
+    // A spear wound up to throw takes no swing: the click throws it
+    // (`ranged::hurl`), so the arm does not chop either.
+    let hurling = net.as_deref().is_some_and(|n| {
+        let c = &n.session.core;
+        c.buttons() & sim_core::input::BTN_AIM != 0
+            && crate::ui::hold::hurl_in_hand(&c.catalog, &c.inv, n.sel)
+    });
     // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
     let swinging = bow.is_none()
         && !shoots
+        && !hurling
         && net
             .as_deref()
             .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);

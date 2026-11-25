@@ -1405,6 +1405,11 @@ pub struct ItemRow {
     /// card (Rust's DAMAGE) and decides nothing with it. Full width, the
     /// sim's own `u16`.
     pub damage: u16,
+    /// A melee weapon that is thrown (v157, `combat::HurlDef`, the spear):
+    /// the ticks the right mouse must be held before a click throws it, 0
+    /// for anything that is not thrown. The client holds `BTN_AIM` for it
+    /// as for a bow (`render::input`) and takes no swing while it is held.
+    pub hurl_ticks: u8,
     /// How a gun handles (v126, `combat::Gun`), for the client to kick its
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
@@ -1562,6 +1567,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + 3
     + ITEM_CLASS_BITS as usize
     + 16
+    + 8
     + 1
     + GUN_ROW_BITS
     + 1
@@ -1595,6 +1601,7 @@ impl ItemRow {
         pour: false,
         class: CLASS_OTHER,
         damage: 0,
+        hurl_ticks: 0,
         gun: None,
         attach: None,
     };
@@ -1602,6 +1609,11 @@ impl ItemRow {
     /// Does a right mouse draw this item before it looses?
     pub fn draws(&self) -> bool {
         self.draw_ticks > 0
+    }
+
+    /// Is this a melee weapon the right mouse winds up to throw?
+    pub fn hurls(&self) -> bool {
+        self.hurl_ticks > 0
     }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
@@ -3313,6 +3325,8 @@ pub fn encode_event_catalog(
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
         // The damage a hit does (v131), full width.
         w.write(row.damage as u32, 16)?;
+        // The throw's windup (v157): ticks in a byte, the draw's posture.
+        w.write(row.hurl_ticks as u32, 8)?;
         // A gun's handling (v126), behind a presence bit.
         w.write_bit(row.gun.is_some())?;
         if let Some(g) = row.gun {
@@ -7089,6 +7103,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     pour: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
                     damage: r.read(16)? as u16,
+                    hurl_ticks: r.read(8)? as u8,
                     gun: if r.read_bit()? {
                         let rate_ticks = r.read(8)? as u8;
                         let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
@@ -9670,6 +9685,8 @@ mod tests {
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
                 // The damage (v131) at the width's corner, distinct per row.
                 damage: u16::MAX - 5 * i as u16,
+                // The throw's windup (v157) at the byte's corner.
+                hurl_ticks: u8::MAX - 7 * i as u8,
                 gun: None,
                 attach: None,
             };

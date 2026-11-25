@@ -789,6 +789,10 @@ pub fn bake_catalog(
                     .or_else(|| combat.held_melee(idx as u16).map(|d| d.damage))
                     .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
                     .unwrap_or(0),
+                // The spear's throw (v157): its windup, 0 if it is not thrown.
+                hurl_ticks: combat
+                    .held_hurl(idx as u16)
+                    .map_or(0, |(h, _)| h.windup_ticks),
                 gun,
                 // An attachment (v144): its bit and slot off the sim's
                 // table, the view's half (kick, zoom, laser, light) off the

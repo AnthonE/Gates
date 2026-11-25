@@ -1424,7 +1424,9 @@ pub fn event_catalog() -> ItemCatalog {
             },
         ),
         // The draw columns' coverage (v82), at the byte's corner, and the
-        // damage column's (v131) at its own.
+        // damage column's (v131) at its own. The throw's windup (v157) sits
+        // here too, beside the draw it mirrors, a byte short of its corner so
+        // a swap with `draw_ticks` shows (content throws no bow).
         (
             b"Hunting Bow",
             ItemRow {
@@ -1432,6 +1434,7 @@ pub fn event_catalog() -> ItemCatalog {
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
                 damage: u16::MAX,
+                hurl_ticks: u8::MAX - 2,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
