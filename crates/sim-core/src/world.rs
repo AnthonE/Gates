@@ -1035,7 +1035,15 @@ pub const EV_WIRE: u8 = 75;
 /// nothing. One per heal that spent an item.
 pub const EV_HEALED: u8 = 76;
 
-pub const EV_MAX: u8 = EV_HEALED;
+/// EV_BAG_GIVEN: a = the player who gave the bag, b = the player who has it
+/// now, c = its address (`deploy::box_key`). A sleeping bag changed hands
+/// (`Command::GiveBag`, Rust's assign bag): from this tick it is `b`'s to
+/// wake on and `a`'s no longer. Server-only, `EV_GAVE`'s posture: no wire
+/// carries it, and what it moves is both players' own-bag lists
+/// (`SUB_BAGS`). One per give that landed; a refusal is `EV_DEPLOY_REFUSED`.
+pub const EV_BAG_GIVEN: u8 = 77;
+
+pub const EV_MAX: u8 = EV_BAG_GIVEN;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2038,6 +2046,19 @@ pub enum Command {
     RepairItem {
         id: u32,
         slot: u8,
+    },
+    /// Give `id`'s sleeping bag at (`cx`, `cz`, `level`) to player `target`
+    /// (Rust's assign bag, `World::give_bag`): from then on it is theirs to
+    /// wake on. The shard mints it only for a teammate (`server::team`);
+    /// the sim checks the rest — a standing giver, a seated receiver who is
+    /// not the giver, the giver's own bag at that address, and room under
+    /// the receiver's `BAG_CAP`.
+    GiveBag {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        target: u32,
     },
     /// What skins `id` owns, as the server read it off the platform
     /// (`server/src/skins.rs`), replacing whatever the sim held.
@@ -5384,6 +5405,28 @@ impl World {
         self.log_trust(seat, id, to, TRUST_GIVE);
     }
 
+    /// Give the bag at `at` from the standing player in `slot` to `target`
+    /// (`Command::GiveBag`). The receiver must be seated — awake, asleep or
+    /// on the death screen, since a bag is where they will wake next — and
+    /// not the giver; anything else is silent, as a give to nobody is. The
+    /// bag and the receiver's cap are `Deploys::give_bag`'s verdict, told to
+    /// the giver as `EV_DEPLOY_REFUSED`; a landed give is `EV_BAG_GIVEN`.
+    fn give_bag(&mut self, slot: usize, at: (u16, u16, u8), target: u32) {
+        let id = self.players[slot].id;
+        if target == id || self.slot_of(target).is_none() {
+            return;
+        }
+        match self.deploys.give_bag(&self.deploy, id, at, target) {
+            Ok(rec) => self.events.push(
+                EV_BAG_GIVEN,
+                id,
+                target,
+                crate::deploy::box_key(rec.cx, rec.cz, rec.level, rec.loc),
+            ),
+            Err(reason) => self.events.push(EV_DEPLOY_REFUSED, id, reason, 0),
+        }
+    }
+
     /// Whether `helper`'s look reaches `target`'s body inside hand reach
     /// with nothing in the way — the hand revive's test, shared with a
     /// syringe and a give.
@@ -6817,6 +6860,17 @@ impl World {
                         skin,
                         &mut self.events,
                     );
+                }
+            }
+            Command::GiveBag {
+                id,
+                cx,
+                cz,
+                level,
+                target,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.give_bag(slot, (cx, cz, level), target);
                 }
             }
             Command::RepairItem { id, slot } => {

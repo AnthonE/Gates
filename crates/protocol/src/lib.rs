@@ -1425,6 +1425,8 @@ pub use voice::{
 /// (`EventMsg::Healed`). Action 46 mends the worn item in an inventory slot at
 /// a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
 /// table's item repair percent after its header (`CraftContent::repair_pct`).
+/// Action 47 gives a sleeping bag of yours to a teammate
+/// (`ActionMsg::BagGive`): its address and their id.
 pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
@@ -2623,6 +2625,11 @@ const ACT_WIRE: u32 = 45;
 /// `Command::RepairItem`): the slot. Wear, the recipe, the bench and the
 /// price are the sim's verdict (`craft::repair_item`).
 const ACT_REPAIR_ITEM: u32 = 46;
+/// Give the sender's sleeping bag at an address to a teammate (wire v157,
+/// `Command::GiveBag`, Rust's assign bag): the bag's cell and storey, then
+/// the receiver's id. The team is the shard's check, the bag and the
+/// receiver's cap the sim's (`deploy::Deploys::give_bag`).
+const ACT_BAG_GIVE: u32 = 47;
 /// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
 const WIRE_OUT_BITS: u32 = 2;
 const WIRE_IN_BITS: u32 = 1;
@@ -2673,7 +2680,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_REPAIR_ITEM;
+const ACT_MAX: u32 = ACT_BAG_GIVE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2834,6 +2841,16 @@ pub enum ActionMsg {
     Reskin { slot: u8, skin: u16 },
     /// Mend the worn item in inventory `slot` at a workbench (v157).
     RepairItem { slot: u8 },
+    /// Give the sender's sleeping bag at this address to player `target`
+    /// (v157, Rust's assign bag). The shard sends it on only for a
+    /// teammate; whether the bag is the sender's and the receiver has room
+    /// for another is the sim's verdict.
+    BagGive {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        target: u32,
+    },
     /// Ask the server to read the owned skin set again. Answered by the
     /// server outside the sim; see `ACT_SKINS_REFRESH`.
     SkinsRefresh,
@@ -3710,6 +3727,31 @@ pub fn encode_action_repair_item(slot: u8, buf: &mut [u8]) -> Result<usize, Wire
     Ok(w.finish())
 }
 
+/// `ActionMsg::BagGive` — give the bag at this address to `target`.
+pub fn encode_action_bag_give(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    target: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+        || target == 0
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_BAG_GIVE, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
 /// `ActionMsg::Vend` — trade offer `offer`, `times` over.
 pub fn encode_action_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if offer as usize >= sim_core::limits::MAX_VEND_OFFERS
@@ -4245,6 +4287,25 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::RepairItem { slot }
+        }
+        ACT_BAG_GIVE => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let target = r.read(32)?;
+            if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+                || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+                || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+                || target == 0
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::BagGive {
+                cx,
+                cz,
+                level,
+                target,
+            }
         }
         ACT_SKINS_REFRESH => ActionMsg::SkinsRefresh,
         ACT_VEND => {
@@ -6622,6 +6683,48 @@ mod tests {
         assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
+    /// The bag give (v157) round-trips its address and receiver at the
+    /// field edges, and an address past the grid or a zero receiver is
+    /// refused at both ends.
+    #[test]
+    fn the_bag_give_action_round_trips() {
+        let mut buf = [0u8; 32];
+        let cx = sim_core::limits::MAX_BUILD_COORD as u16 - 1;
+        let level = sim_core::limits::MAX_BUILD_SOCKETS as u8 - 1;
+        let n = encode_action_bag_give(cx, 3, level, 0xDEAD_BEEF, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::BagGive {
+                cx,
+                cz: 3,
+                level,
+                target: 0xDEAD_BEEF
+            })
+        );
+        assert_eq!(
+            encode_action_bag_give(cx + 1, 3, 0, 7, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_bag_give(1, 3, level + 1, 7, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_bag_give(1, 3, 0, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // A forged zero receiver is refused on the way in.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_BAG_GIVE, ACTION_SUB_BITS).unwrap();
+        w.write(1, BUILD_CELL_BITS).unwrap();
+        w.write(3, BUILD_CELL_BITS).unwrap();
+        w.write(0, BUILD_LEVEL_BITS).unwrap();
+        w.write(0, 32).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
     /// A skinned hand survives both snapshot paths, and a present-zero
     /// skin — a second spelling of "no skin" — is refused.
     #[test]
@@ -6747,11 +6850,12 @@ mod tests {
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
         // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44,
-        // the wire (v150) 45, and the bench repair (v157) 46.
-        assert_eq!(ACT_MAX, ACT_REPAIR_ITEM);
+        // the wire (v150) 45, the bench repair (v157) 46, and the bag give
+        // (v157) 47.
+        assert_eq!(ACT_MAX, ACT_BAG_GIVE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            17,
+            16,
             "the spare action codes moved — say so where the count is written"
         );
     }

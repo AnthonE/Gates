@@ -257,6 +257,39 @@ pub fn distance(at: [f32; 2], x_m: u16, z_m: u16) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
+// ---------------------------------------------------------------------------
+// Giving a sleeping bag (Rust's assign bag, `ActionMsg::BagGive`)
+// ---------------------------------------------------------------------------
+
+/// The press beside a teammate while the TEAM screen is up for a bag.
+pub const GIVE_BAG: &str = "GIVE BAG";
+
+/// What `E` on your own bag says with nobody to give it to.
+pub const NO_BAG_TAKER: &str = "no teammate to give it to  ·  [N] invites one";
+
+/// The line over the rows while a bag is being given.
+pub const BAG_LINE: &str = "Give this sleeping bag to a teammate: it becomes theirs to wake on.";
+
+/// Who your sleeping bag can go to, in the panel's order (leader first):
+/// every teammate but you, asleep or down included, since a bag is where
+/// they wake next. The shard takes a give only for a teammate
+/// (`server::team`), so nobody else is offered.
+pub fn bag_takers(team: &TeamView, me: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = team
+        .members()
+        .iter()
+        .map(|m| m.id)
+        .filter(|&id| id != me)
+        .collect();
+    out.sort_by_key(|&id| id != team.leader);
+    out
+}
+
+/// What the status line says once a give has gone out.
+pub fn bag_sent_line(who: &str) -> String {
+    format!("giving your bag to {who}…")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +364,25 @@ mod tests {
         assert!(team_buttons(&TeamView::NONE).is_empty());
         let r = rows(&t, 1, [0.0, 0.0], |id| format!("#{id}"));
         assert_eq!(r.iter().map(|r| r.id).collect::<Vec<_>>(), [0, 2, 1, 3]);
+    }
+
+    /// A bag goes to every teammate but you, leader first, whatever their
+    /// state; with no team there is nobody.
+    #[test]
+    fn a_bag_is_offered_to_every_teammate_but_you() {
+        assert_eq!(bag_takers(&team(), 1), [2, 3]);
+        assert_eq!(bag_takers(&team(), 2), [1, 3]);
+        assert!(bag_takers(&TeamView::NONE, 1).is_empty());
+        let mut alone = TeamView::NONE;
+        alone.leader = 1;
+        alone.count = 1;
+        alone.members[0] = TeamMember {
+            id: 1,
+            state: TEAM_AWAKE,
+            x_m: 0,
+            z_m: 0,
+        };
+        assert!(bag_takers(&alone, 1).is_empty(), "a team of one");
     }
 
     #[test]

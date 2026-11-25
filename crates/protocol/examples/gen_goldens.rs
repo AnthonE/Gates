@@ -337,6 +337,10 @@ fn main() {
     // A worn item mended at a bench (v157).
     let len = protocol::encode_action_repair_item(goldens::action_repair_item(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[200], &buf[..len]);
+    // A sleeping bag given to a teammate (v157).
+    let (cx, cz, level, target) = goldens::action_bag_give();
+    let len = protocol::encode_action_bag_give(cx, cz, level, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[201], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

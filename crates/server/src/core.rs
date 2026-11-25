@@ -69,9 +69,9 @@ use sim_core::world::{
     EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_HEALED, EV_MECH_SOLVED, EV_NODE_STAGE,
-    EV_PAID, EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
-    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_BAG_GIVEN, EV_EXTRACTED, EV_GAVE, EV_HEALED, EV_MECH_SOLVED,
+    EV_NODE_STAGE, EV_PAID, EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET,
+    EV_WHEEL_PAID, EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -4107,6 +4107,28 @@ impl ShardCore {
                         skin,
                     },
                     ActionMsg::RepairItem { slot } => Command::RepairItem { id: c.id, slot },
+                    // Rust's assign list is the team: a bag goes only to a
+                    // teammate, and teams are the shard's (`team.rs`), so the
+                    // check is here, before the command is minted. The WAL
+                    // records the command, so a replay needs no team. One to
+                    // anybody else is dropped, as a stale button press is.
+                    ActionMsg::BagGive {
+                        cx,
+                        cz,
+                        level,
+                        target,
+                    } => {
+                        if !self.teams.mates(c.id, target) {
+                            continue;
+                        }
+                        Command::GiveBag {
+                            id: c.id,
+                            cx,
+                            cz,
+                            level,
+                            target,
+                        }
+                    }
                     // Answered by the accept loop before it reaches this
                     // ring (`net.rs` `action_reader_task`); one that got
                     // here anyway asks the sim for nothing.
@@ -6546,6 +6568,14 @@ impl ShardCore {
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
+                }
+                EV_BAG_GIVEN => {
+                    // A bag changed hands: both owners' lists moved, so the
+                    // drip owes each of them (and their seats) the whole
+                    // list again — the giver's map loses the bed and the
+                    // receiver's death screen gains it.
+                    self.owe_bags(ev.a);
+                    self.owe_bags(ev.b);
                 }
                 EV_MOVED | EV_MOVE_REFUSED => {
                     // Own-fact, `EV_RESPAWN`'s audience: a move inside your

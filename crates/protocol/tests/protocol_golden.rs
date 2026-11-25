@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 201] = [
+const GOLDEN: [&[u8]; 202] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -264,6 +264,7 @@ const GOLDEN: [&[u8]; 201] = [
     include_bytes!("golden/event_crew.bin"),
     include_bytes!("golden/event_healed.bin"),
     include_bytes!("golden/action_repair_item.bin"),
+    include_bytes!("golden/action_bag_give.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -595,8 +596,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 199);
     // A worn item mended at a bench (v157).
     g!(seen, golden_action, 200);
+    // A sleeping bag given to a teammate (v157).
+    g!(seen, golden_action, 201);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 201, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 202, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1066,6 +1069,20 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_repair_item(slot, &mut buf).unwrap()
+        }
+        "action_bag_give.bin" => {
+            let (cx, cz, level, target) = protocol::goldens::action_bag_give();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::BagGive {
+                    cx,
+                    cz,
+                    level,
+                    target
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_bag_give(cx, cz, level, target, &mut buf).unwrap()
         }
         "action_attach.bin" => {
             let slot = protocol::goldens::action_attach();

@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 201] = [
+pub const FIXTURES: [&str; 202] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -362,6 +362,9 @@ pub const FIXTURES: [&str; 201] = [
     "event_healed.bin",
     // A worn item mended at a bench (v157), on the pack's last slot.
     "action_repair_item.bin",
+    // A sleeping bag given to a teammate (v157): the far corner of the grid
+    // on the top storey, to a receiver with every id bit high.
+    "action_bag_give.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2580,6 +2583,18 @@ pub fn action_attach() -> u8 {
 /// The bench repair (v157) on the pack's last slot.
 pub fn action_repair_item() -> u8 {
     (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The bag give (v157): `(cx, cz, level, target)` at the grid's far
+/// corner and top storey, to a receiver whose id has its top bit set, so
+/// every field is filled to its width.
+pub fn action_bag_give() -> (u16, u16, u8, u32) {
+    (
+        (sim_core::limits::MAX_BUILD_COORD - 1) as u16,
+        (sim_core::limits::MAX_BUILD_COORD - 2) as u16,
+        (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8,
+        0x8000_0403,
+    )
 }
 
 /// The detach verb (v144) on the last attachment bit.

@@ -2137,6 +2137,57 @@ impl Deploys {
         Some(self.entries[i])
     }
 
+    /// Hand `from`'s bag at `at` to `to` (`Command::GiveBag`, Rust's assign
+    /// bag): the record's owner becomes `to`, and its cooldown stays where it
+    /// is — a bag spent a minute ago is spent for its new owner too, or a
+    /// give back and forth would be a way round `BAG_COOLDOWN_TICKS`.
+    ///
+    /// The first bag at that address `from` owns, by the death screen's
+    /// address (`claim_bag_at`'s match). Refused, with nothing moved:
+    /// [`REFUSE_D_KIND`] when no bag stands there, [`REFUSE_D_OWNER`] when
+    /// the bags there are somebody else's, and [`REFUSE_D_BAG_CAP`] when `to`
+    /// already has `BAG_CAP` placed — the cap placement holds, so a bag given
+    /// is never one more than its new owner could have put down.
+    ///
+    /// Bounded and allocation-free: two passes of the store.
+    pub fn give_bag(
+        &mut self,
+        dc: &DeployContent,
+        from: u32,
+        at: (u16, u16, u8),
+        to: u32,
+    ) -> Result<DeployRec, u32> {
+        let (cx, cz, level) = at;
+        let mut bag_here = false;
+        let mut hit = None;
+        for (i, d) in self.entries[..self.len].iter().enumerate() {
+            if d.cx != cx
+                || d.cz != cz
+                || d.level != level
+                || dc.defs[d.row as usize].arch != ARCH_BAG
+            {
+                continue;
+            }
+            bag_here = true;
+            if d.owner == from {
+                hit = Some(i);
+                break;
+            }
+        }
+        let Some(i) = hit else {
+            return Err(if bag_here {
+                REFUSE_D_OWNER
+            } else {
+                REFUSE_D_KIND
+            });
+        };
+        if self.own_bag_count(dc, to) >= BAG_CAP {
+            return Err(REFUSE_D_BAG_CAP);
+        }
+        self.entries[i].owner = to;
+        Ok(self.entries[i])
+    }
+
     /// [`Self::claim_bag`], asked for one bag by address first: the death
     /// screen's pick. A bag that is not the owner's, not a bag, or not ready
     /// falls back to the nearest ready one, so a stale or forged pick is

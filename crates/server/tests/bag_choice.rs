@@ -711,3 +711,94 @@ fn a_bag_survives_its_owner_being_evicted_and_coming_back() {
     );
     assert_eq!(bags(&core, id_of(0)), 0);
 }
+
+/// Ten pumps: past a team verb's pace (`pace::Kind::Use`).
+fn settle(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    seen: &mut Vec<(usize, EventMsg)>,
+) {
+    for _ in 0..10 {
+        pump(core, stats, clients, seen);
+    }
+}
+
+/// **A bag given goes to a teammate, and both lists follow it** (Rust's
+/// assign bag, `ActionMsg::BagGive`). The team is the shard's check, made
+/// before the sim hears anything: to a stranger no command is minted, the
+/// bag stays put and nobody is told. Once the two are a team the bag moves,
+/// and each owner hears their whole list again — the giver's without it,
+/// the receiver's with it.
+#[test]
+fn a_bag_is_given_only_to_a_teammate_and_both_lists_follow() {
+    use protocol::{TEAM_OP_ACCEPT, TEAM_OP_INVITE};
+    let (mut core, stats, mut clients) = a_shard();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut Vec::new());
+    }
+    place_bag(&mut core, &stats, &mut clients, 0, CX, CZ);
+    let give = ActionMsg::BagGive {
+        cx: CX,
+        cz: CZ,
+        level: 0,
+        target: id_of(1),
+    };
+
+    // 1 · a stranger: nothing minted, nothing moved, nothing said.
+    let mut seen = Vec::new();
+    core.push_action(0, give);
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(
+        core.world.deploys.entries()[0].owner,
+        id_of(0),
+        "a bag went to somebody off the team"
+    );
+    assert_eq!(lists_to(&seen, 0) + lists_to(&seen, 1), 0);
+    assert!(
+        !seen
+            .iter()
+            .any(|(_, m)| matches!(m, EventMsg::DeployRefused { .. })),
+        "the sim heard a give the shard should have dropped"
+    );
+
+    // 2 · team up through the real verbs, then give.
+    core.push_action(
+        0,
+        ActionMsg::Team {
+            op: TEAM_OP_INVITE,
+            target: id_of(1),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut Vec::new());
+    core.push_action(
+        1,
+        ActionMsg::Team {
+            op: TEAM_OP_ACCEPT,
+            target: id_of(0),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut Vec::new());
+    assert_eq!(clients[0].1.team().count, 2, "the fixture: a team of two");
+    let mut seen = Vec::new();
+    core.push_action(0, give);
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(core.world.deploys.entries()[0].owner, id_of(1));
+
+    // 3 · both owners are told, each their own list.
+    assert_eq!(lists_to(&seen, 0), 1, "the giver was not told");
+    assert_eq!(lists_to(&seen, 1), 1, "the receiver was not told");
+    assert_eq!(bags_for(&seen, 0), vec![]);
+    assert_eq!(bags_for(&seen, 1), vec![(CX, CZ, 0u8, true)]);
+    assert!(clients[0].1.own_bags().is_empty(), "the giver's mirror");
+    assert_eq!(
+        clients[1]
+            .1
+            .own_bags()
+            .iter()
+            .map(|b| (b.cx, b.cz))
+            .collect::<Vec<_>>(),
+        vec![(CX, CZ)],
+        "the receiver's mirror"
+    );
+}

@@ -232,6 +232,7 @@ pub fn resolve(
     );
     let mut aim = Aim::new(x, z, fx, fz);
     aim.cols = Some(core.pieces.cols());
+    aim.own_bags = core.own_bags();
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
@@ -1194,6 +1195,24 @@ fn use_aimed(
         }
         // The rest of a circuit has nothing on `E`; the wire tool works it.
         Verb::Part => {}
+        // Your own sleeping bag: the TEAM screen opens with a GIVE BAG button
+        // by each teammate (Rust's assign bag); the press is `team::clicks`'.
+        // With nobody to give it to there is nothing to pick from, so say so.
+        Verb::SleepingBag => {
+            let core = &net.session.core;
+            if crate::ui::team::bag_takers(core.team(), core.player_id).is_empty() {
+                toast.warn(crate::ui::team::NO_BAG_TAKER);
+                return;
+            }
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Team;
+                    ui.bag_give = Some((pick.cx, pick.cz, pick.level));
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
         // A sleeper's pack opens like a bag; the server proves the reach.
         Verb::Sleeper => {
             let handle = pick.handle;

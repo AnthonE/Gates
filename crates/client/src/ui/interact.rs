@@ -36,9 +36,9 @@
 use protocol::event::{ItemCatalog, WireBag};
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::deploy::{
-    box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2,
-    ARCH_WORKBENCH3,
+    box_key, BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE,
+    ARCH_FURNACE, ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH,
+    ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 use sim_core::footprint::Rect;
 use sim_core::movement::POS_XZ_Q;
@@ -180,6 +180,13 @@ pub enum Verb {
     /// combiner, a ceiling light. Nothing on `E`; aimed so the wire tool can
     /// name it (`handle`, its box key) and the prompt can say what it is.
     Part,
+    /// A sleeping bag of your own (`ARCH_BAG` at an address on
+    /// `ClientCore::own_bags`, which [`Aim::own_bags`] lends): `E` gives it to
+    /// a teammate, Rust's assign bag — the TEAM screen opens with a GIVE BAG
+    /// button by each one (`ActionMsg::BagGive`). Somebody else's bag offers
+    /// nothing: the wire does not say whose a bag is, and nothing is yours
+    /// to do there.
+    SleepingBag,
 }
 
 /// A power part's name, by archetype, for its prompt and the wire tool's.
@@ -261,6 +268,7 @@ impl Verb {
             // Unreachable for `Take`'s reason: a body is folded in by its
             // own resolver, never scored against a deployable.
             Verb::Heal => 29,
+            Verb::SleepingBag => 30,
         }
     }
 
@@ -302,6 +310,7 @@ impl Verb {
             Verb::Sit => "SEAT",
             Verb::Switch => "SWITCH",
             Verb::Part => "POWER PART",
+            Verb::SleepingBag => "SLEEPING BAG",
         }
     }
 }
@@ -651,6 +660,7 @@ impl Pick {
             }
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
+            Verb::SleepingBag => "[E] GIVE BAG".to_string(),
             // The HUD names the player (`heal_prompt`'s `who`); the KIND
             // stands in where no name is to hand.
             Verb::Heal => heal_prompt(catalog, self.item, self.verb.label()),
@@ -1207,6 +1217,10 @@ pub struct Aim<'a> {
     /// The collision index, when the caller has one: where a door hung in
     /// an edge the grid cannot name is (`deploy::posed_insert`).
     pub cols: Option<&'a sim_core::collide::ColIndex>,
+    /// This player's own bags (`ClientCore::own_bags`, `SUB_BAGS`): a bag
+    /// deployable at one of these addresses is [`Verb::SleepingBag`], and
+    /// any other bag is not offered. Empty by default.
+    pub own_bags: &'a [BagAnchor],
 }
 
 impl Aim<'_> {
@@ -1221,8 +1235,16 @@ impl Aim<'_> {
             radius: AIM_RADIUS_M,
             sight: None,
             cols: None,
+            own_bags: &[],
         }
     }
+}
+
+/// Whether a bag at (`cx`, `cz`, `level`) is on the player's own list — the
+/// death screen's address (`deploy::Deploys::claim_bag_at`), so the bag `E`
+/// offers to give is the one the sim will move.
+pub fn own_bag(own: &[BagAnchor], cx: u16, cz: u16, level: u8) -> bool {
+    own.iter().any(|b| (b.cx, b.cz, b.level) == (cx, cz, level))
 }
 
 /// What the eye looks along, for the deployables `E` has to be LOOKED AT
@@ -1487,6 +1509,7 @@ pub fn resolve(
             sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
+            ARCH_BAG if own_bag(aim.own_bags, rec.cx, rec.cz, rec.level) => Verb::SleepingBag,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0, 0)` is 0 and
@@ -1689,6 +1712,48 @@ mod tests {
             cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
             cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
         )
+    }
+
+    /// A sleeping bag is offered only when it is on your own list: `E` gives
+    /// it away (`Verb::SleepingBag`). Somebody else's, or yours at another
+    /// address, offers nothing, so a box behind it still wins.
+    #[test]
+    fn only_your_own_sleeping_bag_offers_the_give() {
+        let (defs, have) = defs_with(&[ARCH_BAG, ARCH_BOX]);
+        let (x, z) = centre(5, 5);
+        let bag = rec(5, 5, 0);
+        let own = [BagAnchor {
+            cx: 5,
+            cz: 5,
+            level: 0,
+            ready: true,
+            wait_s: 0,
+        }];
+        let mut aim = Aim::new(x, z - 0.5, 0.0, 1.0);
+        aim.own_bags = &own;
+        let p = resolve(aim, &[bag], &defs, have, &[]);
+        assert_eq!(p.verb, Verb::SleepingBag);
+        assert_eq!((p.cx, p.cz, p.level), (5, 5, 0));
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] GIVE BAG");
+
+        // Not yours: nothing.
+        let p = resolve(Aim::new(x, z - 0.5, 0.0, 1.0), &[bag], &defs, have, &[]);
+        assert!(p.is_none(), "somebody else's bag offered a verb");
+        // Yours, but somewhere else: nothing here either.
+        let elsewhere = [BagAnchor { cx: 6, ..own[0] }];
+        let mut aim = Aim::new(x, z - 0.5, 0.0, 1.0);
+        aim.own_bags = &elsewhere;
+        assert!(resolve(aim, &[bag], &defs, have, &[]).is_none());
+        // A stranger's bag beside a box: the box.
+        let boxed = rec(5, 6, 1);
+        let p = resolve(
+            Aim::new(x, z - 0.5, 0.0, 1.0),
+            &[bag, boxed],
+            &defs,
+            have,
+            &[],
+        );
+        assert_eq!(p.verb, Verb::Box);
     }
 
     #[test]
