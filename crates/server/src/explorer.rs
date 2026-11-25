@@ -3860,15 +3860,19 @@ impl Survivor {
             return face;
         }
         let aimed = *self.hand.aimed.get_or_insert(tick);
+        // A wrap of mine still in the hands (the medic's, a goal's that
+        // ended mid-wrap) lands first: a second press does nothing
+        // (`survival::begin_use`), and its toast would read as this heal.
+        let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
         if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
             && self.hands.settled()
             && self.awaiting.is_none()
+            && (wrap == 0 || !self.wrapping(tick))
             && self.queue(|b| protocol::encode_action_treat(inv as u8, id, b))
         {
             self.awaiting = Some((Pending::Treat { item, to: id }, tick));
             self.verdict = None;
             self.hand.aimed = None;
-            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
             if wrap > 0 {
                 self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
             }
@@ -6591,8 +6595,15 @@ impl Survivor {
 
     fn consume(&mut self, core: &ClientCore, slot: usize, tick: u32) {
         let item = core.inv[slot].item;
+        let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+        // A wrap still in the hands (one on a teammate a goal left
+        // mid-wrap, say) lands first: a second one does nothing
+        // (`survival::begin_use`), and that wrap's toast would read as
+        // this one's.
+        if wrap > 0 && self.wrapping(tick) {
+            return;
+        }
         if self.queue(|buf| protocol::encode_action_consume(slot as u8, buf)) {
-            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
             if wrap > 0 {
                 self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
             }
@@ -8849,6 +8860,18 @@ impl Survivor {
         }
         while let Some((item, _slot)) = core.pop_consume_toast() {
             self.stats.eaten += 1;
+            // The awaited wrap's own toast: it has landed, and the hands
+            // are free (one wrap in flight at a time, `consume`).
+            let awaited = match self.awaiting {
+                Some((
+                    Pending::Consume { item: want, .. } | Pending::Treat { item: want, .. },
+                    _,
+                )) => want == item,
+                _ => false,
+            };
+            if awaited && core.catalog.row(item as usize).use_ticks > 0 {
+                self.wrap_until = None;
+            }
             // Only the toast for what was asked for: a late one for an
             // earlier consume is not this one's answer.
             if let Some((
