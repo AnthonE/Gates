@@ -10252,9 +10252,10 @@ impl World {
         }
         self.rewind.write_row(self.tick, &self.players);
         self.rewind.write_mobs(self.tick, &self.mobs);
-        // Last, so every producer this tick has spoken: the shots and
-        // strikes the animals will hear on their next thinks.
-        self.noises.record(self.tick, &self.events, &self.players);
+        // Last, so every producer this tick has spoken: the shots, strikes
+        // and hammering the animals will hear on their next thinks.
+        self.noises
+            .record(self.tick, &self.events, &self.players, &self.pieces);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
