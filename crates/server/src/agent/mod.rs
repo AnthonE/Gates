@@ -20,7 +20,8 @@
 //! the watchdog that ends a goal whose body will not move ([`wedge`]), and
 //! the stairs between a base's floors ([`floors`]), and the clan it may
 //! belong to: its crew, its job in it and its guild ([`society`]), and the
-//! crew's vending machine ([`shop`]).
+//! crew's vending machine ([`shop`]), and what a goal that came to
+//! nothing looked like, for a bug report ([`trace`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -55,6 +56,7 @@ pub mod site;
 pub mod society;
 pub mod stash;
 pub mod supply;
+pub mod trace;
 pub mod tracks;
 pub mod wedge;
 pub mod wiki;

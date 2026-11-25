@@ -44,7 +44,8 @@ use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
 use crate::agent::society::{self, Hand, Kinship, Patrol, Society};
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
-use crate::agent::supply::{self, Deliver, HomeJob, TeamHome, Trip, WANT_ROWS};
+use crate::agent::supply::{self, Deliver, HomeJob, HomeTrace, TeamHome, Trip, WANT_ROWS};
+use crate::agent::trace::{FailTrace, Failures, MATE_NEAR_M};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wedge::{self, Wedge};
 use crate::agent::wiki::{Book, Class, Rules};
@@ -1219,6 +1220,12 @@ pub struct Survivor {
     station_failed: Option<u32>,
     /// Where the body stood this frame.
     here: [f32; 2],
+    /// The last few goals that failed, as the body saw them: a bug report's
+    /// trace (`agent::trace`), never the mind's.
+    failures: Failures,
+    /// The trip into the team's base as of its last step, and when: what a
+    /// failure's trace says of it once the goal's end has reset it.
+    home_seen: Option<(u32, HomeTrace)>,
     /// When a build goal last could not reach its work.
     build_failed: Option<u32>,
     /// Goals that failed the moment they began: when last, and how many
@@ -1501,6 +1508,8 @@ impl Survivor {
             leave_stuck: None,
             station_failed: None,
             here: [0.0; 2],
+            failures: Failures::default(),
+            home_seen: None,
             build_failed: None,
             flops: [None; FLOPS],
             defend_job: DefendJob::default(),
@@ -1890,14 +1899,18 @@ impl Survivor {
     ) {
         let (seed, _) = core.island();
         let summary = self.summarize(core, view, player);
+        let tick = view.newest_applied.unwrap_or_default();
         let mut seen = crate::external::External::observation(0, &summary);
         if let Some(o) = seen.as_object_mut() {
             o.remove("id");
             o.remove("protocol");
+            // What the body saw of the goals that failed: the report's, and
+            // never the observation's, which names no place.
+            o.insert("trace".into(), self.trace_json(tick));
         }
         let facts = crate::bugs::Facts {
             seed,
-            tick: view.newest_applied.unwrap_or_default(),
+            tick,
             pos: [
                 body.qx as f32 * POS_XZ_Q,
                 body.qy as f32 * POS_Y_Q,
@@ -2064,6 +2077,9 @@ impl Survivor {
         let intent = self.decide(core, view, player, now);
         self.last_intent = intent;
         let body = view.get(player);
+        if let Some(b) = body {
+            self.fill_failure(core, b);
+        }
         // A skill that names no slot keeps the one in hand.
         let base = InputFrame {
             seq,
@@ -2807,9 +2823,11 @@ impl Survivor {
         // A walk that came to nothing inside a teammate's walls, where a
         // door would not let it out a moment ago, says the door: its
         // target was never the trouble (#581, a patrol from the team's
-        // base, "could not reach a target" in 2 s).
+        // base, "could not reach a target" in 2 s). One that ran out of
+        // time in there, or found no door in, says the door the same way;
+        // one at its station's spot got where it was going.
         let said = match outcome {
-            Outcome::Failed(Why::Stuck) => self
+            Outcome::Failed(why) if why.unreached() => self
                 .leave
                 .walled_in(self.here, tick)
                 .map_or(outcome, Outcome::Failed),
@@ -2824,6 +2842,9 @@ impl Survivor {
         };
         self.memory.last = Some(report);
         self.history.push(report);
+        if let Outcome::Failed(why) = said {
+            self.trace_failure(&active, why, report.secs, tick);
+        }
         if active.goal == Goal::Research {
             self.research_left = match outcome {
                 Outcome::Done => None,
@@ -2841,17 +2862,15 @@ impl Survivor {
             self.go_failed = Some((place, tick));
             self.memory.go_held = Some(place);
         }
-        if matches!(active.goal, Goal::GoHome | Goal::Stash)
-            && outcome == Outcome::Failed(Why::Stuck)
-        {
+        let unreached = matches!(outcome, Outcome::Failed(why) if why.unreached());
+        if matches!(active.goal, Goal::GoHome | Goal::Stash) && unreached {
             self.home_stuck = Some((tick, self.here));
         }
         // A build that failed the moment it began would fail the same way
         // the next second; one that ran out of materials partway goes for
         // more and is back when it has them.
         if active.goal == Goal::Build
-            && (outcome == Outcome::Failed(Why::Stuck)
-                || matches!(outcome, Outcome::Failed(_)) && report.secs == 0)
+            && (unreached || matches!(outcome, Outcome::Failed(_)) && report.secs == 0)
         {
             self.build_failed = Some(tick);
         }
@@ -2895,6 +2914,64 @@ impl Survivor {
             self.outbox = None;
         }
         self.verdict = None;
+    }
+
+    /// Keep what the body saw of a goal that failed (`agent::trace`): the
+    /// route's last word while it ran, the trip into the team's base if it
+    /// walked one, the teammates at its elbow. The rest wants the mirror,
+    /// and its frame fills it in ([`Self::fill_failure`]).
+    fn trace_failure(&mut self, active: &Active, why: Why, secs: u32, tick: u32) {
+        let ran = tick.wrapping_sub(active.started);
+        let during = |at: u32| tick.wrapping_sub(at) <= ran;
+        let home = self.home_seen.filter(|&(at, _)| during(at)).map(|(_, h)| h);
+        let here = self.here;
+        let chest = home.and_then(|h| h.chest).map(|c| {
+            let (x, z) = cell_center(c.cx, c.cz);
+            (c.level, (x - here[0]).hypot(z - here[1]))
+        });
+        let mates = self
+            .tracks
+            .all()
+            .filter(|t| {
+                self.tracks.friend(t.id)
+                    && t.visible
+                    && (t.pos[0] - here[0]).hypot(t.pos[2] - here[1]) <= MATE_NEAR_M
+            })
+            .count();
+        self.failures.push(FailTrace {
+            goal: active.goal,
+            why,
+            secs,
+            at: tick,
+            route: self.route.blocked_by().filter(|&(.., at)| during(at)),
+            home,
+            chest,
+            mates_near: mates.min(usize::from(u8::MAX)) as u8,
+            layer: None,
+            doors_near: None,
+        });
+    }
+
+    /// The newest failure's facts that want the mirror: the floor under the
+    /// body and the doors about it. Once, on the frame it failed in.
+    fn fill_failure(&mut self, core: &mut ClientCore, body: &EntityState) {
+        let Some(t) = self.failures.unfilled() else {
+            return;
+        };
+        let (x, y, z) = (
+            body.qx as f32 * POS_XZ_Q,
+            body.qy as f32 * POS_Y_Q,
+            body.qz as f32 * POS_XZ_Q,
+        );
+        t.layer = Some(crate::agent::floors::standing(core, x, y, z));
+        t.doors_near = Some(doors::doors_near(core, [x, z], doors::HOP_M));
+    }
+
+    /// A bug report's trace (`seen.trace`): the goals that failed lately as
+    /// the body saw them, and the route's counts.
+    fn trace_json(&self, tick: u32) -> serde_json::Value {
+        self.failures
+            .json(tick, self.route.stats.json(), self.stats.wedges)
     }
 
     /// Hold one encoded action for the next tick's action slot.
@@ -3090,19 +3167,19 @@ impl Survivor {
             Goal::Bag | Goal::AddBox => self.place_bag(core, body, tick),
             Goal::Recover => self.recover(core, body, tick),
             Goal::Build if elapsed >= BUILD_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Build => self.build_home(core, body, tick),
             Goal::GoHome if elapsed >= GO_HOME_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::GoHome if self.shared_home() => self.go_home_shared(core, body, tick),
             Goal::GoHome => self.go_home(core, body, tick),
             Goal::Stash if elapsed >= STASH_GOAL_SECS * TICK_HZ => {
                 self.home.stash_failed(tick);
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
@@ -3110,25 +3187,25 @@ impl Survivor {
                 if elapsed >= COOK_GOAL_SECS * TICK_HZ =>
             {
                 self.oven_failed(tick);
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Cook | Goal::Warm | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
             Goal::Research if elapsed >= VISIT_GOAL_SECS * TICK_HZ => {
                 self.research_failed = Some(tick);
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Research => self.research(core, body, tick),
             Goal::Defend if elapsed >= DEFEND_GOAL_SECS * TICK_HZ => {
                 self.defend_failed = Some(tick);
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Defend if self.shared_home() => self.defend_shared(core, body, tick),
             Goal::Defend => self.defend(core, body, tick),
             Goal::Raid if elapsed >= RAID_GOAL_SECS * TICK_HZ => {
-                self.raid_over(Outcome::Failed(Why::Stuck), tick);
+                self.raid_over(Outcome::Failed(Why::OutOfTime), tick);
                 Intent::IDLE
             }
             Goal::Raid => self.raid(core, body, tick),
@@ -3159,7 +3236,7 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Invite if elapsed >= JOIN_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Invite => {
@@ -3199,12 +3276,12 @@ impl Survivor {
             }
             Goal::Meet => self.meet(core, body, tick),
             Goal::Go(_) if elapsed >= GO_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Go(place) => self.travel(core, body, place, tick),
             Goal::Walk(_) if elapsed >= GO_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Walk(leg) => self.walk_leg(core, body, leg, active.started, tick),
@@ -3215,30 +3292,30 @@ impl Survivor {
             Goal::Patrol => self.patrol(core, body, tick),
             Goal::HandOver if elapsed >= society::HAND_GOAL_SECS * TICK_HZ => {
                 self.hand_failed = Some(tick);
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::HandOver => self.hand_over(core, body, tick),
             Goal::Give(_) | Goal::GiveMate(..) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Give(name) => self.give(core, body, name, None, tick),
             Goal::GiveMate(slot, name) => self.give(core, body, name, Some(slot), tick),
             Goal::HealMate(_) if elapsed >= HEAL_MATE_GOAL_SECS * TICK_HZ => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::HealMate(slot) => self.heal_mate(core, body, slot, tick),
             Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
                 self.auth_failed = Some(tick);
                 self.home_job = HomeJob::default();
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Authorize => self.authorize(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
-                self.deliver_over(tick, Outcome::Failed(Why::Stuck));
+                self.deliver_over(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
             Goal::Deliver => self.deliver(core, body, tick),
@@ -3248,7 +3325,7 @@ impl Survivor {
             Goal::Buy(_) | Goal::Sell(_) | Goal::FeedWork
                 if elapsed >= VISIT_GOAL_SECS * TICK_HZ =>
             {
-                self.visit_over(active.goal, Outcome::Failed(Why::Stuck), tick);
+                self.visit_over(active.goal, Outcome::Failed(Why::OutOfTime), tick);
                 Intent::IDLE
             }
             Goal::Buy(name) => self.trade(core, body, name, false, tick),
@@ -3257,7 +3334,7 @@ impl Survivor {
             Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard
                 if elapsed >= VISIT_GOAL_SECS * TICK_HZ =>
             {
-                self.lore_over(active.goal, Outcome::Failed(Why::Stuck), tick);
+                self.lore_over(active.goal, Outcome::Failed(Why::OutOfTime), tick);
                 Intent::IDLE
             }
             Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard => {
@@ -4635,7 +4712,7 @@ impl Survivor {
             self.gather_over(tick, Outcome::Failed(Why::Stuck));
         }
         if elapsed >= (SUPPLY_GATHER_SECS + DELIVER_GOAL_SECS) * TICK_HZ {
-            self.deliver_over(tick, Outcome::Failed(Why::Stuck));
+            self.deliver_over(tick, Outcome::Failed(Why::OutOfTime));
             return Intent::IDLE;
         }
         self.deliver(core, body, tick)
@@ -4818,6 +4895,7 @@ impl Survivor {
             &self.book,
             tick,
         );
+        self.home_seen = Some((tick, self.home_job.trace()));
         let (sent, intent) = match step {
             Deliver::Door(ref door) => self.door_verb(door),
             Deliver::Open { key, intent } => (
@@ -5640,7 +5718,7 @@ impl Survivor {
             .goal
             .is_some_and(|a| tick.wrapping_sub(a.started) >= CRAFT_WALK_SECS * TICK_HZ)
         {
-            return self.station_over(tick, Why::Stuck);
+            return self.station_over(tick, Why::OutOfTime);
         }
         // None of its own: the team's, in through the team's doors.
         if self.builder.stations(core).spot(station).is_none() {
@@ -5652,7 +5730,7 @@ impl Survivor {
                 return match over {
                     Some(Outcome::Failed(why)) => self.station_over(tick, why),
                     // There, and still out of the station's reach.
-                    Some(_) => self.station_over(tick, Why::Stuck),
+                    Some(_) => self.station_over(tick, Why::StationOutOfReach),
                     None => intent,
                 };
             }
@@ -5686,7 +5764,7 @@ impl Survivor {
             // station is not where the stand spot reaches, and walking at
             // the spot would go on for ever.
             Step::Arrived if (stand[0] - x).hypot(stand[1] - z) <= STAND_ON_M => {
-                self.station_over(tick, Why::Stuck)
+                self.station_over(tick, Why::StationOutOfReach)
             }
             Step::Arrived | Step::Wait => Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)),
         }
@@ -12684,5 +12762,89 @@ mod tests {
             bot.senses.players.count, 1,
             "an inviter who swings is watched"
         );
+    }
+
+    /// A trip whose time ran out says so, not "could not reach": nothing
+    /// was in its way. What the body saw of it goes in a bug report the
+    /// mind files, and never in the mind's own turn.
+    #[test]
+    fn a_trip_out_of_time_says_so_and_its_trace_rides_in_a_bug_report_only() {
+        let (mut bot, mut view, _) = fixture();
+        let trip = Goal::Go(Name::new(gate::GATE_NAME.as_bytes()).unwrap());
+        goal(&mut bot, trip, 1);
+        let body = view.entities[0].1;
+        let mut core = bot.core.take().unwrap();
+        let end = 1 + GO_GOAL_SECS * TICK_HZ;
+        bot.run_goal(&mut core, &body, end);
+        bot.fill_failure(&mut core, &body);
+        let report = bot.memory.last.unwrap();
+        assert_eq!(
+            (report.goal, report.outcome),
+            (trip, Outcome::Failed(Why::OutOfTime))
+        );
+        assert!(!Why::OutOfTime.text().contains("could not reach"));
+        let t = *bot.failures.last().unwrap();
+        assert_eq!(
+            (t.goal, t.why, t.secs),
+            (trip, Why::OutOfTime, GO_GOAL_SECS)
+        );
+        assert_eq!(t.layer, Some(crate::agent::floors::Layer::Ground));
+        assert_eq!(t.doors_near, Some(0));
+        let note = crate::bugs::Note {
+            kind: ::client::report::Kind::Verb,
+            title: "a trip to the gate never got there".into(),
+            body: String::new(),
+        };
+        view.newest_applied = Some(end + 5 * TICK_HZ);
+        bot.hold_bug(note, &mut core, &view, 1, &body);
+        bot.core = Some(core);
+        let (_, facts) = bot.bugs.due(Instant::now()).expect("held");
+        let last = &facts.seen["trace"]["last_failure"];
+        assert_eq!(
+            last["why"],
+            Why::OutOfTime.text(),
+            "{}",
+            facts.seen["trace"]
+        );
+        assert_eq!(last["goal"], "go:THE GATE");
+        assert_eq!(last["ago_s"], 5);
+        assert_eq!(last["standing"], "ground");
+        assert!(facts.seen["trace"]["route"]["plans"].is_u64());
+        let turn = crate::external::External::observation(1, &bot.summary(&view, 1).unwrap());
+        assert!(
+            turn.get("trace").is_none(),
+            "the mind's turn names no trace"
+        );
+    }
+
+    /// Home on its stand spot and still out of the station's reach: the
+    /// craft says the station is out of reach, not that it could not get
+    /// there, and every craft at a station is held a while.
+    #[test]
+    fn a_craft_on_its_stand_spot_out_of_the_station_s_reach_says_so() {
+        let (mut bot, view, _) = fixture();
+        let body = view.entities[0].1;
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let cell = |m: f32| (m / sim_core::build::BUILD_CELL_M) as u16;
+        bot.builder
+            .set_plan(sim_core::bots::BasePlan::new(0, cell(x), cell(z)));
+        let stand = bot.builder.stand().unwrap();
+        let haven = *bot.haven.as_ref().unwrap();
+        let mut on = body;
+        on.qx = quant_xz(stand[0]);
+        on.qz = quant_xz(stand[1]);
+        on.qy = quant_y(terrain::ground(SEED, &haven, stand[0], stand[1]));
+        let craft = Goal::Craft(Name::new(b"Stone Hatchet").unwrap());
+        goal(&mut bot, craft, 1);
+        let mut core = bot.core.take().unwrap();
+        bot.walk_to_station(&mut core, &on, STATION_FURNACE, 2);
+        bot.core = Some(core);
+        let report = bot.memory.last.unwrap();
+        assert_eq!(
+            (report.goal, report.outcome),
+            (craft, Outcome::Failed(Why::StationOutOfReach))
+        );
+        assert_eq!(bot.station_failed, Some(2), "station crafts are held");
+        assert_eq!(bot.failures.last().unwrap().why, Why::StationOutOfReach);
     }
 }

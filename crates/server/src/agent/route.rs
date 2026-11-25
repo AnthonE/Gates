@@ -159,6 +159,25 @@ pub struct RouteStats {
     pub far_barred: u64,
 }
 
+impl RouteStats {
+    /// The counts, for a bug report's trace (`agent::trace`).
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "plans": self.plans,
+            "deferred": self.deferred,
+            "blocked": self.blocked,
+            "stalls": self.stalls,
+            "expanded": self.expanded,
+            "floor_plans": self.floor_plans,
+            "flights": self.flights,
+            "floor_fails": self.floor_fails,
+            "far_searches": self.far_searches,
+            "far_found": self.far_found,
+            "far_barred": self.far_barred,
+        })
+    }
+}
+
 pub struct Route {
     nav: Box<Nav>,
     path: NavPath,
@@ -211,6 +230,9 @@ pub struct Route {
     far_from_m: f32,
     /// Where the body stood when the search in hand began.
     far_at: [f32; 2],
+    /// The last [`Step::Blocked`]: why, the plan in hand then, and when
+    /// ([`Route::blocked_by`]).
+    blocked: Option<(&'static str, Option<Plan>, u32)>,
     pub stats: RouteStats,
 }
 
@@ -256,6 +278,7 @@ impl Route {
             far_used: 0,
             far_from_m: 0.0,
             far_at: [0.0; 2],
+            blocked: None,
             stats: RouteStats::default(),
         }
     }
@@ -277,6 +300,23 @@ impl Route {
         self.far.clear();
         self.far_for = None;
         self.far_tries = 0;
+        self.blocked = None;
+    }
+
+    /// Why the route last said [`Step::Blocked`], the plan it had in hand
+    /// then, and the tick: what a bug report's trace says of a goal that
+    /// came to nothing. One of `no_flight_down`, `trip_timeout`,
+    /// `floor_replans` (between floors); `far_no_way`, `far_barred` (the
+    /// long way round); `gave_up_no_closer`, `stalled`, `no_way_too_soon`,
+    /// `plan_no_way`, `corner_gave_up` (the grid).
+    pub fn blocked_by(&self) -> Option<(&'static str, Option<Plan>, u32)> {
+        self.blocked
+    }
+
+    /// Say [`Step::Blocked`], and why.
+    fn block(&mut self, why: &'static str, tick: u32) -> Step {
+        self.blocked = Some((why, self.last, tick));
+        Step::Blocked
     }
 
     /// Once per frame, before any skill asks for a step.
@@ -396,7 +436,7 @@ impl Route {
             self.trip_for = Some(TripFor::Down);
             return self.run_trip(core, body, false, tick);
         }
-        Step::Blocked
+        self.block("no_flight_down", tick)
     }
 
     /// A trip down the stairs is under way: it finishes before anything
@@ -481,10 +521,18 @@ impl Route {
         hurry: bool,
         tick: u32,
     ) -> Step {
-        if tick.wrapping_sub(self.trip_started) >= TRIP_TICKS || self.replans > TRIP_REPLANS {
+        let late = tick.wrapping_sub(self.trip_started) >= TRIP_TICKS;
+        if late || self.replans > TRIP_REPLANS {
             self.end_trip();
             self.stats.blocked += 1;
-            return Step::Blocked;
+            return self.block(
+                if late {
+                    "trip_timeout"
+                } else {
+                    "floor_replans"
+                },
+                tick,
+            );
         }
         loop {
             if self.trip_at >= self.trip.n {
@@ -550,7 +598,7 @@ impl Route {
         }
         self.end_trip();
         self.stats.blocked += 1;
-        Step::Blocked
+        self.block("floor_replans", tick)
     }
 
     /// One step along a flight's line, point to point at a walk: `None`
@@ -665,7 +713,7 @@ impl Route {
         }
         match self.far.state() {
             Search::Running => return Some(Step::Wait),
-            Search::NoWay => return Some(Step::Blocked),
+            Search::NoWay => return Some(self.block("far_no_way", tick)),
             Search::Idle => return None,
             Search::Found => {}
         }
@@ -701,7 +749,7 @@ impl Route {
                 let goal = self.far.target();
                 if self.far_tries >= FAR_TRIES || (goal[0] - x).hypot(goal[1] - z) < FAR_MIN_M {
                     self.far.done();
-                    return Some(Step::Blocked);
+                    return Some(self.block("far_barred", tick));
                 }
                 self.far.begin([x, y, z], goal);
                 self.far_tries += 1;
@@ -770,11 +818,12 @@ impl Route {
         match self.best {
             Some((best, at)) if !resumed && !whole && left + CLOSER_M > best => {
                 if tick.wrapping_sub(at) >= GIVE_UP_TICKS {
+                    let step = self.block("gave_up_no_closer", tick);
                     self.best = None;
                     self.stats.blocked += 1;
                     self.path.clear();
                     self.last = None;
-                    return Step::Blocked;
+                    return step;
                 }
             }
             // Closer, a fresh start, or on a whole path: the clock runs
@@ -782,10 +831,11 @@ impl Route {
             _ => self.best = Some((left, tick)),
         }
         if self.stalled(body, tick, resumed) {
+            let step = self.block("stalled", tick);
             self.stats.blocked += 1;
             self.path.clear();
             self.last = None;
-            return Step::Blocked;
+            return step;
         }
 
         let mut next = nav::waypoint(&mut self.path, body.qx, body.qz);
@@ -801,7 +851,7 @@ impl Route {
         // No way there, and too soon to look again.
         if spent && !paced && matches!(self.last, Some(Plan::Unreachable | Plan::NoWay)) {
             self.stats.blocked += 1;
-            return Step::Blocked;
+            return self.block("no_way_too_soon", tick);
         }
         let invalid = spent && (self.last.is_none() || self.walked);
         let stale = (spent || self.unstick == Unstick::Replan) && paced;
@@ -824,7 +874,7 @@ impl Route {
                     self.path.clear();
                     self.last = Some(Plan::NoWay);
                     self.planned_at = Some(tick);
-                    return Step::Blocked;
+                    return self.block("plan_no_way", tick);
                 }
                 plan => {
                     self.last = Some(plan);
@@ -849,11 +899,12 @@ impl Route {
         match self.corner {
             Some((c, best, at)) if c == corner && !resumed && near + CLOSER_M > best => {
                 if tick.wrapping_sub(at) >= GIVE_UP_TICKS {
+                    let step = self.block("corner_gave_up", tick);
                     self.corner = None;
                     self.stats.blocked += 1;
                     self.path.clear();
                     self.last = None;
-                    return Step::Blocked;
+                    return step;
                 }
             }
             _ => self.corner = Some((corner, near, tick)),
@@ -1131,6 +1182,9 @@ mod tests {
         assert!(rungs[0] > 0 && rungs[1] > 0 && rungs[2] > 0, "{rungs:?}");
         let at = blocked_at.expect("a route that never moves is given up");
         assert!((4 * STALL_TICKS..5 * STALL_TICKS).contains(&at), "{at}");
+        // And says why, for a bug report's trace.
+        let (by, _, when) = route.blocked_by().expect("a cause");
+        assert_eq!((by, when), ("stalled", at));
         // One plan for the route, one for the replan rung.
         assert_eq!(route.stats.plans, 2, "{:?}", route.stats);
     }
@@ -1163,6 +1217,11 @@ mod tests {
         let (x, y, z) = feet(&me);
         let alone = grid.leg(&mut core, &me, goal, 2.0, false, 0, None);
         assert_eq!(alone, Step::Blocked, "the dead end, from ({x}, {y}, {z})");
+        // The plan said there is no way, and the trace says so.
+        assert_eq!(
+            grid.blocked_by(),
+            Some(("plan_no_way", Some(Plan::NoWay), 0))
+        );
 
         let mut route = Route::new();
         let mut arrived = None;

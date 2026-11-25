@@ -211,6 +211,17 @@ pub fn file(note: &Note, facts: Facts) -> String {
         DROPPED.fetch_add(1, Ordering::Relaxed);
         return format!("bug report dropped: this run has filed its {PER_RUN}");
     }
+    let r = compose(desk, note, facts);
+    let kept = keep(desk, &r);
+    let line = format!("bug report [{}] {:?}{kept}", note.kind.slug(), r.title);
+    send(desk, r, SEND_TIMEOUT_S, true);
+    line
+}
+
+/// The report [`file`] keeps and sends: `note`, with the body's `facts`
+/// and this desk's names. What the body saw (`facts.seen`, its trace of
+/// the goals that failed lately among it) rides in `agent.seen`.
+pub fn compose(desk: &Desk, note: &Note, facts: Facts) -> Report {
     let mut r = Report::new(
         note.kind,
         &note.title,
@@ -235,10 +246,7 @@ pub fn file(note: &Note, facts: Facts) -> String {
         seen: facts.seen,
     });
     r.wallet = desk.wallet.clone();
-    let kept = keep(desk, &r);
-    let line = format!("bug report [{}] {:?}{kept}", note.kind.slug(), r.title);
-    send(desk, r, SEND_TIMEOUT_S, true);
-    line
+    r
 }
 
 /// File a report for this process's own panic, then run the hook it
@@ -399,6 +407,51 @@ mod tests {
         assert_eq!(title(tray.due(t0 + GAP)), Some("b".into()));
         assert_eq!(title(tray.due(t0 + GAP * 2)), Some("c".into()));
         assert_eq!(title(tray.due(t0 + GAP * 3)), None, "past HELD was dropped");
+    }
+
+    /// What the body saw of a goal that failed goes in the report a note
+    /// is filed as, and the kept `.json` carries it under `agent.seen`.
+    #[test]
+    fn a_filed_note_keeps_the_body_s_trace_in_its_json() {
+        let why = crate::mind::Why::NoWayIn.text();
+        let facts = Facts {
+            seed: 7,
+            tick: 900,
+            pos: [1.0, 2.0, 3.0],
+            player_id: 3,
+            vitals: Vitals {
+                hp: 100,
+                hp_max: 100,
+                food: 100,
+                water: 100,
+                dead: false,
+            },
+            goal: None,
+            last: Some("deliver (failed)".into()),
+            seen: json!({"trace": {"last_failure": {"goal": "deliver", "why": why}}}),
+        };
+        let dir = std::env::temp_dir().join(format!("gates-bugs-trace-{}", std::process::id()));
+        let desk = Desk {
+            intake: None,
+            dir: Some(dir.clone()),
+            shard: "127.0.0.1:1".into(),
+            name: "claude".into(),
+            wallet: None,
+            mind: "external".into(),
+        };
+        let note = Note {
+            kind: Kind::Verb,
+            title: "deliver fails at home".into(),
+            body: String::new(),
+        };
+        let r = compose(&desk, &note, facts);
+        let (stem, json_kept) = report::write_pair(&dir, &r).unwrap();
+        assert!(json_kept);
+        let kept = std::fs::read_to_string(dir.join(format!("{stem}.json"))).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let v: Value = serde_json::from_str(&kept).unwrap();
+        assert_eq!(v["agent"]["seen"]["trace"]["last_failure"]["why"], why);
+        assert_eq!(v["agent"]["last"], "deliver (failed)");
     }
 
     #[test]

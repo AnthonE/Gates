@@ -795,6 +795,15 @@ pub enum Why {
     /// The teammate a heal was for was whole: full health, not bleeding
     /// (`REFUSE_C_FULL`).
     Whole,
+    /// The goal's own time ran out before it was done (its `*_GOAL_SECS`):
+    /// not a wall, so the same goal may well do from here.
+    OutOfTime,
+    /// No way to it from here, and no door near it to go in by: walls in
+    /// the way of a trip into a base, or none to try.
+    NoWayIn,
+    /// On the spot it crafts from and still out of its station's reach: the
+    /// station stands somewhere else than that spot reaches.
+    StationOutOfReach,
 }
 
 impl Why {
@@ -833,7 +842,23 @@ impl Why {
             Why::Session => "the session ended while it ran",
             Why::ArcRefused(code) => arc_refusal(code),
             Why::Whole => "they were already whole (full health, not bleeding): nothing was spent",
+            Why::OutOfTime => "ran out of time before it was done",
+            Why::NoWayIn => {
+                "no way to it from here: walls in the way, and no door near it that it could use"
+            }
+            Why::StationOutOfReach => {
+                "its station is out of reach from where it stands to craft; the station was moved \
+                 or blocked"
+            }
         }
+    }
+
+    /// Came to nothing short of where it was going: no way there
+    /// ([`Why::Stuck`], [`Why::NoWayIn`]) or out of time on the way
+    /// ([`Why::OutOfTime`]). What used to read "could not reach a target"
+    /// all through, so what a stuck goal sets off, an unreached one does.
+    pub fn unreached(self) -> bool {
+        matches!(self, Why::Stuck | Why::OutOfTime | Why::NoWayIn)
     }
 }
 
