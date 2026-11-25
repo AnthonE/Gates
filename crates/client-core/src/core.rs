@@ -3497,9 +3497,13 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 self.recipes.recipe_count = total as u16;
+                // The item repair price (v157), the item card's quote
+                // (`craft::repair_cost`).
+                self.recipes.repair_pct = repair_pct;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.recipes.recipes[first as usize + i] = *row;
                 }
@@ -6703,6 +6707,7 @@ mod tests {
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_RECIPES);
         assert_eq!((c.recipes.recipe_count, c.recipes_have), (3, took as u16));
         assert_eq!(c.recipes.recipes[1], cc.recipes[1]);
+        assert_eq!(c.recipes.repair_pct, cc.repair_pct, "the repair price");
 
         // The queue announce replaces the whole view.
         let jobs = [

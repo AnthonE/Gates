@@ -714,6 +714,15 @@ fn repair_price_bands_refused() {
     let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     b.1 = b.1.replace("repair_cost_pct = 100", "repair_cost_pct = 1");
     build(&srcs).expect("1% is legal — cheap is the operator's call to make");
+    // An item's bench repair: free and dearer than a new one are refused.
+    for bad in ["0", "101"] {
+        refuses(
+            "balance.toml",
+            "item_repair_cost_pct = 20",
+            &format!("item_repair_cost_pct = {bad}"),
+            "item_repair_cost_pct",
+        );
+    }
 }
 
 #[test]
@@ -1187,6 +1196,10 @@ fn bake_craft_carries_the_shipped_numbers() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let cc = c.bake_craft().expect("shipped recipes must bake");
     assert_eq!(cc.recipe_count as usize, c.recipes.len());
+    assert_eq!(
+        cc.repair_pct as u32, c.balance.globals.item_repair_cost_pct,
+        "the bench repair's share rides the table"
+    );
 
     // recipes.toml recipe.hatchet_stone: 100 wood + 50 stone → 1 hatchet,
     // 15 s at station none — read back from the baked row.

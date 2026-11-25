@@ -4106,6 +4106,7 @@ impl ShardCore {
                         slot,
                         skin,
                     },
+                    ActionMsg::RepairItem { slot } => Command::RepairItem { id: c.id, slot },
                     // Answered by the accept loop before it reaches this
                     // ring (`net.rs` `action_reader_task`); one that got
                     // here anyway asks the sim for nothing.

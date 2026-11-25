@@ -2032,6 +2032,13 @@ pub enum Command {
         slot: u8,
         skin: u16,
     },
+    /// Mend the worn item in `id`'s inventory `slot` back to whole at a
+    /// workbench, for a share of its recipe (`craft::repair_item`). The slot
+    /// is the sender's claim and the sim is the verdict.
+    RepairItem {
+        id: u32,
+        slot: u8,
+    },
     /// What skins `id` owns, as the server read it off the platform
     /// (`server/src/skins.rs`), replacing whatever the sim held.
     ///
@@ -6808,6 +6815,19 @@ impl World {
                         &mut self.players[s],
                         slot,
                         skin,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::RepairItem { id, slot } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    craft::repair_item(
+                        &self.craft,
+                        &self.gather,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        slot,
                         &mut self.events,
                     );
                 }

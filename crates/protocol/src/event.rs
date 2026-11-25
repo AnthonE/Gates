@@ -1083,10 +1083,11 @@ const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
-/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102). Content
-/// validates `repair_cost_pct` to 1..=100 and an unbaked table is 0, which
-/// crosses as itself; seven bits hold 100, so 101..=127 are forgeable and
-/// both ends refuse them.
+/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102), and the item
+/// repair percent on `SUB_RECIPES` (v157). Content validates
+/// `repair_cost_pct` and `item_repair_cost_pct` to 1..=100 and an unbaked
+/// table is 0, which crosses as itself; seven bits hold 100, so 101..=127
+/// are forgeable and both ends refuse them.
 const REPAIR_PCT_BITS: u32 = 7;
 const REPAIR_PCT_MAX: u16 = 100;
 const _: () = assert!(REPAIR_PCT_MAX < (1 << REPAIR_PCT_BITS));
@@ -2101,10 +2102,14 @@ pub enum EventMsg {
     /// Recipe rows `first..first+count` of a `total`-row table — the
     /// craft menu's data, dripped like the item catalog. Rows decode to
     /// the same `RecipeDef` the sim runs (craft time crosses as ticks).
+    /// `repair_pct` is `CraftContent::repair_pct` (v157), on every batch
+    /// like `PieceDefs`' price: the item card quotes a bench repair with it
+    /// (`craft::repair_cost`).
     Recipes {
         total: u8,
         first: u8,
         count: u8,
+        repair_pct: u16,
         rows: [RecipeDef; RECIPE_BATCH],
     },
     /// Research rows `first..first+count` of a `total`-row table — the
@@ -3489,10 +3494,15 @@ pub fn encode_event_recipes(
         return Err(WireError::Range);
     }
     let count = RECIPE_BATCH.min(total - first);
+    if cc.repair_pct > REPAIR_PCT_MAX {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_RECIPES)?;
     w.write(total as u32, RECIPE_TOTAL_BITS)?;
     w.write(first as u32, RECIPE_TOTAL_BITS)?;
     w.write(count as u32, RECIPE_COUNT_BITS)?;
+    // The item repair price (v157), the piece drip's width and ceiling.
+    w.write(cc.repair_pct as u32, REPAIR_PCT_BITS)?;
     for def in cc.recipes[first..first + count].iter() {
         if def.ticks == 0
             || def.ticks >= (1 << RECIPE_TICKS_BITS)
@@ -7188,7 +7198,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let total = r.read(RECIPE_TOTAL_BITS)? as usize;
             let first = r.read(RECIPE_TOTAL_BITS)? as usize;
             let count = r.read(RECIPE_COUNT_BITS)? as usize;
-            if total > MAX_RECIPES || count == 0 || count > RECIPE_BATCH || first + count > total {
+            let repair_pct = r.read(REPAIR_PCT_BITS)? as u16;
+            if total > MAX_RECIPES
+                || count == 0
+                || count > RECIPE_BATCH
+                || first + count > total
+                || repair_pct > REPAIR_PCT_MAX
+            {
                 return Err(WireError::Malformed);
             }
             let mut rows = [RecipeDef::INERT; RECIPE_BATCH];
@@ -7228,6 +7244,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                repair_pct,
                 rows,
             }
         }
@@ -9765,9 +9782,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (3, 0, 3));
+                assert_eq!(repair_pct, cc.repair_pct, "the price rides along");
                 assert_eq!(rows[0], cc.recipes[0], "decode rebuilds the sim row");
                 assert_eq!(rows[1], cc.recipes[1]);
                 assert_eq!(rows[2], cc.recipes[2]);
@@ -9784,6 +9803,13 @@ mod tests {
         bad.recipes[1].ticks = 0;
         assert_eq!(
             encode_event_recipes(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // So does a repair price past a whole recipe.
+        let mut dear = cc;
+        dear.repair_pct = REPAIR_PCT_MAX + 1;
+        assert_eq!(
+            encode_event_recipes(&dear, 0, &mut buf),
             Err(WireError::Range)
         );
     }

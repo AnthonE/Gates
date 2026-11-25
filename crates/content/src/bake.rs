@@ -330,6 +330,17 @@ impl Content {
             }
             cc.recipes[idx] = def;
         }
+        // `bake_building`'s posture: validated to 1..=100 already, refused
+        // here anyway for a fixture that never ran the validator.
+        cc.repair_pct = u16::try_from(self.balance.globals.item_repair_cost_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: item_repair_cost_pct {} is past 100",
+                    self.balance.globals.item_repair_cost_pct
+                )
+            })?;
         Ok(cc)
     }
 

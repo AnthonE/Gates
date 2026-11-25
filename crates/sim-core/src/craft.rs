@@ -222,6 +222,11 @@ impl RecipeDef {
 pub struct CraftContent {
     pub recipes: [RecipeDef; MAX_RECIPES],
     pub recipe_count: u16,
+    /// What mending a worn item from nothing back to whole costs, as a
+    /// percent of the recipe that makes it ([`repair_item`], content
+    /// `globals.item_repair_cost_pct`). Zero is an unbaked table, and a
+    /// repair refuses there rather than mending free.
+    pub repair_pct: u16,
 }
 
 impl CraftContent {
@@ -230,6 +235,7 @@ impl CraftContent {
     pub const EMPTY: Self = Self {
         recipes: [RecipeDef::INERT; MAX_RECIPES],
         recipe_count: 0,
+        repair_pct: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -243,6 +249,7 @@ impl CraftContent {
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         c.recipe_count = 3;
+        c.repair_pct = 20;
         c.recipes[0] = RecipeDef {
             output: 2,
             out_count: 2,
@@ -624,9 +631,9 @@ pub fn step(
         return;
     }
     let def = &cc.recipes[recipe as usize];
-    // A crafted tool arrives whole: re-craft IS the repair (Q3, operator
-    // 2026-08-15), so the mint at the ceiling is the design and not a
-    // convenience — an output minted at 0 would be dead on arrival.
+    // A crafted tool arrives whole, so the mint at the ceiling is the design
+    // and not a convenience — an output minted at 0 would be dead on
+    // arrival. A worn one is mended at a bench ([`repair_item`]).
     let added = crate::gather::inv_add_spilling_skinned(
         &mut p.inv,
         spill,
@@ -647,6 +654,146 @@ pub fn step(
         shift_left(&mut p.jobs, 0);
     }
     rearm(cc, dc, deploys, tick, p);
+}
+
+/// The bench rung a repair of an item made by `def` needs: the recipe's own
+/// rung on the bench ladder, and the first workbench for an item made by
+/// hand or at a furnace. Mending is bench work whatever made the thing.
+#[inline]
+#[must_use]
+pub const fn repair_station(def: &RecipeDef) -> u8 {
+    if def.station >= STATION_WORKBENCH1 && def.station <= STATION_WORKBENCH3 {
+        def.station
+    } else {
+        STATION_WORKBENCH1
+    }
+}
+
+/// The recipe a repair of `item` is priced against: the first live row that
+/// makes it. `None` for an item no recipe makes (loot only), which can never
+/// be repaired.
+pub fn repair_recipe(cc: &CraftContent, item: u16) -> Option<u16> {
+    let live = (cc.recipe_count as usize).min(MAX_RECIPES);
+    cc.recipes[..live]
+        .iter()
+        .position(|d| d.out_count > 0 && d.output == item)
+        .map(|i| i as u16)
+}
+
+/// What mending a stack of `count` made by `def` from `cond` back to
+/// `cond_max` costs: one `(item, units)` per input row, written into `out`,
+/// and the count returned. **The one price**: [`repair_item`] checks and
+/// takes exactly these rows, and the client's item card quotes them.
+///
+/// Each row is its recipe units × the condition missing × `pct`, over the
+/// full condition × 100 × the units a craft pays, rounded up, so a worn item
+/// never mends free. `u64` for `build::repair_units`' reason. Zero rows means
+/// nothing is for sale: whole, an item that does not wear, or an unbaked
+/// table (`pct == 0`).
+pub fn repair_cost(
+    def: &RecipeDef,
+    cond: u16,
+    cond_max: u16,
+    count: u16,
+    pct: u16,
+    out: &mut [(u16, u32); MAX_RECIPE_INPUTS],
+) -> usize {
+    let missing = cond_max.saturating_sub(cond);
+    if missing == 0 || pct == 0 || count == 0 || def.out_count == 0 {
+        return 0;
+    }
+    let den = cond_max as u64 * 100 * def.out_count as u64;
+    let n = (def.n_inputs as usize).min(MAX_RECIPE_INPUTS);
+    for (slot, &(item, units)) in out.iter_mut().zip(def.inputs.iter()).take(n) {
+        let num = units as u64 * missing as u64 * pct as u64 * count as u64;
+        let owed = if units == 0 {
+            0
+        } else {
+            num.div_ceil(den).max(1)
+        };
+        *slot = (item, owed.min(u32::MAX as u64) as u32);
+    }
+    n
+}
+
+/// Mend the worn item in inventory `slot` back to whole at a workbench, for
+/// a share of the recipe that makes it (`Command::RepairItem`, Rust's repair
+/// bench, on the workbench we already ship: `NOW.md` §0dur 3).
+///
+/// The checks run in [`enqueue`]'s order. Not a repairable thing at all (an
+/// empty slot, an item that does not wear or is already whole, no recipe
+/// makes it, an unbaked table) is `REFUSE_CR_RECIPE`; then the blueprint,
+/// then the bench (the recipe's own rung, [`repair_station`]), then the
+/// inputs — every one counted before any is taken, so a refusal spends
+/// nothing. Skin, count and a gun's data stay. Condition comes back to the
+/// item's full ceiling: Rust also lowers that ceiling on each repair, which
+/// needs a per-stack field we do not have. A success says nothing of its
+/// own, `skin::reskin`'s way: the inventory diff carries the new condition.
+#[allow(clippy::too_many_arguments)]
+pub fn repair_item(
+    cc: &CraftContent,
+    gc: &GatherContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
+    p: &mut Player,
+    slot: u8,
+    events: &mut EventQueue,
+) {
+    let s = slot as usize;
+    if s >= INV_SLOTS || p.inv[s].count == 0 {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
+        return;
+    }
+    let stack = p.inv[s];
+    let cond_max = gc.cond_max_of(stack.item);
+    if cond_max == 0 || stack.cond >= cond_max || cc.repair_pct == 0 {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
+        return;
+    }
+    let Some(recipe) = repair_recipe(cc, stack.item) else {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
+        return;
+    };
+    let def = &cc.recipes[recipe as usize];
+    if def.blueprint && !crate::research::knows(p.known, recipe) {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_BLUEPRINT, 0);
+        return;
+    }
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    if !deploys.bench_near(dc, repair_station(def), px, pz, STATION_RADIUS_M) {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_STATION, 0);
+        return;
+    }
+    let mut cost = [(0u16, 0u32); MAX_RECIPE_INPUTS];
+    let n = repair_cost(
+        def,
+        stack.cond,
+        cond_max,
+        stack.count,
+        cc.repair_pct,
+        &mut cost,
+    );
+    if n == 0 {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_RECIPE, 0);
+        return;
+    }
+    let ceil = |item: u16| input_ceil(gc.stack_max_of(item), gc.cond_max_of(item));
+    for &(item, units) in &cost[..n] {
+        if inv_count_whole(&p.inv, item, ceil(item)) < units {
+            events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_INPUTS, 0);
+            return;
+        }
+    }
+    for &(item, units) in &cost[..n] {
+        inv_take_whole(&mut p.inv, item, units, ceil(item));
+    }
+    // A worn stack of one is never spent as an input (`input_ceil` asks for
+    // whole), so the take above cannot have reached it; the check is for a
+    // fixture's stackable wearing item, which could be its own input.
+    if p.inv[s].count > 0 && p.inv[s].item == stack.item {
+        p.inv[s].cond = cond_max;
+    }
 }
 
 #[cfg(test)]
@@ -864,6 +1011,194 @@ mod tests {
         reskin(&sc, &dc, &benches, &mut p, 200, NO_SKIN, &mut ev);
         assert_eq!(ev.len(), 2);
         assert!(ev.entries().iter().all(|e| e.b == REFUSE_CR_SKIN));
+    }
+
+    /// A player standing at a placed fixture workbench (deploy row 1, item 3)
+    /// with `inv0` in the pack, and the store holding the bench — the
+    /// re-skin test's bench.
+    fn at_a_bench(inv0: &[(u16, u16)]) -> (Player, Deploys) {
+        use crate::build::{BuildContent, Pieces, LOC_PLANE};
+        const SEED: u64 = 20260731;
+        let mut p = player(inv0);
+        let spare = p.inv.iter().position(|s| s.count == 0).expect("room");
+        p.inv[spare] = ItemStack {
+            item: 3,
+            count: 1,
+            ..ItemStack::EMPTY
+        };
+        p.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
+        let mut benches = Deploys::new();
+        let mut ev = EventQueue::default();
+        crate::deploy::place_deploy(
+            SEED,
+            &hv(SEED),
+            &DeployContent::probe_fixture(),
+            &BuildContent::probe_fixture(),
+            &mut Pieces::new(),
+            &mut benches,
+            &mut p,
+            0,
+            1,
+            682,
+            682,
+            0,
+            LOC_PLANE,
+            crate::footprint::Pose::CENTRE,
+            &mut ev,
+        );
+        assert_eq!(
+            ev.entries()[ev.len() - 1].code,
+            crate::world::EV_DEPLOY_PLACED
+        );
+        (p, benches)
+    }
+
+    /// The repair fixture: item 2 is a tool (a stack of one, condition
+    /// 1000) that recipe 0 makes, one at a time, from 25 of item 0 and 7 of
+    /// item 1; item 4 (recipe 2, a blueprint at a level-1 bench) wears too.
+    fn repair_fixture() -> (CraftContent, GatherContent) {
+        let (mut cc, mut gc) = fixture();
+        cc.recipes[0].out_count = 1;
+        cc.recipes[0].n_inputs = 2;
+        cc.recipes[0].inputs = [(0, 25), (1, 7), (0, 0), (0, 0)];
+        gc.stack_max[2] = 1;
+        gc.cond_max[2] = 1000;
+        gc.stack_max[4] = 1;
+        gc.cond_max[4] = 300;
+        (cc, gc)
+    }
+
+    fn worn(item: u16, cond: u16) -> ItemStack {
+        ItemStack {
+            item,
+            count: 1,
+            cond,
+            skin: 7,
+            ..ItemStack::EMPTY
+        }
+    }
+
+    /// Rust's repair bench on our workbench: a half-worn tool pays the
+    /// rounded-up half of 20% of each input and comes back whole, wearing
+    /// its skin; a whole one is refused and nothing is taken.
+    #[test]
+    fn a_worn_tool_is_mended_at_a_bench_for_a_share_of_its_recipe() {
+        let (cc, gc) = repair_fixture();
+        let dc = DeployContent::probe_fixture();
+        let (mut p, benches) = at_a_bench(&[(0, 40), (1, 10)]);
+        p.inv[5] = worn(2, 500);
+        let mut ev = EventQueue::default();
+        repair_item(&cc, &gc, &dc, &benches, &mut p, 5, &mut ev);
+        assert!(ev.is_empty(), "mended: {:?}", ev.entries());
+        assert_eq!(p.inv[5], worn(2, 1000), "whole, skin and count kept");
+        // 25 × 500 × 20 / (1000 × 100) = 2.5 → 3; 7 × 0.1 = 0.7 → 1.
+        assert_eq!((inv_count(&p.inv, 0), inv_count(&p.inv, 1)), (37, 9));
+
+        repair_item(&cc, &gc, &dc, &benches, &mut p, 5, &mut ev);
+        assert_eq!(
+            (ev.entries()[0].code, ev.entries()[0].b),
+            (EV_CRAFT_REFUSED, REFUSE_CR_RECIPE)
+        );
+        assert_eq!(
+            (inv_count(&p.inv, 0), inv_count(&p.inv, 1)),
+            (37, 9),
+            "nothing taken"
+        );
+    }
+
+    /// Each refusal, in `enqueue`'s order, spends nothing: no bench, a
+    /// blueprint not learned, a short pack, an unbaked table, an item no
+    /// recipe makes, one that does not wear, and an empty or forged slot.
+    #[test]
+    fn a_refused_repair_spends_nothing_and_says_why() {
+        let (cc, gc) = repair_fixture();
+        let dc = DeployContent::probe_fixture();
+        let refused = |cc: &CraftContent, deploys: &Deploys, p: &mut Player, slot: u8| {
+            let before = p.inv;
+            let mut ev = EventQueue::default();
+            repair_item(cc, &gc, &dc, deploys, p, slot, &mut ev);
+            assert_eq!(p.inv, before, "a refusal spends nothing");
+            assert_eq!(ev.len(), 1);
+            assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
+            ev.entries()[0].b
+        };
+        let (mut p, benches) = at_a_bench(&[(0, 40), (1, 10)]);
+        p.inv[5] = worn(2, 0);
+        assert_eq!(refused(&cc, &Deploys::new(), &mut p, 5), REFUSE_CR_STATION);
+
+        // Recipe 2 is a blueprint: at the bench, unlearned, it is refused
+        // for that; learned, it mends.
+        p.inv[6] = worn(4, 100);
+        assert_eq!(refused(&cc, &benches, &mut p, 6), REFUSE_CR_BLUEPRINT);
+        p.known |= 1 << 2;
+        let mut ev = EventQueue::default();
+        repair_item(&cc, &gc, &dc, &benches, &mut p, 6, &mut ev);
+        assert!(ev.is_empty());
+        assert_eq!(p.inv[6].cond, 300);
+
+        // Three of item 0 a broken tool wants five of: nothing is taken.
+        let (mut p, benches) = at_a_bench(&[(0, 3), (1, 10)]);
+        p.inv[5] = worn(2, 0);
+        assert_eq!(refused(&cc, &benches, &mut p, 5), REFUSE_CR_INPUTS);
+
+        let mut unbaked = cc;
+        unbaked.repair_pct = 0;
+        p.inv[0].count = 40;
+        assert_eq!(refused(&unbaked, &benches, &mut p, 5), REFUSE_CR_RECIPE);
+        // Item 0 wears, but no recipe makes it: loot only.
+        p.inv[7] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 10,
+            ..ItemStack::EMPTY
+        };
+        assert_eq!(refused(&cc, &benches, &mut p, 7), REFUSE_CR_RECIPE);
+        // Item 3 has a recipe and does not wear.
+        p.inv[8] = worn(3, 0);
+        assert_eq!(refused(&cc, &benches, &mut p, 8), REFUSE_CR_RECIPE);
+        assert_eq!(refused(&cc, &benches, &mut p, 20), REFUSE_CR_RECIPE);
+        assert_eq!(refused(&cc, &benches, &mut p, 200), REFUSE_CR_RECIPE);
+    }
+
+    /// A broken gun refuses for good (`CombatContent::broken`); mended, it
+    /// is a gun again.
+    #[test]
+    fn a_broken_gun_mended_is_not_broken() {
+        let (cc, gc) = repair_fixture();
+        let mut combat = crate::combat::CombatContent::EMPTY;
+        combat.cond_max[2] = 1000;
+        let dc = DeployContent::probe_fixture();
+        let (mut p, benches) = at_a_bench(&[(0, 40), (1, 10)]);
+        p.inv[5] = worn(2, 0);
+        assert!(combat.broken(p.inv[5]));
+        let mut ev = EventQueue::default();
+        repair_item(&cc, &gc, &dc, &benches, &mut p, 5, &mut ev);
+        assert!(ev.is_empty());
+        assert!(!combat.broken(p.inv[5]));
+        // From nothing: the whole 20%, 5 and 2 (1.4 rounded up).
+        assert_eq!((inv_count(&p.inv, 0), inv_count(&p.inv, 1)), (35, 8));
+    }
+
+    /// The price never falls as the wear grows, is never zero for a worn
+    /// item, and is nothing for a whole one.
+    #[test]
+    fn the_repair_price_grows_with_the_wear_and_is_never_free() {
+        let (cc, _) = repair_fixture();
+        let def = &cc.recipes[0];
+        let mut out = [(0u16, 0u32); MAX_RECIPE_INPUTS];
+        assert_eq!(repair_cost(def, 1000, 1000, 1, 20, &mut out), 0, "whole");
+        assert_eq!(repair_cost(def, 0, 1000, 1, 0, &mut out), 0, "unbaked");
+        let mut last = [0u32; 2];
+        for cond in (0..1000).rev() {
+            assert_eq!(repair_cost(def, cond, 1000, 1, 20, &mut out), 2);
+            for (i, &(item, units)) in out[..2].iter().enumerate() {
+                assert_eq!(item, def.inputs[i].0);
+                assert!(units >= 1, "free at cond {cond}");
+                assert!(units >= last[i], "cheaper at cond {cond}");
+                last[i] = units;
+            }
+        }
+        assert_eq!(last, [5, 2], "from nothing: 20% of 25 and of 7, rounded up");
     }
 
     /// The move verb carries a skin, and two looks of one item never merge.

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 200] = [
+const GOLDEN: [&[u8]; 201] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -263,6 +263,7 @@ const GOLDEN: [&[u8]; 200] = [
     include_bytes!("golden/hello_commander.bin"),
     include_bytes!("golden/event_crew.bin"),
     include_bytes!("golden/event_healed.bin"),
+    include_bytes!("golden/action_repair_item.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -592,8 +593,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 198);
     // A heal by another player (v157).
     g!(seen, golden_event, 199);
+    // A worn item mended at a bench (v157).
+    g!(seen, golden_action, 200);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 200, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 201, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1054,6 +1057,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap()
+        }
+        "action_repair_item.bin" => {
+            let slot = protocol::goldens::action_repair_item();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::RepairItem { slot },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_repair_item(slot, &mut buf).unwrap()
         }
         "action_attach.bin" => {
             let slot = protocol::goldens::action_attach();
@@ -1822,11 +1834,12 @@ fn golden_event(fixture: &[u8], name: &str) {
                     total,
                     first,
                     count,
+                    repair_pct,
                     rows,
                 } => {
                     assert_eq!(
-                        (total, first, count),
-                        (cc.recipe_count as u8, 0, RECIPE_BATCH as u8),
+                        (total, first, count, repair_pct),
+                        (cc.recipe_count as u8, 0, RECIPE_BATCH as u8, cc.repair_pct),
                         "{name}: header mismatch"
                     );
                     for (i, row) in rows.iter().enumerate().take(count as usize) {

@@ -1498,6 +1498,11 @@ pub struct Globals {
     /// build cost (100 = the damage's worth exactly). Percent so the file
     /// stays integer-only, like `raid_ratio_stone_pct`.
     pub repair_cost_pct: u32,
+    /// What mending a worn item from nothing back to whole costs at a
+    /// workbench, as a percent of the recipe that makes it
+    /// (`sim_core::craft::repair_item`). Percent for `repair_cost_pct`'s
+    /// reason.
+    pub item_repair_cost_pct: u32,
     /// Unpaid decay per upkeep period, % of max hp, keyed by material.
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).

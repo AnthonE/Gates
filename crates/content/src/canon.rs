@@ -439,6 +439,7 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.u(g.upkeep_pct_per_day);
     h.u(g.repair_cost_pct);
+    h.u(g.item_repair_cost_pct);
     h.u(g.arrow_break_pct);
     h.u(g.arrow_lodge_s);
     if let Some(f) = &g.fist {

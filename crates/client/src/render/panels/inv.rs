@@ -282,6 +282,14 @@ fn info_card(
             }
         }
     }
+    // A worn thing in the pack is mended at a bench (`craft::repair_item`):
+    // the card offers it and says the price, or that nothing ever will.
+    let mend = if kind == CONT_SELF {
+        info::repair(&core.recipes, row.cond_max, stack)
+    } else {
+        info::Repair::Nothing
+    };
+    let mend_line = info::repair_line(&core.catalog, mend);
     let acts = info::actions(
         row,
         stack,
@@ -293,6 +301,7 @@ fn info_card(
             room: split_slot(&core.inv).is_some(),
             attachable: kind == CONT_SELF && core.attachable(stack.item).is_some(),
             fitted,
+            repair: matches!(mend, info::Repair::Quote { .. }),
         },
     );
     col.spawn((
@@ -432,6 +441,18 @@ fn info_card(
                 }
                 for (act, label) in acts {
                     act_button(right, act, label);
+                }
+                if let Some(line) = mend_line {
+                    right.spawn((
+                        Text::new(line),
+                        font(11.0),
+                        TextColor(TEXT_DIM),
+                        Node {
+                            margin: UiRect::top(Val::Px(2.0)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
                 }
             });
         });
@@ -609,6 +630,11 @@ pub fn info_clicks(
             }
         }
         info::Act::Attach => send_attach(&mut ui, &net, slot),
+        info::Act::Repair => {
+            if kind == CONT_SELF {
+                send_repair(&mut ui, &net, slot);
+            }
+        }
         info::Act::Detach(bit) => {
             let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
             match protocol::encode_action_detach(bit, &mut buf) {
@@ -2061,7 +2087,7 @@ fn section(parent: &mut ChildSpawnerCommands, text: &str) {
 
 /// Skins in the inventory (skins v0): `P` over an item of yours cycles
 /// it through the skins you own for it and back to its own look — Rust's
-/// repair-bench skin picker, at any workbench since we have no repair bench
+/// repair-bench skin picker, at any workbench, which is our repair bench
 /// (`sim_core::skin::reskin`; the sim refuses away from one and says why).
 ///
 /// And **opening either page asks the shard to read your skins again**
@@ -2497,6 +2523,54 @@ pub fn drag_pointer(
 /// not do. Every branch of the decision is `ui::slots::quick_move`'s (and
 /// the fire's and the table's own); this sends what it is handed.
 /// Put the attachment in pack slot `slot` on the gun in hand.
+/// The card's Repair: asked of the client's mirror first, in the shard's
+/// order, so a press that would be refused says why instead of waiting on
+/// the refusal (`skin_keys`' posture), then sent. The item's own cell
+/// redraws whole when the sim agrees.
+fn send_repair(ui: &mut Ui, net: &super::super::Net, slot: usize) {
+    let core = &net.session.core;
+    let stack = core.inv[slot];
+    let info::Repair::Quote { recipe, rows, n } = info::repair(
+        &core.recipes,
+        core.catalog.cond_max(stack.item as usize),
+        stack,
+    ) else {
+        ui.say("there is nothing to repair on that");
+        return;
+    };
+    let pos = core.predict.position();
+    let best = sim_core::deploy::best_bench_in(
+        core.deploys.entries(),
+        &core.deploy_defs,
+        pos[0],
+        pos[2],
+        sim_core::craft::STATION_RADIUS_M,
+    );
+    if let Some(why) = info::repair_blocked(
+        &core.recipes,
+        core.known(),
+        best,
+        &core.inv,
+        &core.catalog,
+        recipe,
+        &rows[..n],
+    ) {
+        ui.say(why);
+        return;
+    }
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_repair_item(slot as u8, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say(format!(
+                "repairing {}",
+                research_ui::stack_label(&core.catalog, &core.research, stack)
+            )),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the repair would not encode ({e:?})")),
+    }
+}
+
 fn send_attach(ui: &mut Ui, net: &super::super::Net, slot: usize) {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_attach(slot as u8, &mut buf) {

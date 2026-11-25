@@ -417,6 +417,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
              for free, over 100 costs more than rebuilding"
         ));
     }
+    // An item's mend is a share of its recipe: 0 mends free and over 100
+    // costs more than crafting a new one, which is the verb dead weight.
+    let ip = c.balance.globals.item_repair_cost_pct;
+    if ip == 0 || ip > 100 {
+        return Err(format!(
+            "globals: item_repair_cost_pct {ip} must be 1..=100 — 0 mends an \
+             item for free, over 100 costs more than crafting a new one"
+        ));
+    }
     // A break chance is a percentage and both ends of the range mean
     // something, so this refuses only the value that is not a percentage.
     // 0 is "an arrow is forever" and 100 is "an arrow is spent", which is

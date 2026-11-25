@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 200] = [
+pub const FIXTURES: [&str; 201] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -360,6 +360,8 @@ pub const FIXTURES: [&str; 200] = [
     "event_crew.bin",
     // A heal by another player (v157): the healer and the item.
     "event_healed.bin",
+    // A worn item mended at a bench (v157), on the pack's last slot.
+    "action_repair_item.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1553,6 +1555,8 @@ pub fn event_recipes() -> CraftContent {
     type Row = (u16, u16, u32, u8, &'static [(u16, u16)]);
     let mut cc = CraftContent::EMPTY;
     cc.recipe_count = 6;
+    // The item repair price (v157) at its ceiling, every bit of it live.
+    cc.repair_pct = 100;
     let rows: [Row; 6] = [
         (4, 1, 15 * 30, STATION_NONE, &[(0, 100), (1, 50)]),
         (9, 3, 5 * 30, STATION_NONE, &[(0, 25), (1, 10)]),
@@ -2570,6 +2574,11 @@ pub fn event_ammo() -> (u16, u16) {
 
 /// The attach verb (v144) on the pack's last slot.
 pub fn action_attach() -> u8 {
+    (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The bench repair (v157) on the pack's last slot.
+pub fn action_repair_item() -> u8 {
     (sim_core::limits::INV_SLOTS - 1) as u8
 }
 

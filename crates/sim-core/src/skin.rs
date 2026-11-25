@@ -188,7 +188,7 @@ impl SkinSet {
 
 /// Put skin `skin` on the item in inventory `slot`, or take its skin off
 /// with [`NO_SKIN`] (`Command::Reskin`). Rust does this at a repair bench;
-/// we have none, so any workbench in reach is the station.
+/// ours is any workbench in reach, where `craft::repair_item` mends too.
 ///
 /// The order is craft's (`craft::enqueue` checks the blueprint before the
 /// station): the skin first, because not owning it is the refusal a walk

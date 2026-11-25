@@ -334,6 +334,9 @@ fn main() {
     let (by, item) = goldens::event_healed();
     let len = protocol::encode_event_healed(by, item, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[199], &buf[..len]);
+    // A worn item mended at a bench (v157).
+    let len = protocol::encode_action_repair_item(goldens::action_repair_item(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[200], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

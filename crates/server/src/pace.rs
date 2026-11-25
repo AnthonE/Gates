@@ -115,6 +115,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         | ActionMsg::CraftCancel { .. }
         | ActionMsg::CraftFastTrack { .. }
         | ActionMsg::Reskin { .. }
+        | ActionMsg::RepairItem { .. }
         | ActionMsg::SkinsRefresh
         | ActionMsg::Research { .. }
         | ActionMsg::Unlock { .. }

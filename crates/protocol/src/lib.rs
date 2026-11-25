@@ -1422,7 +1422,9 @@ pub use voice::{
 /// at its index, in 8 bits as `ACT_FASTTRACK`'s does, so a queue that moved
 /// under it refuses instead of cancelling the next job. And `SUB_HEALED`
 /// (113) tells a player another healed standing who did it and with what
-/// (`EventMsg::Healed`).
+/// (`EventMsg::Healed`). Action 46 mends the worn item in an inventory slot at
+/// a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
+/// table's item repair percent after its header (`CraftContent::repair_pct`).
 pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
@@ -2617,6 +2619,10 @@ const ACT_DETACH: u32 = 44;
 /// Lay a wire, or take up every wire on a part (wire v150,
 /// `Command::Wire` / `Command::Unwire`): a bit says which.
 const ACT_WIRE: u32 = 45;
+/// Mend the worn item in an inventory slot at a workbench (wire v157,
+/// `Command::RepairItem`): the slot. Wear, the recipe, the bench and the
+/// price are the sim's verdict (`craft::repair_item`).
+const ACT_REPAIR_ITEM: u32 = 46;
 /// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
 const WIRE_OUT_BITS: u32 = 2;
 const WIRE_IN_BITS: u32 = 1;
@@ -2667,7 +2673,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_WIRE;
+const ACT_MAX: u32 = ACT_REPAIR_ITEM;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2826,6 +2832,8 @@ pub enum ActionMsg {
     Craft { recipe: u16, count: u16, skin: u16 },
     /// Put skin `skin` on the item in inventory `slot` (0 takes it off).
     Reskin { slot: u8, skin: u16 },
+    /// Mend the worn item in inventory `slot` at a workbench (v157).
+    RepairItem { slot: u8 },
     /// Ask the server to read the owned skin set again. Answered by the
     /// server outside the sim; see `ACT_SKINS_REFRESH`.
     SkinsRefresh,
@@ -3690,6 +3698,18 @@ pub fn encode_action_reskin(slot: u8, skin: u16, buf: &mut [u8]) -> Result<usize
     Ok(w.finish())
 }
 
+/// `ActionMsg::RepairItem` — mend the worn item in inventory `slot`.
+pub fn encode_action_repair_item(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_REPAIR_ITEM, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
 /// `ActionMsg::Vend` — trade offer `offer`, `times` over.
 pub fn encode_action_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if offer as usize >= sim_core::limits::MAX_VEND_OFFERS
@@ -4218,6 +4238,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             let skin = r.read(16)? as u16;
             ActionMsg::Reskin { slot, skin }
+        }
+        ACT_REPAIR_ITEM => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::RepairItem { slot }
         }
         ACT_SKINS_REFRESH => ActionMsg::SkinsRefresh,
         ACT_VEND => {
@@ -6571,6 +6598,30 @@ mod tests {
         assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::SkinsRefresh));
     }
 
+    /// The bench repair (v157) round-trips its slot, and a slot past the
+    /// pack is refused at both ends.
+    #[test]
+    fn the_repair_item_action_round_trips() {
+        let mut buf = [0u8; 16];
+        let last = sim_core::limits::INV_SLOTS as u8 - 1;
+        let n = encode_action_repair_item(last, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::RepairItem { slot: last })
+        );
+        assert_eq!(
+            encode_action_repair_item(last + 1, &mut buf),
+            Err(WireError::Range)
+        );
+        // The slot field holds more than the pack: a forged one is refused.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_REPAIR_ITEM, ACTION_SUB_BITS).unwrap();
+        w.write(last as u32 + 1, ACTION_SLOT_BITS).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
     /// A skinned hand survives both snapshot paths, and a present-zero
     /// skin — a second spelling of "no skin" — is refused.
     #[test]
@@ -6696,11 +6747,11 @@ mod tests {
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
         // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44,
-        // and the wire (v150) 45.
-        assert_eq!(ACT_MAX, ACT_WIRE);
+        // the wire (v150) 45, and the bench repair (v157) 46.
+        assert_eq!(ACT_MAX, ACT_REPAIR_ITEM);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            18,
+            17,
             "the spare action codes moved — say so where the count is written"
         );
     }
