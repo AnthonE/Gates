@@ -3577,6 +3577,7 @@ fn shard(name: &str, players: Option<u32>) -> Listing {
         players,
         max_players: Some(100),
         ping_ms: Some(20),
+        ping_samples: [None; servers::PING_SAMPLES],
         status_url: None,
         alt_addrs: Vec::new(),
         proto: None,
@@ -3967,6 +3968,97 @@ fn a_poll_rewrites_the_count_and_the_direct_row_takes_none() {
     assert!(!direct.apply_status(&st));
     assert_eq!(direct.population(), "?", "never a count nobody published");
     assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn ping_is_the_least_of_the_last_three_round_trips() {
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    assert_eq!(row.ping(), "?", "nothing measured is never a number");
+    assert!(row.apply_ping(40), "the first sample is news");
+    assert_eq!(row.ping(), "40");
+    assert!(row.apply_ping(30));
+    assert!(
+        !row.apply_ping(90),
+        "a spike under a lower sample is not shown"
+    );
+    assert_eq!(row.ping(), "30");
+    assert!(!row.apply_ping(35));
+    // 30 is now three samples old and drops out: 90, 35, 50 leave 35.
+    assert!(
+        row.apply_ping(50),
+        "the floor rose once its sample aged out"
+    );
+    assert_eq!(row.ping(), "35");
+
+    let mut direct = Listing::direct("127.0.0.1:4433");
+    assert!(!direct.apply_ping(5), "the Direct row times nothing");
+    assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn a_ping_is_timed_only_on_the_games_own_host() {
+    let t = servers::ping_target;
+    let at = |h: &str, p: u16| Some((h.to_string(), p));
+    // The status endpoint on the game's host, the port from the scheme or the
+    // url; the game's own port never has to match.
+    assert_eq!(
+        t(
+            "https://game.elopros.com/gates/status.json",
+            "game.elopros.com:61234"
+        ),
+        at("game.elopros.com", 443)
+    );
+    assert_eq!(
+        t("http://Game.Example.:8431/status.json", "game.example:4433"),
+        at("game.example", 8431)
+    );
+    assert_eq!(
+        t("http://10.0.0.7/status.json?x=1", "10.0.0.7:4433"),
+        at("10.0.0.7", 80)
+    );
+    // IPv6 literals by value, handed back unbracketed for the resolver.
+    assert_eq!(
+        t("http://[::1]:8431/status.json", "[0:0::1]:4433"),
+        at("::1", 8431)
+    );
+    // Another machine would time that machine: `?` stays.
+    for (url, addr) in [
+        ("https://status.example/s.json", "game.example:4433"),
+        ("https://game.example.evil/s.json", "game.example:4433"),
+        ("http://[::2]:8431/status.json", "[::1]:4433"),
+        ("http://127.0.0.1:8431/status.json", "localhost:4433"),
+        // Garbage on either side.
+        ("ftp://game.example/s.json", "game.example:4433"),
+        ("game.example/status.json", "game.example:4433"),
+        ("https:///status.json", "game.example:4433"),
+        ("http://game.example:99999/s.json", "game.example:4433"),
+        ("http://game.example:x/s.json", "game.example:4433"),
+        ("http://u@game.example/s.json", "game.example:4433"),
+        ("https://game.example/s.json", "game.example/x:4433"),
+        ("https://game.example/s.json", ""),
+    ] {
+        assert_eq!(t(url, addr), None, "{url} against {addr}");
+    }
+}
+
+#[test]
+fn among_equal_counts_the_nearer_shard_goes_first() {
+    let mut rows = vec![
+        shard("a", Some(5)),
+        shard("b", Some(5)),
+        shard("c", Some(5)),
+    ];
+    rows[0].ping_ms = None;
+    rows[1].ping_ms = Some(80);
+    rows[2].ping_ms = Some(12);
+    rows.push(shard("busy", Some(9)));
+    rows[3].ping_ms = Some(300);
+    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default(), &[]);
+    assert_eq!(
+        names(&rows, &shown),
+        ["busy", "c", "b", "a"],
+        "the count first, then the ping, unmeasured last"
+    );
 }
 
 #[test]

@@ -102,11 +102,16 @@ pub struct Menu {
     pub(super) fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<Vec<Shard>, String>>>,
     /// The in-flight round of status polls, one per row that names an
     /// endpoint. Collected as a batch rather than per row so the frame does
-    /// one `try_recv` however many shards are listed.
+    /// one `try_recv` however many shards are listed. Each answer carries
+    /// the row's measured round trip in ms, when one was timed.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) status_poll:
-        Option<tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status)>>>,
+    pub(super) status_poll: Option<StatusRound>,
 }
+
+/// A finished round of status polls: row index, its status, its ping in ms.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type StatusRound =
+    tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status, Option<u32>)>>;
 
 /// What the player has narrowed the list to, and which nav entry is open.
 ///

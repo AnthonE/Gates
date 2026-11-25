@@ -383,11 +383,16 @@ pub fn begin_status_poll(
     }
     *since = 0.0;
 
-    let targets: Vec<(usize, String)> = menu
+    // Each row's status url, and where to time its round trip when that url
+    // is on the game's own host (`servers::ping_target`).
+    let targets: Vec<_> = menu
         .rows
         .iter()
         .enumerate()
-        .filter_map(|(i, r)| r.status_url.as_ref().map(|u| (i, u.to_string())))
+        .filter_map(|(i, r)| {
+            let url = r.status_url.as_ref()?;
+            Some((i, url.to_string(), servers::ping_target(url, &r.addr)))
+        })
         .collect();
     if targets.is_empty() {
         return;
@@ -395,13 +400,26 @@ pub fn begin_status_poll(
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
-        let got: Vec<(usize, shardlist::Status)> = targets
+        // One agent for the round: its TLS roots are built once, and rows
+        // behind one proxy share a kept-alive connection.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .tls_config(crate::tls::ureq())
+            .timeout_global(Some(std::time::Duration::from_secs(STATUS_TIMEOUT_S)))
+            .build()
+            .into();
+        let got: Vec<(usize, shardlist::Status, Option<u32>)> = targets
             .iter()
             // A shard that does not answer contributes NOTHING to this vec.
             // That is the whole honesty rule in one `filter_map`: the row keeps
             // the count it had, rather than being zeroed by a timeout and
-            // reading as "everyone left".
-            .filter_map(|(i, url)| Some((*i, status_blocking(url).ok()?)))
+            // reading as "everyone left". Only an answering shard is timed.
+            .filter_map(|(i, url, ping)| {
+                let st = status_blocking(&agent, url).ok()?;
+                let ms = ping
+                    .as_ref()
+                    .and_then(|(host, port)| ping_blocking(host, *port));
+                Some((*i, st, ms))
+            })
             .collect();
         let _ = tx.send(got);
     });
@@ -411,12 +429,7 @@ pub fn begin_status_poll(
 /// One status GET, capped and timed out. The sibling of `fetch_blocking`, and
 /// bounded for the same reason: this is a request to a host named in a
 /// document fetched from another host.
-fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(crate::tls::ureq())
-        .timeout_global(Some(std::time::Duration::from_secs(STATUS_TIMEOUT_S)))
-        .build()
-        .into();
+fn status_blocking(agent: &ureq::Agent, url: &str) -> Result<shardlist::Status, String> {
     let mut res = agent.get(url).call().map_err(|e| format!("status: {e}"))?;
     let bytes = res
         .body_mut()
@@ -425,6 +438,28 @@ fn status_blocking(url: &str) -> Result<shardlist::Status, String> {
         .read_to_vec()
         .map_err(|e| format!("status: {e}"))?;
     shardlist::parse_status(&bytes)
+}
+
+/// One round trip to `host:port`, in milliseconds: how long a TCP connect
+/// takes to be answered. The handshake is one round trip, answered by the
+/// far kernel, so nothing the endpoint does (TLS, a busy status thread, a
+/// shard closing every connection) is in it, where a timed GET would count a
+/// fresh handshake on top. Resolved before the clock starts; the first two
+/// addresses are tried, so a dead IPv6 route falls through to IPv4. `None`
+/// when nothing answers: the row keeps `?`. Desktop only, as this module is
+/// (`render/mod.rs`); the guard is for `tests/platform_calls.rs`'s scan.
+#[cfg(not(target_arch = "wasm32"))]
+fn ping_blocking(host: &str, port: u16) -> Option<u32> {
+    use std::net::ToSocketAddrs;
+    let timeout = std::time::Duration::from_secs(STATUS_TIMEOUT_S);
+    for at in (host, port).to_socket_addrs().ok()?.take(2) {
+        let t = std::time::Instant::now();
+        if std::net::TcpStream::connect_timeout(&at, timeout).is_ok() {
+            let us = t.elapsed().as_micros();
+            return u32::try_from((us + 500) / 1_000).ok();
+        }
+    }
+    None
 }
 
 /// Collect a finished round and redraw only if a number moved.
@@ -450,9 +485,12 @@ pub fn poll_status(mut menu: ResMut<Menu>) {
     };
     menu.status_poll = None;
     let mut changed = false;
-    for (i, st) in got {
+    for (i, st, ms) in got {
         if let Some(row) = menu.rows.get_mut(i) {
             changed |= row.apply_status(&st);
+            if let Some(ms) = ms {
+                changed |= row.apply_ping(ms);
+            }
         }
     }
     if changed {
@@ -1153,13 +1191,15 @@ fn server_row(
                 at.push_str(m);
             }
             c.spawn(ui::label(at, 12.0, ui::DIM));
-            // Who is on it and when it wipes, the page's `.pop`.
+            // Who is on it, when it wipes and how far away it is, the page's
+            // `.pop`. The ping only once measured (`Listing::apply_ping`).
             let who = listing.crowd().or_else(|| {
                 listing
                     .players
                     .map(|_| format!("{} players", listing.population()))
             });
-            let line = [who, listing.wipe_in(now_unix)]
+            let ping = listing.ping_ms.map(|ms| format!("{ms} ms"));
+            let line = [who, listing.wipe_in(now_unix), ping]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
@@ -2370,5 +2410,16 @@ mod tests {
                 "{n:?} is both a pane and a verb, or neither"
             );
         }
+    }
+
+    #[test]
+    fn a_ping_times_a_listening_port_and_not_a_closed_one() {
+        let open = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = open.local_addr().unwrap().port();
+        let ms = super::ping_blocking("127.0.0.1", port).expect("a listener answers");
+        assert!(ms < 1_000, "loopback in {ms} ms");
+        drop(open);
+        // Refused, not timed out: a closed port is `?`, never a number.
+        assert_eq!(super::ping_blocking("127.0.0.1", port), None);
     }
 }
