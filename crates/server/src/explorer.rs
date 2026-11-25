@@ -50,9 +50,9 @@ use crate::agent::wedge::{self, Wedge};
 use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
-    Arms, BodyState, Choice, Distance, Goal, Heard, HeardLine, History, HomeSense, HomeState, Mind,
-    Name, Outcome, Place, Range, Report, Say, Sighting, SourceKind, Summary, Threat, Trigger, Why,
-    SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
+    AnswerFate, Arms, BodyState, By, Choice, Distance, Fate, Goal, Heard, HeardLine, History,
+    HomeSense, HomeState, Mind, Name, Outcome, Place, Range, Reason, Report, Say, Sighting,
+    SourceKind, Summary, Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
 };
 use crate::pace::Pace;
 use client_core::core::{
@@ -1009,6 +1009,8 @@ enum CraftStep {
 #[derive(Clone, Copy, Debug)]
 struct Active {
     goal: Goal,
+    /// Who chose it: the mind, the autopilot or the body itself.
+    by: By,
     started: u32,
     /// A gather leg began here: the goal's start, or, on a supply run, the
     /// last node's fall.
@@ -1255,6 +1257,9 @@ pub struct Survivor {
     /// An answer that arrived mid-fight, and when; judged once the fight
     /// is over.
     deferred: Option<(Choice, Instant)>,
+    /// The last answer taken from the mind and what became of it, for its
+    /// next look (`Summary::answer`).
+    answer: Option<AnswerFate>,
     /// An idle look round: since when, from which heading, which offset.
     glance: Option<(u32, u16, u8)>,
     /// The pack's heaviest kinds at the last once-a-second look, and at the
@@ -1502,6 +1507,7 @@ impl Survivor {
             deadline: None,
             welcomed: None,
             deferred: None,
+            answer: None,
             glance: None,
             carried: [(0, 0); CARRIED_ROWS],
             carried_prev: [(0, 0); CARRIED_ROWS],
@@ -1752,7 +1758,10 @@ impl Survivor {
             outcome: Outcome::Running,
             gained: a.gained,
             secs: tick.wrapping_sub(a.started) / TICK_HZ,
+            by: a.by,
         });
+        s.recent = self.history;
+        s.answer = self.answer;
         s.seen = self.perceived;
         self.look_around(core, view, player, &mut s.seen);
         s
@@ -1882,8 +1891,29 @@ impl Survivor {
         self.target = None;
         self.recovery = None;
         self.combat.forget();
-        self.deferred = None;
+        self.drop_held(Fate::DroppedDown);
         self.builder.halt();
+    }
+
+    /// What became of an answer, for the mind's next look. A turn the
+    /// autopilot played is told as the autopilot's whatever became of it:
+    /// that the mind's own answer never came is what it needs to know.
+    fn answered(&mut self, choice: &Choice, fate: Fate) {
+        self.answer = Some(match crate::autopilot::why(choice.reason.as_str()) {
+            Some(why) => AnswerFate {
+                goal: choice.goal,
+                fate: Fate::Autopilot,
+                why: Reason::from_text(why),
+            },
+            None => AnswerFate::new(choice.goal, fate),
+        });
+    }
+
+    /// The answer held through a fight is let go, and the mind told why.
+    fn drop_held(&mut self, fate: Fate) {
+        if let Some((choice, _)) = self.deferred.take() {
+            self.answered(&choice, fate);
+        }
     }
 
     /// Would switching goals now lose nothing: no op of a long skill
@@ -1928,7 +1958,7 @@ impl Survivor {
                 self.stats.phase = Phase::LoggingOff;
                 return Intent::IDLE;
             }
-            self.begin(Goal::GoHome, tick);
+            self.begin(Goal::GoHome, By::Body, tick);
             return self.run_goal(core, body, tick);
         }
         // The walk home came to nothing a moment ago: the session ends
@@ -1950,7 +1980,7 @@ impl Survivor {
                 return intent;
             }
         }
-        self.begin(Goal::GoHome, tick);
+        self.begin(Goal::GoHome, By::Body, tick);
         self.run_goal(core, body, tick)
     }
 
@@ -2144,7 +2174,7 @@ impl Survivor {
         let logging_off = self.log_off_due(core, tick);
         if logging_off {
             // Home is where this session ends: nothing held is still owed.
-            self.deferred = None;
+            self.drop_held(Fate::DroppedLoggingOff);
         }
         if let Some(choice) = self.mind.poll(now) {
             // Speech is not a goal: a fight that holds the goal does not
@@ -2162,9 +2192,12 @@ impl Survivor {
             let busy = self.combat.engaged() || !self.at_checkpoint();
             if logging_off {
                 self.stats.deferred_dropped += 1;
+                self.answered(&choice, Fate::DroppedLoggingOff);
             } else if busy && !urgent(choice.goal, self.memory.alarm) {
                 self.deferred = Some((choice, now));
                 self.stats.deferred += 1;
+                let fight = self.combat.engaged();
+                self.answered(&choice, Fate::Deferred { fight });
             } else {
                 self.deferred = None;
                 let running = self.combat.engaged();
@@ -2174,6 +2207,10 @@ impl Survivor {
                     self.start_flee(&body, tick);
                 }
             }
+        }
+        // An answer the mind refused as late never ran: the mind is told.
+        if let Some(goal) = self.mind.take_late() {
+            self.answer = Some(AnswerFate::new(goal, Fate::Late));
         }
         self.perceive(core, &body, tick);
         let x = body.qx as f32 * POS_XZ_Q;
@@ -2414,11 +2451,18 @@ impl Survivor {
         let held = self.deferred.take().and_then(|(choice, since)| {
             let fresh = now.saturating_duration_since(since) < self.mind.config().timeout;
             let short = fought.is_none_or(|f| f < RESUME_TICKS);
-            let keep = fresh && short && self.summarize(core, view, player).allows(choice.goal);
-            if !keep {
+            let dropped = if !(fresh && short) {
+                Some(Fate::DroppedStale)
+            } else if !self.summarize(core, view, player).allows(choice.goal) {
+                Some(Fate::DroppedNotAllowed)
+            } else {
+                None
+            };
+            if let Some(fate) = dropped {
                 self.stats.deferred_dropped += 1;
+                self.answered(&choice, fate);
             }
-            keep.then_some(choice)
+            dropped.is_none().then_some(choice)
         });
         if let (Some((goal, _)), Some(fought)) = (paused, fought) {
             if let Some(a) = self.goal.as_mut() {
@@ -2568,15 +2612,22 @@ impl Survivor {
     fn adopt(&mut self, choice: Choice, tick: u32) {
         if let Some(active) = self.goal {
             if active.goal == choice.goal {
+                self.answered(&choice, Fate::AlreadyRunning);
                 return;
             }
             self.end_goal(tick, Outcome::Interrupted(Why::Replaced));
         }
-        self.begin(choice.goal, tick);
+        self.answered(&choice, Fate::Played);
+        let by = if crate::autopilot::is_autopilot(choice.reason.as_str()) {
+            By::Autopilot
+        } else {
+            By::Mind
+        };
+        self.begin(choice.goal, by, tick);
     }
 
     /// Start a goal from scratch.
-    fn begin(&mut self, goal: Goal, tick: u32) {
+    fn begin(&mut self, goal: Goal, by: By, tick: u32) {
         self.wedge.reset();
         if self.medic {
             // The reflex's bandage still in flight answers to no goal: its
@@ -2588,6 +2639,7 @@ impl Survivor {
         }
         self.goal = Some(Active {
             goal,
+            by,
             started: tick,
             leg: tick,
             delivering: false,
@@ -2716,6 +2768,7 @@ impl Survivor {
             outcome: said,
             gained: active.gained,
             secs: tick.wrapping_sub(active.started) / TICK_HZ,
+            by: active.by,
         };
         self.memory.last = Some(report);
         self.history.push(report);
@@ -8635,7 +8688,7 @@ impl BotDriver for Survivor {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
         }
-        self.deferred = None;
+        self.drop_held(Fate::DroppedDown);
         self.glance = None;
         // Off the frame path: parsing the content allocates. A body that
         // cannot read it plays on without the wiki.
@@ -11559,6 +11612,17 @@ mod tests {
         assert!(bot.deferred.is_some_and(|(c, _)| c.goal == Goal::Drink));
         assert_eq!(bot.goal(), Some(Goal::GatherWood), "held, not adopted");
         assert_eq!(bot.stats.phase, Phase::Fleeing);
+        // The mind is told, on its next look, that its answer waits.
+        let fate = |bot: &Survivor, view: &ClientView| {
+            bot.summary(view, 1)
+                .unwrap()
+                .answer
+                .map(|a| (a.goal, a.fate))
+        };
+        assert_eq!(
+            fate(&bot, &view),
+            Some((Goal::Drink, Fate::Deferred { fight: true }))
+        );
         // The fight ends with the water meter full: drink is not on offer,
         // so the answer is dropped and the paused goal carries on.
         let (start, _) = bot.combat.retreat().unwrap();
@@ -11568,6 +11632,10 @@ mod tests {
         assert_eq!(bot.stats.deferred_dropped, 1);
         assert_eq!(bot.goal(), Some(Goal::GatherWood));
         assert_eq!(bot.stats.goals_resumed, 1);
+        assert_eq!(
+            fate(&bot, &view),
+            Some((Goal::Drink, Fate::DroppedNotAllowed))
+        );
 
         // Fresh and on offer after a short fight: adopted over the goal.
         let tick = start + FLEE_TICKS + 1;
@@ -11583,6 +11651,7 @@ mod tests {
             bot.memory.last.map(|r| (r.goal, r.outcome)),
             Some((Goal::GatherWood, Outcome::Interrupted(Why::Replaced)))
         );
+        assert_eq!(fate(&bot, &view), Some((Goal::Explore, Fate::Played)));
 
         // Older than the mind's own timeout by the end: dropped.
         view.newest_applied = Some(start + FLEE_TICKS + 1);
@@ -11595,6 +11664,7 @@ mod tests {
         bot.frame_at(&view, 1, 7, late);
         assert_eq!(bot.goal(), Some(Goal::Explore));
         assert_eq!(bot.stats.deferred_dropped, 2);
+        assert_eq!(fate(&bot, &view), Some((Goal::Wait, Fate::DroppedStale)));
 
         // A body that goes down takes no answer from its old life along.
         view.newest_applied = Some(start + FLEE_TICKS + 1);
@@ -11605,6 +11675,65 @@ mod tests {
         bot.frame_at(&view, 1, 9, late);
         assert!(bot.deferred.is_none());
         assert_eq!(bot.stats.phase, Phase::Wounded);
+        assert_eq!(fate(&bot, &view), Some((Goal::Wait, Fate::DroppedDown)));
+    }
+
+    /// The mind reads what became of its answer and who chose each goal
+    /// that ran: a turn the autopilot played says so and why, and an
+    /// answer refused as late never ran (#548: ten turns of `go:THE GATE`
+    /// while the body explored, its mind none the wiser).
+    #[test]
+    fn the_mind_is_told_what_became_of_its_answer() {
+        let (mut bot, mut view, _) = fixture();
+        let answer = |bot: &Survivor, view: &ClientView| bot.summary(view, 1).unwrap().answer;
+        let fate = |bot: &Survivor, view: &ClientView| answer(bot, view).map(|a| (a.goal, a.fate));
+        let ran = |bot: &Survivor, view: &ClientView| {
+            let s = bot.summary(view, 1).unwrap();
+            s.recent.iter().map(|r| (r.goal, r.by)).collect::<Vec<_>>()
+        };
+        assert_eq!(fate(&bot, &view), None);
+        goal(&mut bot, Goal::GatherWood, 1);
+        assert_eq!(fate(&bot, &view), Some((Goal::GatherWood, Fate::Played)));
+        goal(&mut bot, Goal::GatherWood, 2);
+        assert_eq!(
+            fate(&bot, &view),
+            Some((Goal::GatherWood, Fate::AlreadyRunning))
+        );
+        let flown = Choice {
+            goal: Goal::Explore,
+            confidence: 1.0,
+            reason: Reason::from_text(
+                "autopilot (external agent did not answer in time): scripted: nothing useful in view",
+            ),
+            input_tokens: 0,
+            output_tokens: 0,
+            say: Say::Quiet,
+            code: None,
+        };
+        bot.adopt(flown, 3);
+        let a = answer(&bot, &view).unwrap();
+        assert_eq!((a.goal, a.fate), (Goal::Explore, Fate::Autopilot));
+        assert_eq!(a.why.as_str(), "external agent did not answer in time");
+        assert_eq!(ran(&bot, &view), [(Goal::GatherWood, By::Mind)]);
+        goal(&mut bot, Goal::Wait, 4);
+        assert_eq!(
+            ran(&bot, &view),
+            [(Goal::GatherWood, By::Mind), (Goal::Explore, By::Autopilot)]
+        );
+        let v = bot.summary(&view, 1).unwrap().to_json();
+        assert_eq!(v["recent_goals"][1]["by"], "autopilot");
+        assert_eq!(v["your_last_answer"]["fate"], "played");
+
+        // Asked, and answered past the deadline: refused, and said so.
+        let now = Instant::now();
+        let summary = bot.summary(&view, 1).unwrap();
+        assert!(bot.mind.ask(now, &summary));
+        let late = now + bot.mind.config().timeout;
+        view.newest_applied = Some(5);
+        bot.frame_at(&view, 1, 5, late);
+        assert_eq!(bot.mind.stats.late, 1);
+        assert_eq!(fate(&bot, &view).map(|(_, f)| f), Some(Fate::Late));
+        assert_eq!(bot.goal(), Some(Goal::Wait), "the late answer never ran");
     }
 
     /// An idle body looks about: while it waits, the view leaves where it

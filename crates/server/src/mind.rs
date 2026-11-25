@@ -862,13 +862,109 @@ impl Outcome {
 }
 
 /// One goal as it ran. `gained` is units received (gathered, crafted,
-/// eaten or drunk); `secs` is play time spent on it.
+/// eaten or drunk); `secs` is play time spent on it; `by` is who chose it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Report {
     pub goal: Goal,
     pub outcome: Outcome,
     pub gained: u32,
     pub secs: u32,
+    pub by: By,
+}
+
+/// Who chose a goal: the mind, the autopilot on a turn it played for the
+/// mind (`autopilot::is_autopilot`), or the body itself (the walk home at
+/// a session's end).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum By {
+    #[default]
+    Mind,
+    Autopilot,
+    Body,
+}
+
+impl By {
+    /// As the mind reads it.
+    pub fn word(self) -> &'static str {
+        match self {
+            By::Mind => "you",
+            By::Autopilot => "autopilot",
+            By::Body => "body",
+        }
+    }
+}
+
+/// What became of the last answer the body took from its decision source
+/// (`Summary::answer`): a mind that chose a goal that never ran is told
+/// so, and why, instead of choosing it again and again (#548, #599).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fate {
+    /// It began.
+    Played,
+    /// It was the goal already running, which carries on.
+    AlreadyRunning,
+    /// Held while a fight (or a step that cannot be left half done) has
+    /// the body; it runs after, if still fresh and on offer.
+    Deferred { fight: bool },
+    /// Held, then dropped: too old by then, or the fight too long.
+    DroppedStale,
+    /// Held, then dropped: no longer on offer.
+    DroppedNotAllowed,
+    /// Dropped: the session is ending and the body is going home.
+    DroppedLoggingOff,
+    /// Held, then dropped: the body went down, died or lost its link.
+    DroppedDown,
+    /// It came after its deadline, or to a request already given up.
+    Late,
+    /// The autopilot chose it: the mind's own answer did not come, or
+    /// the mind was not asked ([`AnswerFate::why`] says which).
+    Autopilot,
+}
+
+impl Fate {
+    /// As the mind reads it: short, it is sent every turn.
+    pub fn words(self) -> &'static str {
+        match self {
+            Fate::Played => "played",
+            Fate::AlreadyRunning => "played: it was already running",
+            Fate::Deferred { fight: true } => "deferred: a fight holds it",
+            Fate::Deferred { fight: false } => "deferred: the step under way ends first",
+            Fate::DroppedStale => "dropped: it went stale while held",
+            Fate::DroppedNotAllowed => "dropped: no longer on offer when it could run",
+            Fate::DroppedLoggingOff => "dropped: logging off",
+            Fate::DroppedDown => "dropped: you went down or lost the link first",
+            Fate::Late => "too late: it came after the deadline, never played",
+            Fate::Autopilot => "not yours: the autopilot played the turn",
+        }
+    }
+}
+
+/// The last answer the body took and what became of it.
+#[derive(Clone, Copy, Debug)]
+pub struct AnswerFate {
+    pub goal: Goal,
+    pub fate: Fate,
+    /// Why the autopilot played the turn (the source's error, or its gate:
+    /// `autopilot::why`); empty otherwise.
+    pub why: Reason,
+}
+
+impl AnswerFate {
+    pub fn new(goal: Goal, fate: Fate) -> Self {
+        Self {
+            goal,
+            fate,
+            why: Reason::EMPTY,
+        }
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "goal": self.goal.label().as_str(),
+            "fate": self.fate.words(),
+            "why": (!self.why.as_str().is_empty()).then(|| self.why.as_str()),
+        })
+    }
 }
 
 /// What prompted a request.
@@ -1918,6 +2014,11 @@ pub struct Summary {
     /// The goal still running when this was asked (a heartbeat), with what
     /// it has gained so far — so a source can let it finish.
     pub current: Option<Report>,
+    /// The goals that ran before, oldest first (`last` is the newest), and
+    /// who chose each.
+    pub recent: History,
+    /// The last answer the body took, and what became of it.
+    pub answer: Option<AnswerFate>,
     pub hits: u16,
     /// Chat lines since the last request, its own echoed back included.
     pub heard: Heard,
@@ -2088,6 +2189,8 @@ impl Summary {
         last_fight: None,
         last: None,
         current: None,
+        recent: History::EMPTY,
+        answer: None,
         hits: 0,
         heard: Heard::EMPTY,
         deaths: 0,
@@ -2515,6 +2618,15 @@ impl Summary {
                 "gained": r.gained,
                 "seconds": r.secs,
             })),
+            "recent_goals": self.recent.iter().map(|r| json!({
+                "goal": r.goal.label().as_str(),
+                "outcome": r.outcome.word(),
+                "why": r.outcome.why().map(Why::text),
+                "gained": r.gained,
+                "seconds": r.secs,
+                "by": r.by.word(),
+            })).collect::<Vec<_>>(),
+            "your_last_answer": self.answer.as_ref().map(AnswerFate::json),
             "hits_taken_since_last_decision": self.hits,
             "deaths": self.deaths,
             "respawns": self.respawns,
@@ -2996,6 +3108,9 @@ pub struct Mind {
     pub stats: MindStats,
     /// The last accepted answer, for display.
     pub last: Option<Choice>,
+    /// The goal of the last answer refused as late, until the body takes
+    /// it ([`Mind::take_late`]) to tell the mind.
+    last_late: Option<Goal>,
 }
 
 impl Mind {
@@ -3132,6 +3247,7 @@ impl Mind {
             free_when: None,
             stats: MindStats::default(),
             last: None,
+            last_late: None,
         }
     }
 
@@ -3189,10 +3305,12 @@ impl Mind {
         };
         let Some((pending, sent)) = self.pending else {
             self.stats.late += 1;
+            self.last_late = answer.map(|c| c.goal).or(self.last_late);
             return None;
         };
         if pending != id {
             self.stats.late += 1;
+            self.last_late = answer.map(|c| c.goal).or(self.last_late);
             return None;
         }
         self.pending = None;
@@ -3207,8 +3325,9 @@ impl Mind {
                 Some(choice)
             }
             other => {
-                if other.is_some() {
+                if let Some(late) = other {
                     self.stats.late += 1;
+                    self.last_late = Some(late.goal);
                 }
                 self.stats.failures += 1;
                 self.failures = (self.failures + 1).min(6);
@@ -3216,6 +3335,12 @@ impl Mind {
                 None
             }
         }
+    }
+
+    /// The goal of an answer [`Mind::poll`] refused as late since this was
+    /// last asked: never played, and the mind is told so.
+    pub fn take_late(&mut self) -> Option<Goal> {
+        self.last_late.take()
     }
 
     /// Send one request if the floor, the backoff, the spend guard and the
@@ -4423,15 +4548,17 @@ pub struct History {
 
 impl Default for History {
     fn default() -> Self {
-        Self {
-            reports: [None; GOAL_HISTORY],
-            head: 0,
-            len: 0,
-        }
+        Self::EMPTY
     }
 }
 
 impl History {
+    pub const EMPTY: Self = Self {
+        reports: [None; GOAL_HISTORY],
+        head: 0,
+        len: 0,
+    };
+
     pub fn push(&mut self, report: Report) {
         if self.len == GOAL_HISTORY {
             self.head = (self.head + 1) % GOAL_HISTORY;
@@ -4823,10 +4950,69 @@ mod tests {
         assert!(mind.ask(t0, &s));
         assert!(mind.poll(t0 + cfg.timeout).is_none(), "expired answer");
         assert_eq!((mind.stats.failures, mind.stats.late), (1, 1));
+        // The goal it carried is kept for the body to tell the mind, once.
+        assert_eq!(mind.take_late(), Some(Goal::Wait));
+        assert_eq!(mind.take_late(), None);
         let backoff = t0 + cfg.timeout;
         assert_eq!(mind.mode(backoff), Mode::BackingOff);
         assert!(!mind.ask(backoff + cfg.interval, &s));
         assert!(mind.ask(backoff + cfg.interval * 2, &s));
+        // A fresh answer is no late one.
+        assert!(mind.poll(backoff + cfg.interval * 2).is_some());
+        assert_eq!(mind.take_late(), None);
+    }
+
+    /// The mind reads what ran, why it ended and who chose it, and what
+    /// became of its last answer: a choice that never ran is said so, not
+    /// left looking like the one that did (#548, #599).
+    #[test]
+    fn the_mind_reads_its_recent_goals_and_its_answer_s_fate() {
+        let mut s = Summary::EMPTY;
+        assert_eq!(s.to_json()["recent_goals"], json!([]));
+        assert!(s.to_json()["your_last_answer"].is_null());
+        let wood = Name::new(b"Wood").unwrap();
+        let rows = [
+            (Goal::Explore, Outcome::Done, By::Autopilot),
+            (Goal::Sell(wood), Outcome::Failed(Why::NotFound), By::Mind),
+            (Goal::GoHome, Outcome::Interrupted(Why::LogOff), By::Body),
+        ];
+        for (goal, outcome, by) in rows {
+            s.recent.push(Report {
+                goal,
+                outcome,
+                gained: 3,
+                secs: 20,
+                by,
+            });
+        }
+        s.answer = Some(AnswerFate::new(Goal::Explore, Fate::DroppedStale));
+        let v = s.to_json();
+        let recent = v["recent_goals"].as_array().unwrap();
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0]["goal"], "explore", "oldest first");
+        assert_eq!(recent[0]["by"], "autopilot");
+        assert!(recent[0]["why"].is_null());
+        assert_eq!(recent[1]["outcome"], "failed");
+        assert_eq!(recent[1]["why"], Why::NotFound.text());
+        assert_eq!(recent[1]["by"], "you");
+        assert_eq!(recent[2]["by"], "body");
+        assert_eq!(
+            v["your_last_answer"],
+            json!({"goal": "explore", "fate": Fate::DroppedStale.words(), "why": null})
+        );
+        // Eight is all it keeps, and the oldest goes first.
+        for _ in 0..GOAL_HISTORY {
+            s.recent.push(Report {
+                goal: Goal::Wait,
+                outcome: Outcome::Done,
+                gained: 0,
+                secs: 1,
+                by: By::Mind,
+            });
+        }
+        let recent = s.to_json()["recent_goals"].as_array().unwrap().clone();
+        assert_eq!(recent.len(), GOAL_HISTORY);
+        assert!(recent.iter().all(|r| r["goal"] == "wait"));
     }
 
     /// A character's traits move the playbook's numbers, and a body of
@@ -4883,6 +5069,7 @@ mod tests {
             outcome: Outcome::Running,
             gained: 150,
             secs: 30,
+            by: By::Mind,
         });
         s.trigger = Trigger::Heartbeat;
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
@@ -5202,6 +5389,7 @@ mod tests {
             outcome: Outcome::Failed(Why::NotFound),
             gained: 0,
             secs: 20,
+            by: By::Mind,
         });
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
         s.last = None;
@@ -5468,6 +5656,7 @@ mod tests {
             outcome: Outcome::Running,
             gained: 0,
             secs: 3,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::Recover);
     }
@@ -5592,6 +5781,7 @@ mod tests {
             outcome: Outcome::Done,
             gained: 300,
             secs: 40,
+            by: By::Mind,
         });
         s.offer(Goal::GoHome);
         assert_eq!(scripted.pick(&s).0, Goal::GoHome, "then home with the take");
@@ -5665,6 +5855,7 @@ mod tests {
             outcome: Outcome::Done,
             gained: 3,
             secs: 90,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.loot.add(25.0, 0);
@@ -5741,6 +5932,7 @@ mod tests {
             outcome: Outcome::Failed(Why::NotFound),
             gained: 0,
             secs: 20,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::Explore);
         // A carcass pays cloth too.

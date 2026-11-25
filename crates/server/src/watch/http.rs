@@ -396,12 +396,14 @@ mod tests {
             outcome: Outcome::Failed(Why::NotFound),
             gained: 0,
             secs: 20,
+            by: crate::mind::By::Mind,
         });
         history.push(Report {
             goal: Goal::Craft(hatchet),
             outcome: Outcome::Done,
             gained: 1,
             secs: 15,
+            by: crate::mind::By::Mind,
         });
         let mut items = [(Name::EMPTY, 0); super::super::PAGE_ITEMS];
         items[0] = (Name::new(b"Wood").unwrap(), 42);

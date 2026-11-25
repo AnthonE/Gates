@@ -101,6 +101,14 @@ pub fn is_autopilot(reason: &str) -> bool {
     reason.starts_with(SAYS)
 }
 
+/// Why the autopilot played a turn, out of its reason: the source's error
+/// ("external agent did not answer in time") or its gate's words ("my
+/// friend is away"), without the scripted policy's own reason after it.
+pub fn why(reason: &str) -> Option<&str> {
+    let rest = reason.strip_prefix(SAYS)?;
+    Some(rest.split_once("): ").map_or(rest, |(why, _)| why))
+}
+
 impl<P: DecisionSource> DecisionSource for Autopilot<P> {
     fn kind(&self) -> SourceKind {
         self.primary.kind()
@@ -215,6 +223,13 @@ mod tests {
         );
         assert_eq!(a.primary.0, 1, "the source is still asked every time");
         assert_eq!(a.kind(), SourceKind::External);
+        // What the mind is told of the turn it missed: the error, not
+        // the scripted policy's reason after it.
+        assert_eq!(
+            why(c.reason.as_str()),
+            Some("external agent did not answer in time")
+        );
+        assert_eq!(why("mine"), None);
     }
 
     #[test]
@@ -227,6 +242,7 @@ mod tests {
         let mut gated = Autopilot::new(Answers(0), Some(FRIEND_AWAY));
         let c = gated.decide(&s).unwrap();
         assert!(c.reason.as_str().contains("my friend is away"));
+        assert_eq!(why(c.reason.as_str()), Some("my friend is away"));
         assert_eq!(gated.primary.0, 0, "no model call while the friend is away");
         assert!(friend_away(&s));
         s.friend.online = true;

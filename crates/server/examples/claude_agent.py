@@ -378,6 +378,23 @@ def save_notes(notes):
 DIED_SINCE = "you died: the counts in your notes are void; observation.pack is what you carry"
 
 
+def mark_recent(recent, observation):
+    """What became of the last goal sent, in the body's own words
+    (`observation.your_last_answer`), so a choice that never ran is not
+    remembered as one that did. A deferred one is read again next turn."""
+    if not recent or not str(recent[-1].get("fate", "deferred")).startswith("deferred"):
+        return
+    last = observation.get("your_last_answer")
+    if not isinstance(last, dict) or not last.get("fate"):
+        return
+    fate = str(last["fate"])
+    if fate.startswith("not yours"):
+        fate = f"not played: the autopilot played {last.get('goal')}"
+        if last.get("why"):
+            fate += f" ({last['why']})"
+    recent[-1]["fate"] = fate
+
+
 def turn_content(request, recent, frame, notes, chat_log, strategy=None, died=False):
     turn = {
         "observation": request["observation"],
@@ -1023,6 +1040,7 @@ def main():
         if spend.out():
             print(json.dumps({"id": request["id"], "error": "out of credit"}), flush=True)
             continue
+        mark_recent(recent, request.get("observation") or {})
         why = triggers.check(request, time.time())
         if strategist.consider(request, digest, why):
             print("strategist thinks: " + "; ".join(why or ["timer"]), file=sys.stderr)

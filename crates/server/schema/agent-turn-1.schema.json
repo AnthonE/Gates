@@ -233,7 +233,8 @@
     "observation": {
       "type": "object", "additionalProperties": false,
       "required": ["body", "health", "food", "water", "condition", "pack", "craftable_now", "in_view", "water_nearby",
-                   "threats", "last_fight", "last_goal", "current_goal", "hits_taken_since_last_decision",
+                   "threats", "last_fight", "last_goal", "current_goal", "recent_goals", "your_last_answer",
+                   "hits_taken_since_last_decision",
                    "deaths", "respawns", "sleeping_bags_down", "my_death_backpack", "home",
                    "a_sleeping_bag_is_ready", "night", "base_next", "stations", "loot_known", "loot_place",
                    "raid_targets", "raid_owner", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because",
@@ -286,6 +287,22 @@
         "current_goal": {
           "type": ["object", "null"], "additionalProperties": false,
           "properties": {"goal": {"type": "string"}, "gained": {"type": "number"}, "seconds": {"type": "number"}}
+        },
+        "recent_goals": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["goal", "outcome", "why", "gained", "seconds", "by"],
+            "properties": {
+              "goal": {"type": "string"}, "outcome": {"type": "string"}, "why": {"type": ["string", "null"]},
+              "gained": {"type": "number"}, "seconds": {"type": "number"}, "by": {"enum": ["you", "autopilot", "body"]}
+            }
+          }
+        },
+        "your_last_answer": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "required": ["goal", "fate", "why"],
+          "properties": {"goal": {"type": "string"}, "fate": {"type": "string"}, "why": {"type": ["string", "null"]}}
         },
         "hits_taken_since_last_decision": {"type": "integer"},
         "deaths": {"type": "integer"},

@@ -6,7 +6,7 @@ Call `look` to get the next decision (what you see, your pack, the goals you may
 
 Goals run by themselves between decisions: you choose what to do, the body does it (walking, aiming, gathering). `go:THE GATE`, or `go:` and the name of a work or lock in places, walks there and stops. To go anywhere else, the `walk:<bearing>:<metres>` option takes a bearing from where you face (ahead, ahead-right, right, behind-right, behind, behind-left, left, ahead-left: the words your observation uses) and 10-600 metres, e.g. `walk:ahead-left:300`, and walks there the best way it finds.
 
-If you take more than about the autopilot deadline to answer, a scripted autopilot plays that turn; just `look` again. Call nothing for a minute past that and the autopilot plays every turn at once, so your body keeps busy between your sessions; `look` takes it back. Leave it a `plan` with `act` (up to 8 steps, each a goal and an optional `until` item count: "gather wood until 1515, then build") and the turns you miss follow your strategy instead of its own.
+If you take more than about the autopilot deadline to answer, a scripted autopilot plays that turn; just `look` again: `your_last_answer` says whether your last answer was played, held, dropped, too late or the autopilot's turn instead, and `recent_goals` what ran and who chose it. Call nothing for a minute past that and the autopilot plays every turn at once, so your body keeps busy between your sessions; `look` takes it back. Leave it a `plan` with `act` (up to 8 steps, each a goal and an optional `until` item count: "gather wood until 1515, then build") and the turns you miss follow your strategy instead of its own.
 
 # A mind, not a drone
 

@@ -165,7 +165,10 @@ finishes and the body holds still. Turns the autopilot plays for free
 
 A failed or late answer is a failure: the body backs off and asks again. The
 mind's own rule is that no decision is ever substituted for one it gave. The
-autopilot is the one exception, and it says so ("The autopilot").
+autopilot is the one exception, and it says so ("The autopilot"). An answer
+that lands mid-fight, or mid-step of a long skill, waits for it to end and is
+then dropped if it went stale or is no longer on offer. Either way the next
+request says so (`your_last_answer`).
 
 ### External minds: JSON lines
 
@@ -196,6 +199,14 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   owner is about (`raid_owner`: online, asleep, quiet or unknown, from its
   own watch of the base), how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
+  `recent_goals` is the last 8 goals that ran, oldest first: how each
+  went and why, and `by` who chose it (`you`, `autopilot`, or `body` for
+  the walk home at a session's end). `your_last_answer` is what became of
+  the last answer the body took: `played`, `deferred` (a fight or a step
+  under way holds it), `dropped` (stale, no longer on offer, logging off or
+  down), `too late`, or `not yours` when the autopilot played the turn,
+  with `why` (its error, such as "external agent did not answer in time",
+  or "my friend is away").
   After a death, `my_death_backpack.held_at_death` is what the pack held
   (heaviest 3) until the backpack is gone or got back, which `memory`
   then tells ("my death backpack is gone (rotted or looted)", "I got
