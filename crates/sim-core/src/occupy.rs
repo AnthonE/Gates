@@ -249,6 +249,15 @@ pub struct SlotCache {
     /// construction (a power of two; `crag_shift` takes the hash's top bits).
     crags: Box<[CragLine]>,
     crag_shift: u32,
+    /// Per crag spot, a bit each, row-major by (`gj`, `gi`): whether `crag`
+    /// has resolved the spot under this seed, and whether it grows a crag.
+    /// Exact, unlike the lines: a resolved spot's answer is a pure function
+    /// of the seed, so a spot known to grow none is skipped by
+    /// [`SlotCache::crags_near`] without a lookup — most of the island's
+    /// spots, and most of a shot's samples' 64 (profile `--fire`,
+    /// 2026-11-27). Never evicted; emptied with the seed.
+    crag_known: Box<[u64]>,
+    crag_some: Box<[u64]>,
     /// The ground's height, the faces' coarse points (`face::coarse_at`),
     /// the solid surface (`face::surface`) and its face law
     /// (`movement::face_fall`), keyed by whole-metre point, and the skin
@@ -261,6 +270,16 @@ pub struct SlotCache {
     skins: Box<[SurfLine]>,
     face_shift: u32,
     skin_shift: u32,
+    /// The shard's: per whole-metre point of the island, two bits, row-major
+    /// by (`iz`, `ix`) — whether `coarse` has resolved the point under this
+    /// seed, and whether its quads are gentle there
+    /// (`gentlest <= face::SKIN_SLOPE_LO`, `face::surface`'s own test).
+    /// Exact and never evicted, unlike the lines: a quad whose four corners
+    /// are known gentle is the sim's ground and wants no coarse point at
+    /// all. Hundreds of rounds sweeping a 170 m disc a tick touch far more
+    /// points than a line per seat holds (profile `--fire`, 2026-11-27).
+    /// 4 MiB; a predicted body's cache goes without.
+    gentle: Option<Box<[u64]>>,
     /// The worldgen memo a crag resolves through. It changes no answer.
     lat: Box<terrain::Lattice>,
 }
@@ -275,6 +294,16 @@ pub const ROCK_CACHE_LINES: usize = 1_024;
 pub const ROCK_SKIN_M: f32 = CAPSULE_RADIUS_M * 0.85;
 
 const _: () = assert!(ROCK_CACHE_LINES.is_power_of_two());
+
+/// Whole-metre points a side of the island, and the words a row of them
+/// takes in [`SlotCache::gentle`] at two bits a point.
+const GENTLE_SIDE: usize = terrain::ISLAND_SIZE as usize;
+const GENTLE_WORDS: usize = GENTLE_SIDE / 32;
+const _: () = assert!(GENTLE_SIDE.is_multiple_of(32));
+
+/// Words in a row of the crag spot bitmaps (`SlotCache::crag_known`).
+const SPOT_WORDS: usize = crate::cliff::SPOTS_PER_SIDE as usize / 64;
+const _: () = assert!(crate::cliff::SPOTS_PER_SIDE % 64 == 0);
 
 #[derive(Clone, Copy)]
 struct RockLine {
@@ -321,6 +350,7 @@ impl SlotCache {
             SLOT_CACHE_SLOTS,
             crate::limits::CRAG_CACHE_LINES_ONE,
             crate::limits::FACE_CACHE_LINES_ONE,
+            false,
         )
     }
 
@@ -330,10 +360,11 @@ impl SlotCache {
             crate::limits::SLOT_CACHE_LINES,
             crate::limits::CRAG_CACHE_LINES,
             crate::limits::FACE_CACHE_LINES,
+            true,
         )
     }
 
-    fn with_lines(slots: usize, n: usize, faces: usize) -> Self {
+    fn with_lines(slots: usize, n: usize, faces: usize, gentle: bool) -> Self {
         assert!(slots.is_power_of_two() && slots >= 2);
         assert!(n.is_power_of_two() && n >= 4);
         assert!(faces.is_power_of_two() && faces >= 2);
@@ -363,6 +394,10 @@ impl SlotCache {
             .into_boxed_slice(),
             // One set per two lines (`crag`).
             crag_shift: 32 - (n / 2).trailing_zeros(),
+            crag_known: vec![0; SPOT_WORDS * crate::cliff::SPOTS_PER_SIDE as usize]
+                .into_boxed_slice(),
+            crag_some: vec![0; SPOT_WORDS * crate::cliff::SPOTS_PER_SIDE as usize]
+                .into_boxed_slice(),
             heights: vec![
                 SurfLine {
                     key: NO_KEY,
@@ -405,6 +440,7 @@ impl SlotCache {
             .into_boxed_slice(),
             face_shift: 32 - faces.trailing_zeros(),
             skin_shift: 32 - (faces * 2).trailing_zeros(),
+            gentle: gentle.then(|| vec![0; GENTLE_WORDS * GENTLE_SIDE].into_boxed_slice()),
             lat: Box::new(terrain::Lattice::new()),
         }
     }
@@ -432,7 +468,59 @@ impl SlotCache {
         let c = crate::cliff::crag(&mut self.lat, seed, haven, gi, gj);
         self.crags[set + 1] = self.crags[set];
         self.crags[set] = CragLine { key, c };
+        let side = crate::cliff::SPOTS_PER_SIDE;
+        if (0..side).contains(&gi) && (0..side).contains(&gj) {
+            let w = gj as usize * SPOT_WORDS + (gi as usize >> 6);
+            let bit = 1u64 << (gi & 63);
+            self.crag_known[w] |= bit;
+            if c.is_some() {
+                self.crag_some[w] |= bit;
+            }
+        }
         c
+    }
+
+    /// Every crag of the spots `cliff::spots_near(x, z, pad)` walks, in its
+    /// order, through [`SlotCache::crag`] — less the spots that grow none,
+    /// which every caller skips and which the spot bitmaps let this skip
+    /// without a lookup. `f` answers whether to stop.
+    pub fn crags_near(
+        &mut self,
+        seed: u64,
+        haven: &Haven,
+        x: f32,
+        z: f32,
+        pad: f32,
+        mut f: impl FnMut(&crate::cliff::Crag) -> bool,
+    ) {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let (i0, i1, j0, j1) = crate::cliff::spot_range(x, z, pad);
+        let mut j = j0;
+        while j <= j1 {
+            let row = j as usize * SPOT_WORDS;
+            let mut i = i0;
+            while i <= i1 {
+                let base = i & !63;
+                let hi = i1.min(base + 63);
+                let span = (hi - i) as u32;
+                let mask = (u64::MAX >> (63 - span)) << (i & 63);
+                let w = row + (i as usize >> 6);
+                // Unresolved spots, and spots that grow a crag.
+                let mut todo = (!self.crag_known[w] | self.crag_some[w]) & mask;
+                while todo != 0 {
+                    let gi = base + todo.trailing_zeros() as i32;
+                    todo &= todo - 1;
+                    let c = self.crag(seed, haven, gi, j);
+                    if c.is_some() && f(&c) {
+                        return;
+                    }
+                }
+                i = hi + 1;
+            }
+            j += 1;
+        }
     }
 
     /// `terrain::ground` at any point, through this cache's worldgen memo:
@@ -481,7 +569,41 @@ impl SlotCache {
             self.ground_at(seed, haven, i, j)
         });
         self.coarses[i] = CoarseLine { key, c };
+        if let Some(bits) = self.gentle.as_deref_mut() {
+            if (0..GENTLE_SIDE as i32).contains(&ix) && (0..GENTLE_SIDE as i32).contains(&iz) {
+                let w = iz as usize * GENTLE_WORDS + (ix as usize >> 5);
+                let known = 1u64 << ((ix & 31) * 2);
+                bits[w] |= known;
+                if c.gentlest <= crate::face::SKIN_SLOPE_LO {
+                    bits[w] |= known << 1;
+                }
+            }
+        }
         c
+    }
+
+    /// Whether the whole-metre quad at (`x0`, `z0`) is known gentle at all
+    /// four corners — [`SlotCache::coarse`] resolved each and found
+    /// `gentlest <= face::SKIN_SLOPE_LO` — without a coarse lookup. `false`
+    /// says only "not known": the caller asks the coarse points.
+    #[inline]
+    pub(crate) fn gentle_quad(&self, seed: u64, x0: i32, z0: i32) -> bool {
+        let Some(bits) = self.gentle.as_deref() else {
+            return false;
+        };
+        if self.seed != seed
+            || x0 < 0
+            || z0 < 0
+            || x0 + 1 >= GENTLE_SIDE as i32
+            || z0 + 1 >= GENTLE_SIDE as i32
+        {
+            return false;
+        }
+        let both = |ix: i32, iz: i32| {
+            let w = bits[iz as usize * GENTLE_WORDS + (ix as usize >> 5)];
+            (w >> ((ix & 31) * 2)) & 3 == 3
+        };
+        both(x0, z0) && both(x0 + 1, z0) && both(x0, z0 + 1) && both(x0 + 1, z0 + 1)
     }
 
     /// The skin's height at half-metre point (`hx`, `hz`) — (`hx / 2`,
@@ -506,9 +628,10 @@ impl SlotCache {
         let mut room = 0.0;
         if q.iter().any(|q| q.fade > 0.0) {
             room = 1.0f32;
-            crate::cliff::spots_near(x, z, crate::face::CRAG_FADE_M, |gi, gj| {
-                let c = self.crag(seed, haven, gi, gj);
-                room = room.min(crate::face::crag_room([&c], x, z));
+            // A spot growing no crag leaves a room of 1 (`crag_room`).
+            self.crags_near(seed, haven, x, z, crate::face::CRAG_FADE_M, |c| {
+                room = room.min(crate::face::crag_room([c], x, z));
+                false
             });
         }
         let y = crate::face::skin_point(crate::face::seed_key(seed), x, z, &q, room).y;
@@ -612,6 +735,11 @@ impl SlotCache {
         for line in self.crags.iter_mut() {
             line.key = NO_KEY;
         }
+        self.crag_known.fill(0);
+        self.crag_some.fill(0);
+        if let Some(bits) = self.gentle.as_deref_mut() {
+            bits.fill(0);
+        }
         for line in self.coarses.iter_mut() {
             line.key = NO_KEY;
         }
@@ -704,18 +832,14 @@ impl Occupants<'_> {
     /// `feet_y`, the crag grown by `r` — `rock_ground`'s rule.
     fn crag_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32) -> f32 {
         let mut best = crate::collide::NO_SURFACE;
-        let (cache, haven) = (&mut *self.cache, self.haven);
         let dil = ROCK_SKIN_M.max(r);
-        crate::cliff::spots_near(x, z, dil, |gi, gj| {
-            let c = cache.crag(seed, haven, gi, gj);
-            if !c.is_some() {
-                return;
-            }
+        self.cache.crags_near(seed, self.haven, x, z, dil, |c| {
             if let Some(s) = c.top(x, z, dil) {
                 if s <= feet_y + crate::movement::STEP_UP && s > best {
                     best = s;
                 }
             }
+            false
         });
         best
     }
@@ -725,23 +849,14 @@ impl Occupants<'_> {
     /// under one.
     fn crag_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
         let mut hit = false;
-        let (cache, haven) = (&mut *self.cache, self.haven);
         let dil = ROCK_SKIN_M.max(r);
-        crate::cliff::spots_near(x, z, dil, |gi, gj| {
-            if hit {
-                return;
-            }
-            let c = cache.crag(seed, haven, gi, gj);
-            if !c.is_some() {
-                return;
-            }
+        self.cache.crags_near(seed, self.haven, x, z, dil, |c| {
             let Some(s) = c.top(x, z, dil) else {
-                return;
+                return false;
             };
-            if s > feet_y && (h < crate::movement::STEP_UP || s > feet_y + crate::movement::STEP_UP)
-            {
-                hit = true;
-            }
+            hit = s > feet_y
+                && (h < crate::movement::STEP_UP || s > feet_y + crate::movement::STEP_UP);
+            hit
         });
         hit
     }
