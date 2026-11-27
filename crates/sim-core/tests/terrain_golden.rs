@@ -229,7 +229,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0xFAA7_0C40_CA79_D87C` at the taiga** (2026-11-12, wipe): the Snow row's
 /// trees 24 → 90 and scrub 20 → 70 per mille, and a tree there keeps
 /// `terrain::SNOW_BROADLEAF_SHARE` of the painted broadleaf. No height moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0xFAA7_0C40_CA79_D87C;
+/// **Moved → `0x3D29_17DE_AA98_7C2C` at the snow's stands and caps** (2026-11-27,
+/// wipe): a birch in the snow stands only on `terrain::snow_stand`, and the Snow
+/// row's trees thin over the treeline (`terrain::SNOW_ALPINE_TREE_KEEP`). No
+/// height moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0x3D29_17DE_AA98_7C2C;
 
 #[test]
 fn test_terrain_golden() {

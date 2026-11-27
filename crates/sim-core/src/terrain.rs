@@ -7255,14 +7255,65 @@ pub const SLOT_SPECIES: u8 = PAINTED_SPECIES + 1;
 pub const PAINTED_SPECIES: u8 = 2;
 
 /// The conifer: the painted draw's first species, and most of the trees
-/// standing in [`Biome::Snow`] ([`SNOW_BROADLEAF_SHARE`]).
+/// standing in [`Biome::Snow`] ([`SNOW_BROADLEAF_SHARE`], [`snow_stand`]).
 pub const CONIFER_SPECIES: u8 = 0;
 
-/// How much of the painted broadleaf share a tree in [`Biome::Snow`] keeps:
-/// the snow is pine country with birch stands in it, never a birch wood. A
-/// birch there stands bare (the client's `props::winter_bare`), so the snow
-/// holds pines and leafless trees and nothing in leaf. **(knob)**
-pub const SNOW_BROADLEAF_SHARE: f32 = 0.4;
+/// The broadleaf share of the trees at the heart of a birch stand in
+/// [`Biome::Snow`] ([`snow_stand`] whole): the snow is pine country with
+/// birch stands in it, never a birch wood, so even a stand's heart keeps a
+/// pine in five, and off the stands the snow is pine alone. About a fifth of
+/// the snow's trees on the gate seeds. A birch there stands bare (the
+/// client's `props::winter_bare`), so the snow holds pines and leafless trees
+/// and nothing in leaf. **(knob)**
+pub const SNOW_BROADLEAF_SHARE: f32 = 0.8;
+
+/// How much of the Snow row's trees still stand where the ground is over the
+/// treeline: a few stunted pines on a cap, thinner than the bare granite
+/// band below it, where the row's whole weight put a taiga on the summits.
+/// Full below [`TREELINE_H`], this share from [`SNOW_FLOOR_H`] up, so the
+/// arctic's own hills carry a treeline too. **(knob)**
+pub const SNOW_ALPINE_TREE_KEEP: f32 = 0.2;
+
+/// Base wavelength of the snow's stand field ([`snow_stand`]), metres⁻¹:
+/// a birch stand is a patch a hundred metres or so across, finer than the
+/// species paint (`SPECIES_FREQ`, 1/620) so a broadleaf region of the snow
+/// is pines with stands in it, not a birch wood with pines between.
+/// **(knob)**
+const SNOW_STAND_FREQ: f32 = 1.0 / 160.0;
+const SNOW_STAND_OCTAVES: u32 = 2;
+const CH_SNOW_STAND: u32 = 248; // +octave index, 2 octaves
+
+/// Where the stand field ([`snow_stand`]'s fBm, stretched like
+/// [`species_share`]) starts a stand and where it is a stand's heart: the
+/// field's upper reach only, so a stand is a patch with pine all round it
+/// rather than a gradient across the snow. **(knob)**
+const SNOW_STAND_BAND: (f32, f32) = (0.5, 0.9);
+
+/// How much of a birch stand a point in the snow is, 0..1: 0 over most of
+/// the snow, 1 at a stand's heart. A tree in [`Biome::Snow`] is a broadleaf
+/// with probability `snow_stand × SNOW_BROADLEAF_SHARE`, whatever the
+/// species paint says: the snow's birch comes in stands of its own size.
+/// Published because `tests/forest.rs` counts the stands.
+pub fn snow_stand(seed: u64, x: f32, z: f32) -> f32 {
+    snow_stand_in(&mut Direct, seed, x, z)
+}
+
+fn snow_stand_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let n = fbm(
+        c,
+        seed,
+        CH_SNOW_STAND,
+        x,
+        z,
+        SNOW_STAND_FREQ,
+        SNOW_STAND_OCTAVES,
+    );
+    ramp(
+        SNOW_STAND_BAND.0,
+        SNOW_STAND_BAND.1,
+        n * SPECIES_GAIN * 0.5 + 0.5,
+    )
+}
 
 /// The desert's tree: a palm. Not painted — every tree standing in
 /// [`Biome::Desert`] is one, so the arid north reads as the reference game's
@@ -7633,7 +7684,9 @@ impl ScatterTable {
                 // scrub are a sparse taiga's, about the meadow's trees per
                 // hectare (13 on the shipped seed, from 3.7, which was the
                 // emptiest ground on the island) and the frozen scrub
-                // between them (9, from 2.8). Neither carries ore.
+                // between them (9, from 2.8). Neither carries ore. Over the
+                // treeline the trees thin to `SNOW_ALPINE_TREE_KEEP` of this
+                // (`blend_rows`): the caps are not a taiga.
                 [90, 40, 18, 6, 70, 0, 0],
             ],
             clump_cap: [
@@ -8280,24 +8333,18 @@ fn scatter_in<C: Corners>(
         // painted pure, and the fBm is read here rather than above the veto
         // because three cells in four are empty and owe nothing.
         // A tree in the desert is a palm whatever the painted field says,
-        // and one under the snow keeps a share of the field's broadleaf
-        // ([`SNOW_BROADLEAF_SHARE`]): mostly pine.
+        // and one under the snow is a broadleaf only on a stand
+        // ([`snow_stand`], [`SNOW_BROADLEAF_SHARE`]): pine country with
+        // birch stands in it.
         species: match (occupant == Occupant::Tree)
             .then(|| biome(hy, moisture_in(c, seed, x, z), fel, cold))
         {
             Some(Biome::Desert) => PALM_SPECIES,
-            Some(b) => {
-                let keep = if b == Biome::Snow {
-                    SNOW_BROADLEAF_SHARE
-                } else {
-                    1.0
-                };
-                u8::from(
-                    ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0)
-                        < species_share_in(c, seed, x, z) * keep,
-                )
-            }
-            None => u8::from(
+            Some(Biome::Snow) => u8::from(
+                ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0)
+                    < snow_stand_in(c, seed, x, z) * SNOW_BROADLEAF_SHARE,
+            ),
+            Some(_) | None => u8::from(
                 ((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z),
             ),
         },
@@ -8649,6 +8696,7 @@ pub fn scatter_row(
 ) -> [u16; OCCUPANT_KINDS] {
     blend_rows(
         table,
+        h,
         splat_from(h, moist, sl),
         desert_share(h, moist),
         fel_share_on(h, fel),
@@ -8745,6 +8793,7 @@ fn edge_factor(w: [u8; 4]) -> f32 {
 /// (`snow` and `fel` 0) the row is bit for bit what it was.
 fn blend_rows(
     table: &ScatterTable,
+    h: f32,
     w: [u8; 4],
     desert: f32,
     fel: f32,
@@ -8754,6 +8803,9 @@ fn blend_rows(
     let d = Biome::Desert as usize;
     let f = Biome::Fel as usize;
     let sn = Biome::Snow as usize;
+    // The Snow row's trees over the treeline: a cap is not a taiga. 1 at and
+    // under the treeline, so the arctic's lowland draws its row bit for bit.
+    let alpine = 1.0 - ramp(TREELINE_H, SNOW_FLOOR_H, h) * (1.0 - SNOW_ALPINE_TREE_KEEP);
     let mut row = [0u16; OCCUPANT_KINDS];
     for (i, out) in row.iter_mut().enumerate() {
         let mut acc = 0.0f32;
@@ -8767,7 +8819,8 @@ fn blend_rows(
             acc += table.weights[b][i] as f32 * gb[b] * *ch as f32;
         }
         if snow > 0.0 {
-            acc = acc * (1.0 - snow) + table.weights[sn][i] as f32 * gb[sn] * 255.0 * snow;
+            let keep = if i == ROW_TREE { alpine } else { 1.0 };
+            acc = acc * (1.0 - snow) + table.weights[sn][i] as f32 * gb[sn] * keep * 255.0 * snow;
         }
         if fel > 0.0 {
             acc = acc * (1.0 - fel) + table.weights[f][i] as f32 * gb[f] * 255.0 * fel;
@@ -8828,6 +8881,7 @@ pub fn scatter_draw_row(
     }
     blend_rows(
         table,
+        h,
         splat_from(h, moist, sl),
         desert_share(h, moist),
         fel_share_on(h, fel),

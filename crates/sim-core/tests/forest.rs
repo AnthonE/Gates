@@ -634,8 +634,6 @@ fn a_species_region_is_dominated_and_not_pure() {
         let mut lo = [0u32; 2];
         let mut hi = [0u32; 2];
         let mut seen = [0u32; 2];
-        // [conifer, broadleaf] standing in `Biome::Snow`.
-        let mut snow = [0u32; 2];
         for cz in 0..CELLS_PER_SIDE {
             for cx in 0..CELLS_PER_SIDE {
                 let s = terrain::scatter(seed, &ScatterTable::alpha_default(), &haven, cx, cz);
@@ -661,10 +659,9 @@ fn a_species_region_is_dominated_and_not_pure() {
                 if desert {
                     continue;
                 }
-                // Under the snow a tree keeps only a share of the paint's
-                // broadleaf: counted here, held below.
+                // Under the snow the birch comes in stands of its own and
+                // not from the paint: `the_snow_is_a_taiga_with_birch_stands`.
                 if terrain::biome_at(seed, s.y, s.x, s.z) == terrain::Biome::Snow {
-                    snow[usize::from(s.species != terrain::CONIFER_SPECIES)] += 1;
                     continue;
                 }
                 seen[s.species as usize] += 1;
@@ -716,20 +713,6 @@ fn a_species_region_is_dominated_and_not_pure() {
             seen[0] > 0 && seen[1] > 0,
             "seed {seed}: species {seen:?} — an island with one species on it"
         );
-        // The snow is pine country with birch stands in it: the broadleaf
-        // keeps `SNOW_BROADLEAF_SHARE` of the paint's draw, so it is there
-        // and it is the minority. A seed with no snow says nothing.
-        let snow_n = snow[0] + snow[1];
-        if snow_n >= 100 {
-            let birch = f64::from(snow[1]) / f64::from(snow_n);
-            assert!(
-                snow[1] > 0 && birch <= f64::from(terrain::SNOW_BROADLEAF_SHARE),
-                "seed {seed}: the snow's trees are {snow:?} [conifer, broadleaf] — \
-                 {:.0}% broadleaf against the {:.0}% ceiling, or none at all",
-                birch * 100.0,
-                terrain::SNOW_BROADLEAF_SHARE * 100.0
-            );
-        }
     }
 }
 
@@ -746,6 +729,152 @@ const SPECIES_DOMINANCE_MIN: f64 = 0.75;
 /// species is a stencil, and the minority IS the mechanic
 /// (`reference/FORESTS.md` §3.2).
 const SPECIES_DOMINANCE_MAX: f64 = 0.99;
+
+/// **The snow is a taiga with birch stands in it, and its caps are bare.**
+///
+/// Three things the Snow row and the stand field promise, each a count:
+///
+/// - The arctic's lowland (snow at or under the treeline) carries a sparse
+///   taiga, about the meadow's trees per hectare.
+/// - A cap over the treeline is thinner than the bare granite band below it
+///   (`Biome::Highland`): the row's whole weight on a summit put more trees
+///   over the treeline than under it.
+/// - The broadleaf is a minority and it comes in STANDS: the trees within
+///   ~36 m of a birch are birch several times as often as those within the
+///   same reach of a pine.
+///
+/// Mutants, run: `SNOW_ALPINE_TREE_KEEP` 1.0 (the caps carry 11 trees/ha
+/// against the granite's 4.5, red); the birch drawn as dc7c36c drew it,
+/// `0.4 × species_share` (the stand lift falls to 1.2–1.8x, red).
+#[test]
+fn the_snow_is_a_taiga_with_birch_stands() {
+    let n = CELLS_PER_SIDE as usize;
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let table = ScatterTable::alpha_default();
+        // [cells, trees] on the arctic's lowland, on the caps, on the granite.
+        let (mut low, mut cap, mut granite) = ([0u32; 2], [0u32; 2], [0u32; 2]);
+        // Per cell: 0 none, 1 a pine, 2 a birch, standing in the snow.
+        let mut snow = vec![0u8; n * n];
+        for cz in 0..CELLS_PER_SIDE {
+            for cx in 0..CELLS_PER_SIDE {
+                let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let h = terrain::height(seed, x, z);
+                if h < LAND_MIN_H {
+                    continue;
+                }
+                let b = terrain::biome_at(seed, h, x, z);
+                let class = match b {
+                    Biome::Snow if h <= terrain::TREELINE_H => &mut low,
+                    Biome::Snow if h > terrain::SNOW_FLOOR_H => &mut cap,
+                    Biome::Highland => &mut granite,
+                    _ => continue,
+                };
+                class[0] += 1;
+                let s = terrain::scatter(seed, &table, &haven, cx, cz);
+                if s.occupant != Occupant::Tree {
+                    continue;
+                }
+                class[1] += 1;
+                if b == Biome::Snow {
+                    snow[cz as usize * n + cx as usize] =
+                        1 + u8::from(s.species != terrain::CONIFER_SPECIES);
+                }
+            }
+        }
+        let per =
+            |c: [u32; 2]| f64::from(c[1]) / f64::from(c[0].max(1)) * (10_000.0 / CELL_AREA_M2);
+        let (lt, ct, gt) = (per(low), per(cap), per(granite));
+        // [pine, birch] neighbours of each pine and each birch, and the totals.
+        let mut around = [[0u64; 2]; 2];
+        let mut count = [0u64; 2];
+        for cz in 0..n {
+            for cx in 0..n {
+                let k = snow[cz * n + cx];
+                if k == 0 {
+                    continue;
+                }
+                let k = usize::from(k - 1);
+                count[k] += 1;
+                for dz in -STAND_REACH..=STAND_REACH {
+                    for dx in -STAND_REACH..=STAND_REACH {
+                        let (x2, z2) = (cx as i32 + dx, cz as i32 + dz);
+                        if (dx, dz) == (0, 0)
+                            || !(0..n as i32).contains(&x2)
+                            || !(0..n as i32).contains(&z2)
+                        {
+                            continue;
+                        }
+                        let j = snow[z2 as usize * n + x2 as usize];
+                        if j != 0 {
+                            around[k][usize::from(j - 1)] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let frac = |r: [u64; 2]| r[1] as f64 / (r[0] + r[1]).max(1) as f64;
+        let birch = count[1] as f64 / (count[0] + count[1]).max(1) as f64;
+        let lift = frac(around[1]) / frac(around[0]).max(1e-6);
+        println!(
+            "seed {seed}: snow lowland {} cells {lt:.2} trees/ha | caps {} cells {ct:.2} | \
+             granite {} cells {gt:.2} | snow birch {:.0}%, birch beside a birch {:.0}% \
+             against beside a pine {:.0}% ({lift:.2}x)",
+            low[0],
+            cap[0],
+            granite[0],
+            birch * 100.0,
+            frac(around[1]) * 100.0,
+            frac(around[0]) * 100.0
+        );
+        assert!(
+            low[0] > 2000 && cap[0] > 200 && granite[0] > 1000,
+            "seed {seed}: {} lowland snow, {} cap and {} granite cells — too few \
+             for the counts below to mean anything",
+            low[0],
+            cap[0],
+            granite[0]
+        );
+        assert!(
+            (TAIGA_STEMS.0..=TAIGA_STEMS.1).contains(&lt),
+            "seed {seed}: the arctic's lowland carries {lt:.2} trees/ha, outside \
+             the sparse taiga's {TAIGA_STEMS:?}"
+        );
+        assert!(
+            ct < gt,
+            "seed {seed}: the snow caps carry {ct:.2} trees/ha against the granite \
+             band's {gt:.2} under them — more trees over the treeline than under \
+             it (`terrain::SNOW_ALPINE_TREE_KEEP`)"
+        );
+        assert!(
+            (SNOW_BIRCH.0..=SNOW_BIRCH.1).contains(&birch),
+            "seed {seed}: the snow's trees are {:.0}% broadleaf, outside \
+             {SNOW_BIRCH:?}: pine country has birch in it and is not a birch wood",
+            birch * 100.0
+        );
+        assert!(
+            lift >= STAND_LIFT_MIN,
+            "seed {seed}: a birch in the snow has birch beside it only {lift:.2}x \
+             as often as a pine does, under {STAND_LIFT_MIN}x — birch salted \
+             through the pines, not standing in stands (`terrain::snow_stand`)"
+        );
+    }
+}
+
+/// The reach, in cells either way, that counts as "beside": 4 cells is
+/// 32–45 m, a stand's own size and well under the pine between stands.
+const STAND_REACH: i32 = 4;
+/// Trees per hectare the arctic's lowland holds. Measured **12.3–13.9**
+/// on the four seeds, the meadow's 12.7–13.4; the floor is a quarter under
+/// the worst, the ceiling well short of a wood.
+const TAIGA_STEMS: (f64, f64) = (9.0, 18.0);
+/// The snow's broadleaf share of its trees. Measured **17–24%**: a minority
+/// that is there.
+const SNOW_BIRCH: (f64, f64) = (0.08, 0.35);
+/// Floor on how much more often a birch's neighbour is a birch than a
+/// pine's is. Measured **3.8–4.3x**; 1.2–1.8x under dc7c36c's draw.
+const STAND_LIFT_MIN: f64 = 2.5;
 
 /// **The forest is many woods, not one continent** — the property the
 /// moisture scale exists for, and the one every other gate in this file is
