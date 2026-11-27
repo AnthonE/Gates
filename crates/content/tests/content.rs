@@ -5938,7 +5938,20 @@ fn strange_gear_beats_the_craftable_tier_and_wears_out() {
             k.id
         );
     }
-    assert!(draught.fel > 0, "the draught costs nothing");
+    // Its cost is the meter, so it has to land on the shipped one: one alone
+    // past the line where the Verdigris hurts (and so past where regen
+    // stops), two to the top.
+    let ex = &c.balance.exposure;
+    assert!(
+        draught.fel as u32 > ex.fel_hurt_at && draught.fel as u32 > ex.fel_regen_max,
+        "the draught's fel {} does not cross fel_hurt_at {}",
+        draught.fel,
+        ex.fel_hurt_at
+    );
+    assert!(
+        2 * draught.fel as u32 >= 1000,
+        "two draughts do not fill the meter"
+    );
 
     for id in &STRANGE[..2] {
         assert!(c.item(id).unwrap().condition_max > 0, "`{id}` never wears");
