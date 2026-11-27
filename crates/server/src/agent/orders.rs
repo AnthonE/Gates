@@ -64,6 +64,8 @@ fn is(word: &[u8], any: &[&str]) -> bool {
 /// then a run, then home, then follow: "stop following" stops. A supply
 /// word names what to fetch and outranks a feed, which names where it
 /// goes: `deposit wood` is a wood run for the box, `feed the works` a feed.
+/// A loot run and a feed tie, as they always have: the first one said wins
+/// (`deposit the loot at the works` is a feed).
 pub fn order(text: &[u8]) -> Option<Order> {
     let mut found: Option<Order> = None;
     let rank = |o: Order| match o {
@@ -105,7 +107,10 @@ pub fn order(text: &[u8]) -> Option<Order> {
         } else {
             continue;
         };
-        if found.is_none_or(|f| rank(o) < rank(f)) {
+        // Loot ranks with a supply word, above a feed, but never takes a
+        // line a feed already holds: those two keep first-word-wins.
+        let ties = o == Order::Run(Goal::Loot) && found == Some(Order::Run(Goal::FeedWork));
+        if found.is_none_or(|f| rank(o) < rank(f)) && !ties {
             found = Some(o);
         }
     }
@@ -264,7 +269,7 @@ mod tests {
 
     #[test]
     fn plain_words_are_orders() {
-        let cases: [(&str, Option<Order>); 28] = [
+        let cases: [(&str, Option<Order>); 30] = [
             ("guards patrol", Some(Order::Patrol)),
             ("defend the base!", Some(Order::Defend)),
             ("patrol, then come home", Some(Order::Home)),
@@ -287,6 +292,12 @@ mod tests {
             ),
             ("feed the gate", Some(Order::Run(Goal::FeedWork))),
             ("deposit at the works", Some(Order::Run(Goal::FeedWork))),
+            // A loot run and a feed: the first said wins.
+            (
+                "deposit the loot at the works",
+                Some(Order::Run(Goal::FeedWork)),
+            ),
+            ("loot, then feed the works", Some(Order::Run(Goal::Loot))),
             // What to fetch outranks where it goes.
             ("deposit wood", Some(Order::Supply(Goal::SupplyWood))),
             (

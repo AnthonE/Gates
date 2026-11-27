@@ -176,6 +176,11 @@ fn die(w: &mut World, id: u32) {
 /// answered (`EV_RESPAWN.b`) and where the body stands.
 fn die_and_wake_at(w: &mut World, id: u32, at: (u16, u16)) -> (bool, (i32, i32)) {
     die(w, id);
+    wake_at(w, id, at)
+}
+
+/// Answer the death screen of a body already dead with the bag at `at`.
+fn wake_at(w: &mut World, id: u32, at: (u16, u16)) -> (bool, (i32, i32)) {
     w.tick(&[Command::RespawnAt {
         id,
         cx: at.0,
@@ -221,17 +226,24 @@ fn a_given_bag_wakes_its_new_owner_and_not_the_giver() {
     );
     assert!(addrs(&w, GIVER).is_empty(), "and off the giver's");
 
-    // Both die somewhere else and ask for the bag by address.
+    // Both die somewhere else and ask for the bag by address: the giver
+    // first, while the bag is still ready, so only ownership can turn the
+    // giver away (a cooling bag would refuse anybody).
     let far = cell(40);
+    stand(&mut w, GIVER, far.0, far.1);
+    die(&mut w, GIVER);
+    assert!(
+        w.deploys.bag_ready()[0] <= w.tick,
+        "the bag must be ready when the giver asks, or the check proves nothing"
+    );
+    let (on_bag, at) = wake_at(&mut w, GIVER, a);
+    assert!(!on_bag, "the giver still woke on a bag they gave away");
+    assert_ne!(at, body_on(&w, a));
+
     stand(&mut w, TAKER, far.0, far.1);
     let (on_bag, at) = die_and_wake_at(&mut w, TAKER, a);
     assert!(on_bag, "the receiver's death screen did not take the bag");
     assert_eq!(at, body_on(&w, a), "the receiver woke on the bag");
-
-    stand(&mut w, GIVER, far.0, far.1);
-    let (on_bag, at) = die_and_wake_at(&mut w, GIVER, a);
-    assert!(!on_bag, "the giver still woke on a bag they gave away");
-    assert_ne!(at, body_on(&w, a));
 }
 
 /// Only your own bag, and only a bag: a give at somebody else's bag or at

@@ -381,7 +381,8 @@ DIED_SINCE = "you died: the counts in your notes are void; observation.pack is w
 def mark_recent(recent, observation):
     """What became of the last goal sent, in the body's own words
     (`observation.your_last_answer`), so a choice that never ran is not
-    remembered as one that did. A deferred one is read again next turn."""
+    remembered as one that did. A deferred one is read again next turn,
+    unless a new answer replaces it first (`supersede_recent`)."""
     if not recent or not str(recent[-1].get("fate", "deferred")).startswith("deferred"):
         return
     last = observation.get("your_last_answer")
@@ -393,6 +394,13 @@ def mark_recent(recent, observation):
         if last.get("why"):
             fate += f" ({last['why']})"
     recent[-1]["fate"] = fate
+
+
+def supersede_recent(recent):
+    """A new answer goes out while the last is still held back: the body
+    drops the held one for it, so it is never played and never read again."""
+    if recent and str(recent[-1].get("fate", "")).startswith("deferred"):
+        recent[-1]["fate"] = "dropped: replaced by your next answer"
 
 
 def turn_content(request, recent, frame, notes, chat_log, strategy=None, died=False):
@@ -1086,6 +1094,7 @@ def main():
             print(f"no decision: {e}", file=sys.stderr)
             print(json.dumps({"id": request["id"], "error": str(e)[:200]}), flush=True)
             continue
+        supersede_recent(recent)
         recent.append({"goal": goal, "said": say, "to": to, "spoke": speak})
         digest.append(digest_row(time.time(), goal, reason, say, to,
                                  [h for h in request.get("heard", []) if not h.get("me")],

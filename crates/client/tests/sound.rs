@@ -3837,6 +3837,20 @@ mod toll {
         assert_eq!((started, mixer.dropped), (vec![TOLL_CUE], 0));
     }
 
+    /// A clock estimate trailing the tick a paid countdown started on reads
+    /// it a little over its length: still no toll until the first hour
+    /// down, not one right behind the start's thunder.
+    #[test]
+    fn a_trailing_clock_hears_no_toll_at_the_start() {
+        let a = counting();
+        let mut t = Toll::default();
+        assert!(!at(&mut t, &a, 12 * HOUR + 2), "the start tolled");
+        assert!(!at(&mut t, &a, 12 * HOUR + 1));
+        assert!(!at(&mut t, &a, 12 * HOUR - 1), "the estimate caught up");
+        assert!(!at(&mut t, &a, 11 * HOUR + 1));
+        assert!(at(&mut t, &a, 11 * HOUR));
+    }
+
     /// A join mid-countdown has passed no mark: it hears the next one.
     #[test]
     fn a_join_mid_countdown_waits_for_the_next_mark() {

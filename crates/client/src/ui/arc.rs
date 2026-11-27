@@ -431,7 +431,12 @@ impl Toll {
                 *last = UNREAD;
                 continue;
             }
-            let mark = toll_mark(w.lights_at as f64 - now);
+            // Never more left than the countdown's own length: a clock
+            // estimate trailing the deposit tick would read a paid
+            // countdown (which starts on a whole hour) an hour up, and toll
+            // that hour right behind the start's thunder.
+            let left = (w.lights_at as f64 - now).min(w.def.countdown as f64);
+            let mark = toll_mark(left);
             if *last == UNREAD {
                 *last = mark;
             } else if mark < *last {

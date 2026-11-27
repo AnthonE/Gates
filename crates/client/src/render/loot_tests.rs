@@ -295,6 +295,28 @@ fn an_arrow_model_keeps_the_shafts_head_where_it_was() {
     }
 }
 
+/// A thrown spear stuck in a trunk stands in it as an arrow does: its point
+/// (the model's crown, +Y) in by `ARROW_STUCK_M` past where it went in,
+/// the butt the whole drawn length back against the way it flew.
+#[test]
+fn a_stuck_spear_stands_point_first_where_it_went_in() {
+    let at = Vec3::new(4.0, 2.0, -3.0);
+    let dir = [90, -20, 30];
+    let flew = Vec3::new(90.0, -20.0, 30.0).normalize();
+    let (height, scale) = (1.8, 1.25);
+    let t = stuck_as_model(at, dir, height, scale);
+    let point = t.transform_point(Vec3::Y * height);
+    let butt = t.transform_point(Vec3::ZERO);
+    assert!(
+        (point - (at + flew * ARROW_STUCK_M)).length() < 1e-4,
+        "point {point}"
+    );
+    assert!(
+        (butt - (point - flew * height * scale)).length() < 1e-4,
+        "butt {butt}"
+    );
+}
+
 /// A dropped skinned stack keeps its look (v102): drawn plain while the
 /// skin catalog does not know the skin, and redrawn in its tint when a
 /// catalog batch lands (`APPLIED2_SKINS`) — the shared model's material,

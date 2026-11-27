@@ -3825,7 +3825,13 @@ impl Survivor {
         let mut waiting = false;
         if let Some((Pending::Treat { item, to }, _)) = self.awaiting {
             let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
-            match self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap) {
+            let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap);
+            // Refused, or never answered: no wrap is in the hands, so none
+            // holds the hand on the bandage past this goal.
+            if !matches!(verdict, Ok(None | Some(Verdict::Ok))) {
+                self.wrap_until = None;
+            }
+            match verdict {
                 Ok(Some(Verdict::Ok)) => {
                     if let Some(a) = self.goal.as_mut() {
                         a.gained += 1;

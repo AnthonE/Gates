@@ -795,6 +795,10 @@ pub struct HomeJob {
     passed_len: u8,
     /// Doors that would not be got to or through.
     tried: [Option<OpAddr>; MAX_DOORS],
+    /// One of `tried` was given up on, not only backed out of: with no
+    /// door left, the trip is stuck at doors that were there, not short of
+    /// one.
+    gave_up: bool,
     /// The box being seen to, by its place in [`TeamHome`], where it
     /// stands, the boxes seen to on this trip, and the ones only looked in
     /// while others were not known yet.
@@ -839,6 +843,7 @@ impl HomeJob {
             passed: [None; MAX_DOORS],
             passed_len: 0,
             tried: [None; MAX_DOORS],
+            gave_up: false,
             target: None,
             chest: None,
             visited: 0,
@@ -1008,6 +1013,7 @@ impl HomeJob {
                     // tried again straight away.
                     if self.leg != Leg::Out {
                         self.tried = [None; MAX_DOORS];
+                        self.gave_up = false;
                         if back {
                             self.tried[0] = Some(at);
                         }
@@ -1019,6 +1025,7 @@ impl HomeJob {
                 Through::GaveUp(at) => match self.tried.iter_mut().find(|s| s.is_none()) {
                     Some(slot) if self.leg != Leg::Out => {
                         *slot = Some(at);
+                        self.gave_up = true;
                         Deliver::IDLE
                     }
                     _ => self.fail(Why::Stuck, "doors_gave_up"),
@@ -1125,6 +1132,9 @@ impl HomeJob {
                                     .begin_toward(door, core.pieces.cols(), goal, tick);
                                 Deliver::IDLE
                             }
+                            // Every door near was given up on: stuck at
+                            // them, which is not having none to use.
+                            None if self.gave_up => self.fail(Why::Stuck, "doors_gave_up"),
                             None => self.fail(Why::NoWayIn, "no_door_near"),
                         }
                     }

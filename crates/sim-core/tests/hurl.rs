@@ -510,12 +510,12 @@ fn no_spear_is_thrown_in_the_safe_zone() {
 /// not while it is in the air.
 #[test]
 fn a_throw_replays_to_the_same_hash() {
-    let run = || {
+    let run = |skin: u16| {
         let mut w = world();
         let (x, z) = lane(&w, 6.0);
         w.players[0].body = Body::at(w.seed, &w.haven, x, z);
         w.players[1].body = Body::at(w.seed, &w.haven, x, z + 4.0);
-        w.players[0].inv[0] = held(1);
+        w.players[0].inv[0] = ItemStack { skin, ..held(1) };
         w.tick(&[]);
         let mut hashes = Vec::new();
         let mut script = vec![vec![input(1, 1, BTN_AIM, 120)]];
@@ -529,11 +529,25 @@ fn a_throw_replays_to_the_same_hash() {
         let mut flew = false;
         for cmds in &script {
             w.tick(cmds);
-            flew |= !w.arrows.is_empty();
-            hashes.push(w.state_hash());
+            let aloft = !w.arrows.is_empty();
+            flew |= aloft;
+            hashes.push((aloft, w.state_hash()));
         }
         assert!(flew, "the spear never left the hand");
         hashes
     };
-    assert_eq!(run(), run(), "a throw replayed to a different world");
+    let a = run(SKIN);
+    assert_eq!(a, run(SKIN), "a throw replayed to a different world");
+    // The same throw of a spear with another skin: once it has left the
+    // hand, the stack in flight is the only place the skin lives, so the
+    // hash tells the two apart only if it folds that stack in.
+    let b = run(SKIN + 1);
+    let aloft: Vec<_> = a.iter().zip(&b).filter(|(x, y)| x.0 && y.0).collect();
+    assert!(
+        !aloft.is_empty(),
+        "the two spears were never aloft together"
+    );
+    for (x, y) in aloft {
+        assert_ne!(x.1, y.1, "the stack in flight is not in state_hash");
+    }
 }

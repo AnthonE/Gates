@@ -49,6 +49,7 @@
 //! [`SWING_INTERVAL_TICKS`]: sim_core::gather::SWING_INTERVAL_TICKS
 
 use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::limits::MAX_ARROW_LIFE_TICKS;
 
 /// The client's mirror of `Player::next_swing`.
 ///
@@ -63,9 +64,51 @@ pub struct SwingCadence {
     /// before the first one, which is correct: `Player::next_swing` starts
     /// at zero too, so a fresh body's first press swings.
     next: f64,
+    /// The estimated tick past which a spear this hand threw can no longer
+    /// be in the air ([`MAX_ARROW_LIFE_TICKS`] after the throw), zero for
+    /// none. A hit landing before it may be the spear's, not a swing's.
+    flying: f64,
+    /// The aim was held for a throw on the last [`Self::hurl`]: the sim's
+    /// `Player::draw_on`, which says whether an aim carries on.
+    aiming: bool,
 }
 
 impl SwingCadence {
+    /// One frame with a throwable weapon in hand (`ranged::hurl`, the
+    /// spear): `aim` is `BTN_AIM` as the sim will read it, `held` is
+    /// `BTN_PRIMARY`, `windup` is the row's `hurl_ticks`. Mirrors the
+    /// sim's two pushes of `next_swing`, since the swing reads that clock
+    /// too: the aim's first tick puts the throw `windup` away (and keeps
+    /// it there after a release, so a plain click just after an aborted
+    /// windup is refused), and a throw pays a swing's interval (so a click
+    /// on the empty hand after it is refused as well).
+    ///
+    /// Returns whether the throw went this frame. Call it, not
+    /// [`Self::poll`], on a frame the aim is held: the click throws.
+    pub fn hurl(&mut self, aim: bool, held: bool, tick_est: f64, windup: u8) -> bool {
+        let began = aim && !self.aiming;
+        self.aiming = aim;
+        if !aim {
+            return false;
+        }
+        if began {
+            self.next = self.next.max(tick_est + f64::from(windup));
+        }
+        if !held || tick_est < self.next {
+            return false;
+        }
+        self.next = tick_est + SWING_INTERVAL_TICKS as f64;
+        self.flying = tick_est + f64::from(MAX_ARROW_LIFE_TICKS);
+        true
+    }
+
+    /// May a hit landing now be a spear this hand threw? While one can
+    /// still be in the air, a hit is no proof of a swing the predictor
+    /// missed (the viewmodel's landed-at-rest backstop).
+    pub fn spear_aloft(&self, tick_est: f64) -> bool {
+        tick_est < self.flying
+    }
+
     /// Should a swing be drawn this frame?
     ///
     /// `held` is the button as the input layer read it (`pressed`, not
@@ -98,7 +141,7 @@ impl SwingCadence {
     /// would leave `next` in the future and swallow every swing until real
     /// time caught up with a tick count from somewhere else.
     pub fn reset(&mut self) {
-        self.next = 0.0;
+        *self = Self::default();
     }
 }
 
@@ -190,6 +233,39 @@ mod tests {
             "a reconnect after a long-running shard left the arm on a cooldown \
              measured in somebody else's ticks"
         );
+    }
+
+    /// The spear's two pushes (`ranged::hurl`): an aim let go before its
+    /// windup still holds a plain click until the windup is up, and a
+    /// throw pays a swing's interval, so the empty hand after it does not
+    /// punch at once. A hit while the spear can be aloft is not a swing's.
+    #[test]
+    fn a_throw_holds_the_arm_as_the_sim_does() {
+        const WINDUP: u8 = 15;
+        let w = f64::from(WINDUP);
+        // Aim held 5 ticks of a 15-tick windup, then let go.
+        let mut c = SwingCadence::default();
+        assert!(!c.hurl(true, false, 100.0, WINDUP));
+        assert!(!c.hurl(true, false, 105.0, WINDUP));
+        assert!(!c.hurl(false, false, 106.0, WINDUP));
+        assert!(!c.poll(true, 107.0), "a click inside the aborted windup");
+        assert!(c.poll(true, 100.0 + w), "the windup lapsed");
+
+        // A full windup, then the click throws.
+        let mut c = SwingCadence::default();
+        assert!(
+            !c.hurl(true, true, 200.0, WINDUP),
+            "thrown before the windup"
+        );
+        assert!(!c.hurl(true, true, 200.0 + w - 1.0, WINDUP));
+        assert!(c.hurl(true, true, 200.0 + w, WINDUP), "the throw");
+        assert!(!c.hurl(true, true, 201.0 + w, WINDUP), "two throws");
+        assert!(c.spear_aloft(210.0 + w));
+        // The hand is empty now: no aim, a held click.
+        assert!(!c.hurl(false, true, 202.0 + w, WINDUP));
+        assert!(!c.poll(true, 202.0 + w), "the empty hand punched at once");
+        assert!(c.poll(true, 200.0 + w + IVL), "the interval lapsed");
+        assert!(!c.spear_aloft(200.0 + w + f64::from(MAX_ARROW_LIFE_TICKS)));
     }
 
     /// One long stall is one swing, not the dozen the elapsed ticks would

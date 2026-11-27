@@ -499,10 +499,13 @@ pub fn gather(
     //
     // **A spear is wound up to throw the same way** (Rust's): held, the
     // windup runs and a click throws it rather than swinging
-    // (`ranged::hurl`), and the body walks as a drawn bow does.
+    // (`ranged::hurl`), and the body walks as a drawn bow does. Not from the
+    // water: a swimmer's spear only swings (`hurl` refuses it there), so an
+    // aim held would hide from the arm a swing the sim takes.
+    let swimming = sim_core::movement::swimming_at(core.predict.position()[1]);
     let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some()
         || crate::ui::hold::sights_in_hand(&core.catalog, &core.inv, sel)
-        || crate::ui::hold::hurl_in_hand(&core.catalog, &core.inv, sel);
+        || (crate::ui::hold::hurl_in_hand(&core.catalog, &core.inv, sel) && !swimming);
     if draws && !downed && !holstered && locked && mouse.pressed(MouseButton::Right) {
         buttons |= BTN_AIM;
         buttons &= !BTN_SPRINT;
