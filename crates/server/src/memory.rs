@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 pub const SEEN_PEOPLE: usize = 8;
 pub const SEEN_PLACES: usize = 16;
 pub const SEEN_EVENTS: usize = 6;
+/// The last event slots a heal or a bag never takes.
+pub const SEEN_EVENTS_KEPT: usize = 2;
 /// What a death took that one look carries: the pack's heaviest kinds.
 pub const SEEN_LOST: usize = 3;
 /// What the memory keeps, newest first out when full (the contract's caps).
@@ -189,6 +191,14 @@ pub enum EventKind {
     BagFrom,
 }
 
+impl EventKind {
+    /// What another player did for it or it for them (a heal, a bag):
+    /// frequent, so merged per person and kept out of the last slots.
+    pub fn told(self) -> bool {
+        matches!(self, Self::HealedBy | Self::Healed | Self::BagFrom)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct EventSeen {
     pub kind: EventKind,
@@ -324,11 +334,18 @@ impl Perceived {
 
     pub fn event(&mut self, kind: EventKind, who: Option<usize>) {
         let i = usize::from(self.events_len);
+        let who = who.map(|w| w as u8);
+        if kind.told() {
+            // A medic's round of bandages is one line per person, and never
+            // takes the last slots: a death or a kill after it still fits.
+            if i >= SEEN_EVENTS - SEEN_EVENTS_KEPT
+                || self.events().iter().any(|e| e.kind == kind && e.who == who)
+            {
+                return;
+            }
+        }
         if i < SEEN_EVENTS {
-            self.events[i] = EventSeen {
-                kind,
-                who: who.map(|w| w as u8),
-            };
+            self.events[i] = EventSeen { kind, who };
             self.events_len += 1;
         }
     }
@@ -633,13 +650,26 @@ impl Memory {
     }
 
     fn event(&mut self, what: String, now: u64) {
+        self.push_event(what, now, false);
+    }
+
+    /// A heal or a bag: the same line again moves the old one to now, so
+    /// "Ash healed me" ten times never evicts a death.
+    fn told(&mut self, what: String, now: u64) {
+        self.push_event(what, now, true);
+    }
+
+    fn push_event(&mut self, what: String, now: u64, fold: bool) {
+        let what = clean(&what, EVENT_MAX);
+        if fold {
+            if let Some(i) = self.events.iter().position(|e| e.what == what) {
+                self.events.remove(i);
+            }
+        }
         if self.events.len() >= EVENTS_MAX {
             self.events.pop_front();
         }
-        self.events.push_back(EventMem {
-            at: now,
-            what: clean(&what, EVENT_MAX),
-        });
+        self.events.push_back(EventMem { at: now, what });
     }
 
     fn place(&mut self, kind: PlaceKind, name: &str, at: [f32; 2], now: u64, note: &str) {
@@ -762,15 +792,15 @@ impl Memory {
                     "I took what fitted from my backpack; the rest is still in it".into(),
                     now,
                 ),
-                (EventKind::HealedBy, Some(name)) => self.event(format!("{name} healed me"), now),
-                (EventKind::HealedBy, None) => self.event("another player healed me".into(), now),
-                (EventKind::Healed, Some(name)) => self.event(format!("I healed {name}"), now),
-                (EventKind::Healed, None) => self.event("I healed another player".into(), now),
+                (EventKind::HealedBy, Some(name)) => self.told(format!("{name} healed me"), now),
+                (EventKind::HealedBy, None) => self.told("another player healed me".into(), now),
+                (EventKind::Healed, Some(name)) => self.told(format!("I healed {name}"), now),
+                (EventKind::Healed, None) => self.told("I healed another player".into(), now),
                 (EventKind::BagFrom, Some(name)) => {
-                    self.event(format!("{name} gave me a sleeping bag"), now)
+                    self.told(format!("{name} gave me a sleeping bag"), now)
                 }
                 (EventKind::BagFrom, None) => {
-                    self.event("another player gave me a sleeping bag".into(), now)
+                    self.told("another player gave me a sleeping bag".into(), now)
                 }
             }
         }
@@ -1436,11 +1466,13 @@ pub(crate) mod tests {
         s.seen.event(EventKind::HealedBy, Some(ash));
         s.seen.event(EventKind::Healed, Some(rowan));
         s.seen.event(EventKind::BagFrom, Some(ash));
+        let mut m = Memory::default();
+        m.ingest(&s, 10);
+        s.seen.clear();
         for kind in [EventKind::HealedBy, EventKind::Healed, EventKind::BagFrom] {
             s.seen.event(kind, None);
         }
-        let mut m = Memory::default();
-        m.ingest(&s, 10);
+        m.ingest(&s, 11);
         let what: Vec<&str> = m.events.iter().map(|e| e.what.as_str()).collect();
         assert_eq!(
             what,
@@ -1453,6 +1485,56 @@ pub(crate) mod tests {
                 "another player gave me a sleeping bag",
             ]
         );
+    }
+
+    /// A teammate wrapping bandages all fight is one line, and the death
+    /// after it in the same look is still told by its killer; in the book,
+    /// "Ash healed me" again moves to now and evicts nothing.
+    #[test]
+    fn a_round_of_heals_never_crowds_out_a_death() {
+        let mut s = Summary::EMPTY;
+        let ash = s
+            .seen
+            .person(9, tag("Ash"), protocol::Address::GUEST, false)
+            .unwrap();
+        let rowan = s
+            .seen
+            .person(10, tag("Rowan"), protocol::Address::GUEST, false)
+            .unwrap();
+        let mut m = Memory::default();
+        m.event("my home was attacked".into(), 1);
+        for _ in 0..10 {
+            s.seen.event(EventKind::HealedBy, Some(ash));
+        }
+        for who in [Some(rowan), None, Some(ash)] {
+            s.seen.event(EventKind::Healed, who);
+        }
+        s.seen.event(EventKind::Died, Some(rowan));
+        s.seen.event(EventKind::Killed, Some(rowan));
+        m.ingest(&s, 10);
+        for now in 11..40 {
+            s.seen.clear();
+            let ash = s
+                .seen
+                .person(9, tag("Ash"), protocol::Address::GUEST, false)
+                .unwrap();
+            s.seen.event(EventKind::HealedBy, Some(ash));
+            m.ingest(&s, now);
+        }
+        let what: Vec<&str> = m.events.iter().map(|e| e.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "my home was attacked",
+                "I healed Rowan",
+                "I healed another player",
+                "I healed Ash",
+                "I was killed by Rowan",
+                "I killed Rowan",
+                "Ash healed me",
+            ]
+        );
+        assert_eq!(m.events.back().unwrap().at, 39);
     }
 
     /// A death and an older backpack's going in one look: each says only
