@@ -8074,15 +8074,27 @@ impl ShardCore {
                     || clients.iter().any(|c| c.connected && c.id == id)
             });
         }
+        // A kept set ends with its owner's team (a leave, a kick, the last
+        // one out, a prune): the client sends nothing while it has no team,
+        // so it could never correct a set kept past that, and the next team
+        // starts from none of theirs.
+        for slot in 0..MAX_PLAYERS {
+            let c = &self.clients[slot];
+            if c.pins.n > 0 && self.teams.team_of(c.id).is_empty() {
+                self.clients[slot].pins = protocol::PinSet::NONE;
+            }
+        }
     }
 
     /// Connection `slot`'s map marks to each teammate connected now, and
     /// nobody else (v157, Rust's team markers): encoded once, on the bare
     /// `send`, so a spectator watching a mate never sees them (`fan_out`'s
     /// confidence rule; `team_only` says so too). The set is kept on the
-    /// connection, team or none, for a mate who joins or comes onto the
-    /// team later (`drip_team_pins`). A ring that refuses is owed the set
-    /// again: the drip sends a kept set with marks in it.
+    /// connection while it has a team, for a mate who joins or comes onto
+    /// the team later (`drip_team_pins`); one sent with no team goes nowhere
+    /// and is not kept (`pump_teams` drops a kept set when the team ends).
+    /// A ring that refuses is owed the set again: the drip sends a kept set
+    /// with marks in it.
     fn relay_pins(
         &mut self,
         slot: usize,
@@ -8097,6 +8109,7 @@ impl ShardCore {
         let from = self.clients[slot].id;
         let mates = self.teams.team_of(from);
         if mates.is_empty() {
+            self.clients[slot].pins = protocol::PinSet::NONE;
             return;
         }
         let len = match protocol::encode_event_team_pins(from, pins, &mut self.ev_buf) {

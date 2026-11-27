@@ -600,9 +600,10 @@ pub struct ClientNetState {
     /// `Command`.
     pub pending_pins: Option<protocol::PinSet>,
     /// This player's map marks as they last sent them, kept in memory while
-    /// they are connected (never saved; `reset` and `ShardCore::disconnect`
-    /// drop it) so a mate who joins later, or comes onto the team, is sent
-    /// them without waiting on this player's next change.
+    /// they are connected and on a team (never saved; `reset`,
+    /// `ShardCore::disconnect` and the team's end drop it) so a mate who
+    /// joins later, or comes onto the team, is sent them without waiting on
+    /// this player's next change.
     pub pins: protocol::PinSet,
     /// The mates whose kept marks this connection has been sent since it
     /// joined or they came onto its team (`ShardCore::drip_team_pins`); 0

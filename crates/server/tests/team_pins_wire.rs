@@ -173,7 +173,8 @@ fn client(clients: &[(usize, ClientCore)], slot: usize) -> &ClientCore {
 /// **The shard keeps a player's marks while they play** (batch 2's
 /// follow-up): a mate who comes back, or a player who comes onto the team,
 /// sees marks set before they arrived though nobody changed one since, and
-/// a player who leaves takes theirs out of what the shard hands on.
+/// a player who leaves (the session or the team) takes theirs out of what
+/// the shard hands on: the next team starts from none of theirs.
 #[test]
 fn a_joiner_sees_marks_set_before_they_came() {
     use server::store::PlayerKey;
@@ -194,8 +195,9 @@ fn a_joiner_sees_marks_set_before_they_came() {
     let mut seen = Vec::new();
     settle(&mut core, &stats, &mut clients, &mut seen);
 
-    // Slot 2 marks the map with no team; slots 0 and 1 make one.
-    core.push_action(2, ActionMsg::Pins(set_of(&["LOOT"])));
+    // Slot 2 sends a set with no team (the game never does): it is not
+    // kept. Slots 0 and 1 make a team.
+    core.push_action(2, ActionMsg::Pins(set_of(&["ALONE"])));
     core.push_action(
         0,
         ActionMsg::Team {
@@ -248,8 +250,8 @@ fn a_joiner_sees_marks_set_before_they_came() {
         "a leaver's marks are not kept"
     );
 
-    // Slot 2 comes onto the team: it sees slot 0's marks, and both of them
-    // see the marks slot 2 set while it had no team.
+    // Slot 2 comes onto the team: it sees slot 0's marks, and nobody is
+    // sent the set it sent with no team.
     core.push_action(
         0,
         ActionMsg::Team {
@@ -272,12 +274,72 @@ fn a_joiner_sees_marks_set_before_they_came() {
         .map(|(id, s)| (id, *s))
         .collect();
     assert_eq!(to_2, vec![(id_of(0), raid)], "a new member sees the team's");
-    for slot in [0, 1] {
-        let loot: Vec<_> = pins_to(&seen, slot)
-            .into_iter()
-            .filter(|(from, _)| *from == id_of(2))
-            .collect();
-        assert_eq!(loot, vec![(id_of(2), set_of(&["LOOT"]))], "slot {slot}");
-    }
     assert_eq!(pins_to(&seen, 2).len(), 1, "slot 1 has no marks to send");
+    for slot in [0, 1] {
+        assert!(
+            pins_to(&seen, slot)
+                .iter()
+                .all(|(from, _)| *from != id_of(2)),
+            "a set sent with no team is not kept (slot {slot})"
+        );
+    }
+
+    // Slot 2 marks the map on the team; its mates see it.
+    let loot = set_of(&["LOOT"]);
+    core.push_action(2, ActionMsg::Pins(loot));
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    for slot in [0, 1] {
+        assert!(
+            client(&clients, slot)
+                .team_pins()
+                .any(|(id, s)| id == id_of(2) && *s == loot),
+            "slot {slot}"
+        );
+    }
+
+    // Slot 2 leaves with its marks up, then clears them with no team: the
+    // game sends nothing then, so the shard must not hold LOOT for the
+    // next team. Slot 1 leaves too and makes a team with slot 2, which must
+    // show none of slot 2's.
+    core.push_action(
+        2,
+        ActionMsg::Team {
+            op: TEAM_OP_LEAVE,
+            target: 0,
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    core.push_action(
+        1,
+        ActionMsg::Team {
+            op: TEAM_OP_LEAVE,
+            target: 0,
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(client(&clients, 2).team().count, 0);
+    assert_eq!(client(&clients, 1).team().count, 0);
+    core.push_action(
+        1,
+        ActionMsg::Team {
+            op: TEAM_OP_INVITE,
+            target: id_of(2),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    seen.clear();
+    core.push_action(
+        2,
+        ActionMsg::Team {
+            op: TEAM_OP_ACCEPT,
+            target: id2_of(1),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(client(&clients, 1).team().count, 2, "a new team");
+    assert!(
+        pins_to(&seen, 1).is_empty(),
+        "the next team starts from none of slot 2's"
+    );
+    assert_eq!(client(&clients, 1).team_pins().count(), 0);
 }
