@@ -3587,6 +3587,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_SENTRY) => "THE GATE's sentry".to_string(),
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
+            Some(sim_core::mob::MOB_STRAY) => "a stray".to_string(),
             Some(_) => "a pig".to_string(),
             None => crate::ui::names::shown(core, id),
         };

@@ -719,6 +719,24 @@ fn test_alloc_zero() {
     let mut assisted_world = sim_core::probe::assist_probe_world(42);
     let mut headroom = sim_core::probe::headroom_probe();
     let mut rotation_world = sim_core::probe::rotation_probe_world();
+    // THE SEVERED GATE opens as the window does: a work past act II, lit,
+    // so the strays come out of the vaults on the window's first tick and
+    // their hatch at a door is counted (`mob::stray_home_of`).
+    let strays_before = world
+        .mobs
+        .m
+        .iter()
+        .filter(|m| m.alive && m.kind == sim_core::mob::MOB_STRAY)
+        .count();
+    {
+        let k = world.works_def.count as usize;
+        world.works_def.defs[k] = world.works_def.defs[0];
+        world.works_def.defs[k].act = 3;
+        world.works_def.count += 1;
+        world.works.w[k].state = sim_core::works::WORK_LIT;
+        world.works.refresh(&world.works_def);
+        assert!(world.works.gate_open(&world.works_def));
+    }
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
 
@@ -1159,6 +1177,16 @@ fn test_alloc_zero() {
     // never be what a future reader blames a nonzero delta on. These are
     // what keep the build arms above honest: a gate that only ever drove
     // refusals would count nothing the write paths do.
+    assert_eq!(strays_before, 0, "a stray stood up before the Gate opened");
+    assert!(
+        world
+            .mobs
+            .m
+            .iter()
+            .any(|m| m.alive && m.kind == sim_core::mob::MOB_STRAY),
+        "no stray came out inside the counted window — the hatch at a vault \
+         fell out of the alloc gate"
+    );
     assert!(
         placed_in_window > 0,
         "no piece was placed inside the counted window — the build write path \

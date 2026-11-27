@@ -9587,6 +9587,7 @@ impl World {
             &mut howls,
             &self.nets,
             tier,
+            self.works.gate_open(&self.works_def),
         );
         for &slot in howls.entries() {
             self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);

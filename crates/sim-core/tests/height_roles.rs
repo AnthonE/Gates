@@ -288,6 +288,13 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "mob.rs",
+        "stray_home_of",
+        "locator: picks where a stray comes out, in front of a landmark's vault \
+         door, against the raw ground for `guard_home_of`'s reason; the landmark \
+         test reads `terrain::ground`.",
+    ),
+    (
+        "mob.rs",
         "den_of",
         "locator: picks where a pack-mate dens, round its leader's home, against \
          the raw ground for `home_of`'s reason.",

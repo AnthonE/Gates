@@ -1561,6 +1561,15 @@ pub const MAX_MOBS: usize = 256;
 // Slots travel as `u8` (`brain.rs` howls, `mob.rs`), so 256 is the ceiling.
 const _: () = assert!(MAX_MOBS <= 256);
 
+/// The strays (`mob::MOB_STRAY`): what leaks out of the sealed vaults once
+/// THE SEVERED GATE opens (`ARC.md` §2 act III) and roams toward the
+/// island's noisiest bases. A block of roster slots of its own, just below
+/// the turrets' (`mob::STRAY_SLOT0`), so this is the population's hard cap:
+/// the row's density (`content/mobs.toml` `per_km2`) asks for some number
+/// and the block clamps it here. A dead stray respawns into its own slot, so
+/// no spawn path can ask for a thirteenth. Proposed default.
+pub const MAX_STRAYS: usize = 12;
+
 /// The bit that says *this class-D entity is not a player*.
 ///
 /// An animal rides the same snapshot lane a player does, because it is the

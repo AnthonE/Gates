@@ -141,7 +141,10 @@ impl Species {
     pub fn of(id: u32) -> Species {
         match mob::slot_of_id(id) {
             None => Species::Player,
-            Some(slot) if mob::kind_of(slot) == mob::MOB_WOLF => Species::Wolf,
+            // A stray is drawn and fights as a wolf, and reads as one.
+            Some(slot) if matches!(mob::kind_of(slot), mob::MOB_WOLF | mob::MOB_STRAY) => {
+                Species::Wolf
+            }
             Some(_) => Species::Pig,
         }
     }

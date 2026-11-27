@@ -453,6 +453,86 @@ drops = [
 
 # ---------------------------------------------------------------------------
 
+[[mob]]
+id = "mob.stray"
+name = "Stray"
+
+# **What leaks out once THE SEVERED GATE opens** (`ARC.md` §2 act III,
+# "things leak out and roam"; §5 M2, "the first roaming things, drawn to
+# noisy bases"). None exists before the Gate opens. From then on each of the
+# roster's stray slots (`limits::MAX_STRAYS`, the population's hard cap) comes
+# out in front of a landmark's unsealed vault door (`mob::stray_home_of`) and
+# roams the island from it, and whatever it hears it goes to see
+# (`brain::STRAY`): a hammer on a wall going up is the loudest thing most
+# bases make. It fights like the wolf it is drawn as (the client wears the
+# wolf's model), without a pack, a fear of fire or a bed.
+#
+# Ours, every number, and proposed defaults. The fight is the wolf's row:
+# the Gate opens in the island's worst fel tier (`[[fel_tier]]` C), so it
+# meets a player at 225 hp and 42 a bite, as every wolf on the island by
+# then does.
+hp = 150
+walk_pct = 55
+flee_pct = 105
+flee_seconds = 6
+attack = 30
+attack_range_m = 2
+attack_seconds = 2
+brave_pct = 0
+fel_bite = 80
+
+# **The leash is the island, near enough**: 300 m from its door, ten wolf
+# ranges of 30, so a stray that heard a base is not walked home before it
+# gets there. It notices a player as a wolf does by day, and the dark changes
+# nothing: it does not keep the island's hours.
+roam_m = 300
+spook_m = 30
+night_spook_m = 30
+
+# Ten minutes in its slot before another comes out: clearing the strays
+# round your base buys a while, and the Gate keeps sending more.
+respawn_seconds = 600
+
+# How many: one per km² of the island's land, wherever it is (it lives at a
+# door, not in a biome), up to the roster's twelve. Habitat here only weighs
+# the count; the home is the vault's.
+per_km2 = 1.0
+habitat = { meadow = 1.0, forest = 1.0, highland = 1.0, desert = 1.0, fel = 1.0, snow = 1.0 }
+
+# The wolf's body, because it is the wolf's model (`render/mobs.rs`
+# WOLF_LEN_M / WOLF_H_M; `client/tests/mob_volume.rs` holds the pair).
+body_r_cm = 60
+body_h_cm = 85
+sight_deg = 200
+
+# Solitary, and no torch holds it off.
+pack_m = 0
+fire_fear_m = 0
+pack_biters = 2
+give_up_tries = 3
+heal_after_seconds = 60
+heal_seconds = 20
+howl_seconds = 20
+orbit_m = 7
+# It never lies down.
+sleep_pct = 0
+
+# **The ear is the point of it.** A strike carries to it from 60 m, more
+# than twice the island's animals' 25, and the open Gate rouses that half
+# as far again (`works::KNOB_NOTICE_PCT`) on top of fel tier C's quarter:
+# a hammer is heard from about 110 m.
+hear_m = { gun = 150, bow = 20, strike = 60, blast = 300 }
+
+# Hide and bone, the wolf's kind of carcass at a little more.
+drops = [
+  { item = "item.fat", count = 7 },
+  { item = "item.cloth", count = 13 },
+  { item = "item.bone_frags", count = 40 },
+  { item = "item.leather", count = 27 },
+]
+
+# ---------------------------------------------------------------------------
+
 # **Butchering** (`NOW.md` §0m item 1, `reference/ANIMALS.md` §9.5 item 2):
 # a tool swung at a carcass cuts one stack out of it per hit, in the order
 # the species' `drops` list them (meat first), and pays `yield_pct` percent

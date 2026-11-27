@@ -2494,8 +2494,12 @@ pub fn voices(
         // The register is the brain's now, not the distance alone: a wolf
         // growls when it is hunting and close enough to hear, and howls
         // otherwise; a pig snorts fast while it charges.
-        let near =
-            gait.hostile && (close || sim_core::mob::kind_of(slot) != sim_core::mob::MOB_WOLF);
+        let near = gait.hostile
+            && (close
+                || !matches!(
+                    sim_core::mob::kind_of(slot),
+                    sim_core::mob::MOB_WOLF | sim_core::mob::MOB_STRAY
+                ));
         let Some(cue) = sound.voices.due(slot, near, dt) else {
             continue;
         };

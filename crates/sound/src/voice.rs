@@ -210,7 +210,7 @@ impl Voices {
 /// and the boundary is [`switch_m`].
 pub fn cue_of(slot: usize, near: bool) -> Cue {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => {
+        mob::MOB_WOLF | mob::MOB_STRAY => {
             if near {
                 Cue::Growl
             } else {
@@ -225,7 +225,7 @@ pub fn cue_of(slot: usize, near: bool) -> Cue {
 /// What the animal in roster slot `slot` cries when a blow lands on it.
 pub fn hurt_of(slot: usize) -> Cue {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => Cue::WolfHurt,
+        mob::MOB_WOLF | mob::MOB_STRAY => Cue::WolfHurt,
         mob::MOB_STAG => Cue::StagHurt,
         _ => Cue::BoarHurt,
     }
@@ -234,7 +234,7 @@ pub fn hurt_of(slot: usize) -> Cue {
 /// …and its last cry.
 pub fn death_of(slot: usize) -> Cue {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => Cue::WolfDeath,
+        mob::MOB_WOLF | mob::MOB_STRAY => Cue::WolfDeath,
         mob::MOB_STAG => Cue::StagDeath,
         _ => Cue::BoarDeath,
     }

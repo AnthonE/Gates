@@ -1435,7 +1435,13 @@ pub use voice::{
 /// `SUB_TEAM_PINS` (114) relays it to each teammate with your id
 /// (`EventMsg::TeamPins`). A catalog row carries `hurl_ticks` after its
 /// `damage`: the windup a thrown spear needs (`combat::HurlDef`).
-pub const PROTO_VER: u16 = 157;
+///
+/// v158 — a fourth species, the stray (`mob::MOB_STRAY`, roster slots
+/// `mob::STRAY_SLOT0..` below the turrets'): `mob::kind_of` answers it for
+/// those slots, the heli's and the sentries' kinds move up one (4, 5), and a
+/// bag's look admits `1 + MOB_STRAY` (4) for its carcass, so a player's
+/// corpse is `BAG_KIND_BODY` 5. No layout moved.
+pub const PROTO_VER: u16 = 158;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
 /// below `limits::MOB_ID_TAG`, are the slot's claim generation.

@@ -152,6 +152,10 @@ fn beast(killer: u32) -> Option<Beast> {
             name: "Stag",
             sentence: "a stag gored you",
         },
+        mob::MOB_STRAY => Beast {
+            name: "Stray",
+            sentence: "a stray ran you down",
+        },
         mob::MOB_HELI => Beast {
             name: "Attack helicopter",
             sentence: "the attack helicopter gunned you down",
@@ -623,6 +627,10 @@ mod tests {
         assert_eq!(sentence(&of(wolf), &cat, ""), "a wolf ran you down");
         assert_eq!(sentence(&of(pig), &cat, ""), "a pig gored you");
         assert_eq!(sentence(&of(stag), &cat, ""), "a stag gored you");
+        assert_eq!(
+            sentence(&of(find(mob::MOB_STRAY)), &cat, ""),
+            "a stray ran you down"
+        );
         assert_eq!(
             sentence(&of(mob::HELI_SLOT), &cat, ""),
             "the attack helicopter gunned you down"

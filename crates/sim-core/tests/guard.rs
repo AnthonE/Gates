@@ -600,7 +600,18 @@ fn guards_are_on_top_of_the_density() {
             want.iter().sum::<usize>() + guards,
             "seed {seed}: the roster is the density's count plus the guards"
         );
-        assert_eq!(w.mobs.alive(), w.mobs.homed(), "seed {seed}: one hatched");
+        // The strays wait behind their doors until the Gate opens (`tests/stray.rs`).
+        let sealed = w
+            .mobs
+            .m
+            .iter()
+            .filter(|m| m.homed && m.kind == mob::MOB_STRAY)
+            .count();
+        assert_eq!(
+            w.mobs.alive(),
+            w.mobs.homed() - sealed,
+            "seed {seed}: one hatched"
+        );
     }
 }
 

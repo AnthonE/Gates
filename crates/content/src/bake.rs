@@ -3118,6 +3118,7 @@ impl Content {
                 "mob.pig" => MOB_PIG,
                 "mob.wolf" => MOB_WOLF,
                 "mob.stag" => sim_core::mob::MOB_STAG,
+                "mob.stray" => sim_core::mob::MOB_STRAY,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"
@@ -3142,6 +3143,7 @@ impl Content {
                 "mob.pig" => MOB_PIG as usize,
                 "mob.wolf" => MOB_WOLF as usize,
                 "mob.stag" => sim_core::mob::MOB_STAG as usize,
+                "mob.stray" => sim_core::mob::MOB_STRAY as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"

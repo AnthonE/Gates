@@ -3666,7 +3666,7 @@ fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
 /// fixture with it.
 #[test]
 fn the_brain_numbers_bake_to_what_the_code_had() {
-    use sim_core::mob::{MobContent, MOB_PIG, MOB_STAG, MOB_WOLF};
+    use sim_core::mob::{MobContent, MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let mc = c.bake_mobs().expect("shipped animals must bake");
     let fx = MobContent::probe_fixture();
@@ -3687,6 +3687,7 @@ fn the_brain_numbers_bake_to_what_the_code_had() {
         (MOB_PIG, MOB_PIG),
         (MOB_WOLF, MOB_WOLF),
         (MOB_STAG, MOB_PIG),
+        (MOB_STRAY, MOB_STRAY),
     ] {
         assert_eq!(
             brain(mc.def(kind)),

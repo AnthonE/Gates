@@ -276,7 +276,7 @@ fn scan(path: &str, every: f64) {
                 if let Some(slot) = sim_core::mob::slot_of_id(id) {
                     // The species is the slot's (`mob::kind_of`), so a shot
                     // list can find a wolf and not just "an animal".
-                    let kind = ["pig", "wolf", "stag", "heli", "sentry"]
+                    let kind = ["pig", "wolf", "stag", "stray", "heli", "sentry"]
                         .get(sim_core::mob::kind_of(slot) as usize)
                         .unwrap_or(&"mob");
                     if *kind != "sentry" {

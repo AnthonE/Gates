@@ -459,6 +459,90 @@ pub static GUARD: Design = Design {
     net: false,
 };
 
+/// A stray (`mob::MOB_STRAY`): the wolf's hunt and its ear without the
+/// wolf's pack, fire or sleep. It roams wide of the vault it came out of,
+/// goes to the newest noise in its hearing whatever it was doing short of a
+/// fight — a base going up is a hammer it hears from far off — and runs
+/// down whoever it finds there, circling when it cannot reach them and
+/// going home once it has given up. It never lies down: what leaked out of
+/// the Gate does not keep the island's hours.
+pub static STRAY: Design = Design {
+    rules: [
+        // Idle
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target], Chase),
+            go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
+            go(&[Timer], Roam),
+        ],
+        // Roam
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target], Chase),
+            go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+        // Chase
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            give_up(&[GaveUp], NavigateHome),
+            go(&[InReach, Crowded], Orbit),
+            go(&[InReach], Attack),
+            go(&[Failed], Orbit),
+        ],
+        // Attack
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            go(&[OutOfReach], Chase),
+        ],
+        // Flee: from the target, or from the noise when there is none.
+        &[go(&[NoTarget, Quiet], Idle)],
+        // NavigateHome: a fresh noise on the way turns it round.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target], Chase),
+            go(&[Noise], MoveTowards),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+        // Orbit
+        &[
+            go(&[Afraid], Flee),
+            go(&[NoTarget], Idle),
+            give_up(&[GaveUp], NavigateHome),
+            go(&[Timer], Chase),
+        ],
+        // Patrol: a stray never patrols; if it ever did, it rests.
+        &[
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+        ],
+        // Sleep: it never sleeps; if it ever did, anything wakes it.
+        &[
+            go(&[Target], Chase),
+            go(&[Noise], MoveTowards),
+            go(&[Timer], Idle),
+        ],
+        // MoveTowards: going to see, until it finds someone or gets there.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
+    ],
+    net: false,
+};
+
 /// The wolf with a bred brain choosing its fights (`genome.rs`,
 /// [`Nets`]). Everything around a fight is the [`WOLF`]'s, row for row: how
 /// it rests, roams, sleeps, goes to look and walks home. From the moment it
@@ -611,11 +695,14 @@ pub static WOLF_NET: Design = Design {
 /// post, and a pack hunter is one whose content row says it answers its
 /// pack and bites. A herd that answers its own but never bites (the stag)
 /// is prey: it runs the boar's design, and its herd's call is a flight it
-/// joins (`pack_call`). Only a free pack hunter takes a net: a guard keeps
-/// its post's rule table, and a net installed on prey's row drives nothing.
+/// joins (`pack_call`). A stray runs its own ([`STRAY`]). Only a free pack
+/// hunter takes a net: a guard keeps its post's rule table, and a net
+/// installed on prey's row drives nothing.
 pub fn design_for(slot: usize, def: &MobDef, net: bool) -> &'static Design {
     if crate::mob::guard_site_of(slot).is_some() {
         &GUARD
+    } else if crate::mob::is_stray_slot(slot) {
+        &STRAY
     } else if def.pack_cm > 0 && def.attack > 0 {
         if net {
             &WOLF_NET

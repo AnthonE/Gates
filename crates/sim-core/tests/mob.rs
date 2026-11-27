@@ -63,6 +63,17 @@ fn armed(seed: u64) -> World {
 /// lucky; the rest would have gone on passing while measuring an animal
 /// they were not written about. A test that takes whatever is in slot 0 and
 /// calls it a pig is a test with an expiry date.
+/// The enrolled slots that hatch on an armed tick: every one but the
+/// strays, which wait behind their vault doors until THE SEVERED GATE opens
+/// (`tests/stray.rs`).
+fn hatchable(w: &World) -> usize {
+    w.mobs
+        .m
+        .iter()
+        .filter(|m| m.homed && m.kind != mob::MOB_STRAY)
+        .count()
+}
+
 fn first_alive(w: &World, kind: u8) -> usize {
     w.mobs
         .m
@@ -81,7 +92,7 @@ fn every_home_is_on_walkable_inland_ground() {
         w.tick(&[]);
         assert_eq!(
             w.mobs.alive(),
-            w.mobs.homed(),
+            hatchable(&w),
             "seed {seed}: an enrolled slot found nowhere to hatch"
         );
         for (slot, m) in w.mobs.m.iter().enumerate() {
@@ -143,7 +154,7 @@ fn inert_content_never_hatches() {
 fn armed_content_hatches_the_whole_roster() {
     let mut w = armed(11);
     w.tick(&[]);
-    assert_eq!(w.mobs.alive(), w.mobs.homed());
+    assert_eq!(w.mobs.alive(), hatchable(&w));
     let fixture = MobContent::probe_fixture();
     for (slot, m) in w.mobs.m.iter().enumerate().filter(|(_, m)| m.alive) {
         assert_eq!(

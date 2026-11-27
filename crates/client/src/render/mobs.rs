@@ -253,11 +253,13 @@ pub const WOLF_BODY_GLB: &str = "models/mob/wolf_body.glb";
 pub const WOLF_LEG_GLB: &str = "models/mob/wolf_leg.glb";
 pub const STAG_BODY_GLB: &str = "models/mob/stag_body.glb";
 pub const STAG_LEG_GLB: &str = "models/mob/stag_leg.glb";
-/// Killed animals lying on their side, indexed by species.
+/// Killed animals lying on their side, indexed by species. A stray lies as
+/// the wolf it is drawn as.
 pub const CARCASS_GLB: [&str; mob::MOB_KINDS] = [
     "models/mob/pig_carcass.glb",
     "models/mob/wolf_carcass.glb",
     "models/mob/stag_carcass.glb",
+    "models/mob/wolf_carcass.glb",
 ];
 /// Every model this file loads — what `tests/packed_maps.rs` censuses.
 pub const MOB_GLBS: [&str; 9] = [
@@ -316,7 +318,7 @@ impl HerdAssets {
     /// this is the thing that makes the rejection free rather than a debt.
     pub fn of(&self, slot: usize) -> &SpeciesAssets {
         match mob::kind_of(slot) {
-            mob::MOB_WOLF => &self.wolf,
+            mob::MOB_WOLF | mob::MOB_STRAY => &self.wolf,
             mob::MOB_STAG => &self.stag,
             _ => &self.pig,
         }
@@ -327,7 +329,7 @@ impl HerdAssets {
 /// tables its legs hang from.
 fn hip_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_LEG_ANCHORS[0].0[1],
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS[0].0[1],
         mob::MOB_STAG => STAG_LEG_ANCHORS[0].0[1],
         _ => LEG_ANCHORS[0].0[1],
     }
@@ -337,7 +339,7 @@ fn hip_of(slot: usize) -> f32 {
 /// lunge or a howl pitches the body about, so the hind feet stay planted.
 fn hind_z_of(slot: usize) -> f32 {
     let anchors = match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_LEG_ANCHORS,
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS,
         mob::MOB_STAG => STAG_LEG_ANCHORS,
         _ => LEG_ANCHORS,
     };
@@ -348,7 +350,7 @@ fn hind_z_of(slot: usize) -> f32 {
 /// is read ([`ground_tilt`]). The fel models stand on the same stance.
 fn feet_z_of(slot: usize) -> [f32; 2] {
     let anchors = match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_LEG_ANCHORS,
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS,
         mob::MOB_STAG => STAG_LEG_ANCHORS,
         _ => LEG_ANCHORS,
     };
@@ -361,7 +363,7 @@ fn feet_z_of(slot: usize) -> [f32; 2] {
 /// The stride speed at which a slot's species reaches full swing.
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_LEG_FULL_MPS,
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_FULL_MPS,
         mob::MOB_STAG => STAG_LEG_FULL_MPS,
         _ => PIG_LEG_FULL_MPS,
     }
@@ -394,7 +396,7 @@ pub fn full_mps_of(slot: usize) -> f32 {
 /// lands.
 pub fn flank_h_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_BODY[0].0[1],
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_BODY[0].0[1],
         mob::MOB_STAG => STAG_BODY[0].0[1],
         _ => PIG_BODY[0].0[1],
     }
@@ -402,7 +404,7 @@ pub fn flank_h_of(slot: usize) -> f32 {
 
 pub fn voice_h_of(slot: usize) -> f32 {
     let stand = match mob::kind_of(slot) {
-        mob::MOB_WOLF => WOLF_H_M,
+        mob::MOB_WOLF | mob::MOB_STRAY => WOLF_H_M,
         mob::MOB_STAG => STAG_H_M,
         _ => PIG_H_M,
     };

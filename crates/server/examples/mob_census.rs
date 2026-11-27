@@ -7,7 +7,7 @@
 //! `ARC_HOUR` and `lit` are the shard's `dev_arc_hour` and `dev_works_lit`:
 //! the animals hatch off the world clock, so a late wipe puts them elsewhere.
 
-use sim_core::mob::{MOB_PIG, MOB_STAG, MOB_WOLF};
+use sim_core::mob::{MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
 use sim_core::movement::POS_XZ_Q;
 use std::collections::BTreeMap;
 
@@ -39,6 +39,19 @@ fn main() {
     for _ in 0..secs * u64::from(sim_core::limits::TICK_HZ) {
         w.tick(&[]);
     }
+    let homed = |k: u8| w.mobs.m.iter().filter(|m| m.homed && m.kind == k).count();
+    println!(
+        "enrolled: pig {} / {}, wolf {} / {}, stag {} / {}, stray {} / {} (gate open {})",
+        homed(MOB_PIG),
+        sim_core::mob::capacity(MOB_PIG),
+        homed(MOB_WOLF),
+        sim_core::mob::capacity(MOB_WOLF),
+        homed(MOB_STAG),
+        sim_core::mob::capacity(MOB_STAG),
+        homed(MOB_STRAY),
+        sim_core::mob::capacity(MOB_STRAY),
+        w.works.gate_open(&w.works_def),
+    );
     let h = &w.haven;
     println!("haven pad {:.0},{:.0}", h.x, h.z);
     println!(
@@ -61,19 +74,24 @@ fn main() {
     for m in h.marks.iter().filter(|m| m.live) {
         println!("landmark {:?} {:.0},{:.0}", m.kind, m.x, m.z);
     }
-    let mut cells: [BTreeMap<(i32, i32), u32>; 3] = Default::default();
+    let mut cells: [BTreeMap<(i32, i32), u32>; 4] = Default::default();
     for (slot, m) in w.mobs.m.iter().enumerate() {
-        if !m.alive || m.kind > MOB_STAG {
+        if !m.alive || m.kind > MOB_STRAY {
             continue;
         }
         let (x, z) = (m.body.qx as f32 * POS_XZ_Q, m.body.qz as f32 * POS_XZ_Q);
-        let name = ["pig", "wolf", "stag"][m.kind as usize];
+        let name = ["pig", "wolf", "stag", "stray"][m.kind as usize];
         println!("{name:5} slot {slot:3}  {x:7.1},{z:7.1}");
         *cells[m.kind as usize]
             .entry(((x / 200.0) as i32, (z / 200.0) as i32))
             .or_default() += 1;
     }
-    for (kind, name) in [(MOB_PIG, "pig"), (MOB_WOLF, "wolf"), (MOB_STAG, "stag")] {
+    for (kind, name) in [
+        (MOB_PIG, "pig"),
+        (MOB_WOLF, "wolf"),
+        (MOB_STAG, "stag"),
+        (MOB_STRAY, "stray"),
+    ] {
         let mut v: Vec<_> = cells[kind as usize].iter().collect();
         v.sort_by(|a, b| b.1.cmp(a.1));
         let top: Vec<String> = v

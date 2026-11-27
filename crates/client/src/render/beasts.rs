@@ -93,7 +93,7 @@ pub fn fel_species(slot: usize) -> Option<usize> {
 pub fn fel_species_of_kind(kind: u8) -> Option<usize> {
     match kind {
         mob::MOB_PIG => Some(FEL_PIG),
-        mob::MOB_WOLF => Some(FEL_WOLF),
+        mob::MOB_WOLF | mob::MOB_STRAY => Some(FEL_WOLF),
         mob::MOB_STAG => Some(FEL_STAG),
         _ => None,
     }

@@ -67,7 +67,7 @@ use crate::collide::ColIndex;
 use crate::combat::{held_item, CombatContent};
 use crate::gather::{ItemStack, NO_ITEM};
 use crate::input::{InputFrame, BTN_SPRINT};
-use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS};
+use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MAX_STRAYS, MOB_ID_TAG, MOB_THINK_TICKS};
 use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav::{self, Ground, Nav, NavPath};
 use crate::noise::Hearing;
@@ -84,19 +84,38 @@ pub const MOB_PIG: u8 = 0;
 pub const MOB_WOLF: u8 = 1;
 /// The stag: prey that only ever runs (`attack = 0`), Rust's deer.
 pub const MOB_STAG: u8 = 2;
+/// The stray: what leaks out of the sealed vaults once THE SEVERED GATE
+/// opens (`ARC.md` §2 act III, "things leak out and roam"). It hatches only
+/// while the Gate is open, at a landmark's vault door ([`STRAY_SLOT0`]'s
+/// block, `stray_home_of`), roams far from it, and goes to the newest noise
+/// in its hearing (`brain::STRAY`): a base going up draws it in. The client
+/// draws it with the wolf's model.
+pub const MOB_STRAY: u8 = 3;
 /// The content species — the rows `content/mobs.toml` bakes.
-pub const MOB_KINDS: usize = 3;
+pub const MOB_KINDS: usize = 4;
 /// The attack helicopter (`heli.rs`), in [`HELI_SLOT`]. **Not a content
 /// species**: past [`MOB_KINDS`], so `MobContent::def` hands back
 /// `MobDef::INERT` for it (no hit volume, no hp, no loot) and nothing here
 /// steps it — the slot is never homed. It rides the roster for the wire's
 /// sake alone.
-pub const MOB_HELI: u8 = 3;
+pub const MOB_HELI: u8 = 4;
 pub use crate::heli::HELI_SLOT;
 /// THE GATE's sentry guns (`sentry.rs`), in the slots just below the heli's.
 /// Not a content species either: the slots are never homed and have no hit
 /// volume, and they ride the roster for the wire's sake alone.
-pub const MOB_SENTRY: u8 = 4;
+pub const MOB_SENTRY: u8 = 5;
+
+/// The first stray's roster slot: [`MAX_STRAYS`] of them, just below the
+/// turrets'. A block at the top of the free roster rather than a stride, so
+/// the pigs', wolves' and stags' ordinals below it do not move (each
+/// species enrols its lowest slots first, and none reaches this high).
+pub const STRAY_SLOT0: usize = crate::turret::TURRET_SLOT0 - MAX_STRAYS;
+
+/// Whether a roster slot is a stray's.
+#[inline]
+pub const fn is_stray_slot(slot: usize) -> bool {
+    slot >= STRAY_SLOT0 && slot < crate::turret::TURRET_SLOT0
+}
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
 /// "predator v0"): 256 slots at 1-in-4 is room for 64 wolves (the site
@@ -134,6 +153,8 @@ pub const fn kind_of(slot: usize) -> u8 {
         MOB_HELI
     } else if crate::sentry::is_sentry_slot(slot) || crate::turret::is_turret_slot(slot) {
         MOB_SENTRY
+    } else if is_stray_slot(slot) {
+        MOB_STRAY
     } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else if slot % WOLF_SLOT_EVERY == STAG_SLOT_PHASE {
@@ -311,6 +332,13 @@ pub const MOB_LOOT_ROWS: usize = 6;
 /// Noise channels. Disjoint from every channel `terrain.rs` and `world.rs`
 /// spend, which is the only property that matters about them.
 const CH_MOB_HOME: u32 = 112;
+/// Which vault a stray comes out of, and where in front of its door.
+const CH_MOB_STRAY: u32 = 113;
+
+/// A stray stands up this far in front of its vault's door, metres: past
+/// the door's swing and the capsule, and inside the landmark's apron.
+const STRAY_DOOR_MIN_M: f32 = 3.0;
+const STRAY_DOOR_SPAN_M: f32 = 5.0;
 
 /// Candidate homes drawn before a roster slot gives up and stays empty.
 /// Bounded like the spawn ring's `SPAWN_CANDIDATES` and for the same
@@ -799,8 +827,34 @@ impl MobContent {
                 ..ItemStack::EMPTY
             }; MOB_LOOT_ROWS],
         };
+        // The stray: the fixture wolf's fight, the shipped row's leash, ear
+        // and density, no pack, no fire, no bed. It hatches only once a
+        // work past act II burns, so a fixture world without one never
+        // stands a stray up.
+        c.defs[MOB_STRAY as usize] = MobDef {
+            roam_cm: 30_000,
+            night_spook_cm: 3_000,
+            respawn_ticks: 18_000,
+            per_km2_milli: 1_000,
+            habitat_pm: [0, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
+            sight_dot_pm: -174,
+            pack_cm: 0,
+            fire_fear_cm: 0,
+            sleep_pct: 0,
+            hear: Self::STRAY_EARS,
+            ..c.defs[MOB_WOLF as usize]
+        };
         c
     }
+
+    /// The shipped stray's ears (`content/mobs.toml` `mob.stray` `hear_m`):
+    /// a gunshot at 150 m, a bow at 20, a strike at 60 and a blast at 300.
+    pub const STRAY_EARS: Hearing = Hearing {
+        gun_cm: 15_000,
+        bow_cm: 2_000,
+        strike_cm: 6_000,
+        blast_cm: 30_000,
+    };
 
     pub fn def(&self, kind: u8) -> MobDef {
         self.defs
@@ -1095,6 +1149,7 @@ pub const fn ordinal(slot: usize) -> Option<usize> {
     match kind_of(slot) {
         MOB_WOLF => Some(slot / WOLF_SLOT_EVERY - SITE_GUARDS),
         MOB_STAG => Some(slot / WOLF_SLOT_EVERY),
+        MOB_STRAY => Some(slot - STRAY_SLOT0),
         // The odd slots.
         _ => Some(slot / 2),
     }
@@ -1283,6 +1338,7 @@ pub fn step(
     howls: &mut Howls,
     nets: &brain::Nets,
     tier: u8,
+    gate_open: bool,
 ) {
     bites.clear();
     howls.clear();
@@ -1320,8 +1376,12 @@ pub fn step(
             // cheap, it is off a tick comparison, and an animal that only
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
-            // Always as the island's animal: the next think turns it.
-            if island.hp > 0 && tick >= mob.respawn_at && !day {
+            // Always as the island's animal: the next think turns it. A
+            // stray waits behind its sealed door until THE SEVERED GATE
+            // opens (`works::gate_open_of`), and from then on comes out of
+            // one whenever its slot is empty.
+            let sealed = mob.kind == MOB_STRAY && !gate_open;
+            if island.hp > 0 && tick >= mob.respawn_at && !day && !sealed {
                 hatch(seed, haven, tick, slot, mob, &island, leader_home);
             }
             continue;
@@ -1467,6 +1527,7 @@ fn hatch(
 ) {
     let home = match guard_site_of(slot) {
         Some(site) => guard_home_of(seed, haven, slot, site),
+        None if is_stray_slot(slot) => stray_home_of(seed, haven, slot, tick),
         None => leader_home
             .and_then(|l| den_of(seed, haven, slot, tick, l))
             .or_else(|| home_of(seed, haven, slot, tick, def)),
@@ -1822,6 +1883,58 @@ fn home_of(seed: u64, haven: &Haven, slot: usize, tick: u64, def: &MobDef) -> Op
             || crate::monument::covers(&haven.ziggurat, x, z, 20.0)
             || crate::landmark::covers(&haven.marks, x, z, 20.0)
         {
+            continue;
+        }
+        return Some((x, z));
+    }
+    None
+}
+
+/// A stray comes out of a vault: one landmark's sealed door, drawn per
+/// hatch among the island's live landmarks, and it stands up a few metres
+/// in front of it — inside a quarter turn either side of where the door
+/// faces, which `landmark::vault_face` turns to open ground. The door is
+/// its home and the leash's centre, so its roam (`roam_m`, far wider than a
+/// wolf's) spreads outward from the landmark across the island.
+///
+/// Rejected like a guard's apron (the land line, the slope) and against the
+/// landmark's own boxes, which a body standing in a wall would be shoved
+/// out of. An island with no landmark keeps its strays behind no door at
+/// all: the slot retries and stays empty.
+fn stray_home_of(seed: u64, haven: &Haven, slot: usize, tick: u64) -> Option<(f32, f32)> {
+    let live = haven.marks.iter().filter(|m| m.live).count();
+    if live == 0 {
+        return None;
+    }
+    for attempt in 0..HOME_TRIES {
+        let h = cell_hash(seed, slot as i32, draw_key(tick, attempt), CH_MOB_STRAY);
+        let pick = (h % live as u64) as usize;
+        let Some(m) = haven.marks.iter().filter(|m| m.live).nth(pick) else {
+            continue;
+        };
+        let mut k = 0;
+        let door = loop {
+            match crate::landmark::anchor(m, k) {
+                Some((x, z, yaw, terrain::Occupant::Vault)) => break Some((x, z, yaw)),
+                Some(_) => k += 1,
+                None => break None,
+            }
+        };
+        let Some((vx, vz, yaw)) = door else {
+            continue;
+        };
+        // ±32 of the bearing byte's 256 is a quarter turn either side.
+        let spread = (((h >> 16) & 0x3F) as u8).wrapping_sub(32);
+        let (fx, fz) = yaw_dir((yaw.wrapping_add(spread) as u16) << 8);
+        let r = STRAY_DOOR_MIN_M + ((h >> 24) & 0xFFFF) as f32 / 65536.0 * STRAY_DOOR_SPAN_M;
+        let (x, z) = (vx + fx * r, vz + fz * r);
+        if terrain::height(seed, x, z) <= terrain::LAND_MIN_H
+            || terrain::slope(seed, x, z) >= HOME_MAX_SLOPE
+        {
+            continue;
+        }
+        let feet = terrain::ground(seed, haven, x, z);
+        if crate::landmark::blocks(&haven.marks, x, z, feet + 0.1, 0.6, 1.0) {
             continue;
         }
         return Some((x, z));
