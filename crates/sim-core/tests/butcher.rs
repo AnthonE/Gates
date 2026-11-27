@@ -9,7 +9,7 @@ use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_MOBS};
-use sim_core::mob::{self, ButcherRow, MobContent, MOB_PIG};
+use sim_core::mob::{self, ButcherRow, MobContent, CARRIER_SLOT0, MOB_CARRIER, MOB_PIG};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::nav::yaw_toward;
 use sim_core::pitch_dir;
@@ -28,6 +28,11 @@ const KNIFE_COND: u16 = 10_000;
 /// A joined player holding `tool`, every animal retired, and a pig's carcass
 /// of 4 meat and 10 fat lying 1.2 m east of them. Returns the carcass id.
 fn carcass_before(tool: u16) -> (Box<World>, u32) {
+    carcass_of(tool, MOB_PIG)
+}
+
+/// [`carcass_before`] for a carcass of species `kind`, given the pig's rows.
+fn carcass_of(tool: u16, kind: u8) -> (Box<World>, u32) {
     let mut w = Box::new(World::new(SEED));
     w.env = sim_core::weather::Env::CLEAR;
     w.gather = GatherContent::probe_fixture();
@@ -48,7 +53,7 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
         wear: KNIFE_WEAR,
     };
     // The pig's own rows: a cut pays only what the species is born holding.
-    let loot = &mut w.mob.defs[MOB_PIG as usize].loot;
+    let loot = &mut w.mob.defs[kind as usize].loot;
     for (row, (item, count)) in loot.iter_mut().zip([(MEAT, 4), (FAT, 10)]) {
         *row = ItemStack {
             item,
@@ -64,8 +69,8 @@ fn carcass_before(tool: u16) -> (Box<World>, u32) {
         m.alive = false;
     }
     let pig = (0..MAX_MOBS)
-        .find(|&s| mob::kind_of(s) == MOB_PIG)
-        .expect("a pig slot");
+        .find(|&s| mob::kind_of(s) == kind)
+        .expect("a slot of that kind");
     w.players[0].inv = [ItemStack::default(); INV_SLOTS];
     w.players[0].inv[0] = ItemStack {
         item: tool,
@@ -123,7 +128,8 @@ fn aim(w: &World, id: u32) -> (u16, u8) {
         .find(|b| b.id == id)
         .expect("the carcass");
     let eye = p.qy as f32 * POS_Y_Q + sim_core::ranged::eye_mm(false) as f32 / 1000.0;
-    let mid = c.qy as f32 * POS_Y_Q + f32::from(w.mob.def(MOB_PIG).body_h_cm) * 0.0025;
+    let kind = mob::slot_of_id(c.owner).map_or(MOB_PIG, mob::kind_of);
+    let mid = c.qy as f32 * POS_Y_Q + f32::from(w.mob.def(kind).body_h_cm) * 0.0025;
     let (dx, dz) = (
         (c.qx - p.qx) as f32 * POS_XZ_Q,
         (c.qz - p.qz) as f32 * POS_XZ_Q,
@@ -220,6 +226,29 @@ fn a_hand_with_no_butcher_row_cuts_nothing() {
     assert!(paid.is_empty(), "a club with no row paid {paid:?}");
     let left = carcass_left(&w, id).expect("the carcass is untouched");
     assert_eq!((left[0].count, left[1].count), (4, 10));
+}
+
+/// A convoy carrier's carcass holds its load, not meat: a blade cuts
+/// nothing out of it (no 150% on the Gate's metal), and the load stays for
+/// the hand at face value.
+#[test]
+fn a_blade_cuts_nothing_from_a_carriers_load() {
+    let (mut w, id) = carcass_of(KNIFE, MOB_CARRIER);
+    let owner = w
+        .backpacks
+        .entries()
+        .iter()
+        .find(|b| b.id == id)
+        .unwrap()
+        .owner;
+    let slot = mob::slot_of_id(owner).unwrap();
+    assert!(mob::is_carrier_slot(slot) && slot >= CARRIER_SLOT0);
+    let mut seq = 0;
+    let paid = swing(&mut w, id, &mut seq);
+    assert!(paid.is_empty(), "a knife cut a carrier's load: {paid:?}");
+    assert_eq!(w.players[0].inv[0].cond, KNIFE_COND, "no cut, no wear");
+    let left = carcass_left(&w, id).expect("the load is still in it");
+    assert_eq!((left[0].count, left[1].count), (4, 10), "the load, 1:1");
 }
 
 /// The carcass dupe (exploit sweep 2026-10): any stack moved into a

@@ -3226,7 +3226,7 @@ impl World {
         }
         // What the body was born holding, and only that, is cut at the
         // blade's rate: the species' rows and a site guard's, or a player
-        // corpse's share. The move verb keeps a carcass take-only; this is
+        // corpse's share. A carrier's load is never cut. The move verb keeps a carcass take-only; this is
         // the second lock on the same door.
         let Some(owner) = self.backpacks.entries().get(c.bag).map(|b| b.owner) else {
             return;
@@ -3240,6 +3240,12 @@ impl World {
             let Some(slot) = crate::mob::slot_of_id(owner) else {
                 return false;
             };
+            // A carrier's rows are its convoy load, not meat: a blade at
+            // 150% on them made killing a column pay better than seeing it
+            // in. The load is taken by hand, at face value.
+            if crate::mob::is_carrier_slot(slot) {
+                return false;
+            }
             let guard: &[ItemStack] = if crate::mob::guard_site_of(slot).is_some() {
                 &mc.guard_loot
             } else {
