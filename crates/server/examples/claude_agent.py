@@ -82,7 +82,7 @@ HARNESS = os.environ.get("GATES_HARNESS", "")
 # The observation fields a journal line keeps: enough to tell a fight, a
 # death or a haul from a walk, and small enough to write every turn.
 JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
-               "current_goal", "deaths", "respawns")
+               "current_goal", "deaths", "respawns", "your_last_answer")
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 # Anthropic's posted list prices, dollars per million tokens: input, output,

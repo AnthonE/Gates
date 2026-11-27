@@ -22,6 +22,7 @@
 use super::far::{Far, Search, FAR_CELL_M, FAR_EXPAND_PER_FRAME, FAR_REACH_M};
 use super::floors::{self, Fails, Flight, Flights, Layer, Leg, Target, Trip};
 use super::intent::{yaw_toward, Intent};
+use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::gather::REACH_M;
@@ -311,6 +312,20 @@ impl Route {
     /// `plan_no_way`, `corner_gave_up` (the grid).
     pub fn blocked_by(&self) -> Option<(&'static str, Option<Plan>, u32)> {
         self.blocked
+    }
+
+    /// What the last [`Step::Blocked`] says to a goal that ends on it: the
+    /// map had no way there ([`Why::NoPath`]: the grid's plan said so, or
+    /// the long way round's search found none, or no flight leads down),
+    /// or a way it walked and got no closer on, round or between floors
+    /// ([`Why::Stuck`]).
+    pub fn blocked_why(&self) -> Why {
+        match self.blocked {
+            Some(("plan_no_way" | "no_way_too_soon" | "far_no_way" | "no_flight_down", ..)) => {
+                Why::NoPath
+            }
+            _ => Why::Stuck,
+        }
     }
 
     /// Say [`Step::Blocked`], and why.
@@ -1185,6 +1200,8 @@ mod tests {
         // And says why, for a bug report's trace.
         let (by, _, when) = route.blocked_by().expect("a cause");
         assert_eq!((by, when), ("stalled", at));
+        // A way it walked and got nowhere on: stuck, not no way.
+        assert_eq!(route.blocked_why(), Why::Stuck);
         // One plan for the route, one for the replan rung.
         assert_eq!(route.stats.plans, 2, "{:?}", route.stats);
     }
@@ -1222,6 +1239,8 @@ mod tests {
             grid.blocked_by(),
             Some(("plan_no_way", Some(Plan::NoWay), 0))
         );
+        // And a goal that ends on it says the map has no way, not stuck.
+        assert_eq!(grid.blocked_why(), Why::NoPath);
 
         let mut route = Route::new();
         let mut arrived = None;

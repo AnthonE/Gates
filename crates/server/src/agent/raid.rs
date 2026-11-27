@@ -991,7 +991,7 @@ impl RaidJob {
             return Some(match route.to(core, body, p, 0.5, hurry, tick) {
                 step @ Step::Walk { .. } => Ok(step.walk().unwrap_or(Intent::IDLE)),
                 Step::Wait | Step::Arrived => Ok(Intent::walk(yaw_toward(p[0] - x, p[1] - z))),
-                Step::Blocked => Err(Why::Stuck),
+                Step::Blocked => Err(route.blocked_why()),
             });
         }
         if left <= STAND_NEAR_M {

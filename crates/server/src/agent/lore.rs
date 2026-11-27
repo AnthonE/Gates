@@ -385,7 +385,7 @@ fn approach(
         match route.to(core, body, [to[0], to[2]], STRAIGHT_M - 0.5, false, tick) {
             step @ Step::Walk { .. } => Ok(step.walk().unwrap_or(straight)),
             Step::Wait | Step::Arrived => Ok(straight),
-            Step::Blocked => Err(Why::Stuck),
+            Step::Blocked => Err(route.blocked_why()),
         },
     )
 }

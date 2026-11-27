@@ -7261,8 +7261,8 @@ fn an_agent_put_upstairs_comes_down_for_a_ground_goal() {
         !h.bot
             .history
             .iter()
-            .any(|r| r.outcome == server::mind::Outcome::Failed(Why::Stuck)),
-        "a goal failed stuck on the way down"
+            .any(|r| matches!(r.outcome, server::mind::Outcome::Failed(w) if w.unreached())),
+        "a goal failed short of where it was going on the way down (stuck, no way down, wedged)"
     );
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }

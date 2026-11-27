@@ -1412,7 +1412,7 @@ impl Passage {
                 Step::Wait => return Pass::Go(Intent::walk(yaw_toward(p0[0] - x, p0[1] - z))),
                 Step::Blocked => {
                     self.way = None;
-                    return Pass::Fail(Why::Stuck);
+                    return Pass::Fail(route.blocked_why());
                 }
                 Step::Arrived => {
                     self.at = CHAIN.len() - 1;
@@ -3939,7 +3939,7 @@ impl Builder {
                     self.approach = None;
                     return Some(Act::Go(step.walk().unwrap_or(Intent::IDLE)));
                 }
-                Step::Blocked => return Some(Act::Fail(Why::Stuck)),
+                Step::Blocked => return Some(Act::Fail(route.blocked_why())),
                 Step::Wait => return Some(Act::Go(Intent::IDLE)),
                 Step::Arrived => {}
             }

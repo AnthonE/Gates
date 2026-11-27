@@ -2505,7 +2505,7 @@ impl Survivor {
             return intent;
         }
         self.stats.wedges += 1;
-        self.end_goal(tick, Outcome::Failed(Why::Stuck));
+        self.end_goal(tick, Outcome::Failed(Why::Wedged));
         self.route.reset();
         let side = if self.stats.wedges.is_multiple_of(2) {
             0x6000
@@ -3932,11 +3932,13 @@ impl Survivor {
                     self.end_goal(tick, Outcome::Failed(Why::Refused));
                     return Intent::IDLE;
                 }
+                // Sent at arm's length and never answered: the shard says
+                // nothing of a treat out of its reach.
                 Err(()) => {
                     self.hand.aimed = None;
                     self.hand.tries += 1;
                     if self.hand.tries >= society::HAND_TRIES {
-                        self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                        self.end_goal(tick, Outcome::Failed(Why::NeverLanded));
                         return Intent::IDLE;
                     }
                 }
@@ -3993,8 +3995,10 @@ impl Survivor {
                 .sent
                 .is_none_or(|(.., sent, _)| tick.wrapping_sub(sent) >= VERDICT_SECS * TICK_HZ);
             if due {
+                // Moved again and again and still only in the pack: the
+                // shard never took the move.
                 if self.hand.tries >= society::HAND_TRIES {
-                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
                     return Intent::IDLE;
                 }
                 if let Some((from, to, count)) = home::belt_move(core, item) {
@@ -4546,11 +4550,13 @@ impl Survivor {
             } else if tick.wrapping_sub(sent) >= VERDICT_SECS * TICK_HZ {
                 self.hand.sent = None;
                 self.hand.tries += 1;
+                // Given at arm's length, try after try, and the stack never
+                // left the pack.
                 if self.hand.tries >= society::HAND_TRIES {
                     if base {
                         self.hand_failed = Some(tick);
                     }
-                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    self.end_goal(tick, Outcome::Failed(Why::NeverLanded));
                     return Intent::IDLE;
                 }
             }
@@ -4710,7 +4716,8 @@ impl Survivor {
                 self.patrol.misses += 1;
                 if usize::from(self.patrol.misses) >= society::PATROL_POSTS.len() {
                     self.patrol_failed = Some(tick);
-                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    let why = self.route.blocked_why();
+                    self.end_goal(tick, Outcome::Failed(why));
                 } else {
                     self.patrol.next();
                 }
@@ -5018,7 +5025,9 @@ impl Survivor {
                 self.end_goal(tick, Outcome::Failed(Why::NotFound));
                 return Intent::IDLE;
             }
-            self.gather_over(tick, Outcome::Failed(Why::Stuck));
+            // Its gathering time is up, with some to take home: what it
+            // hands gather_over goes home, never into a report.
+            self.gather_over(tick, Outcome::Failed(Why::OutOfTime));
         }
         if elapsed >= (SUPPLY_GATHER_SECS + DELIVER_GOAL_SECS) * TICK_HZ {
             self.deliver_over(tick, Outcome::Failed(Why::OutOfTime));
@@ -5750,7 +5759,7 @@ impl Survivor {
                 a.abandons
             });
             if abandons >= MAX_ABANDONS {
-                self.gather_over(tick, Outcome::Failed(Why::Stuck));
+                self.gather_over(tick, Outcome::Failed(Why::OutOfReach));
             }
             return intent;
         }
@@ -6068,7 +6077,7 @@ impl Survivor {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         match self.route.to(core, body, stand, 1.0, false, tick) {
             step @ Step::Walk { .. } => step.walk().unwrap_or(Intent::IDLE),
-            Step::Blocked => self.station_over(tick, Why::Stuck),
+            Step::Blocked => self.station_over(tick, self.route.blocked_why()),
             // On the stand spot and still out of the station's reach: the
             // station is not where the stand spot reaches, and walking at
             // the spot would go on for ever.
@@ -7639,7 +7648,8 @@ impl Survivor {
                 Step::Wait | Step::Arrived => Intent::walk(yaw_toward(mx - x, mz - z)),
                 Step::Blocked => {
                     self.research_failed = Some(tick);
-                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    let why = self.route.blocked_why();
+                    self.end_goal(tick, Outcome::Failed(why));
                     Intent::IDLE
                 }
             };
@@ -7687,7 +7697,8 @@ impl Survivor {
                             Step::Arrived => Intent::IDLE,
                             Step::Blocked => {
                                 self.oven_failed(tick);
-                                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                                let why = self.route.blocked_why();
+                                self.end_goal(tick, Outcome::Failed(why));
                                 Intent::IDLE
                             }
                         };
@@ -8026,7 +8037,9 @@ impl Survivor {
         match act {
             Act::Done => None,
             act => {
-                if act == Act::Fail(Why::Stuck) {
+                // No way out, or one walked and got nowhere on: held a
+                // while, as a door that would not open is not.
+                if matches!(act, Act::Fail(Why::Stuck | Why::NoPath)) {
                     self.leave_stuck = Some(tick);
                 }
                 self.stats.phase = Phase::Leaving;
@@ -13384,6 +13397,30 @@ mod tests {
             turn.get("trace").is_none(),
             "the mind's turn names no trace"
         );
+    }
+
+    /// The watchdog's goal end says the body was wedged, not that it could
+    /// not reach a target: a bug report's trace tells the two apart, and
+    /// the mind reads what happened. It is still an unreached end, so what
+    /// a stuck goal set off before, a wedged one does.
+    #[test]
+    fn a_wedged_goal_says_wedged() {
+        let (mut bot, view, _) = fixture();
+        let body = view.entities[0].1;
+        goal(&mut bot, Goal::Explore, 1);
+        let end = 1 + wedge::WEDGE_SECS * TICK_HZ;
+        for tick in 1..=end {
+            bot.unwedge(Intent::walk(0), &body, tick);
+        }
+        let report = bot.memory.last.expect("the watchdog ended it");
+        assert_eq!(
+            (report.goal, report.outcome),
+            (Goal::Explore, Outcome::Failed(Why::Wedged))
+        );
+        assert_eq!(bot.stats.wedges, 1);
+        assert_eq!(bot.failures.last().unwrap().why, Why::Wedged);
+        assert!(Why::Wedged.unreached());
+        assert!(!Why::Wedged.text().contains("could not reach"));
     }
 
     /// Home on its stand spot and still out of the station's reach: the

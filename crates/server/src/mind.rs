@@ -844,6 +844,22 @@ pub enum Why {
     /// On the spot it crafts from and still out of its station's reach: the
     /// station stands somewhere else than that spot reaches.
     StationOutOfReach,
+    /// The watchdog's (`agent::wedge`): half a minute trying to move the
+    /// body and it never left a metre's box, so the goal ended and the body
+    /// backed off.
+    Wedged,
+    /// The route's map had no way to it from here
+    /// ([`crate::agent::route::Route::blocked_why`]): the grid's plan or the
+    /// long way round's search found none, or no flight leads down.
+    NoPath,
+    /// Held out to them try after try ([`crate::agent::society::HAND_TRIES`])
+    /// at arm's length, and it never landed: a give whose stack never left
+    /// the pack, a treat the shard never answered.
+    NeverLanded,
+    /// A gather gave up one target after another
+    /// ([`crate::explorer::MAX_ABANDONS`]), each for getting no nearer: the
+    /// ones in sight here are out of its reach.
+    OutOfReach,
 }
 
 impl Why {
@@ -890,15 +906,39 @@ impl Why {
                 "its station is out of reach from where it stands to craft; the station was moved \
                  or blocked"
             }
+            Why::Wedged => {
+                "wedged: half a minute trying to move and the body never got anywhere, so it \
+                 backed off"
+            }
+            Why::NoPath => "no way to it on the map from here: water, cliffs or walls all round it",
+            Why::NeverLanded => {
+                "held it out to them again and again and it never landed: out of hand's reach \
+                 (another floor, or moving off), or no answer came"
+            }
+            Why::OutOfReach => {
+                "got no nearer to one after another and gave each up: the ones in sight here are \
+                 out of reach (up a crag, behind walls, out in the water)"
+            }
         }
     }
 
     /// Came to nothing short of where it was going: no way there
-    /// ([`Why::Stuck`], [`Why::NoWayIn`]) or out of time on the way
-    /// ([`Why::OutOfTime`]). What used to read "could not reach a target"
-    /// all through, so what a stuck goal sets off, an unreached one does.
+    /// ([`Why::Stuck`], [`Why::NoWayIn`], [`Why::NoPath`]), wedged on the
+    /// way ([`Why::Wedged`]), every target out of reach
+    /// ([`Why::OutOfReach`]) or out of time on the way ([`Why::OutOfTime`]).
+    /// What used to read "could not reach a target" all through, so what a
+    /// stuck goal sets off, an unreached one does. Not
+    /// [`Why::NeverLanded`]: that one got to arm's length.
     pub fn unreached(self) -> bool {
-        matches!(self, Why::Stuck | Why::OutOfTime | Why::NoWayIn)
+        matches!(
+            self,
+            Why::Stuck
+                | Why::OutOfTime
+                | Why::NoWayIn
+                | Why::NoPath
+                | Why::Wedged
+                | Why::OutOfReach
+        )
     }
 }
 
