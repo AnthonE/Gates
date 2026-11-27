@@ -198,3 +198,15 @@ health = 30
 food = 0
 water = 30
 seconds = 30
+
+# Strange gear (`items.toml`): the whole of a naked body's hp in a second,
+# every wound closed, where a medkit is 60 over 8 seconds. What it costs is
+# the Verdigris: a quarter of the meter, at once (`fel` per mille).
+[[consumable]]
+id = "item.strange_draught"
+health = 100
+food = 0
+water = 0
+seconds = 1
+bleed = -100
+fel = 250

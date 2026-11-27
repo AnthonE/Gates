@@ -282,6 +282,21 @@ limb_pct = 50
 rate_per_min = 48
 reach_cm = 106
 
+# Strange gear (`items.toml`): the longsword's 34, the top of `ttk_melee`,
+# at a spear's reach less a hand (the drawn blade is the longsword's model
+# a size up), and it wears four times as fast as any forged blade with
+# nothing to mend it.
+[[weapon]]
+id = "item.strange_blade"
+kind = "melee"
+condition_loss = 400
+damage = 34
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 48
+reach_cm = 170
+
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
 # it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a
 # level shot from a standing eye meets flat ground about 33 m out with a

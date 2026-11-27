@@ -3534,6 +3534,14 @@ fn a_teammate_fills_the_team_chest_through_an_airlock_from_behind_the_base() {
     let haven = h.shard.world.haven;
     let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
 
+    // Past its first half minute before it is stood in the base: a body
+    // with no team that wakes in a base's room takes the base for its own
+    // (`Builder::find_home_around`, the explorer's `WOKE_TICKS`), and then
+    // its boxes are never the team's. Whether the deploy mirror had landed
+    // by the tick it was stood there was a race with how long the catalog
+    // takes to send, which a few more items lost.
+    h.until(31 * TICK_HZ, |_| false);
+
     // A team, face to face, then both in the stair cell, the teammate at
     // its box: the agent learns the team's chest.
     let body = h

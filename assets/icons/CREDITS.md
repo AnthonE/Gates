@@ -243,3 +243,6 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `pumpkin.png` | `ci/icons/crops.py` (ours) |
 | `pumpkin_seed.png` | `ci/icons/crops.py` (ours) |
 | `berry_seed.png` | `ci/icons/crops.py` (ours) |
+| `humming_blade.png` | `lorc/broadsword`, the longsword's recoloured |
+| `still_helm.png` | `lorc/visored-helm`, the coffee can's recoloured |
+| `bright_draught.png` | `lorc/standing-potion`, the tonic's recoloured |

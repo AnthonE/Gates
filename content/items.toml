@@ -2034,3 +2034,47 @@ rarity = "uncommon"
 slot = "none"
 class = "weapons"
 description = "A quarter more rounds in the magazine."
+
+# --- Strange gear (`ARC.md` §1.4 "powers are loot", §2 act III "strange
+# gear starts dropping"). It comes only out of the sealed vaults
+# (`loot.toml` `loot.vault`), which stay shut until THE SEVERED GATE opens,
+# so none exists before the Gate does. Each piece tops its band on the
+# craftable ladder and pays for it in wear: no recipe makes one, so nothing
+# can mend one (`craft::repair_item` prices a repair off the recipe), and
+# what is worn out is gone. That is v0 of the charge ARC M3 names; the
+# charge itself, and what fills it, waits for M3.
+
+[[item]]
+id = "item.strange_blade"
+name = "Humming Blade"
+stack = 1
+tier = 2
+rarity = "very_rare"
+slot = "hand"
+class = "weapons"
+description = "From a sealed door. Keener and longer than any blade made here. It dulls fast; nothing mends it."
+# 200 points at weapons.toml's 4 a blow: fifty landed hits, a fight or two.
+condition_max = 20000
+
+[[item]]
+id = "item.strange_helm"
+name = "Still Helm"
+stack = 1
+tier = 2
+rarity = "very_rare"
+slot = "head"
+class = "clothing"
+description = "From a sealed door. Better than any helmet made here. It wears thin; nothing mends it."
+# The coffee can's 200 points at a quarter more protection, so it wears a
+# quarter faster for the same fights (`combat::wear_worn`).
+condition_max = 20000
+
+[[item]]
+id = "item.strange_draught"
+name = "Bright Draught"
+stack = 3
+tier = 2
+rarity = "very_rare"
+slot = "hand"
+class = "medical"
+description = "From a sealed door. Closes every wound at once, and leaves green in the blood."

@@ -150,6 +150,9 @@ const OLIVE: [f32; 3] = [0.12, 0.14, 0.06];
 const SNOW: [f32; 3] = [0.70, 0.74, 0.80];
 const RED: [f32; 3] = [0.40, 0.05, 0.03];
 const LEATHER: [f32; 3] = [0.12, 0.06, 0.03];
+/// The strange helm's (`ARC.md` act III): a cold verdigris steel, the
+/// colour of its icon.
+const STILL: [f32; 3] = [0.10, 0.30, 0.32];
 
 /// Build the meshes and materials once (`Startup`).
 pub fn load(
@@ -178,6 +181,14 @@ pub fn load(
     let snow = materials.add(cloth(SNOW, 0.8));
     let red = materials.add(cloth(RED, 0.9));
     let leather = materials.add(cloth(LEATHER, 0.7));
+    let still = materials.add(StandardMaterial {
+        base_color: Color::linear_rgb(STILL[0], STILL[1], STILL[2]),
+        perceptual_roughness: 0.3,
+        metallic: 0.8,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
     let metal = super::textures::MapSet::load(&assets, "metal");
     let sign = materials.add(StandardMaterial {
         base_color: Color::linear_rgb(0.62, 0.64, 0.66),
@@ -451,6 +462,7 @@ pub fn load(
                 "Coffee Can Helmet",
                 vec![part(dome.clone(), &sign, Bone::Head)],
             ),
+            ("Still Helm", vec![part(dome.clone(), &still, Bone::Head)]),
             (
                 "Tank Top",
                 vec![part(tunic_top.clone(), &cotton, Bone::Spine)],

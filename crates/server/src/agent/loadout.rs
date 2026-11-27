@@ -44,8 +44,15 @@ pub const RANGED: [&str; 11] = [
 ];
 /// Health in a hurry, best first: every item that heals whoever uses it.
 /// The syringe also revives a downed body (`Command::Treat`), which no
-/// agent does, so for them it is the smallest heal.
-pub const MEDS: [&str; 3] = ["item.medkit", "item.bandage", "item.syringe"];
+/// agent does, so for them it is the smallest heal. The vaults' draught
+/// heals most and leaves the Verdigris behind, so it waits behind the
+/// medkit.
+pub const MEDS: [&str; 4] = [
+    "item.medkit",
+    "item.strange_draught",
+    "item.bandage",
+    "item.syringe",
+];
 /// What fells a tree and what breaks rock, best first.
 pub const HATCHETS: [&str; 3] = ["item.hatchet_metal", "item.hatchet_stone", "item.bat"];
 pub const PICKS: [&str; 3] = ["item.pickaxe_metal", "item.pickaxe_stone", "item.bat"];

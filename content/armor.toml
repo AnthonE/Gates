@@ -329,3 +329,16 @@ reduction_pct = 5
 move_penalty_pct = 0
 cold_pct = 6
 fel_pct = 1
+
+# Strange gear (`items.toml`): the road sign jacket's 25 on the head, the
+# most one piece may add under `armor_extra_hits_max`, filling the face as
+# the coffee can does, and it keeps out more of the Verdigris than any
+# helmet made here. It wears at its 25 and cannot be mended.
+[[armor]]
+id = "item.strange_helm"
+slot = "head"
+fills = ["face"]
+reduction_pct = 25
+move_penalty_pct = 0
+cold_pct = 6
+fel_pct = 40

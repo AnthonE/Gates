@@ -5767,3 +5767,180 @@ fn a_spears_throw_bakes_and_the_bad_ones_are_refused() {
         "only a melee weapon is thrown",
     );
 }
+
+/// Strange gear (`ARC.md` act III, "strange gear starts dropping"): only a
+/// sealed vault pays it, so none exists before THE SEVERED GATE opens.
+/// Structurally (no other loot table names it) and textually (no recipe,
+/// offer, kit, drop, reward or research row anywhere in `content/` names
+/// it), so a new source of any kind trips this rather than slipping past a
+/// list of the kinds we know today.
+const STRANGE: [&str; 3] = [
+    "item.strange_blade",
+    "item.strange_helm",
+    "item.strange_draught",
+];
+
+#[test]
+fn strange_gear_comes_only_out_of_the_vaults() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let vault = c
+        .loot_tables
+        .iter()
+        .find(|t| t.container == "vault")
+        .expect("a vault table");
+    for id in STRANGE {
+        assert!(c.item(id).is_some(), "`{id}` is not an item");
+        assert!(
+            vault.entries.iter().any(|e| e.item == id && e.weight > 0),
+            "`{id}` is not in the vault's table"
+        );
+        for t in c.loot_tables.iter().filter(|t| t.container != "vault") {
+            assert!(
+                !t.entries.iter().any(|e| e.item == id)
+                    && !t.guaranteed.iter().any(|g| g.item == id),
+                "`{}` pays `{id}`: strange gear is the vaults' alone",
+                t.id
+            );
+        }
+        assert!(
+            !c.recipes.iter().any(|r| r.output == id),
+            "a recipe makes `{id}`: then it could be mended, and made before the Gate"
+        );
+    }
+    // Every file but the rows that define the gear, and the vault's own table.
+    for (file, text) in sources() {
+        if matches!(
+            file,
+            "items.toml" | "weapons.toml" | "armor.toml" | "consumables.toml"
+        ) {
+            continue;
+        }
+        let text = if file == "loot.toml" {
+            let start = text.find("id = \"loot.vault\"").expect("loot.vault");
+            let end = text[start..]
+                .find("[[loot_table]]")
+                .map_or(text.len(), |e| start + e);
+            format!("{}{}", &text[..start], &text[end..])
+        } else {
+            text
+        };
+        for id in STRANGE {
+            assert!(
+                !text.contains(&format!("\"{id}\"")),
+                "{file} names `{id}`: strange gear comes only out of a vault"
+            );
+        }
+    }
+}
+
+/// The same, through the sim's own roll: every baked table opened a few
+/// thousand times pays strange gear from the vault and from nothing else,
+/// and a wearing piece comes out whole.
+#[test]
+fn only_a_vault_rolls_strange_gear() {
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::{INV_SLOTS, MAX_LOOT_TABLES};
+    let c = build(&sources()).unwrap();
+    let lc = c.bake_loot().expect("loot bakes");
+    let gc = c.bake_gather().expect("gather bakes");
+    let strange: Vec<u16> = STRANGE
+        .iter()
+        .map(|id| c.item_index(id).expect("shipped item"))
+        .collect();
+    let mut seen = [0u32; 3];
+    for which in 0..MAX_LOOT_TABLES {
+        if lc.table(which).is_none() {
+            continue;
+        }
+        for tick in 0..4000u64 {
+            let mut out = [ItemStack::EMPTY; INV_SLOTS];
+            lc.roll_into(which, &gc, 20260731, 0x0012_0034, tick * 7919, &mut out);
+            for s in out.iter().filter(|s| s.count > 0) {
+                let Some(k) = strange.iter().position(|&i| i == s.item) else {
+                    continue;
+                };
+                assert_eq!(
+                    which,
+                    sim_core::loot::LOOT_VAULT,
+                    "table {which} rolled `{}`",
+                    STRANGE[k]
+                );
+                assert_eq!(
+                    s.cond,
+                    gc.cond_max_of(s.item),
+                    "`{}` came out worn",
+                    STRANGE[k]
+                );
+                seen[k] += 1;
+            }
+        }
+    }
+    // 4,000 vaults at 3.5 rolls: the blade and helm ~350 each, the draught ~700.
+    for (k, n) in seen.iter().enumerate() {
+        assert!(*n > 100, "`{}` rolled only {n} times", STRANGE[k]);
+    }
+}
+
+/// Each piece tops what the island can make of its kind, and pays for it in
+/// wear it cannot mend: it wears (`condition_max`) and no recipe makes it,
+/// so `craft::repair_item` has nothing to price a repair against.
+#[test]
+fn strange_gear_beats_the_craftable_tier_and_wears_out() {
+    use content::schema::ArmorSlot;
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let made = |id: &str| c.recipes.iter().any(|r| r.output == id);
+    let anchors = content::balance::check(&c).expect("the bands hold");
+
+    let blade = c.weapons.iter().find(|w| w.id == STRANGE[0]).unwrap();
+    assert_eq!(blade.kind, WeaponKind::Melee);
+    assert!(
+        anchors.ttk.iter().any(|(id, _)| id == STRANGE[0]),
+        "the balance anchor did not band the blade"
+    );
+    let mut forged = 0;
+    for w in c
+        .weapons
+        .iter()
+        .filter(|w| w.kind == WeaponKind::Melee && made(&w.id))
+    {
+        assert!(
+            blade.damage >= w.damage,
+            "`{}` hits harder than the blade",
+            w.id
+        );
+        // A spear is a pole, not a blade: its reach is what it is for.
+        if !w.id.starts_with("item.spear") {
+            assert!(blade.reach_cm > w.reach_cm, "`{}` reaches as far", w.id);
+        }
+        forged += 1;
+    }
+    assert!(forged >= 6, "only {forged} craftable melee rows compared");
+
+    let helm = c.armors.iter().find(|a| a.id == STRANGE[1]).unwrap();
+    assert_eq!(helm.slot, ArmorSlot::Head);
+    for a in c
+        .armors
+        .iter()
+        .filter(|a| a.slot == ArmorSlot::Head && made(&a.id))
+    {
+        assert!(
+            helm.reduction_pct > a.reduction_pct,
+            "`{}` turns a blow as well as the helm",
+            a.id
+        );
+    }
+
+    let draught = c.consumables.iter().find(|k| k.id == STRANGE[2]).unwrap();
+    for k in c.consumables.iter().filter(|k| made(&k.id)) {
+        assert!(
+            draught.health > k.health,
+            "`{}` heals as much as the draught",
+            k.id
+        );
+    }
+    assert!(draught.fel > 0, "the draught costs nothing");
+
+    for id in &STRANGE[..2] {
+        assert!(c.item(id).unwrap().condition_max > 0, "`{id}` never wears");
+    }
+}

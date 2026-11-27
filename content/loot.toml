@@ -305,6 +305,14 @@ entries = [
 # group, not only whoever holds the town: the richest box outside the sanctum,
 # heavy on what the war is fought with. 3.5 mean rolls over a total of 1,000,
 # so a row's chance is 0.35 % a weight; it refills on the crate's clock.
+#
+# **And the only box that pays strange gear** (`ARC.md` §2 act III,
+# "strange gear starts dropping"): the blade and the helm each about one
+# vault in eleven, the draught one in six, so a vault is opened for what it
+# might hold. No other table, recipe, offer or drop names them
+# (`content.rs`, `strange_gear_comes_only_out_of_the_vaults`), so none
+# exists before the Gate opens. Their 100 came out of the rounds and the
+# medicine, which every other box already pays.
 [[loot_table]]
 id = "loot.vault"
 container = "vault"
@@ -317,7 +325,7 @@ entries = [
     { item = "item.rocket", weight = 50, count_min = 1, count_max = 2 },
     { item = "item.satchel_charge", weight = 90, count_min = 1, count_max = 3 },
     { item = "item.rifle_ammo_explosive", weight = 60, count_min = 6, count_max = 12 },
-    { item = "item.rifle_ammo", weight = 120, count_min = 20, count_max = 40 },
+    { item = "item.rifle_ammo", weight = 80, count_min = 20, count_max = 40 },
     { item = "item.assault_rifle", weight = 40, count_min = 1, count_max = 1 },
     { item = "item.bolt_rifle", weight = 30, count_min = 1, count_max = 1 },
     { item = "item.rifle_body", weight = 70, count_min = 1, count_max = 2 },
@@ -325,8 +333,11 @@ entries = [
     { item = "item.gears", weight = 90, count_min = 4, count_max = 8 },
     { item = "item.keycard_blue", weight = 50, count_min = 1, count_max = 1 },
     { item = "item.keycard_red", weight = 30, count_min = 1, count_max = 1 },
-    { item = "item.medkit", weight = 140, count_min = 1, count_max = 2 },
-    { item = "item.syringe", weight = 100, count_min = 1, count_max = 2 },
+    { item = "item.medkit", weight = 110, count_min = 1, count_max = 2 },
+    { item = "item.syringe", weight = 70, count_min = 1, count_max = 2 },
+    { item = "item.strange_blade", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.strange_helm", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.strange_draught", weight = 50, count_min = 1, count_max = 2 },
 ]
 
 # --- Roadside junk (Rust's roadside spawns: oil barrels, road signs, food
