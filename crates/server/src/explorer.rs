@@ -65,7 +65,9 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
 use sim_core::craft::{STATION_FURNACE, STATION_NONE};
-use sim_core::deploy::{box_key, cell_center, ACCESS_OP_CREW_JOIN, ACCESS_OP_ENTER, BAG_CAP};
+use sim_core::deploy::{
+    box_key, cell_center, ACCESS_OP_CREW_JOIN, ACCESS_OP_ENTER, ARCH_BAG, BAG_CAP, REFUSE_D_BAG_CAP,
+};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
@@ -142,8 +144,20 @@ pub const NEAR_AIM_ACROSS_M: f32 = 0.6;
 /// A stranger aimed at keeps its `n` slot this long after.
 pub const NEAR_KEEP_TICKS: u32 = 60 * TICK_HZ;
 pub const GIVE_GOAL_SECS: u32 = 60;
-/// A heal on a teammate (`Goal::HealMate`) runs at most this long, seconds.
+/// A heal on a teammate (`Goal::HealMate`) runs at most this long, seconds;
+/// so does a revive (`Goal::ReviveMate`).
 pub const HEAL_MATE_GOAL_SECS: u32 = 60;
+/// A bag given to a teammate (`Goal::GiveBag`) runs at most this long,
+/// seconds: the walk to the bag included.
+pub const GIVE_BAG_GOAL_SECS: u32 = 180;
+/// A bag is given from this close, metres: inside `E`'s reach of it
+/// (`sim_core::deploy::STATION_REACH_M`).
+pub const BAG_STAND_M: f32 = 1.5;
+/// A bag is looked at this far above where it lies, metres: low on the
+/// pad, where the eye's ray meets its footprint and nothing behind it.
+pub const BAG_LOOK_UP_M: f32 = 0.15;
+/// A repair (`Goal::Repair`) runs at most this long, seconds.
+pub const REPAIR_GOAL_SECS: u32 = 20;
 /// A sign that a teammate is hurt (`Survivor::sense_hurt_mates`) keeps them
 /// offered this long after, seconds: nothing on the island mends a body
 /// by itself much faster.
@@ -673,6 +687,13 @@ pub struct Senses {
     /// from bit 0 for `m1`: they look hurt, stand in sight, and the pack
     /// holds a med that heals another (`Survivor::sense_hurt_mates`).
     pub heal_mates: u8,
+    /// The teammates a revive is offered for (`revive:m<k>`), bit by slot as
+    /// `heal_mates`: down in sight, and the pack holds a med that revives.
+    pub revive_mates: u8,
+    /// The teammates a bag give is offered for (`give_bag:m<k>`), bit by
+    /// slot: a bag of mine is down and they are not known to have one of
+    /// mine or a full set.
+    pub bag_mates: u8,
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
@@ -972,11 +993,35 @@ impl Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     Respawn,
-    Craft { item: u16 },
+    Craft {
+        item: u16,
+    },
     Equip,
-    Consume { item: u16, food: u16, water: u16 },
+    Consume {
+        item: u16,
+        food: u16,
+        water: u16,
+    },
     Drink,
-    Treat { item: u16, to: u32 },
+    Treat {
+        item: u16,
+        to: u32,
+    },
+    /// The bench repair of inventory `slot`, which held `item`
+    /// (`encode_action_repair_item`): answered by the slot coming back
+    /// whole, or a craft refusal.
+    Repair {
+        slot: u8,
+        item: u16,
+    },
+    /// My bag at this address to teammate `to` (`encode_action_bag_give`),
+    /// with `had` of mine there when it went: answered by my own-bag list
+    /// holding fewer there, or a deploy refusal.
+    BagGive {
+        at: (u16, u16, u8),
+        to: u32,
+        had: u8,
+    },
 }
 
 /// What it makes of one teammate's health, which the shard never sends
@@ -988,6 +1033,9 @@ struct MateCare {
     id: u32,
     hurt: Option<u32>,
     whole: Option<u32>,
+    /// It gave them a bag, or a give was refused for their bag cap: they
+    /// have one, so no bag give is offered for them.
+    bagged: bool,
 }
 
 /// `a` is later than `b` on the wrapping tick clock.
@@ -2721,7 +2769,12 @@ impl Survivor {
         self.verdict = None;
         if matches!(
             goal,
-            Goal::HandOver | Goal::Give(_) | Goal::GiveMate(..) | Goal::HealMate(_)
+            Goal::HandOver
+                | Goal::Give(_)
+                | Goal::GiveMate(..)
+                | Goal::HealMate(_)
+                | Goal::ReviveMate(_)
+                | Goal::GiveBag(_)
         ) {
             self.hand = Hand::default();
         }
@@ -3306,7 +3359,22 @@ impl Survivor {
                 self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
                 Intent::IDLE
             }
-            Goal::HealMate(slot) => self.heal_mate(core, body, slot, tick),
+            Goal::HealMate(slot) => self.heal_mate(core, body, slot, false, tick),
+            Goal::ReviveMate(_) if elapsed >= HEAL_MATE_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
+                Intent::IDLE
+            }
+            Goal::ReviveMate(slot) => self.heal_mate(core, body, slot, true, tick),
+            Goal::GiveBag(_) if elapsed >= GIVE_BAG_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
+                Intent::IDLE
+            }
+            Goal::GiveBag(slot) => self.give_bag(core, body, slot, tick),
+            Goal::Repair if elapsed >= REPAIR_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::OutOfTime));
+                Intent::IDLE
+            }
+            Goal::Repair => self.repair(core, body, tick),
             Goal::Authorize if elapsed >= AUTHORIZE_GOAL_SECS * TICK_HZ => {
                 self.auth_failed = Some(tick);
                 self.home_job = HomeJob::default();
@@ -3814,17 +3882,33 @@ impl Survivor {
     /// offered again until a fresh sign (`mate_whole`). A treat the shard
     /// said nothing to (out of reach, the aim off them, they moved off
     /// mid-wrap) is tried again a few times.
+    ///
+    /// `revive` is the same treat on a teammate lying downed
+    /// (`Goal::ReviveMate`): a med that revives (the syringe), eyes on the
+    /// body on the ground, and it lands at once, standing them up
+    /// (the sim's treat on a body down); nothing is wrapped and nobody down is
+    /// whole.
     fn heal_mate(
         &mut self,
         core: &mut ClientCore,
         body: &EntityState,
         slot: u8,
+        revive: bool,
         tick: u32,
     ) -> Intent {
         self.stats.phase = Phase::Healing;
         let mut waiting = false;
+        // A revive is never wrapped on: the shard stands the body up on the
+        // press.
+        let wrap_of = |core: &ClientCore, item: u16| {
+            if revive {
+                0
+            } else {
+                u32::from(core.catalog.row(item as usize).use_ticks)
+            }
+        };
         if let Some((Pending::Treat { item, to }, _)) = self.awaiting {
-            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            let wrap = wrap_of(core, item);
             let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap);
             // Refused, or never answered: no wrap is in the hands, so none
             // holds the hand on the bandage past this goal.
@@ -3860,20 +3944,35 @@ impl Survivor {
             }
         }
         let id = mate_in_slot(core, slot);
-        let Some((at, seen)) = (id != 0).then(|| self.mate_at(id, tick)).flatten() else {
+        let found = (id != 0)
+            .then(|| {
+                if revive {
+                    self.mate_down_at(id, tick)
+                } else {
+                    self.mate_at(id, tick)
+                }
+            })
+            .flatten();
+        let Some((at, seen)) = found else {
             if !waiting {
                 self.end_goal(tick, Outcome::Failed(Why::NotFound));
             }
             return Intent::IDLE;
         };
-        let pick = heal_other_slot(core);
+        let pick = if revive {
+            revive_slot(core)
+        } else {
+            heal_other_slot(core)
+        };
+        // A chest standing, a body lying on the ground.
+        let lift = if revive { 0.4 } else { 1.0 };
         // Held as a player holds it: the treat is `E` with it in hand.
         let hold = pick
             .map(|(inv, _)| inv)
             .filter(|&inv| inv < HOTBAR_SLOTS)
             .map(|inv| inv as u8);
         let face = Intent {
-            look: Look::Point([at[0], at[1] + 1.0, at[2]]),
+            look: Look::Point([at[0], at[1] + lift, at[2]]),
             sel: hold,
             ..Intent::IDLE
         };
@@ -3946,7 +4045,7 @@ impl Survivor {
         // A wrap of mine still in the hands (the medic's, a goal's that
         // ended mid-wrap) lands first: a second press does nothing
         // (`survival::begin_use`), and its toast would read as this heal.
-        let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+        let wrap = wrap_of(core, item);
         if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
             && self.hands.settled()
             && self.awaiting.is_none()
@@ -3973,6 +4072,11 @@ impl Survivor {
     /// [`HURT_KEEP_SECS`]; a heal refused as whole clears it until a sign
     /// after that. Offered while they stand in sight and the pack holds a
     /// med that heals another.
+    ///
+    /// Beside it, the revive (`Senses::revive_mates`: lying downed in sight,
+    /// a med that revives in the pack) and the bag give
+    /// (`Senses::bag_mates`: a bag of mine down, and they are not one it
+    /// gave a bag to or found at the cap).
     fn sense_hurt_mates(&mut self, core: &ClientCore, team: &protocol::TeamView, tick: u32) {
         for c in &mut self.mate_care {
             if c.id != 0 && !team.has(c.id) {
@@ -3982,7 +4086,9 @@ impl Survivor {
         let recall = GUARD_RECALL_SECS * TICK_HZ;
         let fresh = |at: Option<u32>| at.filter(|&at| tick.wrapping_sub(at) < recall);
         let med = heal_other_slot(core).is_some();
-        let mut mask = 0u8;
+        let syringe = revive_slot(core).is_some();
+        let bag = !core.own_bags().is_empty();
+        let (mut mask, mut revive, mut bags) = (0u8, 0u8, 0u8);
         let mut slot = 0u8;
         for m in team.members() {
             if m.id == core.player_id {
@@ -4017,22 +4123,48 @@ impl Survivor {
             if med && self.looks_hurt(m.id, tick) && self.mate_at(m.id, tick).is_some() {
                 mask |= 1 << (slot - 1);
             }
+            if syringe && self.mate_down_at(m.id, tick).is_some_and(|(_, seen)| seen) {
+                revive |= 1 << (slot - 1);
+            }
+            let bagged = self.mate_care.iter().any(|c| c.id == m.id && c.bagged);
+            if bag && !bagged {
+                bags |= 1 << (slot - 1);
+            }
         }
         self.senses.heal_mates = mask;
+        self.senses.revive_mates = revive;
+        self.senses.bag_mates = bags;
+    }
+
+    /// Teammate `id`'s row of what it makes of them, a free one taken the
+    /// first time.
+    fn care_row(&mut self, id: u32) -> Option<&mut MateCare> {
+        if id == 0 {
+            return None;
+        }
+        let row = self
+            .mate_care
+            .iter()
+            .position(|c| c.id == id)
+            .or_else(|| self.mate_care.iter().position(|c| c.id == 0))?;
+        let c = &mut self.mate_care[row];
+        c.id = id;
+        Some(c)
+    }
+
+    /// Teammate `id` has a bag of mine now, or a full set of their own.
+    fn mate_bagged(&mut self, id: u32) {
+        if let Some(c) = self.care_row(id) {
+            c.bagged = true;
+        }
     }
 
     /// A sign at tick `at` that teammate `id` is hurt. One from before a
     /// heal on them was refused as whole is not one.
     fn mark_hurt(&mut self, id: u32, at: u32) {
-        let row = self
-            .mate_care
-            .iter()
-            .position(|c| c.id == id)
-            .or_else(|| self.mate_care.iter().position(|c| c.id == 0));
-        let Some(c) = row.map(|i| &mut self.mate_care[i]) else {
+        let Some(c) = self.care_row(id) else {
             return;
         };
-        c.id = id;
         if c.whole.is_some_and(|w| !later(at, w)) {
             return;
         }
@@ -4188,6 +4320,177 @@ impl Survivor {
                     && (t.visible || tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
             })
             .map(|t| (t.pos, t.visible))
+    }
+
+    /// Where teammate `id` lies downed (wounded, not yet dead or asleep), as
+    /// [`Self::mate_at`] has a teammate up: seen now or a moment ago.
+    fn mate_down_at(&self, id: u32, tick: u32) -> Option<([f32; 3], bool)> {
+        self.tracks
+            .get(id)
+            .filter(|t| {
+                t.active()
+                    && t.wounded
+                    && (t.visible || tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
+            })
+            .map(|t| (t.pos, t.visible))
+    }
+
+    /// A bag of mine to a teammate (`Goal::GiveBag`, Rust's assign bag): to
+    /// my nearest bag, eyes on it until `E` would take it, then the GIVE
+    /// BAG the TEAM screen it opens sends (`encode_action_bag_give`). My
+    /// own-bag list losing it is the answer; a deploy refusal is the shard's
+    /// no, one for the bag cap meaning they have a full set already
+    /// (`Deploys::give_bag`). Either way they are not offered a bag again.
+    fn give_bag(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        slot: u8,
+        tick: u32,
+    ) -> Intent {
+        self.stats.phase = Phase::Bagging;
+        let id = mate_in_slot(core, slot);
+        if let Some((Pending::BagGive { to, .. }, _)) = self.awaiting {
+            match self.take_verdict(tick, VERDICT_SECS * TICK_HZ) {
+                Ok(Some(Verdict::Ok)) => {
+                    if let Some(a) = self.goal.as_mut() {
+                        a.gained += 1;
+                    }
+                    self.mate_bagged(to);
+                    self.end_goal(tick, Outcome::Done);
+                    return Intent::IDLE;
+                }
+                Ok(Some(verdict)) => {
+                    if verdict == Verdict::Full {
+                        self.mate_bagged(to);
+                    }
+                    self.end_goal(tick, Outcome::Failed(Why::Refused));
+                    return Intent::IDLE;
+                }
+                Err(()) => {
+                    self.hand.aimed = None;
+                    self.hand.tries += 1;
+                    if self.hand.tries >= society::HAND_TRIES {
+                        self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
+                        return Intent::IDLE;
+                    }
+                }
+                Ok(None) => return Intent::IDLE,
+            }
+        }
+        if id == 0 {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let Some((at, spot)) = nearest_own_bag(core, x, z) else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        let d = (spot[0] - x).hypot(spot[1] - z);
+        // Not in the mirror yet (out of the shard's interest), or out of
+        // reach: walk to it.
+        let Some(rec) = at.filter(|_| d <= BAG_STAND_M + 0.5) else {
+            self.stats.phase = Phase::Approaching;
+            self.hand.aimed = None;
+            return match self
+                .route
+                .to(core, body, spot, BAG_STAND_M - 0.3, d > FOLLOW_RUN_M, tick)
+            {
+                step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                // Stood at its cell and the shard shows no bag there.
+                Step::Arrived if at.is_none() => {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                    Intent::IDLE
+                }
+                Step::Wait | Step::Arrived | Step::Blocked => {
+                    Intent::walk(yaw_toward(spot[0] - x, spot[1] - z))
+                }
+            };
+        };
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        // Eyes low on the bag where it lies, its own footprint's middle.
+        let base = sim_core::deploy::body_base_y(seed, &haven, core.pieces.cols(), &rec, ARCH_BAG);
+        let (bx, bz) = rec.xz();
+        let look = Intent {
+            look: Look::Point([bx, base + BAG_LOOK_UP_M, bz]),
+            ..Intent::IDLE
+        };
+        let aimed = *self.hand.aimed.get_or_insert(tick);
+        if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
+            && self.hands.settled()
+            && self.awaiting.is_none()
+            && e_takes_bag(core, seed, &haven, body, self.hands.view(), &rec)
+            && self.queue(|b| protocol::encode_action_bag_give(rec.cx, rec.cz, rec.level, id, b))
+        {
+            let at = (rec.cx, rec.cz, rec.level);
+            self.awaiting = Some((
+                Pending::BagGive {
+                    at,
+                    to: id,
+                    had: own_bags_at(core, at),
+                },
+                tick,
+            ));
+            self.verdict = None;
+            self.hand.aimed = None;
+        } else if tick.wrapping_sub(aimed) >= VERDICT_SECS * TICK_HZ {
+            // Settled on it this long and `E` still takes something else.
+            self.end_goal(tick, Outcome::Failed(Why::Blocked));
+            return Intent::IDLE;
+        }
+        look
+    }
+
+    /// The bench repair (`Goal::Repair`): the worst-worn thing the pack can
+    /// pay to mend at the workbench in reach ([`repair_pick`]), sent as the
+    /// item card's Repair (`encode_action_repair_item`). The shard says
+    /// nothing of a mend that lands (`craft::repair_item`): the slot coming
+    /// back whole is the answer, a craft refusal the no. One item a goal.
+    fn repair(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Repairing;
+        if let Some((Pending::Repair { slot, item }, _)) = self.awaiting {
+            let st = core.inv[usize::from(slot)];
+            let whole = st.count > 0
+                && st.item == item
+                && st.cond >= core.catalog.cond_max(usize::from(item));
+            if whole {
+                self.awaiting = None;
+                self.verdict = None;
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained += 1;
+                }
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
+            match self.take_verdict(tick, VERDICT_SECS * TICK_HZ) {
+                Ok(None) => {}
+                Ok(Some(_)) => self.end_goal(tick, Outcome::Failed(Why::Refused)),
+                Err(()) => self.end_goal(tick, Outcome::Failed(Why::NoAnswer)),
+            }
+            return Intent::IDLE;
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let Some((slot, item)) = repair_pick(core, x, z) else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        if self.awaiting.is_none()
+            && self.queue(|b| protocol::encode_action_repair_item(slot as u8, b))
+        {
+            self.awaiting = Some((
+                Pending::Repair {
+                    slot: slot as u8,
+                    item,
+                },
+                tick,
+            ));
+            self.verdict = None;
+        }
+        Intent::IDLE
     }
 
     /// Hand to `to` (who, where, and whether its eyes have them): up to
@@ -6427,7 +6730,14 @@ impl Survivor {
     fn medic(&mut self, core: &ClientCore, tick: u32, calm: bool) {
         let owns_lane = matches!(
             self.goal(),
-            Some(Goal::Heal | Goal::HealMate(_) | Goal::Eat | Goal::Drink | Goal::Craft(_))
+            Some(
+                Goal::Heal
+                    | Goal::HealMate(_)
+                    | Goal::ReviveMate(_)
+                    | Goal::Eat
+                    | Goal::Drink
+                    | Goal::Craft(_)
+            )
         );
         if owns_lane {
             self.medic = false;
@@ -8796,6 +9106,16 @@ impl Survivor {
         }
         while let Some(reason) = core.pop_deploy_refusal() {
             self.stats.refusals += 1;
+            // A bag give's no is the give's alone: a bag cap there is the
+            // teammate's full set, not its own (`Home::on_refused`).
+            if matches!(self.awaiting, Some((Pending::BagGive { .. }, _))) {
+                self.verdict = Some(if u32::from(reason) == REFUSE_D_BAG_CAP {
+                    Verdict::Full
+                } else {
+                    Verdict::Refused
+                });
+                continue;
+            }
             // The crew's join in flight was refused: the crew does not
             // admit it (`REFUSE_D_OWNER`), or has no room.
             if matches!(self.auth.leg, AuthLeg::Sent(_)) {
@@ -8916,6 +9236,12 @@ impl Survivor {
         }
         if applied2 & APPLIED2_BAGS != 0 {
             self.home.on_bags(core.own_bags());
+            // A bag given away has left my list: the give landed.
+            if let Some((Pending::BagGive { at, had, .. }, _)) = self.awaiting {
+                if own_bags_at(core, at) < had {
+                    self.verdict = Some(Verdict::Ok);
+                }
+            }
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
             self.stats.respawns += 1;
@@ -8952,6 +9278,12 @@ impl Survivor {
         }
         while core.pop_craft_refusal().is_some() {
             self.stats.refusals += 1;
+            // A repair's no rides the craft refusal: the repair's alone,
+            // never a craft of the builder's.
+            if matches!(self.awaiting, Some((Pending::Repair { .. }, _))) {
+                self.verdict = Some(Verdict::Refused);
+                continue;
+            }
             self.builder.on_craft_refused();
             if matches!(self.awaiting, Some((Pending::Craft { .. }, _))) {
                 self.verdict = Some(Verdict::Refused);
@@ -10246,6 +10578,9 @@ pub fn observe(
             if senses.heal_mates & (1 << (slot - 1)) != 0 {
                 s.offer(Goal::HealMate(slot));
             }
+            if senses.bag_mates & (1 << (slot - 1)) != 0 {
+                s.offer(Goal::GiveBag(slot));
+            }
         }
         for slot in 1..=s.team.near_len {
             s.offer(Goal::FollowNear(slot));
@@ -10255,6 +10590,24 @@ pub fn observe(
         if senses.give_to {
             for i in 0..usize::from(s.items_len) {
                 s.offer(Goal::Give(s.items[i].0));
+            }
+        }
+    }
+    // A downed teammate in sight and a syringe in the pack: a revive, to
+    // every mind, the playbook too (a body down bleeds out).
+    for slot in 1..=s.team.who_len {
+        if senses.revive_mates & (1 << (slot - 1)) != 0 {
+            s.offer(Goal::ReviveMate(slot));
+        }
+    }
+    // A bench repair, at a workbench in reach with something worn the pack
+    // pays to mend.
+    if let Some(b) = body {
+        let (x, z) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+        if let Some((_, item)) = repair_pick(core, x, z) {
+            if let Some(name) = Name::new(core.catalog.name(usize::from(item))) {
+                s.repair_item = name;
+                s.offer(Goal::Repair);
             }
         }
     }
@@ -10362,6 +10715,171 @@ fn heal_other_slot(core: &ClientCore) -> Option<(usize, u16)> {
         }
     }
     best.map(|(i, item, _)| (i, item))
+}
+
+/// The pack's med for a downed teammate, `(slot, item)`: a row that heals
+/// and revives (`SurvivalContent::revives`, the syringe), the belt before
+/// the pack.
+fn revive_slot(core: &ClientCore) -> Option<(usize, u16)> {
+    let revives = |i: &usize| {
+        let st = core.inv[*i];
+        st.count > 0
+            && core
+                .catalog
+                .rows
+                .get(st.item as usize)
+                .is_some_and(|r| r.revive && r.health > 0)
+    };
+    (0..INV_SLOTS)
+        .filter(revives)
+        .min_by_key(|&i| i >= HOTBAR_SLOTS)
+        .map(|i| (i, core.inv[i].item))
+}
+
+/// My nearest sleeping bag from (`x`, `z`), by my own-bag list
+/// (`ClientCore::own_bags`, the addresses the death screen offers): its
+/// record when the mirror holds it, and where it lies (its cell's middle
+/// when the mirror does not).
+fn nearest_own_bag(
+    core: &ClientCore,
+    x: f32,
+    z: f32,
+) -> Option<(Option<sim_core::deploy::DeployRec>, [f32; 2])> {
+    let defs = &core.deploy_defs;
+    let have = core.deploy_defs_have.min(defs.def_count);
+    let mut best: Option<(f32, Option<sim_core::deploy::DeployRec>, [f32; 2])> = None;
+    for b in core.own_bags() {
+        let rec = core.deploys.entries().iter().copied().find(|d| {
+            (d.cx, d.cz, d.level) == (b.cx, b.cz, b.level)
+                && u16::from(d.row) < have
+                && defs.defs[usize::from(d.row)].arch == ARCH_BAG
+        });
+        let (sx, sz) = rec.map_or_else(|| cell_center(b.cx, b.cz), |d| d.xz());
+        let d2 = (sx - x) * (sx - x) + (sz - z) * (sz - z);
+        if best.is_none_or(|(b2, ..)| d2 < b2) {
+            best = Some((d2, rec, [sx, sz]));
+        }
+    }
+    best.map(|(_, rec, spot)| (rec, spot))
+}
+
+/// How many of my own bags lie at this address.
+fn own_bags_at(core: &ClientCore, at: (u16, u16, u8)) -> u8 {
+    core.own_bags()
+        .iter()
+        .filter(|b| (b.cx, b.cz, b.level) == at)
+        .count() as u8
+}
+
+/// Would the human client's `E` take my bag `rec` from this body, looking
+/// along `view` (wire yaw, pitch)? Its own pick (`client::ui::interact::
+/// resolve`, my own-bag list lent as the TEAM screen's GIVE BAG needs it),
+/// cast from the eye, a body deployable judged a metre tall from its floor.
+fn e_takes_bag(
+    core: &ClientCore,
+    seed: u64,
+    haven: &Haven,
+    body: &EntityState,
+    view: (u16, u8),
+    rec: &sim_core::deploy::DeployRec,
+) -> bool {
+    use client::ui::interact::{resolve, Aim, Sight, Verb};
+    let (x, eye_y, z) = eye(body);
+    let (fx, fz) = sim_core::yaw_dir(view.0);
+    let (ch, sv) = sim_core::pitch_dir(view.1);
+    let cols = core.pieces.cols();
+    let span = |r: &sim_core::deploy::DeployRec, arch: u8| {
+        let base = sim_core::deploy::body_base_y(seed, haven, cols, r, arch);
+        let tall = if sim_core::deploy::is_edge_loc(r.loc) {
+            2.2
+        } else {
+            1.0
+        };
+        (base, base + tall)
+    };
+    let mut aim = Aim::new(x, z, fx, fz);
+    aim.cols = Some(cols);
+    aim.own_bags = core.own_bags();
+    aim.sight = Some(Sight {
+        eye: [x, eye_y, z],
+        dir: [fx * ch, sv, fz * ch],
+        span: &span,
+        reach: None,
+        lying: None,
+    });
+    let pick = resolve(
+        aim,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        core.bags.entries(),
+    );
+    pick.verb == Verb::SleepingBag && (pick.cx, pick.cz, pick.level) == (rec.cx, rec.cz, rec.level)
+}
+
+/// What a bench repair (`Goal::Repair`) mends from (`x`, `z`), `(slot,
+/// item)`: of the worn things in the pack that the workbench in reach mends
+/// and the pack pays for, in the shard's own order (`craft::repair_item`:
+/// a recipe makes it, its blueprint is known, the bench's rung, then the
+/// price, `craft::repair_cost`), the most worn. The item card's quote, off
+/// the mirror's recipe table.
+fn repair_pick(core: &ClientCore, x: f32, z: f32) -> Option<(usize, u16)> {
+    use sim_core::craft::{
+        input_ceil, inv_count_whole, repair_cost, repair_recipe, repair_station,
+    };
+    let cc = &core.recipes;
+    if cc.repair_pct == 0 {
+        return None;
+    }
+    // A margin inside the station's radius: the shard measures from where
+    // it has the body, a step behind what the eyes report.
+    let best = sim_core::deploy::best_bench_in(
+        core.deploys.entries(),
+        &core.deploy_defs,
+        x,
+        z,
+        sim_core::craft::STATION_RADIUS_M - 0.5,
+    );
+    if best == 0 {
+        return None;
+    }
+    let cat = &core.catalog;
+    let mut pick: Option<(usize, u16, u32)> = None;
+    for (i, st) in core.inv.iter().enumerate() {
+        let cond_max = cat.cond_max(usize::from(st.item));
+        if st.count == 0 || cond_max == 0 || st.cond >= cond_max {
+            continue;
+        }
+        let Some(recipe) = repair_recipe(cc, st.item) else {
+            continue;
+        };
+        let def = &cc.recipes[usize::from(recipe)];
+        if def.blueprint && !sim_core::research::knows(core.known(), recipe) {
+            continue;
+        }
+        if best < repair_station(def) {
+            continue;
+        }
+        let mut rows = [(0u16, 0u32); sim_core::limits::MAX_RECIPE_INPUTS];
+        let n = repair_cost(def, st.cond, cond_max, st.count, cc.repair_pct, &mut rows);
+        let paid = rows[..n].iter().all(|&(item, units)| {
+            let idx = usize::from(item);
+            inv_count_whole(
+                &core.inv,
+                item,
+                input_ceil(cat.stack_max(idx), cat.cond_max(idx)),
+            ) >= units
+        });
+        if n == 0 || !paid {
+            continue;
+        }
+        // Worn per mille: the most worn first, the first slot on a tie.
+        let worn = u32::from(cond_max - st.cond) * 1000 / u32::from(cond_max);
+        if pick.is_none_or(|(.., w)| worn > w) {
+            pick = Some((i, st.item, worn));
+        }
+    }
+    pick.map(|(i, item, _)| (i, item))
 }
 
 /// The teammate a request listed at `slot` (from 1), in the team view's

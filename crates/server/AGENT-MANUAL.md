@@ -515,6 +515,9 @@ offered, and a reply naming anything else is refused.
 | `reach:m<k>` | walk up to that teammate and stop in hand reach |
 | `give:m<k>:<item>` | walk up to that teammate and hand them every stack of the item. Offered as a form per teammate (`give:m2:<item>`); a live answer only, never a plan step (a plan with any give is refused) |
 | `heal:m<k>` | walk up to that teammate and use a bandage (a syringe if that is all) on them, the treat a player's `E` sends with one in hand. Offered only while they look hurt (seen down or dead lately, struck at, or asking for a heal: the shard sends nobody's health but your own), stand in sight, and you carry one; one already whole refuses it (`failed`, nothing spent) and is not offered again until a fresh sign |
+| `revive:m<k>` | walk up to that teammate lying downed and use a syringe on them: they stand at once, as a won roll stands them. Offered to every mind, the autopilot's playbook too, while they lie downed in sight and you carry a syringe |
+| `give_bag:m<k>` | walk to your nearest sleeping bag and give it to that teammate, the GIVE BAG the TEAM screen offers when you press `E` on your own bag: it becomes theirs to wake on, and yours no longer. Offered while a bag of yours is down and you have not given them one or found them with a full set; a live answer only, never a plan step |
+| `repair` | mend the worst-worn tool, gun or armour piece you carry at the workbench in reach, for a share of its recipe (the item card's Repair). Offered while you stand at a workbench and the pack pays to mend something worn there; `observation.repair_would_mend` names it |
 | `follow:n<k>` | `follow`, after a stranger: the one `team.near` lists `k`th, a body whose nametag it aimed at within 8 m in the last minute |
 | `give:<item>`, `authorize` | the social verbs (below) |
 

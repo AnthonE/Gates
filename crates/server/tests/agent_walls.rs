@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 29] = [
+const EXPECTED_VERBS: [&str; 31] = [
     "craft",
     "consume",
     "drink",
@@ -102,6 +102,8 @@ const EXPECTED_VERBS: [&str; 29] = [
     "give",
     "drop",
     "treat",
+    "repair_item",
+    "bag_give",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -967,6 +969,39 @@ impl Harness {
                     );
                     self.pick_checks += 1;
                 }
+                // GIVE BAG is on the TEAM screen `E` on your own bag opens:
+                // the bag `E` would pick, at the address given.
+                ActionMsg::BagGive { cx, cz, level, .. } => {
+                    let pick = self.e_pick(&frame);
+                    assert!(
+                        pick.verb == Verb::SleepingBag
+                            && (pick.cx, pick.cz, pick.level) == (cx, cz, level),
+                        "the agent gave the bag at {cx},{cz},{level}, which `E` would not pick \
+                         ({pick:?}), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                // The item card's Repair: at a workbench in the station's
+                // reach of where the shard has the body.
+                ActionMsg::RepairItem { .. } => {
+                    let me = self.me().body;
+                    let q = sim_core::movement::POS_XZ_Q;
+                    let w = &self.shard.world;
+                    let best = sim_core::deploy::best_bench_in(
+                        w.deploys.entries(),
+                        &w.deploy,
+                        me.qx as f32 * q,
+                        me.qz as f32 * q,
+                        sim_core::craft::STATION_RADIUS_M,
+                    );
+                    assert!(
+                        best > 0,
+                        "the agent asked a repair with no bench in reach, at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
                 ActionMsg::Feed { cx, cz, level } => {
                     let pick = self.e_pick(&frame);
                     assert_eq!(
@@ -1107,6 +1142,9 @@ impl Harness {
         };
         let mut aim = Aim::new(x, z, fx, fz);
         aim.cols = Some(cols);
+        // The client lends its own bags (`render::verbs`): `E` on one gives
+        // it away.
+        aim.own_bags = core.own_bags();
         aim.sight = Some(Sight {
             eye: [x, eye_y, z],
             dir: [fx * ch, sv, fz * ch],
@@ -2727,6 +2765,381 @@ fn a_teammate_heals_the_hurt_teammate_who_asks() {
     assert_eq!(syringes(&h), 1, "nothing spent on a whole teammate");
     h.step();
     assert!(!offered(&h), "a teammate found whole is offered again");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The revive, bag-give and repair tests' decision source, of the kind
+/// `.0`: yes to a team, then the goal the test wants (`.1`) once it is on
+/// offer (taken, so it is chosen once), else stand.
+struct WantGoal(server::mind::SourceKind, Want);
+
+impl server::mind::DecisionSource for WantGoal {
+    fn kind(&self) -> server::mind::SourceKind {
+        self.0
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = if s.offers(Goal::JoinTeam) {
+            Goal::JoinTeam
+        } else if let Some(g) = self.1.get().filter(|&g| s.offers(g)) {
+            self.1.set(None);
+            g
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// The goal a [`WantGoal`] test wants next, one of [`WANTS`] by place
+/// (0 for none), shared with the source without a lock.
+#[derive(Clone, Default)]
+struct Want(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+const WANTS: [Goal; 4] = [
+    Goal::ReviveMate(1),
+    Goal::Bag,
+    Goal::GiveBag(1),
+    Goal::Repair,
+];
+
+impl Want {
+    fn get(&self) -> Option<Goal> {
+        let i = self.0.load(std::sync::atomic::Ordering::SeqCst);
+        i.checked_sub(1).map(|i| WANTS[i])
+    }
+
+    fn set(&self, goal: Option<Goal>) {
+        let i = goal.map_or(0, |g| WANTS.iter().position(|&w| w == g).unwrap() + 1);
+        self.0.store(i, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A harness whose agent, of `kind`, is on the puppet's team, the puppet
+/// stood on it.
+fn teamed(kind: server::mind::SourceKind) -> (Harness, Want) {
+    let want: Want = Default::default();
+    let mind = Mind::inline(WantGoal(kind, want.clone()), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, common::clearing(3), mind);
+    h.with_puppet();
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    (h, want)
+}
+
+/// The newest report of `goal`.
+fn report_of(h: &Harness, goal: Goal) -> Option<server::mind::Report> {
+    h.bot.history.iter().filter(|r| r.goal == goal).last()
+}
+
+/// A revive (`revive:m<k>`): a teammate lying downed two metres off and a
+/// syringe in the pack. It is offered to every mind, the playbook's kind
+/// too; chosen, the agent belts the syringe, walks up holding it and sends
+/// the human client's treat at the body, and the teammate stands. Both
+/// shards hash-identical, the frame path allocation-free.
+#[test]
+fn a_teammate_revives_the_downed_teammate_with_a_syringe() {
+    use sim_core::movement::POS_XZ_Q;
+
+    let (mut h, want) = teamed(server::mind::SourceKind::Scripted);
+    let content = common::content();
+    let syringe = common::stack(&content, "item.syringe");
+    let item = syringe.item;
+    h.stage(move |p| {
+        p.inv[HOTBAR_SLOTS + 5] = sim_core::gather::ItemStack {
+            count: 2,
+            ..syringe
+        };
+    });
+    let me = h.me().body;
+    let (fx, fz) = sim_core::yaw_dir(h.bot.hands().view().0);
+    let haven = h.shard.world.haven;
+    let (x, z) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+    let mate = sim_core::movement::Body::at(SEED, &haven, x + fx * 2.0, z + fz * 2.0);
+    h.stage_puppet(move |p| p.body = mate);
+    let offered = |h: &Harness| {
+        h.bot
+            .summary(&h.view, ID)
+            .is_some_and(|s| s.allows(Goal::ReviveMate(1)))
+    };
+    for _ in 0..4 * TICK_HZ {
+        h.step();
+        assert!(!offered(&h), "a revive offered for a teammate standing");
+    }
+    // Down, with a minute to bleed out in.
+    let until = h.shard.world.tick + 60 * u64::from(TICK_HZ);
+    h.stage_puppet(move |p| {
+        p.hp = 10;
+        p.wounded = true;
+        p.wound_until = until;
+    });
+    let seen = (0..4 * TICK_HZ).any(|_| {
+        h.step();
+        offered(&h)
+    });
+    assert!(seen, "no revive offered: {}", h.explain());
+    want.set(Some(Goal::ReviveMate(1)));
+    for _ in 0..40 * TICK_HZ {
+        if report_of(&h, Goal::ReviveMate(1)).is_some() {
+            break;
+        }
+        h.step();
+    }
+    let report = report_of(&h, Goal::ReviveMate(1))
+        .unwrap_or_else(|| panic!("no revive ended: {}", h.explain()));
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(report.gained, 1);
+    let up = h
+        .shard
+        .world
+        .players
+        .iter()
+        .find(|p| p.active && p.id == PUPPET)
+        .is_some_and(|p| !p.wounded && !p.dead);
+    assert!(up, "the teammate is still down");
+    let left: u32 = h
+        .me()
+        .inv
+        .iter()
+        .filter(|s| s.count > 0 && s.item == item)
+        .map(|s| u32::from(s.count))
+        .sum();
+    assert_eq!(left, 1, "one syringe spent");
+    assert!(h.verbs.contains("treat"), "{:?}", h.verbs);
+    assert!(
+        h.held_checks > 0,
+        "the treat went without the syringe in hand"
+    );
+    // Up, as the eyes see them by the next look.
+    let gone = (0..TICK_HZ).any(|_| {
+        h.step();
+        !offered(&h)
+    });
+    assert!(gone, "a revive offered for a teammate who stood");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// A bag given (`give_bag:m<k>`, Rust's assign bag): with two of its own
+/// down, the agent walks to the nearest, looks at it until `E` would take
+/// it, and sends the GIVE BAG the TEAM screen that opens sends. The bag is
+/// the teammate's in the sim and off its own list, and no second bag is
+/// offered for that teammate: the mirror knows they have one of its.
+#[test]
+fn a_teammate_gives_its_sleeping_bag_to_a_teammate() {
+    use sim_core::deploy::ARCH_BAG;
+
+    let (mut h, want) = teamed(server::mind::SourceKind::External);
+    let content = common::content();
+    let bag = sim_core::gather::ItemStack {
+        count: 2,
+        ..common::stack(&content, "item.sleeping_bag")
+    };
+    h.stage(move |p| p.inv[HOTBAR_SLOTS - 1] = bag);
+    // The teammate steps back out of the way of where the bags go.
+    let me = h.me().body;
+    let q = sim_core::movement::POS_XZ_Q;
+    let back = sim_core::movement::Body::at(
+        SEED,
+        &h.shard.world.haven,
+        me.qx as f32 * q + 12.0,
+        me.qz as f32 * q,
+    );
+    h.stage_puppet(move |p| p.body = back);
+    for n in 1..=2u32 {
+        want.set(Some(Goal::Bag));
+        let placed = h.until(60 * TICK_HZ, |b| {
+            b.home().stats.bags_placed >= u64::from(n)
+                && b.core().is_some_and(|c| c.own_bags().len() as u32 >= n)
+        });
+        assert!(placed, "bag {n} not down: {}", h.explain());
+    }
+    let owned = |h: &Harness, id: u32| {
+        let w = &h.shard.world;
+        w.deploys
+            .entries()
+            .iter()
+            .filter(|d| d.owner == id && w.deploy.defs[usize::from(d.row)].arch == ARCH_BAG)
+            .count()
+    };
+    assert_eq!(owned(&h, ID), 2);
+    let offered = |h: &Harness| {
+        h.bot
+            .summary(&h.view, ID)
+            .is_some_and(|s| s.allows(Goal::GiveBag(1)))
+    };
+    assert!(offered(&h), "no bag give offered: {}", h.explain());
+    let checks = h.pick_checks;
+    want.set(Some(Goal::GiveBag(1)));
+    for _ in 0..90 * TICK_HZ {
+        if report_of(&h, Goal::GiveBag(1)).is_some() {
+            break;
+        }
+        h.step();
+    }
+    let report = report_of(&h, Goal::GiveBag(1))
+        .unwrap_or_else(|| panic!("no bag give ended: {}", h.explain()));
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    assert_eq!(
+        (owned(&h, ID), owned(&h, PUPPET)),
+        (1, 1),
+        "the bag changed hands"
+    );
+    assert!(h.verbs.contains("bag_give"), "{:?}", h.verbs);
+    assert!(
+        h.pick_checks > checks,
+        "the give went out with no pick checked"
+    );
+    assert_eq!(h.bot.core().unwrap().own_bags().len(), 1);
+    h.step();
+    assert!(!offered(&h), "a second bag offered to a teammate with mine");
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// A teammate's workbench put down beside the agent: the puppet, stood on
+/// it with one in its pack, sends the human client's deploy at the first
+/// cell next to it that takes one.
+fn stage_bench(h: &mut Harness) {
+    use sim_core::build::{BUILD_CELL_M, LOC_PLANE};
+    let w = &h.shard.world;
+    let row = (0..w.deploy.def_count)
+        .find(|&r| w.deploy.defs[usize::from(r)].arch == sim_core::deploy::ARCH_WORKBENCH)
+        .expect("a workbench row");
+    let item = w.deploy.defs[usize::from(row)].item;
+    h.with_puppet();
+    h.step();
+    let me = h.me().body;
+    let q = sim_core::movement::POS_XZ_Q;
+    let (cx, cz) = (
+        (me.qx as f32 * q / BUILD_CELL_M) as i32,
+        (me.qz as f32 * q / BUILD_CELL_M) as i32,
+    );
+    for (dx, dz) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+        h.stage_puppet(move |p| {
+            p.body = me;
+            p.inv[HOTBAR_SLOTS] = sim_core::gather::ItemStack {
+                item,
+                count: 1,
+                ..sim_core::gather::ItemStack::EMPTY
+            };
+        });
+        let before = h.shard.world.deploys.len();
+        h.puppet_act(ActionMsg::Deploy {
+            row,
+            cx: (cx + dx) as u16,
+            cz: (cz + dz) as u16,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        });
+        if h.shard.world.deploys.len() > before {
+            // Off out of the way.
+            let far = sim_core::movement::Body::at(
+                SEED,
+                &h.shard.world.haven,
+                me.qx as f32 * q + 60.0,
+                me.qz as f32 * q + 60.0,
+            );
+            h.stage_puppet(move |p| p.body = far);
+            return;
+        }
+    }
+    panic!("no cell beside the agent took a workbench: {}", h.explain());
+}
+
+/// A bench repair (`repair`): a stone hatchet worn to half and the wood
+/// and stone to mend it, a workbench beside the agent. Offered then, and
+/// not before, with `repair_would_mend` naming it; chosen, the item card's
+/// Repair goes out and the hatchet comes back whole in the sim.
+#[test]
+fn a_survivor_repairs_its_worn_hatchet_at_a_workbench() {
+    let want: Want = Default::default();
+    let source = WantGoal(server::mind::SourceKind::Scripted, want.clone());
+    let mind = Mind::inline(source, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, common::clearing(3), mind);
+    h.until(5, |_| false);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let hatchet = stack("item.hatchet_stone", 1);
+    let whole = hatchet.cond;
+    let worn = sim_core::gather::ItemStack {
+        cond: whole / 2,
+        ..hatchet
+    };
+    let (wood, stone) = (stack("item.wood", 500), stack("item.stone", 500));
+    h.stage(move |p| {
+        p.inv[HOTBAR_SLOTS + 1] = worn;
+        p.inv[HOTBAR_SLOTS + 2] = wood;
+        p.inv[HOTBAR_SLOTS + 3] = stone;
+    });
+    let offered = |h: &Harness| {
+        h.bot
+            .summary(&h.view, ID)
+            .is_some_and(|s| s.allows(Goal::Repair))
+    };
+    for _ in 0..2 * TICK_HZ {
+        h.step();
+        assert!(!offered(&h), "a repair offered with no bench in reach");
+    }
+    stage_bench(&mut h);
+    let seen = (0..4 * TICK_HZ).any(|_| {
+        h.step();
+        offered(&h)
+    });
+    assert!(seen, "no repair offered at the bench: {}", h.explain());
+    let s = h.bot.summary(&h.view, ID).unwrap();
+    assert_eq!(s.repair_item.as_str(), "Stone Hatchet");
+    want.set(Some(Goal::Repair));
+    for _ in 0..20 * TICK_HZ {
+        if report_of(&h, Goal::Repair).is_some() {
+            break;
+        }
+        h.step();
+    }
+    let report =
+        report_of(&h, Goal::Repair).unwrap_or_else(|| panic!("no repair ended: {}", h.explain()));
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let mended = h
+        .me()
+        .inv
+        .iter()
+        .find(|s| s.count > 0 && s.item == hatchet.item)
+        .map(|s| s.cond);
+    assert_eq!(mended, Some(whole), "the hatchet is whole");
+    let wood_left: u32 = h
+        .me()
+        .inv
+        .iter()
+        .filter(|s| s.item == wood.item)
+        .map(|s| u32::from(s.count))
+        .sum();
+    assert!(wood_left < 500, "the mend cost nothing");
+    assert!(h.verbs.contains("repair_item"), "{:?}", h.verbs);
+    h.step();
+    assert!(!offered(&h), "a repair offered with nothing worn");
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 

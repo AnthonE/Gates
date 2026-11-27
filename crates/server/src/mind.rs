@@ -300,6 +300,23 @@ pub enum Goal {
     /// `sense_hurt_mates`: down or dead lately, struck at, or asking for
     /// it), up and in sight, while the pack holds a med that heals another.
     HealMate(u8),
+    /// Bring one downed teammate back up, by slot as `FollowMate`
+    /// (`revive:m2`): walk up to the body and use a syringe on it, the
+    /// treat a player sends with `E` and one in hand (`Command::Treat` on
+    /// someone down: they stand at once). Offered while that teammate lies
+    /// downed in sight and the pack holds a med that revives.
+    ReviveMate(u8),
+    /// Give a sleeping bag of mine to one teammate, by slot as `FollowMate`
+    /// (`give_bag:m2`): walk to my nearest bag, look at it and give it, the
+    /// GIVE BAG a player presses on the TEAM screen `E` on their bag opens
+    /// (`ActionMsg::BagGive`). Offered while a bag of mine is down and the
+    /// teammate is not one it gave a bag to or found at the bag cap; a live
+    /// answer only, never a plan step.
+    GiveBag(u8),
+    /// Mend the worst-worn thing the pack can pay to mend at the workbench
+    /// in reach (`ActionMsg::RepairItem`, the item card's Repair). Offered
+    /// while one stands in reach and something worn would mend there.
+    Repair,
     /// `follow`, after a stranger whose nametag it aimed at within
     /// [`NEAR_AIM_M`] lately: the one `team.near` lists at this slot, from 1
     /// (`follow:n1`).
@@ -380,7 +397,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 43] = [
+    pub const FIXED: [Goal; 44] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -424,6 +441,7 @@ impl Goal {
         Goal::HandOver,
         Goal::Authorize,
         Goal::AddBox,
+        Goal::Repair,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -483,6 +501,9 @@ impl Goal {
             Goal::ReachMate(_) => "reach",
             Goal::GiveMate(..) => "give",
             Goal::HealMate(_) => "heal",
+            Goal::ReviveMate(_) => "revive",
+            Goal::GiveBag(_) => "give_bag",
+            Goal::Repair => "repair",
         }
     }
 
@@ -518,7 +539,9 @@ impl Goal {
         if let Goal::FollowMate(slot)
         | Goal::ReachMate(slot)
         | Goal::GiveMate(slot, _)
-        | Goal::HealMate(slot) = self
+        | Goal::HealMate(slot)
+        | Goal::ReviveMate(slot)
+        | Goal::GiveBag(slot) = self
         {
             put(b":m");
             put(slot.to_string().as_bytes());
@@ -592,6 +615,12 @@ impl Goal {
         }
         if key == "heal" {
             return mate(name).map(Goal::HealMate);
+        }
+        if key == "revive" {
+            return mate(name).map(Goal::ReviveMate);
+        }
+        if key == "give_bag" {
+            return mate(name).map(Goal::GiveBag);
         }
         if key == "give" {
             if let Some((slot, item)) = name.split_once(':') {
@@ -741,6 +770,17 @@ impl Goal {
                 "Heal teammate {k} (team.teammates' {k}th), who looks hurt: walk up and use a \
                  bandage or syringe on them. One already whole refuses it and keeps the med."
             ),
+            Goal::ReviveMate(k) => format!(
+                "Revive teammate {k} (team.teammates' {k}th), downed in view: walk up and use a \
+                 syringe on them, and they stand at once."
+            ),
+            Goal::GiveBag(k) => format!(
+                "Give teammate {k} (team.teammates' {k}th) my nearest sleeping bag: it becomes \
+                 theirs to wake on, and mine no longer."
+            ),
+            Goal::Repair => "Repair the worst-worn thing you carry at the workbench here, for a \
+                 share of its recipe."
+                .into(),
         }
     }
 }
@@ -2018,15 +2058,15 @@ pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits:
 
 /// The most goals one request can offer: the fixed set, every craft and
 /// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
-/// (`HOLD_ANY`), a follow, a reach, a give form and a heal for each
-/// teammate, a follow for each stranger near, and a give for each item the
-/// pack lists.
+/// (`HOLD_ANY`), a follow, a reach, a give form, a heal, a revive and a bag
+/// give for each teammate, a follow for each stranger near, and a give for
+/// each item the pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
     + 2
-    + 4 * protocol::TEAM_MAX
+    + 6 * protocol::TEAM_MAX
     + NEAR_MAX
     + SUMMARY_ITEMS;
 
@@ -2112,6 +2152,9 @@ pub struct Summary {
     /// Its own workbench and furnace stand.
     pub bench: bool,
     pub furnace: bool,
+    /// What `repair` would mend now at the workbench in reach (the
+    /// worst-worn thing the pack pays for); `Name::EMPTY` for nothing.
+    pub repair_item: Name,
     /// Barrels and crates it knows of and has not emptied.
     pub loot: Sighting,
     /// The nearest place on the map with crates it has not found bare.
@@ -2283,6 +2326,7 @@ impl Summary {
         held_by: None,
         bench: false,
         furnace: false,
+        repair_item: Name::EMPTY,
         loot: Sighting {
             count: 0,
             nearest_m: 0,
@@ -2698,6 +2742,7 @@ impl Summary {
                 "waiting_on_work": self.held_by.map(|n| n.as_str().to_owned()),
             },
             "stations": { "workbench": self.bench, "furnace": self.furnace },
+            "repair_would_mend": (self.repair_item != Name::EMPTY).then(|| self.repair_item.as_str()),
             "loot_known": self.loot.json(),
             "loot_place": self.loot_place.map(|p| p.json()),
             "raid_targets": self.raid.json(),
@@ -2919,7 +2964,7 @@ impl Plan {
             let label = step["goal"].as_str().ok_or("each plan step needs a goal")?;
             let goal =
                 Goal::named(label).ok_or_else(|| format!("plan step {label:?} is not a goal"))?;
-            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..)) {
+            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..) | Goal::GiveBag(_)) {
                 return Err(format!(
                     "plan step {label:?}: a give is a live answer, never a plan step"
                 ));
@@ -3970,6 +4015,18 @@ impl Scripted {
         if s.condition.bleeding() && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: bleeding, a bandage stops it");
         }
+        // A teammate down in view and a syringe in the pack: up they come
+        // before they bleed out (Rust's), ahead of anything of its own but
+        // staying alive.
+        if let Some(goal) = (1..=s.team.who_len)
+            .map(Goal::ReviveMate)
+            .find(|&g| s.offers(g))
+        {
+            return (
+                goal,
+                "scripted: my teammate is down, a syringe gets them up",
+            );
+        }
         // Freezing (the cold eating a body already under the heal line), or
         // badly hurt with no meds: by a lit fire, Rust's answer to both. A
         // fire takes the chill away and its comfort mends a body to 80 % at
@@ -4768,7 +4825,39 @@ mod tests {
             None,
             "another slot"
         );
-        // A give is a live answer, never a plan step.
+        // A revive and a bag give, by slot; a repair stands alone.
+        assert_eq!(Goal::ReviveMate(2).label().as_str(), "revive:m2");
+        assert_eq!(Goal::GiveBag(3).label().as_str(), "give_bag:m3");
+        assert_eq!(Goal::named("revive:m2"), Some(Goal::ReviveMate(2)));
+        assert_eq!(Goal::named("give_bag:m3"), Some(Goal::GiveBag(3)));
+        assert_eq!(Goal::named("repair"), Some(Goal::Repair));
+        for bad in [
+            "revive:m0",
+            "revive:m9",
+            "revive",
+            "give_bag:Ash",
+            "give_bag",
+        ] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("revive:m2", s.options()), None, "not offered");
+        s.offer(Goal::ReviveMate(2));
+        s.offer(Goal::GiveBag(1));
+        assert_eq!(
+            Goal::parse("revive:m2", s.options()),
+            Some(Goal::ReviveMate(2))
+        );
+        assert_eq!(
+            Goal::parse("give_bag:m1", s.options()),
+            Some(Goal::GiveBag(1))
+        );
+        assert_eq!(Goal::parse("give_bag:m2", s.options()), None);
+        assert!(Plan::parse(&json!([{"goal": "revive:m1"}])).is_ok());
+        // A give is a live answer, never a plan step; so is a bag's.
+        assert!(Plan::parse(&json!([{"goal": "give_bag:m1"}]))
+            .unwrap_err()
+            .contains("live answer"));
         for give in ["give:Wood", "give:m2:Wood"] {
             let plan = json!([{"goal": give}]);
             assert!(
@@ -5122,6 +5211,32 @@ mod tests {
         assert_eq!(pick(Traits::MID.knobs()), Goal::Flee);
         assert_eq!(pick(Traits::MID.knobs()), Scripted::default().pick(&s).0);
         assert_ne!(pick(Traits([100; 7]).knobs()), Goal::Flee, "the bold stay");
+    }
+
+    /// The playbook gets a downed teammate up while it holds a syringe: a
+    /// revive on offer comes before the work, after a badly hurt body's
+    /// own retreat; the one on offer is the one picked.
+    #[test]
+    fn the_scripted_policy_revives_a_downed_teammate() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        s.offer(Goal::GatherWood);
+        s.trees.add(10.0, 0);
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        (s.hp_max, s.hp) = (100, 100);
+        s.free_slots = 20;
+        s.team.who_len = 2;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherWood, "nobody down");
+        s.offer(Goal::ReviveMate(2));
+        let (goal, why) = scripted.pick(&s);
+        assert_eq!(goal, Goal::ReviveMate(2), "{why}");
+        // Badly hurt with a body in view and struck: away first.
+        s.hits = 1;
+        s.hp = 5;
+        s.players.add(5.0, 0);
+        s.offer(Goal::Flee);
+        assert_eq!(scripted.pick(&s).0, Goal::Flee);
     }
 
     #[test]
