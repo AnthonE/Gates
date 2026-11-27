@@ -107,6 +107,7 @@
 {"kind":"crate","at":[4,5,4]},
 {"kind":"crate_elite","at":[-12,15,-4]},
 {"kind":"crate_elite","at":[-12,15,4]},
+{"kind":"vault","at":[-28,5,4]},
 {"kind":"reader","at":[2.2,0,13]},
 {"kind":"lever","at":[2.2,0,9]},
 {"kind":"reader","at":[27,5,2.2]},

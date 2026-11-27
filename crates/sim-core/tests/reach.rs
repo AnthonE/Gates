@@ -301,6 +301,9 @@ fn every_authored_crate_can_still_be_reached() {
                 sites.push((x, wz));
             }
         }
+        if let Some((x, wz, _)) = sim_core::town::vault_world(&h.town) {
+            sites.push((x, wz));
+        }
         for m in h.marks.iter().filter(|m| m.live) {
             let mut k = 0;
             while let Some((x, wz, _, _)) = sim_core::landmark::anchor(m, k) {

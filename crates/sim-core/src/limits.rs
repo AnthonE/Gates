@@ -1009,6 +1009,13 @@ pub const MAX_CROPS: usize = 8;
 /// Proposed default, DECISIONS.md §open (world containers v0).
 pub const MAX_WORLD_CONTS: usize = 256;
 
+/// Sealed vaults (`Occupant::Vault`) one island may author: one at every
+/// landmark (`landmark::anchors`, a const block holds each kit to exactly
+/// one), one outside the town's walls (`town::VAULT`) and the ziggurat's
+/// (`monument::CRATES`). That ceiling is 66; `landmark.rs` asserts it fits
+/// here, and that the vaults leave most of [`MAX_WORLD_CONTS`] to the rest.
+pub const MAX_VAULTS: usize = 72;
+
 /// Vendor offers on the island, all kiosks together (`vend.rs`). Refused
 /// past at bake.
 pub const MAX_VEND_OFFERS: usize = 64;

@@ -8067,6 +8067,31 @@ fn scatter_in<C: Corners>(
         }
     }
 
+    // The town's sealed vault (`town::VAULT`), outside its walls: authored
+    // and unvetoable like the pad's crates, seated on the carved floor.
+    if crate::town::covers(
+        &haven.town,
+        cell_x as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+        cell_z as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+        0.0,
+    ) {
+        if let Some((vx, vz, yaw)) = crate::town::vault_world(&haven.town) {
+            if (vx * (1.0 / CELL_SIZE)) as i32 == cell_x
+                && (vz * (1.0 / CELL_SIZE)) as i32 == cell_z
+            {
+                return Slot {
+                    occupant: Occupant::Vault,
+                    x: vx,
+                    y: ground_in(c, seed, haven, vx, vz),
+                    z: vz,
+                    yaw,
+                    scale: 1.0,
+                    species: 0,
+                };
+            }
+        }
+    }
+
     // The ziggurat's crates (`monument.rs`), seated on their own floors —
     // a room's floor, not the ground under the stone.
     if crate::monument::covers(

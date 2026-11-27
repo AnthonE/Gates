@@ -37,7 +37,7 @@ pub const LANDMARKS: usize = LANDMARK_CELLS * LANDMARK_CELLS;
 /// Radius every kit fits inside, metres — the veto and broad-phase disc.
 pub const LANDMARK_R_M: f32 = 26.0;
 /// Most crates one kit seats.
-pub const LANDMARK_CRATES: usize = 3;
+pub const LANDMARK_CRATES: usize = 4;
 /// How far below its base every kit's footings run, metres, so a wall on a
 /// slope is rooted on its low side rather than standing on air.
 pub const FOOTING_M: f32 = 4.0;
@@ -122,10 +122,10 @@ const fn p(x0: f32, y0: f32, z0: f32, x1: f32, y1: f32, z1: f32, mat: Mat) -> Pa
     }
 }
 
-/// A crate anchor in the landmark's frame: `(x, z, what)`.
-/// A kit's container: local (x, z) and what stands there. Seven kinds keep
-/// a sealed vault (`Occupant::Vault`) where a barrel stood, so THE SEVERED
-/// GATE opening (`ARC.md` act III) unseals a door at most landmarks.
+/// A kit's container: local (x, z) and what stands there. Every kind keeps
+/// exactly one sealed vault (`Occupant::Vault`), so THE SEVERED GATE opening
+/// (`ARC.md` act III) unseals a door at every landmark ("sealed steel doors
+/// planted everywhere", §5 M2); its door faces [`vault_face`].
 pub type Anchor = (f32, f32, Occupant);
 
 const F: f32 = -FOOTING_M;
@@ -162,6 +162,8 @@ const MAST_CRATES: &[Anchor] = &[
     (-11.0, 7.0, Occupant::CacheSlot),
     (4.5, 9.0, Occupant::CrateSlot),
     (9.0, -9.0, Occupant::BarrelSlot),
+    // South of the hut, off the pad.
+    (-11.0, -9.0, Occupant::Vault),
 ];
 
 const RUIN: &[Part] = &[
@@ -274,6 +276,8 @@ const YARD_CRATES: &[Anchor] = &[
     (-4.0, -3.0, Occupant::CacheSlot),
     (12.0, -6.0, Occupant::CacheSlot),
     (-10.0, 5.0, Occupant::CrateSlot),
+    // On the slab's north-east corner, between the stacks.
+    (8.0, 8.0, Occupant::Vault),
 ];
 
 const ANVIL: &[Part] = &[
@@ -289,7 +293,11 @@ const ANVIL: &[Part] = &[
     p(-11.5, F, 2.0, -8.5, 1.3, 5.0, Mat::Rock),
     p(2.0, F, 8.0, 4.5, 1.0, 10.0, Mat::Rock),
 ];
-const ANVIL_CRATES: &[Anchor] = &[(0.0, -8.5, Occupant::CacheSlot)];
+const ANVIL_CRATES: &[Anchor] = &[
+    (0.0, -8.5, Occupant::CacheSlot),
+    // Off the foot's north-east corner, past the fallen piece.
+    (8.0, 9.0, Occupant::Vault),
+];
 
 const ARCH: &[Part] = &[
     // The buttresses, and the slab across them 10 m up.
@@ -304,7 +312,7 @@ const ARCH: &[Part] = &[
 ];
 const ARCH_CRATES: &[Anchor] = &[
     (0.0, 0.0, Occupant::CrateSlot),
-    (-3.0, -9.0, Occupant::Vault),
+    (-4.0, -11.0, Occupant::Vault),
 ];
 
 const SPIRES: &[Part] = &[
@@ -318,7 +326,7 @@ const SPIRES: &[Part] = &[
 ];
 const SPIRES_CRATES: &[Anchor] = &[
     (-1.0, -3.0, Occupant::CacheSlot),
-    (8.0, 1.0, Occupant::Vault),
+    (10.0, 2.0, Occupant::Vault),
 ];
 
 const QUARRY: &[Part] = &[
@@ -402,7 +410,7 @@ const RELAY: &[Part] = &[
 ];
 const RELAY_CRATES: &[Anchor] = &[
     (-4.0, -5.0, Occupant::CrateSlot),
-    (6.0, -6.0, Occupant::Vault),
+    (7.5, -6.0, Occupant::Vault),
 ];
 
 /// The boxes of a kind.
@@ -434,6 +442,24 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
         LandmarkKind::Spires => SPIRES_CRATES,
         LandmarkKind::Quarry => QUARRY_CRATES,
         LandmarkKind::Relay => RELAY_CRATES,
+    }
+}
+
+/// Where a kind's vault door faces, as a bearing byte in the kit's frame
+/// (0 local +Z, 64 +X, 128 −Z, 192 −X): out of the kit, or across open
+/// ground, never at a wall (`tests/vault.rs` walks up to every door).
+pub const fn vault_face(kind: LandmarkKind) -> u8 {
+    match kind {
+        LandmarkKind::Mast => 128,
+        LandmarkKind::Ruin => 128,
+        LandmarkKind::Tower => 224,
+        LandmarkKind::Stones => 192,
+        LandmarkKind::Yard => 0,
+        LandmarkKind::Anvil => 32,
+        LandmarkKind::Arch => 128,
+        LandmarkKind::Spires => 64,
+        LandmarkKind::Quarry => 128,
+        LandmarkKind::Relay => 192,
     }
 }
 
@@ -488,11 +514,16 @@ pub fn dump(kind: LandmarkKind, w: &mut impl core::fmt::Write) -> core::fmt::Res
         )?;
     }
     w.write_str("],\"anchors\":[")?;
-    for (i, (x, z, _)) in anchors(kind).iter().enumerate() {
+    for (i, (x, z, o)) in anchors(kind).iter().enumerate() {
         if i > 0 {
             w.write_str(",")?;
         }
-        write!(w, "\n{{\"kind\":\"crate\",\"at\":[{x},0,{z}]}}")?;
+        let kind = if *o == Occupant::Vault {
+            "vault"
+        } else {
+            "crate"
+        };
+        write!(w, "\n{{\"kind\":\"{kind}\",\"at\":[{x},0,{z}]}}")?;
     }
     w.write_str("]}\n")
 }
@@ -546,14 +577,48 @@ const _: () = {
         }
         let a = anchors(kinds[k]);
         assert!(a.len() <= LANDMARK_CRATES);
+        let mut vaults = 0;
         let mut i = 0;
         while i < a.len() {
             assert!(a[i].0 * a[i].0 + a[i].1 * a[i].1 <= LANDMARK_R_M * LANDMARK_R_M);
+            if matches!(a[i].2, Occupant::Vault) {
+                vaults += 1;
+                // A scatter cell holds one occupant and the first anchor in
+                // it wins, so a vault keeps more than a cell's diagonal
+                // (8·√2 ≈ 11.31 m) from every other anchor: no two points
+                // that far apart share an 8 m cell, at any bearing. A proof
+                // that the vault is never the one dropped, not a margin.
+                let mut j = 0;
+                while j < a.len() {
+                    let (dx, dz) = (a[i].0 - a[j].0, a[i].1 - a[j].1);
+                    assert!(
+                        j == i
+                            || dx * dx + dz * dz
+                                > 2.0 * terrain::CELL_SIZE * terrain::CELL_SIZE + 1.0
+                    );
+                    j += 1;
+                }
+            }
             i += 1;
         }
+        // Exactly one door per landmark, every kind.
+        assert!(vaults == 1);
         k += 1;
     }
     assert!(LANDMARK_CELLS * LANDMARK_CELLS == LANDMARKS);
+    // The island's vaults fit their cap — one a landmark, the town's and the
+    // ziggurat's (`limits::MAX_VAULTS`) — and leave the world-container
+    // store most of its room.
+    let mut zig = 0;
+    let mut i = 0;
+    while i < crate::monument::CRATES.len() {
+        if matches!(crate::monument::CRATES[i].3, Occupant::Vault) {
+            zig += 1;
+        }
+        i += 1;
+    }
+    assert!(LANDMARKS + 1 + zig <= crate::limits::MAX_VAULTS);
+    assert!(crate::limits::MAX_VAULTS * 3 <= crate::limits::MAX_WORLD_CONTS);
 };
 
 /// One placed landmark.
@@ -656,11 +721,17 @@ pub fn ground(marks: &[Landmark], x: f32, z: f32, feet: f32, r: f32) -> f32 {
     best
 }
 
-/// Crate `k` of a landmark in world space: `(x, z, yaw, occupant)`.
+/// Crate `k` of a landmark in world space: `(x, z, yaw, occupant)`. A
+/// vault's yaw turns its door to [`vault_face`]; a crate's is a spread.
 pub fn anchor(m: &Landmark, k: usize) -> Option<(f32, f32, u8, Occupant)> {
     let a = anchors(m.kind).get(k)?;
     let (x, z) = to_world(m, a.0, a.1);
-    Some((x, z, m.yaw.wrapping_add((k as u8).wrapping_mul(71)), a.2))
+    let turn = if a.2 == Occupant::Vault {
+        vault_face(m.kind)
+    } else {
+        (k as u8).wrapping_mul(71)
+    };
+    Some((x, z, m.yaw.wrapping_add(turn), a.2))
 }
 
 #[inline]

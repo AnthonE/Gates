@@ -15,4 +15,4 @@
 {"b":[6,-4,4.5,9,1.2,6],"mat":"timber","flags":0,"door":0}],"anchors":[
 {"kind":"crate","at":[0,0,0]},
 {"kind":"crate","at":[9,0,-9]},
-{"kind":"crate","at":[-9,0,8]}]}
+{"kind":"vault","at":[-9,0,8]}]}

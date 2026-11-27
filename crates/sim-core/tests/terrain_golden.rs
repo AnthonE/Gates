@@ -233,7 +233,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// wipe): a birch in the snow stands only on `terrain::snow_stand`, and the Snow
 /// row's trees thin over the treeline (`terrain::SNOW_ALPINE_TREE_KEEP`). No
 /// height moved.
-const GOLDEN_TERRAIN_HASH: u64 = 0x3D29_17DE_AA98_7C2C;
+/// **Moved → `0xEC75_5B4D_26A7_B9CE` at the steel doors everywhere** (2026-11-27,
+/// wipe): every landmark kind keeps a vault, its door turned to
+/// `landmark::vault_face`, and the town and the ziggurat keep one each. No
+/// height moved.
+const GOLDEN_TERRAIN_HASH: u64 = 0xEC75_5B4D_26A7_B9CE;
 
 #[test]
 fn test_terrain_golden() {

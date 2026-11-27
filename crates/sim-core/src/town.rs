@@ -621,11 +621,28 @@ pub const GUARD_WALK_MPS: f32 = 1.3;
 /// How long a guard stands at each corner of the beat, seconds.
 pub const GUARD_PAUSE_S: f32 = 3.0;
 
+/// The town's sealed vault (`Occupant::Vault`, `ARC.md` act III): local
+/// (x, z) and the bearing byte its door faces (`landmark::vault_face`'s
+/// convention). It stands outside the local east wall, past the safe square
+/// and inside the reserve, so nobody is safe at it and nobody builds round
+/// it, on the carved floor and 28 m off either axis the gates' roads leave
+/// along; its door faces out, +X. Both coordinates ≡ 4 (mod 8): a
+/// scatter-cell centre on the town's 24 m lattice, whatever the rotation.
+pub const VAULT: (f32, f32, u8) = (52.0, 28.0, 64);
+
 /// Where a player woken at THE GATE stands up (local x, z): the market
 /// street south of the gate, spread across its width by who they are.
 pub const SPAWN_STREET: (f32, f32) = (0.0, -24.0);
 
 const _: () = {
+    // The vault: out of the safe square by more than its door's reach, in
+    // the reserve with a body to spare in front, on the flat floor, and on
+    // a scatter-cell centre.
+    let (vx, vz, _) = VAULT;
+    assert!(vx - 2.0 > SAFE_HALF_M && vx + 2.0 < RESERVE_HALF_M);
+    assert!(vz > -RESERVE_HALF_M + 2.0 && vz + 2.0 < RESERVE_HALF_M);
+    assert!(vx * vx + vz * vz < TOWN_FOOTPRINT.stamp_m * TOWN_FOOTPRINT.stamp_m);
+    assert!((vx - 4.0) % 8.0 == 0.0 && (vz - 4.0) % 8.0 == 0.0);
     assert!(kit::well_formed(PARTS));
     assert!(kit::well_formed(&MACHINES));
     assert!(kit::well_formed(&CASINO));
@@ -795,6 +812,16 @@ pub fn covers(t: &Town, x: f32, z: f32, pad: f32) -> bool {
     let (dx, dz) = (x - t.x, z - t.z);
     let r = TOWN_FOOTPRINT.scatter_m + pad;
     dx * dx + dz * dz <= r * r
+}
+
+/// The vault in world space: (x, z, door yaw byte).
+pub fn vault_world(t: &Town) -> Option<(f32, f32, u8)> {
+    if !t.live {
+        return None;
+    }
+    let (x, z, face) = VAULT;
+    let (wx, wz) = kit::to_world(&t.placed(), x, z);
+    Some((wx, wz, kit::yaw_byte(t.rot).wrapping_add(face)))
 }
 
 /// Kiosk `k`'s trading spot in world space.

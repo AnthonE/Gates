@@ -26,5 +26,5 @@
 {"b":[-9.2,-4,2.8,-7.6,2.5,4],"mat":"stone","flags":0,"door":0},
 {"b":[-9.2,-4,3.4,-7.6,3,4],"mat":"stone","flags":0,"door":0}],"anchors":[
 {"kind":"crate","at":[-10,0,-9]},
-{"kind":"crate","at":[6,0,-14]},
+{"kind":"vault","at":[6,0,-14]},
 {"kind":"crate","at":[0,0,-2]}]}

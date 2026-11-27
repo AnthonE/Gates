@@ -235,7 +235,7 @@ pub const DOORS: [CardDoor; CARD_DOORS] = [
 
 /// The crates: local (x, y, z) and occupant. Each x and z ≡ 4 (mod 8), so
 /// each is a scatter-cell centre and no two share a cell.
-pub const CRATES: [(f32, f32, f32, Occupant); 8] = [
+pub const CRATES: [(f32, f32, f32, Occupant); 9] = [
     // Entry hall.
     (-4.0, 0.0, 20.0, Occupant::CacheSlot),
     (4.0, 0.0, 28.0, Occupant::CrateSlot),
@@ -248,7 +248,16 @@ pub const CRATES: [(f32, f32, f32, Occupant); 8] = [
     // Sanctum.
     (-12.0, 15.0, -4.0, Occupant::EliteCrate),
     (-12.0, 15.0, 4.0, Occupant::EliteCrate),
+    // The sealed vault (`ARC.md` act III), out on the first terrace's west
+    // ledge (x −32..−26, y 5), up the front stairs and round the corner:
+    // its door faces [`VAULT_FACE`], off the ledge, with the ledge's width
+    // in front of it and a body's way past behind.
+    (-28.0, 5.0, 4.0, Occupant::Vault),
 ];
+
+/// Where the vault's door faces, a bearing byte in the kit's frame
+/// (`landmark::vault_face`'s convention): local −X, out over the west face.
+pub const VAULT_FACE: u8 = 192;
 
 const _: () = {
     assert!(kit::well_formed(&PARTS));
@@ -347,7 +356,12 @@ pub fn covers(z: &Ziggurat, x: f32, wz: f32, pad: f32) -> bool {
 pub fn crate_world(z: &Ziggurat, k: usize) -> Option<(f32, f32, f32, u8, Occupant)> {
     let &(x, y, lz, occ) = CRATES.get(k)?;
     let (wx, wz) = kit::to_world(&z.placed(), x, lz);
-    let yaw = kit::yaw_byte(z.rot).wrapping_add((k as u8).wrapping_mul(64));
+    let turn = if occ == Occupant::Vault {
+        VAULT_FACE
+    } else {
+        (k as u8).wrapping_mul(64)
+    };
+    let yaw = kit::yaw_byte(z.rot).wrapping_add(turn);
     Some((wx, z.floor_y + y, wz, yaw, occ))
 }
 
@@ -445,6 +459,7 @@ pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
             Occupant::GreenCrate => "crate_green",
             Occupant::BlueCrate => "crate_blue",
             Occupant::EliteCrate => "crate_elite",
+            Occupant::Vault => "vault",
             _ => "crate",
         };
         anchors[n] = (kind, x, y, z);
