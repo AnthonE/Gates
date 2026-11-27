@@ -2523,6 +2523,27 @@ impl Content {
                 };
             }
             wc.defs[k] = def;
+            if w.convoy_carriers > 0 || w.convoy_minutes > 0 {
+                if w.convoy_carriers == 0
+                    || w.convoy_carriers as usize > sim_core::limits::MAX_CONVOY
+                    || !(1..=24 * 60).contains(&w.convoy_minutes)
+                {
+                    return Err(format!(
+                        "arc: {}: a convoy is 1..={} carriers every 1..=1440 minutes",
+                        w.id,
+                        sim_core::limits::MAX_CONVOY
+                    ));
+                }
+                if w.act <= 2 || wc.convoy_work != sim_core::works::NO_CONVOY {
+                    return Err(format!(
+                        "arc: {}: convoys feed one work, the war effort past act II",
+                        w.id
+                    ));
+                }
+                wc.convoy_work = k as u8;
+                wc.convoy_carriers = w.convoy_carriers;
+                wc.convoy_every = w.convoy_minutes as u64 * 60 * TICK_HZ as u64;
+            }
         }
         wc.count = self.works.len() as u8;
         for (i, e) in self.arc_effects.iter().enumerate() {
@@ -3119,6 +3140,7 @@ impl Content {
                 "mob.wolf" => MOB_WOLF,
                 "mob.stag" => sim_core::mob::MOB_STAG,
                 "mob.stray" => sim_core::mob::MOB_STRAY,
+                "mob.carrier" => sim_core::mob::MOB_CARRIER,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"
@@ -3144,6 +3166,7 @@ impl Content {
                 "mob.wolf" => MOB_WOLF as usize,
                 "mob.stag" => sim_core::mob::MOB_STAG as usize,
                 "mob.stray" => sim_core::mob::MOB_STRAY as usize,
+                "mob.carrier" => sim_core::mob::MOB_CARRIER as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"

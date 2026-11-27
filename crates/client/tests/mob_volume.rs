@@ -22,7 +22,7 @@
 //! copy of the thing under test.
 
 use client::render::mobs::{PIG_H_M, PIG_LEN_M, STAG_H_M, STAG_LEN_M, WOLF_H_M, WOLF_LEN_M};
-use sim_core::mob::{MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
+use sim_core::mob::{MOB_CARRIER, MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
 
 /// The baked roster, off `content/`.
 fn mobs() -> sim_core::mob::MobContent {
@@ -49,6 +49,8 @@ fn the_hit_cylinder_is_the_animal_the_client_draws() {
         (MOB_STAG, "stag", STAG_H_M, STAG_LEN_M),
         // Drawn with the wolf's model.
         (MOB_STRAY, "stray", WOLF_H_M, WOLF_LEN_M),
+        // Drawn with the stag's.
+        (MOB_CARRIER, "carrier", STAG_H_M, STAG_LEN_M),
     ] {
         let def = mc.def(kind);
         let h = f32::from(def.body_h_cm) * 0.01;
@@ -90,6 +92,7 @@ fn no_shipped_species_is_a_ghost() {
         (MOB_WOLF, "wolf"),
         (MOB_STAG, "stag"),
         (MOB_STRAY, "stray"),
+        (MOB_CARRIER, "carrier"),
     ] {
         let def = mc.def(kind);
         assert!(

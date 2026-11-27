@@ -254,12 +254,13 @@ pub const WOLF_LEG_GLB: &str = "models/mob/wolf_leg.glb";
 pub const STAG_BODY_GLB: &str = "models/mob/stag_body.glb";
 pub const STAG_LEG_GLB: &str = "models/mob/stag_leg.glb";
 /// Killed animals lying on their side, indexed by species. A stray lies as
-/// the wolf it is drawn as.
+/// the wolf it is drawn as, a carrier as the stag.
 pub const CARCASS_GLB: [&str; mob::MOB_KINDS] = [
     "models/mob/pig_carcass.glb",
     "models/mob/wolf_carcass.glb",
     "models/mob/stag_carcass.glb",
     "models/mob/wolf_carcass.glb",
+    "models/mob/stag_carcass.glb",
 ];
 /// Every model this file loads — what `tests/packed_maps.rs` censuses.
 pub const MOB_GLBS: [&str; 9] = [
@@ -319,7 +320,7 @@ impl HerdAssets {
     pub fn of(&self, slot: usize) -> &SpeciesAssets {
         match mob::kind_of(slot) {
             mob::MOB_WOLF | mob::MOB_STRAY => &self.wolf,
-            mob::MOB_STAG => &self.stag,
+            mob::MOB_STAG | mob::MOB_CARRIER => &self.stag,
             _ => &self.pig,
         }
     }
@@ -330,7 +331,7 @@ impl HerdAssets {
 fn hip_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS[0].0[1],
-        mob::MOB_STAG => STAG_LEG_ANCHORS[0].0[1],
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_LEG_ANCHORS[0].0[1],
         _ => LEG_ANCHORS[0].0[1],
     }
 }
@@ -340,7 +341,7 @@ fn hip_of(slot: usize) -> f32 {
 fn hind_z_of(slot: usize) -> f32 {
     let anchors = match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS,
-        mob::MOB_STAG => STAG_LEG_ANCHORS,
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_LEG_ANCHORS,
         _ => LEG_ANCHORS,
     };
     anchors.iter().map(|a| a.0[2]).fold(0.0, f32::min)
@@ -351,7 +352,7 @@ fn hind_z_of(slot: usize) -> f32 {
 fn feet_z_of(slot: usize) -> [f32; 2] {
     let anchors = match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_ANCHORS,
-        mob::MOB_STAG => STAG_LEG_ANCHORS,
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_LEG_ANCHORS,
         _ => LEG_ANCHORS,
     };
     [
@@ -364,7 +365,7 @@ fn feet_z_of(slot: usize) -> [f32; 2] {
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_LEG_FULL_MPS,
-        mob::MOB_STAG => STAG_LEG_FULL_MPS,
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_LEG_FULL_MPS,
         _ => PIG_LEG_FULL_MPS,
     }
 }
@@ -397,7 +398,7 @@ pub fn full_mps_of(slot: usize) -> f32 {
 pub fn flank_h_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_BODY[0].0[1],
-        mob::MOB_STAG => STAG_BODY[0].0[1],
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_BODY[0].0[1],
         _ => PIG_BODY[0].0[1],
     }
 }
@@ -405,7 +406,7 @@ pub fn flank_h_of(slot: usize) -> f32 {
 pub fn voice_h_of(slot: usize) -> f32 {
     let stand = match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => WOLF_H_M,
-        mob::MOB_STAG => STAG_H_M,
+        mob::MOB_STAG | mob::MOB_CARRIER => STAG_H_M,
         _ => PIG_H_M,
     };
     stand * 0.6

@@ -533,6 +533,64 @@ drops = [
 
 # ---------------------------------------------------------------------------
 
+[[mob]]
+id = "mob.carrier"
+name = "Carrier"
+
+# **A convoy's pack beast** (`ARC.md` §5 M2, "convoys"; `sim_core::convoy`).
+# While THE SEVERED GATE takes deposits, a column of them comes in off the
+# ring road on the Gate's timetable (`arc.toml` `convoy_carriers`,
+# `convoy_minutes`) and walks one of the town's roads to its gate, where each
+# one's load goes on the Gate's quota. None lives anywhere else: it is never
+# enrolled (`per_km2 = 0`), only stood up by its column. It never fights;
+# struck, it runs on down the road. Killed, its carcass is its load, for
+# whoever killed it. The client draws it with the stag's model.
+#
+# Ours, every number, and proposed defaults. Sturdier than a stag, so a
+# column takes a few people to stop.
+hp = 250
+walk_pct = 80
+flee_pct = 70
+flee_seconds = 8
+attack = 0
+attack_range_m = 0
+attack_seconds = 0
+brave_pct = 0
+# Its senses and leash are the row's shape only: a carrier walks its road
+# and notices nobody.
+roam_m = 40
+spook_m = 10
+night_spook_m = 10
+# Unread: a dead carrier's slot waits for the next column, not this.
+respawn_seconds = 600
+per_km2 = 0.0
+habitat = { meadow = 0.0, forest = 0.0, highland = 0.0, desert = 0.0, fel = 0.0, snow = 0.0 }
+# The stag's body, because it is the stag's model (`render/mobs.rs`
+# STAG_LEN_M / STAG_H_M; `client/tests/mob_volume.rs` holds the pair).
+body_r_cm = 55
+body_h_cm = 130
+sight_deg = 240
+pack_m = 0
+fire_fear_m = 0
+pack_biters = 2
+give_up_tries = 3
+heal_after_seconds = 60
+heal_seconds = 20
+howl_seconds = 20
+orbit_m = 7
+sleep_pct = 0
+hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
+# **The load**: what it puts on the Gate's quota, or leaves in its carcass.
+# A column of three every three hours across the Gate's ~200 open hours,
+# every one of them seen in, is about a third of the Gate's metal and fuel
+# (`arc.toml` `work.gate`): the rest is still carried by hand.
+drops = [
+  { item = "item.metal_frags", count = 60 },
+  { item = "item.lowgrade", count = 40 },
+]
+
+# ---------------------------------------------------------------------------
+
 # **Butchering** (`NOW.md` §0m item 1, `reference/ANIMALS.md` §9.5 item 2):
 # a tool swung at a carcass cuts one stack out of it per hit, in the order
 # the species' `drops` list them (meat first), and pays `yield_pct` percent

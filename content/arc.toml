@@ -224,6 +224,15 @@ inputs = [
     { item = "item.gears", count = 200 },
     { item = "item.tech_trash", count = 100 },
 ]
+# **Convoys** (`sim_core::convoy`): from three hours after it opens, every
+# three hours while it takes deposits, a column of three carriers
+# (`mobs.toml` `mob.carrier`) comes in off the ring road and walks one of the
+# town's roads to its gate, the road drawn from the seed and the hour. What
+# reaches the gate goes on the quota, credited to nobody; a carrier killed on
+# the way leaves its load in its carcass. A column still out when the next
+# is due is lost. Proposed defaults.
+convoy_carriers = 3
+convoy_minutes = 180
 
 [[effect]]
 unlock = "unlock.gate_open"

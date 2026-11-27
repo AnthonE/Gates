@@ -2474,13 +2474,16 @@ fn every_species_speaks_with_its_own_voice() {
                     cue == Cue::Howl || cue == Cue::Growl,
                     "wolf slot {slot} says {cue:?}"
                 ),
-                mob::MOB_STAG => assert_eq!(cue, Cue::Bellow, "stag slot {slot} says {cue:?}"),
+                // A carrier wears the stag's model, so it has the stag's voice.
+                mob::MOB_STAG | mob::MOB_CARRIER => {
+                    assert_eq!(cue, Cue::Bellow, "stag slot {slot} says {cue:?}")
+                }
                 _ => assert_eq!(cue, Cue::Snort, "pig slot {slot} says {cue:?}"),
             }
         }
         match mob::kind_of(slot) {
             mob::MOB_WOLF | mob::MOB_STRAY => wolves += 1,
-            mob::MOB_STAG => stags += 1,
+            mob::MOB_STAG | mob::MOB_CARRIER => stags += 1,
             _ => pigs += 1,
         }
     }
@@ -3608,11 +3611,11 @@ fn a_work_event_plays_the_cue_its_table_names() {
     use client::ui::arc::{frame_work_cue, work_cue};
     use client_core::arc::ArcView;
     use sim_core::works::{
-        WORK_EV_COUNTDOWN, WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT, WORK_EV_MAX,
-        WORK_EV_OPENED, WORK_EV_REKINDLED,
+        WORK_EV_CONVOY, WORK_EV_COUNTDOWN, WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT,
+        WORK_EV_MAX, WORK_EV_OPENED, WORK_EV_REKINDLED,
     };
     // (what, with a tank, tankless)
-    let table: [(u32, Option<Cue>, Option<Cue>); 6] = [
+    let table: [(u32, Option<Cue>, Option<Cue>); 7] = [
         (WORK_EV_OPENED, Some(Cue::GateChime), Some(Cue::GateChime)),
         (WORK_EV_LIT, Some(Cue::GateChime), Some(Cue::Thunder)),
         (WORK_EV_FALLBACK, None, Some(Cue::Thunder)),
@@ -3623,6 +3626,8 @@ fn a_work_event_plays_the_cue_its_table_names() {
             Some(Cue::GateChime),
         ),
         (WORK_EV_COUNTDOWN, Some(Cue::Thunder), Some(Cue::Thunder)),
+        // A convoy is read, not heard: its line says it.
+        (WORK_EV_CONVOY, None, None),
     ];
     assert_eq!(table.len() as u32, WORK_EV_MAX, "an event kind is missing");
     for (what, tanked, tankless) in table {

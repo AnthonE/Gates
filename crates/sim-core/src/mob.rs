@@ -67,7 +67,9 @@ use crate::collide::ColIndex;
 use crate::combat::{held_item, CombatContent};
 use crate::gather::{ItemStack, NO_ITEM};
 use crate::input::{InputFrame, BTN_SPRINT};
-use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MAX_STRAYS, MOB_ID_TAG, MOB_THINK_TICKS};
+use crate::limits::{
+    INV_SLOTS, MAX_CONVOY, MAX_MOBS, MAX_PLAYERS, MAX_STRAYS, MOB_ID_TAG, MOB_THINK_TICKS,
+};
 use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav::{self, Ground, Nav, NavPath};
 use crate::noise::Hearing;
@@ -91,19 +93,25 @@ pub const MOB_STAG: u8 = 2;
 /// in its hearing (`brain::STRAY`): a base going up draws it in. The client
 /// draws it with the wolf's model.
 pub const MOB_STRAY: u8 = 3;
+/// The carrier: a pack beast in a convoy hauling salvage in off the ring
+/// road to THE SEVERED GATE (`convoy.rs`). It never fights and is never
+/// homed: `mob::step` leaves its [`CARRIER_SLOT0`] block alone and
+/// `convoy::step` walks it down the town's road. Killed, its carcass is its
+/// load. The client draws it with the stag's model.
+pub const MOB_CARRIER: u8 = 4;
 /// The content species — the rows `content/mobs.toml` bakes.
-pub const MOB_KINDS: usize = 4;
+pub const MOB_KINDS: usize = 5;
 /// The attack helicopter (`heli.rs`), in [`HELI_SLOT`]. **Not a content
 /// species**: past [`MOB_KINDS`], so `MobContent::def` hands back
 /// `MobDef::INERT` for it (no hit volume, no hp, no loot) and nothing here
 /// steps it — the slot is never homed. It rides the roster for the wire's
 /// sake alone.
-pub const MOB_HELI: u8 = 4;
+pub const MOB_HELI: u8 = 5;
 pub use crate::heli::HELI_SLOT;
 /// THE GATE's sentry guns (`sentry.rs`), in the slots just below the heli's.
 /// Not a content species either: the slots are never homed and have no hit
 /// volume, and they ride the roster for the wire's sake alone.
-pub const MOB_SENTRY: u8 = 5;
+pub const MOB_SENTRY: u8 = 6;
 
 /// The first stray's roster slot: [`MAX_STRAYS`] of them, just below the
 /// turrets'. A block at the top of the free roster rather than a stride, so
@@ -115,6 +123,16 @@ pub const STRAY_SLOT0: usize = crate::turret::TURRET_SLOT0 - MAX_STRAYS;
 #[inline]
 pub const fn is_stray_slot(slot: usize) -> bool {
     slot >= STRAY_SLOT0 && slot < crate::turret::TURRET_SLOT0
+}
+
+/// The first carrier's roster slot: [`MAX_CONVOY`] of them, just below the
+/// strays', for the strays' reason.
+pub const CARRIER_SLOT0: usize = STRAY_SLOT0 - MAX_CONVOY;
+
+/// Whether a roster slot is a convoy carrier's.
+#[inline]
+pub const fn is_carrier_slot(slot: usize) -> bool {
+    slot >= CARRIER_SLOT0 && slot < STRAY_SLOT0
 }
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
@@ -155,6 +173,8 @@ pub const fn kind_of(slot: usize) -> u8 {
         MOB_SENTRY
     } else if is_stray_slot(slot) {
         MOB_STRAY
+    } else if is_carrier_slot(slot) {
+        MOB_CARRIER
     } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else if slot % WOLF_SLOT_EVERY == STAG_SLOT_PHASE {
@@ -844,6 +864,36 @@ impl MobContent {
             hear: Self::STRAY_EARS,
             ..c.defs[MOB_WOLF as usize]
         };
+        // The carrier: the pig's senses with no bite, no density and the
+        // stag's body, carrying a little of the work fixture's two inputs
+        // (`works::WorksContent::probe_fixture`). It stands up only in a
+        // convoy, so a fixture world without one never meets it.
+        let mut load = c.defs[MOB_PIG as usize].loot;
+        load[0] = ItemStack {
+            item: 0,
+            count: 3,
+            ..ItemStack::EMPTY
+        };
+        load[1] = ItemStack {
+            item: 1,
+            count: 1,
+            ..ItemStack::EMPTY
+        };
+        c.defs[MOB_CARRIER as usize] = MobDef {
+            hp: 120,
+            gait: 100,
+            attack: 0,
+            attack_range_cm: 0,
+            attack_ticks: 0,
+            brave_pct: 0,
+            per_km2_milli: 0,
+            habitat_pm: [0; terrain::BIOMES],
+            body_r_cm: 55,
+            body_h_cm: 130,
+            sleep_pct: 0,
+            loot: load,
+            ..c.defs[MOB_PIG as usize]
+        };
         c
     }
 
@@ -1142,6 +1192,7 @@ pub const fn ordinal(slot: usize) -> Option<usize> {
     if slot == HELI_SLOT
         || crate::sentry::is_sentry_slot(slot)
         || crate::turret::is_turret_slot(slot)
+        || is_carrier_slot(slot)
         || guard_site_of(slot).is_some()
     {
         return None;
@@ -1166,7 +1217,8 @@ fn takes_part(
     want: &[usize; MOB_KINDS],
 ) -> bool {
     let kind = kind_of(slot);
-    if kind == MOB_HELI || kind == MOB_SENTRY || mc.def(kind).hp == 0 {
+    // A carrier is stood up by its convoy (`convoy.rs`), never enrolled.
+    if kind == MOB_HELI || kind == MOB_SENTRY || kind == MOB_CARRIER || mc.def(kind).hp == 0 {
         return false;
     }
     match (ordinal(slot), guard_site_of(slot)) {
@@ -1536,6 +1588,20 @@ fn hatch(
         mob.respawn_at = tick + HOME_RETRY_TICKS;
         return;
     };
+    stand_up(seed, haven, mob, def, x, z);
+}
+
+/// Stand the animal up at `(x, z)`, which becomes its home, whole and with
+/// an empty head: the tail of every hatch, and how a convoy stands its
+/// carriers up at the road's end (`convoy.rs`).
+pub(crate) fn stand_up(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    mob: &mut Mob,
+    def: &MobDef,
+    x: f32,
+    z: f32,
+) {
     mob.home_qx = movement::quant_xz(x);
     mob.home_qz = movement::quant_xz(z);
     // `Body::at` puts the capsule on the heightfield — the same one the

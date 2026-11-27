@@ -156,6 +156,10 @@ fn beast(killer: u32) -> Option<Beast> {
             name: "Stray",
             sentence: "a stray ran you down",
         },
+        mob::MOB_CARRIER => Beast {
+            name: "Carrier",
+            sentence: "a carrier ran you down",
+        },
         mob::MOB_HELI => Beast {
             name: "Attack helicopter",
             sentence: "the attack helicopter gunned you down",

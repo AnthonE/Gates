@@ -9589,6 +9589,28 @@ impl World {
             tier,
             self.works.gate_open(&self.works_def),
         );
+        // The war effort's convoy (`convoy.rs`): after the roster, so a
+        // carrier walks against the same tick's animals, and before the
+        // arrows, so a shot lands where it ended the tick.
+        crate::convoy::step(
+            seed,
+            &self.haven,
+            tick,
+            &self.works_def,
+            &mut self.works,
+            &self.mob,
+            &mut self.mobs,
+            &mut self.nav,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &mut self.events,
+        );
         for &slot in howls.entries() {
             self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);
         }

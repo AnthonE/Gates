@@ -67,7 +67,15 @@ pub const WORK_EV_REKINDLED: u32 = 5;
 /// Its countdown started; `c` is who put the last of the quota in, 0 when
 /// its fallback hour started it.
 pub const WORK_EV_COUNTDOWN: u32 = 6;
-pub const WORK_EV_MAX: u32 = WORK_EV_COUNTDOWN;
+/// Its convoy (`convoy.rs`): `c` is [`CONVOY_OUT`] when a column sets out
+/// for it, [`CONVOY_IN`] when the last of a column came in with its load.
+pub const WORK_EV_CONVOY: u32 = 7;
+pub const WORK_EV_MAX: u32 = WORK_EV_CONVOY;
+/// `EV_WORK.c` under [`WORK_EV_CONVOY`].
+pub const CONVOY_OUT: u32 = 0;
+pub const CONVOY_IN: u32 = 1;
+/// No work is fed by convoys.
+pub const NO_CONVOY: u8 = u8::MAX;
 
 /// `Command::Arc` ops. One action carries every arc verb (the action lane
 /// has three codes left, `protocol` `the_action_lane_has_the_room_it_claims`).
@@ -203,6 +211,12 @@ pub struct WorksContent {
     pub extract_unlock: u8,
     /// The item that leaves through it (the coin, JUNK).
     pub coin: u16,
+    /// The work convoys haul to (`convoy.rs`), [`NO_CONVOY`] for none: a
+    /// column of `convoy_carriers` sets out every `convoy_every` ticks after
+    /// it opens, while it takes deposits.
+    pub convoy_work: u8,
+    pub convoy_carriers: u8,
+    pub convoy_every: u64,
 }
 
 impl WorksContent {
@@ -239,6 +253,9 @@ impl WorksContent {
         quiet_burn_pct: 100,
         extract_unlock: NO_UNLOCK,
         coin: 0,
+        convoy_work: NO_CONVOY,
+        convoy_carriers: 0,
+        convoy_every: 0,
     };
 
     /// One work over the gather fixture's items, for the gates: it opens at
@@ -750,6 +767,58 @@ pub fn act(
         }
         _ => refuse(events, REFUSE_A_KIND),
     }
+}
+
+/// A convoy's carrier came in at work `k` (`convoy.rs`) with `load`: every
+/// stack of it the quota still wants goes on the work, as a deposit does,
+/// and the one that meets the quota starts its countdown (or lights it).
+/// Nobody is credited: no player put it in. Only while the work takes
+/// deposits; returns whether any of the load was taken.
+pub fn deliver(
+    wc: &WorksContent,
+    works: &mut Works,
+    k: usize,
+    load: &[crate::gather::ItemStack],
+    tick: u64,
+    events: &mut EventQueue,
+) -> bool {
+    let Some(def) = wc.get(k).copied() else {
+        return false;
+    };
+    let w = &mut works.w[k];
+    if w.state != WORK_OPEN {
+        return false;
+    }
+    let mut took = false;
+    for (i, input) in def.inputs.iter().enumerate().take(def.n_inputs as usize) {
+        let have: u32 = load
+            .iter()
+            .filter(|s| s.item == input.item)
+            .map(|s| s.count as u32)
+            .sum();
+        let take = have.min(input.need.saturating_sub(w.got[i]));
+        if take > 0 {
+            w.got[i] += take;
+            took = true;
+        }
+    }
+    if took && def.met(&w.got) {
+        if def.countdown > 0 {
+            w.state = WORK_COUNTDOWN;
+            w.lit_at = tick
+                .saturating_add(def.countdown)
+                .min(def.fallback_at.max(tick));
+            events.push(EV_WORK, k as u32, WORK_EV_COUNTDOWN, 0);
+        } else {
+            w.state = WORK_LIT;
+            w.lit_at = tick;
+            w.fuel = def.fuel_max;
+            w.burn_acc = 0;
+            events.push(EV_WORK, k as u32, WORK_EV_LIT, 0);
+            works.refresh(wc);
+        }
+    }
+    took
 }
 
 /// `p` puts up to `max` of the coin they carry through the exchange at work

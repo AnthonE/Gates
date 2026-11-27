@@ -633,6 +633,7 @@ pub fn brain_line(
         sim_core::mob::MOB_WOLF => "wolf",
         sim_core::mob::MOB_STAG => "stag",
         sim_core::mob::MOB_STRAY => "stray",
+        sim_core::mob::MOB_CARRIER => "carrier",
         sim_core::mob::MOB_HELI => "heli",
         sim_core::mob::MOB_SENTRY => "guard",
         _ => "mob",

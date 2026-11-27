@@ -3666,7 +3666,7 @@ fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
 /// fixture with it.
 #[test]
 fn the_brain_numbers_bake_to_what_the_code_had() {
-    use sim_core::mob::{MobContent, MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
+    use sim_core::mob::{MobContent, MOB_CARRIER, MOB_PIG, MOB_STAG, MOB_STRAY, MOB_WOLF};
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let mc = c.bake_mobs().expect("shipped animals must bake");
     let fx = MobContent::probe_fixture();
@@ -3688,6 +3688,7 @@ fn the_brain_numbers_bake_to_what_the_code_had() {
         (MOB_WOLF, MOB_WOLF),
         (MOB_STAG, MOB_PIG),
         (MOB_STRAY, MOB_STRAY),
+        (MOB_CARRIER, MOB_CARRIER),
     ] {
         assert_eq!(
             brain(mc.def(kind)),
@@ -3706,6 +3707,39 @@ fn the_brain_numbers_bake_to_what_the_code_had() {
         (pig.orbit_cm, pig.hear.gun_cm, pig.hear.blast_cm),
         (700, 10_000, 20_000)
     );
+}
+
+/// **The war effort's convoy** (`sim_core::convoy`): it feeds THE SEVERED
+/// GATE, a column fits the roster's block, the carrier is a real species
+/// nobody enrols, and every stack it carries is one the Gate's quota takes,
+/// so a load that gets in is never thrown away.
+#[test]
+fn the_convoy_feeds_the_gate_with_what_its_quota_takes() {
+    use sim_core::mob::MOB_CARRIER;
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let wc = c.bake_arc().expect("shipped arc must bake");
+    let mc = c.bake_mobs().expect("shipped animals must bake");
+    let k = wc.convoy_work as usize;
+    assert_eq!(c.works[k].id, "work.gate", "convoys feed the Gate");
+    assert!(wc.defs[k].act > 2);
+    assert!((1..=sim_core::limits::MAX_CONVOY).contains(&(wc.convoy_carriers as usize)));
+    assert!(wc.convoy_every > 0);
+    let carrier = mc.def(MOB_CARRIER);
+    assert!(carrier.hp > 0 && carrier.attack == 0 && carrier.per_km2_milli == 0);
+    let wants = &wc.defs[k].inputs[..wc.defs[k].n_inputs as usize];
+    let load: Vec<_> = carrier
+        .loot
+        .iter()
+        .filter(|s| s.item != sim_core::gather::NO_ITEM && s.count > 0)
+        .collect();
+    assert!(!load.is_empty(), "a carrier with nothing on its back");
+    for s in load {
+        assert!(
+            wants.iter().any(|i| i.item == s.item),
+            "a carrier hauls item {} the Gate does not take",
+            s.item
+        );
+    }
 }
 
 /// **The loop, across three content files that cannot see each other.**

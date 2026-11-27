@@ -764,6 +764,7 @@ fn species_noun(species: u8) -> &'static str {
         sim_core::mob::MOB_WOLF => "WOLF",
         sim_core::mob::MOB_STAG => "STAG",
         sim_core::mob::MOB_STRAY => "STRAY",
+        sim_core::mob::MOB_CARRIER => "CARRIER",
         BODY_SPECIES => "BODY",
         _ => "PIG",
     }
@@ -2241,6 +2242,7 @@ impl SwingPick {
             Some(sim_core::mob::MOB_WOLF) => "BUTCHER WOLF",
             Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
             Some(sim_core::mob::MOB_STRAY) => "BUTCHER STRAY",
+            Some(sim_core::mob::MOB_CARRIER) => "BUTCHER CARRIER",
             Some(BODY_SPECIES) => "BUTCHER BODY",
             Some(_) => "BUTCHER PIG",
             None if self.stump => "CHOP STUMP",
@@ -2524,7 +2526,7 @@ pub fn swing_island(
 /// `tests/ui.rs` holds the two equal through the real loader, so a resized
 /// stag goes red there instead of shadowing a tree at the wrong height.
 pub const MOB_SWING_BODY_CM: [(u16, u16); sim_core::mob::MOB_KINDS] =
-    [(55, 78), (60, 85), (55, 130), (60, 85)];
+    [(55, 78), (60, 85), (55, 130), (60, 85), (55, 130)];
 
 /// What a swing from `at` would land on, with everything the sim's cast
 /// weighs (§0ray 2): [`resolve_swing`]'s node, kept only if nothing nearer

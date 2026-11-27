@@ -5,8 +5,9 @@
 use client_core::arc::{ArcView, WorkView};
 use sim_core::limits::TICK_HZ;
 use sim_core::works::{
-    WORK_COUNTDOWN, WORK_EV_COUNTDOWN, WORK_EV_EMBERS, WORK_EV_FALLBACK, WORK_EV_LIT,
-    WORK_EV_OPENED, WORK_EV_REKINDLED, WORK_LIT, WORK_OPEN, WORK_SEALED,
+    CONVOY_IN, CONVOY_OUT, WORK_COUNTDOWN, WORK_EV_CONVOY, WORK_EV_COUNTDOWN, WORK_EV_EMBERS,
+    WORK_EV_FALLBACK, WORK_EV_LIT, WORK_EV_OPENED, WORK_EV_REKINDLED, WORK_LIT, WORK_OPEN,
+    WORK_SEALED,
 };
 
 /// Ticks an hour.
@@ -343,6 +344,31 @@ pub fn event_line(arc: &ArcView, index: u8, what: u8, who: Option<&str>) -> Opti
         WORK_EV_FALLBACK => format!("{name} WOKE ON ITS OWN — its tank is empty"),
         WORK_EV_EMBERS => format!("{name} HAS GONE TO EMBERS"),
         WORK_EV_REKINDLED => format!("{name} IS FED AGAIN"),
+        _ => return None,
+    })
+}
+
+/// The line a work's event `(index, what, by)` off the feed deserves:
+/// [`convoy_line`] for a convoy, whose `by` is not a player, and
+/// [`event_line`] with `who` for everything else.
+pub fn feed_line(arc: &ArcView, index: u8, what: u8, by: u32, who: Option<&str>) -> Option<String> {
+    if what as u32 == WORK_EV_CONVOY {
+        convoy_line(arc, index, by)
+    } else {
+        event_line(arc, index, what, who)
+    }
+}
+
+/// A convoy (`sim_core::convoy`) set out for work `index` (`CONVOY_OUT`), or
+/// the last of one came in with its load (`CONVOY_IN`).
+pub fn convoy_line(arc: &ArcView, index: u8, by: u32) -> Option<String> {
+    let w = arc.works.get(index as usize).filter(|w| w.known)?;
+    let name = w.name();
+    Some(match by {
+        CONVOY_OUT => {
+            format!("A CONVOY IS ON THE ROAD TO {name} — see it in, or take what it carries")
+        }
+        CONVOY_IN => format!("THE CONVOY IS IN AT {name}"),
         _ => return None,
     })
 }

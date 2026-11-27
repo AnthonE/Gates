@@ -2061,6 +2061,14 @@ pub struct Work {
     pub burn_per_hour: u32,
     /// The quota.
     pub inputs: Vec<Stack>,
+    /// Convoys (`sim_core::convoy`): a column of this many carriers
+    /// (`mob.carrier`) sets out for it every `convoy_minutes` while it takes
+    /// deposits. Both 0, the default, is a work no convoy feeds; at most one
+    /// work, past act II, may have them.
+    #[serde(default)]
+    pub convoy_carriers: u8,
+    #[serde(default)]
+    pub convoy_minutes: u32,
 }
 
 /// One effect (`[[effect]]`): while `unlock` is held, `knob` runs at `pct`.

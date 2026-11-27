@@ -1441,6 +1441,12 @@ pub use voice::{
 /// those slots, the heli's and the sentries' kinds move up one (4, 5), and a
 /// bag's look admits `1 + MOB_STRAY` (4) for its carcass, so a player's
 /// corpse is `BAG_KIND_BODY` 5. No layout moved.
+///
+/// Still v158 (the same wipe): a fifth species, the convoy's carrier
+/// (`mob::MOB_CARRIER`, slots `mob::CARRIER_SLOT0..` below the strays'),
+/// moves the heli's and the sentries' kinds up one more (5, 6) and
+/// `BAG_KIND_BODY` to 6, and `SUB_WORK` admits `WORK_EV_CONVOY` (7), its
+/// `by` a `works::CONVOY_*` code rather than a player.
 pub const PROTO_VER: u16 = 158;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,

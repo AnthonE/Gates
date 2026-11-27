@@ -736,6 +736,20 @@ fn test_alloc_zero() {
         world.works.w[k].state = sim_core::works::WORK_LIT;
         world.works.refresh(&world.works_def);
         assert!(world.works.gate_open(&world.works_def));
+        // And a war effort taking deposits, fed by a column every two
+        // seconds, so a departure (the last column lost, the next stood up
+        // at a town road's ring end), the walk and its routing are counted
+        // (`convoy.rs`).
+        let c = world.works_def.count as usize;
+        world.works_def.defs[c] = world.works_def.defs[0];
+        world.works_def.defs[c].act = 3;
+        world.works_def.defs[c].opens_at = 0;
+        world.works_def.count += 1;
+        world.works_def.convoy_work = c as u8;
+        world.works_def.convoy_carriers = 3;
+        world.works_def.convoy_every = 60;
+        world.works.w[c].state = sim_core::works::WORK_OPEN;
+        assert!(sim_core::convoy::road_of(SEED, &world.haven, 1).is_some());
     }
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
@@ -1178,6 +1192,15 @@ fn test_alloc_zero() {
     // what keep the build arms above honest: a gate that only ever drove
     // refusals would count nothing the write paths do.
     assert_eq!(strays_before, 0, "a stray stood up before the Gate opened");
+    assert!(
+        world
+            .mobs
+            .m
+            .iter()
+            .any(|m| m.alive && m.kind == sim_core::mob::MOB_CARRIER),
+        "no convoy was on the road inside the counted window — its departure \
+         and walk fell out of the alloc gate"
+    );
     assert!(
         world
             .mobs

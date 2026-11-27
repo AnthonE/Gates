@@ -7978,6 +7978,18 @@ fn a_counting_work_leads_the_banner_and_says_when_it_opens() {
         Some("THE SEVERED GATE HAS OPENED — the landmarks' vaults are unsealed"),
         "a work with no tank opens rather than burns"
     );
+    // A convoy's `by` is its code, never a player's name.
+    use client::ui::arc::feed_line;
+    use sim_core::works::{CONVOY_IN, CONVOY_OUT, WORK_EV_CONVOY};
+    let convoy = WORK_EV_CONVOY as u8;
+    assert_eq!(
+        feed_line(&a, 1, convoy, CONVOY_OUT, None).as_deref(),
+        Some("A CONVOY IS ON THE ROAD TO THE SEVERED GATE — see it in, or take what it carries")
+    );
+    assert_eq!(
+        feed_line(&a, 1, convoy, CONVOY_IN, None).as_deref(),
+        Some("THE CONVOY IS IN AT THE SEVERED GATE")
+    );
 }
 
 /// Every act-II work lit and the Gate open: the banner follows the tank

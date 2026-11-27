@@ -3418,8 +3418,9 @@ pub fn feedback(
     // A work changed (`ARC.md`): the whole island hears it, because what a
     // work gives it gives everybody.
     for &(index, what, by) in feed.work_events() {
-        let who = (by != 0).then(|| crate::ui::names::shown(core, by));
-        if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
+        let convoy = what as u32 == sim_core::works::WORK_EV_CONVOY;
+        let who = (by != 0 && !convoy).then(|| crate::ui::names::shown(core, by));
+        if let Some(line) = crate::ui::arc::feed_line(&core.arc, index, what, by, who.as_deref()) {
             toast.say(line);
         }
     }
@@ -3588,6 +3589,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
             Some(sim_core::mob::MOB_STRAY) => "a stray".to_string(),
+            Some(sim_core::mob::MOB_CARRIER) => "a carrier".to_string(),
             Some(_) => "a pig".to_string(),
             None => crate::ui::names::shown(core, id),
         };

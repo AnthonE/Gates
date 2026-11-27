@@ -747,6 +747,8 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.fuel_max);
         h.u(w.burn_per_hour);
         h.stacks(&w.inputs);
+        h.u(w.convoy_carriers as u32);
+        h.u(w.convoy_minutes);
     }
     h.u(c.arc_effects.len() as u32);
     for e in &c.arc_effects {

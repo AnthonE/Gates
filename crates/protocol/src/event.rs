@@ -11487,6 +11487,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/combat.rs"),
         },
         Module {
+            file: "convoy.rs",
+            src: include_str!("../../sim-core/src/convoy.rs"),
+        },
+        Module {
             file: "craft.rs",
             src: include_str!("../../sim-core/src/craft.rs"),
         },

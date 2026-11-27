@@ -816,9 +816,9 @@ pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::supe
         }
     }
     let core = &net.session.core;
-    for &(index, what, _) in feed.work_events() {
+    for &(index, what, by) in feed.work_events() {
         if ui.panel == Panel::Island || index == ui.work {
-            if let Some(line) = words::event_line(&core.arc, index, what, None) {
+            if let Some(line) = words::feed_line(&core.arc, index, what, by, None) {
                 ui.say(line);
             }
         }

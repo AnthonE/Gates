@@ -25,6 +25,7 @@ pub mod cliff;
 pub mod climate;
 pub mod collide;
 pub mod combat;
+pub mod convoy;
 pub mod craft;
 pub mod deploy;
 pub mod depot;

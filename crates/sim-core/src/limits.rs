@@ -1570,6 +1570,15 @@ const _: () = assert!(MAX_MOBS <= 256);
 /// no spawn path can ask for a thirteenth. Proposed default.
 pub const MAX_STRAYS: usize = 12;
 
+/// The carriers of one convoy (`convoy.rs`, `mob::MOB_CARRIER`): the pack
+/// beasts that haul salvage in off the ring road to THE SEVERED GATE while
+/// it takes deposits (`ARC.md` §5 M2, "convoys"). A block of roster slots
+/// of its own, just below the strays' (`mob::CARRIER_SLOT0`), and only one
+/// column is ever out, so this is the cap on both: a work row's
+/// `convoy_carriers` asks for some number and the bake refuses more.
+/// Proposed default.
+pub const MAX_CONVOY: usize = 4;
+
 /// The bit that says *this class-D entity is not a player*.
 ///
 /// An animal rides the same snapshot lane a player does, because it is the

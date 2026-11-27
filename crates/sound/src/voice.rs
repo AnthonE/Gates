@@ -217,7 +217,7 @@ pub fn cue_of(slot: usize, near: bool) -> Cue {
                 Cue::Howl
             }
         }
-        mob::MOB_STAG => Cue::Bellow,
+        mob::MOB_STAG | mob::MOB_CARRIER => Cue::Bellow,
         _ => Cue::Snort,
     }
 }
@@ -226,7 +226,7 @@ pub fn cue_of(slot: usize, near: bool) -> Cue {
 pub fn hurt_of(slot: usize) -> Cue {
     match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => Cue::WolfHurt,
-        mob::MOB_STAG => Cue::StagHurt,
+        mob::MOB_STAG | mob::MOB_CARRIER => Cue::StagHurt,
         _ => Cue::BoarHurt,
     }
 }
@@ -235,7 +235,7 @@ pub fn hurt_of(slot: usize) -> Cue {
 pub fn death_of(slot: usize) -> Cue {
     match mob::kind_of(slot) {
         mob::MOB_WOLF | mob::MOB_STRAY => Cue::WolfDeath,
-        mob::MOB_STAG => Cue::StagDeath,
+        mob::MOB_STAG | mob::MOB_CARRIER => Cue::StagDeath,
         _ => Cue::BoarDeath,
     }
 }
