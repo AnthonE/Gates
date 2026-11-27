@@ -181,6 +181,12 @@ pub enum EventKind {
     BagBack,
     /// It took what fitted from its death backpack; the rest lies there.
     BagPart,
+    /// `who` healed it, standing (`EventMsg::Healed`).
+    HealedBy,
+    /// It healed `who`, standing (the same `EventMsg::Healed`).
+    Healed,
+    /// `who` gave it one of their sleeping bags (`EventMsg::BagGiven`).
+    BagFrom,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -756,6 +762,16 @@ impl Memory {
                     "I took what fitted from my backpack; the rest is still in it".into(),
                     now,
                 ),
+                (EventKind::HealedBy, Some(name)) => self.event(format!("{name} healed me"), now),
+                (EventKind::HealedBy, None) => self.event("another player healed me".into(), now),
+                (EventKind::Healed, Some(name)) => self.event(format!("I healed {name}"), now),
+                (EventKind::Healed, None) => self.event("I healed another player".into(), now),
+                (EventKind::BagFrom, Some(name)) => {
+                    self.event(format!("{name} gave me a sleeping bag"), now)
+                }
+                (EventKind::BagFrom, None) => {
+                    self.event("another player gave me a sleeping bag".into(), now)
+                }
             }
         }
         for p in seen.places() {
@@ -1401,6 +1417,42 @@ pub(crate) mod tests {
         let last = &m.events.back().unwrap().what;
         assert!(last.len() <= EVENT_MAX, "{last}");
         assert!(last.starts_with("my death backpack is gone (rotted or looted): 4294967295 x"));
+    }
+
+    /// A heal and a bag from another player are told by name, and so is a
+    /// heal this body landed; one whose person found no row still says
+    /// what happened.
+    #[test]
+    fn a_heal_and_a_bag_from_a_player_are_told_by_name() {
+        let mut s = Summary::EMPTY;
+        let ash = s
+            .seen
+            .person(9, tag("Ash"), protocol::Address::GUEST, false)
+            .unwrap();
+        let rowan = s
+            .seen
+            .person(10, tag("Rowan"), protocol::Address::GUEST, false)
+            .unwrap();
+        s.seen.event(EventKind::HealedBy, Some(ash));
+        s.seen.event(EventKind::Healed, Some(rowan));
+        s.seen.event(EventKind::BagFrom, Some(ash));
+        for kind in [EventKind::HealedBy, EventKind::Healed, EventKind::BagFrom] {
+            s.seen.event(kind, None);
+        }
+        let mut m = Memory::default();
+        m.ingest(&s, 10);
+        let what: Vec<&str> = m.events.iter().map(|e| e.what.as_str()).collect();
+        assert_eq!(
+            what,
+            [
+                "Ash healed me",
+                "I healed Rowan",
+                "Ash gave me a sleeping bag",
+                "another player healed me",
+                "I healed another player",
+                "another player gave me a sleeping bag",
+            ]
+        );
     }
 
     /// A death and an older backpack's going in one look: each says only

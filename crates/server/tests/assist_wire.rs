@@ -159,10 +159,11 @@ fn a_hand_hold_crosses_the_wire_and_only_its_participants_see_progress() {
     assert_eq!(clients[2].assist, (0, 0, 0));
 }
 
-/// A syringe on a standing teammate: the one healed, and nobody else, is
-/// told who healed them and with what (`EventMsg::Healed`, v157).
+/// A syringe on a standing teammate: the one healed is told who healed
+/// them and with what, the healer whom, and nobody else anything
+/// (`EventMsg::Healed`, v157).
 #[test]
-fn a_heal_on_a_standing_player_tells_only_them_who_did_it() {
+fn a_heal_on_a_standing_player_tells_only_its_two_players() {
     const SYRINGE: u16 = 40;
     let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = sim_core::gather::GatherContent::probe_fixture();
@@ -228,12 +229,22 @@ fn a_heal_on_a_standing_player_tells_only_them_who_did_it() {
     let mut heard = Vec::new();
     for _ in 0..10 {
         for (slot, e) in pump(&mut core, &stats, &mut clients, false) {
-            if let EventMsg::Healed { by, item } = e {
-                heard.push((slot, by, item));
+            if let EventMsg::Healed { by, to, item } = e {
+                heard.push((slot, by, to, item));
             }
         }
     }
     assert_eq!(core.world.players[0].inv[0].count, 0, "the syringe landed");
-    assert_eq!(heard, [(1, id(0), SYRINGE)], "only the one healed hears it");
+    heard.sort_unstable();
+    assert_eq!(
+        heard,
+        [(0, id(0), id(1), SYRINGE), (1, id(0), id(1), SYRINGE)],
+        "the healer and the one healed hear it, nobody else"
+    );
     assert_eq!(clients[1].pop_healed_by(), Some((id(0), SYRINGE)));
+    assert_eq!(clients[1].pop_heal_given(), None);
+    assert_eq!(clients[0].pop_heal_given(), Some((id(1), SYRINGE)));
+    assert_eq!(clients[0].pop_healed_by(), None);
+    assert_eq!(clients[2].pop_healed_by(), None);
+    assert_eq!(clients[2].pop_heal_given(), None);
 }

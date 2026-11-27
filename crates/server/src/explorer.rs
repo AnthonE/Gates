@@ -8893,6 +8893,21 @@ impl Survivor {
             self.stats.refusals += 1;
             self.swipe_job.on_refused(code, door);
         }
+        // Who healed it, whom it healed, who gave it a bag: told to the
+        // mind by name, as a death names its killer.
+        while let Some((by, _item)) = core.pop_healed_by() {
+            let who = self.note_person(core, by);
+            self.perceived
+                .event(crate::memory::EventKind::HealedBy, who);
+        }
+        while let Some((to, _item)) = core.pop_heal_given() {
+            let who = self.note_person(core, to);
+            self.perceived.event(crate::memory::EventKind::Healed, who);
+        }
+        while let Some(by) = core.pop_bag_given() {
+            let who = self.note_person(core, by);
+            self.perceived.event(crate::memory::EventKind::BagFrom, who);
+        }
         while core.pop_work_event().is_some() {}
         while core.pop_research_toast().is_some() {}
         while let Some(reason) = core.pop_research_refusal() {
@@ -11207,6 +11222,36 @@ mod tests {
     /// A rejoin's new client has no join to the last session's death
     /// backpack, which may still stand (backpacks outlive a restart): it is
     /// forgotten, not told as rotted or looted.
+    #[test]
+    fn the_mind_is_told_who_healed_it_whom_it_healed_and_who_gave_it_a_bag() {
+        use crate::memory::EventKind;
+        let (mut bot, _view, _) = fixture();
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let n = protocol::encode_event_healed(5, 1, 40, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let n = protocol::encode_event_healed(1, 6, 41, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let n = protocol::encode_event_bag_given(5, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        // A heal between two others is neither line.
+        let n = protocol::encode_event_healed(6, 7, 40, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let told: Vec<_> = bot
+            .perceived
+            .events()
+            .iter()
+            .map(|e| (e.kind, e.who.map(|w| bot.perceived.people[w as usize].from)))
+            .collect();
+        assert_eq!(
+            told,
+            [
+                (EventKind::HealedBy, Some(5)),
+                (EventKind::Healed, Some(6)),
+                (EventKind::BagFrom, Some(5)),
+            ]
+        );
+    }
+
     #[test]
     fn a_rejoin_forgets_the_death_backpack_and_does_not_call_it_gone() {
         let (mut bot, view, _) = fixture();

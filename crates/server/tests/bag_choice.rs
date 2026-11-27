@@ -756,9 +756,10 @@ fn a_bag_is_given_only_to_a_teammate_and_both_lists_follow() {
     );
     assert_eq!(lists_to(&seen, 0) + lists_to(&seen, 1), 0);
     assert!(
-        !seen
-            .iter()
-            .any(|(_, m)| matches!(m, EventMsg::DeployRefused { .. })),
+        !seen.iter().any(|(_, m)| matches!(
+            m,
+            EventMsg::DeployRefused { .. } | EventMsg::BagGiven { .. }
+        )),
         "the sim heard a give the shard should have dropped"
     );
 
@@ -801,4 +802,15 @@ fn a_bag_is_given_only_to_a_teammate_and_both_lists_follow() {
         vec![(CX, CZ)],
         "the receiver's mirror"
     );
+
+    // 4 · and the receiver alone is told who gave it (v157).
+    let told: Vec<_> = seen
+        .iter()
+        .filter_map(|(to, m)| match m {
+            EventMsg::BagGiven { by } => Some((*to, *by)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(told, [(1, id_of(0))], "only the receiver hears who gave it");
+    assert_eq!(clients[1].1.pop_bag_given(), Some(id_of(0)));
 }

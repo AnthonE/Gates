@@ -65,35 +65,36 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     bullet_drop, bullet_reach_mm, decode_event, encode_event_agent, encode_event_assist,
-    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_bags, encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
-    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
-    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_crew, encode_event_dead, encode_event_death,
-    encode_event_death_mark, encode_event_deploy_defs, encode_event_deploy_placed,
-    encode_event_deploy_refused, encode_event_deploy_sync, encode_event_door, encode_event_drank,
-    encode_event_env, encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
-    encode_event_gather_refused, encode_event_gitem_sync, encode_event_healed, encode_event_health,
-    encode_event_heard, encode_event_hit, encode_event_hostile, encode_event_howl,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_node_stage,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
-    encode_event_research, encode_event_research_refused, encode_event_research_rows,
-    encode_event_respawn, encode_event_sentry_lock, encode_event_shot, encode_event_skins,
-    encode_event_skins_owned, encode_event_slot_change, encode_event_slot_grow_sync,
-    encode_event_slot_respawned, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_stump_grubbed, encode_event_swing,
-    encode_event_swipe_refused, encode_event_tag, encode_event_vend, encode_event_vend_offers,
-    encode_event_vend_refused, encode_event_vessel, encode_event_vitals, encode_event_weak_mark,
-    encode_event_worn, encode_event_wounded, shot_is_bullet, shot_is_gun, shot_is_instant,
-    shot_is_quiet, EventMsg, GunRow, InvSlot, ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow,
-    WireBag, WireGItem, WireToss, BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH,
-    COIN_ELO, COIN_JUNK, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH,
-    SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_given, encode_event_bag_removed,
+    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_card_doors,
+    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_crew,
+    encode_event_dead, encode_event_death, encode_event_death_mark, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_env, encode_event_exposure,
+    encode_event_gate_spawn, encode_event_gather, encode_event_gather_refused,
+    encode_event_gitem_sync, encode_event_healed, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
+    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
+    encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
+    encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
+    encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
+    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vessel,
+    encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
+    shot_is_bullet, shot_is_gun, shot_is_instant, shot_is_quiet, EventMsg, GunRow, InvSlot,
+    ItemCatalog, ItemRow, ModRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
+    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
+    VEND_BATCH,
 };
 pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{encode_event_achievement, Achieved};
@@ -1425,15 +1426,16 @@ pub use voice::{
 /// v157 — a craft cancel (`ACT_CANCEL`) closes with the recipe the click saw
 /// at its index, in 8 bits as `ACT_FASTTRACK`'s does, so a queue that moved
 /// under it refuses instead of cancelling the next job. And `SUB_HEALED`
-/// (113) tells a player another healed standing who did it and with what
-/// (`EventMsg::Healed`). Action 46 mends the worn item in an inventory slot at
-/// a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
+/// (113) tells a player another healed standing who did it and with what,
+/// and the healer whom (`EventMsg::Healed`: healer, healed, item). Action
+/// 46 mends the worn item in an inventory slot at a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
 /// table's item repair percent after its header (`CraftContent::repair_pct`).
 /// Action 47 gives a sleeping bag of yours to a teammate
 /// (`ActionMsg::BagGive`): its address and their id. Action 48 sends your
 /// whole set of map marks (`ActionMsg::Pins`, `pins::PinSet`), and
 /// `SUB_TEAM_PINS` (114) relays it to each teammate with your id
-/// (`EventMsg::TeamPins`). A catalog row carries `hurl_ticks` after its
+/// (`EventMsg::TeamPins`). `SUB_BAG_GIVEN` (115) tells a bag's receiver who
+/// gave it (`EventMsg::BagGiven`). A catalog row carries `hurl_ticks` after its
 /// `damage`: the windup a thrown spear needs (`combat::HurlDef`).
 pub const PROTO_VER: u16 = 157;
 

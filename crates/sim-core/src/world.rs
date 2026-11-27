@@ -1030,17 +1030,19 @@ pub const EV_WIRE: u8 = 75;
 /// the item. A syringe or a bandage on a standing teammate landed
 /// (`World::spend_treat`: the syringe at once, the bandage as its wrap
 /// lands), so the one healed is told by whom — `EV_CONSUMED` tells only
-/// the healer. Own-fact to `a`, `EV_RECOVERED`'s audience; a downed body
-/// helped up hears that instead, and a refused or put-away heal says
-/// nothing. One per heal that spent an item.
+/// the healer what they spent. Aimed at `a` and `b` alone: on the wire
+/// the healer is told whom too. A downed body helped up hears
+/// `EV_RECOVERED` instead, and a refused or put-away heal says nothing.
+/// One per heal that spent an item.
 pub const EV_HEALED: u8 = 76;
 
 /// EV_BAG_GIVEN: a = the player who gave the bag, b = the player who has it
 /// now, c = its address (`deploy::box_key`). A sleeping bag changed hands
 /// (`Command::GiveBag`, Rust's assign bag): from this tick it is `b`'s to
-/// wake on and `a`'s no longer. Server-only, `EV_GAVE`'s posture: no wire
-/// carries it, and what it moves is both players' own-bag lists
-/// (`SUB_BAGS`). One per give that landed; a refusal is `EV_DEPLOY_REFUSED`.
+/// wake on and `a`'s no longer. What it moves is both players' own-bag
+/// lists (`SUB_BAGS`), and the receiver `b` is told who gave it
+/// (`SUB_BAG_GIVEN`). One per give that landed; a refusal is
+/// `EV_DEPLOY_REFUSED`.
 pub const EV_BAG_GIVEN: u8 = 77;
 
 pub const EV_MAX: u8 = EV_BAG_GIVEN;

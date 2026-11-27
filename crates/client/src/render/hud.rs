@@ -3444,6 +3444,15 @@ pub fn feedback(
     for &(by, _item) in feed.healed_by() {
         toast.say(crate::ui::interact::healed_by_line(core, by));
     }
+    // And the healer whom: their "used" line names only the item.
+    for &(to, _item) in feed.heals_given() {
+        toast.say(crate::ui::interact::healed_line(core, to));
+    }
+    // A teammate gave us a sleeping bag (wire v157): who. The bag itself
+    // is on the death screen and the map already.
+    for &by in feed.bags_given() {
+        toast.say(crate::ui::team::bag_given_line(core, by));
+    }
 
     // A blueprint learned — the research verbs' LANDED half, whose refused
     // half is the `Refused::Research` arm above. `Feed::learned` had no reader

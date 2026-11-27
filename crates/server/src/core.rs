@@ -6589,14 +6589,50 @@ impl ShardCore {
                     }
                 }
                 EV_HEALED => {
-                    // Own-fact to the one healed, `EV_RECOVERED`'s audience:
-                    // who healed them and with what (the healer's own answer
-                    // is `EV_CONSUMED`). A lost one is a line never drawn —
-                    // the hp bar still moves — so the resync is all it owes.
-                    let Some(slot) = self.client_slot_of(ev.a) else {
-                        continue; // that player left this tick
+                    // To its two players and nobody else: the one healed
+                    // reads who healed them and with what, the healer whom
+                    // (their spend is `EV_CONSUMED`). A lost one is a line
+                    // never drawn — the hp bar still moves — so the resync
+                    // is all it owes.
+                    let len = match protocol::encode_event_healed(
+                        ev.b,
+                        ev.a,
+                        ev.c as u16,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => len,
+                        Err(_) => {
+                            ShardStats::bump(&stats.encode_range_errors);
+                            continue;
+                        }
                     };
-                    match protocol::encode_event_healed(ev.b, ev.c as u16, &mut self.ev_buf) {
+                    for who in [ev.a, ev.b] {
+                        let Some(slot) = self.client_slot_of(who) else {
+                            continue; // that player left this tick
+                        };
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
+                        }
+                    }
+                }
+                EV_BAG_GIVEN => {
+                    // A bag changed hands: both owners' lists moved, so the
+                    // drip owes each of them (and their seats) the whole
+                    // list again — the giver's map loses the bed and the
+                    // receiver's death screen gains it.
+                    self.owe_bags(ev.a);
+                    self.owe_bags(ev.b);
+                    // And the receiver is told who gave it, own-fact: the
+                    // list alone shows a bed and not a friend. Asleep or
+                    // away there is no client to tell; the list is theirs
+                    // at the next join either way.
+                    let Some(slot) = self.client_slot_of(ev.b) else {
+                        continue;
+                    };
+                    match protocol::encode_event_bag_given(ev.a, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -6607,14 +6643,6 @@ impl ShardCore {
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
-                }
-                EV_BAG_GIVEN => {
-                    // A bag changed hands: both owners' lists moved, so the
-                    // drip owes each of them (and their seats) the whole
-                    // list again — the giver's map loses the bed and the
-                    // receiver's death screen gains it.
-                    self.owe_bags(ev.a);
-                    self.owe_bags(ev.b);
                 }
                 EV_MOVED | EV_MOVE_REFUSED => {
                     // Own-fact, `EV_RESPAWN`'s audience: a move inside your

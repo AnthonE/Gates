@@ -3039,6 +3039,12 @@ pub fn healed_by_line(core: &client_core::core::ClientCore, by: u32) -> String {
     format!("HEALED BY {}", crate::ui::names::shown(core, by))
 }
 
+/// The line a healer reads once their heal on another landed (the same
+/// `EventMsg::Healed`, told to them): whom, named as every surface does.
+pub fn healed_line(core: &client_core::core::ClientCore, to: u32) -> String {
+    format!("HEALED {}", crate::ui::names::shown(core, to))
+}
+
 /// A sleeper is an aimed `E` target: the body the crosshair is on, lying
 /// where the sim's lying capsule is (`ranged::body_crossing`), inside the
 /// help-up ray's reach. The server proves the reach again every tick
@@ -3541,10 +3547,11 @@ mod assist_tests {
         const SYRINGE: u16 = 40;
         let mut core = Box::new(ClientCore::new(42, 1, 0));
         let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
-        let len = protocol::encode_event_healed(HEALER, SYRINGE, &mut buf).unwrap();
+        let len = protocol::encode_event_healed(HEALER, 1, SYRINGE, &mut buf).unwrap();
         core.on_stream(&buf[..len]).expect("the heal applies");
         assert_eq!(core.pop_healed_by(), Some((HEALER, SYRINGE)));
         assert_eq!(core.pop_healed_by(), None, "one heal, one line");
+        assert_eq!(core.pop_heal_given(), None, "the healed is not the healer");
         assert_eq!(healed_by_line(&core, HEALER), "HEALED BY #259");
 
         let address =
@@ -3554,6 +3561,29 @@ mod assist_tests {
         let len = protocol::encode_event_tag(HEALER, &address, &name, 0, &guild, &mut buf).unwrap();
         core.on_stream(&buf[..len]).expect("the tag applies");
         assert_eq!(healed_by_line(&core, HEALER), "HEALED BY Quillon");
+    }
+
+    /// The same heal told to the healer is their "HEALED" line, naming
+    /// whom they healed; a heal between two others is neither line.
+    #[test]
+    fn a_heal_on_another_player_reads_healed_their_name() {
+        use client_core::core::ClientCore;
+        const ME: u32 = 1;
+        const HURT: u32 = 260;
+        const BANDAGE: u16 = 41;
+        let mut core = Box::new(ClientCore::new(42, ME, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_healed(ME, HURT, BANDAGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the heal applies");
+        assert_eq!(core.pop_heal_given(), Some((HURT, BANDAGE)));
+        assert_eq!(core.pop_heal_given(), None, "one heal, one line");
+        assert_eq!(core.pop_healed_by(), None, "the healer was not healed");
+        assert_eq!(healed_line(&core, HURT), "HEALED #260");
+
+        let len = protocol::encode_event_healed(HURT, 261, BANDAGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("a stray heal applies");
+        assert_eq!(core.pop_heal_given(), None);
+        assert_eq!(core.pop_healed_by(), None);
     }
 
     #[test]

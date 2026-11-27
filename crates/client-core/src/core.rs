@@ -2038,6 +2038,13 @@ pub struct ClientCore {
     /// (`EventMsg::Healed`, v157) — drop-oldest, read once in
     /// `render/feed.rs`.
     healed_by: crate::arc::Ring<(u32, u16), TOAST_RING>,
+    /// `(healed, item)` per heal this body landed on another player (the
+    /// same `EventMsg::Healed`, told to the healer) — read once in
+    /// `render/feed.rs`.
+    heals_given: crate::arc::Ring<(u32, u16), TOAST_RING>,
+    /// The giver per sleeping bag a teammate gave this player
+    /// (`EventMsg::BagGiven`, v157) — read once in `render/feed.rs`.
+    bags_given: crate::arc::Ring<u32, TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2837,6 +2844,8 @@ impl ClientCore {
             arc_texts: Default::default(),
             mech_solves: Default::default(),
             healed_by: Default::default(),
+            heals_given: Default::default(),
+            bags_given: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -4422,7 +4431,15 @@ impl ClientCore {
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
-            EventMsg::Healed { by, item } => self.healed_by.push((by, item)),
+            // Told to its two players: which end this is says which line.
+            EventMsg::Healed { by, to, item } => {
+                if to == self.player_id {
+                    self.healed_by.push((by, item));
+                } else if by == self.player_id {
+                    self.heals_given.push((to, item));
+                }
+            }
+            EventMsg::BagGiven { by } => self.bags_given.push(by),
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
                 self.assist = (0, 0, 0);
@@ -5305,6 +5322,16 @@ impl ClientCore {
     /// Oldest heal another player landed on this body: `(healer, item)`.
     pub fn pop_healed_by(&mut self) -> Option<(u32, u16)> {
         self.healed_by.pop()
+    }
+
+    /// Oldest heal this body landed on another player: `(healed, item)`.
+    pub fn pop_heal_given(&mut self) -> Option<(u32, u16)> {
+        self.heals_given.pop()
+    }
+
+    /// Oldest sleeping bag a teammate gave this player: the giver.
+    pub fn pop_bag_given(&mut self) -> Option<u32> {
+        self.bags_given.pop()
     }
 
     /// Oldest swipe refusal: `(code, door)`.

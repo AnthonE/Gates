@@ -299,10 +299,46 @@ pub fn bag_sent_line(who: &str) -> String {
     format!("giving your bag to {who}…")
 }
 
+/// The line a bag's receiver reads (`EventMsg::BagGiven`): who gave it, as
+/// every surface draws them (`ui::names::shown`, streamer-safe).
+pub fn bag_given_line(core: &client_core::core::ClientCore, by: u32) -> String {
+    format!(
+        "{} GAVE YOU A SLEEPING BAG",
+        crate::ui::names::shown(core, by)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use protocol::TeamMember;
+
+    /// A bag given, off the wire, is the receiver's line naming the giver
+    /// as every surface does: by their tag once it has landed, by id before.
+    #[test]
+    fn a_bag_given_reads_who_gave_it() {
+        use client_core::core::ClientCore;
+        const GIVER: u32 = 259;
+        let mut core = Box::new(ClientCore::new(42, 1, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_bag_given(GIVER, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the give applies");
+        assert_eq!(core.pop_bag_given(), Some(GIVER));
+        assert_eq!(core.pop_bag_given(), None, "one bag, one line");
+        assert_eq!(bag_given_line(&core, GIVER), "#259 GAVE YOU A SLEEPING BAG");
+
+        let address =
+            protocol::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf").unwrap();
+        let name = protocol::Name::new("Quillon").unwrap();
+        let len =
+            protocol::encode_event_tag(GIVER, &address, &name, 0, &protocol::Guild::NONE, &mut buf)
+                .unwrap();
+        core.on_stream(&buf[..len]).expect("the tag applies");
+        assert_eq!(
+            bag_given_line(&core, GIVER),
+            "Quillon GAVE YOU A SLEEPING BAG"
+        );
+    }
 
     fn team() -> TeamView {
         let mut v = TeamView::NONE;

@@ -676,17 +676,22 @@ const SUB_WIRE: u32 = 111;
 /// draws `(agent, crew of <of's name>)`. To every session as it moves, and
 /// to a joiner for each agent there.
 const SUB_CREW: u32 = 112;
-/// Another player healed the receiver (wire v157, `sim_core::world::
-/// EV_HEALED`): who, and with what — a syringe, or a bandage as its wrap
-/// landed. Own-fact, `SUB_RECOVERED`'s audience: the one healed. See
-/// `EventMsg::Healed`.
+/// A player healed another standing (wire v157, `sim_core::world::
+/// EV_HEALED`): who healed whom, and with what — a syringe, or a bandage
+/// as its wrap landed. To its two players only: the one healed and the
+/// healer. See `EventMsg::Healed`.
 const SUB_HEALED: u32 = 113;
 /// A teammate's whole set of map marks (wire v157, `ActionMsg::Pins`): whose,
 /// and the set (`pins::PinSet`), empty when they took them all down.
 /// Team-only: relayed by the shard to the sender's team and nobody else,
 /// never the spectator mirror. See `EventMsg::TeamPins`.
 const SUB_TEAM_PINS: u32 = 114;
-const SUB_MAX: u32 = SUB_TEAM_PINS;
+/// A teammate gave the receiver one of their sleeping bags (wire v157,
+/// `sim_core::world::EV_BAG_GIVEN`): who. Own-fact to the receiver; the
+/// bag itself arrives on their own-bag list (`SUB_BAGS`). See
+/// `EventMsg::BagGiven`.
+const SUB_BAG_GIVEN: u32 = 115;
+const SUB_MAX: u32 = SUB_BAG_GIVEN;
 /// Widths of a wire's ports (`sim_core::power::ports`).
 const WIRE_PORT_OUT_BITS: u32 = 2;
 const WIRE_PORT_IN_BITS: u32 = 1;
@@ -2814,11 +2819,17 @@ pub enum EventMsg {
     /// with. Own-fact, `Wounded`'s audience. The failed roll arrives as
     /// `Death`, exactly as the blow would have.
     Recovered { chance_pm: u16, hp: u16 },
-    /// Player `by` healed you, standing, with `item` (v157): a syringe, or
-    /// a bandage as its wrap landed. Own-fact, `Recovered`'s audience; a
-    /// downed body helped up hears `Recovered` and not this. Never from
+    /// Player `by` healed player `to`, standing, with `item` (v157): a
+    /// syringe, or a bandage as its wrap landed. Sent to those two only:
+    /// the one healed reads who healed them, the healer whom they healed.
+    /// A downed body helped up hears `Recovered` and not this. Never from
+    /// or to nobody or an animal, never a player on themself, and both
+    /// ends refuse one.
+    Healed { by: u32, to: u32, item: u16 },
+    /// Player `by` gave you one of their sleeping bags (v157, Rust's assign
+    /// bag). Own-fact to the receiver; the bag rides `Bags`. Never from
     /// nobody or an animal, and both ends refuse one.
-    Healed { by: u32, item: u16 },
+    BagGiven { by: u32 },
     /// A death backpack landed at a world position — broadcast, because a
     /// bag on the ground is a world fact like a placement. What is inside
     /// is deliberately absent: v0 has no container UI, the take is
@@ -6263,14 +6274,35 @@ pub fn encode_event_exposure(
     Ok(w.finish())
 }
 
-/// Player `by` healed the receiver with `item` — see `EventMsg::Healed`.
-pub fn encode_event_healed(by: u32, item: u16, buf: &mut [u8]) -> Result<usize, WireError> {
-    if by == 0 || by & sim_core::limits::MOB_ID_TAG != 0 {
+/// A player id a heal or a bag can name: somebody, and not an animal.
+fn is_player_id(id: u32) -> bool {
+    id != 0 && id & sim_core::limits::MOB_ID_TAG == 0
+}
+
+/// Player `by` healed player `to` with `item` — see `EventMsg::Healed`.
+pub fn encode_event_healed(
+    by: u32,
+    to: u32,
+    item: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !is_player_id(by) || !is_player_id(to) || by == to {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_HEALED)?;
     w.write(by, 32)?;
+    w.write(to, 32)?;
     w.write(item as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// Player `by` gave the receiver a sleeping bag — see `EventMsg::BagGiven`.
+pub fn encode_event_bag_given(by: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !is_player_id(by) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_BAG_GIVEN)?;
+    w.write(by, 32)?;
     Ok(w.finish())
 }
 
@@ -8383,11 +8415,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         }
         SUB_HEALED => {
             let by = r.read(32)?;
+            let to = r.read(32)?;
             let item = r.read(16)? as u16;
-            if by == 0 || by & sim_core::limits::MOB_ID_TAG != 0 {
+            if !is_player_id(by) || !is_player_id(to) || by == to {
                 return Err(WireError::Malformed);
             }
-            EventMsg::Healed { by, item }
+            EventMsg::Healed { by, to, item }
+        }
+        SUB_BAG_GIVEN => {
+            let by = r.read(32)?;
+            if !is_player_id(by) {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::BagGiven { by }
         }
         SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
         SUB_TEAM_PINS => {
@@ -10356,26 +10396,52 @@ mod tests {
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
 
-    /// A heal by another player (v157) crosses with the healer and the
-    /// item, and neither end takes one from nobody or an animal.
+    /// A heal by another player (v157) crosses with the healer, the one
+    /// healed and the item, and neither end takes one from or to nobody or
+    /// an animal, or a player on themself.
     #[test]
-    fn healed_names_the_healer_and_the_item() {
+    fn healed_names_the_healer_the_healed_and_the_item() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = encode_event_healed(0x0001_2307, 0x0102, &mut buf).unwrap();
+        let len = encode_event_healed(0x0001_2307, 0x0000_0402, 0x0102, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]),
             Ok(EventMsg::Healed {
                 by: 0x0001_2307,
+                to: 0x0000_0402,
                 item: 0x0102
             })
         );
         let mob = sim_core::limits::MOB_ID_TAG | 1;
-        assert_eq!(encode_event_healed(0, 1, &mut buf), Err(WireError::Range));
-        assert_eq!(encode_event_healed(mob, 1, &mut buf), Err(WireError::Range));
-        for by in [0, mob] {
+        for (by, to) in [(0, 7), (mob, 7), (7, 0), (7, mob), (7, 7)] {
+            assert_eq!(
+                encode_event_healed(by, to, 1, &mut buf),
+                Err(WireError::Range),
+                "{by:#x} -> {to:#x}"
+            );
             let mut w = begin(&mut buf, SUB_HEALED).unwrap();
             w.write(by, 32).unwrap();
+            w.write(to, 32).unwrap();
             w.write(1, 16).unwrap();
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
+    }
+
+    /// A bag given (v157) crosses with its giver, and neither end takes
+    /// one from nobody or an animal.
+    #[test]
+    fn bag_given_names_the_giver() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_bag_given(0x0001_2307, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::BagGiven { by: 0x0001_2307 })
+        );
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        for by in [0, mob] {
+            assert_eq!(encode_event_bag_given(by, &mut buf), Err(WireError::Range));
+            let mut w = begin(&mut buf, SUB_BAG_GIVEN).unwrap();
+            w.write(by, 32).unwrap();
             let len = w.finish();
             assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
         }

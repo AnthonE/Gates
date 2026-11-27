@@ -331,8 +331,8 @@ fn main() {
     let len = protocol::encode_event_crew(id, of, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[198], &buf[..len]);
     // A heal by another player (v157).
-    let (by, item) = goldens::event_healed();
-    let len = protocol::encode_event_healed(by, item, &mut buf).unwrap();
+    let (by, to, item) = goldens::event_healed();
+    let len = protocol::encode_event_healed(by, to, item, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[199], &buf[..len]);
     // A worn item mended at a bench (v157).
     let len = protocol::encode_action_repair_item(goldens::action_repair_item(), &mut buf).unwrap();
@@ -347,6 +347,9 @@ fn main() {
     let (from, pins) = goldens::event_team_pins();
     let len = protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[203], &buf[..len]);
+    // A sleeping bag given, told to its receiver (v157).
+    let len = protocol::encode_event_bag_given(goldens::event_bag_given(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[204], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

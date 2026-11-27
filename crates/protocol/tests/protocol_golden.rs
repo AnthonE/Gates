@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 204] = [
+const GOLDEN: [&[u8]; 205] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -267,6 +267,7 @@ const GOLDEN: [&[u8]; 204] = [
     include_bytes!("golden/action_bag_give.bin"),
     include_bytes!("golden/action_pins.bin"),
     include_bytes!("golden/event_team_pins.bin"),
+    include_bytes!("golden/event_bag_given.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -603,8 +604,10 @@ fn test_protocol_golden() {
     // A player's map marks, and the same relayed to a teammate (v157).
     g!(seen, golden_action, 202);
     g!(seen, golden_event, 203);
+    // A sleeping bag given, told to its receiver (v157).
+    g!(seen, golden_event, 204);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 204, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 205, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2939,13 +2942,22 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap()
         }
         "event_healed.bin" => {
-            let (by, item) = protocol::goldens::event_healed();
+            let (by, to, item) = protocol::goldens::event_healed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Healed { by, item },
+                EventMsg::Healed { by, to, item },
                 "{name}"
             );
-            protocol::encode_event_healed(by, item, &mut buf).unwrap()
+            protocol::encode_event_healed(by, to, item, &mut buf).unwrap()
+        }
+        "event_bag_given.bin" => {
+            let by = protocol::goldens::event_bag_given();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::BagGiven { by },
+                "{name}"
+            );
+            protocol::encode_event_bag_given(by, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };
