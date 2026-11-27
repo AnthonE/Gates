@@ -20,6 +20,11 @@ fn id_of(slot: usize) -> u32 {
     protocol::player_id(1, slot)
 }
 
+/// A connection's id on its second session.
+fn id2_of(slot: usize) -> u32 {
+    protocol::player_id(2, slot)
+}
+
 fn pump(
     core: &mut ShardCore,
     stats: &ShardStats,
@@ -41,15 +46,15 @@ fn pump(
     }
 }
 
-/// Past the pace's gap for a team verb (`pace::Kind::Use`), which a set of
-/// marks shares.
+/// Past the pace's gap for a team verb (`pace::Kind::Use`) and a set of
+/// marks (`pace::Kind::Pins`).
 fn settle(
     core: &mut ShardCore,
     stats: &ShardStats,
     clients: &mut [(usize, ClientCore)],
     seen: &mut Vec<(usize, EventMsg)>,
 ) {
-    for _ in 0..10 {
+    for _ in 0..14 {
         pump(core, stats, clients, seen);
     }
 }
@@ -155,4 +160,124 @@ fn a_set_of_marks_reaches_the_team_and_nobody_else() {
     for slot in 0..3 {
         assert!(pins_to(&seen, slot).is_empty(), "slot {slot}");
     }
+}
+
+fn client(clients: &[(usize, ClientCore)], slot: usize) -> &ClientCore {
+    &clients
+        .iter()
+        .find(|(s, _)| *s == slot)
+        .expect("connected")
+        .1
+}
+
+/// **The shard keeps a player's marks while they play** (batch 2's
+/// follow-up): a mate who comes back, or a player who comes onto the team,
+/// sees marks set before they arrived though nobody changed one since, and
+/// a player who leaves takes theirs out of what the shard hands on.
+#[test]
+fn a_joiner_sees_marks_set_before_they_came() {
+    use server::store::PlayerKey;
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    let key = |slot: usize| PlayerKey::new(format!("pins-{slot}").as_bytes()).expect("fits");
+    for slot in 0..3 {
+        assert!(core
+            .connect_as(slot, id_of(slot), Some(key(slot)), None)
+            .is_some());
+    }
+    let mut clients: Vec<(usize, ClientCore)> = (0..3)
+        .map(|slot| (slot, ClientCore::new(SEED, id_of(slot), 0)))
+        .collect();
+    let mut seen = Vec::new();
+    settle(&mut core, &stats, &mut clients, &mut seen);
+
+    // Slot 2 marks the map with no team; slots 0 and 1 make one.
+    core.push_action(2, ActionMsg::Pins(set_of(&["LOOT"])));
+    core.push_action(
+        0,
+        ActionMsg::Team {
+            op: TEAM_OP_INVITE,
+            target: id_of(1),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    core.push_action(
+        1,
+        ActionMsg::Team {
+            op: TEAM_OP_ACCEPT,
+            target: id_of(0),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    let raid = set_of(&["RAID", "MEET"]);
+    core.push_action(0, ActionMsg::Pins(raid));
+    core.push_action(1, ActionMsg::Pins(set_of(&["HOME"])));
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(client(&clients, 1).team_pins().count(), 1);
+
+    // Slot 1 closes the game and comes back to its sleeping body, a new
+    // session with a new id: slot 0's marks are on its map without slot 0
+    // sending them again.
+    assert!(core.disconnect(1).is_some());
+    clients.retain(|(s, _)| *s != 1);
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    let (how, _) = core
+        .connect_as(1, id2_of(1), Some(key(1)), None)
+        .expect("admitted");
+    assert_eq!(how, server::core::Admitted::TookOver);
+    clients.push((1, ClientCore::new(SEED, id2_of(1), 0)));
+    seen.clear();
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    assert_eq!(client(&clients, 1).team().count, 2, "still on the team");
+    let shown: Vec<_> = client(&clients, 1)
+        .team_pins()
+        .map(|(id, s)| (id, *s))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![(id_of(0), raid)],
+        "a joiner sees a mate's marks"
+    );
+    assert_eq!(pins_to(&seen, 1).len(), 1, "told once");
+    // Slot 1's HOME left with its session: slot 0 is not sent it again.
+    assert!(
+        pins_to(&seen, 0).is_empty(),
+        "a leaver's marks are not kept"
+    );
+
+    // Slot 2 comes onto the team: it sees slot 0's marks, and both of them
+    // see the marks slot 2 set while it had no team.
+    core.push_action(
+        0,
+        ActionMsg::Team {
+            op: TEAM_OP_INVITE,
+            target: id_of(2),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    seen.clear();
+    core.push_action(
+        2,
+        ActionMsg::Team {
+            op: TEAM_OP_ACCEPT,
+            target: id_of(0),
+        },
+    );
+    settle(&mut core, &stats, &mut clients, &mut seen);
+    let to_2: Vec<_> = client(&clients, 2)
+        .team_pins()
+        .map(|(id, s)| (id, *s))
+        .collect();
+    assert_eq!(to_2, vec![(id_of(0), raid)], "a new member sees the team's");
+    for slot in [0, 1] {
+        let loot: Vec<_> = pins_to(&seen, slot)
+            .into_iter()
+            .filter(|(from, _)| *from == id_of(2))
+            .collect();
+        assert_eq!(loot, vec![(id_of(2), set_of(&["LOOT"]))], "slot {slot}");
+    }
+    assert_eq!(pins_to(&seen, 2).len(), 1, "slot 1 has no marks to send");
 }

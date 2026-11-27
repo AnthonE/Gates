@@ -3590,6 +3590,9 @@ impl ShardCore {
         }
         self.keys[slot] = None;
         self.clients[slot].connected = false;
+        // Marks are kept only while their owner plays.
+        self.clients[slot].pins = protocol::PinSet::NONE;
+        self.clients[slot].pending_pins = None;
         self.last_saved[slot] = PlayerSave::EMPTY;
         self.achievements.leave(slot);
         save.map(|s| (id, s))
@@ -4150,9 +4153,9 @@ impl ShardCore {
                         c.pending_team = Some((op, target));
                         continue;
                     }
-                    // Map marks for the team (v157) are the team verbs'
-                    // kind: relayed after the tick, on the shard, and never
-                    // seen by the sim, the WAL or the hash.
+                    // Map marks for the team (v157), on their own clock
+                    // (`pace::Kind::Pins`): relayed after the tick, on the
+                    // shard, and never seen by the sim, the WAL or the hash.
                     ActionMsg::Pins(set) => {
                         c.pending_pins = Some(set);
                         continue;
@@ -8076,12 +8079,10 @@ impl ShardCore {
     /// Connection `slot`'s map marks to each teammate connected now, and
     /// nobody else (v157, Rust's team markers): encoded once, on the bare
     /// `send`, so a spectator watching a mate never sees them (`fan_out`'s
-    /// confidence rule; `team_only` says so too). A player with no team is
-    /// relayed to nobody, silently: the client sends its set to a team it
-    /// believes it has, and the next team view tells it otherwise. Nothing
-    /// is kept — a mate who joins later hears the set when the sender's
-    /// client sees them join and sends it again. A ring that refuses loses
-    /// the set, counted; the sender's next change repairs it.
+    /// confidence rule; `team_only` says so too). The set is kept on the
+    /// connection, team or none, for a mate who joins or comes onto the
+    /// team later (`drip_team_pins`). A ring that refuses is owed the set
+    /// again: the drip sends a kept set with marks in it.
     fn relay_pins(
         &mut self,
         slot: usize,
@@ -8089,9 +8090,13 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        if !self.clients[slot].connected {
+            return;
+        }
+        self.clients[slot].pins = *pins;
         let from = self.clients[slot].id;
         let mates = self.teams.team_of(from);
-        if !self.clients[slot].connected || mates.is_empty() {
+        if mates.is_empty() {
             return;
         }
         let len = match protocol::encode_event_team_pins(from, pins, &mut self.ev_buf) {
@@ -8106,12 +8111,74 @@ impl ShardCore {
             if to == slot || !c.connected || c.id == from || !mates.contains(&c.id) {
                 continue;
             }
+            let told = &mut self.clients[to].pins_told;
             if send(Lane::Event, to, &self.ev_buf[..len]) {
                 ShardStats::bump(&stats.ev_sent);
+                if !told.contains(&from) {
+                    let at = told.iter().position(|&id| id == 0).unwrap_or(0);
+                    told[at] = from;
+                }
             } else {
                 ShardStats::bump(&stats.chat_undelivered);
+                for id in told.iter_mut().filter(|id| **id == from) {
+                    *id = 0;
+                }
             }
         }
+    }
+
+    /// The kept marks (`relay_pins`) of each mate connection `slot`'s team
+    /// view shows who it has not been sent yet: a joiner sees its mates'
+    /// marks, and they see its, without anyone changing a mark. Read off
+    /// the view the client holds, so a set never names a mate before the
+    /// view that shows them, and an empty set is not sent (there is nothing
+    /// to show). A mate who left the view is forgotten, so coming back onto
+    /// the team sends their marks again. `false` stops the drip for the
+    /// tick.
+    fn drip_team_pins(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        let me = self.clients[slot].id;
+        let Some(view) = self.clients[slot].last_team else {
+            return true;
+        };
+        let members = view.members();
+        for id in self.clients[slot].pins_told.iter_mut() {
+            if *id != 0 && !members.iter().any(|m| m.id == *id) {
+                *id = 0;
+            }
+        }
+        for m in members {
+            if m.id == 0 || m.id == me || self.clients[slot].pins_told.contains(&m.id) {
+                continue;
+            }
+            // A mate asleep keeps no marks here: told, so the search runs
+            // once a member and not every tick. Their next session is a
+            // new id or sends its own set.
+            let pins = (0..MAX_PLAYERS)
+                .find(|&s| self.clients[s].connected && self.clients[s].id == m.id)
+                .map_or(protocol::PinSet::NONE, |s| self.clients[s].pins);
+            if pins.n > 0 {
+                let len = match protocol::encode_event_team_pins(m.id, &pins, &mut self.ev_buf) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    }
+                };
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                ShardStats::bump(&stats.ev_sent);
+            }
+            let told = &mut self.clients[slot].pins_told;
+            let at = told.iter().position(|&id| id == 0).unwrap_or(0);
+            told[at] = m.id;
+        }
+        true
     }
 
     /// One team verb from connection `slot`, from the action lane or a
@@ -8334,7 +8401,9 @@ impl ShardCore {
         if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
             return;
         }
-        if slot < MAX_PLAYERS && !self.drip_team(slot, stats, send) {
+        if slot < MAX_PLAYERS
+            && (!self.drip_team(slot, stats, send) || !self.drip_team_pins(slot, stats, send))
+        {
             return;
         }
         let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {

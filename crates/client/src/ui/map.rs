@@ -780,11 +780,12 @@ pub fn mate_initial(name: &str) -> char {
 /// label typed, a colour cycled round) goes as a set or two, not one a key.
 pub const PIN_SHARE_S: f64 = 0.5;
 
-/// When your marks go to your team (v157). The shard keeps nobody's marks,
-/// so the whole set goes whenever it changes, no oftener than
-/// [`PIN_SHARE_S`], and again when somebody comes onto the team awake — a
-/// joiner, or a mate back from asleep, has none of yours until then. With
-/// no team nothing goes, and the next team starts from none of yours.
+/// When your marks go to your team (v157). The whole set goes whenever it
+/// changes, no oftener than [`PIN_SHARE_S`], and again when somebody comes
+/// onto the team awake. The shard keeps your last set while you play and
+/// sends it to a joiner itself (`ShardCore::drip_team_pins`); the resend
+/// only repeats it. With no team nothing goes, and the
+/// next team starts from none of yours.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PinShare {
     /// What this team was last sent of yours.

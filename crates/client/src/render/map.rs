@@ -170,7 +170,8 @@ pub struct MapShare(pub map::PinShare);
 
 /// Your marks to your team (v157, Rust's team markers): the whole set when
 /// it changes, at most every `PIN_SHARE_S`, and again when a mate comes on
-/// awake, since the shard keeps nobody's (`ui::map::PinShare` decides).
+/// awake, though the shard sends a joiner your last set itself
+/// (`ui::map::PinShare` decides).
 /// Runs on every screen the world runs under, so a mate who joins while the
 /// map is shut still gets them. The island's marks are this island's: one
 /// from another seed never goes.

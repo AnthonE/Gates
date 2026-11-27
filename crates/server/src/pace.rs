@@ -50,6 +50,9 @@ pub enum Kind {
     /// Open a container, loot a bag, pick up a stack or an arrow, pick a
     /// bush.
     Take,
+    /// A set of map marks for the team (v157): its own clock, so a door
+    /// pressed just after a mark moved never waits on it.
+    Pins,
     /// Everything the sim already paces itself, or that is harmless at the
     /// lane's speed: craft (a queue of four), research and unlock (one
     /// shot each), access (the lock's own lockout), feed, reload (its own
@@ -71,6 +74,7 @@ pub const ALL: [Kind; KINDS] = [
     Kind::Deploy,
     Kind::Move,
     Kind::Take,
+    Kind::Pins,
     Kind::Free,
 ];
 
@@ -86,11 +90,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Arc { .. } => Kind::Move,
         // A team verb tells every member: a door's pace.
         // A bag given moves two players' bag lists: a team verb's pace.
-        // So does a set of map marks, which tells every member (v157).
-        ActionMsg::Use { .. }
-        | ActionMsg::Team { .. }
-        | ActionMsg::BagGive { .. }
-        | ActionMsg::Pins(_) => Kind::Use,
+        ActionMsg::Use { .. } | ActionMsg::Team { .. } | ActionMsg::BagGive { .. } => Kind::Use,
+        ActionMsg::Pins(_) => Kind::Pins,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,
         ActionMsg::Place { .. }
@@ -155,6 +156,9 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
 ///   joiner's deployable sync.
 /// - **Take, 3; Move, 2 (15 a second)**: macro looting brought down to a
 ///   fast hand's speed.
+/// - **Pins, 12 (0.4 s)**: every set tells the whole team. The client sends
+///   no oftener than `ui::map::PIN_SHARE_S` (0.5 s); the tenth of a second
+///   of slack is jitter bunching two honest sends.
 /// - **Free, 0**: the lane's own one a tick.
 pub const fn gap(kind: Kind) -> u64 {
     match kind {
@@ -166,6 +170,7 @@ pub const fn gap(kind: Kind) -> u64 {
         Kind::Deploy => 8,
         Kind::Take => 3,
         Kind::Move => 2,
+        Kind::Pins => 12,
         Kind::Free => 0,
     }
 }
@@ -235,6 +240,25 @@ mod tests {
         assert!(!p.go(&door, 52), "a door flip-flop");
         assert!(p.go(&ActionMsg::Reload, 52), "a free kind never waits");
         assert!(p.go(&ActionMsg::Reload, 53));
+    }
+
+    /// **Marks keep their own clock** (batch 2): a door pressed the tick
+    /// after a set of marks went is not held behind it, and a second set
+    /// waits for its own gap.
+    #[test]
+    fn a_door_right_after_a_pins_send_is_not_held() {
+        let door = ActionMsg::Use {
+            cx: 1,
+            cz: 1,
+            level: 0,
+            loc: 0,
+        };
+        let pins = ActionMsg::Pins(protocol::PinSet::NONE);
+        let mut p = Pace::default();
+        assert!(p.go(&pins, 200));
+        assert!(p.go(&door, 201), "a door waited on a set of marks");
+        assert!(!p.go(&pins, 202), "a second set inside its gap");
+        assert!(p.go(&pins, 200 + gap(Kind::Pins)));
     }
 
     /// Every gap is a person's pace — at most a second — and an honest

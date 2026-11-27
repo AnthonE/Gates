@@ -2642,7 +2642,8 @@ const ACT_REPAIR_ITEM: u32 = 46;
 const ACT_BAG_GIVE: u32 = 47;
 /// The sender's whole set of map marks (wire v157, Rust's team markers):
 /// a count and each mark (`pins::PinSet`). Never a command: the shard
-/// relays it to the sender's team (`EventMsg::TeamPins`) and keeps none.
+/// relays it to the sender's team (`EventMsg::TeamPins`), and keeps the
+/// last one in memory while the sender plays, for a mate who joins later.
 const ACT_PINS: u32 = 48;
 /// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
 const WIRE_OUT_BITS: u32 = 2;
