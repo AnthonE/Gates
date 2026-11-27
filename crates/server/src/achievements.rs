@@ -910,8 +910,9 @@ pub struct Lookup<'a> {
     pub mechs: &'a [String],
     /// The keycard each card door takes, by door.
     pub cards: &'a [u16],
-    /// How many speakers there are.
-    pub speakers: u32,
+    /// Bit `k` for each speaker `TALK_ALL` counts: the ones at THE GATE,
+    /// so a speaker out at a landmark is a walk, not a requirement.
+    pub talk_mask: u32,
     /// Every glyph some inscription teaches.
     pub glyphs: u64,
 }
@@ -966,6 +967,7 @@ pub struct Baked {
     c_talk: u8,
     c_glyphs: u8,
     c_wear: u8,
+    talk_mask: u32,
     glyph_mask: u64,
     /// By set: its live rows.
     sets: Vec<u128>,
@@ -998,6 +1000,7 @@ impl Default for Baked {
             c_talk: NONE_U8,
             c_glyphs: NONE_U8,
             c_wear: NONE_U8,
+            talk_mask: 0,
             glyph_mask: 0,
             sets: Vec::new(),
             stats: Vec::new(),
@@ -1018,6 +1021,7 @@ impl Baked {
             swipe: vec![0; l.cards.len()],
             sets: vec![0; sets.len()],
             stats: vec![None; defs.len().min(MAX_DEFS)],
+            talk_mask: l.talk_mask,
             glyph_mask: l.glyphs,
             ..Baked::default()
         };
@@ -1096,13 +1100,13 @@ impl Baked {
                     }
                 }
                 Rule::TalkAll => {
-                    l.speakers > 0
+                    l.talk_mask != 0
                         && match step(
                             &mut b,
                             "talk:speakers".into(),
                             CounterKind::Mask,
                             None,
-                            l.speakers,
+                            l.talk_mask.count_ones(),
                         ) {
                             Some(c) => {
                                 b.c_talk = c;
@@ -1248,10 +1252,15 @@ impl Baked {
         let works = c.bake_work_names();
         let mechs = c.bake_arc_text().map(|t| t.mech_names).unwrap_or_default();
         let cards = c.bake_cards().map(|c| c.to_vec()).unwrap_or_default();
-        let (speakers, glyphs) = c.bake_lore().map_or((0, 0), |lore| {
+        let (talk_mask, glyphs) = c.bake_lore().map_or((0, 0), |lore| {
             let n = usize::from(lore.n_inscriptions);
             let glyphs = lore.inscriptions[..n].iter().fold(0, |m, i| m | i.teaches);
-            (u32::from(lore.n_speakers), glyphs)
+            let at_gate = lore.speakers[..usize::from(lore.n_speakers)]
+                .iter()
+                .enumerate()
+                .filter(|(k, s)| *k < 32 && s.spot.site == sim_core::spot::SITE_TOWN)
+                .fold(0u32, |m, (k, _)| m | 1 << k);
+            (at_gate, glyphs)
         });
         let item = |id: &str| c.item_index(id);
         let l = Lookup {
@@ -1261,7 +1270,7 @@ impl Baked {
             works: &works,
             mechs: &mechs,
             cards: &cards,
-            speakers,
+            talk_mask,
             glyphs,
         };
         Baked::bake(ACHIEVEMENTS, SETS, &l)
@@ -1636,7 +1645,9 @@ impl Achievements {
             EV_ARC_DID => {
                 let target = (ev.c >> 8) & 0xff;
                 match ev.b as u8 {
-                    sim_core::lore::OP_TALK if target < 32 => {
+                    sim_core::lore::OP_TALK
+                        if target < 32 && self.baked.talk_mask & (1 << target) != 0 =>
+                    {
                         self.bump(slot, self.baked.c_talk, 1 << target)
                     }
                     sim_core::lore::OP_READ => self.earn(slot, self.flag(Flag::Read)),
@@ -2275,7 +2286,7 @@ mod tests {
             works: &works,
             mechs: &mechs,
             cards: &[6, 4],
-            speakers: 3,
+            talk_mask: 0b111,
             glyphs: 0b1111,
         };
         Baked::bake(T_DEFS, T_SETS, &l)
@@ -2471,7 +2482,12 @@ mod tests {
         a.event(0, talk(0));
         a.event(0, talk(0));
         a.event(0, talk(2));
-        assert_eq!(got(&a, 0) & bit("TALK"), 0, "two of three, however often");
+        a.event(0, talk(3));
+        assert_eq!(
+            got(&a, 0) & bit("TALK"),
+            0,
+            "two of three, however often; a speaker out at a landmark is not one of them"
+        );
         a.event(0, talk(1));
         assert_eq!(got(&a, 0) & bit("TALK"), bit("TALK"));
         a.swept(0, &[], &[], 0b0111 | 1 << 40);

@@ -59,7 +59,7 @@ fn a_wallet_that_crafts_earns_and_hears_it() {
             works: &[],
             mechs: &[],
             cards: &[],
-            speakers: 0,
+            talk_mask: 0,
             glyphs: 0,
         },
     );

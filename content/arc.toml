@@ -291,6 +291,20 @@ lines = [
     { text = "There is writing on the old stones. Nobody here reads it. Stand at the one by the gate and some of the marks start to mean something. Do that at enough stones and you will read things the rest of us walk past." },
 ]
 
+# The sealed steel doors (`ARC.md` §1.8, §5 M2; `content/loot.toml`
+# `loot.vault`): one at every landmark, one outside the town's wall, one on
+# the ziggurat. Before the Gate they are the one new thing on an old island;
+# after, they are where the strays come from (`content/mobs.toml`
+# `mob.stray`). Places and behaviours only: no line says what is behind one
+# (`WORLD.md` §11.3).
+[[speaker.topic]]
+title = "THE STEEL DOORS"
+lines = [
+    { when = "lit:work.gate", text = "Every steel door on the island stood open the hour the ring did. What comes out, comes out at the old places, one at a time, and walks to the loudest thing it hears. Kill one and another is out before long. Nobody has found a way to shut them again." },
+    { when = "counting:work.gate", text = "Hear the far bell counting? When it stops, the ring opens, and every steel door on the island opens with it. Do not be standing in front of one. Do not be hammering, either." },
+    { text = "There is a steel door at every old place out there, and one outside our own wall. No handle, no hinge, no mark of who set it. Everything else on this island is older than anyone. That is not. It stays shut until the ring over the street opens." },
+]
+
 [[speaker]]
 id = "speaker.trader"
 name = "THE TRADER"
@@ -308,6 +322,13 @@ lines = [
 title = "JUNK"
 lines = [
     { text = "Junk is money here. Paper, parts, me. Carry it and you can lose it. People say there is a way to send it off the island. I say keep walking." },
+]
+
+[[speaker.topic]]
+title = "THE STEEL DOORS"
+lines = [
+    { when = "lacks:unlock.gate_open", text = "Everybody asks me what is behind the steel doors. I sell, I don't guess. A door with no handle is not for sale, and nor is whatever opens it. Wait for the ring like the rest of us." },
+    { text = "The doors are open and something walks out of every one. It doesn't trade, it doesn't sleep and it doesn't mind a torch. It goes where the noise is. Build quiet, or build far from the old places." },
 ]
 
 # The alpha's gift. A topic with `gift = "<season>"` gives every skin of that
@@ -368,6 +389,32 @@ lines = [
 title = "LOOKS"
 lines = [
     { text = "A look changes nothing about what a thing does. It changes who people think is holding it. Pick one when you craft, or put one on at a workbench." },
+]
+
+# THE LISTENER keeps the container yard's steel door (`sim_core::landmark`
+# YARD_CRATES, the vault at (8, 8), its door to +Z): she stands to one side
+# of the door's front, where the strays come out once the Gate opens, and
+# past a word's reach of the door itself. She is not at THE GATE, so Small
+# Talk does not ask for her (`server/src/achievements.rs` `talk_mask`).
+[[speaker]]
+id = "speaker.listener"
+name = "THE LISTENER"
+site = "yard"
+at = [4.0, 0.0, 10.5]
+
+[[speaker.topic]]
+title = "WHO ARE YOU"
+lines = [
+    { text = "I sit by this door. Somebody should. I woke on the sand like you and walked inland, and this was the first thing I found that was not old." },
+]
+
+[[speaker.topic]]
+title = "THE DOOR"
+lines = [
+    { when = "lit:work.gate", text = "It stands open. They come out of it one at a time, and out of the door at every old place, and go to whatever they hear. A hammer on a wall carries farthest. Fire does not turn them, nor does the dark. I have stopped counting them." },
+    { when = "counting:work.gate", text = "The far bell is counting, and this door counts with it. When the bell stops, it opens, and so does every other. Go home, shut your walls and put the hammer down." },
+    { when = "open:work.gate", text = "The terminal under the ring in the town has woken. When its bars are full, or its hour comes, this door opens. I will be here to see it. I am not sure I want to." },
+    { text = "Steel, set in obsidian where a barrel should stand. Every old place has one: the yard, the mast, the spires, the stones. Knock and nothing answers. It is waiting for the ring over the town, the same as the rest of us." },
 ]
 
 # ── Inscriptions (`ARC.md` F6) ────────────────────────────────────────────

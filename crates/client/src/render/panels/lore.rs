@@ -180,7 +180,17 @@ pub fn build_talk(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &I
             .collect();
         if !plain.is_empty() {
             kit::section(p, "ASK ABOUT");
-            kit::row(p, |r| {
+            // Wraps: six topics (THE GATEKEEPER's) are wider than the card.
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                row_gap: Val::Px(6.0),
+                max_width: Val::Px(TALK_W - 30.0),
+                ..default()
+            })
+            .with_children(|r| {
                 for t in plain {
                     kit::button(
                         r,

@@ -5104,6 +5104,128 @@ fn every_shipped_work_stands_on_the_public_island() {
     }
 }
 
+/// **The steel doors are spoken of in their act** (`ARC.md` §5 M2): THE
+/// GATEKEEPER, THE TRADER and THE LISTENER hint at the sealed doors through
+/// acts I to III, warn while the Gate counts, and say what walks out once it
+/// opens. Each phase is the works as `works::sweep` leaves them, and each
+/// line is picked by the server's own `ArcText::line`.
+#[test]
+fn the_steel_doors_are_spoken_of_in_their_act() {
+    use sim_core::works::{Works, WORK_COUNTDOWN, WORK_LIT, WORK_OPEN};
+    let c = build(&sources()).expect("shipped content loads");
+    let wc = c.bake_arc().expect("the arc bakes");
+    let text = c.bake_arc_text().expect("the words bake");
+    let work = |id: &str| c.works.iter().position(|w| w.id == id).expect(id);
+    let (crucible, gate) = (work("work.crucible"), work("work.gate"));
+    // (phase, what the works hold, the act, the Gate open)
+    let mut phases = Vec::new();
+    let mut w = Works::default();
+    w.refresh(&wc);
+    phases.push(("act I", w, 1, false));
+    w.w[crucible].state = WORK_OPEN;
+    w.refresh(&wc);
+    phases.push(("act II", w, 2, false));
+    w.w[gate].state = WORK_OPEN;
+    w.refresh(&wc);
+    phases.push(("act III, the Gate fed", w, 3, false));
+    w.w[gate].state = WORK_COUNTDOWN;
+    w.refresh(&wc);
+    phases.push(("act III, counting", w, 3, false));
+    w.w[gate].state = WORK_LIT;
+    w.refresh(&wc);
+    phases.push(("act III, open", w, 3, true));
+    // Each topic's `when`, phase by phase (`None`: the line with none).
+    let expect: [(&str, &str, [Option<&str>; 5]); 3] = [
+        (
+            "speaker.gatekeeper",
+            "THE STEEL DOORS",
+            [
+                None,
+                None,
+                None,
+                Some("counting:work.gate"),
+                Some("lit:work.gate"),
+            ],
+        ),
+        (
+            "speaker.trader",
+            "THE STEEL DOORS",
+            [
+                Some("lacks:unlock.gate_open"),
+                Some("lacks:unlock.gate_open"),
+                Some("lacks:unlock.gate_open"),
+                Some("lacks:unlock.gate_open"),
+                None,
+            ],
+        ),
+        (
+            "speaker.listener",
+            "THE DOOR",
+            [
+                None,
+                None,
+                Some("open:work.gate"),
+                Some("counting:work.gate"),
+                Some("lit:work.gate"),
+            ],
+        ),
+    ];
+    for (phase, (name, works, act, open)) in phases.iter().enumerate() {
+        assert_eq!(works.act(&wc), *act, "{name}: the act");
+        assert_eq!(works.gate_open(&wc), *open, "{name}: the doors");
+        for (speaker, topic, whens) in &expect {
+            let k = c.speakers.iter().position(|s| s.id == *speaker).unwrap();
+            let t = c.speakers[k]
+                .topic
+                .iter()
+                .position(|t| t.title == *topic)
+                .unwrap_or_else(|| panic!("{speaker} has no `{topic}`"));
+            let said = text.line(k, t, works).expect("a line holds");
+            let line = c.speakers[k].topic[t]
+                .lines
+                .iter()
+                .find(|l| l.text == said)
+                .unwrap();
+            assert_eq!(
+                line.when.as_deref(),
+                whens[phase],
+                "{name}: {speaker} on {topic} said `{said}`"
+            );
+            // `WORLD.md` §11.3: places and behaviours, never what is past
+            // the door.
+            let low = said.to_lowercase();
+            for word in ["machine", "beneath", "below", "underground", "inside"] {
+                assert!(!low.contains(word), "{speaker}: `{word}` in `{said}`");
+            }
+        }
+    }
+    // THE LISTENER stands at the yard's door on the public island, a few
+    // metres off it: past a word's reach of the door, so `E` there is the
+    // door and never her.
+    let haven = sim_core::terrain::haven(20260731);
+    let lc = c.bake_lore().expect("the lore bakes");
+    let k = c
+        .speakers
+        .iter()
+        .position(|s| s.id == "speaker.listener")
+        .unwrap();
+    let (sx, _, sz) = sim_core::spot::world(&haven, &lc.speakers[k].spot).expect("she stands");
+    let yard =
+        sim_core::spot::landmark_nth(&haven, sim_core::landmark::LandmarkKind::Yard as u8, 0)
+            .expect("the public island has a yard");
+    let (vx, vz) = (0..)
+        .map_while(|i| sim_core::landmark::anchor(yard, i))
+        .find(|a| a.3 == sim_core::terrain::Occupant::Vault)
+        .map(|(x, z, _, _)| (x, z))
+        .expect("the yard keeps a vault");
+    let d = ((sx - vx) * (sx - vx) + (sz - vz) * (sz - vz)).sqrt();
+    let reach = sim_core::lore::LORE_REACH_M;
+    assert!(
+        (reach + 0.5..=8.0).contains(&d),
+        "THE LISTENER is {d} m from the door"
+    );
+}
+
 /// The arc's references refuse when they dangle: a recipe waiting on an
 /// unlock no work grants, and a work naming a site that does not exist.
 #[test]

@@ -2469,7 +2469,8 @@ fn every_species_speaks_with_its_own_voice() {
                 seen.push(cue);
             }
             match mob::kind_of(slot) {
-                mob::MOB_WOLF => assert!(
+                // A stray wears the wolf's model, so it has the wolf's voice.
+                mob::MOB_WOLF | mob::MOB_STRAY => assert!(
                     cue == Cue::Howl || cue == Cue::Growl,
                     "wolf slot {slot} says {cue:?}"
                 ),
@@ -2478,7 +2479,7 @@ fn every_species_speaks_with_its_own_voice() {
             }
         }
         match mob::kind_of(slot) {
-            mob::MOB_WOLF => wolves += 1,
+            mob::MOB_WOLF | mob::MOB_STRAY => wolves += 1,
             mob::MOB_STAG => stags += 1,
             _ => pigs += 1,
         }
