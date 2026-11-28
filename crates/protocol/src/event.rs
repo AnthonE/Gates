@@ -4647,13 +4647,14 @@ pub fn encode_event_vend_refused(code: u8, offer: u8, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
-/// The card doors open now.
+/// The doors open now: the card doors, and the lab's (wire v158,
+/// `sim_core::lab::DOOR_BITS`).
 pub fn encode_event_card_doors(bits: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    if bits as u32 >= 1 << sim_core::monument::CARD_DOORS {
+    if bits as u32 >= 1 << sim_core::lab::DOOR_BITS {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_CARD_DOORS)?;
-    w.write(bits as u32, sim_core::monument::CARD_DOORS as u32)?;
+    w.write(bits as u32, sim_core::lab::DOOR_BITS as u32)?;
     Ok(w.finish())
 }
 
@@ -7862,7 +7863,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::VendRefused { code, offer }
         }
         SUB_CARD_DOORS => EventMsg::CardDoors {
-            bits: r.read(sim_core::monument::CARD_DOORS as u32)? as u8,
+            bits: r.read(sim_core::lab::DOOR_BITS as u32)? as u8,
         },
         SUB_HOSTILE => EventMsg::Hostile { until: r.read(32)? },
         SUB_SENTRY_LOCK => {
@@ -11673,6 +11674,10 @@ mod wire_domains {
         Module {
             file: "kit.rs",
             src: include_str!("../../sim-core/src/kit.rs"),
+        },
+        Module {
+            file: "lab.rs",
+            src: include_str!("../../sim-core/src/lab.rs"),
         },
         Module {
             file: "monument.rs",

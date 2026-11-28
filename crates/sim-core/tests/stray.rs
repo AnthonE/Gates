@@ -40,11 +40,14 @@ fn open_gate(w: &mut World, pct: u16) {
     assert!(w.works.gate_open(&w.works_def), "the Gate is not open");
 }
 
+/// The roaming strays: the stray block less the lab's dwellers, who keep
+/// the lab (`tests/lab.rs`).
 fn strays(w: &World, f: impl Fn(&mob::Mob) -> bool) -> usize {
     w.mobs
         .m
         .iter()
-        .filter(|m| m.kind == MOB_STRAY && f(m))
+        .enumerate()
+        .filter(|(s, m)| m.kind == MOB_STRAY && !mob::is_lab_slot(*s) && f(m))
         .count()
 }
 
@@ -92,7 +95,13 @@ fn no_stray_stands_up_until_the_gate_opens_and_then_at_a_vault_door() {
     );
     let doors = doors(&w);
     assert!(!doors.is_empty());
-    for m in w.mobs.m.iter().filter(|m| m.alive && m.kind == MOB_STRAY) {
+    for (_, m) in w
+        .mobs
+        .m
+        .iter()
+        .enumerate()
+        .filter(|(s, m)| m.alive && m.kind == MOB_STRAY && !mob::is_lab_slot(*s))
+    {
         let (x, z) = (m.home_qx as f32 * POS_XZ_Q, m.home_qz as f32 * POS_XZ_Q);
         let near = doors
             .iter()
@@ -106,7 +115,7 @@ fn no_stray_stands_up_until_the_gate_opens_and_then_at_a_vault_door() {
 
     // With no Gate (no work past act II), a dead stray stays dead.
     let slot = (0..MAX_MOBS)
-        .find(|&s| w.mobs.m[s].alive && w.mobs.m[s].kind == MOB_STRAY)
+        .find(|&s| w.mobs.m[s].alive && w.mobs.m[s].kind == MOB_STRAY && !mob::is_lab_slot(s))
         .unwrap();
     w.works_def = sim_core::works::WorksContent::EMPTY;
     w.works.refresh(&w.works_def);
@@ -217,7 +226,7 @@ fn a_stray_walks_to_a_hammer_strike() {
         w.dev_spawn = Some(at);
         w.tick(&[Command::Join { id: 1 }]);
         let slot = (0..MAX_MOBS)
-            .find(|&s| w.mobs.m[s].alive && w.mobs.m[s].kind == MOB_STRAY)
+            .find(|&s| w.mobs.m[s].alive && w.mobs.m[s].kind == MOB_STRAY && !mob::is_lab_slot(s))
             .expect("the open Gate stood up no stray");
         for (i, m) in w.mobs.m.iter_mut().enumerate() {
             if i != slot {

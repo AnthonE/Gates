@@ -45,6 +45,7 @@ pub mod hull;
 pub mod input;
 pub mod inventory;
 pub mod kit;
+pub mod lab;
 pub mod landmark;
 pub mod lattice;
 pub mod light;

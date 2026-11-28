@@ -4529,6 +4529,7 @@ pub fn haven(seed: u64) -> Haven {
     // The landmarks after the sites and roads they keep clear of, and a
     // trail from each to the ring.
     pad.marks = crate::landmark::solve(seed, &pad);
+    crate::lab::choose(&mut pad.marks);
     pad.trails = solve_trails(seed, &pad);
     // The ore budget last: it is measured on the ground the draw will stand
     // on, and that ground is carved by every site and road above.
@@ -6924,10 +6925,13 @@ fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) ->
     let g = if s == 0.0 { raw } else { raw + s };
     // Then the landmarks' own carve, over what the sites left.
     let l = crate::landmark::stamp(&haven.marks, g, x, z);
-    if l == 0.0 {
+    let g = if l == 0.0 { g } else { g + l };
+    // And the lab's cut under its host (`lab.rs`), last.
+    let c = crate::lab::carve(&haven.marks, g, x, z);
+    if c == 0.0 {
         return g;
     }
-    g + l
+    g + c
 }
 
 /// Slope of the carved ground, as `slope` is of the raw.
@@ -7095,7 +7099,9 @@ fn clutter_slope_at<C: Corners>(
 /// `site_sweep`, whose other readers (the cliff veto) are worldgen: the
 /// floor is a picture of the ground, not a change to it.
 fn swept_here(haven: &Haven, x: f32, z: f32, d: u8) -> bool {
-    let s = site_sweep(haven, x, z).max(crate::landmark::floor_sweep(&haven.marks, x, z));
+    let s = site_sweep(haven, x, z)
+        .max(crate::landmark::floor_sweep(&haven.marks, x, z))
+        .max(crate::lab::sweep(&haven.marks, x, z));
     (d as f32) * (1.0 / 256.0) < s
 }
 
@@ -8127,12 +8133,40 @@ fn scatter_in<C: Corners>(
     let cell_mid_x = cell_x as f32 * CELL_SIZE + CELL_SIZE * 0.5;
     let cell_mid_z = cell_z as f32 * CELL_SIZE + CELL_SIZE * 0.5;
     if let Some(m) = crate::landmark::at(&haven.marks, cell_mid_x, cell_mid_z, CELL_SIZE) {
+        // The lab's crates under its host first, seated on the lab's floor
+        // (`lab::CRATES`; its const block keeps each in a cell of its own).
+        if m.lab {
+            let mut k = 0usize;
+            while let Some((ax, ay, az, yaw, occupant)) = crate::lab::crate_world(m, k) {
+                k += 1;
+                if (ax * (1.0 / CELL_SIZE)) as i32 == cell_x
+                    && (az * (1.0 / CELL_SIZE)) as i32 == cell_z
+                {
+                    return Slot {
+                        occupant,
+                        x: ax,
+                        y: ay,
+                        z: az,
+                        yaw,
+                        scale: 1.0,
+                        species: 0,
+                    };
+                }
+            }
+        }
         let mut k = 0usize;
         while let Some((ax, az, yaw, occupant)) = crate::landmark::anchor(m, k) {
             k += 1;
             if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x
                 || (az * (1.0 / CELL_SIZE)) as i32 != cell_z
             {
+                continue;
+            }
+            // The host's court crates went down with the court (`lab.rs`).
+            if m.lab && {
+                let a = crate::landmark::anchors(m.kind)[k - 1];
+                crate::lab::over_pit(a.0, a.1)
+            } {
                 continue;
             }
             return Slot {
@@ -10899,6 +10933,7 @@ pub fn site_roofed(seed: u64, haven: &Haven, x: f32, z: f32, feet_y: f32) -> boo
     crate::depot::roofed(haven, x, z, head)
         || crate::town::roofed(&haven.town, x, z, feet_y)
         || crate::monument::roofed(&haven.ziggurat, x, z, feet_y)
+        || crate::lab::roofed(&haven.marks, x, z, feet_y)
 }
 
 /// [`site_roofed`] for one authored box list standing at `(sx, sz, yaw)` on

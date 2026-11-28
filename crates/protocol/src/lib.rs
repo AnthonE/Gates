@@ -1447,6 +1447,11 @@ pub use voice::{
 /// moves the heli's and the sentries' kinds up one more (5, 6) and
 /// `BAG_KIND_BODY` to 6, and `SUB_WORK` admits `WORK_EV_CONVOY` (7), its
 /// `by` a `works::CONVOY_*` code rather than a player.
+///
+/// Still v158: `SUB_CARD_DOORS` carries `lab::DOOR_BITS` (4) bits, the lab's
+/// door (`lab::LAB_DOOR_BIT`) after the three card doors, and the strays'
+/// block grows by the lab's dwellers (`mob::LAB_SLOT0`), moving the
+/// carriers' slots down by as many.
 pub const PROTO_VER: u16 = 158;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,

@@ -3146,7 +3146,7 @@ pub fn event_gate_spawn() -> u32 {
 
 /// The green and red doors open, the blue shut.
 pub fn event_card_doors() -> u8 {
-    0b101
+    0b1101
 }
 
 /// A swipe at the red door without its card.

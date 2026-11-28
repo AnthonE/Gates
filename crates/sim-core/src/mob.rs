@@ -68,7 +68,8 @@ use crate::combat::{held_item, CombatContent};
 use crate::gather::{ItemStack, NO_ITEM};
 use crate::input::{InputFrame, BTN_SPRINT};
 use crate::limits::{
-    INV_SLOTS, MAX_CONVOY, MAX_MOBS, MAX_PLAYERS, MAX_STRAYS, MOB_ID_TAG, MOB_THINK_TICKS,
+    INV_SLOTS, MAX_CONVOY, MAX_LAB_DWELLERS, MAX_MOBS, MAX_PLAYERS, MAX_STRAYS, MOB_ID_TAG,
+    MOB_THINK_TICKS,
 };
 use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav::{self, Ground, Nav, NavPath};
@@ -117,12 +118,27 @@ pub const MOB_SENTRY: u8 = 6;
 /// turrets'. A block at the top of the free roster rather than a stride, so
 /// the pigs', wolves' and stags' ordinals below it do not move (each
 /// species enrols its lowest slots first, and none reaches this high).
-pub const STRAY_SLOT0: usize = crate::turret::TURRET_SLOT0 - MAX_STRAYS;
+/// The block holds the lab's dwellers too, at its top ([`LAB_SLOT0`]).
+pub const STRAY_SLOT0: usize = crate::turret::TURRET_SLOT0 - MAX_STRAYS - MAX_LAB_DWELLERS;
 
-/// Whether a roster slot is a stray's.
+/// Whether a roster slot is a stray's, the lab's dwellers among them.
 #[inline]
 pub const fn is_stray_slot(slot: usize) -> bool {
     slot >= STRAY_SLOT0 && slot < crate::turret::TURRET_SLOT0
+}
+
+/// The first of the lab's dwellers (`lab.rs`, [`MAX_LAB_DWELLERS`]): strays
+/// that never roam. Each is homed in a room of the lab (`lab::DWELL`),
+/// leashed to it (`lab::LEASH_CM`) and keeps it as a guard keeps its post
+/// (`brain::GUARD`); like every stray it stands up only once THE SEVERED
+/// GATE opens, which is when the lab's door does. An island without a lab
+/// enrols none of them.
+pub const LAB_SLOT0: usize = crate::turret::TURRET_SLOT0 - MAX_LAB_DWELLERS;
+
+/// Whether a roster slot is one of the lab's dwellers.
+#[inline]
+pub const fn is_lab_slot(slot: usize) -> bool {
+    slot >= LAB_SLOT0 && slot < crate::turret::TURRET_SLOT0
 }
 
 /// The first carrier's roster slot: [`MAX_CONVOY`] of them, just below the
@@ -1179,6 +1195,8 @@ pub const fn capacity(kind: u8) -> usize {
     }
     if kind == MOB_WOLF {
         n - SITE_GUARDS
+    } else if kind == MOB_STRAY {
+        n - MAX_LAB_DWELLERS
     } else {
         n
     }
@@ -1193,6 +1211,7 @@ pub const fn ordinal(slot: usize) -> Option<usize> {
         || crate::sentry::is_sentry_slot(slot)
         || crate::turret::is_turret_slot(slot)
         || is_carrier_slot(slot)
+        || is_lab_slot(slot)
         || guard_site_of(slot).is_some()
     {
         return None;
@@ -1224,7 +1243,8 @@ fn takes_part(
     match (ordinal(slot), guard_site_of(slot)) {
         (Some(i), _) => i < want[kind as usize],
         (None, Some(site)) => guard_home_of(seed, haven, slot, site).is_some(),
-        (None, None) => false,
+        // The lab's dwellers, wherever the island has a lab.
+        (None, None) => is_lab_slot(slot) && crate::lab::host(&haven.marks).is_some(),
     }
 }
 
@@ -1579,6 +1599,7 @@ fn hatch(
 ) {
     let home = match guard_site_of(slot) {
         Some(site) => guard_home_of(seed, haven, slot, site),
+        None if is_lab_slot(slot) => crate::lab::dweller_home(&haven.marks, slot - LAB_SLOT0),
         None if is_stray_slot(slot) => stray_home_of(seed, haven, slot, tick),
         None => leader_home
             .and_then(|l| den_of(seed, haven, slot, tick, l))
@@ -2000,7 +2021,10 @@ fn stray_home_of(seed: u64, haven: &Haven, slot: usize, tick: u64) -> Option<(f3
             continue;
         }
         let feet = terrain::ground(seed, haven, x, z);
-        if crate::landmark::blocks(&haven.marks, x, z, feet + 0.1, 0.6, 1.0) {
+        if crate::landmark::blocks(&haven.marks, x, z, feet + 0.1, 0.6, 1.0)
+            || crate::lab::blocks(&haven.marks, 0, x, z, feet + 0.1, 0.6, 1.0)
+            || crate::lab::sweep(&haven.marks, x, z) > 0.0
+        {
             continue;
         }
         return Some((x, z));

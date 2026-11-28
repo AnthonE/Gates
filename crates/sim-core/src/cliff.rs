@@ -226,7 +226,9 @@ fn crag_field(x: f32, z: f32, seed: u32) -> f32 {
 /// Whether nothing authored owns this ground: sites, the haven and the build
 /// pads keep their carved faces clean.
 pub fn open_ground(haven: &Haven, x: f32, z: f32) -> bool {
-    !terrain::in_haven(haven, x, z) && terrain::site_sweep(haven, x, z) <= 0.0
+    !terrain::in_haven(haven, x, z)
+        && terrain::site_sweep(haven, x, z) <= 0.0
+        && crate::lab::sweep(&haven.marks, x, z) <= 0.0
 }
 
 /// The seed's share of every spot key.

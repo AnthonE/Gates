@@ -132,6 +132,7 @@ pub mod mods;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
+pub mod lab;
 pub mod landmarks;
 pub mod lodged;
 pub mod poles;
@@ -1912,7 +1913,7 @@ impl Plugin for GatesRenderPlugin {
                         depot::spawn,
                         landmarks::spawn,
                         poles::spawn,
-                        (town::spawn, ziggurat::spawn),
+                        (town::spawn, ziggurat::spawn, lab::spawn),
                     ),
                     // The sea re-centres like a ring does, and for the same
                     // reason: it reads `Eye::pos`, so it belongs where the
@@ -2037,7 +2038,7 @@ impl Plugin for GatesRenderPlugin {
                         // Its shopkeepers: Rust's, greeting and serving.
                         (keepers::spawn, keepers::act.after(feed::drain)).chain(),
                         ziggurat::dress,
-                        ziggurat::doors,
+                        (ziggurat::doors, lab::doors),
                         // The works' terminals (`ARC.md` F1): stood up as
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light, works::animate).chain(),

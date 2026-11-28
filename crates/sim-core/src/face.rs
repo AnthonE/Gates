@@ -90,7 +90,7 @@ pub fn cliff_relief(
     if slope <= RELIEF_SLOPE_LO || y < SEA_LEVEL {
         return 0.0;
     }
-    let sweep = terrain::site_sweep(haven, x, z);
+    let sweep = terrain::site_sweep(haven, x, z).max(crate::lab::sweep(&haven.marks, x, z));
     if sweep >= 1.0 {
         return 0.0;
     }
@@ -375,7 +375,7 @@ fn skin_mask(haven: &terrain::Haven, x: f32, z: f32, gentlest: f32) -> f32 {
     if t <= 0.0 || terrain::in_haven(haven, x, z) {
         return 0.0;
     }
-    let sweep = terrain::site_sweep(haven, x, z);
+    let sweep = terrain::site_sweep(haven, x, z).max(crate::lab::sweep(&haven.marks, x, z));
     if sweep >= 1.0 {
         return 0.0;
     }

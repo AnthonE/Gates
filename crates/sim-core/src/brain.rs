@@ -699,7 +699,7 @@ pub static WOLF_NET: Design = Design {
 /// hunter takes a net: a guard keeps its post's rule table, and a net
 /// installed on prey's row drives nothing.
 pub fn design_for(slot: usize, def: &MobDef, net: bool) -> &'static Design {
-    if crate::mob::guard_site_of(slot).is_some() {
+    if crate::mob::guard_site_of(slot).is_some() || crate::mob::is_lab_slot(slot) {
         &GUARD
     } else if crate::mob::is_stray_slot(slot) {
         &STRAY
@@ -1176,6 +1176,7 @@ fn far_from_home(seed: u64, slot: usize, def: &MobDef, mob: &Mob) -> bool {
 fn leash(slot: usize, def: &MobDef) -> (i64, f32) {
     match crate::mob::guard_leash_cm(slot) {
         Some(cm) => (cm, terrain::LAND_MIN_H),
+        None if crate::mob::is_lab_slot(slot) => (crate::lab::LEASH_CM, terrain::LAND_MIN_H),
         None => (def.roam_cm, terrain::BEACH_MAX_H),
     }
 }

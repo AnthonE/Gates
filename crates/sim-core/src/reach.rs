@@ -114,6 +114,7 @@ fn walk(
         let feet = y - STEP_UP;
         if crate::monument::blocks(&haven.ziggurat, doors, x, z, feet, ARROW_R_M, STEP_UP)
             || (marks && crate::landmark::blocks(&haven.marks, x, z, feet, ARROW_R_M, STEP_UP))
+            || (marks && crate::lab::blocks(&haven.marks, doors, x, z, feet, ARROW_R_M, STEP_UP))
         {
             return false;
         }
@@ -254,9 +255,22 @@ impl Target {
     /// it as inside the stone. Aimed just above that top instead.
     pub fn stuck_in(haven: &Haven, doors: u32, q: (i32, i32, i32), dir: [i8; 3]) -> Self {
         let mut t = Self::stuck(q, dir);
-        let top = crate::monument::ground(&haven.ziggurat, doors, t.x, t.z, t.base_y, 0.0).max(
-            crate::landmark::ground(&haven.marks, t.x, t.z, t.base_y, 0.0),
-        );
+        let top = crate::monument::ground(&haven.ziggurat, doors, t.x, t.z, t.base_y, 0.0)
+            .max(crate::landmark::ground(
+                &haven.marks,
+                t.x,
+                t.z,
+                t.base_y,
+                0.0,
+            ))
+            .max(crate::lab::ground(
+                &haven.marks,
+                doors,
+                t.x,
+                t.z,
+                t.base_y,
+                0.0,
+            ));
         if top > t.base_y {
             t.base_y = top;
             // Above the top, not on it: the walk's last sample can land an

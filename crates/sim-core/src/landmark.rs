@@ -632,6 +632,8 @@ pub struct Landmark {
     pub yaw: u8,
     pub kind: LandmarkKind,
     pub live: bool,
+    /// The one landmark the lab is cut under (`lab::choose`).
+    pub lab: bool,
 }
 
 impl Landmark {
@@ -642,6 +644,7 @@ impl Landmark {
         yaw: 0,
         kind: LandmarkKind::Ruin,
         live: false,
+        lab: false,
     };
 }
 
@@ -913,6 +916,7 @@ fn try_site(
         yaw: (h >> 48) as u8,
         kind,
         live: true,
+        lab: false,
     })
 }
 

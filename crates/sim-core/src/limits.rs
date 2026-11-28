@@ -1570,6 +1570,17 @@ const _: () = assert!(MAX_MOBS <= 256);
 /// no spawn path can ask for a thirteenth. Proposed default.
 pub const MAX_STRAYS: usize = 12;
 
+/// The strays kept in the lab under the island (`lab.rs`, `ARC.md` act IV):
+/// a block of their own at the top of the strays' (`mob::LAB_SLOT0`), each
+/// homed in a room and leashed to the lab, standing up only once THE
+/// SEVERED GATE opens its door. On top of [`MAX_STRAYS`], so the roaming
+/// count is unmoved. Proposed default.
+pub const MAX_LAB_DWELLERS: usize = 4;
+
+/// The lab's own containers (`lab::CRATES`), seated on its floor. The const
+/// block in `lab.rs` holds the table to it.
+pub const MAX_LAB_CRATES: usize = 2;
+
 /// The carriers of one convoy (`convoy.rs`, `mob::MOB_CARRIER`): the pack
 /// beasts that haul salvage in off the ring road to THE SEVERED GATE while
 /// it takes deposits (`ARC.md` §5 M2, "convoys"). A block of roster slots

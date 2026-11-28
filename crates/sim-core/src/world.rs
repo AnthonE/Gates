@@ -7800,7 +7800,7 @@ impl World {
                         &mut self.events,
                         |to| crate::reach::sight(seed, haven, cols, bits, eye, to),
                     );
-                    self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+                    self.card_door_bits = self.door_bits();
                 }
             }
             Command::Consume { id, slot: inv } => {
@@ -8742,7 +8742,15 @@ impl World {
                 crate::monument::out_of_leaf(&z, d, &mut p.body);
             }
         }
-        self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+        self.card_door_bits = self.door_bits();
+    }
+
+    /// The open mask every collision reads (`kit::blocks_local`): the card
+    /// doors swiped open, and the lab's while THE SEVERED GATE is open
+    /// (`lab::door_bits`).
+    fn door_bits(&self) -> u32 {
+        crate::monument::open_bits(&self.card_doors, self.tick)
+            | crate::lab::door_bits(self.works.gate_open(&self.works_def))
     }
 
     /// A body arriving in the world (a restore, a sleeper woken) out of any
@@ -8759,6 +8767,8 @@ impl World {
         self.trust.clear(self.tick);
         self.safe_zone();
         self.card_door_sweep();
+        // Every tick, not only after a sweep: the lab's bit follows the Gate.
+        self.card_door_bits = self.door_bits();
         // The tick's structural removal budget is minted **before** the
         // commands rather than after them, because since demolish v1 a
         // command can take a piece out of the store and seed a cascade —

@@ -853,6 +853,14 @@ impl Occupants<'_> {
             feet_y,
             r,
         ));
+        best = best.max(crate::lab::ground(
+            &self.haven.marks,
+            self.doors,
+            x,
+            z,
+            feet_y,
+            r,
+        ));
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
             let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
@@ -974,6 +982,9 @@ impl Occupants<'_> {
             return true;
         }
         if crate::monument::blocks(&self.haven.ziggurat, self.doors, x, z, feet_y, r, h) {
+            return true;
+        }
+        if crate::lab::blocks(&self.haven.marks, self.doors, x, z, feet_y, r, h) {
             return true;
         }
         let pcx = floor_i32(x / CELL_SIZE);

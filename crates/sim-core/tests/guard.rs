@@ -595,10 +595,15 @@ fn guards_are_on_top_of_the_density() {
             .filter(|&s| mob::guard_site_of(s).is_some() && w.mobs.m[s].homed)
             .count();
         assert!(guards <= SITE_GUARDS);
+        // And the lab's dwellers (`tests/lab.rs`), on top of it the same way.
+        let dwellers = (0..MAX_MOBS)
+            .filter(|&s| mob::is_lab_slot(s) && w.mobs.m[s].homed)
+            .count();
+        assert!(dwellers <= sim_core::limits::MAX_LAB_DWELLERS);
         assert_eq!(
             w.mobs.homed(),
-            want.iter().sum::<usize>() + guards,
-            "seed {seed}: the roster is the density's count plus the guards"
+            want.iter().sum::<usize>() + guards + dwellers,
+            "seed {seed}: the roster is the density's count plus the guards and the lab's"
         );
         // The strays wait behind their doors until the Gate opens (`tests/stray.rs`).
         let sealed = w
