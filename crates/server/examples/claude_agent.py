@@ -82,7 +82,7 @@ HARNESS = os.environ.get("GATES_HARNESS", "")
 # The observation fields a journal line keeps: enough to tell a fight, a
 # death or a haul from a walk, and small enough to write every turn.
 JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
-               "current_goal", "deaths", "respawns")
+               "current_goal", "deaths", "respawns", "your_last_answer")
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 # Anthropic's posted list prices, dollars per million tokens: input, output,
@@ -375,7 +375,37 @@ def save_notes(notes):
         print(f"notes: {e}", file=sys.stderr)
 
 
-def turn_content(request, recent, frame, notes, chat_log, strategy=None):
+DIED_SINCE = "you died: the counts in your notes are void; observation.pack is what you carry"
+
+
+def mark_recent(recent, observation):
+    """What became of the last goal sent, in the body's own words
+    (`observation.your_last_answer`), so a choice that never ran is not
+    remembered as one that did. A deferred one is read again next turn,
+    unless a new answer replaces it first (`supersede_recent`)."""
+    if not recent or not str(recent[-1].get("fate", "deferred")).startswith("deferred"):
+        return
+    last = observation.get("your_last_answer")
+    if not isinstance(last, dict) or not last.get("fate"):
+        return
+    fate = str(last["fate"])
+    if fate.startswith("not yours"):
+        fate = f"not played: the autopilot played {last.get('goal')}"
+        if last.get("why"):
+            fate += f" ({last['why']})"
+    recent[-1]["fate"] = fate
+
+
+def supersede_recent(recent):
+    """A new answer goes out while the last is still held back: the body
+    drops the held one for it, unless the held one already started while the
+    model was thinking. Only the newest answer's fate is read back, so the
+    held one's is worded as the body may have taken it either way."""
+    if recent and str(recent[-1].get("fate", "")).startswith("deferred"):
+        recent[-1]["fate"] = "replaced by your next answer, unless it had already started"
+
+
+def turn_content(request, recent, frame, notes, chat_log, strategy=None, died=False):
     turn = {
         "observation": request["observation"],
         "options": request["options"],
@@ -388,6 +418,8 @@ def turn_content(request, recent, frame, notes, chat_log, strategy=None):
         "notes": notes,
         "chat_log": list(chat_log),
     }
+    if died:
+        turn["since_last_turn"] = DIED_SINCE
     if request.get("memory"):
         turn["memory"] = request["memory"]
     strategy = request.get("strategy") or strategy
@@ -698,6 +730,19 @@ def post_share(caption, jpeg):
         return r.status
 
 
+def team_numbers_in(text):
+    """The numbers of one to four digits a team line carries, any of which
+    may be the team's lock code. A name opening the line (`Miller-3 follow
+    me`, the TEAM screen's order buttons) is skipped, the rule
+    `agent::orders::code` keeps: a first word with a letter in it and only
+    letters, digits and -_.' once :,!.?; are off its end."""
+    parts = str(text or "").split(None, 1)
+    if parts and re.fullmatch(r"[A-Za-z0-9_.'-]*[A-Za-z][A-Za-z0-9_.'-]*",
+                              re.sub(r"[:,!.?;]+$", "", parts[0])):
+        text = parts[1] if len(parts) > 1 else ""
+    return re.findall(r"(?<!\d)\d{1,4}(?!\d)", str(text or ""))
+
+
 def label(v):
     """A harness or model label as the platform takes one (1-48 of
     [A-Za-z0-9 ._:/@+-]), or None."""
@@ -796,6 +841,8 @@ class Triggers:
     def __init__(self):
         self.first = True
         self.deaths = None
+        # A death the tactician has not been told of yet (`since_last_turn`).
+        self.died = False
         self.attacked = False
         self.people = set()
         self.enemies_seen = {}
@@ -810,6 +857,7 @@ class Triggers:
         if isinstance(deaths, int):
             if self.deaths is not None and deaths > self.deaths:
                 why.append("you died")
+                self.died = True
             self.deaths = deaths
         home = obs.get("home") if isinstance(obs.get("home"), dict) else {}
         attacked = bool((request.get("team") or {}).get("home_attacked") or home.get("under_attack"))
@@ -998,10 +1046,11 @@ def main():
                 how = "heard (voice)" if h.get("voice") else "heard"
                 print(f"{how} {h['from']}: {h['text']}", file=sys.stderr)
                 if h.get("channel") == "team":
-                    team_numbers.update(re.findall(r"(?<!\d)\d{1,4}(?!\d)", h["text"]))
+                    team_numbers.update(team_numbers_in(h["text"]))
         if spend.out():
             print(json.dumps({"id": request["id"], "error": "out of credit"}), flush=True)
             continue
+        mark_recent(recent, request.get("observation") or {})
         why = triggers.check(request, time.time())
         if strategist.consider(request, digest, why):
             print("strategist thinks: " + "; ".join(why or ["timer"]), file=sys.stderr)
@@ -1017,8 +1066,10 @@ def main():
         voice = bool(request.get("voice"))
         system = tactician_system(brief, request, persona, voice, can_share)
         try:
-            answer = ask(system, turn_content(request, recent, frame, notes, chat_log, strategist.echo()),
+            answer = ask(system, turn_content(request, recent, frame, notes, chat_log, strategist.echo(),
+                                              triggers.died),
                          schema(can_share, voice))
+            triggers.died = False
             goal = answer["goal"]
             if (goal not in request["options"] and not walk_ok(goal, request["options"])
                     and not hold_ok(goal, request["options"])
@@ -1045,6 +1096,7 @@ def main():
             print(f"no decision: {e}", file=sys.stderr)
             print(json.dumps({"id": request["id"], "error": str(e)[:200]}), flush=True)
             continue
+        supersede_recent(recent)
         recent.append({"goal": goal, "said": say, "to": to, "spoke": speak})
         digest.append(digest_row(time.time(), goal, reason, say, to,
                                  [h for h in request.get("heard", []) if not h.get("me")],

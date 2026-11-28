@@ -211,6 +211,17 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
                 w.id
             ));
         }
+        // A thrown spear crosses the same head band, on its own blow.
+        if let Some(t) = &w.throw {
+            let head = t.damage * w.headshot_pct / 100;
+            if head >= hp {
+                return Err(format!(
+                    "band break: a thrown `{}` to the head does {head} and kills a naked \
+                     {hp}-hp body in one hit",
+                    w.id
+                ));
+            }
+        }
         if w.limb_pct != bands.limb_pct {
             return Err(format!(
                 "band break: limb pct on `{}` is {}, the band says exactly {}",

@@ -90,13 +90,30 @@ pub struct Bite {
 pub const BITE_S: f64 = 1.0;
 
 impl Bite {
-    /// May a mouthful go at `now`? Starts the clock when it does.
+    /// May a mouthful go at `now`? Starts the clock when it does, and a
+    /// refusal after it may be this mouthful's ([`WrapClock::settle`]).
+    ///
+    /// [`WrapClock::settle`]: crate::ui::wrap::WrapClock::settle
     pub fn take(&mut self, now: f64) -> bool {
         if self.last.is_some_and(|last| now - last < BITE_S) {
             return false;
         }
         self.last = Some(now);
+        self.wrap.settle();
         true
+    }
+}
+
+/// A heal on another player the sim refused (`REFUSE_C_FULL`: they were at
+/// full health) began no wrap, so the one its press started here is put
+/// away (`ui::wrap`): no arm, no countdown, and the hands free again.
+/// After the drain, so each frame's refusals are read once.
+pub fn wrap_refused(feed: Res<super::feed::Feed>, mut bite: ResMut<Bite>) {
+    if feed
+        .refusals()
+        .any(|(which, _, _)| which == super::feed::Refused::Consume)
+    {
+        bite.wrap.refused();
     }
 }
 
@@ -215,6 +232,7 @@ pub fn resolve(
     );
     let mut aim = Aim::new(x, z, fx, fz);
     aim.cols = Some(core.pieces.cols());
+    aim.own_bags = core.own_bags();
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
@@ -453,6 +471,25 @@ pub fn resolve(
         if !help.is_none() && (!aimed.0.aimed || help.d2 < aimed.0.d2) {
             aimed.0 = help;
         }
+        // A syringe or a bandage in hand offers `E` on a standing player
+        // too (`Verb::Heal`); a downed body stays the help up's.
+        let heal_item = core
+            .held_heal_slot()
+            .map(|slot| core.inv[slot as usize].item);
+        let heal = interact::resolve_heal(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+            heal_item,
+        );
+        interact::fold_heal(&mut aimed.0, heal);
         let sleeper = interact::resolve_sleeper(
             SwingAim {
                 x,
@@ -732,7 +769,14 @@ pub fn keys(
             Action::Demolish,
         ];
         if on(Action::Interact) && crate::ui::wounded::allows(aimed.0.verb) {
-            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+            use_aimed(
+                &mut net,
+                &aimed.0,
+                &mut toast,
+                ui.as_deref_mut(),
+                &mut bite,
+                now,
+            );
         } else if HAND_KEYS.iter().any(|&a| on(a))
             // The left click too: it places, eats, reads and repairs, and
             // the sim drops every one of those from a downed body unsaid.
@@ -798,7 +842,14 @@ pub fn keys(
         }
     }
     if on(Action::Interact) {
-        use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        use_aimed(
+            &mut net,
+            &aimed.0,
+            &mut toast,
+            ui.as_deref_mut(),
+            &mut bite,
+            now,
+        );
         if aimed.0.verb == Verb::Hearth {
             hearth.0 = Some((aimed.0.cx, aimed.0.cz, aimed.0.level));
         }
@@ -1058,7 +1109,14 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
 }
 
 /// Dispatch `E` on the resolved pick.
-fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>) {
+fn use_aimed(
+    net: &mut Net,
+    pick: &Pick,
+    toast: &mut Toast,
+    ui: Option<&mut Ui>,
+    bite: &mut Bite,
+    now: f64,
+) {
     match pick.verb {
         Verb::Swipe => {
             let door = pick.handle as u8;
@@ -1079,6 +1137,33 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 });
             }
         },
+        // A syringe or a bandage on a standing player: the treat verb, on
+        // the bite clock as the eat key is (`server::pace` paces both as a
+        // mouthful). A bandage is wrapped on in your hands, so its press
+        // starts the wrap the arm and the HUD draw, as one on yourself does
+        // (`use_slot`); the sim cancels it on the same switch of hands, and
+        // a refusal puts it away here (`wrap_refused`).
+        Verb::Heal => {
+            let core = &net.session.core;
+            let Some(slot) = core.held_heal_slot() else {
+                return;
+            };
+            let stack = core.inv[slot as usize];
+            let use_ticks = core.catalog.row(stack.item as usize).use_ticks;
+            if use_ticks > 0 && bite.wrap.progress(now).is_some() {
+                return;
+            }
+            if bite.take(now) {
+                let target = pick.handle;
+                let sent = send(net, toast, "heal", |buf| {
+                    protocol::encode_action_treat(slot, target, buf)
+                });
+                if sent && use_ticks > 0 {
+                    let secs = f64::from(use_ticks) / f64::from(sim_core::limits::TICK_HZ);
+                    bite.wrap.begin_on_other(now, secs, slot, stack.item);
+                }
+            }
+        }
         Verb::Door => {
             let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
             if send(net, toast, "use", |buf| {
@@ -1110,6 +1195,24 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         }
         // The rest of a circuit has nothing on `E`; the wire tool works it.
         Verb::Part => {}
+        // Your own sleeping bag: the TEAM screen opens with a GIVE BAG button
+        // by each teammate (Rust's assign bag); the press is `team::clicks`'.
+        // With nobody to give it to there is nothing to pick from, so say so.
+        Verb::SleepingBag => {
+            let core = &net.session.core;
+            if crate::ui::team::bag_takers(core.team(), core.player_id).is_empty() {
+                toast.warn(crate::ui::team::NO_BAG_TAKER);
+                return;
+            }
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Team;
+                    ui.bag_give = Some((pick.cx, pick.cz, pick.level));
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
         // A sleeper's pack opens like a bag; the server proves the reach.
         Verb::Sleeper => {
             let handle = pick.handle;

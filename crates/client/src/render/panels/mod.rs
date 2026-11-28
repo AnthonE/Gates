@@ -301,6 +301,11 @@ pub struct Ui {
     /// Whether the wheel's bets were open at the last look, so the panel
     /// redraws its BET buttons as the window turns.
     pub casino_open: bool,
+    /// The sleeping bag being given, `(cx, cz, level)`, while the TEAM screen
+    /// is up for it (`E` on your own bag, `verbs::use_aimed`): each
+    /// teammate's row carries a GIVE BAG button. Cleared when the screen
+    /// shuts (`team::clicks`), so `M` opens the plain screen.
+    pub bag_give: Option<(u16, u16, u8)>,
     /// Change detection against the core. A menu that rebuilt every frame
     /// would allocate a node tree per frame for a screen that changes when
     /// a player clicks — so the rebuild is driven by these snapshots, and
@@ -442,6 +447,7 @@ impl Default for Ui {
             wheel_stake: 2,
             casino_seq: (0, 0, 0),
             casino_open: false,
+            bag_give: None,
             seen: Seen::default(),
         }
     }
@@ -1595,10 +1601,12 @@ pub fn rebuild(
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
     who: Option<Res<super::screen::Who>>,
-    (card, friends, book): (
+    (card, friends, book, world): (
         Option<Res<super::profile::Profile>>,
         Option<Res<super::friends::Friends>>,
         Option<Res<super::contacts::Contacts>>,
+        // What stands at an open world container's cell (a vault's title).
+        Option<Res<super::WorldId>>,
     ),
 ) {
     let core = &net.session.core;
@@ -1632,6 +1640,7 @@ pub fn rebuild(
                 net.sel,
                 portrait.as_deref(),
                 hearth.as_ref().and_then(|h| h.0),
+                world.as_deref(),
             )
         }
         Panel::Craft => {

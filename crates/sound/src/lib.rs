@@ -573,11 +573,19 @@ pub enum Cue {
     /// reference's Nov 2026 "heartbeat sound when wounded". Yours alone, so
     /// not positional. Appended, the enum's append-order rule.
     Heartbeat,
+    /// A blow landing on you: [`Cue::FleshHit`]'s recording at your own
+    /// body (`render/audio.rs::hurt`). Its own row for the remote step's
+    /// reason the other way round: `FleshHit` is a blow on a body out in the
+    /// world, so positional, and a blow on you is an own-fact — both ears at
+    /// the row's gain, no pan, no falloff, a clock of its own, and never
+    /// heard by a film's camera (`film_hears`). Appended, the enum's
+    /// append-order rule.
+    FleshHitOwn,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 154;
+pub const CUE_COUNT: usize = 155;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -740,6 +748,7 @@ impl Cue {
         Cue::StepSnow,
         Cue::RemoteStepSnow,
         Cue::Heartbeat,
+        Cue::FleshHitOwn,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -852,6 +861,7 @@ impl Cue {
             | Cue::BulletWood
             | Cue::BulletMetal
             | Cue::FleshHit
+            | Cue::FleshHitOwn
             | Cue::Collapse
             | Cue::CollapseWood
             | Cue::Knock
@@ -1418,6 +1428,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your heart while down: on the game bus, so turning the scenery down
     // keeps it; under a shot's level, and a cooldown under its beat.
     row(GAME,  0.0, 0.55, 300, 6, false),  // heartbeat
+    // A blow on you: the flesh hit's gain and clock, at your own body, and
+    // Hurt's rank, which it replaced — a player who cannot hear that they
+    // are being hit has lost the round to the mixer.
+    row(GAME,  0.0, 0.70,  30, 7, false),  // flesh hit, yours
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).
@@ -1677,8 +1691,12 @@ pub struct SnapshotDef {
 ///
 /// Real submerged audio is a steep low-pass: the top end goes. One-shots get
 /// it — the engine's one pole, at `engine::lp_under` of the fade — and the
-/// beds and loops, which run unfiltered, are ducked and crossfaded to one
-/// *generated* dark (`synth::under`) instead.
+/// beds are ducked and crossfaded to one *generated* dark (`synth::under`).
+/// The beds that survive the crossfade, the surf and the heli's rotor, take
+/// the same `lp_under` on their held slots (`Cmd::Place`, folded with
+/// `engine::darker` into the rotor's own distance filter), so the sea's top
+/// end and the blades' slap do not come through the water untouched. The
+/// generated dark is not filtered again, and music is not in the world.
 pub const SNAPSHOTS: [SnapshotDef; 2] = [
     // Above.
     SnapshotDef {

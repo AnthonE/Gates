@@ -407,6 +407,138 @@ fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
     }
 }
 
+/// A cell a foundation can go on, and a bearing from its middle over dry
+/// ground nothing stands on for `r` metres: where a wolf can be stood off
+/// from a base going up and walk in to look. Searched in rings out from the
+/// build scan's hint, the one every build suite starts from.
+fn build_site(r: f32) -> ((u16, u16), (f32, f32)) {
+    use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M};
+    let h = hv(SEED);
+    let mut scratch = sim_core::occupy::Scratch::live(SEED);
+    let mut occ = scratch.occupants();
+    let (hx, hz) = sim_core::find::build_hint(SEED, 512, 512);
+    for ring in 0..64i32 {
+        for dz in -ring..=ring {
+            for dx in -ring..=ring {
+                if dx.abs() != ring && dz.abs() != ring {
+                    continue;
+                }
+                let (cx, cz) = ((hx + dx) as u16, (hz + dz) as u16);
+                let at = (
+                    (cx as f32 + 0.5) * BUILD_CELL_M,
+                    (cz as f32 + 0.5) * BUILD_CELL_M,
+                );
+                if !foundation_terrain_ok(SEED, h, at.0, at.1) {
+                    continue;
+                }
+                let open = (0..16u16)
+                    .map(|k| sim_core::yaw_dir(k << 12))
+                    .find(|&(bx, bz)| {
+                        (1..=r as u32).all(|i| {
+                            let (x, z) = (at.0 + bx * i as f32, at.1 + bz * i as f32);
+                            let feet = sim_core::terrain::ground(SEED, h, x, z);
+                            sim_core::terrain::height(SEED, x, z) > sim_core::terrain::BEACH_MAX_H
+                                && !occ.blocks(SEED, x, z, feet)
+                        })
+                    });
+                if let Some(b) = open {
+                    return ((cx, cz), b);
+                }
+            }
+        }
+    }
+    panic!("no buildable cell with open ground round it");
+}
+
+/// Light a work past act II: THE SEVERED GATE is open, and its effect
+/// rouses the island — every notice radius at `pct` per cent
+/// (`works::KNOB_NOTICE_PCT`, the shipped arc's 150).
+fn open_gate(w: &mut World, pct: u16) {
+    use sim_core::works::{ArcEffect, WorksContent, KNOB_NOTICE_PCT, WORK_LIT};
+    let mut wc = WorksContent::EMPTY;
+    wc.count = 1;
+    wc.defs[0].act = 3;
+    wc.defs[0].floor = 1;
+    wc.n_effects = 1;
+    wc.effects[0] = ArcEffect {
+        unlock: 1,
+        knob: KNOB_NOTICE_PCT,
+        pct,
+    };
+    w.works_def = wc;
+    w.works.w[0].state = WORK_LIT;
+    w.works.refresh(&w.works_def);
+    assert!(w.works.gate_open(&w.works_def), "the Gate is not open");
+    assert_eq!(w.notice_pct(), pct as u32);
+}
+
+/// **A hammer is heard** (`noise.rs`): a foundation going up is a strike at
+/// its cell's middle, heard at every species' strike range (the fixture's
+/// and the shipped rows' 25 m). The wolf here sees no further than 5 m, so
+/// whatever it does it heard. 20 m off it goes to look; 30 m off it hears
+/// nothing — until a work past act II is lit and the open Gate rouses the
+/// island, and then the same hammer carries half as far again (37.5 m),
+/// which is what the counting speaker promises. The control is the wolf at
+/// 20 m and nobody building.
+#[test]
+fn a_wolf_hears_a_base_going_up_and_from_further_once_the_gate_opens() {
+    use sim_core::build::{BuildContent, LOC_PLANE};
+    use sim_core::movement::quant_xz;
+    use sim_core::world::EV_PIECE_PLACED;
+    let [wolf, _, _] = free_pack();
+    let ((cx, cz), (bx, bz)) = build_site(32.0);
+    let at = sim_core::build::anchor(cx, cz, LOC_PLANE);
+    let base = (quant_xz(at.0), quant_xz(at.1));
+    let mut mc = MobContent::probe_fixture();
+    mc.defs[MOB_WOLF as usize].spook_cm = 500;
+    mc.defs[MOB_WOLF as usize].night_spook_cm = 500;
+
+    // (heard the base, went to look) for a wolf `r` metres off.
+    let run = |r: f32, build: bool, gate: bool| -> (bool, bool) {
+        let mut w = world_in(mc, Some(at), &[(wolf, bx * r, bz * r)]);
+        w.build = BuildContent::probe_fixture();
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 50,
+            ..ItemStack::EMPTY
+        };
+        if gate {
+            open_gate(&mut w, 150);
+        }
+        if build {
+            w.tick(&[Command::Place {
+                id: 1,
+                row: 0,
+                cx,
+                cz,
+                level: 0,
+                loc: LOC_PLANE,
+                freehand: false,
+                plate: 0,
+            }]);
+            assert!(
+                w.events.entries().iter().any(|e| e.code == EV_PIECE_PLACED),
+                "the foundation did not go up"
+            );
+        }
+        let (mut heard, mut looked) = (false, false);
+        hold(&mut w, 0, 4 * MOB_THINK_TICKS as u32, |w| {
+            let m = &w.mobs.m[wolf];
+            heard |= (m.poi_qx, m.poi_qz) == base && m.poi_until > w.tick;
+            looked |= m.state == AiState::MoveTowards;
+        });
+        (heard, looked)
+    };
+    assert_eq!(run(20.0, false, false), (false, false), "nobody built");
+    assert_eq!(run(20.0, true, false), (true, true), "20 m off, Gate shut");
+    assert_eq!(
+        run(30.0, true, false),
+        (false, false),
+        "30 m off, Gate shut"
+    );
+    assert_eq!(run(30.0, true, true), (true, true), "30 m off, Gate open");
+}
+
 /// **Out of combat, a wound heals** — after a minute unstruck with nobody
 /// remembered, and not a tick before. A pig that got away comes back
 /// whole, which is the reference's reworked wolf.

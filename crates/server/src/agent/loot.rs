@@ -62,8 +62,10 @@ pub enum Prize {
 impl Prize {
     /// The roadside junk too: an oil barrel and a road sign come apart under
     /// a swing like a barrel (`gather::SMASHABLES`), and a food box opens
-    /// like a crate (`worldcont::table_of`).
-    pub fn of(occupant: Occupant) -> Option<Prize> {
+    /// like a crate (`worldcont::table_of`). A landmark's vault opens like a
+    /// crate once THE SEVERED GATE is open (`gate_open`, what
+    /// `client_core::arc::ArcView::gate_open` reads).
+    pub fn of(occupant: Occupant, gate_open: bool) -> Option<Prize> {
         match occupant {
             Occupant::BarrelSlot | Occupant::OilBarrel | Occupant::RoadSign => Some(Prize::Barrel),
             Occupant::CrateSlot
@@ -73,8 +75,9 @@ impl Prize {
             | Occupant::EliteCrate
             | Occupant::FoodCrate => Some(Prize::Crate),
             // A sealed vault refuses everyone until THE SEVERED GATE opens
-            // (`works::gate_open_of`): a run would walk to a shut door.
-            Occupant::Vault => None,
+            // (`works::gate_open_of`): before that a run would walk to a
+            // shut door.
+            Occupant::Vault => gate_open.then_some(Prize::Crate),
             _ => None,
         }
     }
@@ -462,6 +465,17 @@ mod tests {
             },
             prize,
             seen,
+        }
+    }
+
+    #[test]
+    fn a_vault_is_a_crate_once_the_gate_is_open() {
+        assert_eq!(Prize::of(Occupant::Vault, false), None, "sealed");
+        assert_eq!(Prize::of(Occupant::Vault, true), Some(Prize::Crate));
+        for open in [false, true] {
+            assert_eq!(Prize::of(Occupant::CrateSlot, open), Some(Prize::Crate));
+            assert_eq!(Prize::of(Occupant::BarrelSlot, open), Some(Prize::Barrel));
+            assert_eq!(Prize::of(Occupant::Tree, open), None);
         }
     }
 

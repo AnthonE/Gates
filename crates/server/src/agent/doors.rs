@@ -544,6 +544,37 @@ pub fn nearest_door(
     best.map(|b| b.1)
 }
 
+/// Doors whose doorways stand within `within` of `around`, on any storey:
+/// what a bug report's trace counts round a goal that came to nothing
+/// (`agent::trace`).
+pub fn doors_near(core: &ClientCore, around: [f32; 2], within: f32) -> u8 {
+    let have = core.deploy_defs_have.min(core.deploy_defs.def_count);
+    let n = core
+        .deploys
+        .entries()
+        .iter()
+        .filter(|d| {
+            u16::from(d.row) < have
+                && matches!(
+                    core.deploy_defs.defs[usize::from(d.row)].arch,
+                    ARCH_DOOR | ARCH_GARAGE_DOOR
+                )
+                && sim_core::deploy::is_edge_loc(d.loc)
+        })
+        .filter(|d| {
+            let at = OpAddr {
+                cx: d.cx,
+                cz: d.cz,
+                level: d.level,
+                loc: d.loc,
+            };
+            let ([ax, az], _) = doorway(core.pieces.cols(), at);
+            (ax - around[0]).hypot(az - around[1]) <= within
+        })
+        .count();
+    n.min(usize::from(u8::MAX)) as u8
+}
+
 /// The storey a door hangs on: its address's, or for a doorway the grid
 /// cannot name, the doorway piece's — the address spells its id, level bits
 /// and all. `None` for a door whose doorway the mirror does not hold.

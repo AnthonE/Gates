@@ -1800,8 +1800,12 @@ pub struct TapePointInk(usize);
 
 /// A map mark riding the marker row (Rust pins your marks to the compass):
 /// its badge in the mark's colour and its three characters and distance.
+/// Slots `0..PINS_MAX` are your own; the last is your team's nearest
+/// (v157), in the team's green.
 #[derive(Component)]
 pub struct PinMark(usize);
+/// The marker row's mark slots: your own, and the team's nearest.
+const COMPASS_PINS: usize = crate::ui::map::PINS_MAX + 1;
 #[derive(Component)]
 pub struct PinMarkBadge(usize);
 #[derive(Component)]
@@ -2716,7 +2720,8 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
             Pickable::IGNORE,
         ))
         .with_children(|row| {
-            for i in 0..crate::ui::map::PINS_MAX {
+            // Your marks, then one more: the nearest of your team's (v157).
+            for i in 0..COMPASS_PINS {
                 row.spawn((
                     PinMark(i),
                     Node {
@@ -3434,6 +3439,20 @@ pub fn feedback(
         let who = crate::ui::names::shown(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
+    // Another player healed us standing (wire v157): who. A downed body
+    // helped up is told it got up instead (`Recovered`).
+    for &(by, _item) in feed.healed_by() {
+        toast.say(crate::ui::interact::healed_by_line(core, by));
+    }
+    // And the healer whom: their "used" line names only the item.
+    for &(to, _item) in feed.heals_given() {
+        toast.say(crate::ui::interact::healed_line(core, to));
+    }
+    // A teammate gave us a sleeping bag (wire v157): who. The bag itself
+    // is on the death screen and the map already.
+    for &by in feed.bags_given() {
+        toast.say(crate::ui::team::bag_given_line(core, by));
+    }
 
     // A blueprint learned — the research verbs' LANDED half, whose refused
     // half is the `Refused::Research` arm above. `Feed::learned` had no reader
@@ -4085,6 +4104,12 @@ pub fn prompt(
                 "[E] INJECT {}",
                 crate::ui::craft::item_label(&net.session.core.catalog, item).to_uppercase()
             )
+        } else if aimed.0.verb == crate::ui::interact::Verb::Heal {
+            // The one `E` line that names a person, so it is composed here
+            // where the names are (`ui::names`), as the give key's is.
+            let core = &net.session.core;
+            let who = crate::ui::names::shown(core, aimed.0.handle);
+            crate::ui::interact::heal_prompt(&core.catalog, aimed.0.item, &who)
         } else {
             match aimed.0.prompt(&net.session.core.catalog) {
                 // A kiosk names its stall, so six counters are six shops
@@ -4287,7 +4312,9 @@ pub fn compass(
 /// Your map marks on the compass's marker row, the way the reference pins
 /// them: the mark's colour at its bearing, its label's three characters (or
 /// its number) and how far. Dimmed and held at the nearer end while it is
-/// behind you, as the death marker is.
+/// behind you, as the death marker is. After them, the nearest of your
+/// team's marks (v157), in the team's green, with its label's three
+/// characters or the mate's initial.
 #[allow(clippy::type_complexity)]
 pub fn compass_pins(
     net: NonSend<super::Net>,
@@ -4301,12 +4328,26 @@ pub fn compass_pins(
     let [x, _, z] = core.predict.render_position();
     let facing = crate::look::bearing_deg(look.yaw);
     let pins = pins.as_ref().map(|p| &p.0);
+    let team = crate::ui::map::TeamPins::gather(core.team_pins(), core.player_id)
+        .nearest(x, z)
+        .map(|(p, _)| p);
+    // The mark in slot `i`: where it rides, how it looks, and whose — 0 for
+    // your own.
     let mark = |i: usize| {
+        if i == crate::ui::map::PINS_MAX {
+            let p = team?;
+            return Some((
+                crate::ui::death::compass_mark(facing, (x, z), p.at),
+                p.style,
+                p.owner,
+            ));
+        }
         let p = pins?;
         let &to = p.marks().get(i)?;
         Some((
             crate::ui::death::compass_mark(facing, (x, z), to),
             p.style(i),
+            0,
         ))
     };
     for (pin, mut node, mut vis) in &mut marks {
@@ -4319,7 +4360,7 @@ pub fn compass_pins(
         if *vis != want {
             *vis = want;
         }
-        if let Some((m, _)) = m {
+        if let Some((m, _, _)) = m {
             let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
             if node.left != left {
                 node.left = left;
@@ -4327,24 +4368,32 @@ pub fn compass_pins(
         }
     }
     for (pin, mut bg) in &mut badges {
-        let Some((m, style)) = mark(pin.0) else {
+        let Some((m, style, owner)) = mark(pin.0) else {
             continue;
         };
-        let [r, g, b] = style.rgb();
         let alpha = if m.off_row { 0.45 } else { 1.0 };
-        let want = Color::srgba_u8(r, g, b, (alpha * 255.0) as u8);
+        let want = if owner != 0 {
+            super::team::MATE_INK.with_alpha(alpha)
+        } else {
+            let [r, g, b] = style.rgb();
+            Color::srgba_u8(r, g, b, (alpha * 255.0) as u8)
+        };
         if bg.0 != want {
             bg.0 = want;
         }
     }
     for (pin, mut text, mut ink) in &mut texts {
-        let Some((m, style)) = mark(pin.0) else {
+        let Some((m, style, owner)) = mark(pin.0) else {
             continue;
         };
         let d = crate::ui::death::short_distance(m.dist_m);
-        let want = match style.compass_label() {
-            "" => format!("{} {d}", pin.0 + 1),
-            l => format!("{l} {d}"),
+        let want = match (style.compass_label(), owner) {
+            ("", 0) => format!("{} {d}", pin.0 + 1),
+            ("", owner) => {
+                let who = crate::ui::names::shown(core, owner);
+                format!("{} {d}", crate::ui::map::mate_initial(&who))
+            }
+            (l, _) => format!("{l} {d}"),
         };
         if text.0 != want {
             text.0 = want;

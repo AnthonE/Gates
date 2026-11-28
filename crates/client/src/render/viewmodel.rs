@@ -2619,9 +2619,17 @@ pub fn animate(
     // A crossbow or a revolver is fired, not swung: it kicks on each shot
     // the sim reports as this player's, and never chops.
     let shoots = def.is_some_and(|d| d.stroke == Stroke::Shot);
+    // A spear wound up to throw takes no swing: the click throws it
+    // (`ranged::hurl`), so the arm does not chop either.
+    let hurling = net.as_deref().is_some_and(|n| {
+        let c = &n.session.core;
+        c.buttons() & sim_core::input::BTN_AIM != 0
+            && crate::ui::hold::hurl_in_hand(&c.catalog, &c.inv, n.sel)
+    });
     // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
     let swinging = bow.is_none()
         && !shoots
+        && !hurling
         && net
             .as_deref()
             .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
@@ -2696,6 +2704,23 @@ pub fn animate(
     // is held whatever the other term says, or a swing the feed happened to
     // draw would leave the predictor's window unspent and the next one would
     // come early.
+    //
+    // A spear wound up pushes the same clock (`ranged::hurl`): its windup on
+    // the aim's first tick, a swing's interval on the throw. Mirrored every
+    // frame, so the aim's first tick is seen and the click after a throw or
+    // an aborted windup is refused here as the sim refuses it.
+    let windup = net.as_deref().map_or(0, |n| {
+        let c = &n.session.core;
+        c.inv
+            .get(n.sel as usize)
+            .filter(|s| s.count > 0)
+            .map_or(0, |s| c.catalog.row(s.item as usize).hurl_ticks)
+    });
+    let primary = net
+        .as_deref()
+        .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
+    m.cadence
+        .hurl(hurling, primary, feed.server_tick_est, windup);
     let predicted = m.cadence.poll(swinging, feed.server_tick_est);
     // The backstop, and the `<= 0.0` is the whole of it: a landed hit
     // arrives about a round trip into a stroke the prediction already
@@ -2711,7 +2736,10 @@ pub fn animate(
     let own_swing = net
         .as_deref()
         .is_some_and(|n| feed.swings().contains(&n.session.core.player_id));
-    let landed_at_rest = bow.is_none() && !shoots && m.swing <= 0.0 && (feed.hits > 0 || own_swing);
+    // A thrown spear's hit is the spear's, and the hand that threw it is
+    // usually empty by then: taken for a missed swing, it punched.
+    let melee_hit = feed.hits > 0 && !m.cadence.spear_aloft(feed.server_tick_est);
+    let landed_at_rest = bow.is_none() && !shoots && m.swing <= 0.0 && (melee_hit || own_swing);
     // A queued stroke only starts from rest, like the backstop.
     let queued = std::mem::take(&mut m.queued) && m.swing <= 0.0;
     if predicted || landed_at_rest || queued {

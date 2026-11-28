@@ -3577,6 +3577,7 @@ fn shard(name: &str, players: Option<u32>) -> Listing {
         players,
         max_players: Some(100),
         ping_ms: Some(20),
+        ping_samples: [None; servers::PING_SAMPLES],
         status_url: None,
         alt_addrs: Vec::new(),
         proto: None,
@@ -3967,6 +3968,97 @@ fn a_poll_rewrites_the_count_and_the_direct_row_takes_none() {
     assert!(!direct.apply_status(&st));
     assert_eq!(direct.population(), "?", "never a count nobody published");
     assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn ping_is_the_least_of_the_last_three_round_trips() {
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    assert_eq!(row.ping(), "?", "nothing measured is never a number");
+    assert!(row.apply_ping(40), "the first sample is news");
+    assert_eq!(row.ping(), "40");
+    assert!(row.apply_ping(30));
+    assert!(
+        !row.apply_ping(90),
+        "a spike under a lower sample is not shown"
+    );
+    assert_eq!(row.ping(), "30");
+    assert!(!row.apply_ping(35));
+    // 30 is now three samples old and drops out: 90, 35, 50 leave 35.
+    assert!(
+        row.apply_ping(50),
+        "the floor rose once its sample aged out"
+    );
+    assert_eq!(row.ping(), "35");
+
+    let mut direct = Listing::direct("127.0.0.1:4433");
+    assert!(!direct.apply_ping(5), "the Direct row times nothing");
+    assert_eq!(direct.ping(), "?");
+}
+
+#[test]
+fn a_ping_is_timed_only_on_the_games_own_host() {
+    let t = servers::ping_target;
+    let at = |h: &str, p: u16| Some((h.to_string(), p));
+    // The status endpoint on the game's host, the port from the scheme or the
+    // url; the game's own port never has to match.
+    assert_eq!(
+        t(
+            "https://game.elopros.com/gates/status.json",
+            "game.elopros.com:61234"
+        ),
+        at("game.elopros.com", 443)
+    );
+    assert_eq!(
+        t("http://Game.Example.:8431/status.json", "game.example:4433"),
+        at("game.example", 8431)
+    );
+    assert_eq!(
+        t("http://10.0.0.7/status.json?x=1", "10.0.0.7:4433"),
+        at("10.0.0.7", 80)
+    );
+    // IPv6 literals by value, handed back unbracketed for the resolver.
+    assert_eq!(
+        t("http://[::1]:8431/status.json", "[0:0::1]:4433"),
+        at("::1", 8431)
+    );
+    // Another machine would time that machine: `?` stays.
+    for (url, addr) in [
+        ("https://status.example/s.json", "game.example:4433"),
+        ("https://game.example.evil/s.json", "game.example:4433"),
+        ("http://[::2]:8431/status.json", "[::1]:4433"),
+        ("http://127.0.0.1:8431/status.json", "localhost:4433"),
+        // Garbage on either side.
+        ("ftp://game.example/s.json", "game.example:4433"),
+        ("game.example/status.json", "game.example:4433"),
+        ("https:///status.json", "game.example:4433"),
+        ("http://game.example:99999/s.json", "game.example:4433"),
+        ("http://game.example:x/s.json", "game.example:4433"),
+        ("http://u@game.example/s.json", "game.example:4433"),
+        ("https://game.example/s.json", "game.example/x:4433"),
+        ("https://game.example/s.json", ""),
+    ] {
+        assert_eq!(t(url, addr), None, "{url} against {addr}");
+    }
+}
+
+#[test]
+fn among_equal_counts_the_nearer_shard_goes_first() {
+    let mut rows = vec![
+        shard("a", Some(5)),
+        shard("b", Some(5)),
+        shard("c", Some(5)),
+    ];
+    rows[0].ping_ms = None;
+    rows[1].ping_ms = Some(80);
+    rows[2].ping_ms = Some(12);
+    rows.push(shard("busy", Some(9)));
+    rows[3].ping_ms = Some(300);
+    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default(), &[]);
+    assert_eq!(
+        names(&rows, &shown),
+        ["busy", "c", "b", "a"],
+        "the count first, then the ping, unmeasured last"
+    );
 }
 
 #[test]
@@ -7883,9 +7975,156 @@ fn a_counting_work_leads_the_banner_and_says_when_it_opens() {
     );
     assert_eq!(
         event_line(&a, 1, WORK_EV_LIT as u8, None).as_deref(),
-        Some("THE SEVERED GATE HAS OPENED"),
+        Some("THE SEVERED GATE HAS OPENED — the landmarks' vaults are unsealed"),
         "a work with no tank opens rather than burns"
     );
+}
+
+/// Every act-II work lit and the Gate open: the banner follows the tank
+/// burning lowest, not the Gate (whose tankless 0% would hold it for the
+/// rest of the wipe). The Gate leads only when nothing else is lit.
+#[test]
+fn the_open_gate_gives_the_banner_back_to_the_lowest_tank() {
+    use client::ui::arc::{banner, focus};
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_LIT, WORK_SEALED};
+    let mut a = ArcView {
+        count: 4,
+        ..ArcView::default()
+    };
+    let rows: [(&[u8], u8, u32, u32); 4] = [
+        (b"THE FORGE", 2, 1000, 500),
+        (b"THE CRUCIBLE", 2, 1000, 100),
+        (b"THE LANTERN", 2, 1000, 800),
+        (b"THE SEVERED GATE", 3, 0, 0),
+    ];
+    for (w, (name, act, fuel_max, fuel)) in a.works.iter_mut().zip(rows) {
+        w.known = true;
+        w.synced = true;
+        w.state = WORK_LIT;
+        w.def.act = act;
+        w.def.fuel_max = fuel_max;
+        w.fuel = fuel;
+        w.name[..name.len()].copy_from_slice(name);
+        w.name_len = name.len() as u8;
+    }
+    let b = banner(&a, 0.0).expect("a banner");
+    assert_eq!(b.title, "ACT III · THE GATE");
+    assert_eq!(b.line, "THE CRUCIBLE · BURNING · tank 10%");
+    assert_eq!(b.pm, Some(100));
+
+    // A tank run dry is the lowest of all.
+    a.works[2].fuel = 0;
+    assert_eq!(focus(&a).map(|(i, _)| i), Some(2));
+    assert_eq!(
+        banner(&a, 0.0).expect("a banner").line,
+        "THE LANTERN · EMBERS · its tank is dry"
+    );
+
+    // With nothing else lit, the open Gate has it.
+    for w in a.works.iter_mut().take(3) {
+        w.state = WORK_SEALED;
+        w.known = false;
+    }
+    assert_eq!(focus(&a).map(|(i, _)| i), Some(3));
+    assert_eq!(
+        banner(&a, 0.0).expect("a banner").line,
+        "THE SEVERED GATE · OPEN · for the rest of the wipe"
+    );
+}
+
+/// The Gate opening, by quota or on its own hour, says the vaults are
+/// unsealed; a tankless work before act III and a tanked one do not.
+#[test]
+fn the_gate_opening_says_the_vaults_are_unsealed() {
+    use client::ui::arc::{event_line, VAULTS_CLAUSE};
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_EV_FALLBACK, WORK_EV_LIT};
+    let mut a = ArcView {
+        count: 3,
+        ..ArcView::default()
+    };
+    let rows: [(&[u8], u8, u32); 3] = [
+        (b"THE SEVERED GATE", 3, 0),
+        (b"THE DOOR", 2, 0),
+        (b"THE CRUCIBLE", 2, 1000),
+    ];
+    for (w, (name, act, fuel_max)) in a.works.iter_mut().zip(rows) {
+        w.known = true;
+        w.def.act = act;
+        w.def.fuel_max = fuel_max;
+        w.name[..name.len()].copy_from_slice(name);
+        w.name_len = name.len() as u8;
+    }
+    assert_eq!(
+        event_line(&a, 0, WORK_EV_LIT as u8, Some("ana")).as_deref(),
+        Some("THE SEVERED GATE HAS OPENED — the landmarks' vaults are unsealed")
+    );
+    assert_eq!(
+        event_line(&a, 0, WORK_EV_FALLBACK as u8, None).as_deref(),
+        Some("THE SEVERED GATE HAS OPENED ON ITS OWN — the landmarks' vaults are unsealed")
+    );
+    assert_eq!(
+        event_line(&a, 1, WORK_EV_LIT as u8, None).as_deref(),
+        Some("THE DOOR HAS OPENED")
+    );
+    let tanked = event_line(&a, 2, WORK_EV_LIT as u8, None).expect("a line");
+    assert!(!tanked.contains(VAULTS_CLAUSE), "{tanked}");
+}
+
+/// An opened world container is titled by what stands at its cell: a
+/// landmark's vault says VAULT, not CRATE.
+#[test]
+fn a_world_container_is_titled_by_what_stands_there() {
+    use client::ui::slots::{container_title, world_container_title};
+    use sim_core::inventory::CONT_WORLD;
+    use sim_core::terrain::Occupant;
+    assert_eq!(world_container_title(Occupant::Vault), "VAULT");
+    assert_eq!(world_container_title(Occupant::EliteCrate), "ELITE CRATE");
+    assert_eq!(world_container_title(Occupant::FoodCrate), "FOOD BOX");
+    assert_eq!(world_container_title(Occupant::CacheSlot), "CACHE");
+    assert_eq!(world_container_title(Occupant::GreenCrate), "GREEN CRATE");
+    assert_eq!(world_container_title(Occupant::BlueCrate), "BLUE CRATE");
+    for o in [Occupant::CrateSlot, Occupant::None] {
+        assert_eq!(world_container_title(o), container_title(CONT_WORLD));
+        assert_eq!(world_container_title(o), "CRATE");
+    }
+}
+
+/// The `[E] OPEN` prompt names a world container by the panel's own title,
+/// for every occupant that opens one: the prompt said OPEN CRATE over a
+/// panel titled CACHE, FOOD BOX or VAULT until both read one function.
+#[test]
+fn a_world_containers_prompt_names_what_its_panel_says() {
+    use client::ui::interact::{Pick, Verb};
+    use client::ui::slots::world_container_title;
+    use protocol::event::ItemCatalog;
+    use sim_core::limits::MAX_LOOT_TABLES;
+    use sim_core::terrain::Occupant;
+    use sim_core::worldcont::{occupant_of, table_of};
+    let mut seen = 0;
+    for table in 0..MAX_LOOT_TABLES {
+        let o = occupant_of(table);
+        if o == Occupant::None {
+            continue;
+        }
+        assert_eq!(table_of(o), Some(table), "{o:?}");
+        let p = Pick {
+            verb: Verb::Crate,
+            occupant: o as u8,
+            // The Gate is open, so a vault opens rather than saying SEALED.
+            lit: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            p.prompt(&ItemCatalog::EMPTY),
+            format!("[E] OPEN {}", world_container_title(o)),
+            "{o:?}"
+        );
+        seen += 1;
+    }
+    // Crate, cache, green, blue, elite, food box, vault.
+    assert_eq!(seen, 7);
 }
 
 /// A landmark's vault says SEALED until THE SEVERED GATE is open, and then

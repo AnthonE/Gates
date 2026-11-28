@@ -16,7 +16,7 @@
       "type": "object", "additionalProperties": false, "required": ["invite_from", "teammates", "near"],
       "properties": {
         "invite_from": {"type": ["string", "null"]},
-        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k> and give:m<k>:<item> name the kth (from 1)."},
+        "teammates": {"type": "array", "items": {"type": "string"}, "description": "follow:m<k>, reach:m<k>, give:m<k>:<item>, heal:m<k>, revive:m<k> and give_bag:m<k> name the kth (from 1)."},
         "near": {"type": "array", "items": {"type": "string"}, "description": "Strangers whose nametag this body aimed at within 8 m in the last minute; follow:n<k> names the kth (from 1)."}
       }
     },
@@ -47,10 +47,11 @@
     },
     "places": {
       "type": "object", "additionalProperties": false,
-      "required": ["the_gate", "works", "stones", "locks", "ziggurat_doors"],
+      "required": ["the_gate", "works", "vaults", "stones", "locks", "ziggurat_doors"],
       "properties": {
         "the_gate": {"$ref": "#/$defs/place_or_null"},
         "works": {"type": "array", "items": {"$ref": "#/$defs/work"}},
+        "vaults": {"type": "string", "description": "Whether the landmarks' steel vault doors are sealed or open: they open with THE SEVERED GATE."},
         "stones": {
           "type": "object", "additionalProperties": false,
           "required": ["read", "known", "nearest_unread", "glyphs_i_read"],
@@ -82,6 +83,12 @@
       "properties": {"name": {"type": "string"}, "count": {"type": "integer"}}
     },
     "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "need": {
+      "type": "object", "additionalProperties": false, "required": ["name", "count", "costs", "you_carry", "boxed"],
+      "description": "One thing the base's next step is short of: count is costs less you_carry (in the pack) less boxed (in its box).",
+      "properties": {"name": {"type": "string"}, "count": {"type": "integer"}, "costs": {"type": "integer"},
+                     "you_carry": {"type": "integer"}, "boxed": {"type": "integer"}}
+    },
     "sighting": {
       "type": "object", "additionalProperties": false, "required": ["count"],
       "description": "How many of a thing it can see; the nearest one's metres and bearing when there is one.",
@@ -89,6 +96,17 @@
         "count": {"type": "integer"},
         "nearest_m": {"type": "integer"},
         "bearing": {"$ref": "#/$defs/bearing"}
+      }
+    },
+    "death_backpack": {
+      "type": "object", "additionalProperties": false, "required": ["count"],
+      "description": "The backpack its last death dropped, while it stands: a sighting, and, until the backpack is gone or got back, what the pack held when it died and how long ago. A backpack of common things rots in about 5 minutes.",
+      "properties": {
+        "count": {"type": "integer"},
+        "nearest_m": {"type": "integer"},
+        "bearing": {"$ref": "#/$defs/bearing"},
+        "held_at_death": {"$ref": "#/$defs/items", "description": "The pack's heaviest kinds when it died, at most 3. Not what it carries now: that is `pack`."},
+        "died_ago_s": {"type": "integer"}
       }
     },
     "place": {
@@ -215,9 +233,10 @@
     "observation": {
       "type": "object", "additionalProperties": false,
       "required": ["body", "health", "food", "water", "condition", "pack", "craftable_now", "in_view", "water_nearby",
-                   "threats", "last_fight", "last_goal", "current_goal", "hits_taken_since_last_decision",
+                   "threats", "last_fight", "last_goal", "current_goal", "recent_goals", "your_last_answer",
+                   "hits_taken_since_last_decision",
                    "deaths", "respawns", "sleeping_bags_down", "my_death_backpack", "home",
-                   "a_sleeping_bag_is_ready", "night", "base_next", "stations", "loot_known", "loot_place",
+                   "a_sleeping_bag_is_ready", "night", "base_next", "stations", "repair_would_mend", "loot_known", "loot_place",
                    "raid_targets", "raid_owner", "my_box", "cupboard_needs_feeding", "team", "team_home_holds", "asked_because",
                    "failed_lately"],
       "properties": {
@@ -269,23 +288,40 @@
           "type": ["object", "null"], "additionalProperties": false,
           "properties": {"goal": {"type": "string"}, "gained": {"type": "number"}, "seconds": {"type": "number"}}
         },
+        "recent_goals": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["goal", "outcome", "why", "gained", "seconds", "by"],
+            "properties": {
+              "goal": {"type": "string"}, "outcome": {"type": "string"}, "why": {"type": ["string", "null"]},
+              "gained": {"type": "number"}, "seconds": {"type": "number"}, "by": {"enum": ["you", "autopilot", "body"]}
+            }
+          }
+        },
+        "your_last_answer": {
+          "type": ["object", "null"], "additionalProperties": false,
+          "required": ["goal", "fate", "why"],
+          "properties": {"goal": {"type": "string"}, "fate": {"type": "string"}, "why": {"type": ["string", "null"]}}
+        },
         "hits_taken_since_last_decision": {"type": "integer"},
         "deaths": {"type": "integer"},
         "respawns": {"type": "integer"},
         "sleeping_bags_down": {"type": "integer"},
-        "my_death_backpack": {"$ref": "#/$defs/sighting"},
+        "my_death_backpack": {"$ref": "#/$defs/death_backpack"},
         "home": {"$ref": "#/$defs/home"},
         "a_sleeping_bag_is_ready": {"type": "boolean"},
         "night": {"type": "boolean"},
         "base_next": {
           "type": "object", "additionalProperties": false, "required": ["milestone", "missing", "raw", "waiting_on_work"],
-          "properties": {"milestone": {"type": "string"}, "missing": {"$ref": "#/$defs/items"}, "raw": {"$ref": "#/$defs/items"},
+          "properties": {"milestone": {"type": "string"}, "missing": {"type": "array", "items": {"$ref": "#/$defs/need"}}, "raw": {"$ref": "#/$defs/items"},
                          "waiting_on_work": {"type": ["string", "null"]}}
         },
         "stations": {
           "type": "object", "additionalProperties": false, "required": ["workbench", "furnace"],
           "properties": {"workbench": {"type": "boolean"}, "furnace": {"type": "boolean"}}
         },
+        "repair_would_mend": {"type": ["string", "null"], "description": "What `repair` would mend now at the workbench in reach: the worst-worn thing the pack pays to mend there; null while it is not offered."},
         "loot_known": {"$ref": "#/$defs/sighting"},
         "loot_place": {"$ref": "#/$defs/place_or_null"},
         "raid_targets": {"$ref": "#/$defs/sighting"},

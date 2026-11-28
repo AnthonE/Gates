@@ -14,6 +14,7 @@
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::chat::{read_text, write_text, Channel, ChatText};
 use crate::loc_max;
+use crate::pins::PinSet;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
     DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, PLATE_BIAS, PLATE_BITS, POS_XZ_BITS,
@@ -675,7 +676,22 @@ const SUB_WIRE: u32 = 111;
 /// draws `(agent, crew of <of's name>)`. To every session as it moves, and
 /// to a joiner for each agent there.
 const SUB_CREW: u32 = 112;
-const SUB_MAX: u32 = SUB_CREW;
+/// A player healed another standing (wire v157, `sim_core::world::
+/// EV_HEALED`): who healed whom, and with what — a syringe, or a bandage
+/// as its wrap landed. To its two players only: the one healed and the
+/// healer. See `EventMsg::Healed`.
+const SUB_HEALED: u32 = 113;
+/// A teammate's whole set of map marks (wire v157, `ActionMsg::Pins`): whose,
+/// and the set (`pins::PinSet`), empty when they took them all down.
+/// Team-only: relayed by the shard to the sender's team and nobody else,
+/// never the spectator mirror. See `EventMsg::TeamPins`.
+const SUB_TEAM_PINS: u32 = 114;
+/// A teammate gave the receiver one of their sleeping bags (wire v157,
+/// `sim_core::world::EV_BAG_GIVEN`): who. Own-fact to the receiver; the
+/// bag itself arrives on their own-bag list (`SUB_BAGS`). See
+/// `EventMsg::BagGiven`.
+const SUB_BAG_GIVEN: u32 = 115;
+const SUB_MAX: u32 = SUB_BAG_GIVEN;
 /// Widths of a wire's ports (`sim_core::power::ports`).
 const WIRE_PORT_OUT_BITS: u32 = 2;
 const WIRE_PORT_IN_BITS: u32 = 1;
@@ -1078,10 +1094,11 @@ const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
-/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102). Content
-/// validates `repair_cost_pct` to 1..=100 and an unbaked table is 0, which
-/// crosses as itself; seven bits hold 100, so 101..=127 are forgeable and
-/// both ends refuse them.
+/// The table's repair percent on `SUB_PIECE_DEFS` (wire v102), and the item
+/// repair percent on `SUB_RECIPES` (v157). Content validates
+/// `repair_cost_pct` and `item_repair_cost_pct` to 1..=100 and an unbaked
+/// table is 0, which crosses as itself; seven bits hold 100, so 101..=127
+/// are forgeable and both ends refuse them.
 const REPAIR_PCT_BITS: u32 = 7;
 const REPAIR_PCT_MAX: u16 = 100;
 const _: () = assert!(REPAIR_PCT_MAX < (1 << REPAIR_PCT_BITS));
@@ -1393,6 +1410,11 @@ pub struct ItemRow {
     /// card (Rust's DAMAGE) and decides nothing with it. Full width, the
     /// sim's own `u16`.
     pub damage: u16,
+    /// A melee weapon that is thrown (v157, `combat::HurlDef`, the spear):
+    /// the ticks the right mouse must be held before a click throws it, 0
+    /// for anything that is not thrown. The client holds `BTN_AIM` for it
+    /// as for a bow (`render::input`) and takes no swing while it is held.
+    pub hurl_ticks: u8,
     /// How a gun handles (v126, `combat::Gun`), for the client to kick its
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
@@ -1550,6 +1572,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + 3
     + ITEM_CLASS_BITS as usize
     + 16
+    + 8
     + 1
     + GUN_ROW_BITS
     + 1
@@ -1583,6 +1606,7 @@ impl ItemRow {
         pour: false,
         class: CLASS_OTHER,
         damage: 0,
+        hurl_ticks: 0,
         gun: None,
         attach: None,
     };
@@ -1590,6 +1614,11 @@ impl ItemRow {
     /// Does a right mouse draw this item before it looses?
     pub fn draws(&self) -> bool {
         self.draw_ticks > 0
+    }
+
+    /// Is this a melee weapon the right mouse winds up to throw?
+    pub fn hurls(&self) -> bool {
+        self.hurl_ticks > 0
     }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
@@ -2096,10 +2125,14 @@ pub enum EventMsg {
     /// Recipe rows `first..first+count` of a `total`-row table — the
     /// craft menu's data, dripped like the item catalog. Rows decode to
     /// the same `RecipeDef` the sim runs (craft time crosses as ticks).
+    /// `repair_pct` is `CraftContent::repair_pct` (v157), on every batch
+    /// like `PieceDefs`' price: the item card quotes a bench repair with it
+    /// (`craft::repair_cost`).
     Recipes {
         total: u8,
         first: u8,
         count: u8,
+        repair_pct: u16,
         rows: [RecipeDef; RECIPE_BATCH],
     },
     /// Research rows `first..first+count` of a `total`-row table — the
@@ -2568,6 +2601,10 @@ pub enum EventMsg {
     Crew { id: u32, of: u32 },
     /// The receiver's team (v108) — see [`TeamView`].
     Team(TeamView),
+    /// Teammate `from`'s whole set of map marks (v157), which replaces the
+    /// one they sent before; an empty set takes theirs off your map. Never
+    /// from nobody or an animal, and both ends refuse one.
+    TeamPins { from: u32, pins: PinSet },
     /// A vending machine's offers as the receiver sees them (v118) — see
     /// [`ShopView`].
     Shop(ShopView),
@@ -2782,6 +2819,17 @@ pub enum EventMsg {
     /// with. Own-fact, `Wounded`'s audience. The failed roll arrives as
     /// `Death`, exactly as the blow would have.
     Recovered { chance_pm: u16, hp: u16 },
+    /// Player `by` healed player `to`, standing, with `item` (v157): a
+    /// syringe, or a bandage as its wrap landed. Sent to those two only:
+    /// the one healed reads who healed them, the healer whom they healed.
+    /// A downed body helped up hears `Recovered` and not this. Never from
+    /// or to nobody or an animal, never a player on themself, and both
+    /// ends refuse one.
+    Healed { by: u32, to: u32, item: u16 },
+    /// Player `by` gave you one of their sleeping bags (v157, Rust's assign
+    /// bag). Own-fact to the receiver; the bag rides `Bags`. Never from
+    /// nobody or an animal, and both ends refuse one.
+    BagGiven { by: u32 },
     /// A death backpack landed at a world position — broadcast, because a
     /// bag on the ground is a world fact like a placement. What is inside
     /// is deliberately absent: v0 has no container UI, the take is
@@ -3288,6 +3336,8 @@ pub fn encode_event_catalog(
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
         // The damage a hit does (v131), full width.
         w.write(row.damage as u32, 16)?;
+        // The throw's windup (v157): ticks in a byte, the draw's posture.
+        w.write(row.hurl_ticks as u32, 8)?;
         // A gun's handling (v126), behind a presence bit.
         w.write_bit(row.gun.is_some())?;
         if let Some(g) = row.gun {
@@ -3479,10 +3529,15 @@ pub fn encode_event_recipes(
         return Err(WireError::Range);
     }
     let count = RECIPE_BATCH.min(total - first);
+    if cc.repair_pct > REPAIR_PCT_MAX {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_RECIPES)?;
     w.write(total as u32, RECIPE_TOTAL_BITS)?;
     w.write(first as u32, RECIPE_TOTAL_BITS)?;
     w.write(count as u32, RECIPE_COUNT_BITS)?;
+    // The item repair price (v157), the piece drip's width and ceiling.
+    w.write(cc.repair_pct as u32, REPAIR_PCT_BITS)?;
     for def in cc.recipes[first..first + count].iter() {
         if def.ticks == 0
             || def.ticks >= (1 << RECIPE_TICKS_BITS)
@@ -6219,6 +6274,38 @@ pub fn encode_event_exposure(
     Ok(w.finish())
 }
 
+/// A player id a heal or a bag can name: somebody, and not an animal.
+fn is_player_id(id: u32) -> bool {
+    id != 0 && id & sim_core::limits::MOB_ID_TAG == 0
+}
+
+/// Player `by` healed player `to` with `item` — see `EventMsg::Healed`.
+pub fn encode_event_healed(
+    by: u32,
+    to: u32,
+    item: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !is_player_id(by) || !is_player_id(to) || by == to {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HEALED)?;
+    w.write(by, 32)?;
+    w.write(to, 32)?;
+    w.write(item as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// Player `by` gave the receiver a sleeping bag — see `EventMsg::BagGiven`.
+pub fn encode_event_bag_given(by: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !is_player_id(by) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_BAG_GIVEN)?;
+    w.write(by, 32)?;
+    Ok(w.finish())
+}
+
 /// A body got up, own-fact — see `EventMsg::Recovered`.
 pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if chance_pm as u32 > CHANCE_PM_MAX {
@@ -6405,6 +6492,21 @@ impl TeamView {
         }
         Ok(v)
     }
+}
+
+/// Teammate `from`'s map marks — see `EventMsg::TeamPins`.
+pub fn encode_event_team_pins(
+    from: u32,
+    pins: &PinSet,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if from == 0 || from & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TEAM_PINS)?;
+    w.write(from, 32)?;
+    pins.write(&mut w)?;
+    Ok(w.finish())
 }
 
 /// The receiver's team — see [`TeamView`].
@@ -7033,6 +7135,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     pour: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
                     damage: r.read(16)? as u16,
+                    hurl_ticks: r.read(8)? as u8,
                     gun: if r.read_bit()? {
                         let rate_ticks = r.read(8)? as u8;
                         let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
@@ -7167,7 +7270,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let total = r.read(RECIPE_TOTAL_BITS)? as usize;
             let first = r.read(RECIPE_TOTAL_BITS)? as usize;
             let count = r.read(RECIPE_COUNT_BITS)? as usize;
-            if total > MAX_RECIPES || count == 0 || count > RECIPE_BATCH || first + count > total {
+            let repair_pct = r.read(REPAIR_PCT_BITS)? as u16;
+            if total > MAX_RECIPES
+                || count == 0
+                || count > RECIPE_BATCH
+                || first + count > total
+                || repair_pct > REPAIR_PCT_MAX
+            {
                 return Err(WireError::Malformed);
             }
             let mut rows = [RecipeDef::INERT; RECIPE_BATCH];
@@ -7207,6 +7316,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                repair_pct,
                 rows,
             }
         }
@@ -8303,7 +8413,33 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Crew { id, of }
         }
+        SUB_HEALED => {
+            let by = r.read(32)?;
+            let to = r.read(32)?;
+            let item = r.read(16)? as u16;
+            if !is_player_id(by) || !is_player_id(to) || by == to {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Healed { by, to, item }
+        }
+        SUB_BAG_GIVEN => {
+            let by = r.read(32)?;
+            if !is_player_id(by) {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::BagGiven { by }
+        }
         SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
+        SUB_TEAM_PINS => {
+            let from = r.read(32)?;
+            if from == 0 || from & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::TeamPins {
+                from,
+                pins: PinSet::read(&mut r)?,
+            }
+        }
         SUB_SHOP => {
             let mut view = ShopView {
                 key: r.read(32)?,
@@ -9589,6 +9725,8 @@ mod tests {
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
                 // The damage (v131) at the width's corner, distinct per row.
                 damage: u16::MAX - 5 * i as u16,
+                // The throw's windup (v157) at the byte's corner.
+                hurl_ticks: u8::MAX - 7 * i as u8,
                 gun: None,
                 attach: None,
             };
@@ -9736,9 +9874,11 @@ mod tests {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 assert_eq!((total, first, count), (3, 0, 3));
+                assert_eq!(repair_pct, cc.repair_pct, "the price rides along");
                 assert_eq!(rows[0], cc.recipes[0], "decode rebuilds the sim row");
                 assert_eq!(rows[1], cc.recipes[1]);
                 assert_eq!(rows[2], cc.recipes[2]);
@@ -9755,6 +9895,13 @@ mod tests {
         bad.recipes[1].ticks = 0;
         assert_eq!(
             encode_event_recipes(&bad, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // So does a repair price past a whole recipe.
+        let mut dear = cc;
+        dear.repair_pct = REPAIR_PCT_MAX + 1;
+        assert_eq!(
+            encode_event_recipes(&dear, 0, &mut buf),
             Err(WireError::Range)
         );
     }
@@ -10205,6 +10352,98 @@ mod tests {
         ghost.members[0].id = 5;
         for bad in [no_leader, twice, far, headless, ghost] {
             assert_eq!(encode_event_team(&bad, &mut buf), Err(WireError::Range));
+        }
+    }
+
+    /// A teammate's marks (v157) cross with whose they are, an empty set
+    /// included, and neither end takes a set from nobody or an animal or
+    /// past the cap.
+    #[test]
+    fn team_pins_name_their_owner() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut pins = PinSet::NONE;
+        let from = crate::player_id(3, 7);
+        let len = encode_event_team_pins(from, &pins, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::TeamPins { from, pins })
+        );
+        for i in 0..crate::PINS_MAX as u16 {
+            let pin = crate::WirePin::new(4000 + i, 9, 1, 2, "MEET").unwrap();
+            assert!(pins.push(pin));
+        }
+        let len = encode_event_team_pins(from, &pins, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::TeamPins { from, pins })
+        );
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        for by in [0, mob] {
+            assert_eq!(
+                encode_event_team_pins(by, &pins, &mut buf),
+                Err(WireError::Range)
+            );
+            let mut w = begin(&mut buf, SUB_TEAM_PINS).unwrap();
+            w.write(by, 32).unwrap();
+            w.write(0, 3).unwrap();
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
+        let mut w = begin(&mut buf, SUB_TEAM_PINS).unwrap();
+        w.write(from, 32).unwrap();
+        w.write(crate::PINS_MAX as u32 + 1, 3).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// A heal by another player (v157) crosses with the healer, the one
+    /// healed and the item, and neither end takes one from or to nobody or
+    /// an animal, or a player on themself.
+    #[test]
+    fn healed_names_the_healer_the_healed_and_the_item() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_healed(0x0001_2307, 0x0000_0402, 0x0102, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::Healed {
+                by: 0x0001_2307,
+                to: 0x0000_0402,
+                item: 0x0102
+            })
+        );
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        for (by, to) in [(0, 7), (mob, 7), (7, 0), (7, mob), (7, 7)] {
+            assert_eq!(
+                encode_event_healed(by, to, 1, &mut buf),
+                Err(WireError::Range),
+                "{by:#x} -> {to:#x}"
+            );
+            let mut w = begin(&mut buf, SUB_HEALED).unwrap();
+            w.write(by, 32).unwrap();
+            w.write(to, 32).unwrap();
+            w.write(1, 16).unwrap();
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        }
+    }
+
+    /// A bag given (v157) crosses with its giver, and neither end takes
+    /// one from nobody or an animal.
+    #[test]
+    fn bag_given_names_the_giver() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_bag_given(0x0001_2307, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Ok(EventMsg::BagGiven { by: 0x0001_2307 })
+        );
+        let mob = sim_core::limits::MOB_ID_TAG | 1;
+        for by in [0, mob] {
+            assert_eq!(encode_event_bag_given(by, &mut buf), Err(WireError::Range));
+            let mut w = begin(&mut buf, SUB_BAG_GIVEN).unwrap();
+            w.write(by, 32).unwrap();
+            let len = w.finish();
+            assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
         }
     }
 

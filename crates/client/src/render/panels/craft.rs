@@ -102,12 +102,15 @@ pub struct SkinChip(pub u16);
 #[derive(Component)]
 pub struct SkinStore(pub u16);
 
-/// A queue job; the index is its position, which is what `ACT_CANCEL`
-/// carries. The queue is dense and the head is 0, so an index is only valid
-/// for as long as the queue it was drawn from — which is why a cancel is
-/// sent on the click and never latched.
+/// A queue job: its position and the recipe it was drawn as, which is what
+/// `ACT_CANCEL` and `ACT_FASTTRACK` carry. The queue is dense and the head
+/// is 0, so an index is only valid for as long as the queue it was drawn
+/// from — which is why a cancel is sent on the click and never latched, and
+/// why it names the recipe too: a head that finished before the shard read
+/// the click shifted the queue, and the sim refuses rather than cancel the
+/// job behind it (wire v157).
 #[derive(Component)]
-pub struct CancelJob(pub usize);
+pub struct CancelJob(pub usize, pub u8);
 
 /// The search box: a click gives it the keyboard (`Ui::search_focus`).
 #[derive(Component)]
@@ -1512,14 +1515,14 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
                     ..default()
                 },
             ));
-            for (i, (recipe, remaining)) in core.jobs.iter().take(n).enumerate() {
+            for (i, &(recipe, remaining)) in core.jobs.iter().take(n).enumerate() {
                 let output = core
                     .recipes
                     .recipes
-                    .get(*recipe as usize)
+                    .get(recipe as usize)
                     .map(|d| d.output)
                     .unwrap_or(0);
-                queue_tile(strip, core, icons, i, output, *remaining);
+                queue_tile(strip, core, icons, i, recipe, output, remaining);
             }
             strip.spawn((
                 Text::new("click a job to cancel it, right-click to make it next".to_string()),
@@ -1538,6 +1541,7 @@ fn queue_tile(
     core: &ClientCore,
     icons: &Icons,
     i: usize,
+    recipe: u8,
     output: u16,
     remaining: u8,
 ) {
@@ -1550,7 +1554,7 @@ fn queue_tile(
     strip
         .spawn((
             Button,
-            CancelJob(i),
+            CancelJob(i, recipe),
             super::Tip(if head {
                 format!("{name} x{remaining} · click to cancel")
             } else {
@@ -1759,7 +1763,7 @@ pub fn clicks(
                 .rposition(|(r, _)| *r as u16 == recipe)
             {
                 Some(i) => Some((
-                    protocol::encode_action_cancel(i as u16, &mut buf),
+                    protocol::encode_action_cancel(i as u16, recipe, &mut buf),
                     format!("cancelled {} × {name}", core.jobs[i].1),
                 )),
                 None => {
@@ -1899,10 +1903,10 @@ pub fn clicks(
         let hot = tiles
             .iter()
             .find(|(i, j)| matches!(i, Interaction::Hovered) && j.0 > 0 && j.0 < n)
-            .map(|(_, j)| j.0);
-        if let Some(i) = hot {
+            .map(|(_, j)| (j.0, j.1));
+        if let Some((i, recipe)) = hot {
             let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-            match protocol::encode_action_fasttrack(i as u16, core.jobs[i].0 as u16, &mut buf) {
+            match protocol::encode_action_fasttrack(i as u16, recipe as u16, &mut buf) {
                 Ok(len) => match net.session.send_action(&buf[..len]) {
                     Ok(()) => ui.status.clear(),
                     Err(e) => ui.say(e.to_string()),
@@ -1920,7 +1924,7 @@ pub fn clicks(
             continue;
         };
         let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-        match protocol::encode_action_cancel(index, &mut buf) {
+        match protocol::encode_action_cancel(index, job.1 as u16, &mut buf) {
             Ok(len) => match net.session.send_action(&buf[..len]) {
                 Ok(()) => ui.status.clear(),
                 Err(e) => ui.say(e.to_string()),

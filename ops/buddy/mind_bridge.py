@@ -48,8 +48,11 @@ START_WAIT_S = 40.0  # how long a call waits for its body to come in
 ANSWER_S = 60.0      # how long a message waits for the body's answer
 REFRESH_S = 10.0     # an unknown token asks for a fresh feed at most this often
 # What the journal keeps of an observation (`claude_agent.py` JOURNAL_OBS).
+# `your_last_answer` is what became of the answer before this one (played,
+# deferred, dropped, too late, or the autopilot's turn), so a line whose goal
+# never ran is not read as one that did.
 JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
-               "current_goal", "deaths", "respawns")
+               "current_goal", "deaths", "respawns", "your_last_answer")
 
 
 LABEL = re.compile(r"[^A-Za-z0-9 ._:/@+-]")

@@ -96,17 +96,17 @@ use sim_core::terrain;
 use sim_core::trust::TrustRow;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AMMO, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED,
-    EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
-    EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
-    EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
-    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MAX, EV_MOVED,
-    EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_PLANT,
-    EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
-    EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
-    EV_VITALS, EV_WEAK_MARK, EV_WIRE, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
-    PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE,
-    TRUST_VERB_MAX,
+    EV_BAG_GIVEN, EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED,
+    EV_CONSUME_REFUSED, EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED,
+    EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED,
+    EV_HEALED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI,
+    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_PLANT, EV_PLANT_GONE, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED,
+    EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST,
+    EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WIRE, EV_WOUNDED, PRESENCE_ASLEEP,
+    PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT,
+    TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
@@ -4326,6 +4326,61 @@ fn respawn_names_the_player_then_which_anchor_answered() {
     );
 }
 
+/// `EV_BAG_GIVEN: a = the giver, b = the receiver, c = the bag's address`
+/// (`deploy::box_key`). Ids 6 and 7 and a packed address off both keep
+/// the three apart, and `c` is held against the record the bag stands at.
+#[test]
+fn bag_given_names_the_giver_then_the_receiver_then_the_bag() {
+    const GIVER: u32 = 6;
+    const TAKER: u32 = 7;
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: GIVER }, Command::Join { id: TAKER }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: BAG_PLACE_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: GIVER,
+        row: DEPLOY_BAG,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    assert_eq!(w.deploys.len(), 1, "the bag did not place — the fixture");
+    w.tick(&[Command::GiveBag {
+        id: GIVER,
+        cx,
+        cz,
+        level: GROUND,
+        target: TAKER,
+    }]);
+    let e = only(&w, EV_BAG_GIVEN);
+    distinct3(e, "EV_BAG_GIVEN");
+    assert_eq!(e.a, GIVER, "EV_BAG_GIVEN.a is the GIVER");
+    assert_eq!(e.b, TAKER, "EV_BAG_GIVEN.b is the RECEIVER");
+    let d = w.deploys.entries()[0];
+    assert_eq!(
+        e.c,
+        sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc),
+        "EV_BAG_GIVEN.c is the BAG's address"
+    );
+    assert_eq!(d.owner, TAKER, "and the bag is the receiver's now");
+}
+
 /// Is `name` read by an `only(&w, …)` call anywhere in this file?
 ///
 /// `only` is this file's universal idiom for "I drove a real cause and
@@ -4547,7 +4602,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 75] = [
+    const COVERED: [(&str, u8); 77] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
@@ -4623,6 +4678,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_AMMO", EV_AMMO),
         ("EV_FIRE", EV_FIRE),
         ("EV_WIRE", EV_WIRE),
+        ("EV_HEALED", EV_HEALED),
+        ("EV_BAG_GIVEN", EV_BAG_GIVEN),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -6030,6 +6087,62 @@ fn assist_fields_name_the_helper_target_and_elapsed_ticks() {
     assert_eq!(e.a, ATTACKER);
     assert_eq!(e.b, VICTIM);
     assert_eq!(e.c, 4);
+}
+
+/// `EV_HEALED: a = the player healed, b = who healed them, c = the item`
+/// — a syringe from the attacker's pack on the hurt victim in front of
+/// them. Ids 2 and 1 and an item index off both keep the three apart.
+#[test]
+fn healed_names_the_healed_then_the_healer_then_the_item() {
+    use sim_core::survival::{ConsumableDef, SurvivalContent};
+    const SYRINGE: u16 = 40;
+    let mut w = duel_world();
+    let mut sc = SurvivalContent::EMPTY;
+    sc.max_food = MAX_FOOD;
+    sc.max_water = MAX_WATER;
+    sc.food_span_ticks = 1 << 30;
+    sc.water_span_ticks = 1 << 30;
+    sc.consumable[SYRINGE as usize] = ConsumableDef {
+        health: 15,
+        seconds: 2,
+        ..ConsumableDef::NONE
+    };
+    sc.revive[SYRINGE as usize] = true;
+    w.survival = sc;
+    w.players[0].inv[3] = ItemStack {
+        item: SYRINGE,
+        count: 1,
+        cond: 0,
+        skin: 0,
+        ..ItemStack::EMPTY
+    };
+    w.players[1].hp = FIXTURE_HP as u16 / 2;
+    let look = |w: &World, seq| Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq,
+            yaw: YAW,
+            pitch: aim_at(w, 0, 1),
+            ..Default::default()
+        },
+        favour: 0,
+    };
+    let a = look(&w, 0);
+    w.tick(&[a]);
+    let a = look(&w, 1);
+    w.tick(&[
+        a,
+        Command::Treat {
+            id: ATTACKER,
+            slot: 3,
+            target: VICTIM,
+        },
+    ]);
+    let e = only(&w, EV_HEALED);
+    distinct3(e, "EV_HEALED");
+    assert_eq!(e.a, VICTIM, "EV_HEALED.a is the player HEALED");
+    assert_eq!(e.b, ATTACKER, "EV_HEALED.b is the HEALER");
+    assert_eq!(e.c, SYRINGE as u32, "EV_HEALED.c is the ITEM");
 }
 
 /// `EV_VEND_REFUSED: a = player, b = reason, c = offer`, then

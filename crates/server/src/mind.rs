@@ -292,6 +292,31 @@ pub enum Goal {
     /// (`give:m2:<item>`, the item `Name::EMPTY`); a live answer only, never
     /// a plan step.
     GiveMate(u8, Name),
+    /// Heal one teammate, by slot as `FollowMate` (`heal:m2`): walk up to
+    /// them and use a bandage or a syringe on them, the treat a player
+    /// sends with `E` and one in hand (`Command::Treat` on someone
+    /// standing). The shard sends nobody's hp but one's own, so it is
+    /// offered for a teammate who looks hurt (`explorer`'s
+    /// `sense_hurt_mates`: down or dead lately, struck at, or asking for
+    /// it), up and in sight, while the pack holds a med that heals another.
+    HealMate(u8),
+    /// Bring one downed teammate back up, by slot as `FollowMate`
+    /// (`revive:m2`): walk up to the body and use a syringe on it, the
+    /// treat a player sends with `E` and one in hand (`Command::Treat` on
+    /// someone down: they stand at once). Offered while that teammate lies
+    /// downed in sight and the pack holds a med that revives.
+    ReviveMate(u8),
+    /// Give a sleeping bag of mine to one teammate, by slot as `FollowMate`
+    /// (`give_bag:m2`): walk to my nearest bag, look at it and give it, the
+    /// GIVE BAG a player presses on the TEAM screen `E` on their bag opens
+    /// (`ActionMsg::BagGive`). Offered while a bag of mine is down and the
+    /// teammate is not one it gave a bag to or found at the bag cap; a live
+    /// answer only, never a plan step.
+    GiveBag(u8),
+    /// Mend the worst-worn thing the pack can pay to mend at the workbench
+    /// in reach (`ActionMsg::RepairItem`, the item card's Repair). Offered
+    /// while one stands in reach and something worn would mend there.
+    Repair,
     /// `follow`, after a stranger whose nametag it aimed at within
     /// [`NEAR_AIM_M`] lately: the one `team.near` lists at this slot, from 1
     /// (`follow:n1`).
@@ -372,7 +397,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 43] = [
+    pub const FIXED: [Goal; 44] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -416,6 +441,7 @@ impl Goal {
         Goal::HandOver,
         Goal::Authorize,
         Goal::AddBox,
+        Goal::Repair,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -474,6 +500,10 @@ impl Goal {
             Goal::FollowMate(_) | Goal::FollowNear(_) => "follow",
             Goal::ReachMate(_) => "reach",
             Goal::GiveMate(..) => "give",
+            Goal::HealMate(_) => "heal",
+            Goal::ReviveMate(_) => "revive",
+            Goal::GiveBag(_) => "give_bag",
+            Goal::Repair => "repair",
         }
     }
 
@@ -506,7 +536,13 @@ impl Goal {
                 _ => put(b":<bearing>:<metres>"),
             }
         }
-        if let Goal::FollowMate(slot) | Goal::ReachMate(slot) | Goal::GiveMate(slot, _) = self {
+        if let Goal::FollowMate(slot)
+        | Goal::ReachMate(slot)
+        | Goal::GiveMate(slot, _)
+        | Goal::HealMate(slot)
+        | Goal::ReviveMate(slot)
+        | Goal::GiveBag(slot) = self
+        {
             put(b":m");
             put(slot.to_string().as_bytes());
         }
@@ -576,6 +612,15 @@ impl Goal {
         }
         if key == "reach" {
             return mate(name).map(Goal::ReachMate);
+        }
+        if key == "heal" {
+            return mate(name).map(Goal::HealMate);
+        }
+        if key == "revive" {
+            return mate(name).map(Goal::ReviveMate);
+        }
+        if key == "give_bag" {
+            return mate(name).map(Goal::GiveBag);
         }
         if key == "give" {
             if let Some((slot, item)) = name.split_once(':') {
@@ -721,6 +766,21 @@ impl Goal {
             Goal::FollowNear(k) => format!(
                 "Stay with the stranger team.near lists {k}th, whose nametag you aimed at."
             ),
+            Goal::HealMate(k) => format!(
+                "Heal teammate {k} (team.teammates' {k}th), who looks hurt: walk up and use a \
+                 bandage or syringe on them. One already whole refuses it and keeps the med."
+            ),
+            Goal::ReviveMate(k) => format!(
+                "Revive teammate {k} (team.teammates' {k}th), downed in view: walk up and use a \
+                 syringe on them, and they stand at once."
+            ),
+            Goal::GiveBag(k) => format!(
+                "Give teammate {k} (team.teammates' {k}th) my nearest sleeping bag: it becomes \
+                 theirs to wake on, and mine no longer."
+            ),
+            Goal::Repair => "Repair the worst-worn thing you carry at the workbench here, for a \
+                 share of its recipe."
+                .into(),
         }
     }
 }
@@ -772,6 +832,34 @@ pub enum Why {
     Session,
     /// A work refused the verb, with this code (`sim_core::works::REFUSE_A_*`).
     ArcRefused(u8),
+    /// The teammate a heal was for was whole: full health, not bleeding
+    /// (`REFUSE_C_FULL`).
+    Whole,
+    /// The goal's own time ran out before it was done (its `*_GOAL_SECS`):
+    /// not a wall, so the same goal may well do from here.
+    OutOfTime,
+    /// No way to it from here, and no door near it to go in by: walls in
+    /// the way of a trip into a base, or none to try.
+    NoWayIn,
+    /// On the spot it crafts from and still out of its station's reach: the
+    /// station stands somewhere else than that spot reaches.
+    StationOutOfReach,
+    /// The watchdog's (`agent::wedge`): half a minute trying to move the
+    /// body and it never left a metre's box, so the goal ended and the body
+    /// backed off.
+    Wedged,
+    /// The route's map had no way to it from here
+    /// ([`crate::agent::route::Route::blocked_why`]): the grid's plan or the
+    /// long way round's search found none, or no flight leads down.
+    NoPath,
+    /// Held out to them try after try ([`crate::agent::society::HAND_TRIES`])
+    /// at arm's length, and it never landed: a give whose stack never left
+    /// the pack, a treat the shard never answered.
+    NeverLanded,
+    /// A gather gave up one target after another
+    /// ([`crate::explorer::MAX_ABANDONS`]), each for getting no nearer: the
+    /// ones in sight here are out of its reach.
+    OutOfReach,
 }
 
 impl Why {
@@ -809,7 +897,48 @@ impl Why {
             Why::Blocked => "something else is in the way of it, so it could not reach it",
             Why::Session => "the session ended while it ran",
             Why::ArcRefused(code) => arc_refusal(code),
+            Why::Whole => "they were already whole (full health, not bleeding): nothing was spent",
+            Why::OutOfTime => "ran out of time before it was done",
+            Why::NoWayIn => {
+                "no way to it from here: walls in the way, and no door near it that it could use"
+            }
+            Why::StationOutOfReach => {
+                "its station is out of reach from where it stands to craft; the station was moved \
+                 or blocked"
+            }
+            Why::Wedged => {
+                "wedged: half a minute trying to move and the body never got anywhere, so it \
+                 backed off"
+            }
+            Why::NoPath => "no way to it on the map from here: water, cliffs or walls all round it",
+            Why::NeverLanded => {
+                "held it out to them again and again and it never landed: out of hand's reach \
+                 (another floor, or moving off), or no answer came"
+            }
+            Why::OutOfReach => {
+                "got no nearer to one after another and gave each up: the ones in sight here are \
+                 out of reach (up a crag, behind walls, out in the water)"
+            }
         }
+    }
+
+    /// Came to nothing short of where it was going: no way there
+    /// ([`Why::Stuck`], [`Why::NoWayIn`], [`Why::NoPath`]), wedged on the
+    /// way ([`Why::Wedged`]), every target out of reach
+    /// ([`Why::OutOfReach`]) or out of time on the way ([`Why::OutOfTime`]).
+    /// What used to read "could not reach a target" all through, so what a
+    /// stuck goal sets off, an unreached one does. Not
+    /// [`Why::NeverLanded`]: that one got to arm's length.
+    pub fn unreached(self) -> bool {
+        matches!(
+            self,
+            Why::Stuck
+                | Why::OutOfTime
+                | Why::NoWayIn
+                | Why::NoPath
+                | Why::Wedged
+                | Why::OutOfReach
+        )
     }
 }
 
@@ -862,13 +991,115 @@ impl Outcome {
 }
 
 /// One goal as it ran. `gained` is units received (gathered, crafted,
-/// eaten or drunk); `secs` is play time spent on it.
+/// eaten or drunk); `secs` is play time spent on it; `by` is who chose it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Report {
     pub goal: Goal,
     pub outcome: Outcome,
     pub gained: u32,
     pub secs: u32,
+    pub by: By,
+}
+
+/// Who chose a goal: the mind, the autopilot on a turn it played for the
+/// mind (`autopilot::is_autopilot`), or the body itself (the walk home at
+/// a session's end).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum By {
+    #[default]
+    Mind,
+    Autopilot,
+    Body,
+}
+
+impl By {
+    /// As the mind reads it.
+    pub fn word(self) -> &'static str {
+        match self {
+            By::Mind => "you",
+            By::Autopilot => "autopilot",
+            By::Body => "body",
+        }
+    }
+}
+
+/// What became of the last answer the body took from its decision source
+/// (`Summary::answer`): a mind that chose a goal that never ran is told
+/// so, and why, instead of choosing it again and again (#548, #599).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fate {
+    /// It began.
+    Played,
+    /// It was the goal already running, which carries on.
+    AlreadyRunning,
+    /// Held while a fight (or a step that cannot be left half done) has
+    /// the body; it runs after, if still fresh and on offer.
+    Deferred { fight: bool },
+    /// Held, then dropped: too old by then, or the fight too long.
+    DroppedStale,
+    /// Held, then dropped: no longer on offer.
+    DroppedNotAllowed,
+    /// Dropped: the session is ending and the body is going home.
+    DroppedLoggingOff,
+    /// Held, then dropped: the body went down, died or lost its link.
+    DroppedDown,
+    /// Held, then put aside for a turn the autopilot played without
+    /// asking the mind (`autopilot::unasked`: its friend away, a harness
+    /// away).
+    DroppedForAutopilot,
+    /// It came after its deadline, or to a request already given up.
+    Late,
+    /// The autopilot chose it: the mind was asked and its own answer did
+    /// not come ([`AnswerFate::why`] says why). A turn the mind was never
+    /// asked for leaves its last answer's fate as it was.
+    Autopilot,
+}
+
+impl Fate {
+    /// As the mind reads it: short, it is sent every turn.
+    pub fn words(self) -> &'static str {
+        match self {
+            Fate::Played => "played",
+            Fate::AlreadyRunning => "played: it was already running",
+            Fate::Deferred { fight: true } => "deferred: a fight holds it",
+            Fate::Deferred { fight: false } => "deferred: the step under way ends first",
+            Fate::DroppedStale => "dropped: it went stale while held",
+            Fate::DroppedNotAllowed => "dropped: no longer on offer when it could run",
+            Fate::DroppedLoggingOff => "dropped: logging off",
+            Fate::DroppedDown => "dropped: you went down or lost the link first",
+            Fate::DroppedForAutopilot => "dropped: the autopilot took over while it was held",
+            Fate::Late => "too late: it came after the deadline, never played",
+            Fate::Autopilot => "not yours: the autopilot played the turn",
+        }
+    }
+}
+
+/// The last answer the body took and what became of it.
+#[derive(Clone, Copy, Debug)]
+pub struct AnswerFate {
+    pub goal: Goal,
+    pub fate: Fate,
+    /// Why the autopilot played the turn (the source's error:
+    /// `autopilot::why`); empty otherwise.
+    pub why: Reason,
+}
+
+impl AnswerFate {
+    pub fn new(goal: Goal, fate: Fate) -> Self {
+        Self {
+            goal,
+            fate,
+            why: Reason::EMPTY,
+        }
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "goal": self.goal.label().as_str(),
+            "fate": self.fate.words(),
+            "why": (!self.why.as_str().is_empty()).then(|| self.why.as_str()),
+        })
+    }
 }
 
 /// What prompted a request.
@@ -947,6 +1178,10 @@ pub struct TeamSense {
     pub invite_from: Who,
     pub who: [Who; protocol::TEAM_MAX],
     pub who_len: u8,
+    /// Its own name as its teammates see it (its nametag): a team line
+    /// opening with it is for it, and that word is no order
+    /// (`agent::orders::to_me`). Empty until the shard has said.
+    pub name: protocol::Name,
     /// Strangers whose nametag it aimed at within `NEAR_AIM_M` lately, in
     /// the slots `follow:n<k>` names (`explorer`'s `aimed`).
     pub near: [Who; NEAR_MAX],
@@ -1127,9 +1362,10 @@ pub const BEARINGS: [&str; 8] = [
 ];
 
 /// A work (`ARC.md`) as its client knows it: its name, whether it is
-/// sealed, open or lit, where its terminal is, what its quota still takes
-/// while open, its fuel and the room in its tank while lit, and what
-/// lighting it unlocks.
+/// sealed, open, counting down or lit, where its terminal is, what its
+/// quota still takes while open, its fuel and the room in its tank while
+/// lit, and what lighting it unlocks. A work with no tank (THE SEVERED
+/// GATE) burns nothing once lit: it stays open for the rest of the wipe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkSense {
     pub name: Name,
@@ -1140,6 +1376,13 @@ pub struct WorkSense {
     pub fuel: Name,
     pub fuel_room: u32,
     pub unlocks: Name,
+    /// It has no fuel tank (`WorkDef::fuel_max` 0).
+    pub tankless: bool,
+    /// Every quota line is met (`WorkDef::met`): a countdown it was paid
+    /// into, not its own fallback hour's.
+    pub paid: bool,
+    /// While counting down, the minutes until it lights, rounded up.
+    pub opens_in_min: u32,
 }
 
 impl WorkSense {
@@ -1152,20 +1395,37 @@ impl WorkSense {
         fuel: Name::EMPTY,
         fuel_room: 0,
         unlocks: Name::EMPTY,
+        tankless: false,
+        paid: false,
+        opens_in_min: 0,
     };
 
     fn json(&self) -> Value {
+        use sim_core::works::{WORK_COUNTDOWN, WORK_LIT, WORK_OPEN};
+        let lights = if self.tankless { "opens" } else { "lights" };
+        let state = match self.state {
+            WORK_OPEN => "open: takes deposits".to_string(),
+            WORK_LIT if self.tankless => "open: for the rest of the wipe".to_string(),
+            WORK_LIT => "lit: burns fuel".to_string(),
+            WORK_COUNTDOWN if self.paid => {
+                format!(
+                    "counting down: quota met, {lights} in {} min",
+                    self.opens_in_min
+                )
+            }
+            WORK_COUNTDOWN => format!(
+                "counting down to its own hour: {lights} in {} min",
+                self.opens_in_min
+            ),
+            _ => "sealed".to_string(),
+        };
+        let tank = self.state == WORK_LIT && !self.tankless;
         json!({
             "name": self.name.as_str(),
-            "state": match self.state {
-                sim_core::works::WORK_OPEN => "open: takes deposits",
-                sim_core::works::WORK_LIT => "lit: burns fuel",
-                sim_core::works::WORK_COUNTDOWN => "counting down: its quota is met, it lights soon",
-                _ => "sealed",
-            },
+            "state": state,
             "where": self.at.map(|p| p.json()),
             "still_needs": self.needs[..usize::from(self.needs_len)].iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
-            "fuel": (self.state == sim_core::works::WORK_LIT).then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
+            "fuel": tank.then(|| json!({"name": self.fuel.as_str(), "room": self.fuel_room})),
             "unlocks": self.unlocks.as_str(),
         })
     }
@@ -1265,6 +1525,21 @@ impl Sighting {
             "nearest_m": self.nearest_m,
             "bearing": BEARINGS[self.bearing as usize % 8],
         })
+    }
+
+    /// The death backpack's sighting, with what the pack held at that
+    /// death (`held_at_death`) and how long ago (`died_ago_s`) while it
+    /// is known.
+    fn json_held(&self, held: &[(Name, u32)], ago_s: u32) -> Value {
+        let mut v = self.json();
+        if !held.is_empty() {
+            v["held_at_death"] = held
+                .iter()
+                .map(|(n, c)| json!({"name": n.as_str(), "count": c}))
+                .collect();
+            v["died_ago_s"] = ago_s.into();
+        }
+        v
     }
 }
 
@@ -1823,14 +2098,15 @@ pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits:
 
 /// The most goals one request can offer: the fixed set, every craft and
 /// trade, the trips, the one walk anywhere (`Walk::ANY`) and the one hold
-/// (`HOLD_ANY`), a follow, a reach and a give form for each teammate, a
-/// follow for each stranger near, and a give for each item the pack lists.
+/// (`HOLD_ANY`), a follow, a reach, a give form, a heal, a revive and a bag
+/// give for each teammate, a follow for each stranger near, and a give for
+/// each item the pack lists.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len()
     + SUMMARY_CRAFTS
     + crate::agent::gate::TRADE_ROWS
     + GO_PLACES
     + 2
-    + 3 * protocol::TEAM_MAX
+    + 6 * protocol::TEAM_MAX
     + NEAR_MAX
     + SUMMARY_ITEMS;
 
@@ -1874,6 +2150,11 @@ pub struct Summary {
     /// The goal still running when this was asked (a heartbeat), with what
     /// it has gained so far — so a source can let it finish.
     pub current: Option<Report>,
+    /// The goals that ran before, oldest first (`last` is the newest), and
+    /// who chose each.
+    pub recent: History,
+    /// The last answer the body took, and what became of it.
+    pub answer: Option<AnswerFate>,
     pub hits: u16,
     /// Chat lines since the last request, its own echoed back included.
     pub heard: Heard,
@@ -1883,6 +2164,11 @@ pub struct Summary {
     pub bags: u8,
     /// The backpack it dropped at its last death, while it stands.
     pub backpack: Sighting,
+    /// What the pack held at that death, heaviest first, and how long ago
+    /// it died: kept until the backpack is gone or got back.
+    pub lost: [(Name, u32); crate::memory::SEEN_LOST],
+    pub lost_len: u8,
+    pub lost_ago_s: u32,
     /// Its base, if it has one.
     pub home: HomeSense,
     /// One of its sleeping bags would take it now.
@@ -1892,6 +2178,9 @@ pub struct Summary {
     pub milestone: Milestone,
     pub needs: [(Name, u32); SUMMARY_NEEDS],
     pub needs_len: u8,
+    /// Each need's parts, from the survey's one count: what the milestone
+    /// costs of it, what the pack carries and what the box holds.
+    pub needs_parts: [(u32, u32, u32); SUMMARY_NEEDS],
     /// What those come down to that nobody crafts here: to gather, hunt
     /// or loot.
     pub raw: [(Name, u32); SUMMARY_RAW],
@@ -1903,6 +2192,9 @@ pub struct Summary {
     /// Its own workbench and furnace stand.
     pub bench: bool,
     pub furnace: bool,
+    /// What `repair` would mend now at the workbench in reach (the
+    /// worst-worn thing the pack pays for); `Name::EMPTY` for nothing.
+    pub repair_item: Name,
     /// Barrels and crates it knows of and has not emptied.
     pub loot: Sighting,
     /// The nearest place on the map with crates it has not found bare.
@@ -1935,6 +2227,9 @@ pub struct Summary {
     pub gate: Option<Place>,
     pub works: [WorkSense; sim_core::limits::MAX_WORKS],
     pub works_len: u8,
+    /// THE SEVERED GATE is open (`client_core::arc::ArcView::gate_open`):
+    /// the landmarks' vaults open with `E`.
+    pub gate_open: bool,
     /// The ancients' stones (how many it has read of those it knows of,
     /// the nearest unread one in walking range, the glyphs it reads of the
     /// alphabet), their locks, and the ziggurat's card doors.
@@ -2033,6 +2328,8 @@ impl Summary {
         last_fight: None,
         last: None,
         current: None,
+        recent: History::EMPTY,
+        answer: None,
         hits: 0,
         heard: Heard::EMPTY,
         deaths: 0,
@@ -2043,6 +2340,9 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        lost: [(Name::EMPTY, 0); crate::memory::SEEN_LOST],
+        lost_len: 0,
+        lost_ago_s: 0,
         home: HomeSense {
             state: HomeState::None,
             distance: Distance::Here,
@@ -2060,11 +2360,13 @@ impl Summary {
         milestone: Milestone::Shell,
         needs: [(Name::EMPTY, 0); SUMMARY_NEEDS],
         needs_len: 0,
+        needs_parts: [(0, 0, 0); SUMMARY_NEEDS],
         raw: [(Name::EMPTY, 0); SUMMARY_RAW],
         raw_len: 0,
         held_by: None,
         bench: false,
         furnace: false,
+        repair_item: Name::EMPTY,
         loot: Sighting {
             count: 0,
             nearest_m: 0,
@@ -2117,6 +2419,7 @@ impl Summary {
                 address: protocol::Address::GUEST,
             }; protocol::TEAM_MAX],
             who_len: 0,
+            name: protocol::Name::EMPTY,
             near: [Who {
                 id: 0,
                 name: protocol::Name::EMPTY,
@@ -2132,6 +2435,7 @@ impl Summary {
         gate: None,
         works: [WorkSense::EMPTY; sim_core::limits::MAX_WORKS],
         works_len: 0,
+        gate_open: false,
         stones_read: 0,
         stones_known: 0,
         unread_stone: None,
@@ -2329,14 +2633,19 @@ impl Summary {
         Value::Array(out)
     }
 
-    /// THE GATE and the works, the stones, their locks and the ziggurat's
-    /// card doors, as its client knows them. Sent to an external source
-    /// beside the observation (the observation stays small).
-    /// Worker only (it allocates).
+    /// THE GATE and the works, the landmarks' vaults, the stones, their
+    /// locks and the ziggurat's card doors, as its client knows them. Sent
+    /// to an external source beside the observation (the observation stays
+    /// small). Worker only (it allocates).
     pub fn places_json(&self) -> Value {
         json!({
             "the_gate": self.gate.map(|p| p.json()),
             "works": self.works[..usize::from(self.works_len)].iter().map(WorkSense::json).collect::<Vec<_>>(),
+            "vaults": if self.gate_open {
+                "open: the landmarks' steel doors open with E; loot takes them"
+            } else {
+                "sealed: the steel doors at the landmarks open when THE SEVERED GATE does"
+            },
             "stones": {
                 "read": self.stones_read,
                 "known": self.stones_known,
@@ -2449,21 +2758,31 @@ impl Summary {
                 "gained": r.gained,
                 "seconds": r.secs,
             })),
+            "recent_goals": self.recent.iter().map(|r| json!({
+                "goal": r.goal.label().as_str(),
+                "outcome": r.outcome.word(),
+                "why": r.outcome.why().map(Why::text),
+                "gained": r.gained,
+                "seconds": r.secs,
+                "by": r.by.word(),
+            })).collect::<Vec<_>>(),
+            "your_last_answer": self.answer.as_ref().map(AnswerFate::json),
             "hits_taken_since_last_decision": self.hits,
             "deaths": self.deaths,
             "respawns": self.respawns,
             "sleeping_bags_down": self.bags,
-            "my_death_backpack": self.backpack.json(),
+            "my_death_backpack": self.backpack.json_held(&self.lost[..usize::from(self.lost_len)], self.lost_ago_s),
             "home": self.home.json(),
             "a_sleeping_bag_is_ready": self.bag_ready,
             "night": self.night,
             "base_next": {
                 "milestone": self.milestone.word(),
-                "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+                "missing": self.needs().iter().zip(&self.needs_parts).map(|((n, c), (costs, carry, boxed))| json!({"name": n.as_str(), "count": c, "costs": costs, "you_carry": carry, "boxed": boxed})).collect::<Vec<_>>(),
                 "raw": self.raw().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "waiting_on_work": self.held_by.map(|n| n.as_str().to_owned()),
             },
             "stations": { "workbench": self.bench, "furnace": self.furnace },
+            "repair_would_mend": (self.repair_item != Name::EMPTY).then(|| self.repair_item.as_str()),
             "loot_known": self.loot.json(),
             "loot_place": self.loot_place.map(|p| p.json()),
             "raid_targets": self.raid.json(),
@@ -2685,7 +3004,7 @@ impl Plan {
             let label = step["goal"].as_str().ok_or("each plan step needs a goal")?;
             let goal =
                 Goal::named(label).ok_or_else(|| format!("plan step {label:?} is not a goal"))?;
-            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..)) {
+            if matches!(goal, Goal::Give(_) | Goal::GiveMate(..) | Goal::GiveBag(_)) {
                 return Err(format!(
                     "plan step {label:?}: a give is a live answer, never a plan step"
                 ));
@@ -2930,6 +3249,9 @@ pub struct Mind {
     pub stats: MindStats,
     /// The last accepted answer, for display.
     pub last: Option<Choice>,
+    /// The goal of the last answer refused as late, until the body takes
+    /// it ([`Mind::take_late`]) to tell the mind.
+    last_late: Option<Goal>,
 }
 
 impl Mind {
@@ -3066,6 +3388,7 @@ impl Mind {
             free_when: None,
             stats: MindStats::default(),
             last: None,
+            last_late: None,
         }
     }
 
@@ -3123,10 +3446,12 @@ impl Mind {
         };
         let Some((pending, sent)) = self.pending else {
             self.stats.late += 1;
+            self.refused_late(answer);
             return None;
         };
         if pending != id {
             self.stats.late += 1;
+            self.refused_late(answer);
             return None;
         }
         self.pending = None;
@@ -3143,12 +3468,28 @@ impl Mind {
             other => {
                 if other.is_some() {
                     self.stats.late += 1;
+                    self.refused_late(other);
                 }
                 self.stats.failures += 1;
                 self.failures = (self.failures + 1).min(6);
                 self.next_allowed = now + self.cfg.interval * (1 << self.failures);
                 None
             }
+        }
+    }
+
+    /// The goal of an answer [`Mind::poll`] refused as late since this was
+    /// last asked: never played, and the mind is told so.
+    pub fn take_late(&mut self) -> Option<Goal> {
+        self.last_late.take()
+    }
+
+    /// A late answer is kept for the mind to be told of, unless it was a
+    /// turn the autopilot played without asking it (`autopilot::unasked`):
+    /// that one was never the mind's, and its own last answer's fate stands.
+    fn refused_late(&mut self, answer: Option<Choice>) {
+        if let Some(c) = answer.filter(|c| !crate::autopilot::unasked(c.reason.as_str())) {
+            self.last_late = Some(c.goal);
         }
     }
 
@@ -3628,6 +3969,7 @@ impl Scripted {
         }
         let role = s.society.set.then_some(s.society.role);
         let mates = &s.team.who[..usize::from(s.team.who_len).min(s.team.who.len())];
+        let me = s.team.name.as_str().as_bytes();
         for line in s.heard.lines() {
             let named = |w: Option<protocol::Address>| {
                 line.channel == protocol::Channel::Team
@@ -3642,15 +3984,19 @@ impl Scripted {
             match line.channel {
                 protocol::Channel::Team => {
                     // With a commander, only its line (and the crew
-                    // leader's) is an order; a line may name who it is for.
-                    if (self.commander.is_some() && !leader) || !orders::for_me(text, role, mates) {
+                    // leader's) is an order; a line may name who it is
+                    // for, and that word is no order.
+                    if self.commander.is_some() && !leader {
                         continue;
                     }
+                    let Some(said) = orders::to_me(text, me, role, mates) else {
+                        continue;
+                    };
                     if let Some(code) = orders::code(text) {
                         self.code = Some(code);
                         self.reply("got the code");
                     }
-                    match orders::order(text) {
+                    match orders::order(said) {
                         Some(Order::Help) => self.reply(orders::HELP),
                         Some(Order::Follow) => {
                             self.standing = Some(Order::Follow);
@@ -3708,6 +4054,18 @@ impl Scripted {
         // closes it (Rust's), whatever the bar says.
         if s.condition.bleeding() && s.threats_len == 0 && s.offers(Goal::Heal) {
             return (Goal::Heal, "scripted: bleeding, a bandage stops it");
+        }
+        // A teammate down in view and a syringe in the pack: up they come
+        // before they bleed out (Rust's), ahead of anything of its own but
+        // staying alive.
+        if let Some(goal) = (1..=s.team.who_len)
+            .map(Goal::ReviveMate)
+            .find(|&g| s.offers(g))
+        {
+            return (
+                goal,
+                "scripted: my teammate is down, a syringe gets them up",
+            );
         }
         // Freezing (the cold eating a body already under the heal line), or
         // badly hurt with no meds: by a lit fire, Rust's answer to both. A
@@ -3852,6 +4210,14 @@ impl Scripted {
                     },
                 ),
                 Order::Defend => (Goal::Defend, "defending home"),
+                Order::Run(g) => (
+                    g,
+                    if g == Goal::Loot {
+                        "on it: loot"
+                    } else {
+                        "on it: the works"
+                    },
+                ),
                 _ => (Goal::GoHome, "heading home"),
             };
             if s.offers(goal) {
@@ -4344,15 +4710,17 @@ pub struct History {
 
 impl Default for History {
     fn default() -> Self {
-        Self {
-            reports: [None; GOAL_HISTORY],
-            head: 0,
-            len: 0,
-        }
+        Self::EMPTY
     }
 }
 
 impl History {
+    pub const EMPTY: Self = Self {
+        reports: [None; GOAL_HISTORY],
+        head: 0,
+        len: 0,
+    };
+
     pub fn push(&mut self, report: Report) {
         if self.len == GOAL_HISTORY {
             self.head = (self.head + 1) % GOAL_HISTORY;
@@ -4450,6 +4818,19 @@ mod tests {
         }
         assert_eq!(Goal::named("follow"), Some(Goal::Follow));
         assert_eq!(Goal::named("reach:m3"), Some(Goal::ReachMate(3)));
+        // A heal on one teammate, by slot; the plain heal is one's own.
+        assert_eq!(Goal::HealMate(2).label().as_str(), "heal:m2");
+        assert_eq!(Goal::HealMate(2).key(), "heal");
+        assert_eq!(Goal::named("heal:m2"), Some(Goal::HealMate(2)));
+        assert_eq!(Goal::named("heal"), Some(Goal::Heal));
+        for bad in ["heal:m0", "heal:m9", "heal:Ash", "heal:2"] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("heal:m2", s.options()), None, "not offered");
+        s.offer(Goal::HealMate(2));
+        assert_eq!(Goal::parse("heal:m2", s.options()), Some(Goal::HealMate(2)));
+        assert_eq!(Goal::parse("heal:m1", s.options()), None);
         assert_eq!(Goal::named("follow:n1"), Some(Goal::FollowNear(1)));
         assert_eq!(Goal::named("follow:n5"), None, "past NEAR_MAX");
         // A give to a slot: one form per teammate, filled in with the item.
@@ -4484,7 +4865,39 @@ mod tests {
             None,
             "another slot"
         );
-        // A give is a live answer, never a plan step.
+        // A revive and a bag give, by slot; a repair stands alone.
+        assert_eq!(Goal::ReviveMate(2).label().as_str(), "revive:m2");
+        assert_eq!(Goal::GiveBag(3).label().as_str(), "give_bag:m3");
+        assert_eq!(Goal::named("revive:m2"), Some(Goal::ReviveMate(2)));
+        assert_eq!(Goal::named("give_bag:m3"), Some(Goal::GiveBag(3)));
+        assert_eq!(Goal::named("repair"), Some(Goal::Repair));
+        for bad in [
+            "revive:m0",
+            "revive:m9",
+            "revive",
+            "give_bag:Ash",
+            "give_bag",
+        ] {
+            assert_eq!(Goal::named(bad), None, "{bad}");
+        }
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("revive:m2", s.options()), None, "not offered");
+        s.offer(Goal::ReviveMate(2));
+        s.offer(Goal::GiveBag(1));
+        assert_eq!(
+            Goal::parse("revive:m2", s.options()),
+            Some(Goal::ReviveMate(2))
+        );
+        assert_eq!(
+            Goal::parse("give_bag:m1", s.options()),
+            Some(Goal::GiveBag(1))
+        );
+        assert_eq!(Goal::parse("give_bag:m2", s.options()), None);
+        assert!(Plan::parse(&json!([{"goal": "revive:m1"}])).is_ok());
+        // A give is a live answer, never a plan step; so is a bag's.
+        assert!(Plan::parse(&json!([{"goal": "give_bag:m1"}]))
+            .unwrap_err()
+            .contains("live answer"));
         for give in ["give:Wood", "give:m2:Wood"] {
             let plan = json!([{"goal": give}]);
             assert!(
@@ -4744,10 +5157,83 @@ mod tests {
         assert!(mind.ask(t0, &s));
         assert!(mind.poll(t0 + cfg.timeout).is_none(), "expired answer");
         assert_eq!((mind.stats.failures, mind.stats.late), (1, 1));
+        // The goal it carried is kept for the body to tell the mind, once.
+        assert_eq!(mind.take_late(), Some(Goal::Wait));
+        assert_eq!(mind.take_late(), None);
         let backoff = t0 + cfg.timeout;
         assert_eq!(mind.mode(backoff), Mode::BackingOff);
         assert!(!mind.ask(backoff + cfg.interval, &s));
         assert!(mind.ask(backoff + cfg.interval * 2, &s));
+        // A fresh answer is no late one.
+        assert!(mind.poll(backoff + cfg.interval * 2).is_some());
+        assert_eq!(mind.take_late(), None);
+        // Nor is a turn the autopilot played without asking it: that one
+        // was never the mind's, late or not.
+        let gate = Some(crate::autopilot::FRIEND_AWAY);
+        let mut gated =
+            Mind::inline(crate::autopilot::Autopilot::new(Counting(0), gate), cfg).unwrap();
+        s.friend = FriendSense {
+            set: true,
+            ..FriendSense::NONE
+        };
+        let t1 = Instant::now();
+        assert!(gated.ask(t1, &s));
+        assert!(gated.poll(t1 + cfg.timeout).is_none(), "expired answer");
+        assert_eq!(gated.stats.late, 1);
+        assert_eq!(gated.take_late(), None);
+    }
+
+    /// The mind reads what ran, why it ended and who chose it, and what
+    /// became of its last answer: a choice that never ran is said so, not
+    /// left looking like the one that did (#548, #599).
+    #[test]
+    fn the_mind_reads_its_recent_goals_and_its_answer_s_fate() {
+        let mut s = Summary::EMPTY;
+        assert_eq!(s.to_json()["recent_goals"], json!([]));
+        assert!(s.to_json()["your_last_answer"].is_null());
+        let wood = Name::new(b"Wood").unwrap();
+        let rows = [
+            (Goal::Explore, Outcome::Done, By::Autopilot),
+            (Goal::Sell(wood), Outcome::Failed(Why::NotFound), By::Mind),
+            (Goal::GoHome, Outcome::Interrupted(Why::LogOff), By::Body),
+        ];
+        for (goal, outcome, by) in rows {
+            s.recent.push(Report {
+                goal,
+                outcome,
+                gained: 3,
+                secs: 20,
+                by,
+            });
+        }
+        s.answer = Some(AnswerFate::new(Goal::Explore, Fate::DroppedStale));
+        let v = s.to_json();
+        let recent = v["recent_goals"].as_array().unwrap();
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0]["goal"], "explore", "oldest first");
+        assert_eq!(recent[0]["by"], "autopilot");
+        assert!(recent[0]["why"].is_null());
+        assert_eq!(recent[1]["outcome"], "failed");
+        assert_eq!(recent[1]["why"], Why::NotFound.text());
+        assert_eq!(recent[1]["by"], "you");
+        assert_eq!(recent[2]["by"], "body");
+        assert_eq!(
+            v["your_last_answer"],
+            json!({"goal": "explore", "fate": Fate::DroppedStale.words(), "why": null})
+        );
+        // Eight is all it keeps, and the oldest goes first.
+        for _ in 0..GOAL_HISTORY {
+            s.recent.push(Report {
+                goal: Goal::Wait,
+                outcome: Outcome::Done,
+                gained: 0,
+                secs: 1,
+                by: By::Mind,
+            });
+        }
+        let recent = s.to_json()["recent_goals"].as_array().unwrap().clone();
+        assert_eq!(recent.len(), GOAL_HISTORY);
+        assert!(recent.iter().all(|r| r["goal"] == "wait"));
     }
 
     /// A character's traits move the playbook's numbers, and a body of
@@ -4765,6 +5251,32 @@ mod tests {
         assert_eq!(pick(Traits::MID.knobs()), Goal::Flee);
         assert_eq!(pick(Traits::MID.knobs()), Scripted::default().pick(&s).0);
         assert_ne!(pick(Traits([100; 7]).knobs()), Goal::Flee, "the bold stay");
+    }
+
+    /// The playbook gets a downed teammate up while it holds a syringe: a
+    /// revive on offer comes before the work, after a badly hurt body's
+    /// own retreat; the one on offer is the one picked.
+    #[test]
+    fn the_scripted_policy_revives_a_downed_teammate() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        s.offer(Goal::GatherWood);
+        s.trees.add(10.0, 0);
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        (s.hp_max, s.hp) = (100, 100);
+        s.free_slots = 20;
+        s.team.who_len = 2;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherWood, "nobody down");
+        s.offer(Goal::ReviveMate(2));
+        let (goal, why) = scripted.pick(&s);
+        assert_eq!(goal, Goal::ReviveMate(2), "{why}");
+        // Badly hurt with a body in view and struck: away first.
+        s.hits = 1;
+        s.hp = 5;
+        s.players.add(5.0, 0);
+        s.offer(Goal::Flee);
+        assert_eq!(scripted.pick(&s).0, Goal::Flee);
     }
 
     #[test]
@@ -4804,6 +5316,7 @@ mod tests {
             outcome: Outcome::Running,
             gained: 150,
             secs: 30,
+            by: By::Mind,
         });
         s.trigger = Trigger::Heartbeat;
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
@@ -4937,6 +5450,13 @@ mod tests {
         // Defend is a run, once: home not struck, it says so.
         let c = ask(&mut s, boss, false, "defend");
         assert_eq!(said(&c).as_deref(), Some("can't right now"));
+        // Its own name opening the line says who it is for: no stone run.
+        s.team.name = protocol::Name::new("Stone-2").unwrap();
+        let c = ask(&mut s, boss, false, "Stone-2 follow me");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Follow, Some("following you"))
+        );
     }
 
     /// A turncoat gone stray waits to be taken on, gets on its new team's
@@ -5116,6 +5636,7 @@ mod tests {
             outcome: Outcome::Failed(Why::NotFound),
             gained: 0,
             secs: 20,
+            by: By::Mind,
         });
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
         s.last = None;
@@ -5382,6 +5903,7 @@ mod tests {
             outcome: Outcome::Running,
             gained: 0,
             secs: 3,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::Recover);
     }
@@ -5506,6 +6028,7 @@ mod tests {
             outcome: Outcome::Done,
             gained: 300,
             secs: 40,
+            by: By::Mind,
         });
         s.offer(Goal::GoHome);
         assert_eq!(scripted.pick(&s).0, Goal::GoHome, "then home with the take");
@@ -5579,6 +6102,7 @@ mod tests {
             outcome: Outcome::Done,
             gained: 3,
             secs: 90,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.loot.add(25.0, 0);
@@ -5655,6 +6179,7 @@ mod tests {
             outcome: Outcome::Failed(Why::NotFound),
             gained: 0,
             secs: 20,
+            by: By::Mind,
         });
         assert_eq!(scripted.pick(&s).0, Goal::Explore);
         // A carcass pays cloth too.
@@ -5782,5 +6307,121 @@ mod tests {
         s.items[2] = (name("Stone"), 1200);
         assert_eq!(scripted.pick(&s).0, Goal::FeedWork);
         assert_eq!(s.to_json()["base_next"]["waiting_on_work"], "THE CRUCIBLE");
+    }
+
+    /// THE SEVERED GATE has no tank: lit, it is open for the rest of the
+    /// wipe, with no fuel to name. A countdown says whether a quota paid
+    /// for it or its own hour came, and how long is left; the vaults read
+    /// sealed until the Gate is open.
+    #[test]
+    fn the_gate_reads_open_and_a_countdown_says_what_started_it() {
+        use sim_core::works::{WORK_COUNTDOWN, WORK_LIT};
+        let mut s = Summary::EMPTY;
+        s.works[0] = WorkSense {
+            name: name("THE SEVERED GATE"),
+            state: WORK_COUNTDOWN,
+            tankless: true,
+            opens_in_min: 42,
+            ..WorkSense::EMPTY
+        };
+        s.works[1] = WorkSense {
+            name: name("THE CRUCIBLE"),
+            state: WORK_LIT,
+            fuel: name("Wood"),
+            fuel_room: 300,
+            ..WorkSense::EMPTY
+        };
+        s.works[2] = WorkSense {
+            name: name("THE EXCHANGE"),
+            state: WORK_COUNTDOWN,
+            paid: true,
+            opens_in_min: 5,
+            ..WorkSense::EMPTY
+        };
+        s.works_len = 3;
+        let v = s.places_json();
+        let works = &v["works"];
+        assert_eq!(
+            works[0]["state"],
+            "counting down to its own hour: opens in 42 min"
+        );
+        assert!(!works[0]["state"].as_str().unwrap().contains("quota"));
+        assert_eq!(works[1]["state"], "lit: burns fuel");
+        assert_eq!(works[1]["fuel"], json!({"name": "Wood", "room": 300}));
+        assert_eq!(
+            works[2]["state"],
+            "counting down: quota met, lights in 5 min"
+        );
+        assert!(v["vaults"].as_str().unwrap().starts_with("sealed"));
+
+        s.works[0].state = WORK_LIT;
+        s.gate_open = true;
+        let v = s.places_json();
+        assert_eq!(v["works"][0]["state"], "open: for the rest of the wipe");
+        assert!(v["works"][0]["fuel"].is_null(), "no tank, no fuel");
+        assert!(v["vaults"].as_str().unwrap().starts_with("open"));
+    }
+
+    /// `loot` and `feed` on team chat are a run each, once: a crew body
+    /// takes it, says so, and does not head home instead.
+    #[test]
+    fn a_crew_body_loots_and_feeds_the_works_when_told() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Loot] {
+            s.offer(g);
+        }
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.team.mates = 1;
+        s.team.awake.add(6.0, 0);
+        let mut ask = |s: &mut Summary, text: &str| {
+            s.heard.clear();
+            s.heard.push(heard(protocol::Channel::Team, text, false));
+            scripted.decide(s).unwrap()
+        };
+        let c = ask(&mut s, "all loot");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Loot, Some("on it: loot"))
+        );
+        let c = ask(&mut s, "feed the works");
+        assert_eq!(said(&c).as_deref(), Some("can't right now"), "not offered");
+        assert_ne!(c.goal, Goal::GoHome);
+        s.offer(Goal::FeedWork);
+        let c = ask(&mut s, "deposit for the quota");
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::FeedWork, Some("on it: the works"))
+        );
+        let c = ask(&mut s, "meet me at the gate");
+        assert!(said(&c).is_none(), "no order");
+    }
+
+    /// `missing` shows the subtraction, not only its answer: 500 Wood in
+    /// the pack beside 90 missing read as a wrong number (#569, #572)
+    /// until the 590 the shell costs was said beside them.
+    #[test]
+    fn base_next_missing_shows_what_the_count_is_made_of() {
+        let mut s = Summary::EMPTY;
+        s.needs[0] = (name("Wood"), 90);
+        s.needs_parts[0] = (590, 500, 0);
+        s.needs[1] = (name("Stone"), 30);
+        s.needs_parts[1] = (100, 40, 30);
+        s.needs_len = 2;
+        let missing = &s.to_json()["base_next"]["missing"];
+        assert_eq!(
+            missing[0],
+            json!({"name": "Wood", "count": 90, "costs": 590, "you_carry": 500, "boxed": 0})
+        );
+        for row in missing.as_array().unwrap() {
+            let n = |k: &str| row[k].as_u64().unwrap();
+            assert_eq!(
+                n("count"),
+                n("costs") - n("you_carry") - n("boxed"),
+                "{row}"
+            );
+        }
+        assert_eq!(missing.as_array().unwrap().len(), 2);
     }
 }

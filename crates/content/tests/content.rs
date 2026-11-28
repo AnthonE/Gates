@@ -714,6 +714,15 @@ fn repair_price_bands_refused() {
     let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     b.1 = b.1.replace("repair_cost_pct = 100", "repair_cost_pct = 1");
     build(&srcs).expect("1% is legal — cheap is the operator's call to make");
+    // An item's bench repair: free and dearer than a new one are refused.
+    for bad in ["0", "101"] {
+        refuses(
+            "balance.toml",
+            "item_repair_cost_pct = 20",
+            &format!("item_repair_cost_pct = {bad}"),
+            "item_repair_cost_pct",
+        );
+    }
 }
 
 #[test]
@@ -1187,6 +1196,10 @@ fn bake_craft_carries_the_shipped_numbers() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let cc = c.bake_craft().expect("shipped recipes must bake");
     assert_eq!(cc.recipe_count as usize, c.recipes.len());
+    assert_eq!(
+        cc.repair_pct as u32, c.balance.globals.item_repair_cost_pct,
+        "the bench repair's share rides the table"
+    );
 
     // recipes.toml recipe.hatchet_stone: 100 wood + 50 stone → 1 hatchet,
     // 15 s at station none — read back from the baked row.
@@ -5535,5 +5548,65 @@ fn genes_live_on_crop_seeds_alone_and_nothing_eats_them_blind() {
         "w_pct = 25",
         "w_pct = 101",
         "past 100 per cent",
+    );
+}
+
+/// A spear's throw (`[weapon.throw]`) reaches the sim in its units, and the
+/// validator refuses the throws the sim cannot fly — on a row that is not
+/// melee, too fast for the arrow's sampler, with no gravity, with a windup
+/// past the catalog's byte, or one that kills a naked head outright.
+#[test]
+fn a_spears_throw_bakes_and_the_bad_ones_are_refused() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let cc = c.bake_combat().expect("shipped combat bakes");
+    let idx = c.item_index("item.spear_wood").expect("the wooden spear") as usize;
+    let (hurl, melee) = cc.held_hurl(idx as u16).expect("the wooden spear throws");
+    let hz = sim_core::limits::TICK_HZ;
+    assert_eq!(hurl.speed_mmpt as u32, 20 * 1000 / hz);
+    assert_eq!(hurl.damage, 30);
+    assert_eq!(hurl.windup_ticks as u32, 500 * hz / 1000);
+    assert!(hurl.drop_mmpt2 > 0);
+    assert_eq!(melee.damage, 20, "the swing is the row's own");
+    // A hatchet throws nothing.
+    let hatchet = c.item_index("item.hatchet_stone").unwrap();
+    assert!(cc.held_hurl(hatchet).is_none());
+
+    let throw = "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500";
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 2000\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500",
+        "the arrow's sampler can trace",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 0\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 500",
+        "the arrow's sampler can trace",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 0\ndamage = 30\nwindup_ms = 500",
+        "drop_mps2 0 must be nonzero",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 30\nwindup_ms = 10000",
+        "outside 1..=255",
+    );
+    refuses(
+        "weapons.toml",
+        throw,
+        "[weapon.throw]\nspeed_mps = 20\ndrop_mps2 = 10\ndamage = 50\nwindup_ms = 500",
+        "kills a naked",
+    );
+    // Only a melee weapon is thrown: a bow's throw is refused.
+    refuses(
+        "weapons.toml",
+        "draw_ms = 1000",
+        &format!("draw_ms = 1000\n\n{throw}"),
+        "only a melee weapon is thrown",
     );
 }

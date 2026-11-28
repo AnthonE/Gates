@@ -1008,11 +1008,17 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     skin: 0,
                 });
             }
+            // A cancel names the recipe the queue holds at its index now,
+            // as a click would (wire v157), so it cancels what it always
+            // did. Exact because commands apply before the tick's craft
+            // step and no craft of this id rides the same tick (37 × 149
+            // is past `TICKS`).
             if (t + id as u64).is_multiple_of(149) {
-                cmds.push(Command::CraftCancel {
-                    id,
-                    index: (t % 4) as u16,
-                });
+                let index = (t % 4) as u16;
+                let recipe = world
+                    .live_slot_of(id)
+                    .map_or(0, |s| world.players[s].jobs[index as usize].recipe);
+                cmds.push(Command::CraftCancel { id, index, recipe });
             }
             // The build verb rides the log too: places at the player's own
             // cell (successes once wood accrues) plus out-of-range rows and

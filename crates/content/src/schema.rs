@@ -682,6 +682,28 @@ pub struct Weapon {
     /// How a firearm handles — trigger, pellets, cone, falloff, recoil.
     /// Required on every firearm and refused on everything else.
     pub gun: Option<GunSpec>,
+    /// The weapon thrown (Rust's spear): only on a melee row
+    /// (`sim_core::combat::HurlDef`, `ranged::hurl`).
+    pub throw: Option<ThrowSpec>,
+}
+
+/// A melee weapon's throw, `[weapon.throw]`: the right mouse held for
+/// `windup_ms`, a click, and the weapon itself flies as an arrow does, to
+/// lie where it comes down. What it takes off a wall and what a head or a
+/// leg is worth stay the row's own `structure`, `headshot_pct` and
+/// `limb_pct`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThrowSpec {
+    /// Speed out of the hand, m/s — a round's `speed_mps`, held to the
+    /// arrow's sampler the same way.
+    pub speed_mps: u32,
+    /// Gravity in flight, m/s² — a round's `drop_mps2`.
+    pub drop_mps2: u32,
+    /// What it hits a body or an animal for.
+    pub damage: u32,
+    /// Milliseconds the right mouse must be held before it can be thrown.
+    pub windup_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1498,6 +1520,11 @@ pub struct Globals {
     /// build cost (100 = the damage's worth exactly). Percent so the file
     /// stays integer-only, like `raid_ratio_stone_pct`.
     pub repair_cost_pct: u32,
+    /// What mending a worn item from nothing back to whole costs at a
+    /// workbench, as a percent of the recipe that makes it
+    /// (`sim_core::craft::repair_item`). Percent for `repair_cost_pct`'s
+    /// reason.
+    pub item_repair_cost_pct: u32,
     /// Unpaid decay per upkeep period, % of max hp, keyed by material.
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).

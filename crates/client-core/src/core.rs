@@ -1270,7 +1270,9 @@ impl ClientCore {
     }
 
     /// The player agent `id` serves, a person on its team (`EventMsg::Crew`,
-    /// v154): what its nametag names as `crew of`. `None` for nobody.
+    /// v154): what its nametag names as `crew of`. `None` for nobody, and
+    /// for an agent whose commander is away, off its team or an agent (the
+    /// shard sends 0 for each), which still obeys only that commander.
     pub fn crew_of(&self, id: u32) -> Option<u32> {
         self.crews
             .get(protocol::player_id_slot(id))
@@ -1283,6 +1285,57 @@ impl ClientCore {
     /// [`protocol::TeamView::NONE`] until it has.
     pub fn team(&self) -> &protocol::TeamView {
         &self.team
+    }
+
+    /// Each teammate's map marks as they last sent them (`EventMsg::
+    /// TeamPins`, v157): whose, and the set. Only a mate on the team now
+    /// with at least one mark; never your own.
+    pub fn team_pins(&self) -> impl Iterator<Item = (u32, &protocol::PinSet)> + '_ {
+        self.team_pins
+            .iter()
+            .filter(|(id, pins)| *id != 0 && pins.n > 0 && self.is_teammate(*id))
+            .map(|(id, pins)| (*id, pins))
+    }
+
+    /// Keep teammate `from`'s set in place of the one before; an empty set
+    /// clears their row. The shard relays only a mate's, so one from a
+    /// player this team view has not caught up with yet is kept, and the
+    /// next view prunes it if they never join (`prune_team_pins`).
+    fn apply_team_pins(&mut self, from: u32, pins: protocol::PinSet) {
+        if from == 0 || from == self.player_id {
+            return;
+        }
+        let rows = &mut self.team_pins;
+        let theirs = rows.iter().position(|(id, _)| *id == from);
+        if pins.n == 0 {
+            if let Some(at) = theirs {
+                rows[at] = (0, protocol::PinSet::NONE);
+                self.team_pins_gen = self.team_pins_gen.wrapping_add(1);
+            }
+            return;
+        }
+        let at = theirs
+            .or_else(|| rows.iter().position(|(id, _)| *id == 0))
+            .or_else(|| rows.iter().position(|(id, _)| !self.team.has(*id)));
+        if let Some(at) = at {
+            rows[at] = (from, pins);
+            self.team_pins_gen = self.team_pins_gen.wrapping_add(1);
+        }
+    }
+
+    /// Forget the marks of anyone no longer on the team, as a new team view
+    /// lands: a mate who left, was kicked, or a team you left.
+    fn prune_team_pins(&mut self) {
+        let mut moved = false;
+        for row in self.team_pins.iter_mut() {
+            if row.0 != 0 && !self.team.has(row.0) {
+                *row = (0, protocol::PinSet::NONE);
+                moved = true;
+            }
+        }
+        if moved {
+            self.team_pins_gen = self.team_pins_gen.wrapping_add(1);
+        }
     }
 
     /// Auto turret `key` as the shard last told this client
@@ -1843,6 +1896,13 @@ pub struct ClientCore {
     team: protocol::TeamView,
     /// Bumped on every `Team`, so a renderer redraws only when it moved.
     pub team_gen: u32,
+    /// Teammates' map marks (`EventMsg::TeamPins`, v157), one row a mate:
+    /// their id (0 for an empty row) and their set. Read with
+    /// [`Self::team_pins`].
+    team_pins: [(u32, protocol::PinSet); protocol::TEAM_MAX],
+    /// Bumped whenever a mate's marks arrive or go, so the map redraws them
+    /// only then.
+    pub team_pins_gen: u32,
     /// The vending machines this client was told about (`EventMsg::Shop`,
     /// v118), newest kept: a machine's slot is reused for it, else an empty
     /// one, else the one told longest ago. Read with [`Self::shop_offers`].
@@ -1974,6 +2034,17 @@ pub struct ClientCore {
     /// by)` per lock solved — read once in `render/feed.rs`.
     arc_texts: crate::arc::Ring<(u8, u8, u8), TOAST_RING>,
     mech_solves: crate::arc::Ring<(u8, u32), TOAST_RING>,
+    /// `(healer, item)` per heal another player landed on this body
+    /// (`EventMsg::Healed`, v157) — drop-oldest, read once in
+    /// `render/feed.rs`.
+    healed_by: crate::arc::Ring<(u32, u16), TOAST_RING>,
+    /// `(healed, item)` per heal this body landed on another player (the
+    /// same `EventMsg::Healed`, told to the healer) — read once in
+    /// `render/feed.rs`.
+    heals_given: crate::arc::Ring<(u32, u16), TOAST_RING>,
+    /// The giver per sleeping bag a teammate gave this player
+    /// (`EventMsg::BagGiven`, v157) — read once in `render/feed.rs`.
+    bags_given: crate::arc::Ring<u32, TOAST_RING>,
     swipe_refusals: [(u8, u8); REFUSAL_RING],
     swipe_refusal_head: usize,
     swipe_refusal_len: usize,
@@ -2550,6 +2621,8 @@ impl ClientCore {
             crews: vec![(0, 0); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             team: protocol::TeamView::NONE,
             team_gen: 0,
+            team_pins: [(0, protocol::PinSet::NONE); protocol::TEAM_MAX],
+            team_pins_gen: 0,
             shops: [protocol::ShopView::default(); SHOP_VIEWS],
             shop_told: [0; SHOP_VIEWS],
             shop_gen: 0,
@@ -2770,6 +2843,9 @@ impl ClientCore {
             lore: Box::default(),
             arc_texts: Default::default(),
             mech_solves: Default::default(),
+            healed_by: Default::default(),
+            heals_given: Default::default(),
+            bags_given: Default::default(),
             swipe_refusals: [(0, 0); REFUSAL_RING],
             swipe_refusal_head: 0,
             swipe_refusal_len: 0,
@@ -3305,7 +3381,9 @@ impl ClientCore {
             EventMsg::Team(view) => {
                 self.team = view;
                 self.team_gen = self.team_gen.wrapping_add(1);
+                self.prune_team_pins();
             }
+            EventMsg::TeamPins { from, pins } => self.apply_team_pins(from, pins),
             EventMsg::Turret(view) => {
                 self.turret = view;
                 self.turret_gen = self.turret_gen.wrapping_add(1);
@@ -3492,9 +3570,13 @@ impl ClientCore {
                 total,
                 first,
                 count,
+                repair_pct,
                 rows,
             } => {
                 self.recipes.recipe_count = total as u16;
+                // The item repair price (v157), the item card's quote
+                // (`craft::repair_cost`).
+                self.recipes.repair_pct = repair_pct;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.recipes.recipes[first as usize + i] = *row;
                 }
@@ -4349,6 +4431,15 @@ impl ClientCore {
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
+            // Told to its two players: which end this is says which line.
+            EventMsg::Healed { by, to, item } => {
+                if to == self.player_id {
+                    self.healed_by.push((by, item));
+                } else if by == self.player_id {
+                    self.heals_given.push((to, item));
+                }
+            }
+            EventMsg::BagGiven { by } => self.bags_given.push(by),
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
                 self.assist = (0, 0, 0);
@@ -5228,6 +5319,21 @@ impl ClientCore {
         self.mech_solves.pop()
     }
 
+    /// Oldest heal another player landed on this body: `(healer, item)`.
+    pub fn pop_healed_by(&mut self) -> Option<(u32, u16)> {
+        self.healed_by.pop()
+    }
+
+    /// Oldest heal this body landed on another player: `(healed, item)`.
+    pub fn pop_heal_given(&mut self) -> Option<(u32, u16)> {
+        self.heals_given.pop()
+    }
+
+    /// Oldest sleeping bag a teammate gave this player: the giver.
+    pub fn pop_bag_given(&mut self) -> Option<u32> {
+        self.bags_given.pop()
+    }
+
     /// Oldest swipe refusal: `(code, door)`.
     pub fn pop_swipe_refused(&mut self) -> Option<(u8, u8)> {
         if self.swipe_refusal_len == 0 {
@@ -5394,6 +5500,22 @@ impl ClientCore {
                 .rows
                 .get(item as usize)
                 .is_some_and(|r| r.revive))
+        .then_some(self.input.sel)
+    }
+
+    /// The selected hotbar slot, when what is in it heals a standing
+    /// teammate (`SurvivalContent::heals_other`, read off the catalog row
+    /// it rides): a row that heals and either revives (the syringe, at
+    /// once) or is wrapped on (the bandage). The medkit is neither. `E` on
+    /// a standing player sends it (`ActionMsg::Treat`).
+    pub fn held_heal_slot(&self) -> Option<u8> {
+        let item = self.held_item();
+        (item != NO_ITEM
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.health > 0 && (r.revive || r.use_ticks > 0)))
         .then_some(self.input.sel)
     }
 
@@ -5986,6 +6108,79 @@ mod tests {
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// A teammate's marks (v157) replace the set before, an empty set clears
+    /// theirs, your own never land, and a mate who leaves the team takes
+    /// theirs off the map with the next team view.
+    #[test]
+    fn team_pins_follow_the_team() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (me, a, b) = (0x107, 0x208, 0x309);
+        let member = |id| protocol::TeamMember {
+            id,
+            ..Default::default()
+        };
+        let view = |ids: &[u32]| {
+            let mut v = protocol::TeamView::NONE;
+            v.leader = ids[0];
+            for (i, &id) in ids.iter().enumerate() {
+                v.members[i] = member(id);
+            }
+            v.count = ids.len() as u8;
+            v
+        };
+        let send = |c: &mut ClientCore, buf: &mut [u8], from: u32, labels: &[&str]| {
+            let mut set = protocol::PinSet::NONE;
+            for (i, l) in labels.iter().enumerate() {
+                set.push(protocol::WirePin::new(100 + i as u16, 200, 1, 0, l).unwrap());
+            }
+            let len = protocol::encode_event_team_pins(from, &set, buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        };
+        let len = protocol::encode_event_team(&view(&[me, a, b]), &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let labels = |c: &ClientCore| -> Vec<(u32, Vec<String>)> {
+            c.team_pins()
+                .map(|(id, s)| (id, s.pins().iter().map(|p| p.label().into()).collect()))
+                .collect()
+        };
+        let gen = c.team_pins_gen;
+        send(&mut c, &mut buf, a, &["RAID", "LOOT"]);
+        send(&mut c, &mut buf, b, &["HOME"]);
+        send(&mut c, &mut buf, me, &["MINE"]);
+        assert_ne!(c.team_pins_gen, gen, "a mate's set must redraw");
+        assert_eq!(
+            labels(&c),
+            vec![
+                (a, vec!["RAID".into(), "LOOT".into()]),
+                (b, vec!["HOME".into()])
+            ],
+            "never your own"
+        );
+        // A new set replaces the old one, and an empty one clears it.
+        send(&mut c, &mut buf, a, &["MEET"]);
+        send(&mut c, &mut buf, b, &[]);
+        assert_eq!(labels(&c), vec![(a, vec!["MEET".into()])]);
+        // B sends again, then A leaves: the next view takes A's marks away.
+        send(&mut c, &mut buf, b, &["HOME"]);
+        let gen = c.team_pins_gen;
+        let len = protocol::encode_event_team(&view(&[me, b]), &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_ne!(c.team_pins_gen, gen, "a mate leaving must redraw");
+        assert_eq!(labels(&c), vec![(b, vec!["HOME".into()])]);
+        // A set from somebody the view has not caught up with is held, and
+        // shown once they are on it.
+        send(&mut c, &mut buf, a, &["BACK"]);
+        assert_eq!(labels(&c).len(), 1, "not shown off the team");
+        let len = protocol::encode_event_team(&view(&[me, b, a]), &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(labels(&c).len(), 2, "shown once they join");
+        // Leaving the team clears everybody's.
+        let len = protocol::encode_event_team(&protocol::TeamView::NONE, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.team_pins().count(), 0);
     }
 
     /// A placement is drawn from the click until the server answers: its
@@ -6676,6 +6871,7 @@ mod tests {
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_RECIPES);
         assert_eq!((c.recipes.recipe_count, c.recipes_have), (3, took as u16));
         assert_eq!(c.recipes.recipes[1], cc.recipes[1]);
+        assert_eq!(c.recipes.repair_pct, cc.repair_pct, "the repair price");
 
         // The queue announce replaces the whole view.
         let jobs = [

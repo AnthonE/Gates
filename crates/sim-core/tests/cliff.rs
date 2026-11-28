@@ -6,7 +6,7 @@ use sim_core::cliff::{self, Crag, SPOTS_PER_SIDE};
 use sim_core::collide::{ColIndex, CAPSULE_RADIUS_M};
 use sim_core::input::InputFrame;
 use sim_core::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
-use sim_core::occupy::Scratch;
+use sim_core::occupy::{Scratch, SlotCache};
 use sim_core::terrain::{self, Haven, Lattice};
 use sim_core::yaw_dir;
 
@@ -184,4 +184,165 @@ fn a_body_cannot_climb_a_face_on_a_diagonal_or_stand_on_one() {
         pressed > 0,
         "no walk ever reached a face: the test walks nowhere"
     );
+}
+
+/// Every field of a crag, as bits.
+fn bits(c: &Crag) -> [u32; 10] {
+    [
+        c.x.to_bits(),
+        c.z.to_bits(),
+        c.hx.to_bits(),
+        c.hz.to_bits(),
+        c.dir.0.to_bits(),
+        c.dir.1.to_bits(),
+        c.y1.to_bits(),
+        c.tx.to_bits(),
+        c.tz.to_bits(),
+        u32::from(c.tooth) | u32::from(c.moss) << 1,
+    ]
+}
+
+/// `SlotCache::crags_near` skips the spots it knows grow no crag, and hands
+/// back exactly the crags a plain walk of `cliff::spots_near` through a
+/// fresh `cliff::crag` finds, in its order, bit for bit — cold, warm, and
+/// through a one-body cache whose lines a sweep this wide keeps evicting.
+/// Every crag predicate (a body's stop, its ground, the skin's room) reads
+/// only that list, so this is their equivalence too.
+#[test]
+fn crags_near_hands_back_exactly_the_crags_a_plain_walk_finds() {
+    let seed: u64 = 0x0047_4154_4553; // the golden seed, "GATES"
+    let haven = terrain::haven(seed);
+    let mut lat = Lattice::new();
+    let (teeth, ledges) = crags(seed, &haven, 12);
+    assert!(!teeth.is_empty() && !ledges.is_empty());
+    // Round each crag, then across the island on a coarse lattice (the sea
+    // and the island's edges included).
+    let mut points = Vec::new();
+    for c in teeth.iter().chain(ledges.iter()) {
+        let mut dz = -24.0f32;
+        while dz <= 24.0 {
+            let mut dx = -24.0f32;
+            while dx <= 24.0 {
+                points.push((c.x + dx, c.z + dz));
+                dx += 2.3;
+            }
+            dz += 2.3;
+        }
+    }
+    let mut z = -20.0f32;
+    while z < terrain::ISLAND_SIZE + 20.0 {
+        let mut x = -20.0f32;
+        while x < terrain::ISLAND_SIZE + 20.0 {
+            points.push((x, z));
+            x += 97.3;
+        }
+        z += 97.3;
+    }
+    // The plain walk's answers, each spot resolved once from scratch.
+    let mut truth = std::collections::BTreeMap::new();
+    let mut walks = Vec::new();
+    for &(x, z) in &points {
+        for pad in [0.0f32, CAPSULE_RADIUS_M, sim_core::face::CRAG_FADE_M] {
+            let mut want = Vec::new();
+            cliff::spots_near(x, z, pad, |gi, gj| {
+                let c = *truth
+                    .entry((gi, gj))
+                    .or_insert_with(|| cliff::crag(&mut lat, seed, &haven, gi, gj));
+                if c.is_some() {
+                    want.push(c);
+                }
+            });
+            walks.push((x, z, pad, want));
+        }
+    }
+    let mut shard = SlotCache::shard();
+    let mut one = SlotCache::new();
+    let mut found = 0usize;
+    for pass in 0..2 {
+        for (x, z, pad, want) in &walks {
+            let (x, z, pad) = (*x, *z, *pad);
+            for cache in [&mut shard, &mut one] {
+                let mut got = Vec::new();
+                cache.crags_near(seed, &haven, x, z, pad, |c| {
+                    got.push(*c);
+                    false
+                });
+                assert_eq!(got.len(), want.len(), "pass {pass} at ({x}, {z}) pad {pad}");
+                for (g, w) in got.iter().zip(want) {
+                    // Bits, where `==` would pass a -0.0 for a 0.0.
+                    assert_eq!(bits(g), bits(w), "pass {pass} at ({x}, {z})");
+                }
+            }
+            found += want.len();
+        }
+    }
+    assert!(found > 1000, "the sweep met only {found} crags");
+    // A stop is a stop: the walk ends at the first crag `f` refuses.
+    let c = teeth[0];
+    let mut n = 0;
+    shard.crags_near(seed, &haven, c.x, c.z, 0.0, |_| {
+        n += 1;
+        true
+    });
+    assert_eq!(n, 1);
+}
+
+/// The shard's gentle-quad bits (`SlotCache::shard`) change no
+/// `face::surface`: over the faces round every crag and across the island,
+/// cold and warm, it answers bit for bit what a cache without them does.
+#[test]
+fn the_shards_gentle_bits_change_no_surface() {
+    use sim_core::occupy::{Occupants, Pristine};
+    let seed: u64 = 0x0047_4154_4553; // the golden seed, "GATES"
+    let haven = terrain::haven(seed);
+    let table = terrain::ScatterTable::alpha_default();
+    let (teeth, ledges) = crags(seed, &haven, 8);
+    let mut points = Vec::new();
+    for c in teeth.iter().chain(ledges.iter()) {
+        let mut dz = -12.0f32;
+        while dz <= 12.0 {
+            let mut dx = -12.0f32;
+            while dx <= 12.0 {
+                points.push((c.x + dx, c.z + dz));
+                dx += 0.83;
+            }
+            dz += 0.83;
+        }
+    }
+    let mut z = -3.3f32;
+    while z < terrain::ISLAND_SIZE + 3.0 {
+        let mut x = -3.3f32;
+        while x < terrain::ISLAND_SIZE + 3.0 {
+            points.push((x, z));
+            x += 53.7;
+        }
+        z += 53.7;
+    }
+    let mut shard = SlotCache::shard();
+    let mut one = SlotCache::new();
+    let mut steep = 0usize;
+    for pass in 0..2 {
+        for &(x, z) in &points {
+            let mut ys = [0.0f32; 2];
+            for (y, cache) in ys.iter_mut().zip([&mut shard, &mut one]) {
+                let mut occ = Occupants {
+                    table: &table,
+                    haven: &haven,
+                    harvested: &Pristine,
+                    cache,
+                    doors: 0,
+                };
+                *y = sim_core::face::surface(&mut occ, seed, &haven, x, z);
+            }
+            assert_eq!(
+                ys[0].to_bits(),
+                ys[1].to_bits(),
+                "pass {pass} at ({x}, {z})"
+            );
+            if pass == 0 && ys[0] != terrain::ground(seed, &haven, x, z) {
+                steep += 1;
+            }
+        }
+    }
+    assert!(steep > 100, "only {steep} points stood on a face");
 }

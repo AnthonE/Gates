@@ -49,8 +49,21 @@
 //! the player it means is not on the shard to have an id. Only the accept
 //! loop holds the list, so it is the one that knows how either verb went,
 //! and it says so to the admin on an [`AdminReply`] ring back to the sim.
-//! What the sim refuses before the ring (no such player, no wallet to ban,
-//! the ring full) it answers itself, so every outcome reaches the admin.
+//! What the sim refuses before the ring (no such player, the ring full) it
+//! answers itself, so every outcome reaches the admin.
+//!
+//! ## A guest's ban is its address, for a day of this uptime
+//!
+//! A guest has no wallet, so `/ban` on one bans the source it joined from
+//! ([`GuestBans`]): the IPv4 address or the IPv6 /64, as `net.rs`'s
+//! `SourceGate` counts a source. It refuses **keyless** joins from there
+//! for [`GUEST_BAN_SECS`] or until the shard restarts, whichever is first,
+//! and is never written to `ban_file` (that file is wallets). A wallet
+//! signing in from the same address passes: a household or a campus behind
+//! one NAT keeps a way in, and the griefer is slowed, not stopped (a new
+//! address or /64 dodges it). The shard's own host — loopback and its own
+//! addresses, where the inhabitants and the house agents dial from — is
+//! never banned: `/ban` on a guest there only kicks it.
 
 use protocol::admin::{AdminCmd, WalletPrefix};
 use protocol::ChatText;
@@ -67,6 +80,15 @@ pub const MAX_ADMINS: usize = 16;
 /// evicting an earlier one — a griefer who bans their way back in by
 /// filling the list is exactly the hole a silent eviction would open.
 pub const MAX_BANS: usize = 256;
+
+/// The most guest addresses one shard may ban in one uptime
+/// ([`GuestBans`]). Full refuses the ban, as [`MAX_BANS`] does; a lapsed
+/// ban is no ban and makes room.
+pub const MAX_GUEST_BANS: usize = 256;
+
+/// How long a guest address ban holds, seconds: a day, so an address a
+/// griefer shared (a café, a phone network's NAT) heals on its own.
+pub const GUEST_BAN_SECS: u64 = 24 * 60 * 60;
 
 /// Verb codes for the anomaly log's `what` field. Integers because the log
 /// record is integers (wall 3); the names live in one place, here, and the
@@ -89,13 +111,15 @@ pub const VERB_RESTART: u16 = 13;
 /// `/arena` and `/leave` (v153): anybody's, logged because they move a
 /// player to another server.
 pub const VERB_TRAVEL: u16 = 14;
+/// `/suspects`: the cheat checks' flags, read by an admin.
+pub const VERB_SUSPECTS: u16 = 15;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
     match cmd {
         AdminCmd::Kick { .. } => VERB_KICK,
         AdminCmd::Ban { .. } => VERB_BAN,
-        AdminCmd::Unban { .. } => VERB_UNBAN,
+        AdminCmd::Unban { .. } | AdminCmd::UnbanGuests => VERB_UNBAN,
         AdminCmd::Say { .. } => VERB_SAY,
         AdminCmd::Teleport { .. } => VERB_TP,
         AdminCmd::Give { .. } => VERB_GIVE,
@@ -106,6 +130,7 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Restart { .. } | AdminCmd::RestartCancel => VERB_RESTART,
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
+        AdminCmd::Suspects => VERB_SUSPECTS,
         AdminCmd::Arena | AdminCmd::Leave => VERB_TRAVEL,
         // A `/bug` is never an admin act; it has its own `Kind`, and
         // `/top` and `/team` are anybody's.
@@ -201,8 +226,14 @@ pub enum AdminAct {
     Kick { by: u32, id: u32 },
     /// Kick, and remember the wallet for the rest of this uptime.
     Ban { by: u32, id: u32, key: PlayerKey },
+    /// `/ban` on a guest (no wallet): kick it and every guest from its
+    /// address, and refuse guests from there ([`GuestBans`]). Only the
+    /// accept loop knows the address.
+    BanGuest { by: u32, id: u32 },
     /// Forget the one banned wallet starting with `prefix`.
     Unban { by: u32, prefix: WalletPrefix },
+    /// `/unban guests`: forget every guest address ban.
+    UnbanGuests { by: u32 },
     /// `/arena` or `/leave` (v153): send player `id` to the arena, or back to
     /// the shard it came from, on a handoff (`handoff.rs`). `by` is the same
     /// player: it is told how it went if it did not go.
@@ -261,10 +292,40 @@ pub fn ban_full_line(id: u32) -> String {
     format!("{id} not banned: {MAX_BANS} bans")
 }
 
-/// `/ban`'s answer, from the sim, when the target joined with no wallet (a
-/// guest): there is nothing a ban could hold at the door, but a kick works.
-pub fn no_wallet_line(id: u32) -> String {
-    format!("{id} no wallet to ban: /kick it")
+/// `/ban`'s answer on a guest: an address ban, on what (masked), and when
+/// it lapses. `kicked` counts the guests from that address it closed, the
+/// target among them.
+pub fn guest_banned_line(id: u32, source: &GuestSource, kicked: usize) -> String {
+    let hours = GUEST_BAN_SECS / 3600;
+    let more = if kicked > 1 {
+        format!(", {kicked} kicked")
+    } else {
+        String::new()
+    };
+    format!(
+        "address ban {} ({id}): guests, lapses in {hours}h or at a restart{more}",
+        source.masked()
+    )
+}
+
+/// `/ban`'s answer on a guest from the shard's own host (loopback or its
+/// own address): banning it would lock out the inhabitants and the house
+/// agents, so the guest is only kicked.
+pub fn local_guest_line(id: u32) -> String {
+    format!("{id} is a local guest: kicked, not banned")
+}
+
+/// `/ban`'s answer on a guest when [`MAX_GUEST_BANS`] refused it.
+pub fn guest_ban_full_line(id: u32) -> String {
+    format!("{id} not banned: {MAX_GUEST_BANS} address bans")
+}
+
+/// `/unban guests`' answer: how many live address bans it lifted.
+pub fn unban_guests_line(lifted: usize) -> String {
+    match lifted {
+        0 => "no address bans".to_string(),
+        n => format!("lifted {n} address bans"),
+    }
 }
 
 /// The sim's answer to `/kick`, `/ban` or `/unban` when the ring to the
@@ -399,6 +460,97 @@ impl Bans {
     }
 }
 
+/// A guest's source as an address ban holds it: the whole IPv4 address, or
+/// the /64 of an IPv6 one — one source, as `net.rs`'s `SourceGate` counts
+/// it. A v4-mapped IPv6 address is its IPv4 address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestSource {
+    V4([u8; 4]),
+    V6([u8; 8]),
+}
+
+impl GuestSource {
+    pub fn of(ip: std::net::IpAddr) -> Self {
+        match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => Self::V4(v4.octets()),
+            std::net::IpAddr::V6(v6) => {
+                let mut net = [0u8; 8];
+                net.copy_from_slice(&v6.octets()[..8]);
+                Self::V6(net)
+            }
+        }
+    }
+
+    /// As an admin's answer shows it: enough to tell two bans apart, not
+    /// the whole address in a chat line — the last IPv4 octet and the /64's
+    /// last group are `x`.
+    pub fn masked(&self) -> String {
+        match self {
+            Self::V4([a, b, c, _]) => format!("{a}.{b}.{c}.x"),
+            Self::V6(n) => {
+                let g = |i: usize| u16::from_be_bytes([n[2 * i], n[2 * i + 1]]);
+                format!("{:x}:{:x}:{:x}:x::/64", g(0), g(1), g(2))
+            }
+        }
+    }
+}
+
+/// The guest addresses refused at the door, each until it lapses. Lives in
+/// the accept loop beside the source counts; uptime only, never in
+/// `ban_file`. A linear scan over at most [`MAX_GUEST_BANS`], asked once per
+/// keyless join.
+#[derive(Default)]
+pub struct GuestBans {
+    held: Vec<(GuestSource, std::time::Instant)>,
+}
+
+impl GuestBans {
+    pub fn new() -> Self {
+        Self {
+            held: Vec::with_capacity(MAX_GUEST_BANS),
+        }
+    }
+
+    /// Ban `ip`'s source for [`GUEST_BAN_SECS`] from `now`; a second ban
+    /// renews it. `false` ⇒ the list is full of live bans and this one did
+    /// NOT take: a full list refuses, never evicts, the [`Bans`] rule.
+    pub fn insert(&mut self, ip: std::net::IpAddr, now: std::time::Instant) -> bool {
+        let src = GuestSource::of(ip);
+        let until = now + std::time::Duration::from_secs(GUEST_BAN_SECS);
+        self.held.retain(|&(_, t)| now < t);
+        if let Some(held) = self.held.iter_mut().find(|(s, _)| *s == src) {
+            held.1 = until;
+            return true;
+        }
+        if self.held.len() >= MAX_GUEST_BANS {
+            return false;
+        }
+        self.held.push((src, until));
+        true
+    }
+
+    /// Is a guest from `ip` refused at `now`?
+    pub fn hit(&self, ip: std::net::IpAddr, now: std::time::Instant) -> bool {
+        let src = GuestSource::of(ip);
+        self.held.iter().any(|&(s, t)| s == src && now < t)
+    }
+
+    /// Lift every ban; how many were still live at `now`.
+    pub fn clear(&mut self, now: std::time::Instant) -> usize {
+        let live = self.held.iter().filter(|&&(_, t)| now < t).count();
+        self.held.clear();
+        live
+    }
+
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+}
+
 /// The file's text: the header, then a wallet a line — as typed when it is
 /// printable ASCII (an address always is), else `hex:` and its bytes.
 fn bans_text(keys: &[PlayerKey]) -> String {
@@ -507,6 +659,38 @@ pub fn brain_line(
         "{species}#{slot} {state}{status} >{target} hp{} {dist_m:.0}m r{roused_s}s",
         m.hp
     )
+}
+
+/// One `/suspects` row: who (id and the name they had when it flagged),
+/// which check, its numbers, and how long ago — `#259 Bob snap 5/12 41deg
+/// 2m ago`. The check's word is the anomaly log's (`cheat::Check::name`),
+/// so a row greps straight to its line there. Numbers are clamped to a u32
+/// so the row fits a chat line whatever a check ever writes.
+pub fn suspect_line(s: &crate::cheat::Suspect, now: u64) -> String {
+    use crate::cheat::Check;
+    let n = |v: i64| v.clamp(0, u32::MAX as i64);
+    let f = &s.flag;
+    let (a, b, c) = (n(f.a), n(f.b), n(f.c));
+    let what = match f.check {
+        Check::Snap => format!("{a}/{b} {c}deg"),
+        Check::Head => format!("{a}/{b} {c}%"),
+        Check::Wall => format!("{a} on #{b} {c}m"),
+    };
+    let secs = now.saturating_sub(s.tick) / sim_core::limits::TICK_HZ as u64;
+    let ago = if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", secs / 60)
+    };
+    let name = s.name.as_str();
+    let sep = if name.is_empty() { "" } else { " " };
+    format!("#{}{sep}{name} {} {what} {ago} ago", f.who, f.check.name())
+}
+
+/// `/suspects`' answer when nothing flagged in the window.
+pub fn no_suspects_line() -> String {
+    let mins = crate::cheat::WINDOW_TICKS / sim_core::limits::TICK_HZ as u64 / 60;
+    format!("no suspects in the last {mins} min")
 }
 
 /// `/weather`'s answer to the admin: the preset it asked for, by the word
@@ -669,9 +853,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Every answer an admin gets to a kick, ban or unban (the accept loop's
-    /// and the sim's own refusals) reads whole after the `[server] ` mark at
-    /// its longest: a ten-digit id, a full list.
+    /// Every answer an admin gets to a kick, ban, unban or `/suspects` (the
+    /// accept loop's and the sim's own refusals) reads whole after the
+    /// `[server] ` mark at its longest: a ten-digit id, a full list, a
+    /// longest name and numbers past any a check writes.
     #[test]
     fn the_admin_answers_fit_a_chat_line() {
         let room = ChatText::CAP - "[server] ".len();
@@ -681,16 +866,143 @@ mod tests {
             kicked_line(u32::MAX, false),
             banned_line(u32::MAX, &key(A)),
             ban_full_line(u32::MAX),
-            no_wallet_line(u32::MAX),
+            guest_banned_line(
+                u32::MAX,
+                &GuestSource::V6([0xff; 8]),
+                sim_core::limits::MAX_PLAYERS,
+            ),
+            local_guest_line(u32::MAX),
+            guest_ban_full_line(u32::MAX),
+            unban_guests_line(MAX_GUEST_BANS),
             RING_FULL_LINE.to_string(),
             unban_line(&pre, &Ok(key(A))),
             unban_line(&pre, &Err(UnbanMiss::None)),
             unban_line(&pre, &Err(UnbanMiss::Ambiguous(MAX_BANS))),
-        ] {
+            no_suspects_line(),
+        ]
+        .into_iter()
+        .chain(
+            [
+                crate::cheat::Check::Snap,
+                crate::cheat::Check::Head,
+                crate::cheat::Check::Wall,
+            ]
+            .map(|check| {
+                let flag = crate::cheat::Flag {
+                    who: u32::MAX,
+                    check,
+                    a: i64::MAX,
+                    b: i64::MAX,
+                    c: i64::MIN,
+                };
+                let name = "W".repeat(protocol::NAME_MAX_BYTES);
+                let s = crate::cheat::Suspect {
+                    tick: 0,
+                    flag,
+                    name: protocol::Name::new(&name).unwrap(),
+                };
+                suspect_line(&s, crate::cheat::WINDOW_TICKS)
+            }),
+        ) {
             assert!(line.len() <= room, "{line:?} is {} bytes", line.len());
             assert!(AdminReply::new(1, &line).is_some(), "{line:?}");
         }
         assert_eq!(banned_line(257, &key(A)), "banned 257 (0x001122334455)");
+        use crate::cheat::Check;
+        let row = |check, a, b, c, name: &str, ago_s: u64| {
+            let flag = crate::cheat::Flag {
+                who: 259,
+                check,
+                a,
+                b,
+                c,
+            };
+            let tick = 10_000;
+            let s = crate::cheat::Suspect {
+                tick,
+                flag,
+                name: protocol::Name::new(name).unwrap(),
+            };
+            suspect_line(&s, tick + ago_s * sim_core::limits::TICK_HZ as u64)
+        };
+        assert_eq!(
+            row(Check::Snap, 5, 12, 41, "Bob", 130),
+            "#259 Bob snap 5/12 41deg 2m ago"
+        );
+        assert_eq!(
+            row(Check::Head, 14, 20, 70, "", 9),
+            "#259 headshots 14/20 70% 9s ago"
+        );
+        assert_eq!(
+            row(Check::Wall, 3, 300, 42, "Bob", 0),
+            "#259 Bob wall_track 3 on #300 42m 0s ago"
+        );
+        assert_eq!(no_suspects_line(), "no suspects in the last 5 min");
+        let v4 = GuestSource::of("203.0.113.7".parse().unwrap());
+        assert_eq!(
+            guest_banned_line(1026, &v4, 1),
+            "address ban 203.0.113.x (1026): guests, lapses in 24h or at a restart"
+        );
+        let v6 = GuestSource::of("2001:db8:1:2:3:4:5:6".parse().unwrap());
+        assert_eq!(
+            guest_banned_line(1026, &v6, 3),
+            "address ban 2001:db8:1:x::/64 (1026): guests, lapses in 24h or at a restart, 3 kicked"
+        );
+    }
+
+    /// A guest address ban holds one source — an IPv4 address exactly, an
+    /// IPv6 /64 whole, a v4-mapped address as its IPv4 one — until it
+    /// lapses; a second ban renews it, and lifting says how many were live.
+    #[test]
+    fn a_guest_ban_holds_one_source_until_it_lapses() {
+        let ip = |s: &str| -> std::net::IpAddr { s.parse().unwrap() };
+        let t0 = std::time::Instant::now();
+        let day = std::time::Duration::from_secs(GUEST_BAN_SECS);
+        let sec = std::time::Duration::from_secs(1);
+        let mut b = GuestBans::new();
+        assert!(b.insert(ip("203.0.113.7"), t0));
+        assert!(b.hit(ip("203.0.113.7"), t0));
+        assert!(!b.hit(ip("203.0.113.8"), t0), "a neighbour is not banned");
+        assert!(
+            b.hit(ip("::ffff:203.0.113.7"), t0),
+            "v4-mapped is the v4 address"
+        );
+
+        assert!(b.insert(ip("2001:db8:1:2::9"), t0));
+        assert!(b.hit(ip("2001:db8:1:2:ffff::1"), t0), "the same /64");
+        assert!(!b.hit(ip("2001:db8:1:3::9"), t0), "another /64");
+        assert_eq!(b.len(), 2);
+
+        assert!(b.hit(ip("203.0.113.7"), t0 + day - sec));
+        assert!(!b.hit(ip("203.0.113.7"), t0 + day), "a day lifts it");
+        assert!(b.insert(ip("203.0.113.7"), t0 + day - sec), "renewed");
+        assert_eq!(b.len(), 2, "a renewal is the same ban");
+        assert!(b.hit(ip("203.0.113.7"), t0 + day + day - 2 * sec));
+        assert!(!b.hit(ip("2001:db8:1:2::9"), t0 + day), "the other lapsed");
+
+        assert_eq!(b.clear(t0 + day), 1, "one was still live");
+        assert!(b.is_empty());
+        assert!(!b.hit(ip("203.0.113.7"), t0));
+    }
+
+    /// A full guest list refuses a new ban rather than evicting a live one,
+    /// and a lapsed ban is no ban: it makes room.
+    #[test]
+    fn a_full_guest_list_refuses_until_a_ban_lapses() {
+        let t0 = std::time::Instant::now();
+        let mut b = GuestBans::new();
+        let nth = |i: usize| std::net::IpAddr::from([198, 51, (i >> 8) as u8, i as u8]);
+        for i in 0..MAX_GUEST_BANS {
+            assert!(b.insert(nth(i), t0));
+        }
+        let late: std::net::IpAddr = "203.0.113.1".parse().unwrap();
+        assert!(!b.insert(late, t0), "a full list must refuse, not evict");
+        assert!(!b.hit(late, t0));
+        assert!(b.hit(nth(0), t0), "the first still holds");
+        assert!(b.insert(nth(5), t0), "a renewal still takes");
+        let later = t0 + std::time::Duration::from_secs(GUEST_BAN_SECS);
+        assert!(b.insert(late, later), "lapsed bans make room");
+        assert_eq!(b.len(), 1);
     }
 
     /// A ban outlives the shard in its own file, read back as written —

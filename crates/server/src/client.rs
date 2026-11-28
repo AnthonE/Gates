@@ -595,6 +595,20 @@ pub struct ClientNetState {
     /// A team verb that left the action hand this tick, run after the sim
     /// step (`ShardCore::pump_teams`); never a `Command`.
     pub pending_team: Option<(u8, u32)>,
+    /// A set of map marks that left the action hand this tick, relayed to
+    /// the team after the sim step (`ShardCore::pump_teams`, v157); never a
+    /// `Command`.
+    pub pending_pins: Option<protocol::PinSet>,
+    /// This player's map marks as they last sent them, kept in memory while
+    /// they are connected and on a team (never saved; `reset`,
+    /// `ShardCore::disconnect` and the team's end drop it) so a mate who
+    /// joins later, or comes onto the team, is sent them without waiting on
+    /// this player's next change.
+    pub pins: protocol::PinSet,
+    /// The mates whose kept marks this connection has been sent since it
+    /// joined or they came onto its team (`ShardCore::drip_team_pins`); 0
+    /// is an empty seat.
+    pub pins_told: [u32; protocol::TEAM_MAX],
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -718,6 +732,9 @@ impl ClientNetState {
             last_team: None,
             team_sent_at: 0,
             pending_team: None,
+            pending_pins: None,
+            pins: protocol::PinSet::NONE,
+            pins_told: [0; protocol::TEAM_MAX],
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
@@ -731,6 +748,8 @@ impl ClientNetState {
     /// resend. The inventory shadow stays — it re-diffs against the world
     /// by itself.
     pub fn ev_resync(&mut self) {
+        // A ring that overflowed may have lost a mate's marks: owe them all.
+        self.pins_told = [0; protocol::TEAM_MAX];
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;

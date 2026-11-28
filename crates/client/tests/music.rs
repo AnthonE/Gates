@@ -132,6 +132,30 @@ fn the_menu_fades_a_world_song_into_the_intro() {
     );
 }
 
+/// The score answering THE SEVERED GATE (`Director::answer`) mid-song fades
+/// the song playing out and starts its own after the fade.
+#[test]
+fn an_answer_fades_the_song_out_under_it() {
+    let mut app = app();
+    assert_eq!(starts(&advance(&mut app, 10.0)), vec![director::INTRO]);
+    app.world_mut()
+        .resource_mut::<Sound>()
+        .music
+        .answer(director::TENSE_TRACK);
+    let orders = advance(&mut app, MUSIC_FADE_S * 0.5);
+    assert!(
+        starts(&orders).is_empty(),
+        "the answer started over the intro"
+    );
+    let orders = advance(&mut app, MUSIC_FADE_S);
+    let stop_at = orders.iter().position(|o| o.stop).expect("never stopped");
+    assert_eq!(
+        orders[stop_at].start,
+        Some(director::TENSE_TRACK),
+        "{orders:?}"
+    );
+}
+
 /// A page that started the intro inside the PLAY press hands it over, and
 /// the game does not start it again.
 #[test]

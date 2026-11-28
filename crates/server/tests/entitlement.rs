@@ -12,13 +12,27 @@
 use server::config::parse_shard_toml;
 use server::entitle::{self, Verdict};
 
-const BASE: &str = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+/// With the anomaly log a ticket door needs (the cheat checks write there).
+const BASE: &str = "bind = \"127.0.0.1:0\"\nseed = 1\nanomaly_file = \"anomaly.jsonl\"\n";
 
 fn cfg(extra: &str) -> Result<server::config::ShardConfig, String> {
     parse_shard_toml(&format!("{BASE}{extra}"))
 }
 
 // ── the pairing that would silently check nobody ────────────────────────────
+
+#[test]
+fn a_ticket_door_with_no_anomaly_log_refuses_to_boot() {
+    let err = parse_shard_toml(
+        "bind = \"127.0.0.1:0\"\nseed = 1\n\
+         entitle_origin = \"https://elo.example\"\nrequire_auth = true\n",
+    )
+    .expect_err("a shard that sells tickets keeps its cheat flags");
+    assert!(
+        err.contains("entitle_origin") && err.contains("anomaly_file"),
+        "got {err:?}"
+    );
+}
 
 #[test]
 fn a_ticket_door_over_an_open_door_refuses_to_boot() {

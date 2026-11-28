@@ -1114,7 +1114,7 @@ impl RecoverJob {
         let step = self.next(core, body, route, hands, hostile, gained, tick);
         let ended = matches!(
             step,
-            Do::Done | Do::Fail(Why::Refused | Why::Stuck | Why::Blocked)
+            Do::Done | Do::Fail(Why::Refused | Why::Stuck | Why::NoPath | Why::Blocked)
         );
         if ended && death_bag(core).is_some() {
             home.pack_tried(core);
@@ -1170,7 +1170,7 @@ impl RecoverJob {
                     return Do::Go(step.walk().unwrap_or(Intent::IDLE));
                 }
                 Step::Wait => return Do::Go(Intent::walk(yaw_toward(bx - x, bz - z))),
-                Step::Blocked if d > LOOT_REACH_M - 0.5 => return Do::Fail(Why::Stuck),
+                Step::Blocked if d > LOOT_REACH_M - 0.5 => return Do::Fail(route.blocked_why()),
                 Step::Arrived | Step::Blocked => {}
             }
         }

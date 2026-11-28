@@ -11,6 +11,29 @@ use sim_core::works::{
 
 /// Ticks an hour.
 const HOUR: f64 = 3600.0 * TICK_HZ as f64;
+/// Ticks a minute.
+const MINUTE: f64 = 60.0 * TICK_HZ as f64;
+
+// ---- by ear: the countdown's toll and the score's answer ----------------------
+// Opening values, not measured against anything: the operator tunes them by
+// ear. [`Toll`] and [`frame_score_answer`] read them.
+
+/// What a countdown tolls with ([`Toll`]): THE GATE's soft two-note bell.
+pub const TOLL_CUE: crate::sound::Cue = crate::sound::Cue::GateChime;
+/// The toll's gain, on the bell's own row: far off, under the chime a work
+/// event rings at full.
+pub const TOLL_GAIN: f32 = 0.6;
+/// The last minutes of a countdown toll once a minute, where the hours
+/// before them toll once an hour. 0 tolls the hours alone.
+pub const TOLL_LAST_MIN: u32 = 5;
+const _: () = assert!(
+    TOLL_LAST_MIN < 60,
+    "the minute marks sit under the last hour's"
+);
+/// The song the score answers THE SEVERED GATE opening with, over whatever
+/// plays ([`frame_score_answer`], `sound::music::Director::answer`): the
+/// uneasy one.
+pub const GATE_TRACK: crate::sound::music::Track = crate::sound::music::TENSE_TRACK;
 
 /// The act's name (`ARC.md` §2).
 pub fn act_title(act: u8) -> &'static str {
@@ -250,6 +273,9 @@ pub struct Banner {
 
 /// The work the banner follows: one counting down, else an open one with
 /// the most paid in, else the next to open, else the lit one burning lowest.
+/// A lit work with no tank (the open Gate) leads only when nothing else is
+/// lit: it reads 0% and would hold the banner for the rest of the wipe, so
+/// an act-II tank running dry would never show.
 pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
     let counting = arc
         .known()
@@ -272,9 +298,11 @@ pub fn focus(arc: &ArcView) -> Option<(usize, &WorkView)> {
     if sealed.is_some() {
         return sealed;
     }
-    arc.known()
-        .filter(|(_, w)| w.state == WORK_LIT)
+    let lit = || arc.known().filter(|(_, w)| w.state == WORK_LIT);
+    lit()
+        .filter(|(_, w)| w.def.fuel_max > 0)
         .min_by_key(|(_, w)| tank_pct(w))
+        .or_else(|| lit().next())
 }
 
 pub fn banner(arc: &ArcView, now: f64) -> Option<Banner> {
@@ -301,19 +329,160 @@ pub fn event_line(arc: &ArcView, index: u8, what: u8, who: Option<&str>) -> Opti
         .map(|n| format!(" — {n} put the last in"))
         .unwrap_or_default();
     let tankless = w.def.fuel_max == 0;
+    // The Gate opening unseals the landmarks' vaults, by the rule the sim
+    // opens them by (`works::gate_open_of`: a work past act II lit).
+    let vaults = if is_the_gate(w) { VAULTS_CLAUSE } else { "" };
     Some(match what as u32 {
         WORK_EV_OPENED if tankless => format!("{name} WAKES — bring what it needs"),
         WORK_EV_OPENED => format!("{name} IS OPEN — bring what it needs"),
         WORK_EV_COUNTDOWN if who.is_some() => format!("{name} IS COUNTING DOWN{by}"),
         WORK_EV_COUNTDOWN => format!("{name} IS COUNTING DOWN — it opens on its own hour"),
-        WORK_EV_LIT if tankless => format!("{name} HAS OPENED"),
+        WORK_EV_LIT if tankless => format!("{name} HAS OPENED{vaults}"),
         WORK_EV_LIT => format!("{name} BURNS{by}"),
-        WORK_EV_FALLBACK if tankless => format!("{name} HAS OPENED ON ITS OWN"),
+        WORK_EV_FALLBACK if tankless => format!("{name} HAS OPENED ON ITS OWN{vaults}"),
         WORK_EV_FALLBACK => format!("{name} WOKE ON ITS OWN — its tank is empty"),
         WORK_EV_EMBERS => format!("{name} HAS GONE TO EMBERS"),
         WORK_EV_REKINDLED => format!("{name} IS FED AGAIN"),
         _ => return None,
     })
+}
+
+/// What [`event_line`] adds when the Gate opens.
+pub const VAULTS_CLAUSE: &str = " — the landmarks' vaults are unsealed";
+
+/// Whether `w` is THE SEVERED GATE: a work past act II with no tank, open or
+/// not. Its lighting is what unseals the vaults ([`VAULTS_CLAUSE`]) and what
+/// the score answers ([`frame_score_answer`]).
+fn is_the_gate(w: &WorkView) -> bool {
+    w.def.fuel_max == 0 && w.def.act > 2
+}
+
+/// The song a frame's `events` (the feed's `(work, what, who)`) ask of the
+/// score: [`GATE_TRACK`] when THE SEVERED GATE opens, paid or on its own
+/// hour, else nothing. A work whose row has not arrived is as silent here
+/// as its line.
+pub fn frame_score_answer(
+    arc: &ArcView,
+    events: &[(u8, u8, u32)],
+) -> Option<crate::sound::music::Track> {
+    let opens = events.iter().any(|&(index, what, _)| {
+        matches!(what as u32, WORK_EV_LIT | WORK_EV_FALLBACK)
+            && arc
+                .works
+                .get(index as usize)
+                .is_some_and(|w| w.known && is_the_gate(w))
+    });
+    opens.then_some(GATE_TRACK)
+}
+
+/// The toll mark a countdown with `left` ticks to go has passed, in minutes
+/// left at the mark: the whole hour at or above `left` (60, 120, …), or in
+/// its last [`TOLL_LAST_MIN`] minutes the whole minute (1, 2, …). A mark is
+/// passed the moment `left` reaches it, so a countdown starting at 12 h
+/// stands on 720. 0 once it is due: the opening is its own sound
+/// ([`work_cue`]), never a toll.
+pub fn toll_mark(left: f64) -> u32 {
+    let min = left / MINUTE;
+    if min <= 0.0 {
+        0
+    } else if min <= TOLL_LAST_MIN as f64 {
+        min.ceil() as u32
+    } else {
+        (min / 60.0).ceil() as u32 * 60
+    }
+}
+
+/// A slot of [`Toll`] with no reading.
+const UNREAD: u32 = u32::MAX;
+
+/// When a countdown tolls ([`TOLL_CUE`]): once at each whole hour left
+/// before its work opens, and once a minute in its last [`TOLL_LAST_MIN`],
+/// so everyone hears it coming (`content/arc.toml`, THE GATE's *"It is
+/// counting. Hear that?"*). Fixed-size: one mark per work, no allocation.
+#[derive(Clone, Copy, Debug)]
+pub struct Toll {
+    /// Per work, the last [`toll_mark`] read while it counted down.
+    last: [u32; sim_core::limits::MAX_WORKS],
+}
+
+impl Default for Toll {
+    fn default() -> Self {
+        Self {
+            last: [UNREAD; sim_core::limits::MAX_WORKS],
+        }
+    }
+}
+
+impl Toll {
+    /// One frame: the toll to play, if a countdown passed a mark since the
+    /// last. `now` is the server-tick estimate. A countdown's first reading
+    /// is taken silently (its start is thunder, and a join mid-countdown
+    /// passed no mark), and so is every reading until the arc is synced. A
+    /// mark tolls once: the estimate settling back over it does not toll it
+    /// again, and a frame that leaps several marks tolls one.
+    pub fn step(&mut self, arc: &ArcView, now: f64) -> Option<crate::sound::mixer::Request> {
+        if !arc.synced() {
+            *self = Self::default();
+            return None;
+        }
+        let mut toll = false;
+        for (i, (w, last)) in arc.works.iter().zip(self.last.iter_mut()).enumerate() {
+            if i >= arc.count as usize || !w.known || w.state != WORK_COUNTDOWN {
+                *last = UNREAD;
+                continue;
+            }
+            // Never more left than the countdown's own length: a clock
+            // estimate trailing the deposit tick would read a paid
+            // countdown (which starts on a whole hour) an hour up, and toll
+            // that hour right behind the start's thunder.
+            let left = (w.lights_at as f64 - now).min(w.def.countdown as f64);
+            let mark = toll_mark(left);
+            if *last == UNREAD {
+                *last = mark;
+            } else if mark < *last {
+                toll |= mark > 0;
+                *last = mark;
+            }
+        }
+        toll.then(|| crate::sound::mixer::Request::own(TOLL_CUE).with_gain(TOLL_GAIN))
+    }
+}
+
+/// The sound a work changing makes, heard island-wide like its line. The
+/// Gate opening and a countdown starting are thunder (the THE GATE speaker:
+/// *"It is counting. Hear that?"*); a work waking, burning or fed again is
+/// the chime; a tank going dry is silent. `tankless` is the work's
+/// `def.fuel_max == 0`.
+pub fn work_cue(what: u8, tankless: bool) -> Option<crate::sound::Cue> {
+    use crate::sound::Cue;
+    match what as u32 {
+        WORK_EV_COUNTDOWN => Some(Cue::Thunder),
+        WORK_EV_LIT | WORK_EV_FALLBACK if tankless => Some(Cue::Thunder),
+        WORK_EV_OPENED | WORK_EV_LIT | WORK_EV_REKINDLED => Some(Cue::GateChime),
+        _ => None,
+    }
+}
+
+/// The one work cue a frame plays for `events` (the feed's `(work, what,
+/// who)`), thunder over the chime. A work whose row has not arrived is as
+/// silent as its line.
+pub fn frame_work_cue(arc: &ArcView, events: &[(u8, u8, u32)]) -> Option<crate::sound::Cue> {
+    events
+        .iter()
+        .filter_map(|&(index, what, _)| {
+            let w = arc.works.get(index as usize).filter(|w| w.known)?;
+            work_cue(what, w.def.fuel_max == 0)
+        })
+        .max_by_key(|&c| c == crate::sound::Cue::Thunder)
+}
+
+/// The one lock-solve cue a frame plays for `solves` (the feed's
+/// `(mechanism, who)`), heard island-wide like its line. `Cue::Unlock` is
+/// positional (the keypad's click, at the door) and the mixer refuses a
+/// positional cue with no place, so the solve is placed at `ears`: the
+/// listener's own position, full gain and centred, wherever the lock was.
+pub fn solve_request(solves: &[(u8, u32)], ears: [f32; 3]) -> Option<crate::sound::mixer::Request> {
+    (!solves.is_empty()).then(|| crate::sound::mixer::Request::at(crate::sound::Cue::Unlock, ears))
 }
 
 /// What the island hears when its fel tier climbs (`sim_core::blight::SURGE`):

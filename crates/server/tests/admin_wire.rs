@@ -148,6 +148,48 @@ fn an_admin_kicks_and_bans_by_id_and_the_ban_carries_the_wallet() {
     }
 }
 
+/// `/ban` on a guest (no wallet) crosses as an address ban, `BanGuest`,
+/// which the accept loop answers — the sim no longer refuses it — while a
+/// wallet's `/ban` still carries the wallet. `/unban guests` crosses as the
+/// list's lift, and a stranger's crosses nothing.
+#[test]
+fn a_ban_on_a_guest_crosses_as_an_address_ban() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    setup(&mut core);
+    // A guest: on the shard with no wallet.
+    assert!(core.connect_as(2, id_of(2), None, None).is_some());
+    let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(8);
+    pump(&mut core, &stats, &mut tx);
+
+    say(&mut core, 0, "/ban 1026");
+    let (chats, _) = pump(&mut core, &stats, &mut tx);
+    assert!(
+        chats.is_empty(),
+        "the accept loop answers an address ban: {chats:?}"
+    );
+    match rx.pop() {
+        Ok(AdminAct::BanGuest { by, id }) => assert_eq!((by, id), (id_of(0), id_of(2))),
+        other => panic!("expected an address ban for slot 2, got {other:?}"),
+    }
+    say(&mut core, 0, "/ban 1025");
+    pump(&mut core, &stats, &mut tx);
+    assert!(
+        matches!(rx.pop(), Ok(AdminAct::Ban { id, .. }) if id == id_of(1)),
+        "a wallet's ban is still the wallet's"
+    );
+
+    say(&mut core, 1, "/unban guests");
+    pump(&mut core, &stats, &mut tx);
+    assert!(
+        rx.pop().is_err(),
+        "a stranger's unban must not cross the ring"
+    );
+    say(&mut core, 0, "/unban guests");
+    pump(&mut core, &stats, &mut tx);
+    assert!(matches!(rx.pop(), Ok(AdminAct::UnbanGuests { by }) if by == id_of(0)));
+}
+
 /// `/unban` crosses the ring as the prefix the admin typed, lowercased and
 /// without its `0x`, because only the accept loop holds the list to match
 /// it against; a stranger's crosses nothing. The accept loop's answer comes
@@ -191,15 +233,13 @@ fn unban_crosses_as_a_prefix_and_its_answer_reaches_the_admin_alone() {
 }
 
 /// Every way the sim itself refuses `/kick`, `/ban` or `/unban` reaches the
-/// admin, alone: a target not on the shard, a target with no wallet to ban,
-/// and a full ring to the accept loop. Silence would read as "done".
+/// admin, alone: a target not on the shard, and a full ring to the accept
+/// loop. Silence would read as "done".
 #[test]
 fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
     let stats = ShardStats::default();
     let mut core = Box::new(ShardCore::new(SEED));
     setup(&mut core);
-    // A dev login with no wallet: on the shard, but nothing to ban.
-    assert!(core.connect_as(2, id_of(2), None, None).is_some());
     let (mut tx, mut rx) = rtrb::RingBuffer::<AdminAct>::new(1);
     pump(&mut core, &stats, &mut tx);
 
@@ -227,10 +267,6 @@ fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
         heard(&mut core, &mut tx, "/ban 999"),
         "[server] 999 is not on"
     );
-    assert_eq!(
-        heard(&mut core, &mut tx, "/ban 1026"),
-        "[server] 1026 no wallet to ban: /kick it"
-    );
     assert!(rx.pop().is_err(), "no refusal crossed the ring");
 
     // The one-slot ring takes a kick; the next three find it full.
@@ -240,7 +276,12 @@ fn a_refused_kick_ban_or_unban_answers_the_admin_alone() {
         chats.is_empty(),
         "a sent kick is the accept loop's to answer"
     );
-    for typed in ["/kick 1025", "/ban 1025", "/unban 0011223344"] {
+    for typed in [
+        "/kick 1025",
+        "/ban 1025",
+        "/unban 0011223344",
+        "/unban guests",
+    ] {
         assert_eq!(
             heard(&mut core, &mut tx, typed),
             "[server] not done: admin ring full"

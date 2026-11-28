@@ -10,6 +10,10 @@
 //! - **The intensity is read at a boundary, never mid-song.** Bumps land
 //!   whenever they land and decay when nothing happens; the director reads the
 //!   tier only when a song is due to start.
+//! - **One thing is answered at once**: an island event the whole server
+//!   hears (THE SEVERED GATE opening) asks for its song off the schedule
+//!   ([`Director::answer`]). Ours: a once-a-wipe moment should not wait out
+//!   a gap of up to eight minutes.
 //!
 //! The score is four whole recorded tracks ([`Track`], `assets/music/`, listed
 //! in `assets/sound/MANIFEST.md`), not the reference's clip-per-section
@@ -185,6 +189,9 @@ pub struct Director {
     /// The gap and pick stream. Deterministic and owned here, so a whole
     /// session's music is replayable in a test.
     rng: u32,
+    /// A track an island event asked for ([`Director::answer`]), started on
+    /// the next tick.
+    answer: Option<Track>,
 }
 
 impl Default for Director {
@@ -208,6 +215,7 @@ impl Director {
             bumped: false,
             decay_s: DECAY_S,
             rng: 0x1BAD_C0DE,
+            answer: None,
         }
     }
 
@@ -222,6 +230,7 @@ impl Director {
     /// survive.
     pub fn reset(&mut self, mode: Mode) {
         self.mode = mode;
+        self.answer = None;
         self.intensity = 0.0;
         self.bumped = false;
         self.decay_s = DECAY_S;
@@ -259,6 +268,19 @@ impl Director {
         self.bumped = true;
     }
 
+    /// Start `track` on the next tick, off the schedule: an island event the
+    /// score answers at once (THE SEVERED GATE opening) rather than at the
+    /// next boundary. What plays is replaced — the render layer fades it out
+    /// under the new one — the gap is skipped and a fight does not hold it;
+    /// after it the gaps run as ever. A track already playing plays on, and
+    /// the menus ignore it, as they ignore a bump.
+    pub fn answer(&mut self, track: Track) {
+        if self.mode == Mode::Menu || self.playing == Some(track) {
+            return;
+        }
+        self.answer = Some(track);
+    }
+
     /// Where the intensity is, 0..1.
     pub fn intensity(&self) -> f32 {
         self.intensity
@@ -294,6 +316,9 @@ impl Director {
             }
             self.bumped = false;
         }
+        if let Some(track) = self.answer.take() {
+            return Some(self.start(track));
+        }
 
         if self.playing.is_some() {
             self.left_s -= dt_s;
@@ -326,11 +351,16 @@ impl Director {
                 _ => self.pick(),
             },
         };
+        Some(self.start(track))
+    }
+
+    /// `track` starts now, from its beginning.
+    fn start(&mut self, track: Track) -> Track {
         self.playing = Some(track);
         self.left_s = track.len_s();
         self.last = Some(track);
         self.intro_heard |= track == INTRO;
-        Some(track)
+        track
     }
 
     /// A world track other than the last one.

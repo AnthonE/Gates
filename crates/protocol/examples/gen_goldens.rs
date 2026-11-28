@@ -330,6 +330,26 @@ fn main() {
     let (id, of) = goldens::event_crew();
     let len = protocol::encode_event_crew(id, of, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[198], &buf[..len]);
+    // A heal by another player (v157).
+    let (by, to, item) = goldens::event_healed();
+    let len = protocol::encode_event_healed(by, to, item, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[199], &buf[..len]);
+    // A worn item mended at a bench (v157).
+    let len = protocol::encode_action_repair_item(goldens::action_repair_item(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[200], &buf[..len]);
+    // A sleeping bag given to a teammate (v157).
+    let (cx, cz, level, target) = goldens::action_bag_give();
+    let len = protocol::encode_action_bag_give(cx, cz, level, target, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[201], &buf[..len]);
+    // A player's map marks, and the same relayed to a teammate (v157).
+    let len = protocol::encode_action_pins(&goldens::action_pins(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[202], &buf[..len]);
+    let (from, pins) = goldens::event_team_pins();
+    let len = protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[203], &buf[..len]);
+    // A sleeping bag given, told to its receiver (v157).
+    let len = protocol::encode_event_bag_given(goldens::event_bag_given(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[204], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -385,7 +405,8 @@ fn main() {
     let len = encode_action_craft(recipe, count, skin, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[19], &buf[..len]);
 
-    let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
+    let (index, recipe) = goldens::action_cancel();
+    let len = encode_action_cancel(index, recipe, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[20], &buf[..len]);
 
     let (row, cx, cz, level, loc, freehand, plate) = goldens::action_place();

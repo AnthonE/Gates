@@ -432,9 +432,18 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 count: 1 + (t % 2) as u16,
                 skin: 0,
             };
+            // The cancel names the recipe bot 2's queue holds there now, as
+            // a click would, so the cadence still cancels what it did
+            // before the recipe rode the command (`t % 5` = 4 is past the
+            // queue: its recipe is never read).
+            let index = (t % 5) as u16;
             let cancel = Command::CraftCancel {
                 id: 2,
-                index: (t % 5) as u16,
+                index,
+                recipe: world
+                    .live_slot_of(2)
+                    .and_then(|s| world.players[s].jobs.get(index as usize))
+                    .map_or(0, |j| j.recipe),
             };
             // Bot 1 also pokes the build verb at its own feet: row 5 is
             // out of range and the loc cycle mismatches most shapes, so

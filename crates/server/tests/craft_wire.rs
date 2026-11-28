@@ -170,7 +170,14 @@ fn craft_rides_the_wire() {
 
     // Cancel the rest: the remaining unit's inputs come back and the
     // empty-queue announce clears the client view.
-    act(&mut core, 0, ActionMsg::CraftCancel { index: 0 });
+    act(
+        &mut core,
+        0,
+        ActionMsg::CraftCancel {
+            index: 0,
+            recipe: 0,
+        },
+    );
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(flags[0] & APPLIED_CRAFT_Q, 0, "cancel announce missing");
     let c0 = &clients[0].1;

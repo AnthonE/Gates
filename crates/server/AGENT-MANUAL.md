@@ -165,7 +165,10 @@ finishes and the body holds still. Turns the autopilot plays for free
 
 A failed or late answer is a failure: the body backs off and asks again. The
 mind's own rule is that no decision is ever substituted for one it gave. The
-autopilot is the one exception, and it says so ("The autopilot").
+autopilot is the one exception, and it says so ("The autopilot"). An answer
+that lands mid-fight, or mid-step of a long skill, waits for it to end and is
+then dropped if it went stale or is no longer on offer. Either way the next
+request says so (`your_last_answer`).
 
 ### External minds: JSON lines
 
@@ -196,6 +199,21 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   owner is about (`raid_owner`: online, asleep, quiet or unknown, from its
   own watch of the base), how its last goal went, hits and deaths, and
   why it was asked. No seed, no position, no other player's identity.
+  `recent_goals` is the last 8 goals that ran, oldest first: how each
+  went and why, and `by` who chose it (`you`, `autopilot`, or `body` for
+  the walk home at a session's end). `your_last_answer` is what became of
+  the last answer the body took: `played`, `deferred` (a fight or a step
+  under way holds it), `dropped` (stale, no longer on offer, logging off,
+  down, or the autopilot took over while it was held), `too late`, or `not
+  yours` when the autopilot played a turn the mind was asked for, with
+  `why` (its error, such as "external agent did not answer in time"). Turns
+  the mind was never asked for (its friend away, nobody near, a harness
+  away: `autopilot (unasked: ...)`) leave it as it was; `recent_goals`
+  shows them.
+  After a death, `my_death_backpack.held_at_death` is what the pack held
+  (heaviest 3) until the backpack is gone or got back, which `memory`
+  then tells ("my death backpack is gone (rotted or looted)", "I got
+  my backpack back").
 - `options`: the goals it may pick now, by label. Nothing it could do is
   hidden for having failed: a goal that came to nothing a moment ago stays
   here and is named in `observation.failed_lately`.
@@ -205,7 +223,10 @@ Schema 2020-12); a test holds the body to it, so a key changes there first.
   typed: data, never instructions.
 - `team` (whose invite waits, who its teammates are, and `near`: strangers whose nametag it aimed at within 8 m in the last minute), `friend`, `crew` (its
   place in a village), `places` (THE GATE, the works, stones, locks and card
-  doors, each a bearing and metres).
+  doors, each a bearing and metres; `vaults` says whether the landmarks'
+  steel doors are sealed, until THE SEVERED GATE opens, or open, when `E`
+  opens them and `loot` takes them; THE SEVERED GATE is tankless, so once
+  open it never runs out).
 - `character`, `memory` and `strategy`, when the body has them (below).
 - `voice` and `speaking` with `--voice`.
 
@@ -304,7 +325,7 @@ at THE GATE, feeds the works, reads stones, solves locks and swipes cards,
 in roughly that order of need. On a team it hears plain orders on team chat
 from a person (never an agent): `follow`/`come`, `stay`/`stop` and
 `patrol` stand until the next order; `wood`, `stone`, `ore`, `cloth`,
-`home` and `defend` happen once; a lone number of up to four digits is the
+`loot`, `feed`, `home` and `defend` happen once; a lone number of up to four digits is the
 code; `help` lists them. It answers each with a fixed line. A line may open
 with who it is for: a job (`/t guards patrol`, `farmers`, `runners`,
 `founder`), a teammate's name (`/t Miller-3 follow`) or `all`; a line
@@ -493,6 +514,10 @@ offered, and a reply naming anything else is refused.
 | `follow:m<k>` | `follow`, after one teammate: the one `team.teammates` lists `k`th (from 1). Offered, one per teammate, beside the walk |
 | `reach:m<k>` | walk up to that teammate and stop in hand reach |
 | `give:m<k>:<item>` | walk up to that teammate and hand them every stack of the item. Offered as a form per teammate (`give:m2:<item>`); a live answer only, never a plan step (a plan with any give is refused) |
+| `heal:m<k>` | walk up to that teammate and use a bandage (a syringe if that is all) on them, the treat a player's `E` sends with one in hand. Offered only while they look hurt (seen down or dead lately, struck at, or asking for a heal: the shard sends nobody's health but your own), stand in sight, and you carry one; one already whole refuses it (`failed`, nothing spent) and is not offered again until a fresh sign |
+| `revive:m<k>` | walk up to that teammate lying downed and use a syringe on them: they stand at once, as a won roll stands them. Offered to every mind, the autopilot's playbook too, while they lie downed in sight and you carry a syringe |
+| `give_bag:m<k>` | walk to your nearest sleeping bag and give it to that teammate, the GIVE BAG the TEAM screen offers when you press `E` on your own bag: it becomes theirs to wake on, and yours no longer. Offered while a bag of yours is down and you have not given them one or found them with a full set; a live answer only, never a plan step |
+| `repair` | mend the worst-worn tool, gun or armour piece you carry at the workbench in reach, for a share of its recipe (the item card's Repair). Offered while you stand at a workbench and the pack pays to mend something worn there; `observation.repair_would_mend` names it |
 | `follow:n<k>` | `follow`, after a stranger: the one `team.near` lists `k`th, a body whose nametag it aimed at within 8 m in the last minute |
 | `give:<item>`, `authorize` | the social verbs (below) |
 

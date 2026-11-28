@@ -111,6 +111,101 @@ pub fn sent_line(op: u8) -> &'static str {
     }
 }
 
+/// An order button (`client_core::crew`): its label and the team line it
+/// sends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderLine {
+    pub label: &'static str,
+    pub line: String,
+}
+
+/// A row of the ORDERS section: who it is for (`ALL`, or an agent's name,
+/// `id` 0 for all) and its buttons.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderRow {
+    pub who: String,
+    pub id: u32,
+    pub orders: Vec<OrderLine>,
+}
+
+/// The order wheel (`docs/PLAYERS.md`): the team lines a crew's orders
+/// are, typed for you. `crew_of` is whom an agent serves (`EventMsg::Crew`):
+/// `Some(you)` takes your orders; `None` is an agent with no commander,
+/// which takes any teammate's, or one whose commander is away, off the team
+/// or an agent, which takes only theirs (the shard sends 0 for all of
+/// these). Nothing unless a teammate agent is `None` or yours: then an ALL
+/// row with every order, and a FOLLOW and STAY row by its bare name
+/// (`name_of`: the tag's name, never the streamer-mode one) per agent
+/// crewed to you, when that name can open a line (`crew::addressable`)
+/// and no other member, you included, goes by it.
+pub fn order_rows(
+    team: &TeamView,
+    me: u32,
+    is_agent: impl Fn(u32) -> bool,
+    crew_of: impl Fn(u32) -> Option<u32>,
+    name_of: impl Fn(u32) -> Option<String>,
+) -> Vec<OrderRow> {
+    use client_core::crew;
+    if team.count == 0 {
+        return Vec::new();
+    }
+    let mut members: Vec<_> = team.members().iter().map(|m| m.id).collect();
+    members.sort_by_key(|&id| id != team.leader);
+    let crew: Vec<u32> = members
+        .into_iter()
+        .filter(|&id| id != me && is_agent(id) && crew_of(id).is_none_or(|of| of == me))
+        .collect();
+    if crew.is_empty() {
+        return Vec::new();
+    }
+    // Only one sure to be yours gets a row by name: a `None` may be
+    // another's, whose commander is away.
+    let named: Vec<u32> = crew
+        .into_iter()
+        .filter(|&id| crew_of(id) == Some(me))
+        .collect();
+    let mut out = vec![OrderRow {
+        who: "ALL".to_string(),
+        id: 0,
+        orders: crew::ORDERS
+            .iter()
+            .map(|&o| OrderLine {
+                label: o.label,
+                line: crew::to_all(o),
+            })
+            .collect(),
+    }];
+    // A body drops a line opening with any teammate's name (`for_me`), and
+    // names are not unique: one another member shares gets no row.
+    let shared = |id: u32, name: &str| {
+        team.members()
+            .iter()
+            .any(|m| m.id != id && name_of(m.id).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+    };
+    for id in named {
+        let Some(name) = name_of(id).filter(|n| crew::addressable(n) && !shared(id, n)) else {
+            continue;
+        };
+        out.push(OrderRow {
+            orders: crew::ONE
+                .iter()
+                .map(|&o| OrderLine {
+                    label: o.label,
+                    line: crew::to_one(&name, o),
+                })
+                .collect(),
+            who: name,
+            id,
+        });
+    }
+    out
+}
+
+/// What the status line says once an order has gone out.
+pub fn ordered_line(line: &str) -> String {
+    format!("ordered: {line}")
+}
+
 /// The panel: a header, then every member, leader first marked `*`, with
 /// how far off they are; you read as "you". `name(id)` is the chat log's
 /// label (`ui::names::of`). Empty with no team.
@@ -171,10 +266,79 @@ pub fn distance(at: [f32; 2], x_m: u16, z_m: u16) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
+// ---------------------------------------------------------------------------
+// Giving a sleeping bag (Rust's assign bag, `ActionMsg::BagGive`)
+// ---------------------------------------------------------------------------
+
+/// The press beside a teammate while the TEAM screen is up for a bag.
+pub const GIVE_BAG: &str = "GIVE BAG";
+
+/// What `E` on your own bag says with nobody to give it to.
+pub const NO_BAG_TAKER: &str = "no teammate to give it to  ·  [N] invites one";
+
+/// The line over the rows while a bag is being given.
+pub const BAG_LINE: &str = "Give this sleeping bag to a teammate: it becomes theirs to wake on.";
+
+/// Who your sleeping bag can go to, in the panel's order (leader first):
+/// every teammate but you, asleep or down included, since a bag is where
+/// they wake next. The shard takes a give only for a teammate
+/// (`server::team`), so nobody else is offered.
+pub fn bag_takers(team: &TeamView, me: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = team
+        .members()
+        .iter()
+        .map(|m| m.id)
+        .filter(|&id| id != me)
+        .collect();
+    out.sort_by_key(|&id| id != team.leader);
+    out
+}
+
+/// What the status line says once a give has gone out.
+pub fn bag_sent_line(who: &str) -> String {
+    format!("giving your bag to {who}…")
+}
+
+/// The line a bag's receiver reads (`EventMsg::BagGiven`): who gave it, as
+/// every surface draws them (`ui::names::shown`, streamer-safe).
+pub fn bag_given_line(core: &client_core::core::ClientCore, by: u32) -> String {
+    format!(
+        "{} GAVE YOU A SLEEPING BAG",
+        crate::ui::names::shown(core, by)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use protocol::TeamMember;
+
+    /// A bag given, off the wire, is the receiver's line naming the giver
+    /// as every surface does: by their tag once it has landed, by id before.
+    #[test]
+    fn a_bag_given_reads_who_gave_it() {
+        use client_core::core::ClientCore;
+        const GIVER: u32 = 259;
+        let mut core = Box::new(ClientCore::new(42, 1, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_bag_given(GIVER, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the give applies");
+        assert_eq!(core.pop_bag_given(), Some(GIVER));
+        assert_eq!(core.pop_bag_given(), None, "one bag, one line");
+        assert_eq!(bag_given_line(&core, GIVER), "#259 GAVE YOU A SLEEPING BAG");
+
+        let address =
+            protocol::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf").unwrap();
+        let name = protocol::Name::new("Quillon").unwrap();
+        let len =
+            protocol::encode_event_tag(GIVER, &address, &name, 0, &protocol::Guild::NONE, &mut buf)
+                .unwrap();
+        core.on_stream(&buf[..len]).expect("the tag applies");
+        assert_eq!(
+            bag_given_line(&core, GIVER),
+            "Quillon GAVE YOU A SLEEPING BAG"
+        );
+    }
 
     fn team() -> TeamView {
         let mut v = TeamView::NONE;
@@ -245,6 +409,25 @@ mod tests {
         assert!(team_buttons(&TeamView::NONE).is_empty());
         let r = rows(&t, 1, [0.0, 0.0], |id| format!("#{id}"));
         assert_eq!(r.iter().map(|r| r.id).collect::<Vec<_>>(), [0, 2, 1, 3]);
+    }
+
+    /// A bag goes to every teammate but you, leader first, whatever their
+    /// state; with no team there is nobody.
+    #[test]
+    fn a_bag_is_offered_to_every_teammate_but_you() {
+        assert_eq!(bag_takers(&team(), 1), [2, 3]);
+        assert_eq!(bag_takers(&team(), 2), [1, 3]);
+        assert!(bag_takers(&TeamView::NONE, 1).is_empty());
+        let mut alone = TeamView::NONE;
+        alone.leader = 1;
+        alone.count = 1;
+        alone.members[0] = TeamMember {
+            id: 1,
+            state: TEAM_AWAKE,
+            x_m: 0,
+            z_m: 0,
+        };
+        assert!(bag_takers(&alone, 1).is_empty(), "a team of one");
     }
 
     #[test]

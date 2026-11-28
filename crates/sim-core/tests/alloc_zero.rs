@@ -102,7 +102,14 @@ const FARMER: usize = 7;
 /// the verb does when it says no as
 /// well as when it says yes. Bot 1 carries 60 000 of each, so 100 units
 /// eaten over the window cannot bounce a placement on cost.
+///
+/// The cancel names the recipe its player's queue holds at that index, as
+/// a click would (wire v157), so it lands where it landed before the
+/// recipe rode the command: an empty slot the same tick's craft (applied
+/// first) may fill takes that craft's recipe, and `t % 5` = 4 is past the
+/// queue and refuses.
 fn tick_cmds(
+    world: &World,
     rng: &mut Pcg32,
     yaws: &mut [u16; MAX_PLAYERS],
     t: u16,
@@ -125,10 +132,17 @@ fn tick_cmds(
                 skin: 0,
             }
         } else if i == MAX_PLAYERS + 1 {
-            Command::CraftCancel {
-                id: ((t as u32 * 7) % MAX_PLAYERS as u32) + 1,
-                index: t % 5,
-            }
+            let id = ((t as u32 * 7) % MAX_PLAYERS as u32) + 1;
+            let index = t % 5;
+            let job = world
+                .live_slot_of(id)
+                .and_then(|s| world.players[s].jobs.get(index as usize));
+            let recipe = match job {
+                Some(j) if j.remaining > 0 => j.recipe,
+                _ if id == (t as u32 % MAX_PLAYERS as u32) + 1 => t % 4,
+                _ => 0,
+            };
+            Command::CraftCancel { id, index, recipe }
         } else if i == MAX_PLAYERS + 2 {
             let (row, level, loc) = match t % 8 {
                 0 => (0, 0, LOC_PLANE),
@@ -471,7 +485,7 @@ fn test_alloc_zero() {
         world.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), bx, bz);
     }
     for t in 0..30u16 {
-        let cmds = tick_cmds(&mut rng, &mut yaws, t, builder_cell(&world));
+        let cmds = tick_cmds(&world, &mut rng, &mut yaws, t, builder_cell(&world));
         world.tick(&cmds);
     }
 
@@ -852,6 +866,7 @@ fn test_alloc_zero() {
     let mut poured = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
+            &world,
             &mut rng,
             &mut yaws,
             t.wrapping_add(30),

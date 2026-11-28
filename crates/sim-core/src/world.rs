@@ -1026,7 +1026,26 @@ pub const EV_PLANT_GONE: u8 = 74;
 /// hold the part `a`, as a door's state is.
 pub const EV_WIRE: u8 = 75;
 
-pub const EV_MAX: u8 = EV_WIRE;
+/// EV_HEALED: a = the player healed, b = the player who healed them, c =
+/// the item. A syringe or a bandage on a standing teammate landed
+/// (`World::spend_treat`: the syringe at once, the bandage as its wrap
+/// lands), so the one healed is told by whom — `EV_CONSUMED` tells only
+/// the healer what they spent. Aimed at `a` and `b` alone: on the wire
+/// the healer is told whom too. A downed body helped up hears
+/// `EV_RECOVERED` instead, and a refused or put-away heal says nothing.
+/// One per heal that spent an item.
+pub const EV_HEALED: u8 = 76;
+
+/// EV_BAG_GIVEN: a = the player who gave the bag, b = the player who has it
+/// now, c = its address (`deploy::box_key`). A sleeping bag changed hands
+/// (`Command::GiveBag`, Rust's assign bag): from this tick it is `b`'s to
+/// wake on and `a`'s no longer. What it moves is both players' own-bag
+/// lists (`SUB_BAGS`), and the receiver `b` is told who gave it
+/// (`SUB_BAG_GIVEN`). One per give that landed; a refusal is
+/// `EV_DEPLOY_REFUSED`.
+pub const EV_BAG_GIVEN: u8 = 77;
+
+pub const EV_MAX: u8 = EV_BAG_GIVEN;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1603,6 +1622,9 @@ pub struct Player {
     /// A use in the hands (Rust's `MedicalTool`, `survival::begin_use`): the
     /// tick it lands (0 for none), the slot and item it will spend, and the
     /// hand that was up when it began. Switching hands cancels it.
+    /// `use_target` is the player it is being wrapped on, by id (0 for this
+    /// body itself): a bandage on a teammate (`World::treat`), landed by
+    /// `World::land_treat` rather than `survival::tick_use`.
     ///
     /// None of these is hashed or saved, for `hostile`'s reason: the hp a
     /// wound takes and the item a use spends are hashed when they move, and
@@ -1613,6 +1635,7 @@ pub struct Player {
     pub use_slot: u8,
     pub use_sel: u8,
     pub use_item: u16,
+    pub use_target: u32,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1765,6 +1788,7 @@ impl Default for Player {
             use_slot: 0,
             use_sel: 0,
             use_item: NO_ITEM,
+            use_target: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
             born: 0,
@@ -1792,9 +1816,11 @@ pub enum Command {
         id: u32,
         target: u32,
     },
-    /// Use the medicine in inventory slot `slot` on `target`, a downed body
-    /// the sender is aiming at in hand reach (`NOW.md` §0wnd item 1): an
-    /// item with `revive` (the syringe) stands it up at once and heals it.
+    /// Use the medicine in inventory slot `slot` on `target`, a body the
+    /// sender is aiming at in hand reach (`NOW.md` §0wnd item 1): on a
+    /// downed one an item with `revive` (the syringe) stands it up at once
+    /// and heals it; on a standing one a syringe heals at once and a
+    /// bandage is wrapped on (`World::treat_standing`).
     Treat {
         id: u32,
         slot: u8,
@@ -2016,6 +2042,26 @@ pub enum Command {
         slot: u8,
         skin: u16,
     },
+    /// Mend the worn item in `id`'s inventory `slot` back to whole at a
+    /// workbench, for a share of its recipe (`craft::repair_item`). The slot
+    /// is the sender's claim and the sim is the verdict.
+    RepairItem {
+        id: u32,
+        slot: u8,
+    },
+    /// Give `id`'s sleeping bag at (`cx`, `cz`, `level`) to player `target`
+    /// (Rust's assign bag, `World::give_bag`): from then on it is theirs to
+    /// wake on. The shard mints it only for a teammate (`server::team`);
+    /// the sim checks the rest — a standing giver, a seated receiver who is
+    /// not the giver, the giver's own bag at that address, and room under
+    /// the receiver's `BAG_CAP`.
+    GiveBag {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        target: u32,
+    },
     /// What skins `id` owns, as the server read it off the platform
     /// (`server/src/skins.rs`), replacing whatever the sim held.
     ///
@@ -2050,10 +2096,12 @@ pub enum Command {
         id: u32,
         recipe: u16,
     },
-    /// Cancel the queue job at `index`, refunding its remaining inputs.
+    /// Cancel the queue job at `index`, refunding its remaining inputs, if
+    /// it is still a job of `recipe` (`craft::cancel`, wire v157).
     CraftCancel {
         id: u32,
         index: u16,
+        recipe: u16,
     },
     /// Pull the queue job at `index` to the head (`craft::fast_track`), if
     /// it is still a job of `recipe` — the reference's `FastTrackTask`.
@@ -3065,6 +3113,19 @@ impl World {
             }
         }
         self.players.iter().position(|p| p.active && p.id == id)
+    }
+
+    /// [`Self::slot_of`] for the server, which asks it per client and per
+    /// event every tick: the slot holding player `id` — awake, asleep, down
+    /// or a corpse — or `None`. `0` and an animal's or a structure's id
+    /// (`MOB_ID_TAG` set) are never a player's and would miss the hint into
+    /// the full scan, so they answer at once. A pure read: the hint is the
+    /// tick's, and nothing here writes it.
+    pub fn player_slot(&self, id: u32) -> Option<usize> {
+        if id == 0 || id & crate::limits::MOB_ID_TAG != 0 {
+            return None;
+        }
+        self.slot_of(id)
     }
 
     /// The slot of a player who is **standing**. A corpse keeps its slot
@@ -4324,6 +4385,43 @@ impl World {
         );
     }
 
+    /// Lay down each thrown weapon that came down this tick (`ranged::hurl`):
+    /// stuck where it went in when it met the world, else fallen onto the
+    /// surface under where it stopped — out of a body or an animal, that is
+    /// at their feet — as a loose stack of itself, or lost in deep water as
+    /// an arrow is.
+    fn land_hurls(&mut self) {
+        if self.arrows.hurls().is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        for h in self.arrows.hurls() {
+            let (x, y, z) = (
+                h.qx as f32 / 1000.0,
+                h.qy as f32 / 1000.0,
+                h.qz as f32 / 1000.0,
+            );
+            let at = if h.dir == [0; 3] {
+                crate::grounditem::rest_at(seed, &self.haven, cols, &mut occ, x, y, z)
+            } else {
+                crate::grounditem::stick_at(x, y, z)
+            };
+            if let Some(at) = at {
+                self.ground_items
+                    .drop_one(&self.backpack, at, h.stack, tick, h.dir);
+            }
+        }
+        self.arrows.clear_hurls();
+    }
+
     /// Blow up each exploding round that came down this tick where it
     /// stopped (`charge::blast`), then lay down its dead and land its
     /// animals the way a fuse's are (`charge::tick_fuses`' caller).
@@ -5124,7 +5222,17 @@ impl World {
     /// roll stands it, and the item's heal starts on it. An item that does
     /// not revive is refused as `consume` refuses a non-food; a target out
     /// of reach is silent, as an out-of-reach hand revive is.
+    ///
+    /// A standing, awake target is [`Self::treat_standing`]'s instead: a
+    /// syringe or a bandage on a hurt teammate.
     fn treat(&mut self, slot: usize, inv: usize, target: u32) {
+        if let Some(t) = self
+            .slot_of(target)
+            .filter(|&t| self.standing_other(slot, t))
+        {
+            self.treat_standing(slot, inv, t);
+            return;
+        }
         let id = self.players[slot].id;
         let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
         let def = self.survival.row(stack.item);
@@ -5158,6 +5266,133 @@ impl World {
         survival::start_heal(def, &mut self.players[t], heal_pct);
     }
 
+    /// Whether `t` is a standing, awake player who is not `slot` itself —
+    /// the body a heal on someone else and a give are aimed at.
+    fn standing_other(&self, slot: usize, t: usize) -> bool {
+        let q = &self.players[t];
+        t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
+    }
+
+    /// A syringe or a bandage on a standing teammate (`Command::Treat`,
+    /// Rust's medical tool used on another player): the item must heal
+    /// another (`SurvivalContent::heals_other` — the medkit stays
+    /// self-only, refused as a non-food is), and the target must be aimed
+    /// at in hand reach with nothing in the way (`reaches_body`, silent
+    /// otherwise). A target at full hp with no wound is `REFUSE_C_FULL` to
+    /// the healer and spends nothing.
+    ///
+    /// A syringe lands at once: one is spent and its bleed and heal go on
+    /// the target (`survival::medicate`), never its food or water. A
+    /// bandage is wrapped on in the healer's hands exactly as one on
+    /// themselves is (`survival::begin_use`), and [`Self::land_treat`]
+    /// spends it on its tick — the wrap is never skipped on someone else,
+    /// or two players could heal each other faster than either can heal
+    /// themselves.
+    fn treat_standing(&mut self, slot: usize, inv: usize, t: usize) {
+        let id = self.players[slot].id;
+        let stack = self.players[slot].inv.get(inv).copied().unwrap_or_default();
+        let Some(def) = self
+            .survival
+            .row(stack.item)
+            .filter(|_| stack.count > 0 && self.survival.heals_other(stack.item))
+        else {
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_NOT_FOOD, 0);
+            return;
+        };
+        if !self.reaches_body(slot, t) {
+            return;
+        }
+        let q = &self.players[t];
+        if q.hp >= q.hp_max && q.bleed == 0 {
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_FULL, 0);
+            return;
+        }
+        if def.use_ticks > 0 {
+            let (tick, to) = (self.tick, self.players[t].id);
+            let p = &mut self.players[slot];
+            let idle = p.use_at == 0;
+            if !survival::begin_use(&self.survival, inv, p, tick) {
+                self.events
+                    .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_NOT_FOOD, 0);
+            } else if idle {
+                // A second press mid-wrap does nothing (`begin_use`), so
+                // only a wrap this press began is aimed at the target.
+                p.use_target = to;
+            }
+            return;
+        }
+        self.spend_treat(slot, inv, stack.item, t, def);
+    }
+
+    /// The bandage being wrapped on a teammate lands, or is put away. The
+    /// hand switched or the item gone cancels it as `survival::tick_use`
+    /// does; on its tick the target is checked again — still standing,
+    /// awake, in reach and hurt — and only then is one spent. A failed
+    /// check spends nothing: a target who walked off, went down or was
+    /// healed meanwhile is the healer's wrap wasted, never their bandage.
+    fn land_treat(&mut self, i: usize) {
+        let p = &self.players[i];
+        let inv = p.use_slot as usize;
+        let s = p.inv.get(inv).copied().unwrap_or_default();
+        if p.frame.sel != p.use_sel || s.count == 0 || s.item != p.use_item {
+            survival::clear_use(&mut self.players[i]);
+            return;
+        }
+        if self.tick < p.use_at {
+            return;
+        }
+        let target = p.use_target;
+        survival::clear_use(&mut self.players[i]);
+        let Some(t) = self.slot_of(target).filter(|&t| self.standing_other(i, t)) else {
+            return;
+        };
+        if !self.reaches_body(i, t) {
+            return;
+        }
+        let q = &self.players[t];
+        if q.hp >= q.hp_max && q.bleed == 0 {
+            let id = self.players[i].id;
+            self.events
+                .push(EV_CONSUME_REFUSED, id, survival::REFUSE_C_FULL, 0);
+            return;
+        }
+        if let Some(def) = self.survival.row(s.item) {
+            self.spend_treat(i, inv, s.item, t, def);
+        }
+    }
+
+    /// Spend one of `item` from `slot`'s pack slot `inv` on `t`: the
+    /// healer hears `EV_CONSUMED` (who used it, the item and the slot, as
+    /// their own eat says it), the target hears `EV_HEALED` (by whom), and
+    /// the target's bleed and heal start.
+    fn spend_treat(
+        &mut self,
+        slot: usize,
+        inv: usize,
+        item: u16,
+        t: usize,
+        def: survival::ConsumableDef,
+    ) {
+        let id = self.players[slot].id;
+        let s = &mut self.players[slot].inv[inv];
+        s.count -= 1;
+        if s.count == 0 {
+            *s = ItemStack::default();
+        }
+        self.events
+            .push(EV_CONSUMED, id, ((item as u32) << 16) | inv as u32, 0);
+        self.events
+            .push(EV_HEALED, self.players[t].id, id, item as u32);
+        let heal_pct = crate::works::knob_pct(
+            &self.works_def,
+            self.works.unlocks,
+            crate::works::KNOB_HEAL_PCT,
+        );
+        survival::medicate(def, &mut self.players[t], heal_pct);
+    }
+
     /// Hand up to `count` of inventory slot `inv` to `target`
     /// (`Command::Give`): a standing, awake player — not down, not dead, not
     /// a sleeper, not yourself — aimed at in hand reach with nothing in the
@@ -5181,10 +5416,10 @@ impl World {
         if stack.count == 0 || count == 0 {
             return;
         }
-        let Some(t) = self.slot_of(target).filter(|&t| {
-            let q = &self.players[t];
-            t != slot && q.active && !q.wounded && !q.dead && !q.sleeping
-        }) else {
+        let Some(t) = self
+            .slot_of(target)
+            .filter(|&t| self.standing_other(slot, t))
+        else {
             return;
         };
         if !self.reaches_body(slot, t) {
@@ -5220,6 +5455,28 @@ impl World {
         self.events
             .push(EV_GATHER, to, ((stack.item as u32) << 16) | added as u32, 0);
         self.log_trust(seat, id, to, TRUST_GIVE);
+    }
+
+    /// Give the bag at `at` from the standing player in `slot` to `target`
+    /// (`Command::GiveBag`). The receiver must be seated — awake, asleep or
+    /// on the death screen, since a bag is where they will wake next — and
+    /// not the giver; anything else is silent, as a give to nobody is. The
+    /// bag and the receiver's cap are `Deploys::give_bag`'s verdict, told to
+    /// the giver as `EV_DEPLOY_REFUSED`; a landed give is `EV_BAG_GIVEN`.
+    fn give_bag(&mut self, slot: usize, at: (u16, u16, u8), target: u32) {
+        let id = self.players[slot].id;
+        if target == id || self.slot_of(target).is_none() {
+            return;
+        }
+        match self.deploys.give_bag(&self.deploy, id, at, target) {
+            Ok(rec) => self.events.push(
+                EV_BAG_GIVEN,
+                id,
+                target,
+                crate::deploy::box_key(rec.cx, rec.cz, rec.level, rec.loc),
+            ),
+            Err(reason) => self.events.push(EV_DEPLOY_REFUSED, id, reason, 0),
+        }
     }
 
     /// Whether `helper`'s look reaches `target`'s body inside hand reach
@@ -5871,6 +6128,7 @@ impl World {
                     use_slot: 0,
                     use_sel: 0,
                     use_item: NO_ITEM,
+                    use_target: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                     // The save does not carry it: the clock starts here.
@@ -6656,6 +6914,30 @@ impl World {
                     );
                 }
             }
+            Command::GiveBag {
+                id,
+                cx,
+                cz,
+                level,
+                target,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.give_bag(slot, (cx, cz, level), target);
+                }
+            }
+            Command::RepairItem { id, slot } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    craft::repair_item(
+                        &self.craft,
+                        &self.gather,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        slot,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::SkinsOwned { id, owned } => {
                 // Any body carrying the id, awake or asleep: a refresh can
                 // land while its owner is still on the death screen, and
@@ -6700,7 +6982,7 @@ impl World {
                     );
                 }
             }
-            Command::CraftCancel { id, index } => {
+            Command::CraftCancel { id, index, recipe } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
@@ -6711,6 +6993,7 @@ impl World {
                         self.tick,
                         &mut self.players[slot],
                         index,
+                        recipe,
                         &mut spill,
                     );
                     self.announce_spill(slot, &spill);
@@ -8746,8 +9029,11 @@ impl World {
             if self.expose(i, tick, &wx, night) {
                 continue;
             }
-            // The bandage being wrapped lands, or was put away.
-            if self.players[i].use_at != 0 {
+            // The bandage being wrapped lands, or was put away. One being
+            // wrapped on a teammate is the world's: it needs their body.
+            if self.players[i].use_target != 0 {
+                self.land_treat(i);
+            } else if self.players[i].use_at != 0 {
                 let heal_pct = crate::works::knob_pct(
                     &self.works_def,
                     self.works.unlocks,
@@ -8864,7 +9150,22 @@ impl World {
             let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
                 || combat::waterlogged(&self.combat, &self.players[i])
                 || survival::hands_busy(&self.players[i]);
+            // A thrown spear comes down as a loose stack, and a throw never
+            // evicts one (`limits::DROP_HEADROOM`), so it needs the room.
+            let room = self.backpack.base_ticks != 0
+                && self.ground_items.len()
+                    < crate::limits::MAX_GROUND_ITEMS - crate::limits::DROP_HEADROOM;
+            // The spear aimed takes the arm as a drawn bow does; a plain
+            // click with it still swings (`ranged::hurl`).
             let took_arm = holstered
+                || ranged::hurl(
+                    tick,
+                    &self.combat,
+                    &mut self.arrows,
+                    &mut self.events,
+                    &mut self.players[i],
+                    room,
+                )
                 || ranged::draw(
                     tick,
                     &self.combat,
@@ -9736,6 +10037,7 @@ impl World {
         // After the deaths those arrows caused, so an arrow in a body that
         // just died falls out where it fell.
         self.settle_arrows();
+        self.land_hurls();
         self.unstick_arrows();
         self.light_fires();
         self.blow_rockets(&mut removals);
@@ -9965,9 +10267,10 @@ impl World {
         }
         self.rewind.write_row(self.tick, &self.players);
         self.rewind.write_mobs(self.tick, &self.mobs);
-        // Last, so every producer this tick has spoken: the shots and
-        // strikes the animals will hear on their next thinks.
-        self.noises.record(self.tick, &self.events, &self.players);
+        // Last, so every producer this tick has spoken: the shots, strikes
+        // and hammering the animals will hear on their next thinks.
+        self.noises
+            .record(self.tick, &self.events, &self.players, &self.pieces);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -10279,6 +10582,11 @@ impl World {
             buf[38..40].copy_from_slice(&a.round.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
+            // A thrown weapon in flight is the item itself; an arrow folds
+            // nothing more, so no pinned hash of a bow's flight moves.
+            if a.hurled.count > 0 {
+                h.update(&a.hurled.to_le());
+            }
         }
         // Arrows that have landed (`spent.rs`). Length-prefixed, unlike the
         // block above — this store is dense with an explicit `len` where

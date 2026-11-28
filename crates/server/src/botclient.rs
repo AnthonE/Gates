@@ -512,6 +512,13 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         Command::RespawnAt { cx, cz, level, .. } => {
             protocol::encode_action_respawn_at(cx, cz, level, buf)
         }
+        Command::GiveBag {
+            cx,
+            cz,
+            level,
+            target,
+            ..
+        } => protocol::encode_action_bag_give(cx, cz, level, target, buf),
         Command::Pick { cell, .. } => encode_action_pick(cell, buf),
         Command::Plant {
             slot,

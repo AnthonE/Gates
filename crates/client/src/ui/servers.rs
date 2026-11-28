@@ -46,6 +46,12 @@ use crate::ui::MAX_QUERY_CHARS;
 /// the cap would be a rule about the list rather than about the file.
 pub const MAX_FAVOURITES: usize = 128;
 
+/// How many of a row's latest round trips its PING is the least of. One is
+/// whatever the network did that second; the least of three strips a
+/// transient spike, and three polls is half a minute, so a route that really
+/// got slower shows inside one.
+pub const PING_SAMPLES: usize = 3;
+
 /// What a shard's status poll says beyond the row's own columns — the
 /// details pane's half. Every field is "not said" until a poll says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -93,7 +99,11 @@ pub struct Listing {
     pub map: Option<String>,
     pub players: Option<u32>,
     pub max_players: Option<u32>,
+    /// The PING column: the least of `ping_samples`, or the document's own
+    /// `ping_ms` until a round trip is measured.
     pub ping_ms: Option<u32>,
+    /// The latest measured round trips, newest first ([`Listing::apply_ping`]).
+    pub ping_samples: [Option<u32>; PING_SAMPLES],
     /// Where this row's live count is polled from, if anywhere.
     pub status_url: Option<String>,
     /// The same shard on other ports, dialled in order when `addr` gets no
@@ -164,6 +174,7 @@ impl Listing {
             players: None,
             max_players: None,
             ping_ms: None,
+            ping_samples: [None; PING_SAMPLES],
             status_url: None,
             alt_addrs: Vec::new(),
             proto: None,
@@ -192,6 +203,7 @@ impl Listing {
             players: s.players,
             max_players: s.max_players,
             ping_ms: s.ping_ms,
+            ping_samples: [None; PING_SAMPLES],
             status_url: s.status_url.clone(),
             alt_addrs: s.alt_addrs.clone(),
             proto: None,
@@ -239,6 +251,21 @@ impl Listing {
         l.works_total = s.works_total.or(l.works_total);
         l.agents_only = s.agents_only.or(l.agents_only);
         before != seen(self)
+    }
+
+    /// Fold a measured round trip in, in milliseconds. PING shows the least
+    /// of the last [`PING_SAMPLES`]; returns whether that moved, the same
+    /// redraw rule as [`Listing::apply_status`]. The Direct row takes
+    /// nothing, as there.
+    pub fn apply_ping(&mut self, ms: u32) -> bool {
+        if self.direct {
+            return false;
+        }
+        let before = self.ping_ms;
+        self.ping_samples.rotate_right(1);
+        self.ping_samples[0] = Some(ms);
+        self.ping_ms = self.ping_samples.iter().flatten().copied().min();
+        before != self.ping_ms
     }
 
     /// The details pane: what the row's second line has no room for, as
@@ -426,6 +453,38 @@ impl Listing {
     }
 }
 
+/// Where to time a row's round trip: the host and port its `status_url`
+/// answers on, but only when that host is the one the game dials (`addr`).
+/// A status endpoint on another machine would time that machine, so the row
+/// keeps `?`. Hosts compare without case, a trailing dot or brackets, and
+/// IP literals by value; ports never, since the status endpoint and the game
+/// listen on different ones. The host comes back bare (`::1`, not `[::1]`),
+/// ready to resolve. `None` for anything that is not a plain `http(s)` url.
+pub fn ping_target(status_url: &str, addr: &str) -> Option<(String, u16)> {
+    let canon = |h: &str| {
+        let h = h.trim_start_matches('[').trim_end_matches(']');
+        let h = h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
+        h.parse::<std::net::IpAddr>().map_or(h, |ip| ip.to_string())
+    };
+    let game = canon(crate::net::handshake::server_host(addr)?);
+    let (rest, default_port) = match status_url.trim().strip_prefix("https://") {
+        Some(rest) => (rest, 443),
+        None => (status_url.trim().strip_prefix("http://")?, 80),
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    // Userinfo is a second way to read the host; no real status url has one.
+    if authority.contains('@') {
+        return None;
+    }
+    let host = crate::net::handshake::server_host(authority)?;
+    let port = match authority[host.len()..].strip_prefix(':') {
+        Some(p) => p.parse().ok()?,
+        None => default_port,
+    };
+    let host = canon(host);
+    (host == game).then_some((host, port))
+}
+
 /// The rail's categories — the three we can actually back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cat {
@@ -596,7 +655,9 @@ pub fn friends_here(n: usize) -> Option<String> {
 /// screen is "where is there a game happening". Ties break by name so the
 /// order is stable between two polls that return the same numbers, and a
 /// shard whose count is unknown sorts *after* every known one rather than as
-/// zero, because "we could not ask" is not "nobody is there".
+/// zero, because "we could not ask" is not "nobody is there". Within one
+/// count the nearer shard goes first, an unmeasured ping last, for the same
+/// reason.
 ///
 /// The Direct row is pinned to the top ahead of all of it and is exempt from
 /// every filter — see [`Listing::direct`].
@@ -634,20 +695,28 @@ pub fn visible(
         .map(|(i, _)| i)
         .collect();
 
+    // `Option`'s own ordering puts `None` first, and this wants it last: an
+    // unpolled shard belongs under the ones we know about, not above a shard
+    // with a hundred people on it.
+    fn known_first<T: Ord>(a: Option<T>, b: Option<T>) -> std::cmp::Ordering {
+        match (a, b) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    }
     out.sort_by(|&a, &b| {
         let (x, y) = (&rows[a], &rows[b]);
-        // `Option`'s own ordering puts `None` first, and this wants it last:
-        // an unpolled shard belongs under the ones we know about, not above
-        // a shard with a hundred people on it.
-        let rank = |r: &Listing| r.players.map(|p| (0u8, std::cmp::Reverse(p)));
         y.direct
             .cmp(&x.direct)
-            .then_with(|| match (rank(x), rank(y)) {
-                (Some(a), Some(b)) => a.cmp(&b),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
+            .then_with(|| {
+                known_first(
+                    x.players.map(std::cmp::Reverse),
+                    y.players.map(std::cmp::Reverse),
+                )
             })
+            .then_with(|| known_first(x.ping_ms, y.ping_ms))
             .then_with(|| x.name.cmp(&y.name))
     });
     out

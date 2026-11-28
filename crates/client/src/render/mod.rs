@@ -792,6 +792,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<hud::Pickups>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
+            .init_resource::<audio::Toll>()
             // Before `audio::build_bank` below: the bank is installed
             // through it.
             .init_resource::<audio::Engine>()
@@ -1213,6 +1214,11 @@ impl Plugin for GatesRenderPlugin {
         // rely on being downstream of anything.
         app.init_resource::<map::Island>()
             .init_resource::<map::MapPins>()
+            // Your marks to your team (v157), on every screen the world runs
+            // under; a new session's team starts with none of yours.
+            .init_resource::<map::MapShare>()
+            .add_systems(Update, map::share.run_if(world_running))
+            .add_systems(OnEnter(Screen::Loading), map::share_forget)
             .init_resource::<map::MapCursor>()
             .init_resource::<map::MapCamera>()
             // The mouse is the map's while it is held: the crosshair and the
@@ -1378,10 +1384,11 @@ impl Plugin for GatesRenderPlugin {
         // streamers to have somewhere to put chunks, and the 3D pass has to
         // be running for the pipelines to specialize before the player is
         // looking at the result.
-        // The surge toast and the blight's moment start every session over.
+        // The surge toast, the blight's moment and the countdown's toll start
+        // every session over.
         app.add_systems(
             OnEnter(Screen::Loading),
-            (hud::forget_surge, blight::forget),
+            (hud::forget_surge, blight::forget, audio::forget_toll),
         );
         app.add_systems(
             OnEnter(Screen::Loading),
@@ -1842,6 +1849,13 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .after(input::place_eye)
                 .run_if(in_state(Screen::InWorld)),
+        )
+        // A heal on another player the sim refused puts its wrap away. On
+        // the drain's run condition and after it, so each frame's refusals
+        // are read once.
+        .add_systems(
+            Update,
+            verbs::wrap_refused.after(feed::drain).run_if(world_running),
         )
         // Electricity (`sim_core::power`): the wire tool acts on this frame's
         // pick, and the cables redraw when the wires move.

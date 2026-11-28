@@ -53,7 +53,8 @@ for line in sys.stdin:
         r = {"tools": [{"name": "look"}, {"name": "act"}, {"name": "status"}]}
     elif meth == "tools/call" and p.get("name") == "look":
         seen = {"decision_id": 7, "options": ["gather", "meet"], "observation": {"health": 80, "secret": 1,
-                "in_view": {"players": 2}}, "heard": [{"from": "x", "text": "hi", "friend": True}],
+                "in_view": {"players": 2}, "your_last_answer": {"goal": "gather", "fate": "played", "why": None}},
+                "heard": [{"from": "x", "text": "hi", "friend": True}],
                 "friend": {"on": True}}
         r = {"content": [{"type": "text", "text": json.dumps(seen)}], "isError": False}
     elif meth == "tools/call" and p.get("name") == "act":
@@ -153,7 +154,8 @@ code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": 10, "method": "tools/call",
 check("act passes through", code == 200 and got["result"]["isError"] is False)
 rows = [json.loads(x) for x in open(journal)] if os.path.exists(journal) else []
 check("an answered act is journalled with the look it answered", len(rows) == 1 and rows[0]["goal"] == "meet"
-      and rows[0]["say"] == "hi friend" and rows[0]["to"] == "team" and rows[0]["obs"] == {"health": 80, "players": 2}
+      and rows[0]["say"] == "hi friend" and rows[0]["to"] == "team" and rows[0]["obs"] == {"health": 80, "players": 2,
+                                                         "your_last_answer": {"goal": "gather", "fate": "played", "why": None}}
       and rows[0]["heard"][0]["friend"] is True)
 check("the line names the harness its initialize said, and that it answered",
       rows and rows[0]["harness"] == "claude-code/2.1.0" and rows[0]["answered_by"] == "harness"

@@ -255,6 +255,18 @@ pub struct Feed {
     /// Locks solved this frame: (mechanism, who). Broadcast.
     mech_solves: [(u8, u32); FEED_CAP],
     n_mech_solves: usize,
+    /// Heals another player landed on this body this frame: (healer,
+    /// item). Own-fact (`EventMsg::Healed`, wire v157).
+    healed_by: [(u32, u16); FEED_CAP],
+    n_healed_by: usize,
+    /// Heals this body landed on another player this frame: (healed,
+    /// item). Own-fact, the same `EventMsg::Healed` told to the healer.
+    heals_given: [(u32, u16); FEED_CAP],
+    n_heals_given: usize,
+    /// Sleeping bags a teammate gave us this frame: the giver. Own-fact
+    /// (`EventMsg::BagGiven`, wire v157).
+    bags_given: [u32; FEED_CAP],
+    n_bags_given: usize,
     /// Eats that landed this frame: (item index, the slot it was spent
     /// from). Own-fact; the refused half rides `refusals` as
     /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
@@ -553,6 +565,21 @@ impl Feed {
         &self.mech_solves[..self.n_mech_solves]
     }
 
+    /// `(healer, item)` per heal another player landed on us this frame.
+    pub fn healed_by(&self) -> &[(u32, u16)] {
+        &self.healed_by[..self.n_healed_by]
+    }
+
+    /// `(healed, item)` per heal we landed on another player this frame.
+    pub fn heals_given(&self) -> &[(u32, u16)] {
+        &self.heals_given[..self.n_heals_given]
+    }
+
+    /// The giver per sleeping bag a teammate gave us this frame.
+    pub fn bags_given(&self) -> &[u32] {
+        &self.bags_given[..self.n_bags_given]
+    }
+
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
@@ -573,6 +600,9 @@ impl Feed {
         self.n_work_events = 0;
         self.n_arc_texts = 0;
         self.n_mech_solves = 0;
+        self.n_healed_by = 0;
+        self.n_heals_given = 0;
+        self.n_bags_given = 0;
         self.n_consumed = 0;
         self.reloaded = 0;
         self.n_knocks = 0;
@@ -721,6 +751,33 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_mech_solves;
             feed.mech_solves[n] = m;
             feed.n_mech_solves += 1;
+        }
+    }
+    while let Some(h) = core.pop_healed_by() {
+        if feed.n_healed_by >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_healed_by;
+            feed.healed_by[n] = h;
+            feed.n_healed_by += 1;
+        }
+    }
+    while let Some(h) = core.pop_heal_given() {
+        if feed.n_heals_given >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_heals_given;
+            feed.heals_given[n] = h;
+            feed.n_heals_given += 1;
+        }
+    }
+    while let Some(by) = core.pop_bag_given() {
+        if feed.n_bags_given >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_bags_given;
+            feed.bags_given[n] = by;
+            feed.n_bags_given += 1;
         }
     }
     while let Some(code) = core.pop_research_refusal() {

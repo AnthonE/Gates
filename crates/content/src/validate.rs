@@ -417,6 +417,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
              for free, over 100 costs more than rebuilding"
         ));
     }
+    // An item's mend is a share of its recipe: 0 mends free and over 100
+    // costs more than crafting a new one, which is the verb dead weight.
+    let ip = c.balance.globals.item_repair_cost_pct;
+    if ip == 0 || ip > 100 {
+        return Err(format!(
+            "globals: item_repair_cost_pct {ip} must be 1..=100 — 0 mends an \
+             item for free, over 100 costs more than crafting a new one"
+        ));
+    }
     // A break chance is a percentage and both ends of the range mean
     // something, so this refuses only the value that is not a percentage.
     // 0 is "an arrow is forever" and 100 is "an arrow is spent", which is
@@ -893,6 +902,43 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
             (_, None) => {}
+        }
+        // A throw belongs to a melee weapon (the spear), and every number
+        // on it has to be one the sim can fly: the arrow's sampler, the
+        // catalog's windup byte, an arrow's drop on `EV_SHOT`.
+        if let Some(t) = &w.throw {
+            let err = |what: String| Err(format!("weapon `{}`: throw {what}", w.id));
+            if w.kind != WeaponKind::Melee {
+                return err("on a row that is not melee: only a melee weapon is thrown".into());
+            }
+            if t.damage == 0 || t.damage > u32::from(u16::MAX) {
+                return err(format!("damage {} outside 1..=u16", t.damage));
+            }
+            let hz = sim_core::limits::TICK_HZ;
+            let speed = t.speed_mps * 1000 / hz;
+            let ceiling = sim_core::limits::ARROW_STEP_MM as u32
+                * sim_core::limits::MAX_ARROW_SUBSTEPS as u32;
+            if speed == 0 || speed > ceiling {
+                return err(format!(
+                    "speed_mps {} is {speed} mm/tick, outside 1..={ceiling} the arrow's \
+                     sampler can trace",
+                    t.speed_mps
+                ));
+            }
+            let drop = (t.drop_mps2 * 1000 + hz * hz / 2) / (hz * hz);
+            if t.drop_mps2 == 0 || drop >= sim_core::world::SHOT_BULLET {
+                return err(format!(
+                    "drop_mps2 {} must be nonzero and fly as an arrow",
+                    t.drop_mps2
+                ));
+            }
+            let ticks = u64::from(t.windup_ms) * u64::from(hz) / 1000;
+            if ticks == 0 || ticks > u64::from(u8::MAX) {
+                return err(format!(
+                    "windup_ms {} is {ticks} ticks at {hz} Hz, outside 1..=255",
+                    t.windup_ms
+                ));
+            }
         }
     }
 

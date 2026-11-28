@@ -1169,6 +1169,23 @@ pub fn container_title(kind: u8) -> &'static str {
     }
 }
 
+/// A world container's title by what stands at its cell (the handle is the
+/// cell key, so the scatter names it): an opened landmark vault says VAULT,
+/// not CRATE. The `[E] OPEN` prompt names it by this too
+/// ([`crate::ui::interact::Pick::prompt`]), so the two cannot disagree.
+pub fn world_container_title(occupant: sim_core::terrain::Occupant) -> &'static str {
+    use sim_core::terrain::Occupant;
+    match occupant {
+        Occupant::Vault => "VAULT",
+        Occupant::GreenCrate => "GREEN CRATE",
+        Occupant::BlueCrate => "BLUE CRATE",
+        Occupant::EliteCrate => "ELITE CRATE",
+        Occupant::FoodCrate => "FOOD BOX",
+        Occupant::CacheSlot => "CACHE",
+        _ => container_title(CONT_WORLD),
+    }
+}
+
 /// The name bar's text, or `None` when it would only repeat the head.
 ///
 /// **Two of the three ground kinds have no instance name to give.** A

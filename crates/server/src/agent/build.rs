@@ -1412,7 +1412,7 @@ impl Passage {
                 Step::Wait => return Pass::Go(Intent::walk(yaw_toward(p0[0] - x, p0[1] - z))),
                 Step::Blocked => {
                     self.way = None;
-                    return Pass::Fail(Why::Stuck);
+                    return Pass::Fail(route.blocked_why());
                 }
                 Step::Arrived => {
                     self.at = CHAIN.len() - 1;
@@ -2073,6 +2073,11 @@ pub struct Survey {
     /// Items short for the rest of the milestone, and how many.
     pub needs: [(u16, u32); NEED_ROWS],
     pub needs_len: u8,
+    /// What each of `needs` comes to, from the same count: what the rest of
+    /// the milestone costs of it, what the pack carries and what the box
+    /// holds. The shortfall is the first less the other two, so a mind can
+    /// check the subtraction.
+    pub need_parts: [(u32, u32, u32); NEED_ROWS],
     /// Some op of the milestone can go now.
     pub ready: bool,
     /// Its own cupboard stands on the plot.
@@ -2223,6 +2228,7 @@ impl Builder {
                 milestone: Milestone::Shell,
                 needs: [(0, 0); NEED_ROWS],
                 needs_len: 0,
+                need_parts: [(0, 0, 0); NEED_ROWS],
                 ready: false,
                 hearth: false,
                 bill: [(0, 0); BILL_ROWS],
@@ -2676,6 +2682,7 @@ impl Builder {
             sim_core::works::NO_UNLOCK
         };
         let mut needs = [(0u16, 0u32); NEED_ROWS];
+        let mut need_parts = [(0u32, 0u32, 0u32); NEED_ROWS];
         let mut n = 0;
         let bill = self.with_spare(core, &plan, milestone, self.bill(core, milestone, stored));
         let mut take_out = false;
@@ -2686,6 +2693,7 @@ impl Builder {
             let short = units.saturating_sub(carried.saturating_add(boxed));
             if short > 0 && n < NEED_ROWS {
                 needs[n] = (item, short);
+                need_parts[n] = (units, carried, boxed);
                 n += 1;
             }
         }
@@ -2694,6 +2702,7 @@ impl Builder {
             milestone,
             needs,
             needs_len: n as u8,
+            need_parts,
             // An op refused for want of support counts: only a build goal
             // tries it again, once something else stands. Past the last
             // milestone, an optional op the pack has the spare for.
@@ -3930,7 +3939,7 @@ impl Builder {
                     self.approach = None;
                     return Some(Act::Go(step.walk().unwrap_or(Intent::IDLE)));
                 }
-                Step::Blocked => return Some(Act::Fail(Why::Stuck)),
+                Step::Blocked => return Some(Act::Fail(route.blocked_why())),
                 Step::Wait => return Some(Act::Go(Intent::IDLE)),
                 Step::Arrived => {}
             }
@@ -4521,6 +4530,43 @@ mod tests {
         // the roof.
         assert_eq!(b.survey().milestone, Milestone::Doors);
         assert_eq!(b.stats.adopted, 1);
+    }
+
+    /// Each need carries the parts of its own count, taken in the same
+    /// pass: what the milestone costs of it, less the pack, less the box.
+    /// A mind shown only the difference could not check it (#569, #572).
+    #[test]
+    fn a_need_is_its_cost_less_the_pack_and_the_box() {
+        use sim_core::gather::ItemStack;
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        core.piece_defs = sim_core::build::BuildContent::probe_fixture();
+        core.piece_defs_have = core.piece_defs.piece_count;
+        // The fixture's twig is paid in item 0.
+        let wood = 0;
+        core.inv[0] = ItemStack {
+            item: wood,
+            count: 30,
+            ..ItemStack::EMPTY
+        };
+        core.cont_kind = sim_core::inventory::CONT_BOX;
+        core.cont_handle = 7;
+        core.cont[0] = ItemStack {
+            item: wood,
+            count: 5,
+            ..ItemStack::EMPTY
+        };
+        let mut boxed = Ledger::EMPTY;
+        assert!(boxed.on_cont(&core, 7));
+        let mut b = Builder::new();
+        b.survey_now(&core, &boxed);
+        let s = b.survey();
+        assert_eq!(s.milestone, Milestone::Shell);
+        // Three foundations at 5, seven walls and two doorways at 3.
+        assert_eq!(s.needs(), &[(wood, 7)]);
+        assert_eq!(s.need_parts[0], (42, 30, 5));
+        for (&(_, short), &(costs, carried, boxed)) in s.needs().iter().zip(&s.need_parts) {
+            assert_eq!(short, costs - carried - boxed);
+        }
     }
 
     /// Twig rots within the upkeep hour it went down in, and a raid breaks

@@ -938,6 +938,7 @@ mod tests {
             .unwrap();
         for i in 0..crate::mind::SUMMARY_NEEDS {
             s.needs[i] = (long(200 + i), u32::MAX);
+            s.needs_parts[i] = (u32::MAX, u32::MAX, u32::MAX);
         }
         s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
         for i in 0..crate::mind::SUMMARY_RAW {
@@ -953,6 +954,7 @@ mod tests {
             outcome: crate::mind::Outcome::Failed(crate::mind::Why::MissingInputs),
             gained: u32::MAX,
             secs: u32::MAX,
+            by: crate::mind::By::Mind,
         });
         s.trigger = Trigger::Heartbeat;
         let threat = crate::mind::Threat {
@@ -970,6 +972,21 @@ mod tests {
             outcome: crate::mind::Outcome::Running,
             gained: u32::MAX,
             secs: u32::MAX,
+            by: crate::mind::By::Mind,
+        });
+        for i in 0..crate::mind::GOAL_HISTORY {
+            s.recent.push(Report {
+                goal: Goal::Craft(long(600 + i)),
+                outcome: crate::mind::Outcome::Failed(crate::mind::Why::MissingInputs),
+                gained: u32::MAX,
+                secs: u32::MAX,
+                by: crate::mind::By::Autopilot,
+            });
+        }
+        s.answer = Some(crate::mind::AnswerFate {
+            goal: Goal::Craft(long(8)),
+            fate: crate::mind::Fate::DroppedNotAllowed,
+            why: crate::mind::Reason::from_text(&"w".repeat(crate::mind::REASON_BYTES)),
         });
         let text = protocol::ChatText::sanitize(&[b'w'; protocol::CHAT_MAX_BYTES]).unwrap();
         for i in 0..crate::mind::SUMMARY_HEARD as u32 {

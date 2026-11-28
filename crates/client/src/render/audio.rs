@@ -52,9 +52,10 @@ use super::{Eye, Net};
 /// Commands a frame may hand the renderer. Overflow policy: **drop the newest
 /// and count it** ([`Engine::dropped`]) — the mixer's rule one queue up, and
 /// for its reason: a cue's value is that it happened, so the earlier asks
-/// win. A frame's worst case is arithmetic and well under it — three bed
-/// gains, `STARTS_PER_FRAME` starts, plus three loops or three stops and a cut on a screen transition
-/// (`DECISIONS.md` §open, audio engine v0).
+/// win. A frame's worst case is arithmetic and well under it — nine bed
+/// gains, four bed places (the surf's water filter, the furnace, the rotor's
+/// two layers), `STARTS_PER_FRAME` starts, plus nine loops or nine stops and
+/// a cut on a screen transition (`DECISIONS.md` §open, audio engine v0).
 pub const CMD_FRAME_CAP: usize = 32;
 
 /// How fast a bed's gain follows the world, per second. A bed that snapped
@@ -181,8 +182,18 @@ pub fn rotor_levels(dist: f32) -> (f32, f32) {
 /// taken over the full 3-D distance (a hull overhead is centred, not hard
 /// to whichever side it leans). The near layer darkens over
 /// [`ROTOR_DARK_M`]; the far one was recorded dark. Both shift in pitch as
-/// the hull closes or recedes ([`doppler`]).
-pub fn rotor_place(d: [f32; 3], right: [f32; 2], receding_mps: f32, out_rate: u32) -> [Cmd; 2] {
+/// the hull closes or recedes ([`doppler`]). With the ears under water both
+/// layers also go through the water's low-pass (`under`, an
+/// [`engine::lp_under`] byte; 0 above), whichever of it and the air's is
+/// darker ([`engine::darker`]) — folded in here, because a second `Place`
+/// would have to repeat the pan and the pitch.
+pub fn rotor_place(
+    d: [f32; 3],
+    right: [f32; 2],
+    receding_mps: f32,
+    out_rate: u32,
+    under: u8,
+) -> [Cmd; 2] {
     let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     let (ear_l, ear_r) = bed_ears(d, right, ROTOR_PAN);
     let rate = doppler(receding_mps);
@@ -191,17 +202,35 @@ pub fn rotor_place(d: [f32; 3], right: [f32; 2], receding_mps: f32, out_rate: u3
             slot: ROTOR_SLOT,
             ear_l,
             ear_r,
-            lp: engine::lp_of(n, ROTOR_DARK_M, out_rate),
+            lp: engine::darker(engine::lp_of(n, ROTOR_DARK_M, out_rate), under),
             rate,
         },
         Cmd::Place {
             slot: ROTOR_FAR_SLOT,
             ear_l,
             ear_r,
-            lp: 0,
+            lp: under,
             rate,
         },
     ]
+}
+
+/// The surf's held slot: its index in [`BEDS`].
+const SURF_SLOT: u8 = 1;
+const _: () = assert!(matches!(BEDS[SURF_SLOT as usize], Cue::BedSurf));
+
+/// The surf heard through `under` (an [`engine::lp_under`] byte; 0 above):
+/// a bed's centre and rate, so the only thing it changes is the filter. The
+/// surf is the one centred bed the submerged snapshot keeps
+/// (`sound::SNAPSHOTS`); the generated dark is dark already.
+pub fn surf_place(under: u8) -> Cmd {
+    Cmd::Place {
+        slot: SURF_SLOT,
+        ear_l: 1.0,
+        ear_r: 1.0,
+        lp: under,
+        rate: 1.0,
+    }
 }
 
 /// A bed's two ear weights for a source `d` metres off the ears whose right
@@ -223,15 +252,17 @@ fn bed_ears(d: [f32; 3], right: [f32; 2], pan: f32) -> (f32, f32) {
 }
 
 /// Where the furnace's roar is heard from, for the nearest lit furnace `d`
-/// metres off the ears: [`bed_ears`] at [`FURNACE_PAN`], unfiltered — its
-/// reach is short enough that the level law is all the distance it needs.
-pub fn furnace_place(d: [f32; 3], right: [f32; 2]) -> Cmd {
+/// metres off the ears: [`bed_ears`] at [`FURNACE_PAN`], unfiltered by the
+/// air — its reach is short enough that the level law is all the distance
+/// it needs — and through `under` (an [`engine::lp_under`] byte) for the
+/// moment it is still heard as the ears go under and the snapshot takes it.
+pub fn furnace_place(d: [f32; 3], right: [f32; 2], under: u8) -> Cmd {
     let (ear_l, ear_r) = bed_ears(d, right, FURNACE_PAN);
     Cmd::Place {
         slot: FURNACE_SLOT,
         ear_l,
         ear_r,
-        lp: 0,
+        lp: under,
         rate: 1.0,
     }
 }
@@ -507,6 +538,10 @@ pub struct Sound {
     rotor_receding: f32,
     /// The furnace roar's place, as last sent ([`furnace_place`]).
     furnace_sent: Option<Cmd>,
+    /// The surf's water filter, as last sent ([`surf_place`]); `None` after
+    /// a fresh `Loop` or a `Stop`, because a `Place` on a free slot is
+    /// ignored and has to go again once the loops are open.
+    surf_sent: Option<u8>,
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
@@ -525,6 +560,19 @@ impl Sound {
         }
         self.mixer.push(req);
     }
+}
+
+/// The countdown's toll (`ui::arc::Toll`): a resource rather than a
+/// `Local`, for `hud::Surge`'s reason — every session starts it over
+/// ([`forget_toll`]), so a rejoin whose arc is synced before [`feed`]'s first
+/// frame reads its countdown afresh instead of against the last session's
+/// marks.
+#[derive(Resource, Default)]
+pub struct Toll(pub crate::ui::arc::Toll);
+
+/// A new session: no countdown read yet.
+pub fn forget_toll(mut toll: ResMut<Toll>) {
+    toll.0 = Default::default();
 }
 
 /// Whether a film's camera hears this cue. Everything positional, the beds
@@ -740,6 +788,7 @@ pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
     sound.bed_sent = [0.0; BEDS.len()];
     sound.rotor_sent = [None; 2];
     sound.furnace_sent = None;
+    sound.surf_sent = None;
 }
 
 /// Reset what the world owned: stop the beds, cut every one-shot, and reset
@@ -766,6 +815,7 @@ pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_h
     sound.geiger.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
+    sound.surf_sent = None;
     // The waterline and the snapshot go with it, and the second one is the
     // reference's own shipped bug: their underwater sound effect stayed on
     // after disconnecting from a server (`reference/WATER.md` §7). A mix state
@@ -1801,7 +1851,9 @@ pub fn feed(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
     world: Option<Res<super::WorldId>>,
+    eye: Res<Eye>,
     mut sound: ResMut<Sound>,
+    mut toll: ResMut<Toll>,
     mut cont: Local<(u8, u32)>,
 ) {
     // A container opened under your hands: a box's or a crate's latch and
@@ -1874,6 +1926,32 @@ pub fn feed(
     // A kiosk trade went through (THE GATE): the coins.
     for _ in feed.traded() {
         sound.play(Request::own(Cue::Trade));
+    }
+    // A work changed (`ARC.md`): the whole island hears it, as it reads the
+    // toast off the same drained events. One cue a frame, thunder first.
+    if let Some(cue) = crate::ui::arc::frame_work_cue(&net.session.core.arc, feed.work_events()) {
+        sound.play(Request::own(cue));
+    }
+    // THE SEVERED GATE opened: the score answers at once, off its schedule.
+    if let Some(track) =
+        crate::ui::arc::frame_score_answer(&net.session.core.arc, feed.work_events())
+    {
+        sound.music.answer(track);
+    }
+    // A countdown passed an hour, or a minute of its last few: the toll.
+    {
+        let core = &net.session.core;
+        if let Some(req) = toll.0.step(&core.arc, core.server_tick_est()) {
+            sound.play(req);
+        }
+    }
+    // A lock opened somewhere (`ARC.md` F7): heard across the island, like
+    // its toast — at the ears, since `Unlock` is positional. `place_eye` runs
+    // before `Stream`, so this is the very listener `pump` mixes against.
+    if let Some(req) =
+        crate::ui::arc::solve_request(feed.mech_solves(), [eye.pos.x, eye.pos.y, eye.pos.z])
+    {
+        sound.play(req);
     }
     // A town sentry locking on: the beep, at the gun, for everyone in
     // earshot — Rust's turret tells the whole town before it fires.
@@ -2100,8 +2178,9 @@ pub fn fell(
     }
 }
 
-/// What stands at cell key `key`, the scatter's answer, cold.
-fn scatter_occupant(
+/// What stands at cell key `key`, the scatter's answer, cold. A world
+/// container's handle is that key, so the loot panel names it by this too.
+pub(crate) fn scatter_occupant(
     world: Option<&super::WorldId>,
     key: u32,
 ) -> Option<sim_core::terrain::Occupant> {
@@ -2528,9 +2607,18 @@ pub fn hurt(
         // (operator, 2026-10-19: a cactus or a spike trap should sound like
         // one): the flesh hit, not a grunt. Announced blows only, so hunger
         // and thirst stay quiet, and not under the headshot's crunch.
+        //
+        // Its own row, `FleshHitOwn`: `FleshHit` is positional (a blow on a
+        // body out in the world, `contact_cue`), and the mixer refuses a
+        // positional cue with no place, so asked for as an own cue every
+        // blow on you was silent (`tests/audio_world.rs` found it). Placed
+        // at the ears instead, it would pan to −3 dB, share its clock with
+        // a body you are hitting point-blank, and pass a film's filter: in
+        // a film the Eye is the camera, so the recorder's blows would ring
+        // at the lens.
         if feed.hurts > 0 && !feed.hurt_head {
             let g = crate::sound::hurt::weight(feed.hurt_damage, core.hp_max);
-            sound.play(Request::own(Cue::FleshHit).with_gain(g));
+            sound.play(Request::own(Cue::FleshHitOwn).with_gain(g));
         }
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
@@ -2769,12 +2857,22 @@ pub fn bed(
         }
     }
 
+    // Ears under water hear the beds that still sound there through the
+    // water's low-pass, the same byte `pump` gives every one-shot start.
+    // The surf is sent it only when it moved; the furnace and the rotor fold
+    // it into their own places below.
+    let under = engine::lp_under(sound.snapshots.t(), engine.out_rate);
+    if sound.surf_sent != Some(under) {
+        sound.surf_sent = Some(under);
+        engine.push(surf_place(under));
+    }
+
     // The roar from the furnace's side. With none lit in earshot, its level
     // is fading to nothing and its last place holds.
     if let Some(p) = furnace.filter(|p| p.distance(eye.pos) < FURNACE_ROAR_R_M) {
         let d = p - eye.pos;
         let right = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
-        let place = furnace_place([d.x, d.y, d.z], [right.0, right.1]);
+        let place = furnace_place([d.x, d.y, d.z], [right.0, right.1], under);
         if sound.furnace_sent != Some(place) {
             sound.furnace_sent = Some(place);
             engine.push(place);
@@ -2798,6 +2896,7 @@ pub fn bed(
             [x, z],
             sound.rotor_receding,
             engine.out_rate,
+            under,
         );
         for (sent, place) in sound.rotor_sent.iter_mut().zip(places) {
             if *sent != Some(place) {

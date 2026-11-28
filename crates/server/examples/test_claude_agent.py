@@ -118,6 +118,17 @@ check("stance: only names memory holds, once each",
 check("summary rides in strategy", out["strategy"]["summary"].startswith("Woke on the beach"))
 check("an empty answer is no fields", ca.strategy_reply({}, set(), set()) == {})
 
+# --- the lock codes a team line carries ----------------------------------------
+check("a lone number is a code, a longer one is not",
+      ca.team_numbers_in("the code is 1234") == ["1234"] and ca.team_numbers_in("12345") == [])
+check("the digit in a name opening the line is no code (orders.rs `code`)",
+      ca.team_numbers_in("Miller-3 follow me") == [] and ca.team_numbers_in("Miller-3: stay") == []
+      and ca.team_numbers_in("  bob_42") == [])
+check("a number after the name still is",
+      ca.team_numbers_in("Miller-3 the code is 1234") == ["1234"]
+      and ca.team_numbers_in("code: 1234") == ["1234"] and ca.team_numbers_in("code:1234") == ["1234"]
+      and ca.team_numbers_in("#1234") == ["1234"] and ca.team_numbers_in("1234 is it") == ["1234"])
+
 # --- what wakes the strategist --------------------------------------------------
 t = ca.Triggers()
 base = {"observation": {"deaths": 0, "pack": {"items": []}}, "team": {}, "friend": {"online": False},

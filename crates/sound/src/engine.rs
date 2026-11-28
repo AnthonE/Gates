@@ -200,8 +200,9 @@ pub enum Cmd {
     /// next block like [`Cmd::Gain`], a low-pass byte as [`Cmd::Start`]
     /// carries it (0 = none), and a playback rate about its own (a Doppler
     /// shift; inside [`PLACE_RATE_MIN`]`..=`[`PLACE_RATE_MAX`]). A slot
-    /// starts centred at `(1, 1)`, unfiltered, at rate 1; only the heli's
-    /// rotor moves off it. Ignored on a free slot.
+    /// starts centred at `(1, 1)`, unfiltered, at rate 1; the heli's rotor
+    /// and the furnace move off it, and under water the beds the submerged
+    /// snapshot keeps take [`lp_under`]. Ignored on a free slot.
     Place {
         slot: u8,
         ear_l: f32,
@@ -471,6 +472,17 @@ pub fn lp_hz(hz: f32, out_rate: u32) -> u8 {
     (a * 256.0).round().clamp(1.0, 255.0) as u8
 }
 
+/// The darker of two low-pass bytes: the smaller cutoff, where 0 is no
+/// filter at all rather than the darkest one. A source heard far off AND
+/// under water keeps whichever filter takes more of its top end; this is the
+/// one rule for a one-shot ([`Cmd::muffled`]) and a held slot alike.
+pub fn darker(a: u8, b: u8) -> u8 {
+    match (a, b) {
+        (0, x) | (x, 0) => x,
+        (a, b) => a.min(b),
+    }
+}
+
 impl Cmd {
     /// This start through the lower of its own cutoff and `lp` (0 = none):
     /// a far source heard under water keeps whichever filter is darker.
@@ -488,10 +500,7 @@ impl Cmd {
                 cue,
                 take,
                 takes,
-                lp: match (own, lp) {
-                    (0, x) | (x, 0) => x,
-                    (a, b) => a.min(b),
-                },
+                lp: darker(own, lp),
                 gain_l,
                 gain_r,
                 rate,

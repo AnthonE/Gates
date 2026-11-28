@@ -1417,7 +1417,7 @@ impl DeviceJob {
                     .get_or_insert_with(|| out_of_verdigris(core, haven, x, z));
                 return match route.to(core, body, out, 2.0, false, tick) {
                     step @ Step::Walk { .. } => Tend::Go(step.walk().unwrap_or(Intent::IDLE)),
-                    Step::Blocked => Tend::Fail(Why::Stuck),
+                    Step::Blocked => Tend::Fail(route.blocked_why()),
                     // Still in it at the end of the walk: the spread outran it.
                     Step::Arrived => Tend::Fail(Why::NoSpot),
                     Step::Wait => Tend::Go(Intent::walk(yaw_toward(out[0] - x, out[1] - z))),
@@ -1450,7 +1450,7 @@ impl DeviceJob {
             let spot = [mx + ux * STAND_M, mz + uz * STAND_M];
             return match route.to(core, body, spot, 0.5, false, tick) {
                 step @ Step::Walk { .. } => Tend::Go(step.walk().unwrap_or(Intent::IDLE)),
-                Step::Blocked => Tend::Fail(Why::Stuck),
+                Step::Blocked => Tend::Fail(route.blocked_why()),
                 Step::Arrived | Step::Wait => {
                     Tend::Go(Intent::walk(yaw_toward(spot[0] - x, spot[1] - z)))
                 }

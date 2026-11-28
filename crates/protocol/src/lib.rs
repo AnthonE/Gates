@@ -49,6 +49,7 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod lang;
+pub mod pins;
 pub mod secret;
 pub mod version;
 pub mod voice;
@@ -64,15 +65,16 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     bullet_drop, bullet_reach_mm, decode_event, encode_event_agent, encode_event_assist,
-    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_bags, encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
-    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
-    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_crew, encode_event_dead, encode_event_death,
-    encode_event_death_mark, encode_event_deploy_defs, encode_event_deploy_placed,
-    encode_event_deploy_refused, encode_event_deploy_sync, encode_event_door, encode_event_drank,
-    encode_event_env, encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
-    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_auth, encode_event_bag_dropped, encode_event_bag_given, encode_event_bag_removed,
+    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_card_doors,
+    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_crew,
+    encode_event_dead, encode_event_death, encode_event_death_mark, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_env, encode_event_exposure,
+    encode_event_gate_spawn, encode_event_gather, encode_event_gather_refused,
+    encode_event_gitem_sync, encode_event_healed, encode_event_health, encode_event_heard,
     encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
     encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
@@ -123,8 +125,8 @@ pub use event::{
     STANDING_TICKER_BYTES, STANDING_TOP,
 };
 pub use event::{
-    encode_event_team, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE, TEAM_DEAD, TEAM_MAX,
-    TEAM_POS_MAX_M,
+    encode_event_team, encode_event_team_pins, TeamMember, TeamView, TEAM_ASLEEP, TEAM_AWAKE,
+    TEAM_DEAD, TEAM_MAX, TEAM_POS_MAX_M,
 };
 pub use event::{encode_event_turret, encode_event_wire, TurretView};
 pub use event::{
@@ -132,6 +134,9 @@ pub use event::{
     DEED_RELOAD,
 };
 pub use lang::{lang_code, lang_name, lang_of, LANGS, LANG_BITS, LANG_MAX};
+pub use pins::{
+    pin_label_byte, PinSet, WirePin, PINS_MAX, PIN_COLOURS, PIN_ICONS, PIN_LABEL_MAX, PIN_POS_MAX_M,
+};
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 pub use sim_core::shop::ShopAct;
@@ -1124,9 +1129,11 @@ pub use voice::{
 /// count; the sim drops it in a bag at your feet.
 /// v98 — what a body wears. `SUB_WORN` (89) carries a player's id and the
 /// item in each wear slot, so other clients draw what they wear.
-/// v99 — medicine on a downed body. `ACT_TREAT` (31, the last five-bit
-/// code) carries an inventory slot and the target's id; the sim stands the
-/// body up if the item revives (`Command::Treat`). The item catalog row
+/// v99 — medicine on another player. `ACT_TREAT` (31, the last five-bit
+/// code) carries an inventory slot and the target's id; the sim stands a
+/// downed body up if the item revives, and (since, with no wire change) a
+/// syringe or a bandage heals a standing one (`Command::Treat`, v157's
+/// `SUB_HEALED`). The item catalog row
 /// grows a `revive` bit after `holster`, so the client offers the verb. On
 /// an animal's record `crouched` now means the brain's hunt (chase, attack
 /// or orbit), so a client voices a hunting animal and not a grazing one.
@@ -1415,7 +1422,22 @@ pub use voice::{
 /// `SUB_WORK_STATE` admits `WORK_COUNTDOWN` (3) and then the tick it lights,
 /// `SUB_WORK` admits `WORK_EV_COUNTDOWN` (6), an arc refusal admits
 /// `REFUSE_A_COUNTING` (11), and a work's boost may name `KNOB_NOTICE_PCT`.
-pub const PROTO_VER: u16 = 156;
+///
+/// v157 — a craft cancel (`ACT_CANCEL`) closes with the recipe the click saw
+/// at its index, in 8 bits as `ACT_FASTTRACK`'s does, so a queue that moved
+/// under it refuses instead of cancelling the next job. And `SUB_HEALED`
+/// (113) tells a player another healed standing who did it and with what,
+/// and the healer whom (`EventMsg::Healed`: healer, healed, item). Action
+/// 46 mends the worn item in an inventory slot at a workbench (`ActionMsg::RepairItem`), and `SUB_RECIPES` carries the
+/// table's item repair percent after its header (`CraftContent::repair_pct`).
+/// Action 47 gives a sleeping bag of yours to a teammate
+/// (`ActionMsg::BagGive`): its address and their id. Action 48 sends your
+/// whole set of map marks (`ActionMsg::Pins`, `pins::PinSet`), and
+/// `SUB_TEAM_PINS` (114) relays it to each teammate with your id
+/// (`EventMsg::TeamPins`). `SUB_BAG_GIVEN` (115) tells a bag's receiver who
+/// gave it (`EventMsg::BagGiven`). A catalog row carries `hurl_ticks` after its
+/// `damage`: the windup a thrown spear needs (`combat::HurlDef`).
+pub const PROTO_VER: u16 = 157;
 
 /// Low bits of a player id that name its connection slot (v155). The rest,
 /// below `limits::MOB_ID_TAG`, are the slot's claim generation.
@@ -2553,9 +2575,12 @@ const ACT_ARC: u32 = 29;
 /// Drop `count` of an inventory slot on the ground (wire v97,
 /// `Command::Drop`).
 const ACT_DROP: u32 = 30;
-/// Use the medicine in an inventory slot on a downed body (wire v99,
-/// `Command::Treat`): the slot and the target's id. Reach, the target's
-/// state and whether the item revives are the sim's verdict.
+/// Use the medicine in an inventory slot on another player (wire v99,
+/// `Command::Treat`): the slot and the target's id. A downed body is stood
+/// up by an item that revives; a standing, hurt one is healed by a syringe
+/// at once or a bandage wrapped on (`SurvivalContent::heals_other`), and
+/// hears who healed them (`EventMsg::Healed`, v157). Reach, the target's
+/// state and what the item does are the sim's verdict.
 const ACT_TREAT: u32 = 31;
 /// Hand a stack to another player (wire v102, `Command::Give`): the slot,
 /// the count and the receiver's id. **The thirty-third action**, so it
@@ -2606,6 +2631,20 @@ const ACT_DETACH: u32 = 44;
 /// Lay a wire, or take up every wire on a part (wire v150,
 /// `Command::Wire` / `Command::Unwire`): a bit says which.
 const ACT_WIRE: u32 = 45;
+/// Mend the worn item in an inventory slot at a workbench (wire v157,
+/// `Command::RepairItem`): the slot. Wear, the recipe, the bench and the
+/// price are the sim's verdict (`craft::repair_item`).
+const ACT_REPAIR_ITEM: u32 = 46;
+/// Give the sender's sleeping bag at an address to a teammate (wire v157,
+/// `Command::GiveBag`, Rust's assign bag): the bag's cell and storey, then
+/// the receiver's id. The team is the shard's check, the bag and the
+/// receiver's cap the sim's (`deploy::Deploys::give_bag`).
+const ACT_BAG_GIVE: u32 = 47;
+/// The sender's whole set of map marks (wire v157, Rust's team markers):
+/// a count and each mark (`pins::PinSet`). Never a command: the shard
+/// relays it to the sender's team (`EventMsg::TeamPins`), and keeps the
+/// last one in memory while the sender plays, for a mate who joins later.
+const ACT_PINS: u32 = 48;
 /// Widths of a wire's ports: three outputs, two inputs (`power::ports`).
 const WIRE_OUT_BITS: u32 = 2;
 const WIRE_IN_BITS: u32 = 1;
@@ -2656,7 +2695,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_WIRE;
+const ACT_MAX: u32 = ACT_PINS;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2815,11 +2854,28 @@ pub enum ActionMsg {
     Craft { recipe: u16, count: u16, skin: u16 },
     /// Put skin `skin` on the item in inventory `slot` (0 takes it off).
     Reskin { slot: u8, skin: u16 },
+    /// Mend the worn item in inventory `slot` at a workbench (v157).
+    RepairItem { slot: u8 },
+    /// Give the sender's sleeping bag at this address to player `target`
+    /// (v157, Rust's assign bag). The shard sends it on only for a
+    /// teammate; whether the bag is the sender's and the receiver has room
+    /// for another is the sim's verdict.
+    BagGive {
+        cx: u16,
+        cz: u16,
+        level: u8,
+        target: u32,
+    },
+    /// The sender's whole set of map marks (v157), to show their team.
+    /// Never reaches the sim: the shard relays it to each teammate
+    /// (`EventMsg::TeamPins`) and drops it for a player with no team.
+    Pins(PinSet),
     /// Ask the server to read the owned skin set again. Answered by the
     /// server outside the sim; see `ACT_SKINS_REFRESH`.
     SkinsRefresh,
-    /// Cancel the queue job at `index`, refunding remaining inputs.
-    CraftCancel { index: u16 },
+    /// Cancel the queue job at `index`, refunding remaining inputs, if it
+    /// is still `recipe` (v157).
+    CraftCancel { index: u16, recipe: u16 },
     /// Pull the queue job at `index` to the head, if it is still `recipe`.
     CraftFastTrack { index: u16, recipe: u16 },
     /// Place baked piece row `row` at build-grid address (cx, cz, level,
@@ -3034,8 +3090,10 @@ pub enum ActionMsg {
     /// Drop `count` of inventory slot `slot` on the ground (wire v97). The
     /// slot is shape-checked here; an empty one is the sim's no-op.
     Drop { slot: u8, count: u16 },
-    /// Use inventory slot `slot` on downed body `target` (wire v99). The
-    /// slot is shape-checked here; everything else is the sim's verdict.
+    /// Use inventory slot `slot` on player `target` (wire v99): stand them
+    /// up if they are down and it revives, heal them if they stand and it
+    /// is a syringe or a bandage. The slot is shape-checked here;
+    /// everything else is the sim's verdict.
     Treat { slot: u8, target: u32 },
     /// Hand `count` of inventory slot `slot` to player `target` (wire
     /// v102). Slot and a nonzero count are shape-checked here; reach, the
@@ -3676,6 +3734,52 @@ pub fn encode_action_reskin(slot: u8, skin: u16, buf: &mut [u8]) -> Result<usize
     Ok(w.finish())
 }
 
+/// `ActionMsg::RepairItem` — mend the worn item in inventory `slot`.
+pub fn encode_action_repair_item(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_REPAIR_ITEM, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::BagGive` — give the bag at this address to `target`.
+pub fn encode_action_bag_give(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    target: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+        || target == 0
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_BAG_GIVE, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::Pins` — the sender's whole set of map marks.
+pub fn encode_action_pins(set: &PinSet, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PINS, ACTION_SUB_BITS)?;
+    set.write(&mut w)?;
+    Ok(w.finish())
+}
+
 /// `ActionMsg::Vend` — trade offer `offer`, `times` over.
 pub fn encode_action_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if offer as usize >= sim_core::limits::MAX_VEND_OFFERS
@@ -3763,14 +3867,19 @@ pub fn encode_action_fasttrack(
     Ok(w.finish())
 }
 
-pub fn encode_action_cancel(index: u16, buf: &mut [u8]) -> Result<usize, WireError> {
-    if index as usize >= sim_core::limits::CRAFT_QUEUE {
+/// Cancel the queue job at `index`, which the click saw as `recipe` (v157:
+/// the recipe rides as `encode_action_fasttrack`'s does, for its reason).
+pub fn encode_action_cancel(index: u16, recipe: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if index as usize >= sim_core::limits::CRAFT_QUEUE
+        || recipe as usize >= sim_core::limits::MAX_RECIPES
+    {
         return Err(WireError::Range);
     }
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_CANCEL, ACTION_SUB_BITS)?;
     w.write(index as u32, CANCEL_INDEX_BITS)?;
+    w.write(recipe as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -4200,6 +4309,33 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let skin = r.read(16)? as u16;
             ActionMsg::Reskin { slot, skin }
         }
+        ACT_REPAIR_ITEM => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::RepairItem { slot }
+        }
+        ACT_BAG_GIVE => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let target = r.read(32)?;
+            if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+                || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+                || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+                || target == 0
+            {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::BagGive {
+                cx,
+                cz,
+                level,
+                target,
+            }
+        }
+        ACT_PINS => ActionMsg::Pins(PinSet::read(&mut r)?),
         ACT_SKINS_REFRESH => ActionMsg::SkinsRefresh,
         ACT_VEND => {
             let offer = r.read(7)? as u8;
@@ -4256,10 +4392,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         },
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
-            if index as usize >= sim_core::limits::CRAFT_QUEUE {
+            let recipe = r.read(8)? as u16;
+            if index as usize >= sim_core::limits::CRAFT_QUEUE
+                || recipe as usize >= sim_core::limits::MAX_RECIPES
+            {
                 return Err(WireError::Malformed);
             }
-            ActionMsg::CraftCancel { index }
+            ActionMsg::CraftCancel { index, recipe }
         }
         ACT_PLACE => {
             let row = r.read(PIECE_ROW_BITS)? as u16;
@@ -5898,6 +6037,43 @@ mod tests {
         assert!(encode_action_shop(1, no_lot, &mut buf).is_err());
     }
 
+    /// A cancel carries the recipe it saw at its index (v157), as a
+    /// fast-track does: the last index and the last recipe round-trip, and
+    /// an index or a recipe past its table neither encodes nor decodes.
+    #[test]
+    fn a_cancel_round_trips_the_recipe_it_saw() {
+        let (last_i, last_r) = (
+            (sim_core::limits::CRAFT_QUEUE - 1) as u16,
+            (sim_core::limits::MAX_RECIPES - 1) as u16,
+        );
+        let mut buf = [0u8; 8];
+        let n = encode_action_cancel(last_i, last_r, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]).unwrap(),
+            ActionMsg::CraftCancel {
+                index: last_i,
+                recipe: last_r
+            }
+        );
+        assert_eq!(
+            encode_action_cancel(last_i + 1, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_cancel(0, last_r + 1, &mut buf),
+            Err(WireError::Range)
+        );
+        // A forged recipe past the table: the same frame with the 8-bit
+        // field written by hand.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_CANCEL, ACTION_SUB_BITS).unwrap();
+        w.write(0, CANCEL_INDEX_BITS).unwrap();
+        w.write(last_r as u32 + 1, 8).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
     #[test]
     fn wire_widths_cover_the_sim() {
         use sim_core::movement::{POS_XZ_Q, POS_Y_Q, TERMINAL_VELOCITY, VEL_Q};
@@ -6512,6 +6688,130 @@ mod tests {
         assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::SkinsRefresh));
     }
 
+    /// The bench repair (v157) round-trips its slot, and a slot past the
+    /// pack is refused at both ends.
+    #[test]
+    fn the_repair_item_action_round_trips() {
+        let mut buf = [0u8; 16];
+        let last = sim_core::limits::INV_SLOTS as u8 - 1;
+        let n = encode_action_repair_item(last, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::RepairItem { slot: last })
+        );
+        assert_eq!(
+            encode_action_repair_item(last + 1, &mut buf),
+            Err(WireError::Range)
+        );
+        // The slot field holds more than the pack: a forged one is refused.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_REPAIR_ITEM, ACTION_SUB_BITS).unwrap();
+        w.write(last as u32 + 1, ACTION_SLOT_BITS).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
+    /// The bag give (v157) round-trips its address and receiver at the
+    /// field edges, and an address past the grid or a zero receiver is
+    /// refused at both ends.
+    #[test]
+    fn the_bag_give_action_round_trips() {
+        let mut buf = [0u8; 32];
+        let cx = sim_core::limits::MAX_BUILD_COORD as u16 - 1;
+        let level = sim_core::limits::MAX_BUILD_SOCKETS as u8 - 1;
+        let n = encode_action_bag_give(cx, 3, level, 0xDEAD_BEEF, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::BagGive {
+                cx,
+                cz: 3,
+                level,
+                target: 0xDEAD_BEEF
+            })
+        );
+        assert_eq!(
+            encode_action_bag_give(cx + 1, 3, 0, 7, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_bag_give(1, 3, level + 1, 7, &mut buf),
+            Err(WireError::Range)
+        );
+        assert_eq!(
+            encode_action_bag_give(1, 3, 0, 0, &mut buf),
+            Err(WireError::Range)
+        );
+        // A forged zero receiver is refused on the way in.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_BAG_GIVE, ACTION_SUB_BITS).unwrap();
+        w.write(1, BUILD_CELL_BITS).unwrap();
+        w.write(3, BUILD_CELL_BITS).unwrap();
+        w.write(0, BUILD_LEVEL_BITS).unwrap();
+        w.write(0, 32).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+    }
+
+    /// A set of map marks (v157) round-trips at its field edges, empty
+    /// included, and neither end takes a set past the cap, a mark out of
+    /// range or a label byte past printable ASCII.
+    #[test]
+    fn the_pins_action_round_trips() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut set = PinSet::NONE;
+        let n = encode_action_pins(&set, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::Pins(set)));
+        for i in 0..PINS_MAX as u16 {
+            let pin = WirePin::new(
+                PIN_POS_MAX_M - i,
+                i,
+                PIN_COLOURS - 1,
+                (i % PIN_ICONS as u16) as u8,
+                &"~ZZ RAID 9"[..(i as usize * 2).min(PIN_LABEL_MAX)],
+            )
+            .unwrap();
+            assert!(set.push(pin));
+        }
+        let n = encode_action_pins(&set, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::Pins(set)));
+        // Out of range on the way out.
+        let mut bad = set;
+        bad.pins[1].colour = PIN_COLOURS;
+        assert_eq!(encode_action_pins(&bad, &mut buf), Err(WireError::Range));
+        let mut bad = set;
+        bad.n = PINS_MAX as u8 + 1;
+        assert_eq!(encode_action_pins(&bad, &mut buf), Err(WireError::Range));
+        // Forged on the way in: six marks, a control byte in a label, and a
+        // label that ends in a space.
+        let forge = |n: u32, ch: u32| {
+            let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_PINS, ACTION_SUB_BITS).unwrap();
+            w.write(n, 3).unwrap();
+            for _ in 0..n {
+                w.write(7, 12).unwrap();
+                w.write(9, 12).unwrap();
+                w.write(0, 3).unwrap();
+                w.write(0, 3).unwrap();
+                w.write(2, 4).unwrap();
+                w.write(b'A' as u32, 7).unwrap();
+                w.write(ch, 7).unwrap();
+            }
+            let len = w.finish();
+            decode_action(&buf[..len])
+        };
+        assert!(matches!(forge(1, b'B' as u32), Ok(ActionMsg::Pins(_))));
+        assert_eq!(
+            forge(PINS_MAX as u32 + 1, b'B' as u32),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(forge(1, 0x07), Err(WireError::Malformed));
+        assert_eq!(forge(1, b' ' as u32), Err(WireError::Malformed));
+    }
+
     /// A skinned hand survives both snapshot paths, and a present-zero
     /// skin — a second spelling of "no skin" — is refused.
     #[test]
@@ -6637,11 +6937,12 @@ mod tests {
         // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
         // freeform building's lattice placement (v134) 40, and farming v2's
         // plant and tend (v135) 41 and 42, the attachments (v144) 43 and 44,
-        // and the wire (v150) 45.
-        assert_eq!(ACT_MAX, ACT_WIRE);
+        // the wire (v150) 45, the bench repair (v157) 46, the bag give
+        // (v157) 47, and the team's map marks (v157) 48.
+        assert_eq!(ACT_MAX, ACT_PINS);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            18,
+            15,
             "the spare action codes moved — say so where the count is written"
         );
     }

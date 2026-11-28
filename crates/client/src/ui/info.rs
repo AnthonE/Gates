@@ -11,11 +11,12 @@
 //! friends), not against the strongest item in the catalog, so a bar means
 //! the same length on every card and a new gun does not shrink the others.
 
-use protocol::event::ItemRow;
+use protocol::event::{ItemCatalog, ItemRow};
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_NONE};
+use sim_core::craft::{repair_cost, repair_recipe, repair_station, CraftContent};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
-use sim_core::limits::TICK_HZ;
+use sim_core::limits::{INV_SLOTS, MAX_RECIPE_INPUTS, TICK_HZ};
 
 /// One INFORMATION row: a label, a value and, for a number with a sensible
 /// ceiling, how full its bar is (0..=1).
@@ -203,6 +204,8 @@ pub enum Act {
     Attach,
     /// Take the gun in hand's attachment `bit` off.
     Detach(u8),
+    /// Mend this worn item at a workbench (`craft::repair_item`).
+    Repair,
     Split,
     Drop,
 }
@@ -236,6 +239,8 @@ pub struct Ctx {
     /// The stack is the gun in hand, and the attachment bit in each of its
     /// slots (`combat::MOD_*`).
     pub fitted: [Option<u8>; 4],
+    /// The stack is worn and a recipe prices its mend ([`Repair::Quote`]).
+    pub repair: bool,
 }
 
 /// The ACTIONS column, top to bottom: the right-click's verb first, Drop
@@ -271,12 +276,105 @@ pub fn actions(row: ItemRow, stack: ItemStack, ctx: Ctx) -> Vec<(Act, &'static s
         if ctx.loaded_in_hand {
             out.push((Act::Unload, "Unload ammo"));
         }
+        if ctx.repair {
+            out.push((Act::Repair, "Repair"));
+        }
         if stack.count > 1 && ctx.room {
             out.push((Act::Split, "Split stack"));
         }
         out.push((Act::Drop, "Drop"));
     }
     out
+}
+
+/// What the card says of mending a stack at a workbench.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repair {
+    /// Whole, an item that never wears, or a table not dripped in yet.
+    Nothing,
+    /// Worn, and no recipe makes it (loot only): it can never be mended.
+    Never,
+    /// Worn: recipe row `recipe` prices the mend at `rows[..n]`, the sim's
+    /// own `craft::repair_cost`.
+    Quote {
+        recipe: u16,
+        rows: [(u16, u32); MAX_RECIPE_INPUTS],
+        n: usize,
+    },
+}
+
+/// The bench repair of `stack`, whose item's ceiling is `cond_max`, priced
+/// off the client's recipe table (the drip carries the share, wire v157).
+pub fn repair(cc: &CraftContent, cond_max: u16, stack: ItemStack) -> Repair {
+    if stack.count == 0 || cond_max == 0 || stack.cond >= cond_max || cc.repair_pct == 0 {
+        return Repair::Nothing;
+    }
+    let Some(recipe) = repair_recipe(cc, stack.item) else {
+        return Repair::Never;
+    };
+    let mut rows = [(0, 0); MAX_RECIPE_INPUTS];
+    let def = &cc.recipes[recipe as usize];
+    match repair_cost(
+        def,
+        stack.cond,
+        cond_max,
+        stack.count,
+        cc.repair_pct,
+        &mut rows,
+    ) {
+        0 => Repair::Nothing,
+        n => Repair::Quote { recipe, rows, n },
+    }
+}
+
+/// The card's line under its verbs: what a mend costs, or that there is
+/// none to be had.
+pub fn repair_line(catalog: &ItemCatalog, repair: Repair) -> Option<String> {
+    match repair {
+        Repair::Nothing => None,
+        Repair::Never => Some("Nothing makes it, so it cannot be repaired.".to_string()),
+        Repair::Quote { rows, n, .. } => {
+            let cost: Vec<String> = rows[..n]
+                .iter()
+                .map(|&(item, units)| {
+                    format!("{units} {}", crate::ui::craft::item_label(catalog, item))
+                })
+                .collect();
+            Some(format!("Repair at a workbench: {}", cost.join(", ")))
+        }
+    }
+}
+
+/// Why the shard would refuse this mend where the player stands, in its own
+/// order (`craft::repair_item`): the blueprint, the bench (`best`, the
+/// highest rung in reach), then the pack. `None` when it would go.
+pub fn repair_blocked(
+    cc: &CraftContent,
+    known: u128,
+    best: u8,
+    inv: &[ItemStack; INV_SLOTS],
+    catalog: &ItemCatalog,
+    recipe: u16,
+    rows: &[(u16, u32)],
+) -> Option<String> {
+    let def = &cc.recipes[recipe as usize];
+    if def.blueprint && !sim_core::research::knows(known, recipe) {
+        return Some("learn its blueprint to repair it".to_string());
+    }
+    let tier = repair_station(def);
+    if best < tier {
+        return Some(match tier {
+            sim_core::craft::STATION_WORKBENCH1 => "repairing needs a workbench nearby".to_string(),
+            t => format!("repairing this needs a level {t} workbench nearby"),
+        });
+    }
+    let short = rows
+        .iter()
+        .find(|&&(item, units)| crate::ui::craft::spendable(inv, item, catalog) < units)?;
+    Some(format!(
+        "not enough {} to repair it",
+        crate::ui::craft::item_label(catalog, short.0)
+    ))
 }
 
 /// The strip under the card's name: the skin, or else the class and, for a
@@ -313,7 +411,90 @@ mod tests {
             room: true,
             attachable: false,
             fitted: [None; 4],
+            repair: false,
         }
+    }
+
+    /// A worn item a recipe makes offers Repair and quotes its price; a
+    /// whole one, one that never wears and one no recipe makes do not, and
+    /// the last says it never can.
+    #[test]
+    fn the_card_quotes_a_bench_repair() {
+        let mut cc = CraftContent::probe_fixture();
+        // Recipe 1 makes item 3 from two of item 1 and one of item 2.
+        cc.repair_pct = 20;
+        let worn = ItemStack {
+            item: 3,
+            count: 1,
+            cond: 0,
+            ..ItemStack::default()
+        };
+        let Repair::Quote { recipe, rows, n } = repair(&cc, 100, worn) else {
+            panic!("a broken item a recipe makes is quoted");
+        };
+        assert_eq!((recipe, n), (1, 2));
+        assert_eq!(&rows[..n], &[(1, 1), (2, 1)], "20% of each, rounded up");
+        assert_eq!(
+            repair(&cc, 100, ItemStack { cond: 100, ..worn }),
+            Repair::Nothing
+        );
+        assert_eq!(repair(&cc, 0, worn), Repair::Nothing, "never wears");
+        assert_eq!(
+            repair(&cc, 100, ItemStack { item: 9, ..worn }),
+            Repair::Never
+        );
+        let unbaked = CraftContent {
+            repair_pct: 0,
+            ..cc
+        };
+        assert_eq!(repair(&unbaked, 100, worn), Repair::Nothing);
+
+        let acts = actions(
+            ItemRow::EMPTY,
+            worn,
+            Ctx {
+                repair: true,
+                ..ctx(CONT_SELF)
+            },
+        );
+        assert!(acts.iter().any(|a| a.0 == Act::Repair));
+        let acts = actions(
+            ItemRow::EMPTY,
+            worn,
+            Ctx {
+                repair: true,
+                ..ctx(CONT_BOX)
+            },
+        );
+        assert!(
+            acts.iter().all(|a| a.0 != Act::Repair),
+            "only from the pack"
+        );
+    }
+
+    /// The card says why a mend would be refused, in the shard's order.
+    #[test]
+    fn a_blocked_repair_says_why() {
+        let cc = CraftContent::probe_fixture();
+        let catalog = ItemCatalog::default();
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        inv[0] = ItemStack {
+            item: 0,
+            count: 5,
+            ..ItemStack::default()
+        };
+        let rows = [(0u16, 1u32)];
+        let wb1 = sim_core::craft::STATION_WORKBENCH1;
+        // Recipe 2 is a blueprint at a level-1 bench.
+        let why = |known, best, inv: &[ItemStack; INV_SLOTS], rows: &[(u16, u32)]| {
+            repair_blocked(&cc, known, best, inv, &catalog, 2, rows)
+        };
+        assert!(why(0, wb1, &inv, &rows).unwrap().contains("blueprint"));
+        assert!(why(1 << 2, 0, &inv, &rows).unwrap().contains("workbench"));
+        assert!(why(1 << 2, wb1, &inv, &[(0, 6)])
+            .unwrap()
+            .contains("not enough"));
+        assert_eq!(why(1 << 2, wb1, &inv, &rows), None);
     }
 
     /// An attachment the gun in hand takes offers itself; a gun in hand

@@ -274,6 +274,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteBowDraw => Cue::BowDraw,
         Cue::RemoteBrush => Cue::Brush,
         Cue::HurtAgain => Cue::Hurt,
+        Cue::FleshHitOwn => Cue::FleshHit,
         Cue::OreBreak => Cue::Collapse,
         Cue::KnockMetal => Cue::ImpactMetal,
         c => c,

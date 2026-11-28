@@ -189,7 +189,7 @@ pub fn walk(
     Some(match route.to(core, body, to, stop - 0.2, false, tick) {
         step @ Step::Walk { .. } => Ok(step.walk().unwrap_or(Intent::IDLE)),
         Step::Wait | Step::Arrived => Ok(Intent::walk(yaw_toward(to[0] - x, to[1] - z))),
-        Step::Blocked => Err(Why::Stuck),
+        Step::Blocked => Err(route.blocked_why()),
     })
 }
 

@@ -137,6 +137,29 @@ impl MeleeDef {
     }
 }
 
+/// A melee row's throw — `weapons.toml`'s `[weapon.throw]`, Rust's thrown
+/// spear: the right mouse held for `windup_ticks`, a click, and the weapon
+/// itself flies (`ranged::hurl`) as an arrow does, then lies where it came
+/// down to be picked up again. Its own table rather than columns on
+/// [`MeleeDef`] because only a few melee rows throw and the swing reads
+/// none of it. `speed_mmpt == 0` ⇒ the item does not throw.
+///
+/// What the thrown weapon takes off a wall, and what a head or a leg is
+/// worth, stay the melee row's (`structure`, `head_pct`, `limb_pct`): the
+/// throw changes how hard and how far, not what the weapon is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HurlDef {
+    /// Speed out of the hand, mm per tick (`speed_mps`, baked as a round's).
+    pub speed_mmpt: u16,
+    /// Gravity on it in flight, mm per tick² (`drop_mps2`, a round's).
+    pub drop_mmpt2: u16,
+    /// What it hits a body or an animal for (`damage`), before the ladder.
+    pub damage: u16,
+    /// Ticks the aim must be held before it can leave the hand
+    /// (`windup_ms`). A byte, because the catalog carries it that way.
+    pub windup_ticks: u8,
+}
+
 /// One item's throwable row — the raid tool (`charge.rs`). Separate from
 /// `MeleeDef` rather than a nullable column on it because the two are
 /// read by different verbs at different times: a melee row answers a
@@ -663,6 +686,9 @@ pub struct CombatContent {
     /// Throwable rows, indexed the same way. Every entry inert until the
     /// bake installs the throwable rows of `content/weapons.toml`.
     pub throw: [ThrowDef; MAX_ITEM_DEFS],
+    /// The melee rows that can be thrown ([`HurlDef`]), indexed the same
+    /// way. Every entry inert until the bake installs a `[weapon.throw]`.
+    pub hurl: [HurlDef; MAX_ITEM_DEFS],
 
     /// Indexed the same way. A row here and a row in `melee` are not
     /// exclusive in the type, but nothing in the alpha data is both, and
@@ -771,6 +797,12 @@ impl CombatContent {
             reach_cm: 0,
             blast_cm: 0,
             dud_pct: 0,
+        }; MAX_ITEM_DEFS],
+        hurl: [HurlDef {
+            speed_mmpt: 0,
+            drop_mmpt2: 0,
+            damage: 0,
+            windup_ticks: 0,
         }; MAX_ITEM_DEFS],
         ranged: [RangedDef {
             damage: 0,
@@ -1107,6 +1139,19 @@ impl CombatContent {
         // float rules have no NaN to fall back on. Asserted here now so the
         // consumer inherits the invariant instead of having to add it.
         (d.structure > 0 && d.fuse_ticks > 0 && d.blast_cm > 0).then_some(d)
+    }
+
+    /// The throw of the item a player is holding, with the melee row it is
+    /// a throw of — `None` unless the hand holds a melee weapon whose row
+    /// throws ([`HurlDef`]). Every column is required: a throw that does no
+    /// harm, never leaves the hand or needs no windup is a row the bake
+    /// refuses, and refused here again so a hand-built table cannot reach
+    /// the verb with one.
+    #[inline]
+    pub fn held_hurl(&self, held: u16) -> Option<(HurlDef, MeleeDef)> {
+        let m = self.held_melee(held)?;
+        let h = self.hurl[held as usize];
+        (h.speed_mmpt > 0 && h.damage > 0 && h.windup_ticks > 0).then_some((h, m))
     }
 
     /// The ranged row of the item a player is holding, or `None` when the

@@ -6,6 +6,14 @@
 //! viewmodel draws the wrap off and the HUD counts down, started by the click
 //! that sends `ACT_CONSUME` and put away on the same rule the sim uses, so
 //! the arm stops wrapping on the frame the player switches.
+//!
+//! A wrap on another player (`Verb::Heal`) starts on its press too, but the
+//! sim may refuse it (`World::treat_standing`: they are at full health) and
+//! nothing tells this side a wrap began. So the clock reads the refusal
+//! instead: a consume refusal that comes back before any other mouthful
+//! went can only be that treat's answer, and the wrap is put away
+//! ([`WrapClock::refused`]). A target the sim drops unsaid (out of reach,
+//! behind a wall) still draws its wrap to the end with nothing landing.
 
 /// How many times the hand goes round the forearm in one wrap.
 pub const WRAP_TURNS: f32 = 3.0;
@@ -19,6 +27,9 @@ struct Run {
     secs: f64,
     slot: u8,
     item: u16,
+    /// A wrap on another player whose answer has not come back, and no
+    /// other mouthful has gone since: a consume refusal now is its.
+    asking: bool,
 }
 
 /// The wrap under way, if there is one.
@@ -36,7 +47,34 @@ impl WrapClock {
             secs: secs.max(1e-3),
             slot,
             item,
+            asking: false,
         });
+    }
+
+    /// [`Self::begin`] for a wrap on another player, which the sim may
+    /// refuse where it never refuses one on yourself.
+    pub fn begin_on_other(&mut self, now: f64, secs: f64, slot: u8, item: u16) {
+        self.begin(now, secs, slot, item);
+        if let Some(r) = &mut self.run {
+            r.asking = true;
+        }
+    }
+
+    /// A consume refusal came back. A wrap on another player still asking
+    /// was the refused press, so the sim began none: put it away. Any
+    /// other wrap is not the refused verb's and runs on.
+    pub fn refused(&mut self) {
+        if self.run.is_some_and(|r| r.asking) {
+            self.run = None;
+        }
+    }
+
+    /// Another mouthful went: a refusal from now on may be its, so a wrap
+    /// on another player stops reading refusals as its own.
+    pub fn settle(&mut self) {
+        if let Some(r) = &mut self.run {
+            r.asking = false;
+        }
     }
 
     /// One frame: the wrap ends when it has run its time, and is put away
@@ -107,5 +145,20 @@ mod tests {
         w.begin(20.0, 4.0, 2, 7);
         w.step(24.0, 2, (7, 3));
         assert_eq!(w.progress(24.0), None, "done");
+    }
+
+    #[test]
+    fn a_refusal_puts_away_only_a_wrap_on_another_still_asking() {
+        let mut w = WrapClock::default();
+        w.begin(10.0, 4.0, 2, 7);
+        w.refused();
+        assert!(w.busy(), "a wrap on yourself is never the refused verb");
+        w.begin_on_other(20.0, 4.0, 2, 7);
+        w.refused();
+        assert!(!w.busy(), "the heal on another was refused: no wrap began");
+        w.begin_on_other(30.0, 4.0, 2, 7);
+        w.settle();
+        w.refused();
+        assert!(w.busy(), "after another mouthful the refusal may be its");
     }
 }

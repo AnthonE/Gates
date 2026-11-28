@@ -63,7 +63,7 @@ use client_core::core::ClientCore;
 use sim_core::combat::ARMOR_MAX_PCT;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
-    is_own, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_BUSY, REFUSE_M_MAX,
+    is_own, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD, REFUSE_M_BUSY, REFUSE_M_MAX,
     REFUSE_M_NO_INPUT,
 };
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
@@ -82,8 +82,8 @@ use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
     looting, move_args, pip_fraction, quick_move_stack, refusal_text, refusal_text_in, slots_in,
-    take_only_bag, take_only_refused, takes_deposits, wear_slot_label, wearable_here, worn_pct,
-    worn_ward, worn_warmth, Drag, Grab, Quick, Sweep,
+    take_only_bag, take_only_refused, takes_deposits, wear_slot_label, wearable_here,
+    world_container_title, worn_pct, worn_ward, worn_warmth, Drag, Grab, Quick, Sweep,
 };
 use sim_core::oven::OvenLayout;
 
@@ -102,6 +102,7 @@ pub struct SlotCell {
 /// the page is being used for: quick craft, or the container you opened.
 /// The crafting menu is its own page (`craft::build_screen`, `Q`), reached
 /// by the tab strip across the top of both.
+#[allow(clippy::too_many_arguments)]
 pub fn build_screen(
     commands: &mut Commands,
     ui: &Ui,
@@ -110,6 +111,7 @@ pub fn build_screen(
     sel: u8,
     portrait: Option<&crate::render::portrait::Portrait>,
     hearth: Option<(u16, u16, u8)>,
+    world: Option<&crate::render::WorldId>,
 ) {
     super::page_frame(commands, ui, super::Seat::OnHotbar, true, |zone| {
         // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
@@ -163,7 +165,7 @@ pub fn build_screen(
                     } else if let Some(key) = super::turret::open_turret(core) {
                         turret_grid(row, core, icons, key);
                     } else if looting(core.cont_kind) {
-                        container_grid(row, core, icons);
+                        container_grid(row, core, icons, world);
                     } else {
                         craft::build_quick(row, ui, core, icons);
                     }
@@ -280,6 +282,14 @@ fn info_card(
             }
         }
     }
+    // A worn thing in the pack is mended at a bench (`craft::repair_item`):
+    // the card offers it and says the price, or that nothing ever will.
+    let mend = if kind == CONT_SELF {
+        info::repair(&core.recipes, row.cond_max, stack)
+    } else {
+        info::Repair::Nothing
+    };
+    let mend_line = info::repair_line(&core.catalog, mend);
     let acts = info::actions(
         row,
         stack,
@@ -291,6 +301,7 @@ fn info_card(
             room: split_slot(&core.inv).is_some(),
             attachable: kind == CONT_SELF && core.attachable(stack.item).is_some(),
             fitted,
+            repair: matches!(mend, info::Repair::Quote { .. }),
         },
     );
     col.spawn((
@@ -430,6 +441,18 @@ fn info_card(
                 }
                 for (act, label) in acts {
                     act_button(right, act, label);
+                }
+                if let Some(line) = mend_line {
+                    right.spawn((
+                        Text::new(line),
+                        font(11.0),
+                        TextColor(TEXT_DIM),
+                        Node {
+                            margin: UiRect::top(Val::Px(2.0)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
                 }
             });
         });
@@ -607,6 +630,11 @@ pub fn info_clicks(
             }
         }
         info::Act::Attach => send_attach(&mut ui, &net, slot),
+        info::Act::Repair => {
+            if kind == CONT_SELF {
+                send_repair(&mut ui, &net, slot);
+            }
+        }
         info::Act::Detach(bit) => {
             let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
             match protocol::encode_action_detach(bit, &mut buf) {
@@ -698,8 +726,21 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, se
 /// the wire ships `INV_SLOTS` slots whatever kind is open and the tail stays
 /// zero for a box, so a panel that drew all thirty would draw twelve slots
 /// and eighteen lies.
-fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+fn container_grid(
+    row: &mut ChildSpawnerCommands,
+    core: &ClientCore,
+    icons: &Icons,
+    world: Option<&crate::render::WorldId>,
+) {
     let kind = core.cont_kind;
+    // A world container is titled by what stands at its cell: a landmark's
+    // vault says VAULT. With no world (the probes) it is a CRATE.
+    let title = if kind == CONT_WORLD {
+        crate::render::audio::scatter_occupant(world, core.cont_handle)
+            .map_or(container_title(kind), world_container_title)
+    } else {
+        container_title(kind)
+    };
     // The body is not loot, and it is not drawn from here. It had a
     // branch at the top of this function until 2026-08-28, when it got
     // its own stream and its own permanent column beside this one —
@@ -730,7 +771,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
             // over RECYCLER said the wrong word first.
             section(col, &name);
         } else {
-            section(col, container_title(kind));
+            section(col, title);
             if let Some(bar) = container_bar(kind, &name) {
                 name_bar(col, bar);
             }
@@ -2046,7 +2087,7 @@ fn section(parent: &mut ChildSpawnerCommands, text: &str) {
 
 /// Skins in the inventory (skins v0): `P` over an item of yours cycles
 /// it through the skins you own for it and back to its own look — Rust's
-/// repair-bench skin picker, at any workbench since we have no repair bench
+/// repair-bench skin picker, at any workbench, which is our repair bench
 /// (`sim_core::skin::reskin`; the sim refuses away from one and says why).
 ///
 /// And **opening either page asks the shard to read your skins again**
@@ -2482,6 +2523,54 @@ pub fn drag_pointer(
 /// not do. Every branch of the decision is `ui::slots::quick_move`'s (and
 /// the fire's and the table's own); this sends what it is handed.
 /// Put the attachment in pack slot `slot` on the gun in hand.
+/// The card's Repair: asked of the client's mirror first, in the shard's
+/// order, so a press that would be refused says why instead of waiting on
+/// the refusal (`skin_keys`' posture), then sent. The item's own cell
+/// redraws whole when the sim agrees.
+fn send_repair(ui: &mut Ui, net: &super::super::Net, slot: usize) {
+    let core = &net.session.core;
+    let stack = core.inv[slot];
+    let info::Repair::Quote { recipe, rows, n } = info::repair(
+        &core.recipes,
+        core.catalog.cond_max(stack.item as usize),
+        stack,
+    ) else {
+        ui.say("there is nothing to repair on that");
+        return;
+    };
+    let pos = core.predict.position();
+    let best = sim_core::deploy::best_bench_in(
+        core.deploys.entries(),
+        &core.deploy_defs,
+        pos[0],
+        pos[2],
+        sim_core::craft::STATION_RADIUS_M,
+    );
+    if let Some(why) = info::repair_blocked(
+        &core.recipes,
+        core.known(),
+        best,
+        &core.inv,
+        &core.catalog,
+        recipe,
+        &rows[..n],
+    ) {
+        ui.say(why);
+        return;
+    }
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_repair_item(slot as u8, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say(format!(
+                "repairing {}",
+                research_ui::stack_label(&core.catalog, &core.research, stack)
+            )),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the repair would not encode ({e:?})")),
+    }
+}
+
 fn send_attach(ui: &mut Ui, net: &super::super::Net, slot: usize) {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_attach(slot as u8, &mut buf) {

@@ -3499,17 +3499,28 @@ fn sync_loot(
         });
         let own_waits = own.is_some() && own_ready.is_none();
         pending |= own_waits;
+        // A thrown spear that went into a trunk, a wall or a door stays in
+        // it as an arrow does (`grounditem::stick_at`), point first, rather
+        // than lying flat in the air where it went in.
+        let laid = |mesh: &Handle<Mesh>, i: usize| {
+            let def = &crate::ui::hold::HELD_MODELS[i];
+            if g.stuck() {
+                stuck_as_model(position, g.dir, def.height_m, def.scale)
+            } else {
+                super::loot::resting_transform(
+                    meshes.get(mesh).expect("ready model"),
+                    position,
+                    g.id,
+                    def.scale,
+                    true,
+                    &ground,
+                )
+            }
+        };
         let (mesh, mat, transform) = match ready {
             Some(i) if own_ready.is_some() => {
                 let (mesh, mat) = own_ready.expect("checked");
-                let transform = super::loot::resting_transform(
-                    meshes.get(&mesh).expect("ready model"),
-                    position,
-                    g.id,
-                    crate::ui::hold::HELD_MODELS[i].scale,
-                    true,
-                    &ground,
-                );
+                let transform = laid(&mesh, i);
                 drawn = g.skin;
                 (mesh, mat, transform)
             }
@@ -3527,14 +3538,7 @@ fn sync_loot(
             }
             Some(i) => {
                 let (mesh, mat) = models.row(i);
-                let transform = super::loot::resting_transform(
-                    meshes.get(&mesh).expect("ready model"),
-                    position,
-                    g.id,
-                    crate::ui::hold::HELD_MODELS[i].scale,
-                    true,
-                    &ground,
-                );
+                let transform = laid(&mesh, i);
                 let mat = match tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mat, materials)) {
                     Some(skinned) => {
                         drawn = skin;
@@ -3649,6 +3653,19 @@ pub fn arrow_as_model(shaft: Transform, shaft_len: f32, len: f32) -> Transform {
     let head = shaft.translation - back * shaft_len * 0.5;
     Transform::from_translation(head + back * len)
         .with_rotation(shaft.rotation * Quat::from_rotation_x(std::f32::consts::PI))
+}
+
+/// A held model stuck where it went in, as [`stuck_transform`] stands an
+/// arrow: `ui::hold`'s frame (the foot at the origin, the crown up +Y,
+/// `height_m` of it) with the crown, a spear's point, in by
+/// [`ARROW_STUCK_M`], at the row's own `scale`.
+pub fn stuck_as_model(position: Vec3, dir: [i8; 3], height_m: f32, scale: f32) -> Transform {
+    arrow_as_model(
+        stuck_transform(position, dir),
+        ARROW_LEN_M,
+        height_m * scale,
+    )
+    .with_scale(Vec3::splat(scale))
 }
 
 #[allow(clippy::too_many_arguments)]

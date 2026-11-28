@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 199] = [
+const GOLDEN: [&[u8]; 205] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -262,6 +262,12 @@ const GOLDEN: [&[u8]; 199] = [
     include_bytes!("golden/event_wire.bin"),
     include_bytes!("golden/hello_commander.bin"),
     include_bytes!("golden/event_crew.bin"),
+    include_bytes!("golden/event_healed.bin"),
+    include_bytes!("golden/action_repair_item.bin"),
+    include_bytes!("golden/action_bag_give.bin"),
+    include_bytes!("golden/action_pins.bin"),
+    include_bytes!("golden/event_team_pins.bin"),
+    include_bytes!("golden/event_bag_given.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -589,8 +595,19 @@ fn test_protocol_golden() {
     // An agent's commander (v154).
     g!(seen, golden_stream, 197);
     g!(seen, golden_event, 198);
+    // A heal by another player (v157).
+    g!(seen, golden_event, 199);
+    // A worn item mended at a bench (v157).
+    g!(seen, golden_action, 200);
+    // A sleeping bag given to a teammate (v157).
+    g!(seen, golden_action, 201);
+    // A player's map marks, and the same relayed to a teammate (v157).
+    g!(seen, golden_action, 202);
+    g!(seen, golden_event, 203);
+    // A sleeping bag given, told to its receiver (v157).
+    g!(seen, golden_event, 204);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 199, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 205, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -862,13 +879,13 @@ fn golden_action(fixture: &[u8], name: &str) {
             protocol::encode_action_skins_refresh(&mut buf).unwrap()
         }
         "action_cancel.bin" => {
-            let index = action_cancel();
+            let (index, recipe) = action_cancel();
             assert_eq!(
                 decode_action(fixture).unwrap(),
-                ActionMsg::CraftCancel { index },
+                ActionMsg::CraftCancel { index, recipe },
                 "{name}: decode mismatch"
             );
-            encode_action_cancel(index, &mut buf).unwrap()
+            encode_action_cancel(index, recipe, &mut buf).unwrap()
         }
         "action_place.bin" => {
             let (row, cx, cz, level, loc, freehand, plate) = action_place();
@@ -1051,6 +1068,39 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_fasttrack(index, recipe, &mut buf).unwrap()
+        }
+        "action_repair_item.bin" => {
+            let slot = protocol::goldens::action_repair_item();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::RepairItem { slot },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_repair_item(slot, &mut buf).unwrap()
+        }
+        "action_pins.bin" => {
+            let set = protocol::goldens::action_pins();
+            assert_eq!(set.n as usize, protocol::PINS_MAX, "{name}: a full set");
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Pins(set),
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_pins(&set, &mut buf).unwrap()
+        }
+        "action_bag_give.bin" => {
+            let (cx, cz, level, target) = protocol::goldens::action_bag_give();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::BagGive {
+                    cx,
+                    cz,
+                    level,
+                    target
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_bag_give(cx, cz, level, target, &mut buf).unwrap()
         }
         "action_attach.bin" => {
             let slot = protocol::goldens::action_attach();
@@ -1819,11 +1869,12 @@ fn golden_event(fixture: &[u8], name: &str) {
                     total,
                     first,
                     count,
+                    repair_pct,
                     rows,
                 } => {
                     assert_eq!(
-                        (total, first, count),
-                        (cc.recipe_count as u8, 0, RECIPE_BATCH as u8),
+                        (total, first, count, repair_pct),
+                        (cc.recipe_count as u8, 0, RECIPE_BATCH as u8, cc.repair_pct),
                         "{name}: header mismatch"
                     );
                     for (i, row) in rows.iter().enumerate().take(count as usize) {
@@ -2880,6 +2931,33 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_crew(id, of, &mut buf).unwrap()
+        }
+        "event_team_pins.bin" => {
+            let (from, pins) = protocol::goldens::event_team_pins();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::TeamPins { from, pins },
+                "{name}"
+            );
+            protocol::encode_event_team_pins(from, &pins, &mut buf).unwrap()
+        }
+        "event_healed.bin" => {
+            let (by, to, item) = protocol::goldens::event_healed();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Healed { by, to, item },
+                "{name}"
+            );
+            protocol::encode_event_healed(by, to, item, &mut buf).unwrap()
+        }
+        "event_bag_given.bin" => {
+            let by = protocol::goldens::event_bag_given();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::BagGiven { by },
+                "{name}"
+            );
+            protocol::encode_event_bag_given(by, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

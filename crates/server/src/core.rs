@@ -69,9 +69,9 @@ use sim_core::world::{
     EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
-    EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
-    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_BAG_GIVEN, EV_EXTRACTED, EV_GAVE, EV_HEALED, EV_MECH_SOLVED,
+    EV_NODE_STAGE, EV_PAID, EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET,
+    EV_WHEEL_PAID, EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WIRE, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -478,6 +478,9 @@ pub struct ShardCore {
     cheats: crate::cheat::Checks,
     /// The cheat checks' sight-line memo (`terrain::Lattice`).
     cheat_lat: Box<sim_core::terrain::Lattice>,
+    /// The newest flags, named, for an admin's `/suspects`; the anomaly log
+    /// keeps them all. Not sim state.
+    suspects: crate::cheat::Suspects,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -621,6 +624,7 @@ fn team_only(bytes: &[u8]) -> bool {
     match protocol::decode_event(bytes) {
         Ok(protocol::EventMsg::Chat { channel, .. }) => channel == protocol::Channel::Team,
         Ok(protocol::EventMsg::Caption(c)) => c.channel == protocol::Channel::Team,
+        Ok(protocol::EventMsg::TeamPins { .. }) => true,
         _ => false,
     }
 }
@@ -1137,6 +1141,7 @@ impl ShardCore {
             achievements: crate::achievements::Achievements::off(),
             cheats: crate::cheat::Checks::new(),
             cheat_lat: Box::new(sim_core::terrain::Lattice::new()),
+            suspects: crate::cheat::Suspects::new(),
             gifts: crate::gifts::Gifts::off(),
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
@@ -1229,7 +1234,7 @@ impl ShardCore {
     /// their body (`admin::brain_line`), or why there is none.
     fn brain_answer(&self, who: u32) -> String {
         let w = &self.world;
-        let Some(me) = w.players.iter().find(|p| p.active && p.id == who) else {
+        let Some(me) = Self::world_slot_of(w, who).map(|s| &w.players[s]) else {
             return "no body to measure from".to_string();
         };
         let (mx, mz) = (
@@ -1945,7 +1950,8 @@ impl ShardCore {
     }
 
     /// This tick's aims, shots and hits through the cheat checks
-    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named.
+    /// (`cheat.rs`); a flag is a `suspect` line in the anomaly log, named,
+    /// and a row in the ring an admin's `/suspects` reads.
     fn note_cheats(&mut self, ops: &mut Ops<'_>) {
         use crate::anomaly::{Kind, Record};
         let tick = self.world.tick;
@@ -1974,10 +1980,13 @@ impl ShardCore {
         }
         let agents = &agents[..n_agents];
         let exempt = |id: u32| agents.contains(&id);
+        let world = &self.world;
+        let suspects = &mut self.suspects;
         self.cheats.tick(
             tick,
-            &self.world.players,
-            self.world.events.entries(),
+            &world.players,
+            world.events.entries(),
+            |id| world.player_slot(id),
             exempt,
             |a, b| teams.mates(a, b),
             |from, to| ground.hidden(from, to),
@@ -1985,12 +1994,13 @@ impl ShardCore {
                 let name = tags
                     .iter()
                     .find(|t| t.id == f.who)
-                    .map_or("", |t| t.name.as_str());
+                    .map_or(protocol::Name::EMPTY, |t| t.name);
                 ops.log.push(
                     Record::new(tick, Kind::Suspect, f.check as u16, f.who)
                         .with(f.a, f.b, f.c)
-                        .note(name.as_bytes()),
+                        .note(name.as_str().as_bytes()),
                 );
+                suspects.push(tick, f, name);
             },
         );
     }
@@ -2108,7 +2118,8 @@ impl ShardCore {
         let slot = self.achievements.sweep_next();
         if self.clients[slot].connected && self.achievements.tracks(slot) {
             let id = self.clients[slot].id;
-            if let Some(p) = self.world.players.iter().find(|p| p.active && p.id == id) {
+            if let Some(w) = Self::world_slot_of(&self.world, id) {
+                let p = &self.world.players[w];
                 self.achievements.swept(slot, &p.inv, &p.worn, p.glyphs);
             }
         }
@@ -2134,11 +2145,10 @@ impl ShardCore {
 
     /// Where a body stands, in quanta (`(0, 0)` when there is none).
     fn play_at(&self, id: u32) -> (i32, i32) {
-        self.world
-            .players
-            .iter()
-            .find(|p| p.active && p.id == id)
-            .map_or((0, 0), |p| (p.body.qx, p.body.qz))
+        Self::world_slot_of(&self.world, id).map_or((0, 0), |w| {
+            let b = &self.world.players[w].body;
+            (b.qx, b.qz)
+        })
     }
 
     /// This tick's events into the play log (`playlog.rs`): a line for each
@@ -3580,6 +3590,9 @@ impl ShardCore {
         }
         self.keys[slot] = None;
         self.clients[slot].connected = false;
+        // Marks are kept only while their owner plays.
+        self.clients[slot].pins = protocol::PinSet::NONE;
+        self.clients[slot].pending_pins = None;
         self.last_saved[slot] = PlayerSave::EMPTY;
         self.achievements.leave(slot);
         save.map(|s| (id, s))
@@ -4106,6 +4119,29 @@ impl ShardCore {
                         slot,
                         skin,
                     },
+                    ActionMsg::RepairItem { slot } => Command::RepairItem { id: c.id, slot },
+                    // Rust's assign list is the team: a bag goes only to a
+                    // teammate, and teams are the shard's (`team.rs`), so the
+                    // check is here, before the command is minted. The WAL
+                    // records the command, so a replay needs no team. One to
+                    // anybody else is dropped, as a stale button press is.
+                    ActionMsg::BagGive {
+                        cx,
+                        cz,
+                        level,
+                        target,
+                    } => {
+                        if !self.teams.mates(c.id, target) {
+                            continue;
+                        }
+                        Command::GiveBag {
+                            id: c.id,
+                            cx,
+                            cz,
+                            level,
+                            target,
+                        }
+                    }
                     // Answered by the accept loop before it reaches this
                     // ring (`net.rs` `action_reader_task`); one that got
                     // here anyway asks the sim for nothing.
@@ -4117,7 +4153,18 @@ impl ShardCore {
                         c.pending_team = Some((op, target));
                         continue;
                     }
-                    ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
+                    // Map marks for the team (v157), on their own clock
+                    // (`pace::Kind::Pins`): relayed after the tick, on the
+                    // shard, and never seen by the sim, the WAL or the hash.
+                    ActionMsg::Pins(set) => {
+                        c.pending_pins = Some(set);
+                        continue;
+                    }
+                    ActionMsg::CraftCancel { index, recipe } => Command::CraftCancel {
+                        id: c.id,
+                        index,
+                        recipe,
+                    },
                     ActionMsg::CraftFastTrack { index, recipe } => Command::CraftFastTrack {
                         id: c.id,
                         index,
@@ -4870,11 +4917,8 @@ impl ShardCore {
                 return;
             }
             if !back {
-                let in_town = self
-                    .world
-                    .players
-                    .iter()
-                    .find(|p| p.active && p.id == who)
+                let in_town = Self::world_slot_of(&self.world, who)
+                    .map(|w| &self.world.players[w])
                     .is_some_and(|p| {
                         sim_core::town::safe(
                             &self.world.haven.town,
@@ -4951,16 +4995,16 @@ impl ShardCore {
                     return;
                 };
                 let act = if ban {
-                    // The wallet, not the id: an id is meaningless after a
-                    // reconnect, which is the whole point of a ban.
-                    let Some(key) = self.keys[slot] else {
-                        ops.log.push(
-                            Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
-                        );
-                        self.answer(from_slot, admin::no_wallet_line(id), stats, send);
-                        return;
-                    };
-                    AdminAct::Ban { by: who, id, key }
+                    match self.keys[slot] {
+                        // The wallet, not the id: an id is meaningless
+                        // after a reconnect, which is the whole point of a
+                        // ban.
+                        Some(key) => AdminAct::Ban { by: who, id, key },
+                        // A guest has none: the accept loop bans the
+                        // address it joined from, which only it knows
+                        // (`admin::GuestBans`), and answers how it went.
+                        None => AdminAct::BanGuest { by: who, id },
+                    }
                 } else {
                     AdminAct::Kick { by: who, id }
                 };
@@ -4993,6 +5037,18 @@ impl ShardCore {
                 }
                 let _ = self.banned.remove_prefix(&prefix);
                 logged = logged.note(prefix.as_bytes());
+            }
+            AdminCmd::UnbanGuests => {
+                // The address bans are the accept loop's alone; it says
+                // how many it lifted.
+                let act = AdminAct::UnbanGuests { by: who };
+                if !ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok()) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).note(b"guests"));
+                    self.answer(from_slot, admin::RING_FULL_LINE.into(), stats, send);
+                    return;
+                }
+                logged = logged.note(b"guests");
             }
             AdminCmd::Say { text } => {
                 // The house's line, marked and sent from `from = 0` — an
@@ -5116,6 +5172,23 @@ impl ShardCore {
                     line.push_str(&c.id.to_string());
                 }
                 self.answer(from_slot, format!("{n} on:{line}"), stats, send);
+            }
+            AdminCmd::Suspects => {
+                // The window's flags, newest first, a line each, to the
+                // admin alone: evidence to go and watch (`/tp <id>`), and
+                // the log's `suspect` lines hold the rest.
+                let lines: Vec<String> = self
+                    .suspects
+                    .recent(tick)
+                    .map(|s| admin::suspect_line(s, tick))
+                    .collect();
+                logged = logged.with(lines.len() as i64, 0, 0);
+                if lines.is_empty() {
+                    self.answer(from_slot, admin::no_suspects_line(), stats, send);
+                }
+                for line in lines {
+                    self.answer(from_slot, line, stats, send);
+                }
             }
             // Handled above, before the allowlist.
             AdminCmd::Bug { .. }
@@ -6353,12 +6426,8 @@ impl ShardCore {
                     // keeps `born` and `died` (`World::die`), so "alive for"
                     // is the sim's clock and not a guess the client could
                     // make.
-                    let corpse = self
-                        .world
-                        .players
-                        .iter()
-                        .find(|p| p.active && p.id == ev.a)
-                        .copied();
+                    let corpse =
+                        Self::world_slot_of(&self.world, ev.a).map(|w| self.world.players[w]);
                     let (cause, item, range_cm, alive_s) = corpse
                         .map(|p| {
                             (
@@ -6511,6 +6580,62 @@ impl ShardCore {
                         encode_event_recovered(ev.b as u16, ev.c as u16, &mut self.ev_buf)
                     };
                     match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_HEALED => {
+                    // To its two players and nobody else: the one healed
+                    // reads who healed them and with what, the healer whom
+                    // (their spend is `EV_CONSUMED`). A lost one is a line
+                    // never drawn — the hp bar still moves — so the resync
+                    // is all it owes.
+                    let len = match protocol::encode_event_healed(
+                        ev.b,
+                        ev.a,
+                        ev.c as u16,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => len,
+                        Err(_) => {
+                            ShardStats::bump(&stats.encode_range_errors);
+                            continue;
+                        }
+                    };
+                    for who in [ev.a, ev.b] {
+                        let Some(slot) = self.client_slot_of(who) else {
+                            continue; // that player left this tick
+                        };
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            self.clients[slot].ev_resync();
+                            ShardStats::bump(&stats.ev_resyncs);
+                        }
+                    }
+                }
+                EV_BAG_GIVEN => {
+                    // A bag changed hands: both owners' lists moved, so the
+                    // drip owes each of them (and their seats) the whole
+                    // list again — the giver's map loses the bed and the
+                    // receiver's death screen gains it.
+                    self.owe_bags(ev.a);
+                    self.owe_bags(ev.b);
+                    // And the receiver is told who gave it, own-fact: the
+                    // list alone shows a bed and not a friend. Asleep or
+                    // away there is no client to tell; the list is theirs
+                    // at the next join either way.
+                    let Some(slot) = self.client_slot_of(ev.b) else {
+                        continue;
+                    };
+                    match protocol::encode_event_bag_given(ev.a, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -7920,8 +8045,8 @@ impl ShardCore {
         }
     }
 
-    /// The tick's team verbs (`team.rs`), then, once a second, the bodies
-    /// that left the world leave their teams.
+    /// The tick's team verbs (`team.rs`) and map marks, then, once a
+    /// second, the bodies that left the world leave their teams.
     fn pump_teams(
         &mut self,
         stats: &ShardStats,
@@ -7930,6 +8055,12 @@ impl ShardCore {
         for slot in 0..MAX_PLAYERS {
             if let Some((op, target)) = self.clients[slot].pending_team.take() {
                 self.team_op(slot, op, target, stats, send);
+            }
+        }
+        // After the verbs, so a set goes to the team as it stands now.
+        for slot in 0..MAX_PLAYERS {
+            if let Some(pins) = self.clients[slot].pending_pins.take() {
+                self.relay_pins(slot, &pins, stats, send);
             }
         }
         let tick = self.world.tick;
@@ -7943,6 +8074,124 @@ impl ShardCore {
                     || clients.iter().any(|c| c.connected && c.id == id)
             });
         }
+        // A kept set ends with its owner's team (a leave, a kick, the last
+        // one out, a prune): the client sends nothing while it has no team,
+        // so it could never correct a set kept past that, and the next team
+        // starts from none of theirs.
+        for slot in 0..MAX_PLAYERS {
+            let c = &self.clients[slot];
+            if c.pins.n > 0 && self.teams.team_of(c.id).is_empty() {
+                self.clients[slot].pins = protocol::PinSet::NONE;
+            }
+        }
+    }
+
+    /// Connection `slot`'s map marks to each teammate connected now, and
+    /// nobody else (v157, Rust's team markers): encoded once, on the bare
+    /// `send`, so a spectator watching a mate never sees them (`fan_out`'s
+    /// confidence rule; `team_only` says so too). The set is kept on the
+    /// connection while it has a team, for a mate who joins or comes onto
+    /// the team later (`drip_team_pins`); one sent with no team goes nowhere
+    /// and is not kept (`pump_teams` drops a kept set when the team ends).
+    /// A ring that refuses is owed the set again: the drip sends a kept set
+    /// with marks in it.
+    fn relay_pins(
+        &mut self,
+        slot: usize,
+        pins: &protocol::PinSet,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        if !self.clients[slot].connected {
+            return;
+        }
+        self.clients[slot].pins = *pins;
+        let from = self.clients[slot].id;
+        let mates = self.teams.team_of(from);
+        if mates.is_empty() {
+            self.clients[slot].pins = protocol::PinSet::NONE;
+            return;
+        }
+        let len = match protocol::encode_event_team_pins(from, pins, &mut self.ev_buf) {
+            Ok(len) => len,
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                return;
+            }
+        };
+        for to in 0..MAX_PLAYERS {
+            let c = &self.clients[to];
+            if to == slot || !c.connected || c.id == from || !mates.contains(&c.id) {
+                continue;
+            }
+            let told = &mut self.clients[to].pins_told;
+            if send(Lane::Event, to, &self.ev_buf[..len]) {
+                ShardStats::bump(&stats.ev_sent);
+                if !told.contains(&from) {
+                    let at = told.iter().position(|&id| id == 0).unwrap_or(0);
+                    told[at] = from;
+                }
+            } else {
+                ShardStats::bump(&stats.chat_undelivered);
+                for id in told.iter_mut().filter(|id| **id == from) {
+                    *id = 0;
+                }
+            }
+        }
+    }
+
+    /// The kept marks (`relay_pins`) of each mate connection `slot`'s team
+    /// view shows who it has not been sent yet: a joiner sees its mates'
+    /// marks, and they see its, without anyone changing a mark. Read off
+    /// the view the client holds, so a set never names a mate before the
+    /// view that shows them, and an empty set is not sent (there is nothing
+    /// to show). A mate who left the view is forgotten, so coming back onto
+    /// the team sends their marks again. `false` stops the drip for the
+    /// tick.
+    fn drip_team_pins(
+        &mut self,
+        slot: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) -> bool {
+        let me = self.clients[slot].id;
+        let Some(view) = self.clients[slot].last_team else {
+            return true;
+        };
+        let members = view.members();
+        for id in self.clients[slot].pins_told.iter_mut() {
+            if *id != 0 && !members.iter().any(|m| m.id == *id) {
+                *id = 0;
+            }
+        }
+        for m in members {
+            if m.id == 0 || m.id == me || self.clients[slot].pins_told.contains(&m.id) {
+                continue;
+            }
+            // A mate asleep keeps no marks here: told, so the search runs
+            // once a member and not every tick. Their next session is a
+            // new id or sends its own set.
+            let pins = (0..MAX_PLAYERS)
+                .find(|&s| self.clients[s].connected && self.clients[s].id == m.id)
+                .map_or(protocol::PinSet::NONE, |s| self.clients[s].pins);
+            if pins.n > 0 {
+                let len = match protocol::encode_event_team_pins(m.id, &pins, &mut self.ev_buf) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    }
+                };
+                if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                    return false;
+                }
+                ShardStats::bump(&stats.ev_sent);
+            }
+            let told = &mut self.clients[slot].pins_told;
+            let at = told.iter().position(|&id| id == 0).unwrap_or(0);
+            told[at] = m.id;
+        }
+        true
     }
 
     /// One team verb from connection `slot`, from the action lane or a
@@ -8165,7 +8414,9 @@ impl ShardCore {
         if !self.drip_standing(slot, stats, send) || !self.drip_bank(slot, stats, send) {
             return;
         }
-        if slot < MAX_PLAYERS && !self.drip_team(slot, stats, send) {
+        if slot < MAX_PLAYERS
+            && (!self.drip_team(slot, stats, send) || !self.drip_team_pins(slot, stats, send))
+        {
             return;
         }
         let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {
@@ -8717,8 +8968,13 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
+        // This connection's own body: the slot `interest_for` settled, else
+        // the lookup.
+        let own = self
+            .live_wslot(slot)
+            .or_else(|| Self::world_slot_of(&self.world, self.clients[slot].id));
         // The glyphs this player reads, whenever the mask moves.
-        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+        if let Some(wslot) = own {
             let mask = self.world.players[wslot].glyphs;
             if self.clients[slot].last_glyphs != Some(mask) {
                 match protocol::encode_event_glyphs(mask, &mut self.ev_buf) {
@@ -8753,7 +9009,7 @@ impl ShardCore {
 
         // What this player owns, whenever the sim's copy moves (a join's
         // first read, a refresh, a new session's reset to none).
-        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+        if let Some(wslot) = own {
             let owned = self.world.players[wslot].skins;
             if self.clients[slot].last_skins != Some(owned) {
                 match protocol::encode_event_skins_owned(&owned, &mut self.ev_buf) {
@@ -10155,9 +10411,12 @@ impl ShardCore {
     }
 
     /// Resolve the world slot player `id` landed in (join order is
-    /// deterministic but not slot-aligned with connections).
+    /// deterministic but not slot-aligned with connections). Asked per
+    /// client, per swing, shot and heard deed every tick, so it goes through
+    /// the sim's id → slot hint (`World::player_slot`) instead of a scan of
+    /// all `MAX_PLAYERS` bodies, one cache line each.
     fn world_slot_of(world: &World, id: u32) -> Option<usize> {
-        world.players.iter().position(|p| p.active && p.id == id)
+        world.player_slot(id)
     }
 
     /// Does connection `slot`'s class-D interest array describe this tick?
@@ -11380,6 +11639,94 @@ mod tests {
         core.world.tick(&[]);
         assert!(core.world.events.is_empty(), "ring quiet after setup");
         core
+    }
+
+    /// `/suspects`: an admin hears the window's flags a line each, newest
+    /// first, or that there are none, and the act is logged; a stranger hears
+    /// nothing and the refusal is logged, as for `/kick`.
+    #[test]
+    fn suspects_answers_the_admin_alone_newest_first() {
+        use crate::anomaly::{Kind, Record};
+        use crate::cheat::{Check, Flag};
+        const ADMIN: &str = "0x00112233445566778899aabbccddeeff00112233";
+        const OTHER: &str = "0xffeeddccbbaa99887766554433221100ffeeddcc";
+        let stats = std::sync::Arc::new(ShardStats::default());
+        let mut core = ShardCore::new(SEED);
+        core.install_admins(crate::admin::Admins::parse(ADMIN).unwrap());
+        let key = |s: &str| PlayerKey::new(s.as_bytes()).unwrap();
+        let (me, them) = (protocol::player_id(1, 0), protocol::player_id(1, 1));
+        assert!(core.connect_as(0, me, Some(key(ADMIN)), None).is_some());
+        assert!(core.connect_as(1, them, Some(key(OTHER)), None).is_some());
+        core.tick_bare(&stats, |_, _, _| true);
+
+        let (tx, mut rx) = rtrb::RingBuffer::<Record>::new(64);
+        let mut log = crate::anomaly::Sink::new(tx, stats.clone());
+        let mut ask = |core: &mut ShardCore, slot: usize| -> Vec<(usize, String)> {
+            core.push_chat(
+                slot,
+                ChatMsg {
+                    channel: protocol::Channel::Global,
+                    text: protocol::ChatText::sanitize(b"/suspects").unwrap(),
+                },
+            );
+            let mut save_now = false;
+            let mut ops = Ops {
+                log: &mut log,
+                admin_tx: None,
+                admin_answers: None,
+                save_now: &mut save_now,
+            };
+            let mut heard = Vec::new();
+            core.tick(&stats, &mut ops, |lane, to, bytes| {
+                if let (Lane::Event, Ok(EventMsg::Chat { text, .. })) = (lane, decode_event(bytes))
+                {
+                    let text = String::from_utf8_lossy(text.as_bytes()).into_owned();
+                    heard.push((to, text));
+                }
+                true
+            });
+            heard
+        };
+        let logged = |rx: &mut rtrb::Consumer<Record>| {
+            std::iter::from_fn(|| rx.pop().ok())
+                .filter(|r| matches!(r.kind, Kind::AdminAct | Kind::AdminRefused))
+                .map(|r| (r.kind, r.what, r.who, r.a))
+                .collect::<Vec<_>>()
+        };
+        let verb = crate::admin::VERB_SUSPECTS;
+
+        assert_eq!(
+            ask(&mut core, 0),
+            [(0, "[server] no suspects in the last 5 min".to_string())]
+        );
+        assert_eq!(logged(&mut rx), [(Kind::AdminAct, verb, me, 0)]);
+
+        let flag = |check, a, b, c| Flag {
+            who: them,
+            check,
+            a,
+            b,
+            c,
+        };
+        let bob = protocol::Name::new("Bob").unwrap();
+        core.suspects.push(0, flag(Check::Snap, 5, 12, 41), bob);
+        core.suspects
+            .push(1, flag(Check::Wall, 3, me as i64, 42), bob);
+        assert_eq!(
+            ask(&mut core, 0),
+            [
+                (
+                    0,
+                    format!("[server] #{them} Bob wall_track 3 on #{me} 42m 0s ago")
+                ),
+                (0, format!("[server] #{them} Bob snap 5/12 41deg 0s ago")),
+            ]
+        );
+        assert_eq!(logged(&mut rx), [(Kind::AdminAct, verb, me, 2)]);
+
+        let heard = ask(&mut core, 1);
+        assert!(heard.is_empty(), "a stranger hears nothing: {heard:?}");
+        assert_eq!(logged(&mut rx), [(Kind::AdminRefused, verb, them, 0)]);
     }
 
     /// The standings are tallied per wallet off the sim's own events: a
@@ -13368,5 +13715,97 @@ mod tests {
         assert!(back.entries.iter().flatten().any(|r| r.1 == 0x0201 && r.3));
         let _ = std::fs::remove_file(&file);
         assert_eq!(EvictIds::open(Some(file)).load(|_| true).unwrap(), 0);
+    }
+
+    /// `world_slot_of` reads the sim's id → slot hint, which is only a
+    /// hint: through joins, leaves into sleep, a death written straight
+    /// into `players` and its respawn, a takeover that hands a sleeper the
+    /// new connection's id, an eviction, and a return that rekeys the
+    /// evicted id's things, it names the slot the scan it replaced named,
+    /// for every id the shard ever minted and for ids no player wears.
+    #[test]
+    fn world_slot_of_answers_as_the_scan_through_churn() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let key = |n: u8| PlayerKey::new(format!("0x{:040x}", n).as_bytes()).unwrap();
+        let id = |gen: u32, s: usize| protocol::player_id(gen, s);
+        let mut minted: Vec<u32> = Vec::new();
+        let check = |core: &ShardCore, minted: &[u32], when: &str| {
+            let mob = sim_core::limits::MOB_ID_TAG;
+            let strays = [0, 1, mob, mob | 3, sim_core::world::STRUCT_VICTIM];
+            for &who in minted.iter().chain(strays.iter()) {
+                let scan = core
+                    .world
+                    .players
+                    .iter()
+                    .position(|p| p.active && p.id == who);
+                assert_eq!(
+                    ShardCore::world_slot_of(&core.world, who),
+                    scan,
+                    "{when}: id {who:#x}"
+                );
+            }
+        };
+        let tick = |core: &mut ShardCore| core.tick_bare(&stats, |_, _, _| true);
+
+        for s in 0..4 {
+            assert!(core
+                .connect_as(s, id(1, s), Some(key(s as u8 + 1)), None)
+                .is_some());
+            minted.push(id(1, s));
+        }
+        check(&core, &minted, "joins queued");
+        tick(&mut core);
+        check(&core, &minted, "joined");
+
+        core.disconnect(1);
+        core.disconnect(2);
+        tick(&mut core);
+        assert_eq!(core.world.sleepers(), 2);
+        check(&core, &minted, "two asleep");
+
+        let w = ShardCore::world_slot_of(&core.world, id(1, 0)).expect("seated");
+        core.world.players[w].dead = true;
+        core.world.players[w].hp = 0;
+        check(&core, &minted, "a corpse");
+        core.push_action(0, ActionMsg::Respawn { on_bag: false });
+        tick(&mut core);
+        assert!(!core.world.players[w].dead, "respawned");
+        check(&core, &minted, "respawned");
+
+        // Wallet 2 comes back to its sleeper: the body takes the new id.
+        assert!(core.connect_as(1, id(2, 1), Some(key(2)), None).is_some());
+        minted.push(id(2, 1));
+        tick(&mut core);
+        assert_eq!(ShardCore::world_slot_of(&core.world, id(1, 1)), None);
+        check(&core, &minted, "taken over");
+
+        for s in 4..MAX_PLAYERS {
+            assert!(core.connect(s, id(1, s)), "filler {s}");
+            minted.push(id(1, s));
+        }
+        tick(&mut core);
+        check(&core, &minted, "full");
+
+        // A stranger on a full shard evicts wallet 3's sleeper.
+        let (_, gone) = core
+            .connect_as(2, id(2, 2), Some(key(0xee)), None)
+            .expect("admitted");
+        assert_eq!(gone.expect("keyed victim").0, key(3));
+        minted.push(id(2, 2));
+        tick(&mut core);
+        assert_eq!(core.world.evictions, 1);
+        check(&core, &minted, "evicted");
+
+        // Wallet 3 returns through a filler's freed connection, evicting the
+        // filler's sleeper and rekeying its old id's things to the new one.
+        core.disconnect(5);
+        tick(&mut core);
+        assert!(core.connect_as(5, id(2, 5), Some(key(3)), None).is_some());
+        minted.push(id(2, 5));
+        tick(&mut core);
+        assert_eq!(core.world.evictions, 2);
+        assert!(ShardCore::world_slot_of(&core.world, id(2, 5)).is_some());
+        check(&core, &minted, "back after eviction");
     }
 }

@@ -789,6 +789,10 @@ pub fn bake_catalog(
                     .or_else(|| combat.held_melee(idx as u16).map(|d| d.damage))
                     .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
                     .unwrap_or(0),
+                // The spear's throw (v157): its windup, 0 if it is not thrown.
+                hurl_ticks: combat
+                    .held_hurl(idx as u16)
+                    .map_or(0, |(h, _)| h.windup_ticks),
                 gun,
                 // An attachment (v144): its bit and slot off the sim's
                 // table, the view's half (kick, zoom, laser, light) off the
@@ -1958,6 +1962,8 @@ async fn accept_loop(
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let bound = endpoint.local_addr().ok().map(|a| a.ip());
     let sources = Arc::new(SourceGate::new(bound, &facts.own_sources));
+    // Guest addresses `/ban` refused (`admin::GuestBans`): this uptime only.
+    let mut guest_bans = crate::admin::GuestBans::new();
     // The sign-ins waiting on a person.
     let signing = Arc::new(SignWait::new());
     // The work a signature starts — its check, the ticket read — a few at a
@@ -2171,8 +2177,18 @@ async fn accept_loop(
                 // refused with the code its ban closed it on — so the
                 // screen says what it said then. (A watcher is anonymous:
                 // its auth is never verified, so it carries no key a ban
-                // could match.)
-                if done.key.as_ref().is_some_and(|k| bans.contains(k)) {
+                // could match.) A guest has no wallet: what a ban on one
+                // held is the address it joined from, and a wallet signing
+                // in from there still passes.
+                let banned = done.key.as_ref().is_some_and(|k| bans.contains(k))
+                    || guest_banned(
+                        done.key.as_ref(),
+                        done.hello.is_spectator(),
+                        sources.counted(done.connection.remote_address().ip()),
+                        &guest_bans,
+                        Instant::now(),
+                    );
+                if banned {
                     door_log.push(door_rec(&done, crate::playlog::Door::Banned, 0, 0));
                     ShardStats::bump(&stats.refused_banned);
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
@@ -2549,6 +2565,30 @@ async fn accept_loop(
                         crate::admin::AdminAct::Kick { by, id } => (by, id, None),
                         crate::admin::AdminAct::Ban { by, id, key } => (by, id, Some(key)),
                         crate::admin::AdminAct::Travel { .. } => continue,
+                        crate::admin::AdminAct::BanGuest { by, id } => {
+                            let line = ban_guest(
+                                id,
+                                &mut guest_bans,
+                                &mut keys,
+                                &slots,
+                                &stats,
+                                Instant::now(),
+                            );
+                            answer_admin(&mut answer_tx, by, &line, &stats);
+                            continue;
+                        }
+                        crate::admin::AdminAct::UnbanGuests { by } => {
+                            let lifted = guest_bans.clear(Instant::now());
+                            let counter = if lifted > 0 {
+                                &stats.admin_unbanned
+                            } else {
+                                &stats.admin_refused
+                            };
+                            ShardStats::bump(counter);
+                            let line = crate::admin::unban_guests_line(lifted);
+                            answer_admin(&mut answer_tx, by, &line, &stats);
+                            continue;
+                        }
                         crate::admin::AdminAct::Unban { by, prefix } => {
                             let how = bans.remove_prefix(&prefix);
                             match how {
@@ -4935,12 +4975,76 @@ fn travel_tenant(
 /// the two must not be kicked in the first one's name.
 fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
     // The tenant with that id, wallet or guest: a guest griefs as well as
-    // anyone, and a kick needs no wallet (a ban does — `core.rs` refuses
-    // that one before it reaches here). `kick_tenant` checks it is live.
+    // anyone, and a kick needs no wallet (a guest's ban is its address,
+    // `ban_guest`). `kick_tenant` checks it is live.
     let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].conn.is_some()) else {
         return false;
     };
     kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN)
+}
+
+/// Is `slot`'s `KeySlot` its live tenant's (not a stale earlier one's)?
+fn live_tenant(slot: usize, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
+    let word = slots.load(slot);
+    crate::slot::state_of(word) == crate::slot::SLOT_LIVE
+        && crate::slot::generation_of(word) == keys[slot].generation
+}
+
+/// `/ban` on guest `id` (`admin::AdminAct::BanGuest`): ban the source it
+/// joined from in `guest_bans`, close every live guest from that source with
+/// `REFUSE_ADMIN` (the door would refuse each of them next time anyway),
+/// and say how it went. Wallets from the same source stay: a ban on a guest
+/// is the guests'. A guest from the shard's own host is only kicked — the
+/// inhabitants and the house agents dial from there — and a full list
+/// refuses the ban without kicking, as a wallet ban's does.
+fn ban_guest(
+    id: u32,
+    guest_bans: &mut crate::admin::GuestBans,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+    stats: &ShardStats,
+    now: Instant,
+) -> String {
+    let guest = |s: usize, keys: &[KeySlot; MAX_PLAYERS]| {
+        keys[s].key.is_none() && live_tenant(s, keys, slots)
+    };
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && guest(s, keys)) else {
+        ShardStats::bump(&stats.admin_refused);
+        return crate::admin::kicked_line(id, false);
+    };
+    let Some(ip) = keys[slot].source else {
+        // Live, checked above, so the kick lands.
+        kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN);
+        ShardStats::bump(&stats.admin_kicked);
+        return crate::admin::local_guest_line(id);
+    };
+    if !guest_bans.insert(ip, now) {
+        ShardStats::bump(&stats.admin_refused);
+        return crate::admin::guest_ban_full_line(id);
+    }
+    let mut kicked = 0;
+    for s in 0..MAX_PLAYERS {
+        let from_there = keys[s].source.is_some_and(|x| same_source(x, ip));
+        if from_there && guest(s, keys) && kick_tenant(s, keys, slots, protocol::REFUSE_ADMIN) {
+            kicked += 1;
+        }
+    }
+    ShardStats::bump(&stats.admin_kicked);
+    crate::admin::guest_banned_line(id, &crate::admin::GuestSource::of(ip), kicked)
+}
+
+/// Is this join a guest from a source `/ban` refused (`admin::GuestBans`)?
+/// A wallet is never (its ban is its own), nor a watcher (anonymous, and
+/// never seated), nor the shard's own host (`source` is `None`:
+/// `SourceGate::counted`).
+fn guest_banned(
+    key: Option<&PlayerKey>,
+    spectator: bool,
+    source: Option<std::net::IpAddr>,
+    guest_bans: &crate::admin::GuestBans,
+    now: Instant,
+) -> bool {
+    key.is_none() && !spectator && source.is_some_and(|ip| guest_bans.hit(ip, now))
 }
 
 /// End `slot`'s live tenant with `code`: marked leaving (the sim's sweep
@@ -6327,6 +6431,78 @@ mod tests {
         assert_eq!(gate.counted("::ffff:203.0.113.9".parse().unwrap()), Some(a));
     }
 
+    /// **`/ban` on a guest bans its source and closes the guests from it**:
+    /// the named guest and its sibling on the same address go, a wallet on
+    /// that address and a guest elsewhere stay, and the door then refuses
+    /// guests from there — not wallets, not watchers. A guest from the
+    /// shard's own host is kicked and never banned.
+    #[test]
+    fn a_guest_ban_closes_its_sources_guests_and_holds_the_door() {
+        let slots = SlotTable::new(MAX_CONNS);
+        let stats = ShardStats::default();
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let a: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let elsewhere: std::net::IpAddr = "198.51.100.4".parse().unwrap();
+        let wallet = PlayerKey::new(b"0x00112233445566778899aabbccddeeff00112233").unwrap();
+        for (s, source, key) in [
+            (0, Some(a), None),
+            (1, Some(a), None),
+            (2, Some(a), Some(wallet)),
+            (3, Some(elsewhere), None),
+            (4, None, None),
+        ] {
+            let generation = slots.claim(s).unwrap();
+            keys[s] = KeySlot {
+                key,
+                id: 1000 + s as u32,
+                generation,
+                source,
+                ..KeySlot::default()
+            };
+        }
+        let live = |s: usize| state_of(slots.load(s)) == SLOT_LIVE;
+        let now = Instant::now();
+        let mut bans = crate::admin::GuestBans::new();
+        let mut ban = |id: u32, keys: &mut [KeySlot; MAX_PLAYERS]| {
+            ban_guest(id, &mut bans, keys, &slots, &stats, now)
+        };
+
+        assert_eq!(
+            ban(1002, &mut keys),
+            "1002 is not on",
+            "a wallet is no guest"
+        );
+        assert_eq!(
+            ban(1000, &mut keys),
+            "address ban 203.0.113.x (1000): guests, lapses in 24h or at a restart, 2 kicked"
+        );
+        assert!(!live(0) && !live(1), "both guests from there are closed");
+        assert!(live(2) && live(3) && live(4));
+        assert_eq!(ban(1000, &mut keys), "1000 is not on", "already gone");
+        assert_eq!(
+            ban(1004, &mut keys),
+            "1004 is a local guest: kicked, not banned"
+        );
+        assert!(!live(4));
+        assert_eq!(bans.len(), 1, "the shard's own host is never banned");
+        assert_eq!(ShardStats::get(&stats.admin_kicked), 2);
+        assert_eq!(ShardStats::get(&stats.admin_refused), 2);
+
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.9".parse().unwrap();
+        assert!(guest_banned(None, false, Some(a), &bans, now));
+        assert!(guest_banned(None, false, Some(mapped), &bans, now));
+        assert!(
+            !guest_banned(Some(&wallet), false, Some(a), &bans, now),
+            "a wallet from there signs in"
+        );
+        assert!(!guest_banned(None, true, Some(a), &bans, now), "a watcher");
+        assert!(!guest_banned(None, false, Some(elsewhere), &bans, now));
+        assert!(
+            !guest_banned(None, false, None, &bans, now),
+            "the shard's own host"
+        );
+    }
+
     /// **The human feed's delay line holds every message for exactly its
     /// delay, in order, and refuses past its bound** — clock-free: every
     /// instant is handed in, none is read.
@@ -6563,7 +6739,7 @@ mod tests {
         // The demux itself: this frame is chat, and an action frame is not.
         assert_eq!(peek_kind(&frame[..n]), Ok(KIND_CHAT));
         let mut act = [0u8; MAX_STREAM_MSG_BYTES];
-        let an = protocol::encode_action_cancel(0, &mut act).expect("encodes");
+        let an = protocol::encode_action_cancel(0, 0, &mut act).expect("encodes");
         assert_eq!(peek_kind(&act[..an]), Ok(protocol::KIND_ACTION));
 
         // The burst is accepted and ringed; everything past it is refused

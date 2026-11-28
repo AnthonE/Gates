@@ -150,6 +150,58 @@ pub struct Flag {
     pub c: i64,
 }
 
+/// The flags an admin's `/suspects` lists: the newest this many.
+pub const SUSPECT_ROWS: usize = 32;
+
+/// One flag kept for `/suspects`, with the tick it flagged at and the name
+/// its player had then (a sleeper's slot can change tenant before anyone
+/// asks).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Suspect {
+    pub tick: u64,
+    pub flag: Flag,
+    pub name: protocol::Name,
+}
+
+/// The newest [`SUSPECT_ROWS`] flags, a fixed ring overwritten oldest first:
+/// nothing allocates on the sim thread, and the anomaly log keeps every
+/// flag anyway. Evidence for an admin to go and watch, never a verdict.
+pub struct Suspects {
+    rows: [Option<Suspect>; SUSPECT_ROWS],
+    /// Where the next flag goes.
+    head: usize,
+}
+
+impl Default for Suspects {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Suspects {
+    pub fn new() -> Self {
+        Self {
+            rows: [None; SUSPECT_ROWS],
+            head: 0,
+        }
+    }
+
+    /// Keep a flag, over the oldest when full. `tick` never goes backwards.
+    pub fn push(&mut self, tick: u64, flag: Flag, name: protocol::Name) {
+        self.rows[self.head] = Some(Suspect { tick, flag, name });
+        self.head = (self.head + 1) % SUSPECT_ROWS;
+    }
+
+    /// The flags of the last [`WINDOW_TICKS`] before `now`, newest first.
+    pub fn recent(&self, now: u64) -> impl Iterator<Item = &Suspect> {
+        (1..=SUSPECT_ROWS)
+            .map_while(move |back| {
+                self.rows[(self.head + SUSPECT_ROWS - back) % SUSPECT_ROWS].as_ref()
+            })
+            .take_while(move |s| now.saturating_sub(s.tick) < WINDOW_TICKS)
+    }
+}
+
 type V3 = (f32, f32, f32);
 
 #[derive(Clone, Copy, Default)]
@@ -299,11 +351,13 @@ fn standing(p: &Player) -> bool {
     p.active && !p.dead && !p.sleeping
 }
 
-fn slot_of(players: &[Player; MAX_PLAYERS], id: u32) -> Option<usize> {
+/// The body `id` names, through `find` (the world's id → slot lookup), or
+/// `None` for an id no player wears: nobody, an animal, a structure.
+fn slot_of(find: &impl Fn(u32) -> Option<usize>, id: u32) -> Option<usize> {
     if id == 0 || id & MOB_ID_TAG != 0 || id == STRUCT_VICTIM {
         return None;
     }
-    players.iter().position(|p| p.active && p.id == id)
+    find(id)
 }
 
 impl Checks {
@@ -315,15 +369,18 @@ impl Checks {
     }
 
     /// One tick, after `World::tick`: read every body's aim, this tick's
-    /// shots and hits, and (on the cadence) the wall check. `exempt` names
-    /// players no check applies to; `mates` whether two are on one team;
-    /// `hidden` is the sight line ([`Ground::hidden`] on a shard).
+    /// shots and hits, and (on the cadence) the wall check. `find` is the
+    /// slot of `players` that holds an id (`World::player_slot` on a shard,
+    /// so a hit costs no scan of every body); `exempt` names players no
+    /// check applies to; `mates` whether two are on one team; `hidden` is
+    /// the sight line ([`Ground::hidden`] on a shard).
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
         tick: u64,
         players: &[Player; MAX_PLAYERS],
         events: &[SimEvent],
+        find: impl Fn(u32) -> Option<usize>,
         exempt: impl Fn(u32) -> bool,
         mates: impl Fn(u32, u32) -> bool,
         mut hidden: impl FnMut(V3, V3) -> bool,
@@ -356,7 +413,7 @@ impl Checks {
         for ev in events {
             match ev.code {
                 EV_SHOT => {
-                    let Some(w) = slot_of(players, ev.a) else {
+                    let Some(w) = slot_of(&find, ev.a) else {
                         continue;
                     };
                     let s = &mut self.slots[w];
@@ -370,8 +427,7 @@ impl Checks {
                     };
                 }
                 EV_HIT => {
-                    let (Some(w), Some(v)) = (slot_of(players, ev.a), slot_of(players, ev.b))
-                    else {
+                    let (Some(w), Some(v)) = (slot_of(&find, ev.a), slot_of(&find, ev.b)) else {
                         continue;
                     };
                     if w == v || exempt(ev.a) || mates(ev.a, ev.b) || self.slots[v].down {
@@ -622,6 +678,45 @@ mod tests {
         Box::new([Player::default(); MAX_PLAYERS])
     }
 
+    /// `/suspects`' ring answers newest first, only inside the window, and
+    /// a full ring forgets its oldest flag rather than refusing a new one.
+    #[test]
+    fn the_suspect_ring_is_newest_first_within_the_window() {
+        let flag = |who: u32| Flag {
+            who,
+            check: Check::Snap,
+            a: 5,
+            b: 12,
+            c: 41,
+        };
+        let name = protocol::Name::new("Bob").unwrap();
+        let mut ring = Suspects::new();
+        assert_eq!(ring.recent(0).count(), 0, "empty");
+        ring.push(100, flag(256), name);
+        ring.push(200, flag(257), name);
+        let who = |r: &Suspects, now: u64| r.recent(now).map(|s| s.flag.who).collect::<Vec<_>>();
+        assert_eq!(who(&ring, 300), [257, 256]);
+        assert_eq!(ring.recent(300).next().unwrap().name, name);
+        assert_eq!(who(&ring, 100 + WINDOW_TICKS), [257], "the first aged out");
+        assert_eq!(who(&ring, 200 + WINDOW_TICKS), [] as [u32; 0]);
+
+        for k in 0..SUSPECT_ROWS as u32 {
+            ring.push(300 + k as u64, flag(1000 + k), name);
+        }
+        let got = who(&ring, 400);
+        assert_eq!(got.len(), SUSPECT_ROWS, "a full ring is all window");
+        assert_eq!(got[0], 1000 + SUSPECT_ROWS as u32 - 1, "newest first");
+        assert!(
+            !got.contains(&256) && !got.contains(&257),
+            "oldest overwritten"
+        );
+    }
+
+    /// The fixtures write `players` directly, with no world to keep a hint.
+    fn scan(ps: &[Player; MAX_PLAYERS], id: u32) -> Option<usize> {
+        ps.iter().position(|p| p.active && p.id == id)
+    }
+
     fn run(
         c: &mut Checks,
         tick: u64,
@@ -634,6 +729,7 @@ mod tests {
             tick,
             ps,
             evs,
+            |id| scan(ps, id),
             |_| false,
             |_, _| false,
             |_, _| hidden,
@@ -836,6 +932,7 @@ mod tests {
                     10 + i * 10,
                     &ps,
                     &evs,
+                    |id| scan(&ps, id),
                     |id| agent && id == 1,
                     |_, _| mate,
                     |_, _| false,

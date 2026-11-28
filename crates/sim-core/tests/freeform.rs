@@ -473,6 +473,16 @@ fn a_turned_base_is_built_and_unbuilt_through_the_commands() {
         spelled_id(named[0].0, named[0].1, named[0].2, named[0].3),
         Some(core_rec.id)
     );
+    // The hammer is heard where the turned foundation stands, not at the
+    // cell its address spells (`noise.rs`).
+    let ears = sim_core::noise::Hearing {
+        strike_cm: 10,
+        ..sim_core::noise::Hearing::DEAF
+    };
+    let (mx, mz) = w.pieces.anchor_of(&core_rec);
+    let mid = (movement::quant_xz(mx), movement::quant_xz(mz));
+    let heard = w.noises.heard(w.tick, mid.0, mid.1, &ears);
+    assert_eq!(heard.map(|n| (n.qx, n.qz)), Some(mid));
 
     // A triangle on its first side, outward.
     let sq = core_rec.sock;

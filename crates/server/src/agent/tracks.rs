@@ -1003,6 +1003,27 @@ fn chest(own: Own) -> [f32; 3] {
     [own.pos[0], own.pos[1] + y, own.pos[2]]
 }
 
+/// Does `t`'s look ray, as last seen, pass within [`AIM_MISS_M`] of the
+/// chest of a body standing (or crouched) at `feet`, ahead of it and no
+/// further along than `max_m`? A blow or a shot gone that way: what a
+/// teammate struck at looks like from outside, where the shard sends
+/// nobody's hp but one's own.
+pub fn aims_at(t: &Track, feet: [f32; 3], crouched: bool, max_m: f32) -> bool {
+    let y = if crouched {
+        CROUCH_CHEST_Y_M
+    } else {
+        CHEST_Y_M
+    };
+    passes(
+        t.pos,
+        t.crouched,
+        (t.yaw, t.pitch),
+        [feet[0], feet[1] + y, feet[2]],
+        AIM_MISS_M,
+        max_m,
+    )
+}
+
 /// Does a look ray from a body at `feet`, in that stance, pass within
 /// [`AIM_MISS_M`] of `chest`, ahead of it?
 fn aimed_at(feet: [f32; 3], crouched: bool, yaw: u16, pitch: u8, chest: [f32; 3]) -> bool {

@@ -36,9 +36,9 @@
 use protocol::event::{ItemCatalog, WireBag};
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::deploy::{
-    box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2,
-    ARCH_WORKBENCH3,
+    box_key, BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE,
+    ARCH_FURNACE, ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH,
+    ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 use sim_core::footprint::Rect;
 use sim_core::movement::POS_XZ_Q;
@@ -125,6 +125,11 @@ pub enum Verb {
     /// not press.
     TechTree,
     Assist,
+    /// A standing, awake player, with a syringe or a bandage in hand
+    /// (`ClientCore::held_heal_slot`): `E` uses it on them
+    /// (`ActionMsg::Treat`). `handle` is their id, `item` what is in hand.
+    /// Aimed, by [`resolve_heal`]; a downed body stays `Assist`.
+    Heal,
     /// A kiosk in the town (THE GATE, `sim_core::vend`): `handle` is the
     /// vendor index. Resolved by nearness like `Take`, from the town's own
     /// layout — there is no record on the wire to aim at.
@@ -175,6 +180,13 @@ pub enum Verb {
     /// combiner, a ceiling light. Nothing on `E`; aimed so the wire tool can
     /// name it (`handle`, its box key) and the prompt can say what it is.
     Part,
+    /// A sleeping bag of your own (`ARCH_BAG` at an address on
+    /// `ClientCore::own_bags`, which [`Aim::own_bags`] lends): `E` gives it to
+    /// a teammate, Rust's assign bag — the TEAM screen opens with a GIVE BAG
+    /// button by each one (`ActionMsg::BagGive`). Somebody else's bag offers
+    /// nothing: the wire does not say whose a bag is, and nothing is yours
+    /// to do there.
+    SleepingBag,
 }
 
 /// A power part's name, by archetype, for its prompt and the wire tool's.
@@ -253,6 +265,10 @@ impl Verb {
             Verb::Sit => 24,
             Verb::Switch => 27,
             Verb::Part => 28,
+            // Unreachable for `Take`'s reason: a body is folded in by its
+            // own resolver, never scored against a deployable.
+            Verb::Heal => 29,
+            Verb::SleepingBag => 30,
         }
     }
 
@@ -276,6 +292,7 @@ impl Verb {
             // ground is the same mesh whatever is in it).
             Verb::Take => "ITEM",
             Verb::Assist => "WOUNDED PLAYER",
+            Verb::Heal => "PLAYER",
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
@@ -293,6 +310,7 @@ impl Verb {
             Verb::Sit => "SEAT",
             Verb::Switch => "SWITCH",
             Verb::Part => "POWER PART",
+            Verb::SleepingBag => "SLEEPING BAG",
         }
     }
 }
@@ -642,6 +660,10 @@ impl Pick {
             }
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
+            Verb::SleepingBag => "[E] GIVE BAG".to_string(),
+            // The HUD names the player (`heal_prompt`'s `who`); the KIND
+            // stands in where no name is to hand.
+            Verb::Heal => heal_prompt(catalog, self.item, self.verb.label()),
             Verb::Shop => "[E] SHOP".to_string(),
             Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
             Verb::Slots => "[E] PLAY SLOTS".to_string(),
@@ -710,10 +732,25 @@ impl Pick {
             Verb::Crate if self.occupant == Occupant::Vault as u8 && !self.lit => {
                 VAULT_SEALED_LINE.to_string()
             }
-            Verb::Crate if self.occupant == Occupant::Vault as u8 => "[E] OPEN VAULT".to_string(),
+            // Named by the panel's own title, so `[E] OPEN CACHE` opens a
+            // panel that says CACHE.
+            Verb::Crate => format!(
+                "[E] OPEN {}",
+                crate::ui::slots::world_container_title(container_occupant(self.occupant))
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
+}
+
+/// The world container a pick's occupant ordinal names, read back through
+/// the sim's own table of them (`worldcont::occupant_of`), or
+/// `Occupant::None` for an ordinal that is no container.
+fn container_occupant(ordinal: u8) -> Occupant {
+    (0..sim_core::limits::MAX_LOOT_TABLES)
+        .map(sim_core::worldcont::occupant_of)
+        .find(|&o| o != Occupant::None && o as u8 == ordinal)
+        .unwrap_or(Occupant::None)
 }
 
 /// A sealed vault's line, on the prompt and when `E` is pressed at it.
@@ -1195,6 +1232,10 @@ pub struct Aim<'a> {
     /// The collision index, when the caller has one: where a door hung in
     /// an edge the grid cannot name is (`deploy::posed_insert`).
     pub cols: Option<&'a sim_core::collide::ColIndex>,
+    /// This player's own bags (`ClientCore::own_bags`, `SUB_BAGS`): a bag
+    /// deployable at one of these addresses is [`Verb::SleepingBag`], and
+    /// any other bag is not offered. Empty by default.
+    pub own_bags: &'a [BagAnchor],
 }
 
 impl Aim<'_> {
@@ -1209,8 +1250,16 @@ impl Aim<'_> {
             radius: AIM_RADIUS_M,
             sight: None,
             cols: None,
+            own_bags: &[],
         }
     }
+}
+
+/// Whether a bag at (`cx`, `cz`, `level`) is on the player's own list — the
+/// death screen's address (`deploy::Deploys::claim_bag_at`), so the bag `E`
+/// offers to give is the one the sim will move.
+pub fn own_bag(own: &[BagAnchor], cx: u16, cz: u16, level: u8) -> bool {
+    own.iter().any(|b| (b.cx, b.cz, b.level) == (cx, cz, level))
 }
 
 /// What the eye looks along, for the deployables `E` has to be LOOKED AT
@@ -1475,6 +1524,7 @@ pub fn resolve(
             sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
+            ARCH_BAG if own_bag(aim.own_bags, rec.cx, rec.cz, rec.level) => Verb::SleepingBag,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0, 0)` is 0 and
@@ -1677,6 +1727,48 @@ mod tests {
             cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
             cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
         )
+    }
+
+    /// A sleeping bag is offered only when it is on your own list: `E` gives
+    /// it away (`Verb::SleepingBag`). Somebody else's, or yours at another
+    /// address, offers nothing, so a box behind it still wins.
+    #[test]
+    fn only_your_own_sleeping_bag_offers_the_give() {
+        let (defs, have) = defs_with(&[ARCH_BAG, ARCH_BOX]);
+        let (x, z) = centre(5, 5);
+        let bag = rec(5, 5, 0);
+        let own = [BagAnchor {
+            cx: 5,
+            cz: 5,
+            level: 0,
+            ready: true,
+            wait_s: 0,
+        }];
+        let mut aim = Aim::new(x, z - 0.5, 0.0, 1.0);
+        aim.own_bags = &own;
+        let p = resolve(aim, &[bag], &defs, have, &[]);
+        assert_eq!(p.verb, Verb::SleepingBag);
+        assert_eq!((p.cx, p.cz, p.level), (5, 5, 0));
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] GIVE BAG");
+
+        // Not yours: nothing.
+        let p = resolve(Aim::new(x, z - 0.5, 0.0, 1.0), &[bag], &defs, have, &[]);
+        assert!(p.is_none(), "somebody else's bag offered a verb");
+        // Yours, but somewhere else: nothing here either.
+        let elsewhere = [BagAnchor { cx: 6, ..own[0] }];
+        let mut aim = Aim::new(x, z - 0.5, 0.0, 1.0);
+        aim.own_bags = &elsewhere;
+        assert!(resolve(aim, &[bag], &defs, have, &[]).is_none());
+        // A stranger's bag beside a box: the box.
+        let boxed = rec(5, 6, 1);
+        let p = resolve(
+            Aim::new(x, z - 0.5, 0.0, 1.0),
+            &[bag, boxed],
+            &defs,
+            have,
+            &[],
+        );
+        assert_eq!(p.verb, Verb::Box);
     }
 
     #[test]
@@ -2895,6 +2987,64 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// `E` with a syringe or a bandage in hand on a standing player
+/// (`Verb::Heal`): the player [`resolve_give`] would name, `held` the heal
+/// item in hand (`ClientCore::held_heal_slot`'s), `None` for anything else.
+/// The prompt shows on a player at full health too: their hp is not this
+/// client's to see, and the sim's `REFUSE_C_FULL` answers the press.
+pub fn resolve_heal(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+    held: Option<u16>,
+) -> Pick {
+    let Some(item) = held else {
+        return Pick::default();
+    };
+    match nearest_player(aim, own, entities) {
+        Some((t, id)) => Pick {
+            verb: Verb::Heal,
+            handle: id,
+            item,
+            aimed: true,
+            d2: (t * sim_core::assist::ASSIST_REACH_M).powi(2),
+            ..Default::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// Fold a [`resolve_heal`] pick into `E`'s: it wins where nothing nearer is
+/// aimed at, and never over a downed body — `E` on one is the help up or
+/// the syringe's revive (`Verb::Assist`), whatever is in hand.
+pub fn fold_heal(aimed: &mut Pick, heal: Pick) {
+    if aimed.verb == Verb::Assist || heal.is_none() {
+        return;
+    }
+    if !aimed.aimed || heal.d2 < aimed.d2 {
+        *aimed = heal;
+    }
+}
+
+/// The heal's line: who and with what. `who` is the player's label
+/// (`ui::names`).
+pub fn heal_prompt(catalog: &ItemCatalog, item: u16, who: &str) -> String {
+    let item = crate::ui::craft::item_label(catalog, item).to_uppercase();
+    format!("[E] HEAL {who} WITH {item}")
+}
+
+/// The line a player healed by another reads (`EventMsg::Healed`): who,
+/// as every surface draws them (`ui::names::shown`, streamer-safe).
+pub fn healed_by_line(core: &client_core::core::ClientCore, by: u32) -> String {
+    format!("HEALED BY {}", crate::ui::names::shown(core, by))
+}
+
+/// The line a healer reads once their heal on another landed (the same
+/// `EventMsg::Healed`, told to them): whom, named as every surface does.
+pub fn healed_line(core: &client_core::core::ClientCore, to: u32) -> String {
+    format!("HEALED {}", crate::ui::names::shown(core, to))
+}
+
 /// A sleeper is an aimed `E` target: the body the crosshair is on, lying
 /// where the sim's lying capsule is (`ranged::body_crossing`), inside the
 /// help-up ray's reach. The server proves the reach again every tick
@@ -3024,6 +3174,16 @@ fn resolve_player(
     own: u32,
     entities: &[(u32, protocol::EntityState)],
 ) -> Option<u32> {
+    nearest_player(aim, own, entities).map(|(_, target)| target)
+}
+
+/// [`resolve_player`] with how far along the hand's reach the aim enters
+/// the body (`assist::aimed`'s fraction), for folding against other picks.
+fn nearest_player(
+    aim: SwingAim,
+    own: u32,
+    entities: &[(u32, protocol::EntityState)],
+) -> Option<(f32, u32)> {
     let body = Body {
         qx: quant_xz(aim.x),
         qy: quant_y(aim.y),
@@ -3058,7 +3218,7 @@ fn resolve_player(
             }
         }
     }
-    best.map(|(_, target)| target)
+    best
 }
 
 /// The give key's line: what, how many and to whom, and while the key is
@@ -3304,6 +3464,126 @@ mod assist_tests {
             resolve_assist(aim, 1, &[(3, target), (2, target)]).handle,
             2
         );
+    }
+
+    #[test]
+    fn heal_needs_a_heal_item_in_hand_and_never_takes_a_downed_body() {
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: 128,
+            crouched: false,
+        };
+        let friend = protocol::EntityState {
+            qx: quant_xz(10.0),
+            qy: quant_y(0.0),
+            qz: quant_xz(11.5),
+            ..Default::default()
+        };
+        const BANDAGE: u16 = 7;
+        let pick = resolve_heal(aim, 1, &[(2, friend)], Some(BANDAGE));
+        assert_eq!(pick.verb, Verb::Heal);
+        assert_eq!((pick.handle, pick.item), (2, BANDAGE));
+        assert!(pick.aimed);
+        assert!(heal_prompt(&ItemCatalog::EMPTY, BANDAGE, "ANNA").starts_with("[E] HEAL ANNA"));
+        assert!(pick
+            .prompt(&ItemCatalog::EMPTY)
+            .starts_with("[E] HEAL PLAYER"));
+        assert!(
+            resolve_heal(aim, 1, &[(2, friend)], None).is_none(),
+            "no heal item in hand"
+        );
+        assert!(resolve_heal(aim, 2, &[(2, friend)], Some(BANDAGE)).is_none());
+        let animal = sim_core::mob::mob_id(3);
+        assert!(resolve_heal(aim, 1, &[(animal, friend)], Some(BANDAGE)).is_none());
+        for absent in [
+            protocol::EntityState {
+                dead: true,
+                ..friend
+            },
+            protocol::EntityState {
+                sleeping: true,
+                ..friend
+            },
+            protocol::EntityState {
+                qz: quant_xz(14.0),
+                ..friend
+            },
+        ] {
+            assert!(resolve_heal(aim, 1, &[(2, absent)], Some(BANDAGE)).is_none());
+        }
+
+        // A downed body is the help up's, a syringe in hand or not.
+        let down = protocol::EntityState {
+            wounded: true,
+            ..friend
+        };
+        assert!(resolve_heal(aim, 1, &[(2, down)], Some(BANDAGE)).is_none());
+        let mut e = resolve_assist(aim, 1, &[(2, down)]);
+        fold_heal(&mut e, resolve_heal(aim, 1, &[(2, down)], Some(BANDAGE)));
+        assert_eq!(e.verb, Verb::Assist);
+        // ...and stays it with a standing player beside it in the aim.
+        let mut e = resolve_assist(aim, 1, &[(2, down), (3, friend)]);
+        fold_heal(
+            &mut e,
+            resolve_heal(aim, 1, &[(2, down), (3, friend)], Some(BANDAGE)),
+        );
+        assert_eq!((e.verb, e.handle), (Verb::Assist, 2));
+        // With no body down, the standing one is the pick.
+        let mut e = Pick::default();
+        fold_heal(&mut e, resolve_heal(aim, 1, &[(3, friend)], Some(BANDAGE)));
+        assert_eq!((e.verb, e.handle), (Verb::Heal, 3));
+    }
+
+    /// A heal by another player, off the wire, is the healed player's
+    /// "HEALED BY" line, naming the healer as every surface does: by
+    /// their tag once it has landed, by id before.
+    #[test]
+    fn a_heal_from_another_player_reads_healed_by_their_name() {
+        use client_core::core::ClientCore;
+        const HEALER: u32 = 259;
+        const SYRINGE: u16 = 40;
+        let mut core = Box::new(ClientCore::new(42, 1, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_healed(HEALER, 1, SYRINGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the heal applies");
+        assert_eq!(core.pop_healed_by(), Some((HEALER, SYRINGE)));
+        assert_eq!(core.pop_healed_by(), None, "one heal, one line");
+        assert_eq!(core.pop_heal_given(), None, "the healed is not the healer");
+        assert_eq!(healed_by_line(&core, HEALER), "HEALED BY #259");
+
+        let address =
+            protocol::Address::from_hex(b"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf").unwrap();
+        let name = protocol::Name::new("Quillon").unwrap();
+        let guild = protocol::Guild::NONE;
+        let len = protocol::encode_event_tag(HEALER, &address, &name, 0, &guild, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the tag applies");
+        assert_eq!(healed_by_line(&core, HEALER), "HEALED BY Quillon");
+    }
+
+    /// The same heal told to the healer is their "HEALED" line, naming
+    /// whom they healed; a heal between two others is neither line.
+    #[test]
+    fn a_heal_on_another_player_reads_healed_their_name() {
+        use client_core::core::ClientCore;
+        const ME: u32 = 1;
+        const HURT: u32 = 260;
+        const BANDAGE: u16 = 41;
+        let mut core = Box::new(ClientCore::new(42, ME, 0));
+        let mut buf = [0u8; protocol::MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_healed(ME, HURT, BANDAGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("the heal applies");
+        assert_eq!(core.pop_heal_given(), Some((HURT, BANDAGE)));
+        assert_eq!(core.pop_heal_given(), None, "one heal, one line");
+        assert_eq!(core.pop_healed_by(), None, "the healer was not healed");
+        assert_eq!(healed_line(&core, HURT), "HEALED #260");
+
+        let len = protocol::encode_event_healed(HURT, 261, BANDAGE, &mut buf).unwrap();
+        core.on_stream(&buf[..len]).expect("a stray heal applies");
+        assert_eq!(core.pop_heal_given(), None);
+        assert_eq!(core.pop_healed_by(), None);
     }
 
     #[test]

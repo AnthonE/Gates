@@ -456,6 +456,11 @@ pub fn surface(
 ) -> f32 {
     let c = &mut *occ.cache;
     let (x0, z0) = (floor_i32(x), floor_i32(z));
+    // The test just below, read from the shard's bits where it was made
+    // before.
+    if c.gentle_quad(seed, x0, z0) {
+        return c.ground(seed, haven, x, z);
+    }
     let q = [
         c.coarse(seed, haven, x0, z0),
         c.coarse(seed, haven, x0 + 1, z0),

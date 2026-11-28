@@ -43,7 +43,8 @@
 //! instead ([`WalletPrefix`]), which `/ban`'s answer prints for exactly this.
 //! A whole wallet does not fit (`/unban 0x` + 40 hex is 49 bytes), so the
 //! `0x` is optional and six digits is enough; the server lifts a ban only
-//! when one banned wallet matches.
+//! when one banned wallet matches. `/unban guests` lifts every guest
+//! address ban at once.
 
 use crate::ChatText;
 
@@ -107,10 +108,14 @@ pub enum AdminCmd {
     /// Drop this player's connection now. Their body stays as a sleeper —
     /// a kick is not a wipe.
     Kick { id: u32 },
-    /// Kick, and remember the wallet so the next join is refused.
+    /// Kick, and remember the wallet so the next join is refused. A guest
+    /// has none: the server bans the address it joined from, for guests.
     Ban { id: u32 },
     /// Forget the one banned wallet that starts with `prefix`.
     Unban { prefix: WalletPrefix },
+    /// `/unban guests`: lift every guest address ban (a `/ban` on a guest
+    /// bans the address it joined from, for the shard's uptime).
+    UnbanGuests,
     /// A line from the house, to everybody, marked as the server's.
     Say { text: ChatText },
     /// Put the caller at another player's feet. Self-targeted movement
@@ -152,6 +157,11 @@ pub enum AdminCmd {
     Brain,
     /// `/who`: the connected player ids, said to the asker only.
     Who,
+    /// `/suspects` (or `/sus`): the cheat checks' flags in their window —
+    /// who, which check, its numbers and how long ago — newest first, said
+    /// to the asking admin only. Admin-only: a flag is evidence about a
+    /// named player, never a public accusation.
+    Suspects,
     /// `/top` (or `/standings`, `/lb`): the wipe's standings and where the
     /// asker stands, said to the asker only. Anyone may ask.
     Top,
@@ -221,8 +231,17 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             id: parts.next()?.parse().ok()?,
         }),
         "unban" => {
-            let prefix = WalletPrefix::parse(parts.next()?)?;
-            (parts.next().is_none()).then_some(AdminCmd::Unban { prefix })
+            let word = parts.next()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            // Not hex, so never a wallet's front.
+            if let "guests" | "guest" = word {
+                return Some(AdminCmd::UnbanGuests);
+            }
+            Some(AdminCmd::Unban {
+                prefix: WalletPrefix::parse(word)?,
+            })
         }
         "tp" => Some(AdminCmd::Teleport {
             id: parts.next()?.parse().ok()?,
@@ -273,6 +292,7 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "save" => Some(AdminCmd::SaveNow),
         "brain" => Some(AdminCmd::Brain),
         "who" => Some(AdminCmd::Who),
+        "suspects" | "sus" => (parts.next().is_none()).then_some(AdminCmd::Suspects),
         "top" | "standings" | "lb" | "leaderboard" => Some(AdminCmd::Top),
         "arena" | "ranked" => (parts.next().is_none()).then_some(AdminCmd::Arena),
         "leave" | "back" => (parts.next().is_none()).then_some(AdminCmd::Leave),
@@ -499,6 +519,16 @@ mod tests {
     }
 
     #[test]
+    fn suspects_parses_bare() {
+        assert_eq!(parse(&text("/suspects")), Some(AdminCmd::Suspects));
+        assert_eq!(parse(&text("/sus")), Some(AdminCmd::Suspects));
+        assert_eq!(parse(&text("/ sus")), Some(AdminCmd::Suspects));
+        for bad in ["/suspects 259", "/sus all", "/suspect"] {
+            assert_eq!(parse(&text(bad)), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn the_verbs_parse_with_their_arguments() {
         assert_eq!(parse(&text("/kick 259")), Some(AdminCmd::Kick { id: 259 }));
         assert_eq!(parse(&text("/ban 260")), Some(AdminCmd::Ban { id: 260 }));
@@ -536,8 +566,11 @@ mod tests {
             panic!("a whole address parses");
         };
         assert_eq!(prefix.as_bytes(), &line.as_bytes()[7..]);
+        assert_eq!(parse(&text("/unban guests")), Some(AdminCmd::UnbanGuests));
+        assert_eq!(parse(&text("/unban  guest")), Some(AdminCmd::UnbanGuests));
         for bad in [
             "/unban",
+            "/unban guests now",
             "/unban 12345",                                     // too short
             "/unban 0x12345",                                   // too short past the 0x
             "/unban zzzzzz",                                    // not hex

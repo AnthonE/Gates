@@ -715,6 +715,21 @@ pub enum Trip {
     Point([f32; 2]),
 }
 
+/// A trip home as a bug report's trace has it: what it was for, the leg
+/// it was on, where it failed (`""` while it has not), the box it was
+/// seeing to, and the doors it was inside of, had given up on, and the
+/// tries at the box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HomeTrace {
+    pub trip: &'static str,
+    pub leg: &'static str,
+    pub fail_site: &'static str,
+    pub chest: Option<OpAddr>,
+    pub passed: u8,
+    pub tried: u8,
+    pub tries: u8,
+}
+
 /// What the trip wants next. `explorer.rs` sends the verbs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Deliver {
@@ -780,6 +795,10 @@ pub struct HomeJob {
     passed_len: u8,
     /// Doors that would not be got to or through.
     tried: [Option<OpAddr>; MAX_DOORS],
+    /// One of `tried` was given up on, not only backed out of: with no
+    /// door left, the trip is stuck at doors that were there, not short of
+    /// one.
+    gave_up: bool,
     /// The box being seen to, by its place in [`TeamHome`], where it
     /// stands, the boxes seen to on this trip, and the ones only looked in
     /// while others were not known yet.
@@ -801,6 +820,9 @@ pub struct HomeJob {
     aim_only: bool,
     /// Why the trip failed inside, said once it is back out.
     failed: Option<Why>,
+    /// Where in the trip it failed, for a bug report's trace
+    /// ([`HomeTrace`]); empty while it has not.
+    fail_site: &'static str,
     /// Units put in the boxes, and taken out.
     pub put: u32,
     pub took: u32,
@@ -821,6 +843,7 @@ impl HomeJob {
             passed: [None; MAX_DOORS],
             passed_len: 0,
             tried: [None; MAX_DOORS],
+            gave_up: false,
             target: None,
             chest: None,
             visited: 0,
@@ -833,6 +856,7 @@ impl HomeJob {
             tries: 0,
             aim_only: true,
             failed: None,
+            fail_site: "",
             put: 0,
             took: 0,
         }
@@ -840,6 +864,28 @@ impl HomeJob {
 
     pub fn trip(&self) -> Trip {
         self.trip
+    }
+
+    /// Where the trip is, and where it failed if it has: a bug report's
+    /// trace of it (`agent::trace`).
+    pub fn trace(&self) -> HomeTrace {
+        HomeTrace {
+            trip: match self.trip {
+                Trip::Stock => "stock",
+                Trip::Stay => "stay",
+                Trip::Point(_) => "point",
+            },
+            leg: match self.leg {
+                Leg::In => "in",
+                Leg::Chest => "chest",
+                Leg::Out => "out",
+            },
+            fail_site: self.fail_site,
+            chest: self.chest,
+            passed: self.passed_len,
+            tried: self.tried.iter().flatten().count() as u8,
+            tries: self.tries,
+        }
     }
 
     /// The step went out on the wire at `tick`.
@@ -904,9 +950,11 @@ impl HomeJob {
         }
     }
 
-    /// The trip fails. A stocking trip inside a door it went through walks
-    /// back out first, as it came, and says why there.
-    fn fail(&mut self, why: Why) -> Deliver {
+    /// The trip fails, at `site`. A stocking trip inside a door it went
+    /// through walks back out first, as it came, and says why there. The
+    /// site is the last failure's: the one whose why the trip says.
+    fn fail(&mut self, why: Why, site: &'static str) -> Deliver {
+        self.fail_site = site;
         if self.leg == Leg::Out || self.passed_len == 0 || self.trip != Trip::Stock {
             return Deliver::Fail(why);
         }
@@ -939,7 +987,7 @@ impl HomeJob {
             } else {
                 Why::Refused
             };
-            return self.fail(why);
+            return self.fail(why, "box_tries");
         }
         if self.doors.busy() {
             return match self
@@ -965,6 +1013,7 @@ impl HomeJob {
                     // tried again straight away.
                     if self.leg != Leg::Out {
                         self.tried = [None; MAX_DOORS];
+                        self.gave_up = false;
                         if back {
                             self.tried[0] = Some(at);
                         }
@@ -976,11 +1025,12 @@ impl HomeJob {
                 Through::GaveUp(at) => match self.tried.iter_mut().find(|s| s.is_none()) {
                     Some(slot) if self.leg != Leg::Out => {
                         *slot = Some(at);
+                        self.gave_up = true;
                         Deliver::IDLE
                     }
-                    _ => self.fail(Why::Stuck),
+                    _ => self.fail(Why::Stuck, "doors_gave_up"),
                 },
-                Through::Fail(why) => self.fail(why),
+                Through::Fail(why) => self.fail(why, "door_failed"),
                 step => Deliver::Door(step),
             };
         }
@@ -1019,7 +1069,7 @@ impl HomeJob {
                     }
                     Trip::Stay => match home.first() {
                         Some(at) => (center(at), STAY_NEAR_M),
-                        None => return Deliver::Fail(Why::NotFound),
+                        None => return self.fail(Why::NotFound, "no_home_box"),
                     },
                     Trip::Point(p) => (p, STAY_NEAR_M),
                 };
@@ -1082,7 +1132,10 @@ impl HomeJob {
                                     .begin_toward(door, core.pieces.cols(), goal, tick);
                                 Deliver::IDLE
                             }
-                            None => self.fail(Why::Stuck),
+                            // Every door near was given up on: stuck at
+                            // them, which is not having none to use.
+                            None if self.gave_up => self.fail(Why::Stuck, "doors_gave_up"),
+                            None => self.fail(Why::NoWayIn, "no_door_near"),
                         }
                     }
                 }
@@ -1093,7 +1146,7 @@ impl HomeJob {
                     return match self.failed {
                         Some(why) => Deliver::Fail(why),
                         None if self.put > 0 || self.took > 0 => Deliver::Done,
-                        None => Deliver::Fail(Why::BoxFull),
+                        None => self.fail(Why::BoxFull, "box_full"),
                     };
                 };
                 match self.passed[top] {
@@ -1101,7 +1154,7 @@ impl HomeJob {
                         self.doors.begin(door, core.pieces.cols(), x, z, tick);
                         Deliver::IDLE
                     }
-                    None => Deliver::Fail(Why::Stuck),
+                    None => self.fail(Why::Stuck, "lost_way_out"),
                 }
             }
         }

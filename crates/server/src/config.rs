@@ -315,7 +315,9 @@ pub struct ShardConfig {
     /// one-build-two-populations posture applied to privilege.
     pub admins: crate::admin::Admins,
     /// Where the anomaly log is appended (`anomaly_file`). `None` ⇒ no log
-    /// and every push is a no-op, which is what a test shard runs.
+    /// and every push is a no-op, which is what a test shard runs. Required
+    /// where the shard pays out or sells tickets: the cheat checks' flags
+    /// are written nowhere else.
     pub anomaly_file: Option<String>,
     /// Where admin bans last (`ban_file`, `admin::Bans`). `None` ⇒ a ban
     /// holds for the uptime only.
@@ -1691,6 +1693,25 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     if prizes.places.iter().any(|p| !p.is_empty()) && prizes.ticker.is_empty() {
         return Err("shard.toml: prize places without prize_ticker — paid in what?".into());
     }
+    // A shard that pays out or sells tickets is the one a cheat is worth
+    // something on, and the cheat checks write their flags only to the
+    // anomaly log: with none, they run and every flag is lost. Refused with
+    // the key that armed it, after the pairings above have named theirs.
+    let armed_by = if exits.cap > 0 {
+        Some("extract_cap")
+    } else if prizes.armed() {
+        Some("prize_ticker")
+    } else if entitle.armed() {
+        Some("entitle_origin")
+    } else {
+        None
+    };
+    if let (Some(key), None) = (armed_by, &anomaly_file) {
+        return Err(format!(
+            "shard.toml: {key} needs anomaly_file — a shard that pays out or sells \
+             tickets runs the cheat checks, and they write their flags only there"
+        ));
+    }
     if wipe_anchor.is_some() && wipe_days.is_none() {
         return Err("shard.toml: wipe_anchor without wipe_days — the anchor of no schedule".into());
     }
@@ -1963,8 +1984,10 @@ mod tests {
         assert_eq!(cfg.prizes.min_minutes, DEFAULT_PRIZE_MIN_MINUTES);
         assert_eq!(cfg.exits.cap, 0, "and lets nothing leave by default");
         assert_eq!(cfg.exits.min_minutes, 0, "and pays every wallet that does");
+        // A paying shard keeps the cheat checks' flags (`armed_needs_…`).
+        let logged = format!("{base}anomaly_file = \"anomaly.jsonl\"\n");
         let cfg = parse_shard_toml(&format!(
-            "{base}extract_cap = 1000\nextract_fee_pct = 5\nextract_min_minutes = 120\n"
+            "{logged}extract_cap = 1000\nextract_fee_pct = 5\nextract_min_minutes = 120\n"
         ))
         .unwrap();
         assert_eq!(
@@ -1973,7 +1996,7 @@ mod tests {
         );
         assert!(parse_shard_toml(&format!("{base}extract_fee_pct = 101\n")).is_err());
         let cfg = parse_shard_toml(&format!(
-            "{base}prize_ticker = \"JUNK\"\nprize_island = \"500, 300,200\"\n\
+            "{logged}prize_ticker = \"JUNK\"\nprize_island = \"500, 300,200\"\n\
              prize_fight = 50\nprize_min_minutes = 60\nprize_agents = true\n\
              discord_webhook = \"https://discord.com/api/webhooks/1/x\"\n"
         ))
@@ -1993,6 +2016,70 @@ mod tests {
         ] {
             assert!(parse_shard_toml(&format!("{base}{bad}")).is_err(), "{bad}");
         }
+    }
+
+    /// A shard that pays out (`extract_cap`, prizes) or sells tickets
+    /// (`entitle_origin`) refuses to boot without `anomaly_file`, the only
+    /// place the cheat checks write a flag; with one, or paying nothing, it
+    /// boots.
+    #[test]
+    fn armed_needs_an_anomaly_file() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        let log = "anomaly_file = \"anomaly.jsonl\"\n";
+        for (key, armed) in [
+            ("extract_cap", "extract_cap = 1000\n"),
+            (
+                "prize_ticker",
+                "prize_ticker = \"JUNK\"\nprize_island = \"500,300\"\n",
+            ),
+            (
+                "entitle_origin",
+                "entitle_origin = \"https://elo.example\"\nrequire_auth = true\n",
+            ),
+        ] {
+            let err = parse_shard_toml(&format!("{base}{armed}")).unwrap_err();
+            assert!(
+                err.contains(key) && err.contains("anomaly_file"),
+                "{key}: {err}"
+            );
+            parse_shard_toml(&format!("{base}{armed}{log}"))
+                .unwrap_or_else(|e| panic!("{key} with a log boots: {e}"));
+        }
+        // Paying nothing needs no log: a zero cap, zero purses.
+        for unarmed in [
+            "extract_cap = 0\n",
+            "prize_ticker = \"JUNK\"\nprize_island = \"0\"\n",
+            "prize_ticker = \"JUNK\"\n",
+        ] {
+            parse_shard_toml(&format!("{base}{unarmed}"))
+                .unwrap_or_else(|e| panic!("{unarmed:?} pays nothing: {e}"));
+        }
+        // The ticket door's own pairing still names its own key first.
+        let err = parse_shard_toml(&format!("{base}entitle_origin = \"https://elo.example\"\n"))
+            .unwrap_err();
+        assert!(err.contains("require_auth"), "{err}");
+    }
+
+    /// Every shard config the repo ships (`shards.toml` is the shard list,
+    /// not a shard's config) boots under that rule, and the public one is a
+    /// paying shard that names its log, so the rule is exercised, not skipped.
+    #[test]
+    fn the_tracked_configs_boot_under_the_anomaly_rule() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut public = None;
+        for name in [
+            "shard.toml.example",
+            "shard-public.toml",
+            "shard-agents.toml",
+        ] {
+            let text = std::fs::read_to_string(root.join(name)).unwrap();
+            let cfg = parse_shard_toml(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            if name == "shard-public.toml" {
+                public = Some(cfg);
+            }
+        }
+        let public = public.unwrap();
+        assert!(public.exits.cap > 0 && public.anomaly_file.is_some());
     }
 
     /// `siwe_domains`: absent is `domain` alone, set is the whole list and

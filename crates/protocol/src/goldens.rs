@@ -44,7 +44,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 199] = [
+pub const FIXTURES: [&str; 205] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -358,6 +358,19 @@ pub const FIXTURES: [&str; 199] = [
     // crew mark.
     "hello_commander.bin",
     "event_crew.bin",
+    // A heal by another player (v157): the healer, the healed and the item.
+    "event_healed.bin",
+    // A worn item mended at a bench (v157), on the pack's last slot.
+    "action_repair_item.bin",
+    // A sleeping bag given to a teammate (v157): the far corner of the grid
+    // on the top storey, to a receiver with every id bit high.
+    "action_bag_give.bin",
+    // A player's map marks to the shard, and on to a teammate (v157): a
+    // full set with every field at its width's edge.
+    "action_pins.bin",
+    "event_team_pins.bin",
+    // A sleeping bag given (v157): the giver, told to the receiver.
+    "event_bag_given.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1413,7 +1426,9 @@ pub fn event_catalog() -> ItemCatalog {
             },
         ),
         // The draw columns' coverage (v82), at the byte's corner, and the
-        // damage column's (v131) at its own.
+        // damage column's (v131) at its own. The throw's windup (v157) sits
+        // here too, beside the draw it mirrors, a byte short of its corner so
+        // a swap with `draw_ticks` shows (content throws no bow).
         (
             b"Hunting Bow",
             ItemRow {
@@ -1421,6 +1436,7 @@ pub fn event_catalog() -> ItemCatalog {
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
                 damage: u16::MAX,
+                hurl_ticks: u8::MAX - 2,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
@@ -1551,6 +1567,8 @@ pub fn event_recipes() -> CraftContent {
     type Row = (u16, u16, u32, u8, &'static [(u16, u16)]);
     let mut cc = CraftContent::EMPTY;
     cc.recipe_count = 6;
+    // The item repair price (v157) at its ceiling, every bit of it live.
+    cc.repair_pct = 100;
     let rows: [Row; 6] = [
         (4, 1, 15 * 30, STATION_NONE, &[(0, 100), (1, 50)]),
         (9, 3, 5 * 30, STATION_NONE, &[(0, 25), (1, 10)]),
@@ -1697,9 +1715,9 @@ pub fn event_bags() -> ([BagAnchor; BAG_CAP], usize) {
     (bags, 3)
 }
 
-/// A cancel of queue job 2.
-pub fn action_cancel() -> u16 {
-    2
+/// A cancel of queue job 2, seen as recipe 37 (wire v157).
+pub fn action_cancel() -> (u16, u16) {
+    (2, 37)
 }
 
 /// A place request: (row, cx, cz, level, loc, freehand, plate) — a stone
@@ -2358,6 +2376,18 @@ pub fn event_crew() -> (u32, u32) {
     ((0x0123 << 8) | 9, (0x0045 << 8) | 3)
 }
 
+/// A heal by another player (v157): the healer and the one healed, ids
+/// with bits in both halves, and an item whose two bytes differ.
+pub fn event_healed() -> (u32, u32, u16) {
+    ((0x0067 << 8) | 5, (0x0103 << 8) | 11, 0x0129)
+}
+
+/// A sleeping bag given (v157): the giver, an id with every bit a player
+/// id may hold high.
+pub fn event_bag_given() -> u32 {
+    sim_core::limits::MOB_ID_TAG - 1
+}
+
 /// A part's wires taken up (v150).
 pub fn action_unwire() -> u32 {
     0x0A0B_0C0D
@@ -2563,6 +2593,50 @@ pub fn event_ammo() -> (u16, u16) {
 /// The attach verb (v144) on the pack's last slot.
 pub fn action_attach() -> u8 {
     (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The bench repair (v157) on the pack's last slot.
+pub fn action_repair_item() -> u8 {
+    (sim_core::limits::INV_SLOTS - 1) as u8
+}
+
+/// The bag give (v157): `(cx, cz, level, target)` at the grid's far
+/// corner and top storey, to a receiver whose id has its top bit set, so
+/// every field is filled to its width.
+pub fn action_bag_give() -> (u16, u16, u8, u32) {
+    (
+        (sim_core::limits::MAX_BUILD_COORD - 1) as u16,
+        (sim_core::limits::MAX_BUILD_COORD - 2) as u16,
+        (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8,
+        0x8000_0403,
+    )
+}
+
+/// A full set of map marks (v157): the island's far corner and its origin,
+/// the last colour and picture, a label of every length up to the longest,
+/// and the printable range's two ends inside them.
+pub fn action_pins() -> crate::PinSet {
+    let labels = ["", "~", "RAID ME", "!", "LOOT~HERE!"];
+    let mut set = crate::PinSet::NONE;
+    for (i, label) in labels.iter().enumerate() {
+        let i = i as u16;
+        let pin = crate::WirePin::new(
+            crate::PIN_POS_MAX_M - i,
+            i * 811,
+            (crate::PIN_COLOURS - 1).min(i as u8 + 1),
+            i as u8 % crate::PIN_ICONS,
+            label,
+        )
+        .expect("a golden label is a label");
+        set.push(pin);
+    }
+    set
+}
+
+/// [`action_pins`]' set relayed from a teammate with bits in both halves
+/// of their id.
+pub fn event_team_pins() -> (u32, crate::PinSet) {
+    ((0x0089 << 8) | 6, action_pins())
 }
 
 /// The detach verb (v144) on the last attachment bit.

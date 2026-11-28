@@ -390,8 +390,9 @@ impl MapView {
     }
 }
 
-/// How many marks a player can put on their map (Rust's five).
-pub const PINS_MAX: usize = 5;
+/// How many marks a player can put on their map (Rust's five): the wire's
+/// cap, since a teammate is shown the whole set (`protocol::pins`, v157).
+pub const PINS_MAX: usize = protocol::PINS_MAX;
 
 /// How close a click must land to a mark to mean that mark, as a fraction
 /// of the map's side: about the badge's own size at 640 px.
@@ -409,6 +410,7 @@ pub const PIN_COLOURS: [[u8; 3]; 6] = [
     [255, 148, 199], // rose
     [242, 242, 235], // white
 ];
+const _: () = assert!(PIN_COLOURS.len() == protocol::PIN_COLOURS as usize);
 
 /// The pictures a mark cycles through: `None` is its number, the rest are
 /// white silhouettes from the icon atlas (`ui::icons::STEMS`), tinted dark
@@ -421,9 +423,10 @@ pub const PIN_ICONS: [Option<&str>; 6] = [
     Some("ui_lock"),
     Some("ui_clock"),
 ];
+const _: () = assert!(PIN_ICONS.len() == protocol::PIN_ICONS as usize);
 
 /// A mark's label, characters. Short, because it prints under a 16 px badge.
-pub const PIN_LABEL_MAX: usize = 10;
+pub const PIN_LABEL_MAX: usize = protocol::PIN_LABEL_MAX;
 
 /// What a label prints as on the compass: the reference's three characters
 /// (*"slimmed down to three characters when displayed on the compass"*,
@@ -431,8 +434,8 @@ pub const PIN_LABEL_MAX: usize = 10;
 pub const PIN_COMPASS_CHARS: usize = 3;
 
 /// How a mark looks: its colour, its picture and its label, as indexes into
-/// [`PIN_COLOURS`] and [`PIN_ICONS`] and ASCII bytes. Client-only like the
-/// mark itself.
+/// [`PIN_COLOURS`] and [`PIN_ICONS`] and ASCII bytes. Shown to the team as
+/// it is (`Pins::wire`, [`Self::from_wire`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PinStyle {
     pub colour: u8,
@@ -482,6 +485,21 @@ impl PinStyle {
         ok
     }
 
+    /// A teammate's mark's look off the wire: its colour and picture, and its
+    /// label typed in the way [`Self::push_label`] takes one, so it is
+    /// upper-cased like every other name on the map.
+    pub fn from_wire(pin: &protocol::WirePin) -> Self {
+        let mut s = Self {
+            colour: pin.colour % PIN_COLOURS.len() as u8,
+            icon: pin.icon % PIN_ICONS.len() as u8,
+            ..Self::default()
+        };
+        for c in pin.label().chars() {
+            s.push_label(c);
+        }
+        s
+    }
+
     /// Rub out the last character. False when there was none. The byte is
     /// zeroed too, so two looks with the same label compare equal.
     pub fn pop_label(&mut self) -> bool {
@@ -501,7 +519,7 @@ fn cycled(i: u8, step: i32, n: usize) -> u8 {
 
 /// The marks a player put on their own map: world XZ and how each looks,
 /// oldest first, for one island (`seed`) — a new island starts with none.
-/// Client-only: no one else sees them, and they are not saved.
+/// Not saved; the team sees them (`Self::wire`, [`PinShare`]), nobody else.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pins {
     seed: u64,
@@ -511,6 +529,11 @@ pub struct Pins {
 }
 
 impl Pins {
+    /// The island these marks were made on.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// Forget the marks if they were made on another island.
     pub fn for_seed(&mut self, seed: u64) {
         if self.seed != seed {
@@ -615,6 +638,223 @@ impl Pins {
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, d, dx, dz)| (i + 1, self.style[i], d, crate::look::bearing_of(dx, dz)))
+    }
+
+    /// The whole set as the team is shown it (`ActionMsg::Pins`, v157): each
+    /// mark to the whole metre it is in, held on the island, with its
+    /// colour, picture and label (trimmed).
+    pub fn wire(&self) -> protocol::PinSet {
+        let m = |v: f32| (v.max(0.0) as u32).min(protocol::PIN_POS_MAX_M as u32) as u16;
+        let mut set = protocol::PinSet::NONE;
+        for (&(x, z), s) in self.marks().iter().zip(self.styles()) {
+            // `push_label` takes printable ASCII only, so a label always fits.
+            if let Some(p) = protocol::WirePin::new(m(x), m(z), s.colour, s.icon, s.label()) {
+                set.push(p);
+            }
+        }
+        set
+    }
+}
+
+/// Where a teammate's mark stands, world XZ: the middle of its metre, as a
+/// mate's dot is drawn (`render::map::mates`).
+pub fn wire_pin_at(pin: &protocol::WirePin) -> (f32, f32) {
+    (f32::from(pin.x_m) + 0.5, f32::from(pin.z_m) + 0.5)
+}
+
+/// The most teammates' marks drawn: every mate's whole set.
+pub const TEAM_PINS_MAX: usize = PINS_MAX * (protocol::TEAM_MAX - 1);
+
+/// One teammate's mark as the map and the compass draw it: whose, where
+/// (world XZ) and how it looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TeamPin {
+    pub owner: u32,
+    pub at: (f32, f32),
+    pub style: PinStyle,
+}
+
+/// Teammates' marks, every mate's set one after another in the order they
+/// came (`ClientCore::team_pins`), at most [`TEAM_PINS_MAX`]; never your
+/// own, even if a set of yours came back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TeamPins {
+    pins: [TeamPin; TEAM_PINS_MAX],
+    len: usize,
+}
+
+impl Default for TeamPins {
+    fn default() -> Self {
+        Self {
+            pins: [TeamPin::default(); TEAM_PINS_MAX],
+            len: 0,
+        }
+    }
+}
+
+impl TeamPins {
+    /// Flatten each mate's set (`(id, set)`) into marks, skipping `me`'s.
+    pub fn gather<'a>(
+        sets: impl IntoIterator<Item = (u32, &'a protocol::PinSet)>,
+        me: u32,
+    ) -> Self {
+        let mut out = Self::default();
+        for (owner, set) in sets {
+            if owner == 0 || owner == me {
+                continue;
+            }
+            for pin in set.pins() {
+                if out.len == TEAM_PINS_MAX {
+                    return out;
+                }
+                out.pins[out.len] = TeamPin {
+                    owner,
+                    at: wire_pin_at(pin),
+                    style: PinStyle::from_wire(pin),
+                };
+                out.len += 1;
+            }
+        }
+        out
+    }
+
+    pub fn pins(&self) -> &[TeamPin] {
+        &self.pins[..self.len]
+    }
+
+    /// The nearest to world `(x, z)`, and how far in metres.
+    pub fn nearest(&self, x: f32, z: f32) -> Option<(TeamPin, f32)> {
+        self.pins()
+            .iter()
+            .map(|p| (*p, (p.at.0 - x).hypot(p.at.1 - z)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+}
+
+/// One mark the map draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawnPin {
+    /// Your own `n`th (1-based, oldest first): the one a click edits.
+    Own {
+        n: usize,
+        at: (f32, f32),
+        style: PinStyle,
+    },
+    /// A teammate's.
+    Mate(TeamPin),
+}
+
+/// Every mark on the map in draw order, your own and your team's, each set
+/// under its own cap ([`PINS_MAX`], [`TEAM_PINS_MAX`]): teammates' first, so
+/// yours — the ones a click takes off or recolours — draw on top of a
+/// mate's in the same place.
+pub fn drawn_pins<'a>(own: &'a Pins, team: &'a TeamPins) -> impl Iterator<Item = DrawnPin> + 'a {
+    let mates = team.pins().iter().map(|p| DrawnPin::Mate(*p));
+    let own = own
+        .marks()
+        .iter()
+        .zip(own.styles())
+        .enumerate()
+        .map(|(i, (&at, &style))| DrawnPin::Own {
+            n: i + 1,
+            at,
+            style,
+        });
+    mates.chain(own)
+}
+
+/// The letter a teammate's mark carries: the first letter or digit of their
+/// name as drawn, past a guild tag, upper-cased; `?` for a name with none.
+pub fn mate_initial(name: &str) -> char {
+    let bare = name
+        .strip_prefix('[')
+        .and_then(|r| r.split_once("] "))
+        .map_or(name, |(_, n)| n);
+    bare.chars()
+        .find(|c| c.is_alphanumeric())
+        .and_then(|c| c.to_uppercase().next())
+        .unwrap_or('?')
+}
+
+/// How often your marks may go to the team, seconds: a burst of edits (a
+/// label typed, a colour cycled round) goes as a set or two, not one a key.
+pub const PIN_SHARE_S: f64 = 0.5;
+
+/// When your marks go to your team (v157). The whole set goes whenever it
+/// changes, no oftener than [`PIN_SHARE_S`], and again when somebody comes
+/// onto the team awake. The shard keeps your last set while you play and
+/// sends it to a joiner itself (`ShardCore::drip_team_pins`); the resend
+/// only repeats it. With no team nothing goes, and the
+/// next team starts from none of yours.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PinShare {
+    /// What this team was last sent of yours.
+    sent: protocol::PinSet,
+    /// When the last send was tried, seconds.
+    at: Option<f64>,
+    /// The mates awake at the last look.
+    awake: [u32; protocol::TEAM_MAX],
+    /// Somebody came on awake since the last send.
+    owed: bool,
+}
+
+impl PinShare {
+    /// The set to send now, if any: `own` is your marks as the wire has them
+    /// ([`Pins::wire`]), `team` the shard's last team view, `me` your id and
+    /// `now` the time, seconds. Say how the send went with [`Self::sent`]
+    /// or [`Self::refused`].
+    pub fn due(
+        &mut self,
+        own: &protocol::PinSet,
+        team: &protocol::TeamView,
+        me: u32,
+        now: f64,
+    ) -> Option<protocol::PinSet> {
+        let mut awake = [0u32; protocol::TEAM_MAX];
+        let up = team
+            .members()
+            .iter()
+            .filter(|m| m.id != me && m.state != protocol::TEAM_ASLEEP);
+        for (slot, m) in awake.iter_mut().zip(up) {
+            *slot = m.id;
+        }
+        if awake.iter().any(|&id| id != 0 && !self.awake.contains(&id)) {
+            self.owed = true;
+        }
+        self.awake = awake;
+        if team.count == 0 {
+            self.sent = protocol::PinSet::NONE;
+            self.owed = false;
+            return None;
+        }
+        // Nobody awake to hear it: a mate who wakes is owed the set then.
+        if awake.iter().all(|&id| id == 0) {
+            return None;
+        }
+        let changed = *own != self.sent;
+        if !changed && own.n == 0 {
+            // Nothing of yours for a joiner to see.
+            self.owed = false;
+        }
+        if !changed && !self.owed {
+            return None;
+        }
+        if self.at.is_some_and(|t| now - t < PIN_SHARE_S) {
+            return None;
+        }
+        Some(*own)
+    }
+
+    /// `set` is away, at `now`.
+    pub fn sent(&mut self, set: protocol::PinSet, now: f64) {
+        self.sent = set;
+        self.at = Some(now);
+        self.owed = false;
+    }
+
+    /// The send at `now` did not go: try again after [`PIN_SHARE_S`].
+    pub fn refused(&mut self, now: f64) {
+        self.at = Some(now);
     }
 }
 
@@ -3082,6 +3322,162 @@ mod tests {
         // Back out: re-centred on the axis it no longer fills.
         v.zoom_about(w, h, 0.0, 0.0, ZOOM_MIN);
         assert_eq!((v.cx, v.cy), (0.5, 0.5));
+    }
+
+    fn set_of(labels: &[&str]) -> protocol::PinSet {
+        let mut set = protocol::PinSet::NONE;
+        for (i, l) in labels.iter().enumerate() {
+            assert!(set.push(protocol::WirePin::new(10 * i as u16, 7, 1, 2, l).unwrap()));
+        }
+        set
+    }
+
+    fn team_of(ids: &[(u32, u8)]) -> protocol::TeamView {
+        let mut v = protocol::TeamView::NONE;
+        v.leader = ids[0].0;
+        for (i, &(id, state)) in ids.iter().enumerate() {
+            v.members[i] = protocol::TeamMember {
+                id,
+                state,
+                ..Default::default()
+            };
+        }
+        v.count = ids.len() as u8;
+        v
+    }
+
+    /// Your marks go to the team as the wire has them — to the metre, held
+    /// on the island, the label trimmed — and come back looking the same.
+    #[test]
+    fn a_mark_crosses_to_the_team_looking_the_same() {
+        let mut p = Pins::default();
+        p.toggle(0.25, 0.75);
+        p.toggle(0.0, 0.0);
+        p.cycle_colour(0, 2);
+        p.cycle_icon(0, 1);
+        for c in "MEET ".chars() {
+            p.style_mut(0).unwrap().push_label(c);
+        }
+        let set = p.wire();
+        assert!(set.valid());
+        assert_eq!(set.n, 2);
+        let (x, z) = p.marks()[0];
+        let w = set.pins()[0];
+        assert_eq!((w.x_m, w.z_m), (x as u16, z as u16));
+        assert_eq!(w.label(), "MEET", "trimmed");
+        let back = PinStyle::from_wire(&w);
+        assert_eq!(back.label(), "MEET");
+        assert_eq!(
+            (back.colour, back.icon),
+            (p.style(0).colour, p.style(0).icon)
+        );
+        let (bx, bz) = wire_pin_at(&w);
+        assert!((bx - x).abs() <= 1.0 && (bz - z).abs() <= 1.0);
+        // The island's far corner is 4096 m, one past the wire's last metre.
+        assert_eq!(set.pins()[1].x_m, protocol::PIN_POS_MAX_M);
+        // A label off the wire is upper-cased like one typed.
+        let low = protocol::WirePin::new(1, 1, 0, 0, "raid").unwrap();
+        assert_eq!(PinStyle::from_wire(&low).label(), "RAID");
+    }
+
+    /// The map draws every mate's marks under your own, each set under its
+    /// own cap, and never a set of yours that came back.
+    #[test]
+    fn team_marks_draw_under_your_own_within_the_cap() {
+        let me = 0x101;
+        let full = set_of(&["A", "B", "C", "D", "E"]);
+        let sets: Vec<(u32, protocol::PinSet)> = (0..protocol::TEAM_MAX as u32 + 1)
+            .map(|i| (0x200 + i, full))
+            .chain([(me, full)])
+            .collect();
+        let team = TeamPins::gather(sets.iter().map(|(id, s)| (*id, s)), me);
+        assert_eq!(team.pins().len(), TEAM_PINS_MAX, "every mate's, no more");
+        assert!(team.pins().iter().all(|p| p.owner != me));
+        assert_eq!(team.pins()[0].owner, 0x200, "in the order they came");
+        let mut own = Pins::default();
+        own.toggle(0.5, 0.5);
+        let drawn: Vec<DrawnPin> = drawn_pins(&own, &team).collect();
+        assert_eq!(drawn.len(), TEAM_PINS_MAX + 1);
+        assert!(
+            matches!(drawn.last(), Some(DrawnPin::Own { n: 1, .. })),
+            "yours on top"
+        );
+        assert!(drawn[..TEAM_PINS_MAX]
+            .iter()
+            .all(|d| matches!(d, DrawnPin::Mate(_))));
+        // The compass's pick: the nearest of them all.
+        let few = set_of(&["NEAR", "FAR"]);
+        let team = TeamPins::gather([(0x200, &few)], me);
+        let (p, d) = team.nearest(0.0, 7.5).unwrap();
+        assert_eq!(p.style.label(), "NEAR");
+        assert!(d < 1.0);
+        assert!(TeamPins::default().nearest(0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_mates_initial_skips_their_guild_tag() {
+        assert_eq!(mate_initial("rook"), 'R');
+        assert_eq!(mate_initial("[GLD] nova"), 'N');
+        assert_eq!(mate_initial("#1234"), '1');
+        assert_eq!(mate_initial("--"), '?');
+    }
+
+    /// Your set goes when it changes, no oftener than `PIN_SHARE_S`, again
+    /// when a mate comes on awake, and not at all with no team or nobody
+    /// awake on it.
+    #[test]
+    fn your_marks_go_when_they_change_and_when_a_mate_comes_on() {
+        let (me, a, b) = (1, 2, 3);
+        let mut share = PinShare::default();
+        let none = protocol::PinSet::NONE;
+        let one = set_of(&["RAID"]);
+        let two = set_of(&["RAID", "HOME"]);
+        let alone = protocol::TeamView::NONE;
+        // No team: nothing goes, whatever you mark.
+        assert_eq!(share.due(&one, &alone, me, 0.0), None);
+        // A team with A awake: the marks you already had go at once.
+        let ta = team_of(&[(me, protocol::TEAM_AWAKE), (a, protocol::TEAM_AWAKE)]);
+        assert_eq!(share.due(&one, &ta, me, 1.0), Some(one));
+        share.sent(one, 1.0);
+        assert_eq!(share.due(&one, &ta, me, 1.1), None, "unchanged");
+        // A change waits out the half second, then goes.
+        assert_eq!(share.due(&two, &ta, me, 1.2), None);
+        assert_eq!(share.due(&two, &ta, me, 1.5), Some(two));
+        share.sent(two, 1.5);
+        // B joins asleep: owed nothing yet. B wakes: owed the set again.
+        let tb = team_of(&[
+            (me, protocol::TEAM_AWAKE),
+            (a, protocol::TEAM_AWAKE),
+            (b, protocol::TEAM_ASLEEP),
+        ]);
+        assert_eq!(share.due(&two, &tb, me, 3.0), None);
+        let mut up = tb;
+        up.members[2].state = protocol::TEAM_AWAKE;
+        assert_eq!(share.due(&two, &up, me, 3.1), Some(two));
+        share.sent(two, 3.1);
+        // A refused send backs off, then tries again.
+        assert_eq!(share.due(&none, &up, me, 4.0), Some(none));
+        share.refused(4.0);
+        assert_eq!(share.due(&none, &up, me, 4.2), None);
+        assert_eq!(share.due(&none, &up, me, 4.6), Some(none));
+        share.sent(none, 4.6);
+        // A joiner sees nothing of an empty set: none is sent them.
+        let mut more = up;
+        more.members[3] = protocol::TeamMember {
+            id: 4,
+            ..Default::default()
+        };
+        more.count = 4;
+        assert_eq!(share.due(&none, &more, me, 6.0), None);
+        // Everyone else asleep: nobody to tell.
+        let mut sleep = more;
+        for m in sleep.members[1..4].iter_mut() {
+            m.state = protocol::TEAM_ASLEEP;
+        }
+        assert_eq!(share.due(&one, &sleep, me, 7.0), None);
+        // Leaving and joining a new team starts from none of yours.
+        assert_eq!(share.due(&one, &alone, me, 8.0), None);
+        assert_eq!(share.due(&one, &ta, me, 9.0), Some(one));
     }
 
     /// The wheel moves the target and the ease arrives at it, about the

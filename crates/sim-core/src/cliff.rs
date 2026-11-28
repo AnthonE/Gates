@@ -441,15 +441,26 @@ fn ledge(
     }
 }
 
-/// The spots whose crags can reach (`x`, `z`) grown by `pad` metres.
+/// The spots whose crags can reach (`x`, `z`) grown by `pad` metres, as
+/// the inclusive rectangle `(i0, i1, j0, j1)` [`spots_near`] walks — empty
+/// (`i0 > i1` or `j0 > j1`) off the island.
 #[inline]
-pub fn spots_near(x: f32, z: f32, pad: f32, mut f: impl FnMut(i32, i32)) {
+pub fn spot_range(x: f32, z: f32, pad: f32) -> (i32, i32, i32, i32) {
     let r = CRAG_REACH_M + pad;
     let last = SPOTS_PER_SIDE - 1;
-    let i0 = floor_i32((x - r) / SPOT_M).max(0);
-    let i1 = floor_i32((x + r) / SPOT_M).min(last);
-    let j0 = floor_i32((z - r) / SPOT_M).max(0);
-    let j1 = floor_i32((z + r) / SPOT_M).min(last);
+    (
+        floor_i32((x - r) / SPOT_M).max(0),
+        floor_i32((x + r) / SPOT_M).min(last),
+        floor_i32((z - r) / SPOT_M).max(0),
+        floor_i32((z + r) / SPOT_M).min(last),
+    )
+}
+
+/// The spots whose crags can reach (`x`, `z`) grown by `pad` metres, row by
+/// row.
+#[inline]
+pub fn spots_near(x: f32, z: f32, pad: f32, mut f: impl FnMut(i32, i32)) {
+    let (i0, i1, j0, j1) = spot_range(x, z, pad);
     let mut j = j0;
     while j <= j1 {
         let mut i = i0;
