@@ -337,7 +337,7 @@ lines = [
 title = "THE STEEL DOORS"
 lines = [
     { when = "lacks:unlock.gate_open", text = "Everybody asks me what is behind the steel doors. I sell, I don't guess. A door with no handle is not for sale, and nor is whatever opens it. Wait for the ring like the rest of us." },
-    { text = "The doors are open and something walks out of every one. It doesn't trade, it doesn't sleep and it doesn't mind a torch. It goes where the noise is. Build quiet, or build far from the old places." },
+    { text = "The doors are open, and something walks out of the ones at the old places. It doesn't trade, it doesn't sleep and it doesn't mind a torch. It goes where the noise is. Build quiet, or build far from the old places." },
 ]
 
 # The alpha's gift. A topic with `gift = "<season>"` gives every skin of that
