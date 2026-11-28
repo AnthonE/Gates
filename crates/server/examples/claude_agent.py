@@ -398,9 +398,11 @@ def mark_recent(recent, observation):
 
 def supersede_recent(recent):
     """A new answer goes out while the last is still held back: the body
-    drops the held one for it, so it is never played and never read again."""
+    drops the held one for it, unless the held one already started while the
+    model was thinking. Only the newest answer's fate is read back, so the
+    held one's is worded as the body may have taken it either way."""
     if recent and str(recent[-1].get("fate", "")).startswith("deferred"):
-        recent[-1]["fate"] = "dropped: replaced by your next answer"
+        recent[-1]["fate"] = "replaced by your next answer, unless it had already started"
 
 
 def turn_content(request, recent, frame, notes, chat_log, strategy=None, died=False):
