@@ -429,6 +429,47 @@ pub fn blocks(marks: &[Landmark], doors: u32, x: f32, z: f32, feet: f32, r: f32,
     kit::blocks_local(&PARTS, m.y, doors, lx, lz, feet, r, h)
 }
 
+/// How far apart [`walled`] samples its line, metres: under half the
+/// thinnest wall ([`PARTS`]' 0.4 m partitions), so no sample steps over one.
+const WALL_SAMPLE_M: f32 = 0.15;
+/// The most samples [`walled`] takes: a bite's reach and some.
+const WALL_SAMPLES: usize = 32;
+
+/// Whether a lab wall (or its shut door) stands on the planar line from
+/// (`x0`, `z0`) to (`x1`, `z1`) for a body with its feet at `feet`: a point
+/// walk at [`WALL_SAMPLE_M`], so a bite never crosses a partition. A tread
+/// within a step of `feet` is floor, not wall (`kit::blocks_local`).
+#[allow(clippy::too_many_arguments)]
+pub fn walled(
+    marks: &[Landmark],
+    doors: u32,
+    x0: f32,
+    z0: f32,
+    x1: f32,
+    z1: f32,
+    feet: f32,
+) -> bool {
+    let (dx, dz) = (x1 - x0, z1 - z0);
+    let len = (dx * dx + dz * dz).sqrt();
+    if host_at(marks, x0, z0, len + 1.0).is_none() {
+        return false;
+    }
+    let n = ((len / WALL_SAMPLE_M) as usize + 1).min(WALL_SAMPLES);
+    let h = crate::collide::CAPSULE_HEIGHT_M;
+    (1..n).any(|k| {
+        let t = k as f32 / n as f32;
+        blocks(
+            marks,
+            doors,
+            x0 + dx * t,
+            z0 + dz * t,
+            feet,
+            crate::ranged::ARROW_R_M,
+            h,
+        )
+    })
+}
+
 /// The highest lab surface within a step of `feet` under a disc of radius
 /// `r` at (`x`, `z`) — `kit::ground_local`'s footprint.
 pub fn ground(marks: &[Landmark], doors: u32, x: f32, z: f32, feet: f32, r: f32) -> f32 {

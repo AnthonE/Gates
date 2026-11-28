@@ -410,3 +410,26 @@ fn only_the_door_follows_the_mask() {
     ));
     assert!(lab::blocks(&h.marks, 0, x, z, m.y + 0.1, 0.3, 1.7));
 }
+
+/// **No bite through a partition.** A dweller held at the hall's wall is a
+/// metre from the hall across it, inside a stray's reach; the line between
+/// them is walled. Across a room, through a doorway and down the stair (at
+/// the higher body's feet) it is not.
+#[test]
+fn a_bite_never_crosses_a_lab_wall() {
+    let h = terrain::haven(SHIPPED);
+    let m = host(&h);
+    let line = |a: (f32, f32), b: (f32, f32), ly: f32| {
+        let (x0, z0) = landmark::to_world(&m, a.0, a.1);
+        let (x1, z1) = landmark::to_world(&m, b.0, b.1);
+        lab::walled(&h.marks, LAB_DOOR_BIT, x0, z0, x1, z1, m.y + ly)
+    };
+    // The hall's wall, and the wall between the rooms.
+    assert!(line((-1.5, -0.4), (-1.5, -1.6), FLOOR_Y));
+    assert!(line((-0.6, 3.5), (0.6, 3.5), FLOOR_Y));
+    // Inside one room, and through the hall's west doorway.
+    assert!(!line((-3.5, 3.5), (-3.5, 1.5), FLOOR_Y));
+    assert!(!line((-3.8, -0.4), (-3.8, -1.6), FLOOR_Y));
+    // Down the stair: two treads apart, walked at the upper one's feet.
+    assert!(!line((5.7, -14.75), (5.7, -13.75), 0.1 - 0.5 * 6.0));
+}

@@ -1147,16 +1147,27 @@ fn in_reach(ctx: &Ctx, def: &MobDef, mob: &Mob, pct: i64) -> bool {
         return false;
     }
     let y = mob.body.qy as f32 * crate::movement::POS_Y_Q;
-    !crate::collide::blocked(
+    let (mx, mz) = (mob.body.qx as f32 * POS_XZ_Q, mob.body.qz as f32 * POS_XZ_Q);
+    let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
+    if crate::collide::blocked(
         ctx.ground.seed,
         ctx.ground.haven,
         ctx.ground.cols,
-        mob.body.qx as f32 * POS_XZ_Q,
-        mob.body.qz as f32 * POS_XZ_Q,
-        p.qx as f32 * POS_XZ_Q,
-        p.qz as f32 * POS_XZ_Q,
+        mx,
+        mz,
+        px,
+        pz,
         y,
-    )
+    ) {
+        return false;
+    }
+    // The lab's partitions are kit boxes, not built hulls, so the wall test
+    // above never sees them: a dweller held at one would bite the hall
+    // through it. Walked at the higher body's feet, so a stair tread
+    // between the two is floor and not wall.
+    let feet = y.max(p.qy as f32 * crate::movement::POS_Y_Q);
+    let doors = ctx.ground.occ.doors;
+    !crate::lab::walled(&ctx.ground.haven.marks, doors, mx, mz, px, pz, feet)
 }
 
 /// The leash, both halves: past the radius from home, or standing on the
